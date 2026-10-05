@@ -9,12 +9,13 @@ import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
-import { createMediaGenerationStore, createModelPullStore } from "./adapters/store";
+import { createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError } from "./contracts";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
+import { createVolumeLock } from "./volume-lock";
 
 type JobScheduling = "background" | "detached";
 
@@ -44,6 +45,16 @@ const DETACHED_KEY = Symbol.for("youtube-operations-manager.media-generation-cor
 function buildCore(jobScheduling: JobScheduling) {
   const now = () => new Date();
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  // The one "volume busy" lock (review round 9, `volume-lock.ts`): sessions and pulls both take it; its staleness
+  // check asks the holder's own module whether that holder is still active (late-bound: both are built below).
+  let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
+  let modelsRef: ReturnType<typeof createMediaModelServices> | null = null;
+  const isHolderActive = async (holder: string): Promise<boolean> => {
+    if (holder.startsWith("session:")) return (await sessionsRef?.getOpenSessionId()) === holder.slice("session:".length);
+    if (holder.startsWith("pull:")) return (await modelsRef?.isPullActive(holder.slice("pull:".length))) ?? false;
+    return false;
+  };
+  const volumeLock = createVolumeLock({ store: createVolumeLockStore(), isHolderActive, log: (line) => console.warn(line) });
   const base = createMediaGenerationServices({
     store: createMediaGenerationStore(),
     keyFile: createFsKeyFile(appDataPaths.appDataDir),
@@ -52,16 +63,20 @@ function buildCore(jobScheduling: JobScheduling) {
       createS3Client: (config) => createRunpodS3Client(config),
     },
     clock: { now },
+    activeVolumeHolder: async () => {
+      const holder = await volumeLock.holder();
+      return holder && (await isHolderActive(holder)) ? holder : null;
+    },
+    log: (line) => console.warn(line),
   });
-  // Sessions and models each need the other's "is the volume busy" answer; wire through late-bound closures.
-  let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   const models = createMediaModelServices({
     store: createModelPullStore(),
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
     generateId: () => randomUUID(),
     clock: { now },
-    hasOpenPod: () => (sessionsRef ? sessionsRef.hasOpenPod() : Promise.resolve(false)),
+    volumeLock,
   });
+  modelsRef = models;
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     base,
@@ -71,7 +86,7 @@ function buildCore(jobScheduling: JobScheduling) {
     generateToken: () => randomBytes(24).toString("base64url"),
     clock: { now },
     sleep,
-    hasActiveModelPull: () => models.hasActivePull(),
+    volumeLock,
     log: (line) => console.warn(line),
   });
   sessionsRef = sessions;

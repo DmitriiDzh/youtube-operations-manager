@@ -55,6 +55,9 @@ export type ServiceDependencies = {
     createS3Client(config: RunpodS3Config): RunpodS3Client;
   };
   clock: { now(): Date };
+  /** Who holds the volume lock right now (a session or pull still active), or null -- late-bound by the core. */
+  activeVolumeHolder?: () => Promise<string | null>;
+  log?: (line: string) => void;
 };
 
 /** The URL this app (and the scripts) use for ComfyUI on a pod -- built here so no caller spells the proxy host itself. */
@@ -78,8 +81,24 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     } catch {
       return { ...DEFAULT_MEDIA_SETTINGS };
     }
-    const result = mediaSettingsSchema.safeParse({ ...DEFAULT_MEDIA_SETTINGS, ...(parsed as object) });
-    return result.success ? result.data : { ...DEFAULT_MEDIA_SETTINGS };
+    const stored = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    const result = mediaSettingsSchema.safeParse({ ...DEFAULT_MEDIA_SETTINGS, ...stored });
+    if (result.success) return result.data;
+    // Never reset EVERYTHING (the spend cap included) because one key is off (a key from a newer build, a value a
+    // tightened schema no longer accepts): keep every key that validates on its own, default only the offending ones,
+    // and say so (review round 9).
+    const salvaged: Record<string, unknown> = { ...DEFAULT_MEDIA_SETTINGS };
+    const dropped: string[] = [];
+    for (const [key, fieldSchema] of Object.entries(mediaSettingsSchema.shape)) {
+      if (!(key in stored)) continue;
+      const field = (fieldSchema as { safeParse(v: unknown): { success: boolean; data?: unknown } }).safeParse(stored[key]);
+      if (field.success) salvaged[key] = field.data;
+      else dropped.push(key);
+    }
+    for (const key of Object.keys(stored)) if (!(key in mediaSettingsSchema.shape)) dropped.push(key);
+    (deps.log ?? (() => undefined))(`[media] stored settings partly invalid; kept the valid keys, defaulted: ${dropped.join(", ") || "(none)"}`);
+    const salvagedResult = mediaSettingsSchema.safeParse(salvaged);
+    return salvagedResult.success ? salvagedResult.data : { ...DEFAULT_MEDIA_SETTINGS };
   }
 
   async function credentialsStatus(): Promise<MediaCredentialsStatus> {
@@ -266,7 +285,24 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     },
 
     getGatewayEnabled: () => deps.store.getGatewayEnabled(),
-    setGatewayEnabled: (enabled: boolean) => deps.store.setGatewayEnabled(enabled),
+    /**
+     * Disabling the gateway while a pod is open or a pull is running would disable the only path that can terminate
+     * that pod (watcher, Stop, shutdown, boot sweep all go through the gated client) -- the caps would stop being
+     * enforced and the pod would bill until the toggle came back. Refused while the volume lock has an active holder.
+     */
+    async setGatewayEnabled(enabled: boolean): Promise<void> {
+      if (!enabled && deps.activeVolumeHolder) {
+        const holder = await deps.activeVolumeHolder();
+        if (holder) {
+          throw new DomainError({
+            code: "media_session_conflict",
+            message: `The media gateway cannot be disabled while ${holder.startsWith("pull:") ? "a model pull is running" : "a generation session is open"} (${holder}): the pod could then never be terminated. Stop it first.`,
+            details: { holder },
+          });
+        }
+      }
+      await deps.store.setGatewayEnabled(enabled);
+    },
 
     // -- used by the session services (same device key as the credentials; the key never leaves) --
 

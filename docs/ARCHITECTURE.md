@@ -2476,6 +2476,22 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `output_node_ids_json`/`node_count` (schema v55) are derived at import/update so a listing never
   re-parses graphs; `createAssetCatalogCore` wires `getAssetByReference` (round 7 had added it to the
   services only); S3 query strings use the SigV4 encoder (a space is `%20`, never `+`).
+- **The volume lock and the last guesses removed (review round 9).** AC-P14-18 is now a CONSTRAINT, not a
+  protocol: `volume-lock.ts` is the one database-enforced "network volume is busy" lock (one
+  `app_settings` row, `media_volume_lock`, whose primary key makes the insert the atomic test-and-set). A
+  session takes `session:<id>` before its `approved` write and `finish()` releases it with the terminal
+  write; a pull takes `pull:<id>` before its reservation and releases it with its terminal write. An
+  acquire that finds a holder asks the holder's module whether it is still active and steals a stale one
+  (crash between the terminal write and the release). Every future writer to the volume takes the same
+  lock. Disabling the media gateway is refused while the lock has an active holder (the toggle gates the
+  only path that can terminate that pod). A failed `createPod` whose name lookup ALSO fails leaves the
+  session `approved` (slot and lock kept, error recorded) -- the watcher repeats the search; a pull in the
+  same situation keeps its reservation; neither frees the volume on a guess. The abandoned-start margin is
+  5 min (derived from the approve request's real worst case, not 30 s over it). Stored settings with one
+  invalid key keep every valid key (the spend cap included) and default only that key. A remote key with a
+  `.`/`..` segment (an untrusted Save-node subfolder) is never HEADed, pulled or deleted; an output pulled
+  earlier but not cataloged is cataloged on the retry; a template rename does not bump the version that job
+  provenance records (only a graph/parameter change does).
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

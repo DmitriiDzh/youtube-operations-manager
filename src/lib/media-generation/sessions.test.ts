@@ -4,6 +4,14 @@ import { encryptSecret, decryptSecret } from "@/lib/shared-crypto";
 import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
 import { createMediaSessionServices, type MediaSessionStore, type StoredSessionRow } from "./sessions";
+import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
+
+/** A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). */
+function testLock(opts: { heldBy?: string } = {}) {
+  const store = createMemoryVolumeLockStore();
+  if (opts.heldBy) void store.tryAcquire(opts.heldBy);
+  return { lock: createVolumeLock({ store, isHolderActive: async () => true }), store };
+}
 
 // Expected behaviour from docs/roadmap/plans/PHASE_14_PLAN.md §2.3 and §4 (AC-P14-03, -04, -05,
 // -06, -07, -08, -09, -17), written before this module. Expected numbers are computed by hand from
@@ -154,6 +162,7 @@ function fixture(opts: {
   let now = opts.now ?? new Date("2026-10-05T10:00:00Z");
   const missing = opts.ready === false ? ["network volume"] : [];
   let idCounter = 0;
+  const lock = testLock();
   const services = createMediaSessionServices({
     store: mem.store,
     base: {
@@ -173,8 +182,9 @@ function fixture(opts: {
       now = new Date(now.getTime() + ms);
     },
     timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
+    volumeLock: lock.lock,
   });
-  return { services, mem, runpod, comfy, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
+  return { services, mem, runpod, comfy, lock: lock.store, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
 }
 
 const operatorRequest = { channelId: "UC1", requestedBy: "operator" as const };
@@ -461,11 +471,14 @@ test("AC-P14-18: approve is refused while a model pull is writing to the volume;
     sleep: async (ms) => {
       now = new Date(now.getTime() + ms);
     },
-    hasActiveModelPull: async () => true,
+    volumeLock: testLock({ heldBy: "pull:p1" }).lock, // a running model pull holds the volume lock
   });
   const requested = await services.requestSession(operatorRequest);
-  await assert.rejects(services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
-  assert.equal(mem.rows.get(requested.sessionId)?.status, "pending");
+  await assert.rejects(services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /model pull \(p1\)/.test(e.message));
+  const row = mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "pending");
+  assert.equal(row.approvedAt, null);
+  assert.equal(row.tokenCiphertext, null);
   assert.ok(!runpod.calls.includes("createPod"));
 });
 
@@ -683,21 +696,21 @@ test("review 6: a session left `starting` by an approve request that died is rec
   // The approving request died right after the `starting` write (a non-DomainError escaped): pod1 bills, nobody polls it.
   await f.runpod.client.createPod({ name: `ytm-media-${requested.sessionId.slice(0, 8)}`, env: {} } as never);
   f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "starting", podId: "pod1", approvedAt: f.getNow(), startedAt: f.getNow(), costPerHr: 0.69 });
-  // Inside the start budget (60 s) + stop budget (20 s) + grace (120 s) the approve may still be running: hands off.
-  f.advance(150_000);
+  // Inside the start budget (60 s) + stop budget (20 s) + grace (300 s, review round 9) the approve may still be running: hands off.
+  f.advance(370_000);
   assert.equal((await f.services.watchTick()).action, "none");
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "starting");
   assert.ok(f.runpod.pods.has("pod1"));
   // Past it, the pod can only be an orphan.
-  f.advance(60_000);
+  f.advance(20_000);
   const tick = await f.services.watchTick();
   assert.equal(tick.action, "stopped");
   assert.match(tick.reason ?? "", /start abandoned/);
   const row = f.mem.rows.get(requested.sessionId)!;
   assert.equal(row.status, "failed");
   assert.equal(f.runpod.pods.has("pod1"), false);
-  assert.equal(row.secondsUsed, 210);
-  assert.equal(row.usdCharged, 0.04); // 210 s × 0.69 / 3600 = 0.04025
+  assert.equal(row.secondsUsed, 390);
+  assert.equal(row.usdCharged, 0.07); // 390 s × 0.69 / 3600 = 0.07475
   assert.equal(await f.services.hasOpenPod(), false, "the idle shutdown is no longer blocked");
 });
 
@@ -836,38 +849,68 @@ test("review 7: the watcher's 'pod disappeared' closes the window at the previou
 
 // -- review round 8 (2026-10-05) ------------------------------------------------------------------
 
-test("review 8 (AC-P14-18 without a window): a model pull that reserved itself between the approve's first check and its `approved` write is seen by the re-check -- the request goes back to pending, no pod is created", async () => {
-  let checks = 0;
-  const runpod = fakeRunpod();
-  const mem = memorySessionStore();
-  let now = new Date("2026-10-05T10:00:00Z");
-  const services = createMediaSessionServices({
-    store: mem.store,
-    base: {
-      getSettings: async () => READY_SETTINGS,
-      getOverview: async () => ({ ready: true, missing: [], gatewayEnabled: true }),
-      resolveRunpodClient: async () => runpod.client,
-      sealSecret: async (text) => encryptSecret(text, KEY),
-      openSecret: async (payload) => decryptSecret(payload, KEY),
-    },
-    createComfyClient: fakeComfy().factory,
-    comfyUiProxyBaseUrl: (podId, port) => `https://${podId}-${port}.example.test`,
-    generateId: () => "session-1",
-    generateToken: () => "tok",
-    clock: { now: () => now },
-    sleep: async (ms) => {
-      now = new Date(now.getTime() + ms);
-    },
-    // First check (before the `approved` write): no pull. Second check (after it): a pull reserved itself meanwhile.
-    hasActiveModelPull: async () => ++checks >= 2,
-  });
-  const requested = await services.requestSession(operatorRequest);
-  await assert.rejects(services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
-  const row = mem.rows.get(requested.sessionId)!;
-  assert.equal(row.status, "pending");
-  assert.equal(row.approvedAt, null);
-  assert.equal(row.tokenCiphertext, null);
-  assert.match(row.error ?? "", /model pull started/);
-  assert.ok(!runpod.calls.includes("createPod"));
-  assert.equal(checks, 2);
+test("review 8/9 (AC-P14-18 as a constraint): the session holds the volume lock from its `approved` write until it is terminal, on every exit path", async () => {
+  // Running session: held; after the watcher stops it: released.
+  const f = fixture();
+  const running = await startRunning(f);
+  assert.equal(f.lock.current(), `session:${running.sessionId}`);
+  await f.services.stopSession({ sessionId: running.sessionId });
+  assert.equal(f.lock.current(), null);
+
+  // A failed start (pod creation refused) releases it; a start whose pod lingers keeps it until the retry confirms.
+  const g = fixture({ runpod: fakeRunpod({ createFails: true }) });
+  const r1 = await g.services.requestSession(operatorRequest);
+  await assert.rejects(g.services.approveAndStartSession({ sessionId: r1.sessionId }));
+  assert.equal(g.lock.current(), null);
+  const h = fixture({ runpod: fakeRunpod({ terminateSticks: true }), comfy: fakeComfy({ never: true }) });
+  const r2 = await h.services.requestSession(operatorRequest);
+  await assert.rejects(h.services.approveAndStartSession({ sessionId: r2.sessionId }));
+  assert.equal(h.mem.rows.get(r2.sessionId)!.status, "stopping");
+  assert.equal(h.lock.current(), `session:${r2.sessionId}`, "the pod may still write the volume");
+  h.runpod.pods.delete("pod1");
+  await h.services.watchTick();
+  assert.equal(h.lock.current(), null);
+
+  // The boot sweep's terminal write releases it too; a rejected pending request never held it.
+  const i = fixture();
+  const swept = await startRunning(i);
+  await i.services.bootSweep();
+  assert.equal(i.mem.rows.get(swept.sessionId)!.status, "interrupted");
+  assert.equal(i.lock.current(), null);
+  const pending = await i.services.requestSession(operatorRequest);
+  await i.services.rejectSession({ sessionId: pending.sessionId, reason: "no" });
+  assert.equal(i.lock.current(), null);
+});
+
+test("review 9: when createPod fails AND RunPod cannot be asked whether the pod exists, the session stays `approved` (slot and volume lock kept) and the watcher's later name search settles it -- never a freed slot on a guess", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  (f.runpod.client as unknown as { createPod: () => Promise<unknown> }).createPod = async () => {
+    f.runpod.calls.push("createPod");
+    throw new Error("RunPod API timed out");
+  };
+  let listPodsDown = true;
+  const pod = { id: "pod9", name: `ytm-media-${requested.sessionId.slice(0, 8)}`, status: "RUNNING", costPerHr: 0.69, createdAt: null };
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => {
+    if (listPodsDown) throw new Error("RunPod API returned HTTP 503");
+    return [pod];
+  };
+  f.runpod.pods.set("pod9", { status: "RUNNING", costPerHr: 0.69 });
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed" && /could not confirm/.test(e.message));
+  let row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "approved");
+  assert.equal(row.podId, null);
+  assert.match(row.error ?? "", /could not be asked whether the pod exists/);
+  assert.equal(f.lock.current(), `session:${requested.sessionId}`);
+  assert.equal((await f.services.getLimits()).openSession?.sessionId, requested.sessionId, "the slot is NOT freed");
+  // Later, RunPod answers: the watcher's abandoned-start path finds the pod by name and terminates it.
+  listPodsDown = false;
+  f.advance(10 * 60_000);
+  const tick = await f.services.watchTick();
+  assert.equal(tick.action, "stopped");
+  row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.podId, "pod9");
+  assert.equal(f.runpod.pods.has("pod9"), false);
+  assert.equal(f.lock.current(), null);
 });

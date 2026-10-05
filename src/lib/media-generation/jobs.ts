@@ -308,6 +308,11 @@ function safeFileName(name: string): string | null {
   return name;
 }
 
+/** Every segment of the key must be a plain name: no empty, `.` or `..` segment (a Save node's subfolder is untrusted). */
+function safeRemoteKey(key: string): boolean {
+  return key.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".." && !segment.includes("\\"));
+}
+
 export function createMediaJobServices(deps: JobServiceDependencies) {
   const pollMs = deps.timeouts?.pollMs ?? DEFAULT_POLL_MS;
   const maxGenerationMs = deps.timeouts?.maxGenerationMs ?? DEFAULT_MAX_GENERATION_MS;
@@ -362,7 +367,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   async function pullOutput(job: StoredJobRow, output: MediaJobOutput, outputDir: string, s3: RunpodS3Client, provenance: Record<string, unknown>): Promise<MediaJobOutput> {
     const fileName = safeFileName(output.filename);
     if (!fileName) return { ...output, note: "unsafe file name; not pulled" };
-    if (!output.remoteKey.startsWith(`${EXCHANGE_PREFIX}${job.id}/`)) return { ...output, note: "output outside the job's folder; not pulled" };
+    if (!safeRemoteKey(output.remoteKey) || !output.remoteKey.startsWith(`${EXCHANGE_PREFIX}${job.id}/`)) return { ...output, note: "output outside the job's folder; not pulled" };
     const head = await s3.headObject(output.remoteKey);
     if (!head) return { ...output, note: "output missing on the volume" };
     const localPath = path.join(outputDir, fileName);
@@ -404,7 +409,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           title: fileName,
           provenance: { ...provenance, comfyNodeId: output.nodeId, outputKind: output.kind, sha256: output.sha256, bytes: output.bytes },
         }));
-      return { ...output, assetId: asset.assetId, note: output.note };
+      // A note from an earlier failed registration is resolved by this success; any other note stays.
+      return { ...output, assetId: asset.assetId, note: output.note?.startsWith("pulled, but asset registration failed") ? null : output.note };
     } catch (error) {
       return { ...output, assetId: null, note: `pulled, but asset registration failed: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -581,8 +587,14 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     let transientFailure: string | null = null;
     for (const output of outputs) {
       if (output.localPath) {
-        results.push(output); // already pulled by an earlier attempt
-        forRetry.push(output);
+        // Already pulled by an earlier attempt; its catalog entry may still be missing (registration failed then) --
+        // catalogOutput is idempotent, so that step alone is redone (review round 9).
+        const settled =
+          output.assetId || output.bytes === null || output.sha256 === null
+            ? output
+            : await catalogOutput(job, { ...output, localPath: output.localPath, bytes: output.bytes, sha256: output.sha256 }, path.basename(output.localPath), provenance);
+        results.push(settled);
+        forRetry.push(settled);
         continue;
       }
       const ledger = await deps.store.ledger.get(output.remoteKey);
@@ -652,13 +664,14 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const graph = (parsed.workflow ?? JSON.parse(existing.workflowJson)) as Graph;
       const parameters = parsed.parameters ? parsed.parameters.map(normalizeParameter) : (JSON.parse(existing.parametersJson) as MediaTemplateParameter[]);
       validateTemplateShape(parseWithSchema(workflowGraphSchema, graph, "workflow") as Graph, parameters);
+      // Only a changed graph/parameters is a new version (what job provenance records); a rename keeps the version.
+      const contentChanged = parsed.workflow !== undefined || parsed.parameters !== undefined;
       const row = await deps.store.templates.update(parsed.templateId, {
         ...(parsed.name !== undefined ? { name: parsed.name } : {}),
         ...(parsed.description !== undefined ? { description: parsed.description ?? null } : {}),
-        workflowJson: JSON.stringify(graph),
-        parametersJson: JSON.stringify(parameters),
-        outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)),
-        nodeCount: Object.keys(graph).length,
+        ...(contentChanged
+          ? { workflowJson: JSON.stringify(graph), parametersJson: JSON.stringify(parameters), outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)), nodeCount: Object.keys(graph).length }
+          : {}),
       });
       if (!row) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: parsed.templateId } });
       return toPublicTemplate(row);

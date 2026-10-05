@@ -1036,7 +1036,7 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 - `GET|PUT|DELETE /api/media-generation/credentials` — status `{ configured, runpodKeyPrefix, s3AccessKeyId, verifiedAt, updatedAt }` or `{ configured: false, reason: "no_credentials" | "key_file_missing" }`; PUT body `{ runpodApiKey, s3AccessKeyId?, s3SecretAccessKey? }` (encrypted with the per-device key file); DELETE clears
 - `POST /api/media-generation/credentials/test` — one RunPod read (+ one S3 listing when configured) → `{ runpod, s3, verifiedAt }`
 - `GET|PUT /api/media-generation/settings` — `{ datacenterId, gpuTypeId, cloudType, networkVolumeId, templateId, maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds }`; PUT is a partial update, GPU/datacenter/volume are checked against RunPod's live catalog (`media_settings_invalid`)
-- `PUT /api/media-generation/gateway` — `{ enabled }` (the media gateway toggle)
+- `PUT /api/media-generation/gateway` — `{ enabled }` (the media gateway toggle; `enabled: false` → 409 `media_session_conflict` while a session is open or a model pull runs, since the toggle gates the only path that can terminate that pod)
 - `GET /api/media-generation/catalog` — `{ gpus[], dataCenters[] }` (two RunPod reads, on an explicit "Load")
 - `GET|POST /api/media-generation/network-volumes` — list / create `{ name, datacenterId, sizeGb }` (billed monthly by RunPod)
 - `GET /api/media-generation/templates` — `{ templates: [{ id, name }] }`

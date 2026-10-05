@@ -3,6 +3,14 @@ import test from "node:test";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError } from "./contracts";
 import { buildPullCommand, createMediaModelServices, modelFileName, type ModelPullStore } from "./models";
+import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
+
+/** A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). */
+function testLock(opts: { heldBy?: string } = {}) {
+  const store = createMemoryVolumeLockStore();
+  if (opts.heldBy) void store.tryAcquire(opts.heldBy);
+  return { lock: createVolumeLock({ store, isHolderActive: async () => true }), store };
+}
 
 // AC-P14-18 (docs/roadmap/plans/PHASE_14_PLAN.md): "Add from URL" creates a CPU pod attached to the volume; the pod is terminated
 // after success or failure; the listing shows the file afterwards; the GPU session cannot start while a pull runs (checked in
@@ -29,6 +37,9 @@ function fixture(opts: { objects?: Map<string, number>; podStatus?: string; crea
       calls.push(`terminate:${id}`);
       podStatus = "GONE";
       return { terminated: true, alreadyGone: false };
+    },
+    async listPods() {
+      return []; // RunPod reachable: no pod of the deterministic name exists
     },
   } as unknown as RunpodApiClient;
   const s3 = {
@@ -57,6 +68,7 @@ function fixture(opts: { objects?: Map<string, number>; podStatus?: string; crea
     generateId: () => `id-${++ids}`,
     clock: { now: () => now },
     pullCapMs: 60 * 60_000,
+    volumeLock: testLock().lock,
   });
   return { services, calls, objects, setPodStatus: (s: string) => (podStatus = s), advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
 }
@@ -215,6 +227,7 @@ function fixtureWithFlakyTerminate() {
     },
     generateId: () => "id",
     clock: { now: () => new Date("2026-10-05T12:00:00Z") },
+    volumeLock: testLock().lock,
   });
   return { services, objects };
 }
@@ -243,11 +256,11 @@ test("review 3: a pull is refused while a GPU session is open on the volume", as
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "id",
     clock: { now: () => new Date() },
-    hasOpenPod: async () => true,
+    volumeLock: testLock({ heldBy: "session:s-open" }).lock, // an open GPU session holds the volume lock
   });
   void objects;
   await assert.rejects(services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
-  assert.deepEqual(await services.listPulls(), []);
+  assert.deepEqual(await services.listPulls(), [], "refused before anything is recorded");
 });
 
 test("review 4: the Hugging Face CLI's .cache litter is not listed as a model", async () => {
@@ -282,6 +295,7 @@ test("review 5: a pull is terminal only once RunPod confirms the pod is gone; a 
     sleep: async (ms) => {
       now = new Date(now.getTime() + ms);
     },
+    volumeLock: testLock().lock,
   });
   await services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
   objects.set("models/vae/c.bin", 5);
@@ -318,6 +332,7 @@ test("review 5: a createPod call that fails after RunPod created the pull pod st
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "pull-abcdef",
     clock: { now: () => new Date() },
+    volumeLock: testLock().lock,
   });
   const pull = await services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
   assert.equal(pull.podId, "cpupod9");
@@ -361,12 +376,14 @@ test("review 6: two PROCESSES (the web watch loop and the operator CLI) mutating
       return { terminated: true, alreadyGone: false };
     },
   } as unknown as RunpodApiClient;
+  const sharedLock = testLock();
   const make = (prefix: string) =>
     createMediaModelServices({
       store,
       base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
       generateId: () => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       clock: { now: () => new Date("2026-10-05T12:00:00Z") },
+      volumeLock: sharedLock.lock, // one database -> one lock for both processes
     });
   const web = make("web");
   const cli = make("cli");
@@ -408,22 +425,22 @@ test("review 7: pulling a file whose key already exists on the volume is refused
 
 // -- review round 8 (2026-10-05) ------------------------------------------------------------------
 
-test("review 8 (AC-P14-18 without a window): a pull is visible as active from BEFORE its createPod returns, and backs off when a session was approved meanwhile", async () => {
-  // 1. Reserved before createPod: hasActivePull() is already true while RunPod is still creating the pod.
+test("review 8/9 (AC-P14-18 as a constraint): the pull holds the volume lock from before its createPod until it is terminal; a session cannot take it meanwhile, and a crash-stale holder is stolen", async () => {
   let releaseCreate: () => void = () => undefined;
   const gate = new Promise<void>((r) => (releaseCreate = r));
-  let seenDuringCreate: boolean | null = null;
   const objects = new Map<string, number>();
   let json: string | null = null;
+  let terminated = false;
   const client = {
     async createPod() {
       await gate;
       return { id: "cpupod1", status: "PROVISIONING", costPerHr: 0.08 };
     },
     async getPod(id: string) {
-      return { id, status: "RUNNING" };
+      return { id, status: terminated ? "TERMINATED" : "RUNNING" };
     },
     async terminatePod() {
+      terminated = true;
       return { terminated: true, alreadyGone: false };
     },
     async listPods() {
@@ -431,36 +448,35 @@ test("review 8 (AC-P14-18 without a window): a pull is visible as active from BE
     },
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
-  // Answers for the two open-pod checks of one startPull: before the reservation, and after it.
-  let openPodAnswers: boolean[] = [false, false];
+  const { lock, store } = testLock();
   const services = createMediaModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "pull-1",
     clock: { now: () => new Date("2026-10-05T12:00:00Z") },
-    hasOpenPod: async () => openPodAnswers.shift() ?? false,
+    volumeLock: lock,
   });
   const starting = services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
   await new Promise((r) => setTimeout(r, 0));
-  seenDuringCreate = await services.hasActivePull();
+  // While RunPod is still creating the pod: the lock is already the pull's -- a session approve would be refused here.
+  assert.equal(store.current(), "pull:pull-1");
+  await assert.rejects(lock.acquire("session:s1"), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /model pull \(pull-1\)/.test(e.message));
   releaseCreate();
   const pull = await starting;
-  assert.equal(seenDuringCreate, true, "an approve running during createPod must see the pull");
   assert.equal(pull.podId, "cpupod1");
+  // Done -> the lock is released with the terminal write.
+  objects.set("models/vae/c.bin", 7);
+  await services.pollPulls();
+  assert.equal(store.current(), null);
+  await lock.acquire("session:s1");
+  await lock.release("session:s1");
 
-  // 2. The re-check after the reservation: no open pod at the first check, a session approved in between (its
-  // `approved` write landed after this pull's reservation) -> the reservation is voided, no pod created.
-  json = null;
-  openPodAnswers = [false, true];
-  let created = 0;
-  (client as unknown as { createPod: () => Promise<unknown> }).createPod = async () => {
-    created++;
-    return { id: "cpupod2", status: "PROVISIONING" };
-  };
-  await assert.rejects(services.startPull({ repoId: "a/b", file: "d.bin", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
-  assert.equal(created, 0);
-  assert.equal(await services.hasActivePull(), false);
-  assert.equal((await services.listPulls())[0].status, "failed");
+  // A holder that is no longer active (crash between its terminal write and its release) is stolen by the next acquire.
+  const stale = createMemoryVolumeLockStore();
+  await stale.tryAcquire("session:dead");
+  const stealing = createVolumeLock({ store: stale, isHolderActive: async (h) => h !== "session:dead" });
+  await stealing.acquire("pull:p2");
+  assert.equal(stale.current(), "pull:p2");
 });
 
 test("review 8: a reservation whose createPod never returned is settled by the poll after a grace period -- adopted when a pod of its name exists, voided otherwise", async () => {
@@ -488,6 +504,7 @@ test("review 8: a reservation whose createPod never returned is settled by the p
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "x",
     clock: { now: () => clock },
+    volumeLock: testLock().lock,
   });
   // Inside the grace period: left alone (its startPull may still be inside createPod).
   assert.equal((await services.pollPulls())[0].podId, null);

@@ -3,6 +3,7 @@ import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { DomainError, type MediaSettings } from "./contracts";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { parseWithSchema } from "./schemas";
+import type { VolumeLock } from "./volume-lock";
 
 // ---------------------------------------------------------------------------
 // Phase 14 slice 4 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6 "Models", owner decision D5): what is on
@@ -78,8 +79,8 @@ export type ModelServiceDependencies = {
   clock: { now(): Date };
   sleep?(ms: number): Promise<void>;
   pullCapMs?: number;
-  /** AC-P14-18 in the other direction: no pull may write to the volume while a GPU pod is open on it. */
-  hasOpenPod?: () => Promise<boolean>;
+  /** AC-P14-18 as a constraint (review round 9): a pull holds the one "volume busy" lock from its reservation until it is terminal. */
+  volumeLock: VolumeLock;
 };
 
 export function modelFileName(file: string): string {
@@ -160,6 +161,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     }
     const finished: ModelPull = { ...pull, status, finishedAt: deps.clock.now().toISOString(), bytes: extra.bytes ?? null, error: extra.error ?? null };
     await savePull(finished);
+    await deps.volumeLock.release(`pull:${pull.pullId}`);
     return finished;
   }
 
@@ -194,6 +196,11 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
 
     async hasActivePull(): Promise<boolean> {
       return hasActivePull();
+    },
+
+    /** For the volume lock's staleness check: is this particular pull still running? */
+    async isPullActive(pullId: string): Promise<boolean> {
+      return (await readPulls()).some((p) => p.pullId === pullId && p.status === "running");
     },
 
     /**
@@ -233,9 +240,6 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     if (await hasActivePull()) {
       throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
     }
-    if (deps.hasOpenPod && (await deps.hasOpenPod())) {
-      throw new DomainError({ code: "media_session_conflict", message: "A generation session is open on the volume; stop it before pulling models (Settings → Media → Sessions)." });
-    }
     const client = await deps.base.resolveRunpodClient();
     // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.
     const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${parsed.file}`;
@@ -251,14 +255,11 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     }
     const pullId = deps.generateId();
     const podName = pullPodNameFor(pullId);
-    // RESERVE first (AC-P14-18 without a window, review round 8): from here `hasActivePull` is true, so a session approve
-    // that runs concurrently sees it; then re-check the open pod -- an approve that wrote `approved` meanwhile is seen here.
+    // AC-P14-18 as a constraint: the volume lock (held by an open session, if any) is taken BEFORE anything is written;
+    // then the pull is RESERVED (recorded with no pod yet) so a crash inside createPod leaves a record the poll settles.
+    await deps.volumeLock.acquire(`pull:${pullId}`);
     const reserved: ModelPull = { pullId, podId: null, repoId: parsed.repoId, file: parsed.file, expectedKey, status: "running", startedAt: deps.clock.now().toISOString(), finishedAt: null, bytes: null, error: null };
     await savePull(reserved);
-    if (deps.hasOpenPod && (await deps.hasOpenPod())) {
-      await savePull({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: "a generation session was approved meanwhile" });
-      throw new DomainError({ code: "media_session_conflict", message: "A generation session was approved meanwhile; wait for it to end before pulling models." });
-    }
     let pod: { id: string };
     try {
       pod = await client.createPod({
@@ -273,9 +274,19 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       });
     } catch (error) {
       // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
-      const orphan = await findLivePodByName(client, podName).catch(() => undefined);
+      const message = error instanceof Error ? error.message : String(error);
+      let orphan: { id: string } | undefined;
+      try {
+        orphan = await findLivePodByName(client, podName);
+      } catch (lookupError) {
+        // RunPod unreachable for the lookup too: the pod MAY exist and write the volume. The reservation (and the lock)
+        // stay, with the error recorded; the poll repeats the name search (review round 9).
+        await savePull({ ...reserved, error: `pod creation failed (${message}); RunPod could not be asked whether the pod exists (${lookupError instanceof Error ? lookupError.message : String(lookupError)}); the poll re-checks` });
+        throw error;
+      }
       if (!orphan) {
-        await savePull({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: `pod creation failed: ${error instanceof Error ? error.message : String(error)}` });
+        await savePull({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: `pod creation failed: ${message}` });
+        await deps.volumeLock.release(`pull:${pullId}`);
         throw error;
       }
       pod = orphan;
@@ -301,9 +312,20 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         // Reserved but never given a pod: its startPull is still inside createPod, or died there. Past a short grace the
         // deterministic name settles it -- a pod that exists is adopted, none means the reservation is void.
         if (now - Date.parse(pull.startedAt) <= RESERVATION_GRACE_MS) continue;
-        const orphan = await findLivePodByName(client, pullPodNameFor(pull.pullId)).catch(() => undefined);
-        if (orphan) await savePull({ ...pull, podId: orphan.id });
-        else await savePull({ ...pull, status: "failed", finishedAt: deps.clock.now().toISOString(), error: "reserved, but no pod was ever created" });
+        let orphan: { id: string } | undefined;
+        try {
+          orphan = await findLivePodByName(client, pullPodNameFor(pull.pullId));
+        } catch (lookupError) {
+          // Unknown is not "none": the reservation (and the lock) stay until RunPod can be asked (review round 9).
+          await savePull({ ...pull, error: `could not check RunPod for a pod named ${pullPodNameFor(pull.pullId)} (${lookupError instanceof Error ? lookupError.message : String(lookupError)}); retrying` });
+          continue;
+        }
+        if (orphan) {
+          await savePull({ ...pull, podId: orphan.id, error: null });
+        } else {
+          await savePull({ ...pull, status: "failed", finishedAt: deps.clock.now().toISOString(), error: "reserved, but no pod was ever created" });
+          await deps.volumeLock.release(`pull:${pull.pullId}`);
+        }
         continue;
       }
       const head = await s3.headObject(pull.expectedKey);

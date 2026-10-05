@@ -7249,6 +7249,32 @@ export async function getMediaModelPullsJson(database: AppDb = db): Promise<stri
   return await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
 }
 
+const MEDIA_VOLUME_LOCK_KEY = "media_volume_lock";
+
+/**
+ * Phase 14 review round 9 (`src/lib/media-generation/volume-lock.ts`): the one "network volume is busy"
+ * row. `app_settings.key` is the primary key, so the insert is the atomic test-and-set -- a session
+ * approve and a model pull cannot both hold it. Returns whoever holds it afterwards.
+ */
+export async function tryAcquireMediaVolumeLock(owner: string, database: AppDb = db): Promise<{ acquired: boolean; holder: string }> {
+  await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value: owner }).onConflictDoNothing();
+  const holder = (await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database)) ?? owner;
+  return { acquired: holder === owner, holder };
+}
+
+/** Deletes the row only when `owner` holds it (never another owner's lock). */
+export async function releaseMediaVolumeLock(owner: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .delete(appSettings)
+    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), eq(appSettings.value, owner)))
+    .returning({ key: appSettings.key });
+  return rows.length > 0;
+}
+
+export async function getMediaVolumeLockHolder(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+}
+
 /**
  * The only writer: a read-modify-write of the pulls list in ONE write transaction (libSQL's `BEGIN IMMEDIATE`), so the
  * web server's watch loop and the operator CLI -- separate processes -- never overwrite each other's
@@ -7396,7 +7422,8 @@ export async function updateMediaWorkflowTemplate(
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const rows = await database
     .update(mediaWorkflowTemplates)
-    .set({ ...patch, version: sql`${mediaWorkflowTemplates.version} + 1`, updatedAt: new Date() })
+    // `version` is what job provenance records: it moves only when the graph or the parameters change (review round 9).
+    .set({ ...patch, ...(patch.workflowJson !== undefined || patch.parametersJson !== undefined ? { version: sql`${mediaWorkflowTemplates.version} + 1` } : {}), updatedAt: new Date() })
     .where(eq(mediaWorkflowTemplates.id, id))
     .returning();
   return rows[0] ?? null;

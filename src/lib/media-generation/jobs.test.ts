@@ -40,7 +40,8 @@ function memoryStore() {
       async update(id, patch) {
         const t = templates.get(id);
         if (!t) return null;
-        const next = { ...t, ...patch, version: t.version + 1 };
+        // Like db.ts: the version moves only when the graph or the parameters change (review round 9).
+        const next = { ...t, ...patch, version: patch.workflowJson !== undefined || patch.parametersJson !== undefined ? t.version + 1 : t.version };
         templates.set(id, next);
         return next;
       },
@@ -256,12 +257,16 @@ test("importTemplate stores the graph with declared parameters and reports the S
   await assert.rejects(services.importWorkflowTemplate({ name: "bad", workflow: "not a graph", parameters: [] }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
 });
 
-test("updateTemplate bumps the version; getTemplate returns the graph; deleteTemplate reports", async () => {
+test("updateTemplate bumps the version on a graph/parameter change (not on a rename); getTemplate returns the graph; deleteTemplate reports", async () => {
   const { services } = fixture();
   const t = await importDefault(services);
-  const updated = await services.updateWorkflowTemplate({ templateId: t.templateId, name: "txt2img v2" });
+  // Review round 9: the version is what job provenance records about the GRAPH -- a label-only edit keeps it
+  // (the earlier expectation of 2 after a rename described the defect, not the requirement).
+  const renamed = await services.updateWorkflowTemplate({ templateId: t.templateId, name: "txt2img v2" });
+  assert.equal(renamed.version, 1);
+  assert.equal(renamed.name, "txt2img v2");
+  const updated = await services.updateWorkflowTemplate({ templateId: t.templateId, workflow: GRAPH, parameters: PARAMETERS });
   assert.equal(updated.version, 2);
-  assert.equal(updated.name, "txt2img v2");
   assert.deepEqual((await services.getWorkflowTemplate({ templateId: t.templateId })).workflow, GRAPH);
   assert.deepEqual(await services.deleteWorkflowTemplate({ templateId: t.templateId }), { deleted: true });
   await assert.rejects(services.getWorkflowTemplate({ templateId: t.templateId }), (e: unknown) => isDomainError(e) && e.code === "media_template_not_found");
@@ -996,4 +1001,54 @@ test("review 8: a template listing uses the shape recorded at import (no graph p
   const row = mem.templates.get(imported.templateId)!;
   assert.equal(row.outputNodeIdsJson, JSON.stringify(["9"]));
   assert.equal(row.nodeCount, 4);
+});
+
+// -- review round 9 (2026-10-05) ------------------------------------------------------------------
+
+test("review 9: a Save node's subfolder with a `..` segment never reaches the volume -- the output is not pulled and nothing is deleted", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "x.safetensors", subfolder: "job-1/../../models/checkpoints" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/../../models/checkpoints/x.safetensors", new Uint8Array([1])]]));
+  const f = fixture({ comfy, s3 });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /outside the job's folder/);
+  assert.ok(!f.s3.calls.some((c) => c.startsWith("head:") || c.startsWith("get:") || c.startsWith("delete:")), "no S3 call for an unsafe key");
+});
+
+test("review 9: an output pulled earlier whose asset registration failed is cataloged on the retry (never carried over uncataloged)", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  const localPath = "/ws/99 Data Exchange/From YTM/media/job-1/ComfyUI_00001_.png";
+  // An earlier attempt pulled the file but could not register it, and left the job transferring (a second output failed transiently).
+  const row = f.mem.jobs.get(job.jobId)!;
+  f.mem.jobs.set(job.jobId, {
+    ...row,
+    status: "transferring",
+    outputsJson: JSON.stringify([
+      { nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath, bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), remoteDeleted: true, assetId: null, note: "pulled, but asset registration failed: DB busy" },
+    ]),
+  });
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.equal(done.outputs[0].assetId, "asset-1");
+  assert.deepEqual(done.assetIds, ["asset-1"]);
+  assert.equal(done.outputs[0].note, null);
+  assert.equal(f.registered.length, 1);
+  assert.ok(!f.s3.calls.some((c) => c.startsWith("get:")), "nothing re-downloaded");
+});
+
+test("review 9: a name/description-only template edit keeps the version (provenance records versions of the graph, not of the label); a graph change bumps it", async () => {
+  const { services } = fixture();
+  const t = await importDefault(services);
+  const renamed = await services.updateWorkflowTemplate({ templateId: t.templateId, name: "txt2img v1 (renamed)" });
+  assert.equal(renamed.version, 1);
+  assert.equal(renamed.name, "txt2img v1 (renamed)");
+  const changed = await services.updateWorkflowTemplate({ templateId: t.templateId, parameters: PARAMETERS.slice(0, 2) });
+  assert.equal(changed.version, 2);
 });

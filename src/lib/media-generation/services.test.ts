@@ -144,7 +144,7 @@ function fakeS3(options: { fails?: boolean } = {}) {
   };
 }
 
-function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typeof fakeRunpod>; s3?: ReturnType<typeof fakeS3> } = {}) {
+function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typeof fakeRunpod>; s3?: ReturnType<typeof fakeS3>; activeVolumeHolder?: () => Promise<string | null> } = {}) {
   const mem = memoryStore();
   const key = memoryKeyFile(opts.keyFileContent ?? null);
   const runpod = opts.runpod ?? fakeRunpod();
@@ -154,6 +154,7 @@ function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typ
     keyFile: key.keyFile,
     gateway: { createRunpodClient: runpod.factory, createS3Client: s3.factory },
     clock: { now: () => new Date("2026-10-05T12:34:56Z") },
+    ...(opts.activeVolumeHolder ? { activeVolumeHolder: opts.activeVolumeHolder } : {}),
   });
   return { services, mem, key, runpod, s3 };
 }
@@ -382,4 +383,31 @@ test("review 3: a three-letter datacenter region (CA-MTL-1) passes the settings 
   const { services } = fixture({ runpod });
   await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
   assert.equal((await services.updateSettings({ datacenterId: "CA-MTL-1" })).datacenterId, "CA-MTL-1");
+});
+
+// -- review round 9 (2026-10-05) ------------------------------------------------------------------
+
+test("review 9: stored settings with one bad key keep every valid key (the spend cap above all) -- only the offending key falls back to its default", async () => {
+  const f = fixture();
+  await f.mem.store.setSettingsJson(JSON.stringify({ maxUsdPerDay: 2, idleMinutes: "abc", datacenterId: "EU-RO-1", futureKey: true }));
+  const settings = await f.services.getSettings();
+  assert.equal(settings.maxUsdPerDay, 2, "the operator's cap survives");
+  assert.equal(settings.datacenterId, "EU-RO-1");
+  assert.equal(settings.idleMinutes, DEFAULT_MEDIA_SETTINGS.idleMinutes, "only the invalid key is defaulted");
+  // Malformed JSON altogether: defaults (nothing to salvage).
+  await f.mem.store.setSettingsJson("{not json");
+  assert.equal((await f.services.getSettings()).maxUsdPerDay, DEFAULT_MEDIA_SETTINGS.maxUsdPerDay);
+});
+
+test("review 9: the media gateway cannot be disabled while a session or pull holds the volume (the pod could never be terminated); enabling is always allowed", async () => {
+  let holder: string | null = "session:s1";
+  const f = fixture({ activeVolumeHolder: async () => holder });
+  await assert.rejects(f.services.setGatewayEnabled(false), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /session is open/.test(e.message));
+  assert.equal(await f.services.getGatewayEnabled(), true);
+  await f.services.setGatewayEnabled(true);
+  holder = "pull:p1";
+  await assert.rejects(f.services.setGatewayEnabled(false), (e: unknown) => isDomainError(e) && /model pull is running/.test((e as Error).message));
+  holder = null;
+  await f.services.setGatewayEnabled(false);
+  assert.equal(await f.services.getGatewayEnabled(), false);
 });

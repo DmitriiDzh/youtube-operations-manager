@@ -10,6 +10,7 @@ import {
   type MediaSettings,
 } from "./contracts";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
+import type { VolumeLock } from "./volume-lock";
 import { parseWithSchema, rejectSessionInputSchema, requestSessionInputSchema, sessionIdInputSchema, stopSessionInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -93,8 +94,11 @@ export type SessionServiceDependencies = {
   sleep(ms: number): Promise<void>;
   /** Start: pod creation -> ComfyUI answering. Stop: terminate -> confirmed gone. */
   timeouts?: { startMs?: number; pollMs?: number; stopMs?: number };
-  /** Slice 4 (AC-P14-18): a model pull shares the volume, so a session must not start while one runs. */
-  hasActiveModelPull?: () => Promise<boolean>;
+  /**
+   * AC-P14-18 as a constraint (review round 9, `volume-lock.ts`): the session holds the one "volume busy" lock
+   * from its `approved` write until it is terminal, so a model pull cannot write the volume meanwhile.
+   */
+  volumeLock: VolumeLock;
   log?: (line: string) => void;
 };
 
@@ -103,9 +107,12 @@ const DEFAULT_POLL_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 90_000;
 /**
  * An `approved`/`starting` row older than start + stop timeout plus this margin has no approve request
- * behind it any more (that request either returned or threw by then): it was abandoned mid-start.
+ * behind it any more: it was abandoned mid-start. The margin covers the request's real worst case beyond
+ * those two budgets (review round 9): the last poll iteration already begun at the deadline (one RunPod
+ * call + one ComfyUI call, 30 s each, + a sleep), then abortStart's terminate (30 s) and a trailing getPod
+ * (30 s) after the stop budget -- about 2.5 min -- with 5 min there is room, not a 30 s coin toss.
  */
-const ABANDONED_START_GRACE_MS = 2 * 60_000;
+const ABANDONED_START_GRACE_MS = 5 * 60_000;
 
 /** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
 export function podNameFor(sessionId: string): string {
@@ -229,7 +236,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const stoppedAt = extra.stoppedAt ?? deps.clock.now();
     const effective: StoredSessionRow = { ...row, ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}), ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}) };
     const cost = finalCost(effective, stoppedAt);
-    return deps.store.transition(row.id, from, {
+    const terminal = await deps.store.transition(row.id, from, {
       status,
       stoppedAt,
       secondsUsed: cost.secondsUsed,
@@ -240,6 +247,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}),
       ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}),
     });
+    // Terminal = the volume is free again. (A crash between these two writes leaves a lock whose holder is terminal;
+    // the next acquire sees that and steals it.)
+    if (terminal) await deps.volumeLock.release(`session:${row.id}`);
+    return terminal;
   }
 
   /**
@@ -471,13 +482,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       if (open && open.id !== sessionId) {
         throw new DomainError({ code: "media_session_conflict", message: "Another session is already open on this device.", details: { openSessionId: open.id } });
       }
-      if (deps.hasActiveModelPull && (await deps.hasActiveModelPull())) {
-        throw new DomainError({ code: "media_session_conflict", message: "A model pull is still writing to the network volume; wait for it to finish (Settings → Media → Models)." });
-      }
       const client = await deps.base.resolveRunpodClient(); // credentials must resolve
       const token = deps.generateToken();
       const sealed = await deps.base.sealSecret(token);
 
+      // AC-P14-18 as a constraint: the volume lock is taken BEFORE the `approved` write and held until the session is
+      // terminal; a running model pull holds it, so this throws `media_session_conflict` naming it, and the request
+      // stays pending with nothing changed.
+      await deps.volumeLock.acquire(`session:${sessionId}`);
       const approved = await deps.store.transition(sessionId, ["pending"], {
         status: "approved",
         approvedAt: now,
@@ -486,21 +498,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         tokenIv: sealed.iv,
         tokenAuthTag: sealed.authTag,
       });
-      if (!approved) throw invalidState(sessionId, "pending", (await requireRow(sessionId)).status);
-      // AC-P14-18 without a window (review round 8): a pull reserves itself BEFORE its createPod and re-checks the open
-      // pod after; this side re-checks the pull AFTER its own `approved` write (which `hasOpenPod` counts), so whichever
-      // of the two wrote second sees the other. A pull that slipped in puts the request back to `pending`.
-      if (deps.hasActiveModelPull && (await deps.hasActiveModelPull())) {
-        await deps.store.transition(sessionId, ["approved"], {
-          status: "pending",
-          approvedAt: null,
-          approvedByUserId: null,
-          tokenCiphertext: null,
-          tokenIv: null,
-          tokenAuthTag: null,
-          error: "a model pull started while this request was being approved; approve again once it finishes",
-        });
-        throw new DomainError({ code: "media_session_conflict", message: "A model pull started meanwhile and is writing to the network volume; the request stays pending -- approve again once it finishes." });
+      if (!approved) {
+        await deps.volumeLock.release(`session:${sessionId}`);
+        throw invalidState(sessionId, "pending", (await requireRow(sessionId)).status);
       }
 
       onStage("Creating the pod");
@@ -523,8 +523,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         let orphan: RunpodPod | undefined;
         try {
           orphan = await findLivePodByName(client, podNameFor(sessionId));
-        } catch {
-          orphan = undefined;
+        } catch (lookupError) {
+          // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
+          // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
+          // repeats the name search once RunPod answers (review round 9).
+          const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
+          await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
+          throw new DomainError({
+            code: "media_session_start_failed",
+            message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
+            details: { sessionId, status: "approved" },
+          });
         }
         if (!orphan) {
           await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
@@ -732,6 +741,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         log(`[media] boot sweep of session ${open.id} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
       return { swept: [open.id] };
+    },
+
+    /** For the volume lock's staleness check: the id of the device's one non-terminal session, if any. */
+    async getOpenSessionId(): Promise<string | null> {
+      return (await deps.store.getOpen())?.id ?? null;
     },
 
     /** For the idle auto-shutdown: a pod in flight is work (an MCP-driven session makes no HTTP traffic to this server). */
