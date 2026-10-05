@@ -22,6 +22,12 @@ export const setCredentialsInputSchema = z
   .refine((v) => Boolean(v.s3AccessKeyId) === Boolean(v.s3SecretAccessKey), {
     message: "s3AccessKeyId and s3SecretAccessKey must be given together",
     path: ["s3SecretAccessKey"],
+  })
+  // Slice 0 (2026-10-05): the access key id pasted into the secret field too (both `user_...`) passed validation and only
+  // surfaced later as S3 `SignatureDoesNotMatch`. RunPod S3 secrets look like `rps_...`, the ids like `user_...`.
+  .refine((v) => !v.s3SecretAccessKey || (v.s3SecretAccessKey !== v.s3AccessKeyId && !v.s3SecretAccessKey.startsWith("user_")), {
+    message: "s3SecretAccessKey looks like the access key id (user_...); the S3 secret is the other value RunPod showed once (rps_...)",
+    path: ["s3SecretAccessKey"],
   });
 
 export const mediaSettingsSchema = z

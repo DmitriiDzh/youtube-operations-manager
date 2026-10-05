@@ -624,3 +624,10 @@ test("review 20: re-saving the SAME GPU repairs a missing price (the remedy requ
   const repaired = await services.updateSettings({ gpuTypeId: "NVIDIA GeForce RTX 4090" }); // the Compute card's Save with the same GPU
   assert.equal(repaired.gpuOnDemandPricePerHr, 0.69);
 });
+
+test("slice 0: an S3 secret that is really the access key id (user_..., or equal to the id) is refused at save -- it would only fail later as SignatureDoesNotMatch", async () => {
+  const { services } = fixture();
+  await assert.rejects(services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_3IY51Cj8eiVEk36oJCo6OWthnSC", s3SecretAccessKey: "user_3IY51Cj8eiVEk36oJCo6OWthnSC" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && /looks like the access key id/.test(JSON.stringify(e.details)));
+  await assert.rejects(services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_a", s3SecretAccessKey: "user_b" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  assert.equal((await services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_a", s3SecretAccessKey: "rps_secret_value" })).configured, true);
+});
