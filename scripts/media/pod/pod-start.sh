@@ -17,12 +17,15 @@ fi
 # -- locate ComfyUI --------------------------------------------------------------------------------
 COMFY_DIR="${COMFY_DIR:-}"
 if [ -z "$COMFY_DIR" ]; then
-  for candidate in /workspace/ComfyUI /ComfyUI /opt/ComfyUI /app/ComfyUI /comfyui; do
+  # /opt/comfyui-baked: runpod/comfyui (github.com/runpod-workers/comfyui-base) bakes ComfyUI there; its own /start.sh
+  # would copy it to /workspace/runpod-slim/ComfyUI and run it unprotected on 8188 -- the template replaces that
+  # entrypoint with this script, so ComfyUI runs from the image and only the token proxy is reachable (slice 0).
+  for candidate in /opt/comfyui-baked /workspace/runpod-slim/ComfyUI /workspace/ComfyUI /ComfyUI /opt/ComfyUI /app/ComfyUI /comfyui; do
     if [ -f "$candidate/main.py" ]; then COMFY_DIR="$candidate"; break; fi
   done
 fi
 if [ -z "$COMFY_DIR" ] || [ ! -f "$COMFY_DIR/main.py" ]; then
-  log "ComfyUI not found (set COMFY_DIR); candidates: /workspace/ComfyUI /ComfyUI /opt/ComfyUI"
+  log "ComfyUI not found (set COMFY_DIR); candidates: /opt/comfyui-baked /workspace/runpod-slim/ComfyUI /workspace/ComfyUI /ComfyUI /opt/ComfyUI"
   sleep infinity
 fi
 log "ComfyUI at $COMFY_DIR"
