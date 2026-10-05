@@ -38,6 +38,7 @@ export const MEDIA_CLI_COMMANDS = [
   "templates",
   "template-create",
   "cpus",
+  "sessions",
   "pods",
   "pod-get",
   "pod-create",
@@ -64,6 +65,7 @@ export const HELP = [
   "  credentials-test                        one RunPod read (+ one S3 listing when configured)",
   "  settings                                the stored Settings → Media values",
   "  gpus | cpus | datacenters | volumes | templates | pods",
+  "  sessions                                recent generation sessions + limits (approve/stop are Web-only)",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
   "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
   "  pod-get <podId>",
@@ -184,6 +186,9 @@ export async function runMediaCli(args: {
         break;
       case "cpus":
         data = await core.listCpuTypes();
+        break;
+      case "sessions":
+        data = { sessions: await core.listSessions(20), limits: await core.getLimits() };
         break;
       case "volume-create":
         data = await core.createNetworkVolume({

@@ -33,11 +33,26 @@ export const mediaSettingsSchema = z
     defaultMaxMinutes: z.number().int().min(1).max(1440),
     idleMinutes: z.number().int().min(1).max(1440),
     watchIntervalSeconds: z.number().int().min(15).max(3600),
+    gpuOnDemandPricePerHr: z.number().min(0).max(1000).nullable(),
   })
   .strict();
 
-/** PUT body: any subset; absent fields keep their stored value. */
-export const updateSettingsInputSchema = mediaSettingsSchema.partial().strict();
+/** PUT body: any subset; absent fields keep their stored value. The price is derived, never set by a caller. */
+export const updateSettingsInputSchema = mediaSettingsSchema.omit({ gpuOnDemandPricePerHr: true }).partial().strict();
+
+export const requestSessionInputSchema = z
+  .object({
+    channelId: z.string().min(1).max(64),
+    maxMinutes: z.number().int().min(1).max(1440).optional(),
+    maxUsd: z.number().gt(0).max(10_000).nullable().optional(),
+    reason: z.string().trim().max(500).nullable().optional(),
+    requestedBy: z.enum(["operator", "agent"]),
+  })
+  .strict();
+
+export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(64) }).strict();
+export const stopSessionInputSchema = z.object({ sessionId: z.string().min(1).max(64), reason: z.string().trim().max(200).optional() }).strict();
+export const rejectSessionInputSchema = z.object({ sessionId: z.string().min(1).max(64), reason: z.string().trim().min(1).max(500) }).strict();
 
 export const createNetworkVolumeInputSchema = z
   .object({

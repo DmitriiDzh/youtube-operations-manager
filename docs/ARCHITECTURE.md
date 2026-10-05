@@ -2401,3 +2401,26 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   secret is never an argument or an environment variable (AC-P14-20).
 - **Independence (AGENTS.md §M).** With no credentials the feature answers "not configured" and makes no
   outbound call; nothing else in the app imports it. Residual risks: RISK-105.
+- **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51, owner decisions D2/D3).** A session is one
+  pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
+  (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod
+  calls, AC-P14-03) and `fitsToday` against the daily cap; a request that does not fit is still created
+  and flagged. `approveAndStartSession` is Web-only (fenced by `session-approval-inventory.test.ts` from
+  `src/mcp`, `src/cli`, `src/lib/agent-operations`): every precondition (ready, cap not used up, no
+  other open session, credentials resolve) runs before the first transition (AC-P14-04); then
+  `pending → approved → starting → running` as atomic `UPDATE … WHERE status IN (…) RETURNING` steps,
+  the pod created from the template with the network volume at `/workspace`, port `8189/http` and a
+  per-session `COMFY_TOKEN` (stored encrypted under the device key, never returned), `startedAt` =
+  creation time (RunPod bills from there), `costPerHr` from the pod; the route blocks behind the shared
+  progress overlay until `GET /system_stats` answers through the token proxy. A start that fails or
+  times out terminates the pod and ends `failed`. **One open session per device is a database fact:**
+  `open_slot` is 1 while non-terminal, NULL when terminal, under a UNIQUE index (AC-P14-05). The
+  watcher (`src/instrumentation.ts`, interval = `watchIntervalSeconds`, min 15 s) terminates on idle ≥
+  `idleMinutes` (activity = job traffic, slice 3), minutes ≥ `maxMinutes`, usd ≥ `maxUsd`; a pod found
+  `EXITED`/`ERROR` is terminated and the session `interrupted`, a vanished pod likewise (AC-P14-06/07).
+  Termination is always `DELETE /pods/{id}` confirmed by a re-read; if RunPod cannot confirm, the
+  session stays `stopping` (slot kept) and the watcher retries. Boot sweep terminates whatever a dead
+  process left and marks it `interrupted` (AC-P14-08); the idle auto-shutdown and the SIGINT/SIGTERM
+  handlers call `stopForShutdown` first (AC-P14-09; the signal path is best-effort, the boot sweep is
+  the backstop). Cost: `usdCharged = secondsUsed × costPerHr / 3600`, seconds from pod creation to
+  confirmed termination, live while running; the daily total sums sessions started today (AC-P14-17).

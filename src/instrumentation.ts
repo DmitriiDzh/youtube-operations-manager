@@ -170,6 +170,34 @@ async function startServerSession() {
   setTimeout(publishQuotaLedgerQuietly, 45_000).unref();
   setInterval(publishQuotaLedgerQuietly, 120_000).unref();
 
+  // Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3): generation sessions = RunPod pods that
+  // must never outlive this process. Boot sweep first (a pod left by a dead process is terminated and
+  // its session marked interrupted; AC-P14-08), then the watcher at the operator-set interval
+  // (idle / minutes / USD caps, pod disappeared; AC-P14-06/07), and a best-effort terminate on
+  // SIGINT/SIGTERM (AC-P14-09; the signal handlers stay non-blocking, Next.js owns the exit). With
+  // no credentials configured every step answers "nothing to do" and makes no outbound call.
+  const { createMediaGenerationCore } = await import("@/lib/media-generation");
+  const media = createMediaGenerationCore();
+  await media.bootSweep().catch(() => undefined);
+  const MEDIA_WATCH_MIN_MS = 15_000;
+  const mediaWatchLoop = async () => {
+    try {
+      await media.watchTick();
+    } catch {
+      // RunPod unreachable, or nothing configured: try again next interval.
+    }
+    let intervalMs = 60_000;
+    try {
+      intervalMs = Math.max(MEDIA_WATCH_MIN_MS, (await media.getSettings()).watchIntervalSeconds * 1000);
+    } catch {
+      // keep the default
+    }
+    setTimeout(() => void mediaWatchLoop(), intervalMs).unref();
+  };
+  setTimeout(() => void mediaWatchLoop(), 30_000).unref();
+  process.once("SIGINT", () => void media.stopForShutdown());
+  process.once("SIGTERM", () => void media.stopForShutdown());
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
@@ -188,6 +216,8 @@ async function startServerSession() {
     },
     onIdle: () =>
       void resetQuietly()
+        // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
+        .then(() => media.stopForShutdown())
         .then(() => ticking ?? undefined)
         .then(() => tickQuietly({ force: true, exportOnly: true }))
         .finally(() => process.exit(0)),

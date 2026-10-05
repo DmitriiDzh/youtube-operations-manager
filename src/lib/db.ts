@@ -740,6 +740,61 @@ export const mediaCredentials = sqliteTable("media_credentials", {
     .$defaultFn(() => new Date()),
 });
 
+export const MEDIA_SESSION_STATUSES = ["pending", "approved", "starting", "running", "stopping", "done", "failed", "rejected", "interrupted"] as const;
+export type MediaSessionStatusValue = (typeof MEDIA_SESSION_STATUSES)[number];
+
+/**
+ * Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3), SCHEMA_MIGRATIONS version 51. One
+ * generation session = one RunPod pod, requested by the operator or an agent, approved by a human,
+ * watched (idle / minutes / USD caps) and always TERMINATED (never stopped). Transitions are atomic
+ * `UPDATE ... WHERE status IN (...) RETURNING`, like `market_collection_requests`.
+ *
+ * `open_slot` is 1 while the session is non-terminal and NULL once terminal; the UNIQUE index on it
+ * is what makes "at most one non-terminal session per device" (AC-P14-05) a database fact rather than
+ * a check that two concurrent requests could both pass. The ComfyUI proxy token is stored encrypted
+ * under the same per-device key as `media_credentials` and never returned by any read.
+ *
+ * **Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES`** -- a pod is owned by the server process
+ * that started it (its watcher and boot sweep run there); another device must not inherit it.
+ */
+export const mediaSessions = sqliteTable(
+  "media_sessions",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    status: text("status", { enum: MEDIA_SESSION_STATUSES }).notNull().default("pending"),
+    openSlot: integer("open_slot"),
+    requestedBy: text("requested_by", { enum: ["operator", "agent"] }).notNull(),
+    reason: text("reason"),
+    maxMinutes: integer("max_minutes").notNull(),
+    maxUsd: real("max_usd"),
+    estimateUsd: real("estimate_usd").notNull(),
+    fitsToday: integer("fits_today", { mode: "boolean" }).notNull(),
+    costPerHr: real("cost_per_hr"),
+    gpuTypeId: text("gpu_type_id"),
+    datacenterId: text("datacenter_id"),
+    podId: text("pod_id"),
+    comfyUiProxyUrl: text("comfy_ui_proxy_url"),
+    tokenCiphertext: text("token_ciphertext"),
+    tokenIv: text("token_iv"),
+    tokenAuthTag: text("token_auth_tag"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    approvedAt: integer("approved_at", { mode: "timestamp" }),
+    approvedByUserId: text("approved_by_user_id"),
+    startedAt: integer("started_at", { mode: "timestamp" }),
+    readyAt: integer("ready_at", { mode: "timestamp" }),
+    lastActivityAt: integer("last_activity_at", { mode: "timestamp" }),
+    stoppedAt: integer("stopped_at", { mode: "timestamp" }),
+    secondsUsed: integer("seconds_used"),
+    usdCharged: real("usd_charged"),
+    stopReason: text("stop_reason"),
+    error: text("error"),
+  },
+  (table) => [uniqueIndex("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
+);
+
 /**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
@@ -2817,6 +2872,47 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "verified_at INTEGER, " +
           "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
       );
+    },
+  },
+  {
+    version: 51,
+    description:
+      "media_sessions -- RunPod pod sessions approved by a human, watched and always terminated (Phase 14 slice 2, docs/roadmap/plans/PHASE_14_PLAN.md §2.3); additive new table, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_sessions (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'pending', " +
+          "open_slot INTEGER, " +
+          "requested_by TEXT NOT NULL, " +
+          "reason TEXT, " +
+          "max_minutes INTEGER NOT NULL, " +
+          "max_usd REAL, " +
+          "estimate_usd REAL NOT NULL, " +
+          "fits_today INTEGER NOT NULL, " +
+          "cost_per_hr REAL, " +
+          "gpu_type_id TEXT, " +
+          "datacenter_id TEXT, " +
+          "pod_id TEXT, " +
+          "comfy_ui_proxy_url TEXT, " +
+          "token_ciphertext TEXT, " +
+          "token_iv TEXT, " +
+          "token_auth_tag TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "approved_at INTEGER, " +
+          "approved_by_user_id TEXT, " +
+          "started_at INTEGER, " +
+          "ready_at INTEGER, " +
+          "last_activity_at INTEGER, " +
+          "stopped_at INTEGER, " +
+          "seconds_used INTEGER, " +
+          "usd_charged REAL, " +
+          "stop_reason TEXT, " +
+          "error TEXT)"
+      );
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS media_sessions_open_slot_idx ON media_sessions(open_slot)");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_sessions_status_idx ON media_sessions(status)");
     },
   },
 ];
@@ -6968,6 +7064,73 @@ export async function getMediaGatewayEnabled(database: AppDb = db): Promise<bool
 
 export async function setMediaGatewayEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(MEDIA_GATEWAY_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+// -- media_sessions (Phase 14 slice 2); read/written only by src/lib/media-generation/adapters/session-store.ts --
+
+export type StoredMediaSession = typeof mediaSessions.$inferSelect;
+export type NewStoredMediaSession = typeof mediaSessions.$inferInsert;
+
+const MEDIA_SESSION_TERMINAL_STATUSES: readonly MediaSessionStatusValue[] = ["done", "failed", "rejected", "interrupted"];
+
+function isOpenSlotConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /UNIQUE constraint failed.*media_sessions\.open_slot/i.test(message) || /SQLITE_CONSTRAINT.*open_slot/i.test(message);
+}
+
+/** `null` = another non-terminal session already holds the device's single open slot (AC-P14-05). */
+export async function insertMediaSession(row: NewStoredMediaSession, database: AppDb = db): Promise<StoredMediaSession | null> {
+  try {
+    const [inserted] = await database
+      .insert(mediaSessions)
+      .values({ ...row, openSlot: 1 })
+      .returning();
+    return inserted ?? null;
+  } catch (error) {
+    if (isOpenSlotConflict(error)) return null;
+    throw error;
+  }
+}
+
+export async function getMediaSessionById(id: string, database: AppDb = db): Promise<StoredMediaSession | null> {
+  const [row] = await database.select().from(mediaSessions).where(eq(mediaSessions.id, id));
+  return row ?? null;
+}
+
+export async function getOpenMediaSession(database: AppDb = db): Promise<StoredMediaSession | null> {
+  const [row] = await database.select().from(mediaSessions).where(eq(mediaSessions.openSlot, 1));
+  return row ?? null;
+}
+
+export async function listMediaSessions(limit = 50, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database.select().from(mediaSessions).orderBy(desc(mediaSessions.createdAt)).limit(limit);
+}
+
+/** Sessions whose pod started on or after `since` (for the daily spend). */
+export async function listMediaSessionsStartedSince(since: Date, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database.select().from(mediaSessions).where(gte(mediaSessions.startedAt, since));
+}
+
+/**
+ * The one atomic transition: `UPDATE ... WHERE id = ? AND status IN (from) RETURNING`. A terminal
+ * target frees the open slot in the same statement. `null` = the row was not in one of `from`.
+ */
+export async function transitionMediaSession(
+  id: string,
+  from: readonly MediaSessionStatusValue[],
+  set: Partial<Omit<NewStoredMediaSession, "id" | "openSlot">> & { status: MediaSessionStatusValue },
+  database: AppDb = db
+): Promise<StoredMediaSession | null> {
+  const rows = await database
+    .update(mediaSessions)
+    .set({ ...set, openSlot: MEDIA_SESSION_TERMINAL_STATUSES.includes(set.status) ? null : 1 })
+    .where(and(eq(mediaSessions.id, id), inArray(mediaSessions.status, [...from])))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function touchMediaSessionActivity(id: string, at: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaSessions).set({ lastActivityAt: at }).where(and(eq(mediaSessions.id, id), eq(mediaSessions.status, "running")));
 }
 
 // ---------------------------------------------------------------------------

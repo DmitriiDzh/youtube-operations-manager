@@ -123,6 +123,12 @@ export type DomainErrorCode =
   | "runpod_api_unavailable"
   | "runpod_s3_unavailable"
   | "comfyui_unavailable"
+  // Phase 14 slice 2 -- generation sessions (one pod, approved by a human, always terminated).
+  | "media_session_not_found"
+  | "media_session_conflict"
+  | "media_session_invalid_state"
+  | "media_daily_cap_reached"
+  | "media_session_start_failed"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

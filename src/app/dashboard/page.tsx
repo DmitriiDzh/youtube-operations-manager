@@ -538,7 +538,7 @@ export default function Dashboard() {
 
         <div className={settingsSubTab === "media" ? "space-y-6" : "hidden"}>
           <FeatureErrorBoundary label="Settings — Media generation">
-            <MediaGenerationSettings />
+            <MediaGenerationSettings activeChannelId={channel?.id ?? null} />
           </FeatureErrorBoundary>
         </div>
 

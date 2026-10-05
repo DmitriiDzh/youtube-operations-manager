@@ -224,6 +224,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const update = parseWithSchema(updateSettingsInputSchema, input, "media settings");
       const current = await readSettings();
       const next = parseWithSchema(mediaSettingsSchema, { ...current, ...update }, "media settings");
+      if (update.gpuTypeId === null) next.gpuOnDemandPricePerHr = null;
 
       const needsCatalog = (update.gpuTypeId !== undefined && update.gpuTypeId !== null) || (update.networkVolumeId !== undefined && update.networkVolumeId !== null) || (update.datacenterId !== undefined && update.datacenterId !== null);
       if (needsCatalog) {
@@ -235,10 +236,13 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
           }
         }
         if (next.gpuTypeId && update.gpuTypeId !== undefined) {
-          const gpus = await client.listGpuTypes();
-          if (!gpus.some((g) => g.id === next.gpuTypeId)) {
+          const gpus = await client.listGpuTypes({ cloud: next.cloudType });
+          const gpu = gpus.find((g) => g.id === next.gpuTypeId);
+          if (!gpu) {
             throw new DomainError({ code: "media_settings_invalid", message: `GPU type "${next.gpuTypeId}" is not in RunPod's catalog.`, details: { field: "gpuTypeId" } });
           }
+          // Captured here so a session estimate needs no RunPod call (AC-P14-03).
+          next.gpuOnDemandPricePerHr = gpu.onDemandPricePerHr;
         }
         if (next.networkVolumeId && (update.networkVolumeId !== undefined || update.datacenterId !== undefined)) {
           const volume = await client.getNetworkVolume(next.networkVolumeId);
@@ -260,6 +264,24 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
     getGatewayEnabled: () => deps.store.getGatewayEnabled(),
     setGatewayEnabled: (enabled: boolean) => deps.store.setGatewayEnabled(enabled),
+
+    // -- used by the session services (same device key as the credentials; the key never leaves) --
+
+    /** Encrypts a per-session secret (the ComfyUI proxy token) under the device key. */
+    async sealSecret(plaintext: string): Promise<EncryptedPayload> {
+      const key = await deps.keyFile.readKey();
+      if (!key) throw new DomainError({ code: "media_generation_not_configured", message: "No device key file yet -- save the RunPod credentials first." });
+      return encryptSecret(plaintext, key);
+    },
+
+    async openSecret(payload: EncryptedPayload): Promise<string> {
+      const key = await deps.keyFile.readKey();
+      if (!key) throw new DomainError({ code: "media_generation_not_configured", message: "The device key file is missing." });
+      return decryptSecret(payload, key);
+    },
+
+    /** The RunPod client for one call sequence; the key stays inside its closure. */
+    resolveRunpodClient: runpodClient,
 
     // -- RunPod reads (each needs credentials; nothing cached, nothing persisted) --------------
 

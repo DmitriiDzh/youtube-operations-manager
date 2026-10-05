@@ -1039,6 +1039,11 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 - `GET /api/media-generation/catalog` — `{ gpus[], dataCenters[] }` (two RunPod reads, on an explicit "Load")
 - `GET|POST /api/media-generation/network-volumes` — list / create `{ name, datacenterId, sizeGb }` (billed monthly by RunPod)
 - `GET /api/media-generation/templates` — `{ templates: [{ id, name }] }`
+- `GET|POST /api/media-generation/sessions` — `{ sessions[], limits }` / the operator's own request `{ channelId, maxMinutes?, maxUsd?, reason? }` → 201 `{ session }` (pending; the estimate `costPerHr × maxMinutes / 60` is computed locally, no RunPod call; `media_session_conflict` while another session is open)
+- `POST /api/media-generation/sessions/{sessionId}/approve` — Web-only (fenced from MCP/CLI): preconditions, then the pod is created and the request blocks (tracked operation `media_session_start`) until ComfyUI answers; a failed start terminates the pod → `media_session_start_failed`
+- `POST /api/media-generation/sessions/{sessionId}/stop` — `{ reason? }`; terminates the pod and confirms it is gone (never "stop")
+- `POST /api/media-generation/sessions/{sessionId}/reject` — `{ reason }` for a pending request
+- Session shape: `{ sessionId, channelId, status: pending|approved|starting|running|stopping|done|failed|rejected|interrupted, requestedBy, maxMinutes, maxUsd, estimateUsd, fitsToday, costPerHr, podId, comfyUiProxyUrl, createdAt, startedAt, readyAt, stoppedAt, secondsUsed, usdCharged, stopReason, error }` — never the proxy token
 
 ### Media CLI (`npm run media -- <command>`, Phase 14 slice 1)
 
@@ -1047,7 +1052,7 @@ credential store, so no key is ever an argument or an environment variable. Same
 CLI: "Operator CLI access" must be on; `volume-create`, `template-create`, `pod-create`, `pod-terminate`,
 `s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
 `gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
-`template-create --file <body.json>`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
+`template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
 `pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-put <file> <key>`, `s3-rm <key>`.
 JSON envelope on stdout, non-zero exit on failure. Pod objects carry `comfyUiProxyUrl` (the token-proxy
 port on RunPod's HTTP proxy), so no script spells the proxy host itself. There is deliberately no

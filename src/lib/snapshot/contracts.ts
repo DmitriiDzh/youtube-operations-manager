@@ -181,6 +181,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   workspace_export_files: "ledger of research export files written on THIS computer (ADR 0019): paths and expiry, meaningless on another device",
   channel_reach_daily: "accepted limitation (RISK-52, same as video_metrics_daily): collected impressions/CTR stay local (BL-114)",
   media_credentials: "encrypted RunPod / S3 API keys (Phase 14); the key file is per device, so the row is unreadable anywhere else",
+  media_sessions: "generation sessions = pods started by THIS device's server process (Phase 14); the watcher and boot sweep that own them run here only",
 });
 
 /**

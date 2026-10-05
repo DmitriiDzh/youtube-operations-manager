@@ -5,6 +5,7 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
+import { OperationOverlay, useOperation } from "./operation-progress";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
 
@@ -63,7 +64,7 @@ function Card({ title, help, children }: { title: string; help: string; children
   );
 }
 
-export function MediaGenerationSettings() {
+export function MediaGenerationSettings({ activeChannelId = null }: { activeChannelId?: string | null }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
@@ -113,7 +114,289 @@ export function MediaGenerationSettings() {
       <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
       <VolumeCard overview={overview} onChanged={refresh} />
       <LimitsCard settings={overview.settings} onChanged={refresh} />
+      <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} />
     </div>
+  );
+}
+
+type Session = {
+  sessionId: string;
+  channelId: string;
+  status: string;
+  requestedBy: "operator" | "agent";
+  reason: string | null;
+  maxMinutes: number;
+  maxUsd: number | null;
+  estimateUsd: number;
+  fitsToday: boolean;
+  costPerHr: number | null;
+  podId: string | null;
+  comfyUiProxyUrl: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  secondsUsed: number | null;
+  usdCharged: number | null;
+  stopReason: string | null;
+  error: string | null;
+};
+type SessionLimits = { maxUsdPerDay: number; spentTodayUsd: number; remainingTodayUsd: number; defaultMaxMinutes: number; idleMinutes: number; openSession: Session | null };
+
+const OPEN_STATUSES = new Set(["pending", "approved", "starting", "running", "stopping"]);
+
+function minutesLabel(seconds: number | null): string {
+  if (seconds === null) return "—";
+  return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+}
+
+// Phase 14 slice 2 (owner decision D3): a human approves a SESSION (one pod with caps) here -- the only
+// place; approving blocks behind the shared progress pop-up until ComfyUI answers. Inside a running
+// session the agent submits jobs freely (slice 3); the watcher terminates on idle / minutes / USD.
+function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChannelId: string | null }) {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [limits, setLimits] = useState<SessionLimits | null>(null);
+  const [maxMinutes, setMaxMinutes] = useState<number | null>(null);
+  const [maxUsd, setMaxUsd] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [approveTarget, setApproveTarget] = useState<Session | null>(null);
+  const [stopTarget, setStopTarget] = useState<Session | null>(null);
+  const op = useOperation();
+  const { runBlocking } = op;
+
+  const fetchAll = useCallback(
+    () =>
+      requestJson<{ sessions: Session[]; limits: SessionLimits }>("/api/media-generation/sessions").then(
+        (data) => {
+          setSessions(data.sessions);
+          setLimits(data.limits);
+        },
+        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load sessions")
+      ),
+    []
+  );
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  // The open session's live cost changes every second; refresh while one exists.
+  const hasOpen = Boolean(limits?.openSession);
+  useEffect(() => {
+    if (!hasOpen) return;
+    const timer = setInterval(() => void fetchAll(), 15_000);
+    return () => clearInterval(timer);
+  }, [hasOpen, fetchAll]);
+
+  async function request() {
+    if (!activeChannelId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson("/api/media-generation/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId: activeChannelId,
+          ...(maxMinutes ? { maxMinutes } : {}),
+          ...(maxUsd.trim() ? { maxUsd: Number(maxUsd) } : {}),
+        }),
+      });
+      await fetchAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to request a session");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function approve() {
+    const target = approveTarget;
+    if (!target) return;
+    setApproveTarget(null);
+    setError(null);
+    try {
+      await runBlocking({
+        title: "Starting the generation session",
+        stage: "Creating the pod",
+        track: { channelId: target.channelId, kind: "media_session_start" },
+        request: async () => {
+          const res = await fetch(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/approve`, { method: "POST" });
+          return { res, data: (await res.json()) as { session?: Session; message?: string; error?: string } };
+        },
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
+        summarize: ({ data }) => (data.session ? `Pod ${data.session.podId} is running at $${data.session.costPerHr ?? "?"}/h` : null),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start the session");
+    } finally {
+      await fetchAll();
+    }
+  }
+
+  async function stop() {
+    const target = stopTarget;
+    if (!target) return;
+    setStopTarget(null);
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/stop`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "stopped by operator" }),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to stop the session");
+    } finally {
+      setBusy(false);
+      await fetchAll();
+    }
+  }
+
+  async function reject(target: Session) {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "rejected by operator" }),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reject the session");
+    } finally {
+      setBusy(false);
+      await fetchAll();
+    }
+  }
+
+  const open = limits?.openSession ?? null;
+  const recent = sessions.filter((s) => !OPEN_STATUSES.has(s.status)).slice(0, 8);
+
+  return (
+    <Card
+      title="Sessions"
+      help="A session is one RunPod pod running ComfyUI. Requesting one costs nothing; approving creates the pod (billed per second from that moment) and waits until ComfyUI answers. The pod is terminated when the session is stopped, idle, over its minutes or over its USD cap -- never 'stopped' (that would keep billing its disk)."
+    >
+      {limits && (
+        <p className="text-xs text-zinc-500">
+          Spent today ${limits.spentTodayUsd.toFixed(2)} of ${limits.maxUsdPerDay.toFixed(2)} · idle timeout {limits.idleMinutes} min
+        </p>
+      )}
+
+      {open ? (
+        <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+          <p className="text-sm text-zinc-200">
+            <span className="font-medium">{open.status}</span>
+            {" · "}requested by {open.requestedBy}
+            {open.reason ? ` · ${open.reason}` : ""}
+          </p>
+          <p className="text-xs text-zinc-400">
+            cap {open.maxMinutes} min{open.maxUsd !== null ? ` / $${open.maxUsd}` : ""} · estimate ${open.estimateUsd.toFixed(2)}
+            {open.fitsToday ? "" : " (does not fit today's cap)"}
+            {open.podId ? ` · pod ${open.podId}` : ""}
+            {open.costPerHr !== null ? ` · $${open.costPerHr}/h` : ""}
+            {open.startedAt ? ` · running ${minutesLabel(open.secondsUsed)} ≈ $${(open.usdCharged ?? 0).toFixed(2)}` : ""}
+          </p>
+          {open.error && <p className="text-xs text-amber-400">{open.error}</p>}
+          <div className="flex flex-wrap gap-2">
+            {open.status === "pending" && (
+              <>
+                <button type="button" onClick={() => setApproveTarget(open)} disabled={busy || !ready} className={primaryButton}>
+                  Approve and start
+                </button>
+                <button type="button" onClick={() => reject(open)} disabled={busy} className={secondaryButton}>
+                  Reject
+                </button>
+              </>
+            )}
+            {["starting", "running", "stopping"].includes(open.status) && (
+              <button type="button" onClick={() => setStopTarget(open)} disabled={busy} className={dangerButton}>
+                Stop (terminate pod)
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {!activeChannelId ? (
+            <p className="text-xs text-zinc-500">Select an active channel to request a session.</p>
+          ) : !ready ? (
+            <p className="text-xs text-zinc-500">Finish the setup above to request a session.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-3">
+              <label className="block text-xs text-zinc-400">
+                Max minutes
+                <input type="number" min={1} max={1440} value={maxMinutes ?? limits?.defaultMaxMinutes ?? 60} onChange={(e) => setMaxMinutes(Number(e.target.value))} className={inputClass} />
+              </label>
+              <label className="block text-xs text-zinc-400">
+                Max USD (optional)
+                <input type="number" min={0.01} step={0.5} value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder="no cap" />
+              </label>
+              <div className="flex items-end">
+                <button type="button" onClick={request} disabled={busy} className={primaryButton}>
+                  {busy ? "Requesting…" : "Request a session"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {recent.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
+            <thead>
+              <tr className="text-zinc-500">
+                <th className="py-1 pr-3">When</th>
+                <th className="py-1 pr-3">Status</th>
+                <th className="py-1 pr-3">By</th>
+                <th className="py-1 pr-3">Pod</th>
+                <th className="py-1 pr-3">Used</th>
+                <th className="py-1 pr-3">Cost</th>
+                <th className="py-1">Reason / error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((s) => (
+                <tr key={s.sessionId} className="border-t border-zinc-800">
+                  <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
+                  <td className="py-1 pr-3">{s.status}</td>
+                  <td className="py-1 pr-3">{s.requestedBy}</td>
+                  <td className="py-1 pr-3 font-mono">{s.podId ?? "—"}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{minutesLabel(s.secondsUsed)}</td>
+                  <td className="py-1 pr-3">{s.usdCharged !== null ? `$${s.usdCharged.toFixed(2)}` : "—"}</td>
+                  <td className="py-1">{s.error ?? s.stopReason ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <OperationOverlay state={op.state} onClose={op.reset} />
+      {approveTarget && (
+        <ConfirmDialog
+          title="Start this generation session?"
+          description={`RunPod bills the pod per second from creation (about $${approveTarget.estimateUsd.toFixed(2)} for the full ${approveTarget.maxMinutes} minutes). The pod is terminated automatically when idle, at the cap, or when you stop it.`}
+          confirmLabel="Approve and start"
+          onCancel={() => setApproveTarget(null)}
+          onConfirm={approve}
+        />
+      )}
+      {stopTarget && (
+        <ConfirmDialog
+          title="Terminate the session's pod now?"
+          description="Running jobs are cut off; files already on the volume stay there."
+          confirmLabel="Terminate"
+          confirmVariant="danger"
+          onCancel={() => setStopTarget(null)}
+          onConfirm={stop}
+        />
+      )}
+    </Card>
   );
 }
 

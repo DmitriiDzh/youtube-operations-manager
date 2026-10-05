@@ -491,14 +491,15 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ### 2.9x Phase 14 — удалённая генерация медиа (RunPod + ComfyUI) — **PARTIALLY IMPLEMENTED** (срез 1, ветка `feature/phase-14-media-generation`)
 
-- **Ответственность (срез 1):** ключи RunPod/S3 вводятся в Settings → Media и хранятся зашифрованно с ключом, который приложение само создаёт в файле `media-generation.key` (0600, app-data) — не переменная окружения; настройки (датацентр, GPU, cloud, network volume, шаблон, лимиты $/мин, таймаут простоя, интервал watcher'а) с проверкой по живому каталогу RunPod; operator CLI `npm run media -- …`. Сессии, задания, обмен через S3, панель Models, MCP-инструменты — **PLANNED** (срезы 2–5).
+- **Ответственность (срез 1):** ключи RunPod/S3 вводятся в Settings → Media и хранятся зашифрованно с ключом, который приложение само создаёт в файле `media-generation.key` (0600, app-data) — не переменная окружения; настройки (датацентр, GPU, cloud, network volume, шаблон, лимиты $/мин, таймаут простоя, интервал watcher'а) с проверкой по живому каталогу RunPod; operator CLI `npm run media -- …`.
+- **Срез 2 — сессии (`src/lib/media-generation/sessions.ts`, таблица `media_sessions`, schema v51):** сессия = один под. Запрос (оператор из Settings → Media → Sessions; агент — срез 5) считает оценку локально (`цена GPU × минуты / 60`), одобрение — только в Web (blocking-оверлей): предусловия до перехода, создание пода с одноразовым токеном для прокси, ожидание `RUNNING` и ответа ComfyUI; watcher в `src/instrumentation.ts` с интервалом из настроек терминирует под по простою / минутам / $, помечает `interrupted` исчезнувший/`EXITED` под; boot-sweep и остановка при завершении приложения; `UNIQUE(open_slot)` — не более одной незавершённой сессии на устройство; `session-approval-inventory.test.ts` запрещает approve/stop/reject из MCP/CLI/agent-operations. Задания, обмен через S3, панель Models, MCP-инструменты — **PLANNED** (срезы 3–5).
 - **Модули:**
   - `src/lib/media-gateway/` — единый шлюз: `runpod-api.ts` (REST v2), `runpod-s3.ts` (+ `sigv4.ts`), `comfyui-api.ts`; один тумблер «Media gateway» и три счётчика трафика (`runpod_api`, `runpod_s3`, `comfyui_api`); `inventory.test.ts` запрещает обращение к хостам runpod.io вне шлюза;
   - `src/lib/media-generation/` — credentials (AES-GCM, ключ-файл), settings (JSON в `app_settings`), каталог/volumes/pods через шлюз; никогда не возвращает секрет;
   - `src/app/api/media-generation/*` — операторские маршруты (сессия обязательна);
   - `src/components/media-generation-settings.tsx` — под-вкладка Settings → Media;
   - `src/cli/media.ts` — operator CLI (гейт «Operator CLI access» + device mutation gate для мутаций).
-- **Схема:** v50 (`media_credentials`, device-local, не в snapshot/sync).
+- **Схема:** v50 (`media_credentials`), v51 (`media_sessions`) — обе device-local, не в snapshot/sync.
 - **Подробно:** ARCHITECTURE §25, план `docs/roadmap/plans/PHASE_14_PLAN.md`, исследование `MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`.
 
 ### 2.10 Web UI — **IMPLEMENTED**
