@@ -219,6 +219,33 @@ export type MediaJob = {
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */
 export const MEDIA_OUTPUT_SUBDIR = "media";
+/**
+ * FO-REQ-0002: the file written LAST into `media/<jobId>/` once the job is final (`done`, or `failed` with a folder).
+ * Reserved: an output with this name at the job's top level is never pulled over it.
+ */
+export const MEDIA_JOB_MANIFEST_FILE = "manifest.json";
+
+/** `manifest.json` content (FO-REQ-0002). An explicit allowlist: no credentials, account identities, pod or billing data. */
+export type MediaJobManifest = {
+  schema: "ytm.media-job-manifest";
+  schemaVersion: 1;
+  jobId: string;
+  sessionId: string;
+  channelId: string;
+  status: "done" | "failed";
+  error: string | null;
+  template: { templateId: string; templateVersion: number; name: string | null };
+  params: Record<string, string | number | boolean>;
+  createdBy: "operator" | "agent";
+  createdAt: string;
+  submittedAt: string | null;
+  finishedAt: string;
+  device: { deviceId: string | null; hostname: string | null };
+  /** Delivered files; `path` is relative to `media/<jobId>/`, always with `/` separators. */
+  outputs: Array<{ path: string; kind: "image" | "audio" | "video" | "other"; comfyKind: string; nodeId: string; bytes: number; sha256: string; assetId: string | null; note: string | null }>;
+  /** Outputs ComfyUI produced that are NOT in the folder, with the reason. */
+  missing: Array<{ nodeId: string; comfyKind: string; filename: string; subfolder: string; note: string | null }>;
+};
 /** The volume prefix ComfyUI writes to (`--output-directory /workspace/exchange`) and the only prefix the janitor touches. */
 export const EXCHANGE_PREFIX = "exchange/";
 /** Reference inputs for ComfyUI (`--input-directory /workspace/exchange/in`); never cleaned by the janitor. */

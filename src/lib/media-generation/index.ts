@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
+import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
@@ -157,6 +159,21 @@ function buildCore(jobScheduling: JobScheduling) {
       });
     },
     fs: createExchangeLocalFs(),
+    // For the manifest only (FO-REQ-0002): read, never created here; an unreadable config is "unknown", never a reason
+    // to hold a finished job back.
+    device: async () => ({
+      deviceId: await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath)
+        .read()
+        .then((config) => config?.deviceId ?? null)
+        .catch(() => null),
+      hostname: (() => {
+        try {
+          return hostname() || null;
+        } catch {
+          return null;
+        }
+      })(),
+    }),
     registerAsset: async (input) => {
       const asset = await assets.registerAsset(input);
       return { assetId: asset.assetId };

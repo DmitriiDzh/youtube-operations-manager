@@ -100,6 +100,8 @@ function sha256(bytes: Uint8Array): string {
 
 function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boolean } = {}) {
   const calls: string[] = [];
+  /** Shared, ordered log of what reached the workspace (final file names, manifests) and of status changes (FO-REQ-0002 AC2). */
+  const events: string[] = [];
   const files = new Map<string, Uint8Array>();
   const client = {
     async listAllObjects(prefix: string): Promise<S3ObjectSummary[]> {
@@ -116,6 +118,7 @@ function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boole
       const bytes = objects.get(key);
       if (!bytes) throw new Error("missing");
       files.set(dest, bytes);
+      events.push(`file:${dest}`);
       return { bytes: bytes.byteLength, sha256: sha256(bytes) };
     },
     async deleteObject(key: string) {
@@ -124,7 +127,7 @@ function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boole
       objects.delete(key);
     },
   } as unknown as RunpodS3Client;
-  return { client, calls, files };
+  return { client, calls, files, events };
 }
 
 function fakeComfy(script: Array<ComfyHistoryEntry | null>, options: { submitFails?: boolean; queue?: { running: string[]; pending: string[] } } = {}) {
@@ -175,9 +178,17 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   const registered: Array<Record<string, unknown>> = [];
   const removed: string[] = [];
   const activity: string[] = [];
+  const transition = mem.store.jobs.transition;
+  mem.store.jobs.transition = async (id, from, set) => {
+    const next = await transition(id, from, set);
+    if (next) s3.events.push(`status:${set.status}`);
+    return next;
+  };
   // Mutable: review round 7 made createJob check the workspace at submit, so a transfer-time failure is simulated
   // by flipping this AFTER the submit (the drive unmounting between generation and transfer).
   let workspaceFails = opts.workspaceFails ?? false;
+  let manifestWriteFails = false;
+  const manifests = new Map<string, string>();
   let now = new Date("2026-10-05T12:00:00Z");
   let ids = 0;
   const scheduled: Array<() => Promise<void>> = [];
@@ -208,7 +219,13 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
         removed.push(p);
         s3.files.delete(p);
       },
+      writeFileAtomic: async (p, text) => {
+        if (manifestWriteFails) throw new Error("EIO: workspace drive gone");
+        manifests.set(p, text);
+        s3.events.push(`manifest:${p}`);
+      },
     },
+    device: async () => ({ deviceId: "device-1", hostname: "studio-mac" }),
     registerAsset: async (input) => {
       registered.push(input);
       return { assetId: `asset-${registered.length}` };
@@ -238,7 +255,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -564,7 +581,9 @@ function fixtureWithFailingRegister() {
         return bytes ? sha256(bytes) : "missing";
       },
       remove: async () => {},
+      writeFileAtomic: async () => {},
     },
+    device: async () => ({ deviceId: "device-1", hostname: "studio-mac" }),
     registerAsset: async () => {
       throw new Error("creative_assets insert failed");
     },
@@ -1259,7 +1278,8 @@ test("review 13: createJob refuses to submit when the S3 transport is not config
       throw new DomainError({ code: "media_generation_not_configured", message: "no S3 key pair" });
     },
     resolveOutputRoot: async () => "/ws/99 Data Exchange/From YTM",
-    fs: { mkdirp: async () => {}, sha256File: async () => "", remove: async () => {} },
+    fs: { mkdirp: async () => {}, sha256File: async () => "", remove: async () => {}, writeFileAtomic: async () => {} },
+    device: async () => ({ deviceId: null, hostname: null }),
     registerAsset: async () => ({ assetId: "a" }),
     findAssetByLocalPath: async () => null,
     generateId: () => "job-x",
@@ -1382,4 +1402,161 @@ test("review 19: a job resumed from the ledger ends `done` with NO error -- 'pul
   assert.equal(done.status, "done");
   assert.equal(done.error, null);
   assert.equal(done.outputs[0].note, "pulled by an earlier attempt");
+});
+
+// -- FO-REQ-0002: manifest.json in every delivery folder ------------------------------------------
+// Expected values come from the request's acceptance criteria (Factory Operator, approved by the owner
+// 2026-10-06), written before the implementation: the manifest is written LAST (after every output has
+// its final name, before the job is `done`), lists each delivered file with the bytes/sha256 of the
+// bytes S3 served (hashed here independently), records a failed job's error, and carries no secrets.
+
+const MANIFEST_PATH = "/ws/99 Data Exchange/From YTM/media/job-1/manifest.json";
+const MANIFEST_KEYS = ["schema", "schemaVersion", "jobId", "sessionId", "channelId", "status", "error", "template", "params", "createdBy", "createdAt", "submittedAt", "finishedAt", "device", "outputs", "missing"];
+
+function twoOutputFixture() {
+  // An image at the job's top level and an audio file in a subfolder (a Save node with a subfolder prefix).
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }, { nodeId: "12", kind: "audio", filename: "song_00001_.flac", subfolder: "job-1/music" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9])], ["exchange/job-1/music/song_00001_.flac", new Uint8Array([1, 2, 3, 4, 5])]]));
+  return fixture({ comfy, s3 });
+}
+
+test("FO-REQ-0002 AC1/AC2/AC5: a done job's folder gets manifest.json, written after every output's final name and before `done`, listing each file with matching bytes/sha256 and nothing secret", async () => {
+  const f = twoOutputFixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+
+  const text = f.manifests.get(MANIFEST_PATH);
+  assert.ok(text, "manifest.json is written into media/<jobId>/");
+  const manifest = JSON.parse(text);
+  assert.deepEqual(manifest, {
+    schema: "ytm.media-job-manifest",
+    schemaVersion: 1,
+    jobId: "job-1",
+    sessionId: "s1",
+    channelId: "UC1",
+    status: "done",
+    error: null,
+    template: { templateId: "tpl-1", templateVersion: 1, name: "txt2img" },
+    params: { prompt: "a cat", steps: 20, seed: 1, size: "model.safetensors" },
+    createdBy: "agent",
+    createdAt: "2026-10-05T12:00:00.000Z",
+    submittedAt: "2026-10-05T12:00:00.000Z",
+    finishedAt: "2026-10-05T12:00:01.000Z",
+    device: { deviceId: "device-1", hostname: "studio-mac" },
+    outputs: [
+      { path: "ComfyUI_00001_.png", kind: "image", comfyKind: "images", nodeId: "9", bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), assetId: "asset-1", note: null },
+      { path: "music/song_00001_.flac", kind: "audio", comfyKind: "audio", nodeId: "12", bytes: 5, sha256: sha256(new Uint8Array([1, 2, 3, 4, 5])), assetId: "asset-2", note: null },
+    ],
+    missing: [],
+  });
+  // The manifest's finishedAt is the job's own.
+  assert.equal(manifest.finishedAt, done.finishedAt);
+
+  // AC2: both outputs under their final names, then the manifest, then `done` -- never the other way round.
+  const events = f.s3.events.filter((e) => e.startsWith("file:") || e.startsWith("manifest:") || e === "status:done");
+  assert.deepEqual(events, [
+    "file:/ws/99 Data Exchange/From YTM/media/job-1/ComfyUI_00001_.png",
+    "file:/ws/99 Data Exchange/From YTM/media/job-1/music/song_00001_.flac",
+    `manifest:${MANIFEST_PATH}`,
+    "status:done",
+  ]);
+
+  // AC5: an explicit key allowlist (no tokens, credentials, account identities, pod/GPU billing details).
+  assert.deepEqual(Object.keys(manifest).sort(), [...MANIFEST_KEYS].sort());
+  assert.doesNotMatch(text, /token|secret|password|apiKey|accessKey|email|podId|pod1/i);
+});
+
+test("FO-REQ-0002 AC2: a manifest that cannot be written keeps the job `transferring` (retried) -- `done` never exists without its manifest; the retry writes it once, without duplicating outputs", async () => {
+  const f = twoOutputFixture();
+  f.setManifestWriteFails(true);
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+  const stuck = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(stuck.status, "transferring");
+  assert.match(stuck.error ?? "", /manifest/);
+  assert.equal(f.manifests.size, 0);
+
+  f.setManifestWriteFails(false);
+  f.advance(60_000);
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  const manifest = JSON.parse(f.manifests.get(MANIFEST_PATH)!);
+  assert.equal(manifest.status, "done");
+  assert.deepEqual(manifest.outputs.map((o: { path: string }) => o.path), ["ComfyUI_00001_.png", "music/song_00001_.flac"]);
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("get:")).length, 2, "the retry did not download anything again");
+});
+
+test("FO-REQ-0002 AC3: a job failed at the end of the retry window with a partial delivery gets a manifest with status failed, its error, the delivered file and the missing one", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "a.png", subfolder: "job-1" }, { nodeId: "9", kind: "images", filename: "b.png", subfolder: "job-1" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/a.png", new Uint8Array([1])], ["exchange/job-1/b.png", new Uint8Array([2])]]));
+  const f = fixture({ comfy, s3 });
+  const original = f.s3.client.getObjectToFile.bind(f.s3.client);
+  (f.s3.client as unknown as { getObjectToFile: (k: string, d: string) => Promise<unknown> }).getObjectToFile = async (key, dest) => {
+    if (key.endsWith("/b.png")) throw new Error("RunPod S3 returned HTTP 503");
+    return original(key, dest);
+  };
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal(f.manifests.size, 0, "no manifest while the job is still being retried");
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") }); // the window is over
+  f.advance(60_000);
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  const manifest = JSON.parse(f.manifests.get(MANIFEST_PATH)!);
+  assert.equal(manifest.status, "failed");
+  assert.equal(manifest.error, failed.error);
+  assert.match(manifest.error, /not every output could be received/);
+  assert.deepEqual(manifest.outputs.map((o: { path: string; bytes: number; sha256: string }) => [o.path, o.bytes, o.sha256]), [["a.png", 1, sha256(new Uint8Array([1]))]]);
+  assert.equal(manifest.missing.length, 1);
+  assert.equal(manifest.missing[0].filename, "b.png");
+  assert.equal(manifest.missing[0].nodeId, "9");
+  assert.match(manifest.missing[0].note, /503/);
+});
+
+test("FO-REQ-0002: an output named manifest.json at the job's top level is never pulled over the manifest; a job with nothing pulled is failed with a manifest naming it", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "manifest.json", subfolder: "job-1" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/manifest.json", new Uint8Array([7])]]));
+  const f = fixture({ comfy, s3 });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("get:") || c.startsWith("delete:")).length, 0, "not downloaded, and the remote copy is not deleted");
+  const manifest = JSON.parse(f.manifests.get(MANIFEST_PATH)!);
+  assert.equal(manifest.status, "failed");
+  assert.deepEqual(manifest.outputs, []);
+  assert.equal(manifest.missing[0].filename, "manifest.json");
+  assert.match(manifest.missing[0].note, /reserved/);
+});
+
+test("FO-REQ-0002 AC3: a failed job's manifest is best effort -- a write failure leaves the job failed with its own error, never transferring or done", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "../escape.png", subfolder: "job-1" }])]);
+  const f = fixture({ comfy });
+  f.setManifestWriteFails(true);
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.doesNotMatch(failed.error ?? "", /manifest/);
+  assert.equal(f.manifests.size, 0);
+});
+
+test("FO-REQ-0002: a job that never reached the transfer (generation timeout, cancel) has no folder and gets no manifest", async () => {
+  const f = fixture({ comfy: fakeComfy([null]) });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
+  assert.equal(f.manifests.size, 0);
 });
