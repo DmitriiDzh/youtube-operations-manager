@@ -159,3 +159,11 @@ test("AC-TI-11: an imported factory token is still rejected by the channel-token
   await assertCode(channelServices.verifyToken(token), "AGENT_TOKEN_INVALID");
   await assertCode(channelServices.importToken({ channelId: "UC_A", token }), "AGENT_TOKEN_IMPORT_MALFORMED");
 });
+
+test("independent review (factory): a label that looks like a token is refused; nothing stored", async () => {
+  const device = createDevice([SECRET_2]);
+  const token = `ytom_fo_${SECRET_1}`;
+  await assertCode(device.services.importToken({ token, label: token }), "validation_failed");
+  await assertCode(device.services.issueToken({ label: "YTOM_fo_x" }), "validation_failed");
+  assert.equal(device.rows.length, 0);
+});

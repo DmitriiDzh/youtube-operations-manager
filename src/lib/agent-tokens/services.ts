@@ -44,6 +44,13 @@ export function hashAgentToken(token: string): string {
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const CHANNEL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+/** A label is stored and shown in plaintext: refuse one that looks like a token (pasted in the wrong field). */
+function rejectTokenLikeLabel(label: string | undefined): void {
+  if (label && /^ytom_/i.test(label.trim())) {
+    throw new DomainError({ code: "validation_failed", message: "label must not be a token" });
+  }
+}
+
 /** The channel id embedded in a token, or null for a legacy (pre-BL-130) token. */
 function embeddedChannelId(token: string): string | null {
   const body = token.slice(AGENT_TOKEN_PREFIX.length);
@@ -90,6 +97,7 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
      */
     async issueToken(input: unknown): Promise<IssuedAgentToken> {
       const parsed = parseWithSchema(issueAgentTokenInputSchema, input, "issue agent token input");
+      rejectTokenLikeLabel(parsed.label);
       // The embedded-id format relies on the id never containing `.` (true for every YouTube id); fail
       // closed at issue rather than mint a token that `verifyToken` would then reject on every call.
       if (!CHANNEL_ID_PATTERN.test(parsed.channelId)) {
@@ -141,10 +149,15 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
         });
       }
 
+      rejectTokenLikeLabel(parsed.label);
       const userId = await requireLiveOwner(parsed.channelId);
       const tokenHash = hashAgentToken(token);
-      const existing = await deps.store.findByHash(tokenHash);
-      if (existing) {
+
+      // Already known here: a no-op only for the same binding. A row recorded under a Google identity
+      // the channel is no longer connected with can never verify again (independent review), so
+      // reporting success for it would be false -- the operator must issue a new token instead.
+      const existingOutcome = (existing: (StoredAgentTokenRow & { revokedAt: Date | null }) | null): AgentTokenSummary | null => {
+        if (!existing) return null;
         if (existing.revokedAt !== null) {
           throw new DomainError({
             code: "AGENT_TOKEN_IMPORT_REVOKED",
@@ -154,11 +167,29 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
         if (existing.channelId !== parsed.channelId) {
           throw new DomainError({ code: "AGENT_TOKEN_CHANNEL_MISMATCH", message: "this token belongs to another channel" });
         }
+        if (existing.userId !== userId) {
+          throw new DomainError({
+            code: "AGENT_TOKEN_IDENTITY_MISMATCH",
+            message: "this token was registered here for a different Google account of the channel -- issue a new one",
+            details: { channelId: parsed.channelId },
+          });
+        }
         return toSummary(existing);
-      }
+      };
+
+      const known = existingOutcome(await deps.store.findByHash(tokenHash));
+      if (known) return known;
       const label = parsed.label && parsed.label.length > 0 ? parsed.label : null;
       const id = randomUUID();
-      await deps.store.replace({ id, channelId: parsed.channelId, userId, tokenHash, label });
+      try {
+        await deps.store.replace({ id, channelId: parsed.channelId, userId, tokenHash, label });
+      } catch (error) {
+        // A concurrent import of the same token won the UNIQUE(token_hash) race; this transaction rolled
+        // back (its revoke included). Report the winner's row, never a generic failure.
+        const raced = existingOutcome(await deps.store.findByHash(tokenHash));
+        if (raced) return raced;
+        throw error;
+      }
       return { tokenId: id, channelId: parsed.channelId, label, createdAt: new Date().toISOString() };
     },
 

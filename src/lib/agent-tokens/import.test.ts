@@ -216,3 +216,51 @@ test("AC-TI-09: a token naming a channel verifies only against that channel's ro
   });
   assert.deepEqual(await device.services.verifyToken(legacy), { tokenId: "legacy", channelId: "UC_A", userId: "user-a" });
 });
+
+test("independent review: re-importing a token recorded under a Google identity the channel no longer has is refused, not a false success", async () => {
+  const connected: Record<string, string> = { UC_A: "user-a" };
+  const live: Record<string, string | null> = { "user-a": "UC_A", "user-a2": "UC_A" };
+  const device = createDevice({ connected, live });
+  const token = `ytom_ch_UC_A.${SECRET_1}`;
+  await device.services.importToken({ channelId: "UC_A", token });
+
+  connected.UC_A = "user-a2"; // reconnected under another account that also owns the channel live
+  await assertCode(device.services.importToken({ channelId: "UC_A", token }), "AGENT_TOKEN_IDENTITY_MISMATCH");
+  await assertCode(device.services.verifyToken(token), "AGENT_TOKEN_INVALID");
+  assert.equal(device.rows.length, 1);
+});
+
+test("independent review: losing a concurrent import race returns the winner's row instead of failing", async () => {
+  const device = createDevice();
+  const token = `ytom_ch_UC_A.${SECRET_1}`;
+  const tokenHash = createHash("sha256").update(token, "utf8").digest("hex");
+  // Simulate the race on the real store contract: the first lookup misses, and by the time this call
+  // inserts, a concurrent import has inserted the same hash (UNIQUE violation, this transaction rolls back).
+  const services = createAgentTokenServices({
+    store: {
+      async replace() {
+        device.rows.push({ id: "winner", channelId: "UC_A", userId: "user-a", label: null, createdAt: new Date(), tokenHash, revoked: false });
+        throw new Error("UNIQUE constraint failed: agent_channel_tokens.token_hash");
+      },
+      async revokeForChannel() { return 0; },
+      async findActiveByHash() { return null; },
+      async findByHash(hash) {
+        const row = device.rows.find((candidate) => candidate.tokenHash === hash);
+        return row ? { ...row, revokedAt: null } : null;
+      },
+      async listActive() { return []; },
+    },
+    getChannelConnectedUserId: async () => "user-a",
+    getLiveChannelIdForUser: async () => "UC_A",
+  });
+  const result = await services.importToken({ channelId: "UC_A", token });
+  assert.equal(result.tokenId, "winner");
+});
+
+test("independent review: a label that looks like a token is refused (labels are stored in plaintext)", async () => {
+  const device = createDevice({ secrets: [SECRET_2] });
+  const token = `ytom_ch_UC_A.${SECRET_1}`;
+  await assertCode(device.services.importToken({ channelId: "UC_A", token, label: token }), "validation_failed");
+  await assertCode(device.services.issueToken({ channelId: "UC_A", label: ` ${token}` }), "validation_failed");
+  assert.equal(device.rows.length, 0);
+});

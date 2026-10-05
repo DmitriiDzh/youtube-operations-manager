@@ -26,6 +26,14 @@ export function hashFactoryToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+/** A label is stored and shown in plaintext: refuse one that looks like a token pasted in the wrong field.
+ * Kept local rather than imported from `agent-tokens`, so the two token modules stay independent (`AGENTS.md` §M). */
+function rejectTokenLikeLabel(label: string | undefined): void {
+  if (label && /^ytom_/i.test(label.trim())) {
+    throw new DomainError({ code: "validation_failed", message: "label must not be a token" });
+  }
+}
+
 /** BL-130: what `issueToken` generates after the prefix -- base64url of 32 random bytes. */
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
@@ -43,6 +51,7 @@ export function createFactoryTokenServices(deps: ServiceDependencies) {
      */
     async issueToken(input: unknown): Promise<IssuedFactoryToken> {
       const parsed = parseWithSchema(issueFactoryTokenInputSchema, input ?? {}, "issue factory token input");
+      rejectTokenLikeLabel(parsed.label);
       const token = `${FACTORY_AGENT_TOKEN_PREFIX}${generateSecret()}`;
       const id = randomUUID();
       const label = parsed.label && parsed.label.length > 0 ? parsed.label : null;
@@ -62,9 +71,10 @@ export function createFactoryTokenServices(deps: ServiceDependencies) {
       if (!token.startsWith(FACTORY_AGENT_TOKEN_PREFIX) || !SECRET_PATTERN.test(token.slice(FACTORY_AGENT_TOKEN_PREFIX.length))) {
         throw new DomainError({ code: "AGENT_TOKEN_IMPORT_MALFORMED", message: "this is not a Factory Operator token (ytom_fo_...)" });
       }
+      rejectTokenLikeLabel(parsed.label);
       const tokenHash = hashFactoryToken(token);
-      const existing = await deps.store.findByHash(tokenHash);
-      if (existing) {
+      const existingOutcome = (existing: (StoredFactoryTokenRow & { revokedAt: Date | null }) | null): FactoryTokenSummary | null => {
+        if (!existing) return null;
         if (existing.revokedAt !== null) {
           throw new DomainError({
             code: "AGENT_TOKEN_IMPORT_REVOKED",
@@ -72,10 +82,19 @@ export function createFactoryTokenServices(deps: ServiceDependencies) {
           });
         }
         return toSummary(existing);
-      }
+      };
+      const known = existingOutcome(await deps.store.findByHash(tokenHash));
+      if (known) return known;
       const label = parsed.label && parsed.label.length > 0 ? parsed.label : null;
       const id = randomUUID();
-      await deps.store.replace({ id, tokenHash, label });
+      try {
+        await deps.store.replace({ id, tokenHash, label });
+      } catch (error) {
+        // A concurrent import of the same token won the UNIQUE race; report the winner's row.
+        const raced = existingOutcome(await deps.store.findByHash(tokenHash));
+        if (raced) return raced;
+        throw error;
+      }
       return { tokenId: id, label, createdAt: new Date().toISOString() };
     },
 
