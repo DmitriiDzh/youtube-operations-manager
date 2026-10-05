@@ -2543,6 +2543,17 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   writes `verified_at`). The pod template ships no default `COMFY_TOKEN` (`pod-start.sh` refuses to expose
   ComfyUI without one). `src/lib/shared-json` holds the one tolerant JSON reader set (`asRecord`,
   `asRecordOrNull`, ...) that the media gateway and the transcript provider both import.
+- **Nothing that can strand a billing pod is editable while one is open (review round 14).** The guard that
+  refused disabling the gateway now also refuses changing or clearing the credentials and switching the
+  network volume or datacenter while the volume lock has an active holder (`assertVolumeFree`); limits,
+  GPU and template stay editable (they bind only future sessions). An operator Stop on a `stopping` row
+  retries the terminate with the row's OWN outcome and reason (an aborted start still ends `failed`); a
+  Stop on an `approved` row whose approve request died runs the name search and terminate at once (the
+  manual override of the watcher's abandoned-start path) and, while RunPod cannot be asked, keeps the slot
+  and says so (`runpod_api_unavailable`). `releaseMediaVolumeLock` matches the owner by exact prefix
+  (`substr`), never `LIKE`. `creative_assets_reference_idx` (schema v56) backs the per-output asset
+  lookup. The pull command removes the Hugging Face CLI's download cache from the volume after the
+  download and on any exit (a trap), as does `models-pull.sh`.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

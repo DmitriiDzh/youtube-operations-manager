@@ -41,6 +41,12 @@ test("updateMediaModelPullsJson: two connections interleaving read-modify-write 
     assert.equal(await releaseMediaVolumeLock("pull:p1", dbB), false);
     assert.equal(await releaseMediaVolumeLock("session:s1", dbA), true);
     assert.deepEqual(await tryAcquireMediaVolumeLock("pull:p1", t0, dbB), { acquired: true, holder: { owner: "pull:p1", since: t0 } });
+    assert.equal(await releaseMediaVolumeLock("pull:p1", dbB), true);
+    // Review round 14: the release matches the owner exactly -- `_`/`%` in a pod name are not wildcards, case matters.
+    assert.deepEqual((await tryAcquireMediaVolumeLock("pod:myXpod", t0, dbA)).acquired, true);
+    assert.equal(await releaseMediaVolumeLock("pod:my_pod", dbB), false);
+    assert.equal(await releaseMediaVolumeLock("pod:MYXPOD", dbB), false);
+    assert.equal(await releaseMediaVolumeLock("pod:myXpod", dbB), true);
   } finally {
     a.close();
     b.close();

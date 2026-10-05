@@ -96,6 +96,9 @@ test("buildPullCommand downloads into the right folder and quotes the arguments;
   const cmd = buildPullCommand("Comfy-Org/flux1-schnell", "split_files/flux1-schnell-fp8.safetensors", "checkpoints");
   assert.ok(cmd.includes("hf download 'Comfy-Org/flux1-schnell' 'split_files/flux1-schnell-fp8.safetensors' --local-dir /workspace/models/checkpoints"));
   assert.ok(cmd.endsWith("sleep infinity"));
+  // Review round 14: the HF CLI's download cache is removed after the download and on any exit (a trap).
+  assert.ok(cmd.includes("--local-dir /workspace/models/checkpoints; rm -rf /workspace/models/checkpoints/.cache;"));
+  assert.ok(cmd.includes("trap 'rm -rf /workspace/models/checkpoints/.cache' EXIT"));
   assert.equal(modelFileName("split_files/x.safetensors"), "x.safetensors");
   assert.ok(buildPullCommand("a/b", "it's.bin", "vae").includes("'it'\\''s.bin'"));
 });

@@ -27,12 +27,13 @@ volume="$(json_get 'data.networkVolumeId ?? ""' <<<"$settings")"
 expected=()
 # Single-quote a value for the pod's shell exactly like src/lib/media-generation/models.ts's buildPullCommand (a `'` becomes `'\''`).
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-download_cmds="set -e; pip install -q -U 'huggingface_hub[cli]'; mkdir -p /workspace/models;"
+# The HF CLI's download cache under models/<folder>/.cache would stay on the paid volume forever (review round 14): removed per folder after each download and on any exit.
+download_cmds="set -e; trap 'find /workspace/models -maxdepth 2 -name .cache -type d -exec rm -rf {} +' EXIT; pip install -q -U 'huggingface_hub[cli]'; mkdir -p /workspace/models;"
 while IFS=$'\t' read -r repo file dest || [ -n "$repo" ]; do
   case "$repo" in ''|'#'*) continue ;; esac
   [ -n "$file" ] && [ -n "$dest" ] || { echo "bad manifest line: $repo" >&2; exit 2; }
   case "$dest" in */*|*..*) echo "bad manifest dest (one models/ folder name): $dest" >&2; exit 2 ;; esac
-  download_cmds+=" hf download $(q "$repo") $(q "$file") --local-dir $(q "/workspace/models/$dest");"
+  download_cmds+=" hf download $(q "$repo") $(q "$file") --local-dir $(q "/workspace/models/$dest"); rm -rf $(q "/workspace/models/$dest/.cache");"
   expected+=("models/$dest/$file")
 done < "$manifest"
 [ ${#expected[@]} -gt 0 ] || { echo "manifest has no rows" >&2; exit 2; }

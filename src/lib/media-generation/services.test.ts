@@ -490,3 +490,20 @@ test("review 13: an operator pod that mounts the configured network volume takes
   await assert.rejects(services.createPod({ name: "ytm-models-pull-2", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } }));
   assert.equal(store.current(), null);
 });
+
+// -- review round 14 (2026-10-05) -----------------------------------------------------------------
+
+test("review 14: the credentials cannot be changed or cleared, and the volume/datacenter cannot be switched, while a session, pull or operator pod holds the volume (the only path able to terminate it would vanish)", async () => {
+  let holder: string | null = "session:s1";
+  const f = fixture({ activeVolumeHolder: async () => holder });
+  await assert.rejects(f.services.setCredentials({ runpodApiKey: RUNPOD_KEY }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /Cannot change the RunPod credentials while a generation session is open/.test(e.message));
+  await assert.rejects(f.services.clearCredentials(), (e: unknown) => isDomainError(e) && /Cannot clear the RunPod credentials/.test((e as Error).message));
+  holder = null;
+  await f.services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await f.services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
+  holder = "pull:p1";
+  await assert.rejects(f.services.updateSettings({ networkVolumeId: "vol-us", datacenterId: "US-TX-3" }), (e: unknown) => isDomainError(e) && /Cannot change the network volume or datacenter while a model pull is running/.test((e as Error).message));
+  // Limits and the GPU only affect future sessions: still editable.
+  assert.equal((await f.services.updateSettings({ idleMinutes: 3 })).idleMinutes, 3);
+  assert.equal((await f.services.updateSettings({ networkVolumeId: "vol-eu" })).networkVolumeId, "vol-eu", "re-saving the same volume is not a change");
+});

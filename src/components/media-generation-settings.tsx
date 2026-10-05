@@ -890,9 +890,9 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
                 </button>
               </>
             )}
-            {["starting", "running", "stopping"].includes(open.status) && (
+            {["approved", "starting", "running", "stopping"].includes(open.status) && (
               <button type="button" onClick={() => setStopTarget(open)} disabled={busy} className={dangerButton}>
-                Stop (terminate pod)
+                {open.status === "approved" ? "Stop (search and terminate the pod)" : "Stop (terminate pod)"}
               </button>
             )}
           </div>

@@ -657,9 +657,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         results.push(pulled);
         forRetry.push(pulled);
       } catch (error) {
-        // A THROW here is infrastructure (S3 503, a read error), not a verdict about the output: the job keeps
-        // `transferring` and the watch loop retries within the window (review round 8); a verdict ("outside the job's
-        // folder", "verification failed") is a note, never a throw.
+        // A THROW here is "could not receive it THIS time" (S3 503, a read error, an object not yet visible or not yet
+        // fully flushed, bytes that failed verification -- the S3 view can lag, review round 10): the job keeps
+        // `transferring` and the watch loop retries with backoff within the window, after which it FAILS with these notes.
+        // A verdict about the output itself ("outside the job's folder", "unsafe file name") is a note, never a throw.
         transientFailure = error instanceof Error ? error.message : String(error);
         results.push({ ...output, note: `pull failed: ${transientFailure}` });
         forRetry.push({ ...output, note: null });

@@ -675,8 +675,22 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     async stopSession(input: unknown): Promise<MediaSession> {
       const parsed = parseWithSchema(stopSessionInputSchema, input, "stop session");
       const row = await requireRow(parsed.sessionId);
-      if (!["starting", "running", "stopping"].includes(row.status)) throw invalidState(parsed.sessionId, "starting|running|stopping", row.status);
-      return toPublicSession(await stopRow(row, parsed.reason ?? "stopped by operator"), deps.clock.now());
+      const reason = parsed.reason ?? "stopped by operator";
+      // A row already `stopping` is resumed with ITS reason and outcome (an aborted start stays `failed`, review round 14);
+      // the operator's press only retries the terminate.
+      if (row.status === "stopping") return toPublicSession(await retryStop(row, reason, "done"), deps.clock.now());
+      if (row.status === "approved") {
+        // The approve request is gone (it threw: createPod failed and RunPod could not say whether a pod exists) -- the
+        // operator's Stop is the manual override the watcher's abandoned-start path would otherwise reach only later:
+        // search the pod by name now; while RunPod still cannot be asked, say so and keep the slot (review round 14).
+        const result = await reconcileAbandoned(row, reason, "failed");
+        if (result === "deferred") {
+          throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod could not be asked whether a pod named ${podNameFor(row.id)} exists; the session stays approved (slot kept) -- try again when RunPod answers.`, details: { sessionId: row.id } });
+        }
+        return toPublicSession(await requireRow(row.id), deps.clock.now());
+      }
+      if (!["starting", "running"].includes(row.status)) throw invalidState(parsed.sessionId, "approved|starting|running|stopping", row.status);
+      return toPublicSession(await stopRow(row, reason), deps.clock.now());
     },
 
     /** Jobs (slice 3) call this on every submit/poll so the idle clock restarts. */

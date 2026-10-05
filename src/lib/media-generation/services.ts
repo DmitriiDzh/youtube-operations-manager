@@ -104,6 +104,19 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     return salvagedResult.success ? salvagedResult.data : { ...DEFAULT_MEDIA_SETTINGS };
   }
 
+  /** Refuses an action that would remove the only path able to terminate a billing pod while one is open. */
+  async function assertVolumeFree(action: string): Promise<void> {
+    if (!deps.activeVolumeHolder) return;
+    const holder = await deps.activeVolumeHolder();
+    if (!holder) return;
+    const what = holder.startsWith("pull:") ? "a model pull is running" : holder.startsWith("pod:") ? "an operator pod has the volume mounted" : "a generation session is open";
+    throw new DomainError({
+      code: "media_session_conflict",
+      message: `Cannot ${action} while ${what} (${holder}): the pod could then never be terminated, or its files never received. Stop it first.`,
+      details: { holder },
+    });
+  }
+
   async function credentialsStatus(): Promise<MediaCredentialsStatus> {
     const row = await deps.store.getCredentials();
     if (!row) return { configured: false, reason: "no_credentials" };
@@ -187,6 +200,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
      */
     async setCredentials(input: unknown): Promise<MediaCredentialsStatus> {
       const parsed = parseWithSchema(setCredentialsInputSchema, input, "media credentials");
+      await assertVolumeFree("change the RunPod credentials");
       const key = await deps.keyFile.readOrCreateKey();
       const secrets: SecretSet = {
         runpodApiKey: parsed.runpodApiKey,
@@ -203,6 +217,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     },
 
     async clearCredentials(): Promise<MediaCredentialsStatus> {
+      await assertVolumeFree("clear the RunPod credentials");
       await deps.store.clearCredentials();
       return credentialsStatus();
     },
@@ -249,6 +264,12 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const update = parseWithSchema(updateSettingsInputSchema, input, "media settings");
       const current = await readSettings();
       const next = parseWithSchema(mediaSettingsSchema, { ...current, ...update }, "media settings");
+      // The volume and the datacenter are what an open session's pod and an in-flight transfer/pull are bound to:
+      // `s3()` re-reads the settings on every call, so switching them mid-flight would make every later transfer look
+      // at the wrong volume (review round 14). Everything else (GPU, template, limits) only affects future sessions.
+      if ((update.networkVolumeId !== undefined && update.networkVolumeId !== current.networkVolumeId) || (update.datacenterId !== undefined && update.datacenterId !== current.datacenterId)) {
+        await assertVolumeFree("change the network volume or datacenter");
+      }
       if (update.gpuTypeId === null) next.gpuOnDemandPricePerHr = null;
 
       // A cloud-type change re-prices the already-chosen GPU (SECURE and COMMUNITY differ), so it touches the catalog too.
@@ -320,19 +341,11 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     /**
      * Disabling the gateway while a pod is open or a pull is running would disable the only path that can terminate
      * that pod (watcher, Stop, shutdown, boot sweep all go through the gated client) -- the caps would stop being
-     * enforced and the pod would bill until the toggle came back. Refused while the volume lock has an active holder.
+     * enforced and the pod would bill until the toggle came back. Refused while the volume lock has an active holder
+     * (the same guard covers the credentials and the volume/datacenter settings, review round 14).
      */
     async setGatewayEnabled(enabled: boolean): Promise<void> {
-      if (!enabled && deps.activeVolumeHolder) {
-        const holder = await deps.activeVolumeHolder();
-        if (holder) {
-          throw new DomainError({
-            code: "media_session_conflict",
-            message: `The media gateway cannot be disabled while ${holder.startsWith("pull:") ? "a model pull is running" : "a generation session is open"} (${holder}): the pod could then never be terminated. Stop it first.`,
-            details: { holder },
-          });
-        }
-      }
+      if (!enabled) await assertVolumeFree("disable the media gateway");
       await deps.store.setGatewayEnabled(enabled);
     },
 

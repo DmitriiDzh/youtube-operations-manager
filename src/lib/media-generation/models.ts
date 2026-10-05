@@ -91,7 +91,11 @@ export function modelFileName(file: string): string {
 /** The shell the CPU pod runs: install the HF CLI, download one file into the right models folder, then idle until terminated. */
 export function buildPullCommand(repoId: string, file: string, folder: string): string {
   const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-  return `set -e; pip install -q -U 'huggingface_hub[cli]'; mkdir -p /workspace/models/${folder}; hf download ${q(repoId)} ${q(file)} --local-dir /workspace/models/${folder}; echo YTM_PULL_DONE; sleep infinity`;
+  const dir = `/workspace/models/${folder}`;
+  // The HF CLI's download cache (`.cache/huggingface/download/*.incomplete|.metadata|.lock`) would otherwise stay on
+  // the paid volume forever, invisible in the Models panel (review round 14): removed after the download and on any
+  // exit (a failed or cancelled pull leaves a multi-GB `.incomplete` blob).
+  return `set -e; trap 'rm -rf ${dir}/.cache' EXIT; pip install -q -U 'huggingface_hub[cli]'; mkdir -p ${dir}; hf download ${q(repoId)} ${q(file)} --local-dir ${dir}; rm -rf ${dir}/.cache; echo YTM_PULL_DONE; sleep infinity`;
 }
 
 function parsePulls(json: string | null): ModelPull[] {

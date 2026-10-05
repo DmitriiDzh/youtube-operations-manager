@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -1101,7 +1101,7 @@ export const creativeAssets = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date()),
   },
-  (table) => [index("creative_assets_channel_id_idx").on(table.channelId)]
+  (table) => [index("creative_assets_channel_id_idx").on(table.channelId), index("creative_assets_reference_idx").on(table.channelId, table.referenceKind, table.referenceValue)]
 );
 
 /**
@@ -3088,6 +3088,14 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 56,
+    description:
+      "creative_assets(channel_id, reference_kind, reference_value) index -- the media job pipeline looks an asset up by its local path per pulled output (Phase 14 review round 14); additive index, data untouched",
+    apply: async (client) => {
+      await client.execute("CREATE INDEX IF NOT EXISTS creative_assets_reference_idx ON creative_assets(channel_id, reference_kind, reference_value)");
     },
   },
 ];
@@ -6988,8 +6996,9 @@ export async function getCreativeAssetById(
 
 /**
  * One asset by its reference within a channel (Phase 14 review round 7: the media job pipeline asks
- * "is this local file already cataloged?" per pulled output -- one query, never a full channel listing
- * scanned in JS). Newest first when several rows share a reference.
+ * "is this local file already cataloged?" per pulled output -- one query on
+ * `creative_assets_reference_idx` (schema v56), never a full channel listing scanned in JS). Newest
+ * first when several rows share a reference.
  */
 export async function getCreativeAssetByReference(
   channelId: string,
@@ -7282,7 +7291,8 @@ export async function tryAcquireMediaVolumeLock(owner: string, at: Date, databas
 export async function releaseMediaVolumeLock(owner: string, database: AppDb = db): Promise<boolean> {
   const rows = await database
     .delete(appSettings)
-    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), like(appSettings.value, `${owner} %`)))
+    // Exact, case-sensitive prefix match (`LIKE` would read `_`/`%` in a pod name as wildcards and compare case-insensitively).
+    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), sql`substr(${appSettings.value}, 1, ${owner.length + 1}) = ${`${owner} `}`))
     .returning({ key: appSettings.key });
   return rows.length > 0;
 }

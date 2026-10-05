@@ -1009,3 +1009,40 @@ test("review 13: every successful pod poll during the START wait marks the pod s
   assert.equal(swept.status, "interrupted");
   assert.ok((swept.secondsUsed ?? 0) >= 15 && (swept.secondsUsed ?? 0) < 3600, `billed to the last sighting, got ${swept.secondsUsed}`);
 });
+
+test("review 14: an operator Stop on a row already `stopping` retries the terminate but keeps the row's own outcome and reason (an aborted start still ends `failed`)", async () => {
+  const runpod = fakeRunpod({ terminateSticks: true });
+  const f = fixture({ runpod, comfy: fakeComfy({ never: true }) });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }));
+  const stopping = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(stopping.status, "stopping");
+  assert.equal(stopping.stoppingOutcome, "failed");
+  f.runpod.pods.delete("pod1");
+  const stopped = await f.services.stopSession({ sessionId: requested.sessionId, reason: "stopped by operator" });
+  assert.equal(stopped.status, "failed");
+  assert.match(stopped.stopReason ?? "", /start failed/);
+});
+
+test("review 14: an `approved` row whose approve request died has an operator Stop: the pod is searched by name and terminated now; while RunPod cannot be asked the slot is kept and the operator is told", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const pod = { id: "pod9", name: `ytm-media-${requested.sessionId.slice(0, 8)}`, status: "RUNNING", costPerHr: 0.69, createdAt: null };
+  f.runpod.pods.set("pod9", { status: "RUNNING", costPerHr: 0.69 });
+  let runpodDown = true;
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => {
+    if (runpodDown) throw new Error("RunPod API returned HTTP 503");
+    return [pod];
+  };
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: f.getNow(), error: "pod creation failed (timeout) and RunPod could not be asked whether the pod exists" });
+  await f.lock.tryAcquire(`session:${requested.sessionId}`, f.getNow());
+  await assert.rejects(f.services.stopSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "runpod_api_unavailable");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "approved", "the slot is kept while the pod may exist");
+  runpodDown = false;
+  const stopped = await f.services.stopSession({ sessionId: requested.sessionId });
+  assert.equal(stopped.status, "failed");
+  assert.equal(stopped.podId, "pod9");
+  assert.equal(f.runpod.pods.has("pod9"), false);
+  assert.equal(f.lock.current(), null);
+  assert.equal((await f.services.getLimits()).openSession, null);
+});

@@ -162,9 +162,10 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
     },
 
     /**
-     * Queues an API-format workflow. ComfyUI validates it first: a validation failure comes back
-     * as `node_errors` (HTTP 400) and is surfaced as `comfyui_unavailable` with the node errors in
-     * `details`, so the caller can mark the job failed without a second call.
+     * Queues an API-format workflow. ComfyUI validates it first: a validation failure comes back as
+     * `node_errors` (HTTP 400) and is surfaced by `request()` as `comfyui_rejected` (definitive, never
+     * retried) with the body in `details`, so the caller can mark the job failed without a second call;
+     * a 200 without a `prompt_id` (not a documented shape) is `comfyui_unavailable`.
      */
     async submitPrompt(input: { prompt: Record<string, unknown>; clientId?: string }): Promise<{ promptId: string; queueNumber: number | null }> {
       const { body } = await request("POST", "/prompt", { json: { prompt: input.prompt, ...(input.clientId ? { client_id: input.clientId } : {}) } });
