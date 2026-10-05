@@ -235,7 +235,7 @@ sidebar section **Production** right after Content; (3) its tabs ordered by freq
 on the right: **Sessions → Jobs → Models → Workflow templates → Setup** (Compute, Volume, Limits, gateway toggle);
 (4) the agent path is the existing seven MCP tools (unchanged contract, plus the fields below); (5) **concurrent
 sessions** — supersedes D2/D3's "one open session per device": a configurable `maxConcurrentSessions` (Setup,
-1–4, default 2) bounds the sessions holding a pod (`approved|starting|running|stopping`); pending requests are not
+1–4, default 3 -- owner, msg 1553) bounds the sessions holding a pod (`approved|starting|running|stopping`); pending requests are not
 bounded by it; sessions are shown in a table with live statuses and per-row Approve / Reject / Stop — no blocking
 pop-up: approve validates synchronously, then the start runs in the background and the row's status tells the rest;
 (6) the account **balance** on Production, from RunPod's legacy GraphQL `myself { clientBalance, currentSpendPerHr,
@@ -259,8 +259,17 @@ while any session is active and a session approve is refused while a pull runs; 
 never sends the key anywhere but RunPod and degrades to v2 spend when GraphQL fails; AC-P14-26 Settings shows only
 the RunPod connection; Production shows the five tabs in the stated order.
 
+Implemented (slice 6 commits on this branch): the shared side of the volume lock is not a multi-owner lock row but
+the active session rows themselves -- the approve UPDATE is guarded by "active count < max" AND "no lock row", and the
+exclusive lock insert (`INSERT … SELECT … WHERE NOT EXISTS active session`) by the reverse, one statement each; a
+crash-stale pull/pod row is cleared before an approve (`volumeLock.activeHolder`). `approveSession` returns
+`{ session, started }`; the Web route answers `202` with the `approved` row and lets `started` run. Balance:
+`RunpodApiClient.getAccountBalance` (GraphQL, else `/billing/pods` + `/billing/networkvolumes` totals, shapes probed
+live 2026-10-05); `GET /api/media-generation/balance`. UI: `src/components/production-panel.tsx` (balance header, tabs),
+Settings → RunPod renders only `RunpodConnectionSettings`.
+
 ## 6. Not in scope
 
-Serverless compute (later adapter), concurrent sessions / multiple pods, any YouTube upload of generated media
+Serverless compute (later adapter), any YouTube upload of generated media
 (Publishing Pipeline, `FUTURE_PHASES.md` §6a), prompt libraries or editorial logic (outside the repo, §B),
 syncing templates/sessions between devices, automatic model selection.

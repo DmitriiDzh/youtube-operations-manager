@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  MAX_CONCURRENT_SESSIONS_RANGE,
   NETWORK_VOLUME_USD_PER_GB_MONTH,
   type MediaCredentialsStatus,
   type MediaGenerationOverview,
@@ -15,14 +16,16 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
-import { OperationOverlay, useOperation } from "./operation-progress";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
 // enters RunPod keys here (stored encrypted per device, never shown again), picks datacenter / GPU /
 // volume / template from RunPod's live lists, and sets the spend and watcher limits. Every RunPod
-// call behind this card is an explicit click ("Load", "Test", "Create"), never on mount.
+// call behind the setup cards is an explicit click ("Load", "Test", "Create"), never on mount.
+//
+// Slice 6 (owner, Telegram 2026-10-05, msg 1549): Settings → RunPod keeps ONLY the connection (`RunpodConnectionSettings`);
+// everything else is the Production section (`production-panel.tsx`), which uses the cards exported below.
 
 // The core's own public shapes (review round 16): never a hand copy that drifts when contracts.ts changes.
 type CredentialsStatus = MediaCredentialsStatus;
@@ -89,7 +92,8 @@ function Card({ title, help, children }: { title: string; help: string; children
   );
 }
 
-export function MediaGenerationSettings({ activeChannelId = null }: { activeChannelId?: string | null }) {
+/** The media overview (credentials, settings, readiness) and the gateway traffic, shared by Settings → RunPod and Production. */
+export function useMediaOverview() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
@@ -110,7 +114,7 @@ export function MediaGenerationSettings({ activeChannelId = null }: { activeChan
     []
   );
 
-  // Traffic stats are decorative; the card works without them.
+  // Traffic stats are decorative; the cards work without them.
   const fetchTraffic = useCallback(
     () =>
       requestJson<{ gatewayTraffic?: GatewayTrafficWindowView[] }>("/api/settings").then(
@@ -129,20 +133,18 @@ export function MediaGenerationSettings({ activeChannelId = null }: { activeChan
     fetchTraffic();
   }, [fetchOverview, fetchTraffic]);
 
+  return { overview, loadError, gatewayTraffic, refresh };
+}
+
+/** Settings → RunPod (slice 6): only the connection -- the API keys and their test. */
+export function RunpodConnectionSettings() {
+  const { overview, loadError, refresh } = useMediaOverview();
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
   if (!overview) return <p className="text-sm text-zinc-500">Loading…</p>;
-
   return (
     <div className="space-y-6">
-      <ReadinessBanner overview={overview} />
       <CredentialsCard status={overview.credentials} onChanged={refresh} />
-      <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
-      <VolumeCard overview={overview} onChanged={refresh} />
-      <LimitsCard settings={overview.settings} onChanged={refresh} />
-      <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} />
-      <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} />
-      <WorkflowTemplatesCard />
-      <JobsCard activeChannelId={activeChannelId} />
+      <p className="text-xs text-zinc-500">Compute, network volume, limits, sessions, models, workflow templates and jobs are in the Production section.</p>
     </div>
   );
 }
@@ -158,7 +160,7 @@ function gb(bytes: number): string {
 // Phase 14 slice 4 (owner decision D5): the models on the network volume, and "add from Hugging Face"
 // through a cheap CPU pod attached to the volume (terminated as soon as the file is there). Every
 // listing is one S3 call made on an explicit Load/Refresh; while a pull runs the card refreshes itself.
-function ModelsCard({ configured }: { configured: boolean }) {
+export function ModelsCard({ configured }: { configured: boolean }) {
   const [models, setModels] = useState<ModelFile[] | null>(null);
   const [pulls, setPulls] = useState<ModelPull[]>([]);
   const [repoId, setRepoId] = useState("");
@@ -353,7 +355,7 @@ type WorkflowTemplate = MediaWorkflowTemplate;
 // Phase 14 slice 3 (owner decision D7): templates are imported by the operator -- a ComfyUI API-format
 // graph (Save As (API Format) in ComfyUI) plus the parameters an agent may set. Prompts are job
 // parameters, never part of a template.
-function WorkflowTemplatesCard() {
+export function WorkflowTemplatesCard() {
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [name, setName] = useState("");
   const [workflowText, setWorkflowText] = useState("");
@@ -491,10 +493,12 @@ type Job = MediaJob;
 
 // Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
 // job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
-function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
+export function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
-  const [openSession, setOpenSession] = useState<{ sessionId: string; status: string; channelId: string } | null>(null);
+  // Slice 6: several sessions may run at once; a job goes to one RUNNING session of the active channel, chosen here.
+  const [openSessions, setOpenSessions] = useState<Array<{ sessionId: string; status: string; channelId: string; podId: string | null; createdAt: string }>>([]);
+  const [chosenSessionId, setChosenSessionId] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [paramsText, setParamsText] = useState("{}");
   const [busy, setBusy] = useState(false);
@@ -517,11 +521,11 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
     () =>
       Promise.all([
         requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
-        requestJson<{ limits: { openSession: { sessionId: string; status: string; channelId: string } | null } }>("/api/media-generation/sessions"),
+        requestJson<{ limits: { openSessions: Array<{ sessionId: string; status: string; channelId: string; podId: string | null; createdAt: string }> } }>("/api/media-generation/sessions"),
       ]).then(
         ([t, s]) => {
           setTemplates(t.templates);
-          setOpenSession(s.limits.openSession);
+          setOpenSessions(s.limits.openSessions);
         },
         (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load jobs")
       ),
@@ -545,7 +549,7 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
   }, [hasActive, fetchJobs, fetchContext]);
 
   async function run() {
-    if (!activeChannelId || !openSession) return;
+    if (!activeChannelId || !targetSession) return;
     setBusy(true);
     setError(null);
     try {
@@ -558,7 +562,7 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
       await requestJson("/api/media-generation/jobs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: openSession.sessionId, channelId: activeChannelId, templateId, params }),
+        body: JSON.stringify({ sessionId: targetSession.sessionId, channelId: activeChannelId, templateId, params }),
       });
       await fetchAll();
     } catch (err) {
@@ -598,9 +602,11 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
     }
   }
 
-  // The device's one open session belongs to ONE channel; a job is submitted for the active channel (review round 16).
-  const sessionOfOtherChannel = Boolean(openSession && activeChannelId && openSession.channelId !== activeChannelId);
-  const canRun = Boolean(activeChannelId) && openSession?.status === "running" && !sessionOfOtherChannel && templates.length > 0;
+  // A job is submitted for the active channel, to one of ITS running sessions (review round 16; slice 6: several may run).
+  const runningHere = openSessions.filter((s) => s.status === "running" && s.channelId === activeChannelId);
+  const targetSession = runningHere.find((s) => s.sessionId === chosenSessionId) ?? runningHere[0] ?? null;
+  const runningElsewhere = openSessions.some((s) => s.status === "running" && s.channelId !== activeChannelId);
+  const canRun = Boolean(activeChannelId) && targetSession !== null && templates.length > 0;
 
   return (
     <Card
@@ -611,15 +617,27 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
         <p className="text-xs text-zinc-500">
           {!activeChannelId
             ? "Select an active channel."
-            : openSession?.status !== "running"
-              ? "Start a session first."
-              : sessionOfOtherChannel
-                ? `The open session belongs to channel ${openSession?.channelId}; switch the active channel to it (or stop it and request one for this channel).`
-                : "Import a workflow template first."}
+            : targetSession === null
+              ? runningElsewhere
+                ? "The running sessions belong to other channels; switch the active channel, or request and approve a session for this one (Sessions tab)."
+                : "Start a session for this channel first (Sessions tab)."
+              : "Import a workflow template first (Workflow templates tab)."}
         </p>
       ) : (
         <div className="space-y-2">
           <div className="grid gap-2 sm:grid-cols-2">
+            {runningHere.length > 1 && (
+              <label className="block text-xs text-zinc-400 sm:col-span-2">
+                Session
+                <select value={targetSession?.sessionId ?? ""} onChange={(e) => setChosenSessionId(e.target.value)} className={inputClass}>
+                  {runningHere.map((s) => (
+                    <option key={s.sessionId} value={s.sessionId}>
+                      {s.podId ?? s.sessionId} · requested {formatDisplayDateTime(s.createdAt)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="block text-xs text-zinc-400">
               Template
               <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputClass}>
@@ -707,26 +725,67 @@ type Session = MediaSession;
 type SessionLimits = MediaSessionLimits;
 
 const OPEN_STATUSES = new Set(["pending", "approved", "starting", "running", "stopping"]);
+const TRANSITIONAL_STATUSES = new Set(["approved", "starting", "stopping"]);
+/** Poll fast while a pod is being created or terminated, slower otherwise (an agent's new request still shows up). */
+const SESSIONS_FAST_POLL_MS = 5_000;
+const SESSIONS_SLOW_POLL_MS = 15_000;
 
 function minutesLabel(seconds: number | null): string {
   if (seconds === null) return "—";
   return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
 }
 
-// Phase 14 slice 2 (owner decision D3): a human approves a SESSION (one pod with caps) here -- the only
-// place; approving blocks behind the shared progress pop-up until ComfyUI answers. Inside a running
-// session the agent submits jobs freely (slice 3); the watcher terminates on idle / minutes / USD.
-function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChannelId: string | null }) {
+function sinceLabel(iso: string | null, nowMs: number): string {
+  if (!iso) return "";
+  const seconds = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 1000));
+  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min`;
+}
+
+/** What a row's status means right now, in the operator's words (the start runs in the background since slice 6). */
+function statusDetail(s: Session, nowMs: number): string {
+  switch (s.status) {
+    case "pending":
+      return "waiting for your approval";
+    case "approved":
+      return `creating the pod… ${sinceLabel(s.approvedAt, nowMs)}`;
+    case "starting":
+      return `pod created, waiting for ComfyUI… ${sinceLabel(s.startedAt, nowMs)}`;
+    case "running":
+      return `ready${s.lastActivityAt ? ` · last activity ${sinceLabel(s.lastActivityAt, nowMs)} ago` : ""}`;
+    case "stopping":
+      return "terminating the pod…";
+    default:
+      return "";
+  }
+}
+
+const statusTone: Record<string, string> = {
+  pending: "text-amber-300",
+  approved: "text-sky-300",
+  starting: "text-sky-300",
+  running: "text-emerald-400",
+  stopping: "text-orange-300",
+  done: "text-zinc-400",
+  failed: "text-red-400",
+  rejected: "text-zinc-500",
+  interrupted: "text-orange-400",
+};
+
+// Phase 14 slice 6 (owner, Telegram 2026-10-05, msgs 1549/1551/1553; PHASE_14_PLAN.md §5.2): several sessions -- each
+// its own pod -- may be requested (by agents through MCP, or here) and run at once, up to the limit set in Setup. They
+// are listed in one table with live statuses and per-row Approve / Reject / Stop. Approving answers at once; the pod
+// start runs in the background and the row's status tells the rest -- no blocking pop-up. Every action that spends or
+// ends a pod asks for a confirmation IN the row (no modal, no native dialog).
+export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: boolean; activeChannelId: string | null; onLimits?: (limits: SessionLimits) => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [limits, setLimits] = useState<SessionLimits | null>(null);
   const [maxMinutesText, setMaxMinutesText] = useState<string>("");
   const [maxUsd, setMaxUsd] = useState<string>("");
-  const [busy, setBusy] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [approveTarget, setApproveTarget] = useState<Session | null>(null);
-  const [stopTarget, setStopTarget] = useState<Session | null>(null);
-  const op = useOperation();
-  const { runBlocking } = op;
+  const [confirming, setConfirming] = useState<{ sessionId: string; action: "approve" | "stop" } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const fetchAll = useCallback(
     () =>
@@ -734,23 +793,24 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
         (data) => {
           setSessions(data.sessions);
           setLimits(data.limits);
+          setNowMs(Date.now());
+          onLimits?.(data.limits);
         },
         (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load sessions")
       ),
-    []
+    [onLimits]
   );
 
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
 
-  // The open session's live cost changes every second; refresh while one exists.
-  const hasOpen = Boolean(limits?.openSession);
+  const openSessions = limits?.openSessions ?? [];
+  const fast = openSessions.some((s) => TRANSITIONAL_STATUSES.has(s.status));
   useEffect(() => {
-    if (!hasOpen) return;
-    const timer = setInterval(() => void fetchAll(), 15_000);
+    const timer = setInterval(() => void fetchAll(), fast ? SESSIONS_FAST_POLL_MS : SESSIONS_SLOW_POLL_MS);
     return () => clearInterval(timer);
-  }, [hasOpen, fetchAll]);
+  }, [fast, fetchAll]);
 
   async function request() {
     if (!activeChannelId) return;
@@ -764,7 +824,7 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
       setError("Max minutes must be a whole number between 1 and 1440");
       return;
     }
-    setBusy(true);
+    setRequesting(true);
     setError(null);
     try {
       await requestJson("/api/media-generation/sessions", {
@@ -780,147 +840,164 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to request a session");
     } finally {
-      setBusy(false);
+      setRequesting(false);
     }
   }
 
-  async function approve() {
-    const target = approveTarget;
-    if (!target) return;
-    setApproveTarget(null);
+  async function act(target: Session, action: "approve" | "reject" | "stop") {
+    setConfirming(null);
+    setBusyId(target.sessionId);
     setError(null);
     try {
-      await runBlocking({
-        title: "Starting the generation session",
-        stage: "Creating the pod",
-        track: { channelId: target.channelId, kind: "media_session_start" },
-        request: async () => {
-          const res = await fetch(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/approve`, { method: "POST" });
-          return { res, data: (await res.json()) as { session?: Session; message?: string; error?: string } };
-        },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
-        summarize: ({ data }) => (data.session ? `Pod ${data.session.podId} is running at $${data.session.costPerHr ?? "?"}/h` : null),
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start the session");
-    } finally {
-      await fetchAll();
-    }
-  }
-
-  async function stop() {
-    const target = stopTarget;
-    if (!target) return;
-    setStopTarget(null);
-    setBusy(true);
-    setError(null);
-    try {
-      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/stop`, {
+      const body = action === "reject" ? { reason: "rejected by operator" } : action === "stop" ? { reason: "stopped by operator" } : undefined;
+      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/${action}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason: "stopped by operator" }),
+        ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to stop the session");
+      setError(err instanceof Error ? err.message : `Failed to ${action} the session`);
     } finally {
-      setBusy(false);
+      setBusyId(null);
       await fetchAll();
     }
   }
 
-  async function reject(target: Session) {
-    setBusy(true);
-    setError(null);
-    try {
-      await requestJson(`/api/media-generation/sessions/${encodeURIComponent(target.sessionId)}/reject`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason: "rejected by operator" }),
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reject the session");
-    } finally {
-      setBusy(false);
-      await fetchAll();
-    }
-  }
+  const activeCount = limits?.activeSessionCount ?? 0;
+  const maxConcurrent = limits?.maxConcurrentSessions ?? 1;
+  const atLimit = activeCount >= maxConcurrent;
+  const recent = sessions.filter((s) => !OPEN_STATUSES.has(s.status)).slice(0, 10);
 
-  const open = limits?.openSession ?? null;
-  const recent = sessions.filter((s) => !OPEN_STATUSES.has(s.status)).slice(0, 8);
+  function actions(s: Session) {
+    const busy = busyId === s.sessionId;
+    if (confirming?.sessionId === s.sessionId) {
+      const approve = confirming.action === "approve";
+      return (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-zinc-300">{approve ? `Start a pod? up to $${s.estimateUsd.toFixed(2)} for ${s.maxMinutes} min` : "Terminate the pod now? Running jobs are cut off."}</span>
+          <button type="button" onClick={() => act(s, confirming.action)} disabled={busy} className={approve ? primaryButton : dangerButton}>
+            {approve ? "Confirm start" : "Confirm stop"}
+          </button>
+          <button type="button" onClick={() => setConfirming(null)} className={secondaryButton}>
+            Cancel
+          </button>
+        </div>
+      );
+    }
+    if (s.status === "pending") {
+      return (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setConfirming({ sessionId: s.sessionId, action: "approve" })}
+            disabled={busy || !ready || atLimit}
+            title={atLimit ? `${activeCount} of ${maxConcurrent} sessions are active (Setup → Limits)` : undefined}
+            className={primaryButton}
+          >
+            Approve
+          </button>
+          <button type="button" onClick={() => act(s, "reject")} disabled={busy} className={secondaryButton}>
+            Reject
+          </button>
+        </div>
+      );
+    }
+    return (
+      <button type="button" onClick={() => setConfirming({ sessionId: s.sessionId, action: "stop" })} disabled={busy} className={dangerButton}>
+        Stop
+      </button>
+    );
+  }
 
   return (
     <Card
       title="Sessions"
-      help="A session is one RunPod pod running ComfyUI. Requesting one costs nothing; approving creates the pod (billed per second from that moment) and waits until ComfyUI answers. The pod is terminated when the session is stopped, idle, over its minutes or over its USD cap -- never 'stopped' (that would keep billing its disk)."
+      help="A session is one RunPod pod running ComfyUI; several may run at once, up to the limit in Setup. Agents request sessions through MCP (or you do, below); requesting costs nothing. Approving creates the pod in the background (billed per second from that moment) -- the row shows its progress. A pod is terminated when its session is stopped, idle, over its minutes or over its USD cap, or when today's cap is reached -- never 'stopped' (that would keep billing its disk)."
     >
       {limits && (
         <p className="text-xs text-zinc-500">
-          Spent today ${limits.spentTodayUsd.toFixed(2)} of ${limits.maxUsdPerDay.toFixed(2)} · idle timeout {limits.idleMinutes} min
+          Active {activeCount} of {maxConcurrent} · spent today ${limits.spentTodayUsd.toFixed(2)} of ${limits.maxUsdPerDay.toFixed(2)} · idle timeout {limits.idleMinutes} min
         </p>
       )}
 
-      {open ? (
-        <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-          <p className="text-sm text-zinc-200">
-            <span className="font-medium">{open.status}</span>
-            {" · "}requested by {open.requestedBy}
-            {open.reason ? ` · ${open.reason}` : ""}
-          </p>
-          <p className="text-xs text-zinc-400">
-            cap {open.maxMinutes} min{open.maxUsd !== null ? ` / $${open.maxUsd}` : ""} · estimate ${open.estimateUsd.toFixed(2)}
-            {open.fitsToday ? "" : " (does not fit today's cap)"}
-            {open.podId ? ` · pod ${open.podId}` : ""}
-            {open.costPerHr !== null ? ` · $${open.costPerHr}/h` : ""}
-            {open.startedAt ? ` · running ${minutesLabel(open.secondsUsed)} ≈ $${(open.usdCharged ?? 0).toFixed(2)}` : ""}
-          </p>
-          {open.error && <p className="text-xs text-amber-400">{open.error}</p>}
-          <div className="flex flex-wrap gap-2">
-            {open.status === "pending" && (
-              <>
-                <button type="button" onClick={() => setApproveTarget(open)} disabled={busy || !ready} className={primaryButton}>
-                  Approve and start
-                </button>
-                <button type="button" onClick={() => reject(open)} disabled={busy} className={secondaryButton}>
-                  Reject
-                </button>
-              </>
-            )}
-            {["approved", "starting", "running", "stopping"].includes(open.status) && (
-              <button type="button" onClick={() => setStopTarget(open)} disabled={busy} className={dangerButton}>
-                {open.status === "approved" ? "Stop (search and terminate the pod)" : "Stop (terminate pod)"}
-              </button>
-            )}
-          </div>
+      {openSessions.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-xs text-zinc-400">
+            <thead>
+              <tr className="text-zinc-500">
+                <th className="py-1 pr-3">Requested</th>
+                <th className="py-1 pr-3">Channel</th>
+                <th className="py-1 pr-3">Status</th>
+                <th className="py-1 pr-3">By / reason</th>
+                <th className="py-1 pr-3">Caps</th>
+                <th className="py-1 pr-3">Pod</th>
+                <th className="py-1 pr-3">Cost so far</th>
+                <th className="py-1">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {openSessions.map((s) => (
+                <tr key={s.sessionId} className="border-t border-zinc-800 align-top">
+                  <td className="py-2 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
+                  <td className="py-2 pr-3 font-mono">{s.channelId === activeChannelId ? "this channel" : s.channelId}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`font-medium ${statusTone[s.status] ?? ""}`}>{s.status}</span>
+                    <div className="text-zinc-500">{statusDetail(s, nowMs)}</div>
+                    {s.error && <div className="text-amber-400">{s.error}</div>}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {s.requestedBy}
+                    {s.reason ? <div className="text-zinc-500">{s.reason}</div> : null}
+                  </td>
+                  <td className="py-2 pr-3 whitespace-nowrap">
+                    {s.maxMinutes} min{s.maxUsd !== null ? ` / $${s.maxUsd}` : ""}
+                    <div className="text-zinc-500">
+                      est. ${s.estimateUsd.toFixed(2)}
+                      {s.fitsToday ? "" : " · over today's cap"}
+                    </div>
+                  </td>
+                  <td className="py-2 pr-3 font-mono">
+                    {s.podId ?? "—"}
+                    {s.costPerHr !== null && <div className="font-sans text-zinc-500">${s.costPerHr}/h</div>}
+                  </td>
+                  <td className="py-2 pr-3 whitespace-nowrap">{s.startedAt ? `${minutesLabel(s.secondsUsed)} ≈ $${(s.usdCharged ?? 0).toFixed(2)}` : "—"}</td>
+                  <td className="py-2">{actions(s)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : (
-        <div className="space-y-2">
-          {!activeChannelId ? (
-            <p className="text-xs text-zinc-500">Select an active channel to request a session.</p>
-          ) : !ready ? (
-            <p className="text-xs text-zinc-500">Finish the setup above to request a session.</p>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-3">
-              <label className="block text-xs text-zinc-400">
-                Max minutes
-                <input type="text" inputMode="numeric" value={maxMinutesText} onChange={(e) => setMaxMinutesText(e.target.value)} className={inputClass} placeholder={`default ${limits?.defaultMaxMinutes ?? 60}`} />
-              </label>
-              <label className="block text-xs text-zinc-400">
-                Max USD (optional)
-                <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder="no cap (e.g. 2.5)" />
-              </label>
-              <div className="flex items-end">
-                <button type="button" onClick={request} disabled={busy} className={primaryButton}>
-                  {busy ? "Requesting…" : "Request a session"}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+        <p className="text-xs text-zinc-500">No open sessions. Requests from agents appear here automatically.</p>
       )}
+
+      <div className="space-y-2 border-t border-zinc-800 pt-3">
+        {!activeChannelId ? (
+          <p className="text-xs text-zinc-500">Select an active channel to request a session yourself.</p>
+        ) : !ready ? (
+          <p className="text-xs text-zinc-500">Finish Settings → RunPod and Production → Setup to request a session.</p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-3">
+            <label className="block text-xs text-zinc-400">
+              Max minutes
+              <input type="text" inputMode="numeric" value={maxMinutesText} onChange={(e) => setMaxMinutesText(e.target.value)} className={inputClass} placeholder={`default ${limits?.defaultMaxMinutes ?? 60}`} />
+            </label>
+            <label className="block text-xs text-zinc-400">
+              Max USD (optional)
+              <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder="no cap (e.g. 2.5)" />
+            </label>
+            <div className="flex items-end">
+              <button type="button" onClick={request} disabled={requesting} className={secondaryButton}>
+                {requesting ? "Requesting…" : "Request a session for this channel"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {recent.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
+          <p className="mb-1 text-xs font-medium text-zinc-400">Recent</p>
+          <table className="w-full min-w-[640px] text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
                 <th className="py-1 pr-3">When</th>
@@ -936,7 +1013,7 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
               {recent.map((s) => (
                 <tr key={s.sessionId} className="border-t border-zinc-800">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
-                  <td className="py-1 pr-3">{s.status}</td>
+                  <td className={`py-1 pr-3 ${statusTone[s.status] ?? ""}`}>{s.status}</td>
                   <td className="py-1 pr-3">{s.requestedBy}</td>
                   <td className="py-1 pr-3 font-mono">{s.podId ?? "—"}</td>
                   <td className="py-1 pr-3 whitespace-nowrap">{minutesLabel(s.secondsUsed)}</td>
@@ -950,36 +1027,16 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
       )}
 
       {error && <p className="text-xs text-red-400">{error}</p>}
-      <OperationOverlay state={op.state} onClose={op.reset} />
-      {approveTarget && (
-        <ConfirmDialog
-          title="Start this generation session?"
-          description={`RunPod bills the pod per second from creation (about $${approveTarget.estimateUsd.toFixed(2)} for the full ${approveTarget.maxMinutes} minutes). The pod is terminated automatically when idle, at the cap, or when you stop it.`}
-          confirmLabel="Approve and start"
-          onCancel={() => setApproveTarget(null)}
-          onConfirm={approve}
-        />
-      )}
-      {stopTarget && (
-        <ConfirmDialog
-          title="Terminate the session's pod now?"
-          description="Running jobs are cut off; files already on the volume stay there."
-          confirmLabel="Terminate"
-          confirmVariant="danger"
-          onCancel={() => setStopTarget(null)}
-          onConfirm={stop}
-        />
-      )}
     </Card>
   );
 }
 
-function ReadinessBanner({ overview }: { overview: Overview }) {
-  if (overview.ready) return <p className="text-xs text-emerald-400">Media generation is configured: request and approve a session below, then submit jobs.</p>;
+export function ReadinessBanner({ overview }: { overview: Overview }) {
+  if (overview.ready) return <p className="text-xs text-emerald-400">Media generation is configured: agents can request sessions; approve them in Sessions, then jobs run.</p>;
   return <p className="text-xs text-zinc-500">Not ready yet — missing: {overview.missing.join(", ")}.</p>;
 }
 
-function CredentialsCard({ status, onChanged }: { status: CredentialsStatus; onChanged: () => Promise<void> }) {
+export function CredentialsCard({ status, onChanged }: { status: CredentialsStatus; onChanged: () => Promise<void> }) {
   const [editing, setEditing] = useState(!status.configured);
   const [runpodApiKey, setRunpodApiKey] = useState("");
   const [s3AccessKeyId, setS3AccessKeyId] = useState("");
@@ -1157,7 +1214,7 @@ function CredentialsCard({ status, onChanged }: { status: CredentialsStatus; onC
   );
 }
 
-function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview: Overview; gatewayTraffic: GatewayTrafficWindowView[] | undefined; onChanged: () => Promise<void> }) {
+export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview: Overview; gatewayTraffic: GatewayTrafficWindowView[] | undefined; onChanged: () => Promise<void> }) {
   const { settings, credentials } = overview;
   const [catalog, setCatalog] = useState<{ gpus: Gpu[]; dataCenters: DataCenter[] } | null>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
@@ -1329,7 +1386,7 @@ function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview: Overvi
   );
 }
 
-function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: () => Promise<void> }) {
+export function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: () => Promise<void> }) {
   const { settings, credentials } = overview;
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1465,13 +1522,14 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
   );
 }
 
-function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+export function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
   // Every field is a controlled text input parsed on save (parseInteger / parseMoney): never a native number widget
   // (locale-dependent, and a cleared field would silently become 0).
   const [draft, setDraft] = useState({
     defaultMaxMinutes: String(settings.defaultMaxMinutes),
     idleMinutes: String(settings.idleMinutes),
     watchIntervalSeconds: String(settings.watchIntervalSeconds),
+    maxConcurrentSessions: String(settings.maxConcurrentSessions),
   });
   const [maxUsdPerDayText, setMaxUsdPerDayText] = useState(String(settings.maxUsdPerDay));
   const [busy, setBusy] = useState(false);
@@ -1483,9 +1541,10 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
       defaultMaxMinutes: String(settings.defaultMaxMinutes),
       idleMinutes: String(settings.idleMinutes),
       watchIntervalSeconds: String(settings.watchIntervalSeconds),
+      maxConcurrentSessions: String(settings.maxConcurrentSessions),
     });
     setMaxUsdPerDayText(String(settings.maxUsdPerDay));
-  }, [settings.maxUsdPerDay, settings.defaultMaxMinutes, settings.idleMinutes, settings.watchIntervalSeconds]);
+  }, [settings.maxUsdPerDay, settings.defaultMaxMinutes, settings.idleMinutes, settings.watchIntervalSeconds, settings.maxConcurrentSessions]);
 
   async function save() {
     const maxUsdPerDay = parseMoney(maxUsdPerDayText);
@@ -1496,15 +1555,18 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
     const defaultMaxMinutes = parseInteger(draft.defaultMaxMinutes, { min: 1, max: 1440 });
     const idleMinutes = parseInteger(draft.idleMinutes, { min: 1, max: 1440 });
     const watchIntervalSeconds = parseInteger(draft.watchIntervalSeconds, { min: 15, max: 3600 });
-    if (defaultMaxMinutes === null || idleMinutes === null || watchIntervalSeconds === null) {
-      setError("Session length and idle timeout must be whole minutes (1–1440); the watch interval whole seconds (15–3600)");
+    const maxConcurrentSessions = parseInteger(draft.maxConcurrentSessions, MAX_CONCURRENT_SESSIONS_RANGE);
+    if (defaultMaxMinutes === null || idleMinutes === null || watchIntervalSeconds === null || maxConcurrentSessions === null) {
+      setError(
+        `Session length and idle timeout must be whole minutes (1–1440); the watch interval whole seconds (15–3600); concurrent sessions a whole number (${MAX_CONCURRENT_SESSIONS_RANGE.min}–${MAX_CONCURRENT_SESSIONS_RANGE.max})`
+      );
       return;
     }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds }) });
+      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds, maxConcurrentSessions }) });
       setNotice("Saved.");
       await onChanged();
     } catch (err) {
@@ -1524,7 +1586,7 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
   return (
     <Card
       title="Limits"
-      help="Daily spend cap across sessions; the default length of a session request; how long a running session may sit without jobs before its pod is terminated; and how often the watcher checks (at least every 15 seconds)."
+      help="Daily spend cap across all sessions; the default length of a session request; how long a running session may sit without jobs before its pod is terminated; and how often the watcher checks (at least every 15 seconds); and how many sessions may hold a pod at the same time (each is its own pod, billed separately; an approve beyond the limit is refused and the request stays pending)."
     >
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="block text-xs text-zinc-400">
@@ -1534,6 +1596,7 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
         {field("Default session length (minutes)", "defaultMaxMinutes", { min: 1, max: 1440 })}
         {field("Idle timeout (minutes)", "idleMinutes", { min: 1, max: 1440 })}
         {field("Watch interval (seconds)", "watchIntervalSeconds", { min: 15, max: 3600 })}
+        {field("Concurrent sessions (pods at once)", "maxConcurrentSessions", MAX_CONCURRENT_SESSIONS_RANGE)}
       </div>
       <button type="button" onClick={save} disabled={busy} className={primaryButton}>
         {busy ? "Saving…" : "Save limits"}

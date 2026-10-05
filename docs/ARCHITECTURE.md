@@ -2376,7 +2376,7 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   There is deliberately no "stop pod" function anywhere: a stopped pod's disk is billed at twice the
   running rate, so the only idle state this app knows is "terminated".
 - **Credentials (`src/lib/media-generation/`, owner instruction 2026-10-05).** The RunPod API key and the
-  optional S3 key pair are entered only in Settings → Media, encrypted as one AES-256-GCM blob in
+  optional S3 key pair are entered only in Settings → RunPod (Settings → Media before slice 6), encrypted as one AES-256-GCM blob in
   `media_credentials` (schema v50, singleton, device-local: not in `SNAPSHOT_TRANSFERRED_TABLES`, not in
   `sync-gateway`). **The encryption key is a file the app creates itself** (`media-generation.key` in the
   app-data directory, written through `writeJsonFileAtomic`, mode 0600), not an environment variable —
@@ -2645,8 +2645,8 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   per-session `COMFY_TOKEN` (stored encrypted under the device key, never returned), `startedAt` =
   creation time (RunPod bills from there), `costPerHr` from the pod; the route blocks behind the shared
   progress overlay until `GET /system_stats` answers through the token proxy. A start that fails or
-  times out terminates the pod and ends `failed`. **One open session per device is a database fact:**
-  `open_slot` is 1 while non-terminal, NULL when terminal, under a UNIQUE index (AC-P14-05). The
+  times out terminates the pod and ends `failed`. *(Until slice 6: one open session per device via a UNIQUE index on
+  `open_slot` -- superseded, see "Concurrent sessions" below.)* The
   watcher (`src/instrumentation.ts`, interval = `watchIntervalSeconds`, min 15 s) terminates on idle ≥
   `idleMinutes` (activity = job traffic, slice 3), minutes ≥ `maxMinutes`, usd ≥ `maxUsd`; a pod found
   `EXITED`/`ERROR` is terminated and the session `interrupted`, a vanished pod likewise (AC-P14-06/07).
@@ -2681,12 +2681,29 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   job failed/was cancelled; dry run by default (Settings button, CLI `janitor`), real deletes daily from
   `src/instrumentation.ts` and on demand. Jobs left mid-flight by a dead process fail as interrupted at
   boot, right after the session sweep.
-- **Agent surface (slice 5, Agent API 3.3.0).** Seven `agent_*` MCP tools in a new `media_generation`
+- **Concurrent sessions, Production section, balance (slice 6, ADR 0022 amendment 1, schema v58).** Requests are
+  never refused for another open session; `approveSession` runs the preconditions, clears a crash-stale exclusive
+  volume lock (`volumeLock.activeHolder`), then `pending → approved` as ONE `UPDATE` guarded by "active sessions <
+  `maxConcurrentSessions`" and "no `media_volume_lock` row" (`approveMediaSessionGuarded`); a refusal re-reads to
+  say which guard (`media_session_conflict`) or that the row moved on. The exclusive lock insert of a pull / operator
+  pod is guarded the other way (`INSERT … SELECT … WHERE NOT EXISTS active session`), so a session and a pull can
+  never both hold the volume (AC-P14-18/-23). Daily cap at approve: spent today + Σ other active sessions'
+  `max(0, estimate − live)` + this estimate ≤ cap. The approve returns `{ session, started }`; the Web route answers
+  202 with the `approved` row and the start runs in the background (failures land on the row). `watchTick`,
+  `bootSweep`, `stopForShutdown` (parallel) and `hasOpenPod` iterate every open session; one session's failure is
+  that session's tick result, not the loop's. Balance: `RunpodApiClient.getAccountBalance` -- legacy GraphQL
+  `myself { clientBalance currentSpendPerHr spendLimit }`, else the v2 `/billing/pods` + `/billing/networkvolumes`
+  totals with the reason (`GET /api/media-generation/balance`). UI: sidebar **Production** (after Content,
+  `production-panel.tsx`: balance header; tabs Sessions, Jobs, Models, Workflow templates | Setup), sessions table
+  with per-row Approve / Reject / Stop confirmed in the row and 5 s / 15 s polling; Settings → **RunPod** keeps only
+  the credentials card.
+- **Agent surface (slice 5, Agent API 3.3.0; 3.4.0 since slice 6).** Seven `agent_*` MCP tools in a new `media_generation`
   capability domain, registered directly in `src/mcp/server.ts` against a request/read/job subset of the
   core (`MediaGenerationCoreSubset`): list templates, request a session, get session(s), get limits, create
   / get / cancel a job. Every tool asserts `channelId` is the caller's active (bound) channel first; a
   session or job of another channel is reported as not found; `agent_get_media_limits` discloses only this
-  channel's open session but reports `deviceHasOpenSession` so the agent understands a conflict. Request,
+  channel's open sessions (`openSessions`, 3.4.0) plus the device-wide `activeSessionCount`/`maxConcurrentSessions` and
+  `deviceHasOpenSession`. Request,
   create and cancel pass the MCP mutation gate like `agent_create_collection_request`. No tool can approve,
   start or stop a session: those symbols are absent from `src/mcp` by inventory test (AC-P14-16). The CLI
   gets no agent commands (ADR 0013: the CLI is the operator's tool).

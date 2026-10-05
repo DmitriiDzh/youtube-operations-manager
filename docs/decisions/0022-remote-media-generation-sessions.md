@@ -59,10 +59,30 @@ How a session is authorised and paid for, how files travel, how the pod is secur
   confirmed by the live spike (RISK-105).
 - The key file has no rotation/backup procedure (RISK-105); the two older env-key modules are unchanged.
 - Jobs poll in-process; a server restart fails the in-flight job as interrupted (its pod is swept too).
-- Serverless, concurrent sessions, YouTube upload of generated media and prompt libraries stay out of scope.
+- Serverless, YouTube upload of generated media and prompt libraries stay out of scope (concurrent sessions: see the amendment below).
 
 ## Compatibility / migration impact
 
 Purely additive: schema v50 (`media_credentials`), v51 (`media_sessions`), v52 (`media_workflow_templates`,
 `media_jobs`, `media_exchange_files`), v53 (`media_sessions.stopping_outcome`, nullable), v54 (`media_sessions.last_seen_alive_at`, nullable), v55 (`media_workflow_templates.output_node_ids_json`/`node_count`, nullable), v56 (index `creative_assets_reference_idx`), v57 (`media_sessions.terminate_sent_at`, nullable), all device-local; one more `app_settings` key (`media_volume_lock`, the session/pull mutual-exclusion row); three new `app_settings` keys; Agent API MINOR bump
 3.2.0 → 3.3.0 (new tools only). No existing route, tool, table or contract changed.
+
+## Amendment 1 (2026-10-05, slice 6 -- owner, Telegram msgs 1549/1551/1553)
+
+Supersedes "one open session per device" (decision 1, AC-P14-05) and the blocking approve route:
+
+- **Concurrent sessions.** Any number of requests may be pending; at most `maxConcurrentSessions` (setting, 1–4,
+  default 3) hold a pod (`approved|starting|running|stopping`), each its own pod on the shared volume. Schema v58
+  makes `media_sessions_open_slot_idx` a plain index; the bound is the approve's single guarded UPDATE (AC-P14-22).
+  The daily cap at approve counts spend today plus what the other active sessions may still spend up to their
+  estimates; the watcher stops every session once the day's total reaches the cap.
+- **Shared/exclusive volume.** Sessions hold the volume SHARED by being active rows; a model pull or operator pod
+  holds it EXCLUSIVELY with the `media_volume_lock` row. Each write is guarded by the other's absence in the same
+  statement, so AC-P14-18 stays a database constraint (AC-P14-23).
+- **Non-blocking approve.** The approve request validates and writes `approved`, answers at once, and the pod start
+  continues in the background; every outcome is on the row (AC-P14-24). Sessions are shown in a table with live
+  statuses in the new Production section; Settings keeps only the RunPod connection (AC-P14-26).
+- **Balance.** Read from RunPod's legacy GraphQL API (`myself.clientBalance`) -- REST v2 has none -- through the same
+  gateway and key, degrading to the v2 billing spend when that read fails (AC-P14-25).
+- **Agent API 3.4.0 (MINOR):** `agent_get_media_limits` adds `openSessions` (this channel's), `maxConcurrentSessions`
+  and `activeSessionCount`; `openSession` stays; a request no longer conflicts with another open session.
