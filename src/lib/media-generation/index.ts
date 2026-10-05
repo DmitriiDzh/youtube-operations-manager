@@ -16,16 +16,33 @@ import { createMediaModelServices } from "./models";
 import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 
+type JobScheduling = "background" | "detached";
+
 /**
  * Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- see `./contracts.ts`. One core: the slice-1
- * foundation (credentials, settings, catalog, pods/S3 passthrough), the slice-2 sessions and the
- * slice-3 templates/jobs/exchange.
+ * foundation (credentials, settings, catalog, pods/S3 passthrough), the slice-2 sessions, the slice-3
+ * templates/jobs/exchange and the slice-4 models.
+ *
+ * ONE instance per process and scheduling mode (kept on `globalThis`, like the operation registry):
+ * the watch loop in `src/instrumentation.ts`, every API route and the MCP server must share the same
+ * in-flight job set and the same serialized pulls-list writer, or they would poll a job twice and race
+ * on the pulls JSON (review round 3). Next's dev hot-reload re-evaluates modules, which `globalThis`
+ * survives.
  */
-export function createMediaGenerationCore(options: { jobScheduling?: "background" | "detached" } = {}) {
-  const now = () => new Date();
-  // "detached" (the operator CLI): a submitted job is NOT polled in this short-lived process -- the web
-  // server's watch loop picks it up (`resumeInFlightJobs`), so the CLI exits at once and Ctrl-C orphans nothing.
+export function createMediaGenerationCore(options: { jobScheduling?: JobScheduling } = {}) {
+  // "detached" (the operator CLI, the MCP server): a submitted job is NOT polled by that process -- the web
+  // server's watch loop picks it up (`resumeInFlightJobs`), so the CLI exits at once and nothing is polled twice.
   const jobScheduling = options.jobScheduling ?? "background";
+  const holder = globalThis as unknown as Record<symbol, MediaGenerationCoreInstance | undefined>;
+  const key = jobScheduling === "detached" ? DETACHED_KEY : BACKGROUND_KEY;
+  return (holder[key] ??= buildCore(jobScheduling));
+}
+
+const BACKGROUND_KEY = Symbol.for("youtube-operations-manager.media-generation-core.background");
+const DETACHED_KEY = Symbol.for("youtube-operations-manager.media-generation-core.detached");
+
+function buildCore(jobScheduling: JobScheduling) {
+  const now = () => new Date();
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   const base = createMediaGenerationServices({
     store: createMediaGenerationStore(),
@@ -36,11 +53,14 @@ export function createMediaGenerationCore(options: { jobScheduling?: "background
     },
     clock: { now },
   });
+  // Sessions and models each need the other's "is the volume busy" answer; wire through late-bound closures.
+  let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   const models = createMediaModelServices({
     store: createModelPullStore(),
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
     generateId: () => randomUUID(),
     clock: { now },
+    hasOpenPod: () => (sessionsRef ? sessionsRef.hasOpenPod() : Promise.resolve(false)),
   });
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
@@ -54,6 +74,7 @@ export function createMediaGenerationCore(options: { jobScheduling?: "background
     hasActiveModelPull: () => models.hasActivePull(),
     log: (line) => console.warn(line),
   });
+  sessionsRef = sessions;
   const workspaces = createChannelWorkspacesCore();
   const assets = createAssetCatalogCore();
   const jobs = createMediaJobServices({
@@ -103,6 +124,8 @@ export function createMediaGenerationCore(options: { jobScheduling?: "background
   });
   return { ...base, ...sessions, ...jobs, ...models };
 }
+
+type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;
 
 export type MediaGenerationCore = ReturnType<typeof createMediaGenerationCore>;
 export { isDomainError, DomainError } from "./contracts";

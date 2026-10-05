@@ -121,3 +121,11 @@ test("review: getQueue exposes the running and pending prompt ids; deleteQueued 
   assert.equal(calls[1].url, "https://x/queue");
   assert.deepEqual(JSON.parse(String(calls[1].init.body)), { delete: ["p-wait"] });
 });
+
+test("review 3: an execution error keeps the node and exception message the agent needs", () => {
+  const entry = parseHistoryEntry("p", {
+    p: { outputs: {}, status: { status_str: "error", messages: [["execution_start", {}], ["execution_error", { node_id: "4", node_type: "CheckpointLoaderSimple", exception_message: "Model not found: big.safetensors" }]] } },
+  });
+  assert.equal(entry?.status, "error");
+  assert.deepEqual(entry?.statusMessages, ["execution_start", "execution_error: Model not found: big.safetensors @ node CheckpointLoaderSimple #4"]);
+});

@@ -31,10 +31,11 @@ export type S3ObjectSummary = { key: string; size: number; lastModified: string 
 
 export type RunpodS3Client = ReturnType<typeof createRunpodS3Client>;
 
-const DATACENTER_ID_PATTERN = /^[A-Z]{2,4}-[A-Z]{2}-\d{1,2}$/;
+/** RunPod datacenter ids: `EU-RO-1`, `EUR-IS-1`, `US-TX-3`, `CA-MTL-3` -- the ONE pattern every validation in this app uses. */
+export const RUNPOD_DATACENTER_ID_PATTERN = /^[A-Z]{2,4}-[A-Z]{2,4}-\d{1,2}$/;
 
 export function runpodS3Endpoint(datacenterId: string): URL {
-  if (!DATACENTER_ID_PATTERN.test(datacenterId)) {
+  if (!RUNPOD_DATACENTER_ID_PATTERN.test(datacenterId)) {
     throw new DomainError({ code: "media_settings_invalid", message: `Not a RunPod datacenter id: ${datacenterId}` });
   }
   return new URL(`https://s3api-${datacenterId.toLowerCase()}.runpod.io/`);
@@ -173,6 +174,9 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       let bytes = 0;
       const hash = createHash("sha256");
       try {
+        // A `.part` left by a killed earlier download is ours to replace (the final name is only ever reached by
+        // rename). Done BEFORE the stream gets its data listener: attaching one starts the flow at once.
+        await rm(tmpPath, { force: true });
         const counting = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream<Uint8Array>);
         counting.on("data", (chunk: Buffer) => {
           bytes += chunk.length;

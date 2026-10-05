@@ -60,6 +60,8 @@ export type ModelServiceDependencies = {
   generateId(): string;
   clock: { now(): Date };
   pullCapMs?: number;
+  /** AC-P14-18 in the other direction: no pull may write to the volume while a GPU pod is open on it. */
+  hasOpenPod?: () => Promise<boolean>;
 };
 
 export function modelFileName(file: string): string {
@@ -197,6 +199,9 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       }
       if (await hasActivePull()) {
         throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
+      }
+      if (deps.hasOpenPod && (await deps.hasOpenPod())) {
+        throw new DomainError({ code: "media_session_conflict", message: "A generation session is open on the volume; stop it before pulling models (Settings → Media → Sessions)." });
       }
       const client = await deps.base.resolveRunpodClient();
       // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.

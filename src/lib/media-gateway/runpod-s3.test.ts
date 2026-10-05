@@ -141,3 +141,19 @@ test("parseListObjectsXml on an empty listing", () => {
     nextContinuationToken: null,
   });
 });
+
+test("review 3: Montreal-style datacenter ids are accepted; a stale .part file from a killed download does not block the next one", async () => {
+  assert.equal(runpodS3Endpoint("CA-MTL-3").host, "s3api-ca-mtl-3.runpod.io");
+  const dir = await mkdtemp(path.join(tmpdir(), "runpod-s3-part-"));
+  try {
+    const { fetchImpl } = fakeFetch(() => new Response(new Uint8Array([7, 7]), { status: 200 }));
+    const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+    const dest = path.join(dir, "out.bin");
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(`${dest}.part`, "stale");
+    assert.equal((await client.getObjectToFile("exchange/j/out.bin", dest)).bytes, 2);
+    assert.deepEqual([...(await readFile(dest))], [7, 7]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

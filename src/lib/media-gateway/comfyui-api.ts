@@ -45,7 +45,16 @@ export function parseHistoryEntry(promptId: string, raw: unknown): ComfyHistoryE
   const messages: string[] = [];
   if (Array.isArray(status.messages)) {
     for (const m of status.messages) {
-      if (Array.isArray(m) && typeof m[0] === "string") messages.push(m[0]);
+      if (!Array.isArray(m) || typeof m[0] !== "string") continue;
+      // `["execution_error", { node_id, node_type, exception_message, ... }]`: keep the detail an agent can act on.
+      const payload = asRecord(m[1]);
+      const detail = [
+        typeof payload.exception_message === "string" ? payload.exception_message : null,
+        typeof payload.node_type === "string" || typeof payload.node_id === "string" ? `node ${payload.node_type ?? ""}${payload.node_id ? ` #${payload.node_id}` : ""}`.trim() : null,
+      ]
+        .filter(Boolean)
+        .join(" @ ");
+      messages.push(detail ? `${m[0]}: ${detail}` : m[0]);
     }
   }
   const outputs: ComfyHistoryEntry["outputs"] = [];
@@ -99,7 +108,16 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
         details: { method, path },
       });
     }
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw new DomainError({
+        code: "comfyui_unavailable",
+        message: `ComfyUI response could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        details: { method, path, status: response.status },
+      });
+    }
     let body: unknown = null;
     if (text) {
       try {

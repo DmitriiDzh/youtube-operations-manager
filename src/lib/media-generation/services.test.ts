@@ -375,3 +375,11 @@ test("review 2: changing the cloud type re-prices the chosen GPU from the catalo
   const cleared = await services.updateSettings({ gpuTypeId: null });
   assert.equal(cleared.gpuOnDemandPricePerHr, null);
 });
+
+test("review 3: a three-letter datacenter region (CA-MTL-1) passes the settings validation", async () => {
+  const runpod = fakeRunpod();
+  (runpod.client as unknown as { listDataCenters: () => Promise<unknown[]> }).listDataCenters = async () => [{ id: "CA-MTL-1", countryCode: "CA", region: "NA" }];
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  assert.equal((await services.updateSettings({ datacenterId: "CA-MTL-1" })).datacenterId, "CA-MTL-1");
+});

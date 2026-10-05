@@ -648,7 +648,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const resumed: string[] = [];
       for (const row of await deps.store.jobs.listNonTerminal()) {
         if (row.status === "queued" || inFlight.has(row.id) || !row.promptId) continue;
-        if (!(await deps.sessions.getRunningSession(row.sessionId))) continue;
+        // A transfer needs only S3 (the pod may be gone already); a poll needs the session's ComfyUI.
+        if (row.status !== "transferring" && !(await deps.sessions.getRunningSession(row.sessionId))) continue;
         resumed.push(row.id);
         deps.schedule(() => processJob(row.id));
       }

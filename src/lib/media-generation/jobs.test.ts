@@ -633,3 +633,30 @@ test("review 2: a job stuck in `transferring` is resumed and completed from its 
   assert.ok(done.outputs[0].localPath);
   assert.equal(f.registered.length, 1);
 });
+
+test("review 3: a `transferring` job is resumed even when its session is no longer running (a transfer needs only S3)", async () => {
+  const f = fixture({ sessionRunning: false });
+  const t = await importDefault(f.services);
+  f.mem.jobs.set("job-1", {
+    id: "job-1",
+    sessionId: "s1",
+    channelId: "UC1",
+    templateId: t.templateId,
+    templateVersion: 1,
+    paramsJson: "{}",
+    status: "transferring",
+    createdBy: "agent",
+    promptId: "prompt-1",
+    outputsJson: JSON.stringify([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null, note: null }]),
+    assetIdsJson: null,
+    error: null,
+    createdAt: new Date(),
+    submittedAt: new Date(),
+    finishedAt: null,
+  });
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: ["job-1"] });
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: "job-1" });
+  assert.equal(done.status, "done");
+  assert.ok(done.outputs[0].localPath);
+});

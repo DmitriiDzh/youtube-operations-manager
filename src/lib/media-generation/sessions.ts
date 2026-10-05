@@ -92,6 +92,11 @@ const DEFAULT_START_TIMEOUT_MS = 8 * 60_000;
 const DEFAULT_POLL_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 90_000;
 
+/** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
+export function podNameFor(sessionId: string): string {
+  return `ytm-media-${sessionId.slice(0, 8)}`;
+}
+
 function startOfUtcDay(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
@@ -383,7 +388,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const startedAt = deps.clock.now();
       try {
         pod = await client.createPod({
-          name: `ytm-media-${sessionId.slice(0, 8)}`,
+          name: podNameFor(sessionId),
           templateId: settings.templateId ?? undefined,
           gpu: { id: settings.gpuTypeId as string, count: 1 },
           cloud: settings.cloudType,
@@ -572,14 +577,31 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const open = await deps.store.getOpen();
       if (!open || open.status === "pending") return { swept: [] };
       const error = "interrupted by a server restart";
-      if (open.podId) {
+      let podId = open.podId;
+      if (!podId && open.status === "approved") {
+        // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
+        try {
+          const client = await deps.base.resolveRunpodClient();
+          const orphan = (await client.listPods()).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
+          if (orphan) podId = orphan.id;
+        } catch (cause) {
+          await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], {
+            status: "stopping",
+            stopReason: error,
+            error: `could not check RunPod for a pod named ${podNameFor(open.id)} (${cause instanceof Error ? cause.message : String(cause)}); the watcher retries`,
+          });
+          return { swept: [open.id] };
+        }
+        if (podId) await deps.store.transition(open.id, ["approved"], { status: "approved", podId });
+      }
+      if (podId) {
         let unconfirmed: string | null = null;
         try {
           const client = await deps.base.resolveRunpodClient();
-          const result = await terminateAndConfirm(client, open.podId);
+          const result = await terminateAndConfirm(client, podId);
           if (!result.confirmed) unconfirmed = `pod still ${result.lastStatus} after terminate`;
         } catch (cause) {
-          unconfirmed = `pod ${open.podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
+          unconfirmed = `pod ${podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
         }
         if (unconfirmed) {
           // Never free the slot while the pod may still bill: `stopping` keeps podId and the watcher retries (like stopRow).

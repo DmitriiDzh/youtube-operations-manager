@@ -2401,6 +2401,13 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   secret is never an argument or an environment variable (AC-P14-20).
 - **Independence (AGENTS.md §M).** With no credentials the feature answers "not configured" and makes no
   outbound call; nothing else in the app imports it. Residual risks: RISK-105.
+- **One core per process (review round 3).** `createMediaGenerationCore()` returns a `globalThis`
+  singleton per scheduling mode (`background` for the web server's watch loop and routes, `detached` for
+  the operator CLI and the per-request MCP server), so the in-flight job set and the serialized
+  pulls-list writer are shared by every caller in the process; a detached core never polls a job itself --
+  the web watch loop re-attaches to it (`resumeInFlightJobs`, including stuck `transferring` rows, which
+  need only S3). The pod's name is deterministic (`ytm-media-<sessionId prefix>`), so a pod created in the
+  instant before the `starting` write is still found and terminated by the boot sweep.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

@@ -613,3 +613,19 @@ test("review 2: a pod created but never written as `starting` is still recorded 
   assert.ok((row.secondsUsed ?? 0) >= 0 && row.usdCharged !== null);
   assert.equal(f.runpod.pods.has("pod1"), false);
 });
+
+// -- review round 3 (2026-10-05) ------------------------------------------------------------------
+
+test("review 3: a pod created before the `starting` write (process died in between) is found by its deterministic name at boot and terminated", async () => {
+  const runpod = fakeRunpod();
+  const f = fixture({ runpod });
+  const requested = await f.services.requestSession(operatorRequest);
+  // Simulate the crash: the pod exists under the session's name, the row is still `approved` with no podId.
+  await runpod.client.createPod({ name: `ytm-media-${requested.sessionId.slice(0, 8)}` } as never);
+  (runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ id: "pod1", name: `ytm-media-${requested.sessionId.slice(0, 8)}`, status: "RUNNING" }];
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: new Date() });
+  assert.deepEqual(await f.services.bootSweep(), { swept: [requested.sessionId] });
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "interrupted");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.podId, "pod1");
+  assert.equal(runpod.pods.has("pod1"), false);
+});

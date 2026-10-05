@@ -224,3 +224,20 @@ test("review 2: concurrent startPull and pollPulls never lose a pull (the list m
   if (second) assert.ok(pulls.some((p) => p.pullId === second.pullId && p.status === "running"), "the second pull must be in the list");
   assert.ok(pulls.some((p) => p.expectedKey === "models/vae/first.bin" && p.status === "done"));
 });
+
+test("review 3: a pull is refused while a GPU session is open on the volume", async () => {
+  const objects = new Map<string, number>();
+  let json: string | null = null;
+  const client = { async createPod() { throw new Error("must not be reached"); } } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "id",
+    clock: { now: () => new Date() },
+    hasOpenPod: async () => true,
+  });
+  void objects;
+  await assert.rejects(services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  assert.deepEqual(await services.listPulls(), []);
+});

@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { RUNPOD_DATACENTER_ID_PATTERN } from "@/lib/media-gateway";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 /** RunPod datacenter ids look like `EU-RO-1`, `EUR-IS-1`, `US-TX-3`. */
-export const DATACENTER_ID_PATTERN = /^[A-Z]{2,4}-[A-Z]{2}-\d{1,2}$/;
+/** Re-exported from the gateway (single source, review round 3): `EU-RO-1`, `EUR-IS-1`, `CA-MTL-3`, ... */
+export const DATACENTER_ID_PATTERN = RUNPOD_DATACENTER_ID_PATTERN;
 
 const trimmedSecret = (max: number) => z.string().trim().min(1).max(max);
 

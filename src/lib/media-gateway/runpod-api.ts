@@ -214,7 +214,16 @@ export function createRunpodApiClient(args: {
         details: { method, path },
       });
     }
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text(); // the 30 s signal can also fire while the body streams
+    } catch (error) {
+      throw new DomainError({
+        code: "runpod_api_unavailable",
+        message: `RunPod API response could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        details: { method, path, status: response.status },
+      });
+    }
     let parsed: unknown = null;
     if (text) {
       try {
