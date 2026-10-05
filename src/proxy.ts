@@ -61,6 +61,8 @@ const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
 const EXEMPT_STOP_SWITCH_ROUTES = new Set([
   "POST /api/settings",
   "DELETE /api/agent-tokens",
+  // Factory Operator token (BL-129): revoking it is the same kind of stop switch as revoking a channel agent's token.
+  "DELETE /api/factory-agent-token",
   "POST /api/channel-connections/disconnect",
 ]);
 

@@ -157,11 +157,12 @@ export function createLogicalPathServices(deps: ServiceDependencies) {
     async setValue(input: unknown): Promise<{ name: string; path: string | null }> {
       const parsed = parseWithSchema(setLogicalPathValueInputSchema, input, "set logical path value input");
       await requireDefinition(parsed.name);
-      const deviceId = await deps.ensureDeviceId();
 
       const candidate = parsed.path?.trim() ?? "";
       if (candidate === "") {
-        await deps.store.setValue(deviceId, parsed.name, null);
+        // Clearing never creates the device identity: with none, no value can exist to clear.
+        const existingDeviceId = await deps.readDeviceId();
+        if (existingDeviceId) await deps.store.setValue(existingDeviceId, parsed.name, null);
         return { name: parsed.name, path: null };
       }
 
@@ -173,6 +174,8 @@ export function createLogicalPathServices(deps: ServiceDependencies) {
           details: { name: parsed.name, reason: validation.reason },
         });
       }
+      // Only a validated value creates the device identity (a rejected one leaves everything untouched).
+      const deviceId = await deps.ensureDeviceId();
       await deps.store.setValue(deviceId, parsed.name, candidate);
       return { name: parsed.name, path: candidate };
     },

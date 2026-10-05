@@ -2861,6 +2861,11 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
           "revoked_at INTEGER)"
       );
+      // At most ONE active row, enforced by the database (independent review): two overlapping issue calls can then
+      // never leave two valid tokens -- the loser fails closed instead of the Settings card hiding a live second token.
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS factory_agent_tokens_one_active_idx ON factory_agent_tokens((1)) WHERE revoked_at IS NULL"
+      );
     },
   },
 ];
@@ -4774,9 +4779,11 @@ export async function insertLogicalPathRow(
 
 /** Deletes the definition and every stored value for that name. Returns false if it did not exist. */
 export async function deleteLogicalPathRow(name: string, database: AppDb = db): Promise<boolean> {
-  await database.delete(logicalPathValues).where(eq(logicalPathValues.name, name));
-  const deleted = await database.delete(logicalPaths).where(eq(logicalPaths.name, name)).returning({ name: logicalPaths.name });
-  return deleted.length > 0;
+  return database.transaction(async (tx) => {
+    await tx.delete(logicalPathValues).where(eq(logicalPathValues.name, name));
+    const deleted = await tx.delete(logicalPaths).where(eq(logicalPaths.name, name)).returning({ name: logicalPaths.name });
+    return deleted.length > 0;
+  });
 }
 
 export async function getLogicalPathValue(deviceId: string, name: string, database: AppDb = db): Promise<string | null> {

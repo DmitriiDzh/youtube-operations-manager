@@ -3057,8 +3057,18 @@ test("factory_agent_tokens: replace keeps one active token; revoke hides it; sep
     assert.equal(await findActiveFactoryAgentTokenByHash("hc", isolatedDb), null);
     assert.equal(await findActiveAgentChannelTokenByHash("h2", isolatedDb), null);
 
+    // The database itself refuses a second ACTIVE row (independent review): a racing second issue can never
+    // leave two valid tokens; it fails closed. A revoked row does not count.
+    await assert.rejects(
+      client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('f-race', 'h-race')"),
+      /UNIQUE|constraint/i
+    );
+    assert.equal(await findActiveFactoryAgentTokenByHash("h-race", isolatedDb), null);
+    assert.equal((await listActiveFactoryAgentTokens(isolatedDb)).length, 1);
+
     assert.equal(await revokeFactoryAgentTokens(isolatedDb), 1);
     assert.equal(await revokeFactoryAgentTokens(isolatedDb), 0);
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('f-after', 'h-after')");
     assert.equal(await findActiveFactoryAgentTokenByHash("h2", isolatedDb), null);
     assert.equal((await findActiveAgentChannelTokenByHash("hc", isolatedDb))?.id, "c1");
   }));

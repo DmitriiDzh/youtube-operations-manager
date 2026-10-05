@@ -258,6 +258,19 @@ test("AC-FO-11: a read never touches the path and never creates the device ident
     assert.equal(fresh.deviceCreated(), false);
   }));
 
+test("review: a rejected value and a clear never create the device identity; only a validated value does", () =>
+  withDirs(async ({ folderA, appData }) => {
+    const fresh = createServices(appData, null);
+    await rejectsWithCode(fresh.services.setValue({ name: "factory_shared", path: "relative/path" }), "LOGICAL_PATH_VALUE_INVALID");
+    await fresh.services.setValue({ name: "factory_shared", path: null });
+    assert.equal(fresh.deviceCreated(), false);
+    assert.equal(fresh.memory.setCallCount(), 0);
+
+    await fresh.services.setValue({ name: "factory_shared", path: folderA });
+    assert.equal(fresh.deviceCreated(), true);
+    assert.equal(fresh.memory.values.size, 1);
+  }));
+
 test("operator listing reports exists / missing / unset for this device", () =>
   withDirs(async ({ folderA, folderB, appData }) => {
     const { services } = createServices(appData);
