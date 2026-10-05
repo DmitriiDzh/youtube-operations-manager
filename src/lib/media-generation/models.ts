@@ -376,13 +376,26 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         }
         continue;
       }
-      const head = await s3.headObject(pull.expectedKey);
+      // Each check stands on its own (review round 18): a flaky S3 must not hide a dead pod or the cap, and a flaky RunPod
+      // must not hide a finished file; a check that cannot be made is "unknown", not "fine".
+      let head: { size: number } | null | undefined;
+      try {
+        head = await s3.headObject(pull.expectedKey);
+      } catch (error) {
+        head = undefined;
+        await savePull({ ...pull, error: `S3 could not be asked for ${pull.expectedKey} (${error instanceof Error ? error.message : String(error)}); retrying` });
+      }
       if (head && head.size > 0) {
         await finishPull(pull, "done", { bytes: head.size });
         continue;
       }
-      const pod = await client.getPod(pull.podId);
-      if (!pod || pod.status === "TERMINATED" || pod.status === "EXITED" || pod.status === "ERROR") {
+      let pod: { status: string } | null | undefined;
+      try {
+        pod = await client.getPod(pull.podId);
+      } catch {
+        pod = undefined;
+      }
+      if (pod !== undefined && (!pod || pod.status === "TERMINATED" || pod.status === "EXITED" || pod.status === "ERROR")) {
         await finishPull(pull, "failed", { error: `pod ${pod?.status ?? "gone"} before the file appeared` });
         continue;
       }

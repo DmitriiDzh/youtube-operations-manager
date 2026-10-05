@@ -683,7 +683,7 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
       {confirmJanitor && (
         <ConfirmDialog
           title="Delete finished jobs' leftovers from the volume?"
-          description="Only objects under exchange/ that belong to finished jobs of this device (and are already in your workspace, or belong to failed/cancelled jobs) are deleted. Models and reference inputs are never touched."
+          description="Only objects under exchange/ that this device's ledger says are already in your workspace are deleted (by ledger only). Leftovers of failed or cancelled jobs are KEPT -- they may be the only copy of a finished generation -- for you to pull or remove by hand (scripts/media/s3.sh). Models and reference inputs are never touched."
           confirmLabel="Delete leftovers"
           confirmVariant="danger"
           onCancel={() => setConfirmJanitor(false)}
@@ -1132,8 +1132,12 @@ function CredentialsCard({ status, onChanged }: { status: CredentialsStatus; onC
 
       {confirmClear && (
         <ConfirmDialog
-          title="Remove the RunPod credentials from this computer?"
-          description="Sessions cannot start without them. The per-device key file stays in place."
+          title={!status.configured && status.reason === "key_file_invalid" ? "Reset the RunPod credentials and this computer's key file?" : "Remove the RunPod credentials from this computer?"}
+          description={
+            !status.configured && status.reason === "key_file_invalid"
+              ? "The stored credentials cannot be decrypted with the unreadable key file, so both are removed; a fresh key file is created when you enter the keys again."
+              : "Sessions cannot start without them. The per-device key file stays in place."
+          }
           confirmLabel="Remove"
           confirmVariant="danger"
           onCancel={() => setConfirmClear(false)}

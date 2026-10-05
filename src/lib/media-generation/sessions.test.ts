@@ -1154,3 +1154,52 @@ test("review 17: the boot sweep moves a running session to `stopping` BEFORE ter
   assert.deepEqual(seen, ["stopping"], "the row was `stopping` when RunPod was asked to terminate");
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "stopping"); // unconfirmed -> stays stopping for the watcher
 });
+
+// -- review round 18 (2026-10-05) -----------------------------------------------------------------
+
+test("review 18: a pod the watcher cannot GET is terminated through DELETE-then-confirm, never marked gone on the strength of one 404; a `done` stop of an already-gone pod carries no error", async () => {
+  const f = fixture();
+  await startRunning(f);
+  // One transient 404 on a live pod: the watcher sends DELETE (idempotent) rather than freeing the slot on trust.
+  const original = f.runpod.client.getPod.bind(f.runpod.client);
+  let lies = 1;
+  (f.runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => (lies-- > 0 ? null : original(id));
+  const tick = await f.services.watchTick();
+  assert.equal(tick.action, "interrupted");
+  assert.ok(f.runpod.calls.includes("terminate:pod1"), "DELETE was sent");
+  assert.equal(f.runpod.pods.has("pod1"), false, "the live pod was really terminated, not left billing");
+
+  // Operator Stop of a pod terminated by hand: `done`, the gone-note with the reason, no error text.
+  const g = fixture();
+  const stopped = await startRunning(g);
+  g.runpod.pods.delete("pod1");
+  const s = await g.services.stopSession({ sessionId: stopped.sessionId, reason: "stopped by operator" });
+  assert.equal(s.status, "done");
+  assert.equal(s.error, null);
+  assert.match(s.stopReason ?? "", /stopped by operator \(pod was already gone/);
+});
+
+test("review 18: an abandoned `approved` row with an adopted orphan pod is `stopping` while its terminate is confirmed (a concurrent Stop resumes it, never a second reconcile), and an unparsable createdAt never makes the cost NaN", async () => {
+  const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
+  const requested = await f.services.requestSession(operatorRequest);
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: f.getNow(), error: "pod creation failed and RunPod could not be asked" });
+  f.runpod.pods.set("pod7", { status: "RUNNING", costPerHr: 0.69 });
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ id: "pod7", name: `ytm-media-${requested.sessionId.slice(0, 8)}`, status: "RUNNING", costPerHr: 0.69, createdAt: "not-a-date" }];
+  const seen: string[] = [];
+  const originalTerminate = f.runpod.client.terminatePod.bind(f.runpod.client);
+  (f.runpod.client as unknown as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => {
+    seen.push(f.mem.rows.get(requested.sessionId)!.status);
+    return originalTerminate(id);
+  };
+  await f.services.stopSession({ sessionId: requested.sessionId }).catch(() => undefined);
+  assert.deepEqual(seen, ["stopping"], "already `stopping` when RunPod was asked to terminate");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod7");
+  assert.ok(row.startedAt && Number.isFinite(row.startedAt.getTime()), "a bad createdAt fell back to a real timestamp");
+  f.runpod.pods.delete("pod7");
+  await f.services.watchTick();
+  const done = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(done.status, "failed");
+  assert.ok(Number.isFinite(done.usdCharged ?? NaN) && Number.isFinite(done.secondsUsed ?? NaN), "never NaN");
+});

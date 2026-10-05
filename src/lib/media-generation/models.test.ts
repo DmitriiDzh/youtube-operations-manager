@@ -626,3 +626,36 @@ test("review 17: after a pull ends, the HF CLI's cache keys under models/<folder
   assert.ok(f.objects.has("models/checkpoints/.cache/other.lock"));
   assert.ok(f.objects.has("models/vae/c.bin"));
 });
+
+test("review 18: a flaky S3 does not hide a dead pull pod or the 6 h cap -- each poll check stands on its own", async () => {
+  // A running pull whose pod died while S3 answers 503 to every HEAD.
+  let json: string | null = JSON.stringify([{ pullId: "p1", podId: "cpupod1", repoId: "a/b", file: "c.bin", expectedKey: "models/vae/c.bin", status: "running", startedAt: "2026-10-05T12:00:00.000Z", finishedAt: null, bytes: null, error: null }]);
+  const calls: string[] = [];
+  const client = {
+    async getPod(id: string) {
+      return { id, status: calls.includes(`terminate:${id}`) ? "TERMINATED" : "EXITED" };
+    },
+    async terminatePod(id: string) {
+      calls.push(`terminate:${id}`);
+      return { terminated: true, alreadyGone: false };
+    },
+    async listPods() {
+      return [];
+    },
+  } as unknown as RunpodApiClient;
+  const flakyS3 = { async listAllObjects() { return []; }, async headObject() { throw new Error("RunPod S3 returned HTTP 503"); }, async deleteObject() {} } as unknown as RunpodS3Client;
+  const { lock, store } = testLock();
+  await store.tryAcquire("pull:p1", new Date(0));
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => flakyS3 },
+    generateId: () => "x",
+    clock: { now: () => new Date("2026-10-05T12:05:00Z") },
+    volumeLock: lock,
+  });
+  const [settled] = await services.pollPulls();
+  assert.equal(settled.status, "failed", "the dead pod was noticed although S3 was down");
+  assert.match(settled.error ?? "", /pod EXITED before the file appeared/);
+  assert.deepEqual(calls, ["terminate:cpupod1"]);
+  assert.equal(store.current(), null);
+});

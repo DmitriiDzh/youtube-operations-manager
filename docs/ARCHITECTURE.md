@@ -2593,6 +2593,18 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `hasInFlightJobs` ignores a `transferring` job sleeping in its backoff, so the idle shutdown is not
   deferred for it. The integer Settings fields (minutes, seconds, GB) are controlled text inputs parsed on
   save (`parseInteger`), like the money fields.
+- **Never on the strength of one GET (review round 18).** A pod the watcher cannot GET goes through
+  `stopRow` (DELETE, then confirm) like every other exit, never straight to `interrupted` -- a transient
+  404 on a live pod would otherwise free the slot and the lock while it bills. An operator pod whose
+  `createPod` failed keeps the volume lock while a live pod of its name exists (or RunPod cannot be asked);
+  only a confirmed "no pod" releases it. The pull poll evaluates each check on its own (a flaky S3 cannot
+  hide a dead pod or the cap). An abandoned `approved` row with an adopted orphan pod is `stopping` while
+  its terminate is confirmed (a concurrent Stop resumes that stop). RunPod's `createdAt` is parsed with
+  `Date.parse` and falls back when unparsable (never a NaN cost that would silently disable the daily
+  cap). A `done` stop of an already-gone pod carries the gone-note in its reason, not as an error. The
+  janitor's documentation and the Jobs card say what it does: by ledger only, failed/cancelled leftovers
+  kept. `job-run.sh --param-string` sends a numeric-looking text value as text. The credentials Reset
+  dialog says the unreadable key file is removed too.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

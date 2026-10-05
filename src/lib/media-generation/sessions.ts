@@ -285,7 +285,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     }
     if (result.alreadyGone) {
       const gone = lastKnownAlive(stopping, deps.clock.now());
-      const finished = await finish(stopping, ["stopping"], outcome, { ...terminal, error: goneNote(stopping, gone), stoppedAt: gone });
+      // A `done` stop of a pod that was already gone is not an error: the note goes with the reason (review round 18).
+      const finished = await finish(
+        stopping,
+        ["stopping"],
+        outcome,
+        outcome === "done" ? { stopReason: `${reason} (${goneNote(stopping, gone)})`, error: null, stoppedAt: gone } : { ...terminal, error: `${reason}; ${goneNote(stopping, gone)}`, stoppedAt: gone }
+      );
       return finished ?? stopping;
     }
     const finished = await finish(stopping, ["stopping"], outcome, terminal);
@@ -329,7 +335,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         if (orphan) {
           podId = orphan.id;
           // The pod billed from its creation; record that like abortStart does (AC-P14-17).
-          orphanFacts = { podId: orphan.id, startedAt: orphan.createdAt ? new Date(orphan.createdAt) : (open.approvedAt ?? deps.clock.now()), costPerHr: orphan.costPerHr ?? open.costPerHr };
+          // RunPod's createdAt is untrusted input: an unparsable value must never become an Invalid Date that turns the cost
+          // (and the daily cap check) into NaN (review round 18).
+          const createdMs = orphan.createdAt ? Date.parse(orphan.createdAt) : NaN;
+          orphanFacts = { podId: orphan.id, startedAt: Number.isFinite(createdMs) ? new Date(createdMs) : (open.approvedAt ?? deps.clock.now()), costPerHr: orphan.costPerHr ?? open.costPerHr };
         }
       } catch (cause) {
         await deps.store.transition(open.id, ["approved"], {
@@ -338,14 +347,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         });
         return "deferred";
       }
-      if (orphanFacts) await deps.store.transition(open.id, ["approved"], { status: "approved", ...orphanFacts });
     }
     let alreadyGone = false;
     if (podId) {
-      // While the terminate is being confirmed (up to the stop budget) the row must not read `running`/`starting` to the
-      // UI, MCP or createJob (review round 17): `stopping` first, like stopRow.
-      if (open.status === "starting" || open.status === "running") {
-        await deps.store.transition(open.id, ["starting", "running"], { status: "stopping", ...(orphanFacts ?? {}), stopReason: reason, stoppingOutcome: outcome });
+      // While the terminate is being confirmed (up to the stop budget) the row must not read `running`/`starting`/
+      // `approved` to the UI, MCP, createJob or a concurrent Stop (review rounds 17/18): `stopping` first, with the pod
+      // facts, like stopRow -- a second reconcile then resumes the same stop instead of racing it.
+      if (open.status === "approved" || open.status === "starting" || open.status === "running") {
+        await deps.store.transition(open.id, ["approved", "starting", "running"], { status: "stopping", ...(orphanFacts ?? {}), stopReason: reason, stoppingOutcome: outcome });
       }
       let unconfirmed: string | null = null;
       try {
@@ -801,9 +810,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const client = await deps.base.resolveRunpodClient();
       const pod = open.podId ? await client.getPod(open.podId) : null;
       if (!pod || pod.status === "TERMINATED") {
-        const gone = lastKnownAlive(open, now);
-        await finish(open, ["running"], "interrupted", { error: `pod disappeared; ${goneNote(open, gone)}`, stoppedAt: gone });
-        return { action: "interrupted", sessionId: open.id, reason: "pod disappeared" };
+        // Through stopRow (DELETE first, then confirm), never on the strength of one GET: a transient 404 on a live pod would
+        // otherwise free the slot and the lock while the pod keeps billing (review round 18). An already-gone pod is billed
+        // to its last sighting by stopRow's alreadyGone path.
+        const stopped = await stopRow(open, "pod disappeared", "interrupted");
+        return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: "pod disappeared" };
       }
       if (pod.status === "EXITED" || pod.status === "ERROR") {
         // Through stopRow, so an unconfirmed termination keeps the row `stopping` (podId kept) instead of marking it interrupted on trust.

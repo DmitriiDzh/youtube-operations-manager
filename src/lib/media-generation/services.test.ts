@@ -575,3 +575,27 @@ test("review 16: re-saving unchanged compute settings makes no catalog call; onl
   await services.updateSettings({ datacenterId: "US-TX-3", gpuTypeId: "NVIDIA GeForce RTX 4090", cloudType: "SECURE", templateId: "tpl1", networkVolumeId: "vol-us" });
   assert.ok(runpod.calls.length > before, "a changed datacenter is validated");
 });
+
+test("review 18: an operator createPod that fails AFTER RunPod created the pod keeps the volume lock with that pod (found by name); only a confirmed 'no pod' releases it", async () => {
+  const { createMemoryVolumeLockStore, createVolumeLock } = await import("./volume-lock");
+  const runpod = fakeRunpod();
+  const client = runpod.client as unknown as Record<string, unknown>;
+  let livePods: Array<{ id: string; name: string; status: string }> = [];
+  client.createPod = async () => {
+    throw new Error("RunPod API request failed: timeout");
+  };
+  client.listPods = async () => livePods;
+  const store = createMemoryVolumeLockStore();
+  const volumeLock = createVolumeLock({ store, isHolderActive: async () => true });
+  const { services } = fixture({ runpod, volumeLock });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
+  const body = { name: "ytm-models-pull", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } };
+  livePods = [{ id: "p-orphan", name: "ytm-models-pull", status: "RUNNING" }];
+  await assert.rejects(services.createPod(body));
+  assert.equal(store.current(), "pod:ytm-models-pull", "the pod exists: the lock stays with it");
+  await store.release("pod:ytm-models-pull");
+  livePods = [];
+  await assert.rejects(services.createPod(body));
+  assert.equal(store.current(), null, "no pod: released");
+});

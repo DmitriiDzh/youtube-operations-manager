@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Submits one job to the running session and waits for it: prints the output paths when done.
-# Usage: scripts/media/job-run.sh --template <templateId> --channel <UC...> [--param name=value ...] [--session <sessionId>]
+# Usage: scripts/media/job-run.sh --template <templateId> --channel <UC...> [--param name=value ...] [--param-string name=value ...] [--session <sessionId>]
+# `--param` coerces true/false and numeric-looking values; `--param-string` always sends the value as text (a prompt "2024").
 #        (string values as-is; numbers and true/false are converted; --session defaults to the open running session)
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [ "${1:-}" = "--help" ] && { sed -n '2,4p' "$0"; exit 0; }
@@ -11,7 +12,8 @@ while [ $# -gt 0 ]; do
     --template) template="$2"; shift 2 ;;
     --channel) channel="$2"; shift 2 ;;
     --session) session="$2"; shift 2 ;;
-    --param) params+=("$2"); shift 2 ;;
+    --param) params+=("auto:$2"); shift 2 ;;
+    --param-string) params+=("string:$2"); shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -26,10 +28,11 @@ body="$(mktemp)"; trap 'rm -f "$body"' EXIT
 node -e '
   const [session, channel, template, ...pairs] = process.argv.slice(1);
   const params = {};
-  for (const pair of pairs) {
+  for (const tagged of pairs) {
+    const mode = tagged.slice(0, tagged.indexOf(":")), pair = tagged.slice(tagged.indexOf(":") + 1);
     const i = pair.indexOf("=");
     const name = pair.slice(0, i), raw = pair.slice(i + 1);
-    params[name] = raw === "true" ? true : raw === "false" ? false : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
+    params[name] = mode === "string" ? raw : raw === "true" ? true : raw === "false" ? false : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
   }
   process.stdout.write(JSON.stringify({ sessionId: session, channelId: channel, templateId: template, params }));
 ' "$session" "$channel" "$template" ${params[@]+"${params[@]}"} > "$body"

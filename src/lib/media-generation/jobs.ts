@@ -935,8 +935,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
     /**
      * The janitor (AC-P14-14): lists ONLY `exchange/`, skips `exchange/in/`, and deletes a key only
-     * when its job is terminal AND (its ledger row says the file is local, or the job failed/was
-     * cancelled, so nothing was ever pulled). Keys of unknown jobs (another device's) are left alone.
+     * when its job is terminal AND its ledger row says the file is local (BY LEDGER ONLY, review round
+     * 5). A failed/cancelled job's leftovers are kept -- they may be a finished generation nobody
+     * received, the only copy -- for the operator (`scripts/media/s3.sh rm`). Keys of unknown jobs
+     * (another device's) are left alone.
      */
     async cleanupExchange(options: { dryRun?: boolean } = {}): Promise<{ scanned: number; deleted: string[]; kept: Array<{ key: string; reason: string }> }> {
       const dryRun = options.dryRun ?? true;

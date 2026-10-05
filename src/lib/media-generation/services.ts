@@ -82,6 +82,7 @@ function withProxyUrl(pod: RunpodPod): RunpodPod & { comfyUiProxyUrl: string } {
 }
 
 export function createMediaGenerationServices(deps: ServiceDependencies) {
+  const log = deps.log ?? (() => undefined);
   async function readSettings(): Promise<MediaSettings> {
     const json = await deps.store.getSettingsJson();
     if (!json) return { ...DEFAULT_MEDIA_SETTINGS };
@@ -457,10 +458,17 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       if (owner && (await deps.volumeLock!.acquire(owner)) === "already-held") {
         throw new DomainError({ code: "media_session_conflict", message: `A pod named ${parsed.name} already holds the network volume; terminate it first (media pod-terminate).`, details: { holder: owner } });
       }
+      const client = await runpodClient();
       try {
-        return withProxyUrl(await (await runpodClient()).createPod(parsed as CreatePodInput));
+        return withProxyUrl(await client.createPod(parsed as CreatePodInput));
       } catch (error) {
-        if (owner) await deps.volumeLock!.release(owner);
+        // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the lock is released only when the
+        // deterministic name finds no live pod; unknown (RunPod unreachable) keeps it (review round 18).
+        if (owner) {
+          const orphan = await findLivePodByName(client, parsed.name).then((p) => p ?? null, () => undefined);
+          if (orphan === null) await deps.volumeLock!.release(owner);
+          else if (orphan) log(`[media] createPod failed but pod ${orphan.id} (${parsed.name}) exists; the volume lock stays with it`);
+        }
         throw error;
       }
     },
