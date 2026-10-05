@@ -84,7 +84,7 @@ A access to B on that device. That is a wrong-channel binding, which `AGENTS.md`
   revoke.
 - **UI:** in each channel's agent-token field (`channel-agent-token-field.tsx`) and in the factory token settings
   (`factory-agent-token-settings.tsx`), add an inline "I already have a token" input next to "Issue":
-  - a password-type field and a submit button, with no native browser dialogs;
+  - a password-type field and a submit button, with no native browser dialogs; replacing an active token on this device first asks for confirmation in the app's ConfirmDialog, like Rotate (owner, msg 1584);
   - success shows the same metadata as issuing, never the token;
   - a short note explains that a token works on every device where it is entered, and revoking applies to this
     device only.
