@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { NETWORK_VOLUME_USD_PER_GB_MONTH } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
@@ -38,7 +39,6 @@ type Volume = { id: string; name: string; dataCenterId: string; sizeGb: number; 
 type Template = { id: string; name: string };
 type TestResult = { runpod: { ok: true } | { ok: false; message: string }; s3: { ok: true } | { ok: false; message: string } | { skipped: true; reason: string }; verifiedAt: string | null };
 
-const VOLUME_USD_PER_GB_MONTH = 0.07;
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -225,7 +225,7 @@ function ModelsCard({ configured }: { configured: boolean }) {
             </button>
             {models && (
               <span className="text-xs text-zinc-500">
-                {models.length} file(s), {gb(totalBytes)} ≈ ${((totalBytes / 1024 ** 3) * VOLUME_USD_PER_GB_MONTH).toFixed(2)}/month of the volume&rsquo;s price
+                {models.length} file(s), {gb(totalBytes)} ≈ ${((totalBytes / 1024 ** 3) * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2)}/month of the volume&rsquo;s price
               </span>
             )}
           </div>
@@ -1352,7 +1352,7 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
   }
 
   const selectedVolume = volumes?.find((v) => v.id === selected);
-  const monthly = (gb: number) => (gb * VOLUME_USD_PER_GB_MONTH).toFixed(2);
+  const monthly = (gb: number) => (gb * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2);
 
   return (
     <Card

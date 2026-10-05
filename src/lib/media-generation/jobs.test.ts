@@ -792,13 +792,22 @@ test("review 6: a download that fails verification is removed from the workspace
   const t = await importDefault(f.services);
   const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
   await f.runScheduled();
-  const failed = await f.services.getJob({ jobId: job.jobId });
-  assert.equal(failed.status, "failed");
-  assert.equal(failed.outputs[0].localPath, null);
-  assert.match(failed.outputs[0].note ?? "", /verification failed/);
+  // Review round 10: a short/corrupt read may be the S3 view lagging behind ComfyUI's write -- within the retry window the
+  // job stays `transferring` (the unverified file is removed, the remote copy kept); only past the window is it a failure.
+  const retrying = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(retrying.status, "transferring");
+  assert.match(retrying.error ?? "", /verification failed.*retrying/);
+  assert.equal(retrying.outputs[0].localPath, null);
   assert.deepEqual(f.removed, ["/ws/99 Data Exchange/From YTM/media/job-1/ComfyUI_00001_.png"]);
   assert.equal(f.s3.files.size, 0, "no unverified file remains in the workspace");
   assert.ok(!f.s3.calls.includes("delete:exchange/job-1/ComfyUI_00001_.png"), "the remote copy is kept for a retry");
+  assert.equal(f.registered.length, 0);
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") }); // past the window
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.outputs[0].note ?? "", /verification failed/);
   assert.equal(f.registered.length, 0);
 });
 
@@ -1051,4 +1060,46 @@ test("review 9: a name/description-only template edit keeps the version (provena
   assert.equal(renamed.name, "txt2img v1 (renamed)");
   const changed = await services.updateWorkflowTemplate({ templateId: t.templateId, parameters: PARAMETERS.slice(0, 2) });
   assert.equal(changed.version, 2);
+});
+
+// -- review round 10 (2026-10-05) -----------------------------------------------------------------
+
+test("review 10: an output not yet visible in the S3 view of the volume is retried, not failed -- it is pulled once it appears", async () => {
+  const s3 = fakeS3(new Map()); // ComfyUI reported `completed`, but the S3 view has not surfaced the file yet
+  const f = fixture({ s3 });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const retrying = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(retrying.status, "transferring");
+  assert.match(retrying.error ?? "", /not visible on the volume yet; retrying/);
+  // Seconds later the object is there; the watch loop's resume pass completes the transfer.
+  const objects = new Map([["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9])]]);
+  const live = fakeS3(objects);
+  (f.s3.client as unknown as Record<string, unknown>).headObject = live.client.headObject;
+  (f.s3.client as unknown as Record<string, unknown>).getObjectToFile = async (key: string, dest: string) => {
+    const r = await live.client.getObjectToFile(key, dest);
+    f.s3.files.set(dest, objects.get(key)!);
+    return r;
+  };
+  (f.s3.client as unknown as Record<string, unknown>).deleteObject = live.client.deleteObject;
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.deepEqual(done.assetIds, ["asset-1"]);
+});
+
+test("review 10: a template parameter may not target filename_prefix (the <jobId>/ rewrite keeps outputs inside the job's folder)", async () => {
+  const { services } = fixture();
+  await assert.rejects(
+    services.importWorkflowTemplate({ name: "t", workflow: GRAPH, parameters: [{ name: "out", type: "string", nodeId: "9", input: "filename_prefix" }] }),
+    (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /filename_prefix is managed by the job/.test(e.message)
+  );
+});
+
+test("review 10: a declared minimum length is enforced for string/text parameters", () => {
+  const params = [{ name: "prompt", type: "text", nodeId: "6", input: "text", required: true, default: null, min: 1, max: null, enum: null, description: null }] as MediaTemplateParameter[];
+  assert.throws(() => resolveParams(params, { prompt: "" }), (e: unknown) => isDomainError(e) && /shorter than 1/.test(e.message));
+  assert.deepEqual(resolveParams(params, { prompt: "a cat" }), { prompt: "a cat" });
 });

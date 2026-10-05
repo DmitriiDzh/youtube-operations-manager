@@ -7257,9 +7257,14 @@ const MEDIA_VOLUME_LOCK_KEY = "media_volume_lock";
  * approve and a model pull cannot both hold it. Returns whoever holds it afterwards.
  */
 export async function tryAcquireMediaVolumeLock(owner: string, database: AppDb = db): Promise<{ acquired: boolean; holder: string }> {
-  await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value: owner }).onConflictDoNothing();
-  const holder = (await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database)) ?? owner;
-  return { acquired: holder === owner, holder };
+  // The holder may release between a no-op insert and the read-back; a null read-back then means "nobody holds it",
+  // never "we do" -- insert again (review round 10). `acquired` is true only with OUR row in the table.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value: owner }).onConflictDoNothing();
+    const holder = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+    if (holder !== null) return { acquired: holder === owner, holder };
+  }
+  return { acquired: false, holder: "unknown (the lock row kept vanishing between insert and read)" };
 }
 
 /** Deletes the row only when `owner` holds it (never another owner's lock). */

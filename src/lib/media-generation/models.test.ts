@@ -521,3 +521,50 @@ test("review 8: a reservation whose createPod never returned is settled by the p
   assert.match(voided.error ?? "", /no pod was ever created/);
   assert.equal(await services.hasActivePull(), false);
 });
+
+test("review 10: a pull settled by another process while this one was inside createPod is NOT resurrected -- the just-created pod is terminated and the stored verdict stands", async () => {
+  let releaseCreate: () => void = () => undefined;
+  const gate = new Promise<void>((r) => (releaseCreate = r));
+  let json: string | null = null;
+  const calls: string[] = [];
+  let terminated = false;
+  const client = {
+    async createPod() {
+      await gate;
+      return { id: "cpupod1", status: "PROVISIONING" };
+    },
+    async getPod(id: string) {
+      return { id, status: terminated ? "TERMINATED" : "RUNNING" };
+    },
+    async terminatePod(id: string) {
+      calls.push(`terminate:${id}`);
+      terminated = true;
+      return { terminated: true, alreadyGone: false };
+    },
+    async listPods() {
+      return [];
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  const { lock, store } = testLock();
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "pull-1",
+    clock: { now: () => new Date("2026-10-05T12:00:00Z") },
+    volumeLock: lock,
+  });
+  const starting = services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  await new Promise((r) => setTimeout(r, 0));
+  // The web UI (another process, not this one's serialized chain) cancels the reserved pull and the lock is released.
+  json = JSON.stringify((JSON.parse(json ?? "[]") as Array<Record<string, unknown>>).map((p) => ({ ...p, status: "failed", error: "cancelled by operator", finishedAt: "2026-10-05T12:00:01.000Z" })));
+  await store.release("pull:pull-1");
+  releaseCreate();
+  await assert.rejects(starting, (e: unknown) => isDomainError(e) && e.code === "media_job_invalid_state" && /was failed before its pod was recorded/.test(e.message));
+  assert.deepEqual(calls, ["terminate:cpupod1"]);
+  const [stored] = await services.listPulls();
+  assert.equal(stored.status, "failed");
+  assert.equal(stored.podId, null);
+  assert.equal(store.current(), null);
+  assert.equal(await services.hasActivePull(), false);
+});

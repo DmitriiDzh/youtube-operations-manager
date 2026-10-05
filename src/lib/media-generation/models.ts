@@ -291,8 +291,26 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       }
       pod = orphan;
     }
-    const pull: ModelPull = { ...reserved, podId: pod.id };
-    await savePull(pull);
+    // Record the pod ONLY if the reservation is still running: another process (the web UI's cancel while this CLI
+    // process was inside createPod) may have settled it and released the lock meanwhile; then the pod we just created
+    // must not be resurrected into an unlocked, billing pull (review round 10) -- it is terminated instead.
+    const pull: ModelPull = { ...reserved, podId: pod.id, error: null };
+    let recorded = false;
+    await deps.store.updatePullsJson((current) => {
+      const pulls = parsePulls(current);
+      const stored = pulls.find((p) => p.pullId === pullId);
+      recorded = stored?.status === "running";
+      return JSON.stringify(trimPulls(recorded ? pulls.map((p) => (p.pullId === pullId ? pull : p)) : pulls));
+    });
+    if (!recorded) {
+      const settled = (await readPulls()).find((p) => p.pullId === pullId);
+      try {
+        await terminateAndConfirm(client, pod.id, { now: () => deps.clock.now(), sleep: sleepFn }, { timeoutMs: TERMINATE_CONFIRM_MS, pollMs: TERMINATE_POLL_MS });
+      } catch {
+        // best effort; the pod carries the deterministic name for the operator's `pods` listing
+      }
+      throw new DomainError({ code: "media_job_invalid_state", message: `The pull was ${settled?.status ?? "removed"} before its pod was recorded; the pod ${pod.id} was terminated.`, details: { pullId, podId: pod.id } });
+    }
     return pull;
   }
 

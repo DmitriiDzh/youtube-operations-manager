@@ -25,11 +25,14 @@ volume="$(json_get 'data.networkVolumeId ?? ""' <<<"$settings")"
 
 # Build the download script and the expected key list from the manifest.
 expected=()
-download_cmds="set -e; pip install -q -U huggingface_hub[cli]; mkdir -p /workspace/models;"
+# Single-quote a value for the pod's shell exactly like src/lib/media-generation/models.ts's buildPullCommand (a `'` becomes `'\''`).
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+download_cmds="set -e; pip install -q -U 'huggingface_hub[cli]'; mkdir -p /workspace/models;"
 while IFS=$'\t' read -r repo file dest || [ -n "$repo" ]; do
   case "$repo" in ''|'#'*) continue ;; esac
   [ -n "$file" ] && [ -n "$dest" ] || { echo "bad manifest line: $repo" >&2; exit 2; }
-  download_cmds+=" hf download '$repo' '$file' --local-dir '/workspace/models/$dest';"
+  case "$dest" in */*|*..*) echo "bad manifest dest (one models/ folder name): $dest" >&2; exit 2 ;; esac
+  download_cmds+=" hf download $(q "$repo") $(q "$file") --local-dir $(q "/workspace/models/$dest");"
   expected+=("models/$dest/$file")
 done < "$manifest"
 [ ${#expected[@]} -gt 0 ] || { echo "manifest has no rows" >&2; exit 2; }

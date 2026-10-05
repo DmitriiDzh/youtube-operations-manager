@@ -411,3 +411,23 @@ test("review 9: the media gateway cannot be disabled while a session or pull hol
   await f.services.setGatewayEnabled(false);
   assert.equal(await f.services.getGatewayEnabled(), false);
 });
+
+// -- review round 10 (2026-10-05) -----------------------------------------------------------------
+
+test("review 10: changing the datacenter re-validates and re-prices the kept GPU against the live catalog (AC-P14-19) -- a GPU absent there is refused at settings time, a different price is captured", async () => {
+  const runpod = fakeRunpod();
+  let gpus: Array<Record<string, unknown>> = [{ id: "NVIDIA GeForce RTX 4090", displayName: "RTX 4090", memoryInGb: 24, secureCloud: true, communityCloud: true, onDemandPricePerHr: 0.69, spotPricePerHr: null, estimatedAvailability: "HIGH", dataCenters: [] }];
+  (runpod.client as unknown as { listGpuTypes: () => Promise<unknown[]> }).listGpuTypes = async () => gpus;
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", gpuTypeId: "NVIDIA GeForce RTX 4090" });
+  // The catalog for the new datacenter has no 4090: refused, settings unchanged.
+  gpus = [];
+  await assert.rejects(services.updateSettings({ datacenterId: "US-TX-3" }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /not in RunPod's catalog/.test(e.message));
+  assert.equal((await services.getSettings()).datacenterId, "EU-RO-1");
+  // The catalog prices it differently there: the saved price follows.
+  gpus = [{ id: "NVIDIA GeForce RTX 4090", displayName: "RTX 4090", memoryInGb: 24, secureCloud: true, communityCloud: true, onDemandPricePerHr: 0.59, spotPricePerHr: null, estimatedAvailability: "HIGH", dataCenters: [] }];
+  const moved = await services.updateSettings({ datacenterId: "US-TX-3" });
+  assert.equal(moved.datacenterId, "US-TX-3");
+  assert.equal(moved.gpuOnDemandPricePerHr, 0.59);
+});

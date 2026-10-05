@@ -212,6 +212,7 @@ export function checkParameterValue(p: MediaTemplateParameter, value: string | n
     case "string":
     case "text":
       if (typeof value !== "string") return `"${p.name}" must be a string`;
+      if (p.min !== null && value.length < p.min) return `"${p.name}" is shorter than ${p.min} characters`;
       if (p.max !== null && value.length > p.max) return `"${p.name}" is longer than ${p.max} characters`;
       return null;
     case "number":
@@ -324,6 +325,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const node = graph[p.nodeId];
       if (!node) problems.push(`parameter "${p.name}": node ${p.nodeId} is not in the workflow`);
       else if (!(p.input in node.inputs)) problems.push(`parameter "${p.name}": node ${p.nodeId} has no input "${p.input}"`);
+      // The `<jobId>/` output-folder rewrite is what keeps every output inside the job's own folder (and pullable): a
+      // parameter on `filename_prefix` could undo it (review round 10).
+      if (p.input === "filename_prefix") problems.push(`parameter "${p.name}": filename_prefix is managed by the job (its <jobId>/ prefix) and cannot be a parameter`);
       if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
       // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
       // (blaming the caller's params); refuse it at import instead (review round 8).
@@ -369,14 +373,16 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     if (!fileName) return { ...output, note: "unsafe file name; not pulled" };
     if (!safeRemoteKey(output.remoteKey) || !output.remoteKey.startsWith(`${EXCHANGE_PREFIX}${job.id}/`)) return { ...output, note: "output outside the job's folder; not pulled" };
     const head = await s3.headObject(output.remoteKey);
-    if (!head) return { ...output, note: "output missing on the volume" };
+    // The S3 view of the volume can lag behind ComfyUI's just-closed file (review round 10): "not there yet" and "not
+    // all there yet" are THROWN so the transfer stays `transferring` and is retried within the window, never a verdict.
+    if (!head) throw new Error("output not visible on the volume yet");
     const localPath = path.join(outputDir, fileName);
     const pulled = await s3.getObjectToFile(output.remoteKey, localPath);
     const readBack = await deps.fs.sha256File(localPath);
     if (readBack !== pulled.sha256 || (head.size > 0 && pulled.bytes !== head.size)) {
       // Never leave a file that failed verification in the operator's folder looking like a result; the remote copy stays.
       await deps.fs.remove(localPath).catch((error) => log(`[media] could not remove unverified ${localPath}: ${error instanceof Error ? error.message : String(error)}`));
-      return { ...output, note: `verification failed (stream ${pulled.sha256.slice(0, 8)}, file ${readBack.slice(0, 8)}, ${pulled.bytes}/${head.size} bytes); the file was removed` };
+      throw new Error(`verification failed (stream ${pulled.sha256.slice(0, 8)}, file ${readBack.slice(0, 8)}, ${pulled.bytes}/${head.size} bytes); the file was removed`);
     }
     await deps.store.ledger.upsert({ remoteKey: output.remoteKey, jobId: job.id, localPath, bytes: pulled.bytes, sha256: pulled.sha256, pulledAt: deps.clock.now() });
     let remoteDeleted = false;

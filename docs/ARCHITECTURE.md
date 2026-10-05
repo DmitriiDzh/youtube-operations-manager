@@ -2492,6 +2492,16 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `.`/`..` segment (an untrusted Save-node subfolder) is never HEADed, pulled or deleted; an output pulled
   earlier but not cataloged is cataloged on the retry; a template rename does not bump the version that job
   provenance records (only a graph/parameter change does).
+- **Lock row never assumed, settled pulls never resurrected (review round 10).** `tryAcquireMediaVolumeLock`
+  re-inserts when the read-back is null (the holder released between the no-op insert and the read):
+  `acquired` is true only with the caller's own row in the table. After `createPod`, a pull records its pod
+  only if its reservation is still `running` -- one settled by another process meanwhile (a cancel from the
+  web UI while the CLI was inside `createPod`) keeps its verdict and the just-created pod is terminated.
+  An output not yet visible in the S3 view of the volume, or read short, is a THROWN transient (the job
+  stays `transferring` within the retry window), never a verdict. A template parameter may not target
+  `filename_prefix`; `min` is enforced for string/text parameters; a datacenter change re-validates and
+  re-prices the kept GPU; `models-pull.sh` quotes manifest values like `buildPullCommand`; the Settings
+  card imports `NETWORK_VOLUME_USD_PER_GB_MONTH` instead of restating it.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod
