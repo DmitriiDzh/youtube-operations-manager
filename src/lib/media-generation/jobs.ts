@@ -701,7 +701,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
     transferBackoff.delete(jobId);
     const pulled = results.filter((r) => r.localPath);
-    const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
+    // `error` on a done job = notes of outputs that were NOT received; an informational note on a received output
+    // ("pulled by an earlier attempt") stays on the output only (review round 19).
+    const notes = results.filter((r) => r.note && !r.localPath).map((r) => `${r.filename}: ${r.note}`);
     if (pulled.length === 0) {
       await failJob(job, results.length === 0 ? "nothing was produced" : `no output could be pulled (${notes.join("; ")})`, results);
       return;

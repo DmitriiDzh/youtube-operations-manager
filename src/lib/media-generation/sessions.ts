@@ -56,6 +56,8 @@ export type StoredSessionRow = {
   stoppingOutcome: StoppingOutcome | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
+  /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
+  terminateSentAt: Date | null;
 };
 
 export type StoppingOutcome = "done" | "failed" | "interrupted";
@@ -193,14 +195,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
 
   /** Pod creation -> confirmed termination (AC-P14-17); a terminal row keeps the frozen numbers. */
   function finalCost(row: StoredSessionRow, stoppedAt: Date): { secondsUsed: number; usdCharged: number } {
-    const secondsUsed = row.startedAt ? Math.max(0, Math.round((stoppedAt.getTime() - row.startedAt.getTime()) / 1000)) : 0;
-    const usdCharged = row.costPerHr === null ? 0 : round2((secondsUsed * row.costPerHr) / 3600);
-    return { secondsUsed, usdCharged };
+    // The ONE billing arithmetic (`liveSeconds`/`liveUsd`), frozen at `stoppedAt` (review round 19).
+    const frozen = { ...row, stoppedAt, usdCharged: null };
+    return { secondsUsed: liveSeconds(frozen, stoppedAt) ?? 0, usdCharged: liveUsd(frozen, stoppedAt) ?? 0 };
   }
 
   /** Shared with model pulls (`pod-lifecycle.ts`); `alreadyGone` = RunPod had no such pod before our terminate. */
-  function terminateAndConfirm(client: RunpodApiClient, podId: string): Promise<TerminateOutcome> {
-    return terminateAndConfirmPod(client, podId, { now: () => deps.clock.now(), sleep: deps.sleep }, { timeoutMs: stopTimeoutMs, pollMs });
+  function terminateAndConfirm(client: RunpodApiClient, podId: string, onTerminateSent?: (at: Date, alreadyGone: boolean) => Promise<void>): Promise<TerminateOutcome> {
+    return terminateAndConfirmPod(client, podId, { now: () => deps.clock.now(), sleep: deps.sleep }, { timeoutMs: stopTimeoutMs, pollMs }, onTerminateSent);
   }
 
   /**
@@ -271,7 +273,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     let result: TerminateOutcome;
     try {
       const client = await deps.base.resolveRunpodClient();
-      result = await terminateAndConfirm(client, stopping.podId);
+      result = await terminateAndConfirm(client, stopping.podId, async (at, alreadyGone) => {
+        // Our DELETE went through: from here the pod dies by our hand, so a retry must bill to THIS moment, not to the
+        // last sighting (review round 19).
+        if (!alreadyGone && !stopping.terminateSentAt) await deps.store.transition(row.id, ["stopping"], { status: "stopping", terminateSentAt: at });
+      });
     } catch (cause) {
       // The row stays `stopping` (the watcher retries); say why on the row, not only in the one HTTP response (review round 11).
       const detail = cause instanceof Error ? cause.message : String(cause);
@@ -284,6 +290,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       return kept ?? stopping;
     }
     if (result.alreadyGone) {
+      if (stopping.terminateSentAt) {
+        // Gone because an earlier attempt's DELETE went through (its confirm failed): billed to that DELETE, the honest
+        // "creation -> confirmed termination" window (AC-P14-17), and no "vanished on its own" note.
+        const finished = await finish(stopping, ["stopping"], outcome, { ...terminal, stoppedAt: stopping.terminateSentAt });
+        return finished ?? stopping;
+      }
       const gone = lastKnownAlive(stopping, deps.clock.now());
       // A `done` stop of a pod that was already gone is not an error: the note goes with the reason (review round 18).
       const finished = await finish(
@@ -465,6 +477,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         error: null,
         stoppingOutcome: null,
         lastSeenAliveAt: null,
+        terminateSentAt: null,
       });
       if (!row) {
         const open = await deps.store.getOpen();
@@ -593,7 +606,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       }
       // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
       // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
-      const abortStart = async (lastDetail: string): Promise<never> => {
+      const abortStart = async (lastDetail: string): Promise<MediaSession> => {
         onStage("Terminating the pod");
         let terminated: { confirmed: boolean; lastStatus: string | null };
         try {
@@ -618,10 +631,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             });
           }
         }
+        // An operator Stop (or the watcher/boot sweep) ended the session on purpose while it was starting: that is the
+        // session's outcome, not a start failure to report as an error (review round 19).
+        const final = await requireRow(sessionId);
+        if (latest.status !== "approved" && latest.status !== "starting") return toPublicSession(final, deps.clock.now());
         throw new DomainError({
           code: "media_session_start_failed",
           message: `The session could not start: ${lastDetail}.`,
-          details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: (await requireRow(sessionId)).status },
+          details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: final.status },
         });
       };
 
@@ -651,15 +668,25 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           failure = cause instanceof Error ? cause.message : String(cause);
         }
         const latest = await requireRow(sessionId);
+        const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
         if (!outcome?.confirmed) {
           const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
           log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
           await deps.store.transition(sessionId, [latest.status], {
             status: latest.status,
-            podId: pod.id,
-            startedAt,
-            costPerHr: pod.costPerHr ?? latest.costPerHr,
+            ...facts,
             error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and its terminate could not be confirmed (${detail}): terminate it by hand (media pod-terminate ${pod.id})`,
+          });
+        } else {
+          // Confirmed gone -- but it billed from `startedAt` until now, on no row so far: record the pod and its cost on
+          // whatever row the other party left, so the daily cap sees the spend (AC-P14-17, review round 19).
+          const stoppedAt = deps.clock.now();
+          const cost = finalCost({ ...latest, ...facts }, stoppedAt);
+          await deps.store.transition(sessionId, [latest.status], {
+            status: latest.status,
+            ...facts,
+            ...(MEDIA_SESSION_NON_TERMINAL_STATUSES.includes(latest.status) ? {} : { stoppedAt, secondsUsed: cost.secondsUsed, usdCharged: cost.usdCharged }),
+            error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and was terminated (${cost.secondsUsed} s billed)`,
           });
         }
         throw invalidState(sessionId, "approved", latest.status);

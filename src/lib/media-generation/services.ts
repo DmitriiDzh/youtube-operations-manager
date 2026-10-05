@@ -297,36 +297,31 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       }
       if (update.gpuTypeId === null) next.gpuOnDemandPricePerHr = null;
 
-      // A cloud-type change re-prices the already-chosen GPU (SECURE and COMMUNITY differ), so it touches the catalog too.
-      // A changed cloud type OR datacenter re-validates and re-prices the kept GPU against the live catalog (AC-P14-19):
-      // the GPU may not exist there, or cost something else (review round 10).
       // RunPod's network volumes exist on Secure Cloud only (as the Compute card itself says): a Community pod could not
       // mount one, so the pair is refused here, not by a failed createPod after a human approved (review round 16).
       if (next.cloudType === "COMMUNITY" && next.networkVolumeId) {
         throw new DomainError({ code: "media_settings_invalid", message: "Community Cloud pods cannot mount a network volume; choose Secure Cloud or clear the network volume.", details: { field: "cloudType" } });
       }
       // Only a CHANGED field is re-validated against the live catalog -- the Compute card resends every field on save,
-      // and an unchanged form must not cost three RunPod reads (review round 16).
-      const changed = <K extends keyof typeof update>(key: K) => update[key] !== undefined && update[key] !== null && update[key] !== current[key as keyof typeof current];
-      if (!changed("gpuTypeId")) delete update.gpuTypeId;
-      if (!changed("datacenterId")) delete update.datacenterId;
-      if (!changed("networkVolumeId")) delete update.networkVolumeId;
-      if (!changed("templateId")) delete update.templateId;
-      const repriceGpu =
-        ((update.cloudType !== undefined && update.cloudType !== current.cloudType) || update.datacenterId !== undefined) &&
-        next.gpuTypeId !== null &&
-        update.gpuTypeId === undefined;
-      if (repriceGpu) update.gpuTypeId = next.gpuTypeId;
-      const needsCatalog = update.gpuTypeId !== undefined || update.networkVolumeId !== undefined || update.datacenterId !== undefined || update.templateId !== undefined;
-      if (needsCatalog) {
+      // and an unchanged form must not cost three RunPod reads (review round 16). Computed ONCE as a set, never by
+      // rewriting the caller's update (review round 19): a changed cloud type or datacenter re-validates and re-prices
+      // the kept GPU as well (AC-P14-19, review round 10).
+      const changed = (key: "gpuTypeId" | "datacenterId" | "networkVolumeId" | "templateId" | "cloudType") => update[key] !== undefined && update[key] !== current[key];
+      const revalidate = new Set<"gpuTypeId" | "datacenterId" | "networkVolumeId" | "templateId">();
+      if (changed("gpuTypeId") && next.gpuTypeId) revalidate.add("gpuTypeId");
+      if (changed("datacenterId") && next.datacenterId) revalidate.add("datacenterId");
+      if (changed("networkVolumeId") && next.networkVolumeId) revalidate.add("networkVolumeId");
+      if (changed("templateId") && next.templateId) revalidate.add("templateId");
+      if ((changed("cloudType") || revalidate.has("datacenterId")) && next.gpuTypeId) revalidate.add("gpuTypeId");
+      if (revalidate.size > 0) {
         const client = await runpodClient();
-        if (next.datacenterId && update.datacenterId !== undefined) {
+        if (next.datacenterId && revalidate.has("datacenterId")) {
           const datacenters = await client.listDataCenters();
           if (!datacenters.some((dc) => dc.id === next.datacenterId)) {
             throw new DomainError({ code: "media_settings_invalid", message: `Datacenter ${next.datacenterId} is not in RunPod's catalog.`, details: { field: "datacenterId" } });
           }
         }
-        if (next.gpuTypeId && update.gpuTypeId !== undefined) {
+        if (next.gpuTypeId && revalidate.has("gpuTypeId")) {
           const gpus = await client.listGpuTypes({ cloud: next.cloudType });
           const gpu = gpus.find((g) => g.id === next.gpuTypeId);
           if (!gpu) {
@@ -344,7 +339,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
           // Captured here so a session estimate needs no RunPod call (AC-P14-03).
           next.gpuOnDemandPricePerHr = gpu.onDemandPricePerHr;
         }
-        if (next.templateId && update.templateId !== undefined) {
+        if (next.templateId && revalidate.has("templateId")) {
           // The fourth value createPod depends on (review round 12): a deleted or mistyped template is refused here, not
           // by a failed createPod after a human approved a session.
           const templates = await client.listTemplates();
@@ -352,7 +347,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
             throw new DomainError({ code: "media_settings_invalid", message: `Pod template "${next.templateId}" is not in your RunPod account's templates.`, details: { field: "templateId" } });
           }
         }
-        if (next.networkVolumeId && (update.networkVolumeId !== undefined || update.datacenterId !== undefined)) {
+        if (next.networkVolumeId && (revalidate.has("networkVolumeId") || revalidate.has("datacenterId"))) {
           const volume = await client.getNetworkVolume(next.networkVolumeId);
           if (!volume) {
             throw new DomainError({ code: "media_settings_invalid", message: `Network volume ${next.networkVolumeId} does not exist.`, details: { field: "networkVolumeId" } });
@@ -455,10 +450,10 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const settings = await readSettings();
       const mountsConfiguredVolume = Boolean(settings.networkVolumeId && parsed.mounts?.network?.some((m) => m.volumeId === settings.networkVolumeId));
       const owner = mountsConfiguredVolume && deps.volumeLock ? (`pod:${parsed.name}` as const) : null;
+      const client = await runpodClient(); // credentials must resolve BEFORE the lock is taken (review round 19)
       if (owner && (await deps.volumeLock!.acquire(owner)) === "already-held") {
         throw new DomainError({ code: "media_session_conflict", message: `A pod named ${parsed.name} already holds the network volume; terminate it first (media pod-terminate).`, details: { holder: owner } });
       }
-      const client = await runpodClient();
       try {
         return withProxyUrl(await client.createPod(parsed as CreatePodInput));
       } catch (error) {

@@ -23,10 +23,13 @@ export async function terminateAndConfirm(
   client: RunpodApiClient,
   podId: string,
   clock: PodLifecycleClock,
-  timeouts: { timeoutMs: number; pollMs: number }
+  timeouts: { timeoutMs: number; pollMs: number },
+  /** Called once the DELETE returned (before the confirm polls): the caller persists "terminate sent at" (review round 19). */
+  onTerminateSent?: (at: Date, alreadyGone: boolean) => Promise<void>
 ): Promise<TerminateOutcome> {
   const terminated = await client.terminatePod(podId);
   const alreadyGone = terminated.alreadyGone;
+  if (onTerminateSent) await onTerminateSent(clock.now(), alreadyGone);
   const deadline = clock.now().getTime() + timeouts.timeoutMs;
   let lastStatus: string | null = null;
   for (;;) {

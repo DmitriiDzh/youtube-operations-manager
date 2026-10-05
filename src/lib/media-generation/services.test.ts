@@ -599,3 +599,15 @@ test("review 18: an operator createPod that fails AFTER RunPod created the pod k
   await assert.rejects(services.createPod(body));
   assert.equal(store.current(), null, "no pod: released");
 });
+
+test("review 19: an operator createPod with no usable credentials never leaves a volume lock behind (the client is resolved before the lock is taken)", async () => {
+  const { createMemoryVolumeLockStore, createVolumeLock } = await import("./volume-lock");
+  const store = createMemoryVolumeLockStore();
+  const volumeLock = createVolumeLock({ store, isHolderActive: async () => true });
+  const { services, mem } = fixture({ volumeLock });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
+  await mem.store.clearCredentials();
+  await assert.rejects(services.createPod({ name: "ytm-media", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } }), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
+  assert.equal(store.current(), null);
+});

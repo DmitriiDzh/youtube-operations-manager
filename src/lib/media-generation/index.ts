@@ -58,8 +58,15 @@ function buildCore(jobScheduling: JobScheduling) {
     if (holder.startsWith("pull:")) return (await modelsRef?.isPullActive(holder.slice("pull:".length))) ?? false;
     if (holder.startsWith("pod:")) {
       // An operator pod (CLI/scripts) holds the volume while a live pod of its name exists; unknown (RunPod down) = active.
+      // No credentials at all is NOT "unknown": nothing could ever check or terminate that pod, and treating the holder
+      // as active would block saving the very credentials needed (review round 19) -- the lock then ages out.
+      let client;
       try {
-        const client = await baseRef!.resolveRunpodClient();
+        client = await baseRef!.resolveRunpodClient();
+      } catch (error) {
+        return !(error instanceof DomainError && error.code === "media_generation_not_configured");
+      }
+      try {
         return Boolean(await findLivePodByName(client, holder.slice("pod:".length)));
       } catch {
         return true;

@@ -561,7 +561,10 @@ test("review: an operator Stop during the start wait is not overwritten by the s
     }
     return original(id);
   };
-  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  // Review round 19: an intentional Stop while starting is the session's outcome, not a start failure -- the approve
+  // request resolves with that outcome instead of reporting an error.
+  const outcome = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(outcome.status, "done");
   const row = f.mem.rows.get(requested.sessionId)!;
   assert.equal(row.status, "done");
   assert.equal(row.stopReason, "stopped by operator");
@@ -1202,4 +1205,58 @@ test("review 18: an abandoned `approved` row with an adopted orphan pod is `stop
   const done = f.mem.rows.get(requested.sessionId)!;
   assert.equal(done.status, "failed");
   assert.ok(Number.isFinite(done.usdCharged ?? NaN) && Number.isFinite(done.secondsUsed ?? NaN), "never NaN");
+});
+
+// -- review round 19 (2026-10-05) -----------------------------------------------------------------
+
+test("review 19: a stop whose DELETE went through but whose confirm failed is billed, on the retry, to the moment of that DELETE -- not to the last sighting, and not as 'vanished on its own'", async () => {
+  const f = fixture();
+  const running = await startRunning(f);
+  f.advance(60_000);
+  await f.services.watchTick(); // seen alive at +65 s
+  f.advance(10 * 60_000); // the stop is pressed 10 min later
+  // DELETE succeeds, the confirm GET throws once (RunPod 502).
+  const originalGet = f.runpod.client.getPod.bind(f.runpod.client);
+  let failConfirm = true;
+  (f.runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    if (failConfirm) {
+      failConfirm = false;
+      throw new Error("RunPod API returned HTTP 502");
+    }
+    return originalGet(id);
+  };
+  const deleteAt = f.getNow();
+  await assert.rejects(f.services.stopSession({ sessionId: running.sessionId, reason: "stopped by operator" }));
+  const stopping = f.mem.rows.get(running.sessionId)!;
+  assert.equal(stopping.status, "stopping");
+  assert.equal(stopping.terminateSentAt?.getTime(), deleteAt.getTime());
+  f.advance(2 * 60_000); // the watcher retries two minutes later; the pod is gone (our DELETE did it)
+  assert.equal((await f.services.watchTick()).action, "stopped");
+  const done = f.mem.rows.get(running.sessionId)!;
+  assert.equal(done.status, "done");
+  assert.equal(done.stoppedAt?.getTime(), deleteAt.getTime(), "billed to our DELETE");
+  assert.equal(done.secondsUsed, 5 + 60 + 600);
+  assert.equal(done.stopReason, "stopped by operator");
+  assert.ok(!/already gone/.test(done.stopReason ?? ""), "no 'vanished on its own' note");
+});
+
+test("review 19: a pod created after the row was ended by another party, whose terminate IS confirmed, is still written onto that row with its billed seconds (never a pod on no row)", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const originalCreate = f.runpod.client.createPod.bind(f.runpod.client);
+  (f.runpod.client as unknown as { createPod: (i: unknown) => Promise<unknown> }).createPod = async (input) => {
+    const pod = await originalCreate(input as never);
+    f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, error: "pod creation failed and RunPod could not be asked" });
+    await f.services.stopSession({ sessionId: requested.sessionId }); // ends it `failed` with no pod
+    f.advance(30_000);
+    return pod;
+  };
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_invalid_state");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.podId, "pod1");
+  assert.ok((row.secondsUsed ?? 0) >= 30, `billed ${row.secondsUsed} s`);
+  assert.ok((row.usdCharged ?? 0) > 0);
+  assert.match(row.error ?? "", /was terminated \(\d+ s billed\)/);
+  assert.equal(f.runpod.pods.has("pod1"), false);
 });

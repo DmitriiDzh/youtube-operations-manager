@@ -803,6 +803,11 @@ export const mediaSessions = sqliteTable(
      * `now()` -- a pod terminated by hand hours before a reboot must not be billed up to the reboot.
      */
     lastSeenAliveAt: integer("last_seen_alive_at", { mode: "timestamp" }),
+    /**
+     * Schema v57 (review round 19): when this app's terminate DELETE went through for the pod. A later retry whose DELETE
+     * answers 404 then bills to this moment (the pod died by OUR hand then), not to the last sighting.
+     */
+    terminateSentAt: integer("terminate_sent_at", { mode: "timestamp" }),
   },
   (table) => [uniqueIndex("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -3096,6 +3101,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       "creative_assets(channel_id, reference_kind, reference_value) index -- the media job pipeline looks an asset up by its local path per pulled output (Phase 14 review round 14); additive index, data untouched",
     apply: async (client) => {
       await client.execute("CREATE INDEX IF NOT EXISTS creative_assets_reference_idx ON creative_assets(channel_id, reference_kind, reference_value)");
+    },
+  },
+  {
+    version: 57,
+    description:
+      "media_sessions.terminate_sent_at -- when the app's terminate DELETE went through, so a retried stop whose DELETE answers 404 bills to that moment (Phase 14 review round 19); additive nullable column, existing rows untouched",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN terminate_sent_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];

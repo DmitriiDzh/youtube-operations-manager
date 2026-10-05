@@ -1364,3 +1364,21 @@ test("review 17: hasInFlightJobs ignores a transferring job that is sleeping in 
   f.advance(20_000);
   assert.equal(await f.services.hasInFlightJobs(), true, "its attempt is due");
 });
+
+// -- review round 19 (2026-10-05) -----------------------------------------------------------------
+
+test("review 19: a job resumed from the ledger ends `done` with NO error -- 'pulled by an earlier attempt' is a note on the output, not a problem with the job", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  const localPath = "/ws/99 Data Exchange/From YTM/media/job-1/ComfyUI_00001_.png";
+  await f.mem.store.ledger.upsert({ remoteKey: "exchange/job-1/ComfyUI_00001_.png", jobId: job.jobId, localPath, bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), pulledAt: new Date() });
+  await f.mem.store.ledger.markRemoteDeleted("exchange/job-1/ComfyUI_00001_.png", new Date());
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, status: "transferring", outputsJson: JSON.stringify([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null, note: null }]) });
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.equal(done.error, null);
+  assert.equal(done.outputs[0].note, "pulled by an earlier attempt");
+});

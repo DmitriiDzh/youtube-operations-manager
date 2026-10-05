@@ -2605,6 +2605,17 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   janitor's documentation and the Jobs card say what it does: by ledger only, failed/cancelled leftovers
   kept. `job-run.sh --param-string` sends a numeric-looking text value as text. The credentials Reset
   dialog says the unreadable key file is removed too.
+- **The window ends at OUR delete (review round 19).** `media_sessions.terminate_sent_at` (schema v57) records
+  when this app's terminate DELETE went through; a retried stop whose DELETE answers 404 then bills to that
+  moment (the pod died by our hand), not to the last sighting and not as "vanished on its own". A pod
+  created after another party ended the row, whose terminate is confirmed, is written onto that row with
+  its billed seconds (a pod on no row would hide spend from the daily cap). An intentional Stop while a
+  session is starting is the approve request's outcome (the session as it ended), not a start error. A
+  `done` job's `error` lists only outputs that were NOT received (an informational note stays on the
+  output). The operator `createPod` resolves credentials before taking the volume lock, and a `pod:`
+  holder check that cannot even resolve credentials counts as inactive (the lock ages out instead of
+  blocking the very credentials needed). `updateSettings` derives one `revalidate` set from what changed
+  (never by rewriting the caller's update); `finalCost` is `liveSeconds`/`liveUsd` frozen at `stoppedAt`.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

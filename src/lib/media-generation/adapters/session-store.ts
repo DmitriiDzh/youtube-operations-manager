@@ -43,6 +43,7 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     error: row.error ?? null,
     stoppingOutcome: row.stoppingOutcome ?? null,
     lastSeenAliveAt: row.lastSeenAliveAt ?? null,
+    terminateSentAt: row.terminateSentAt ?? null,
   };
 }
 
