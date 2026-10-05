@@ -144,7 +144,7 @@ function fakeS3(options: { fails?: boolean } = {}) {
   };
 }
 
-function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typeof fakeRunpod>; s3?: ReturnType<typeof fakeS3>; activeVolumeHolder?: () => Promise<string | null> } = {}) {
+function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typeof fakeRunpod>; s3?: ReturnType<typeof fakeS3>; activeVolumeHolder?: () => Promise<string | null>; volumeLock?: import("./volume-lock").VolumeLock } = {}) {
   const mem = memoryStore();
   const key = memoryKeyFile(opts.keyFileContent ?? null);
   const runpod = opts.runpod ?? fakeRunpod();
@@ -155,6 +155,7 @@ function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typ
     gateway: { createRunpodClient: runpod.factory, createS3Client: s3.factory },
     clock: { now: () => new Date("2026-10-05T12:34:56Z") },
     ...(opts.activeVolumeHolder ? { activeVolumeHolder: opts.activeVolumeHolder } : {}),
+    ...(opts.volumeLock ? { volumeLock: opts.volumeLock } : {}),
   });
   return { services, mem, key, runpod, s3 };
 }
@@ -322,10 +323,13 @@ test("AC-P14-19: the network volume must exist and sit in the chosen datacenter"
   assert.equal(cleared.networkVolumeId, null);
 });
 
-test("overview becomes ready once credentials, datacenter, GPU, volume and template are set; the gateway toggle is part of it", async () => {
+test("overview becomes ready once credentials (RunPod key AND the S3 pair), datacenter, GPU, volume and template are set; the gateway toggle is part of it", async () => {
   const { services } = fixture();
   await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
   await services.updateSettings({ datacenterId: "EU-RO-1", gpuTypeId: "NVIDIA GeForce RTX 4090", networkVolumeId: "vol-eu", templateId: "tpl1" });
+  // Review round 13: outputs travel over S3 only -- without the key pair a job could be generated and never received.
+  assert.deepEqual((await services.getOverview()).missing, ["S3 key pair (RunPod → Settings → S3 API keys)"]);
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_1", s3SecretAccessKey: "rps_secret" });
   assert.equal((await services.getOverview()).ready, true);
   await services.setGatewayEnabled(false);
   const overview = await services.getOverview();
@@ -451,4 +455,38 @@ test("review 12: a pod template id is validated against the account's templates 
   await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
   await assert.rejects(services.updateSettings({ templateId: "tpl-typo" }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /not in your RunPod account/.test(e.message));
   assert.equal((await services.updateSettings({ templateId: "tpl-real" })).templateId, "tpl-real");
+});
+
+test("review 13: an operator pod that mounts the configured network volume takes the same volume lock as sessions and pulls (refused while held; released when the pod is terminated)", async () => {
+  const { createMemoryVolumeLockStore, createVolumeLock } = await import("./volume-lock");
+  const runpod = fakeRunpod();
+  const pods = new Map<string, { id: string; name: string; status: string }>();
+  const client = runpod.client as unknown as Record<string, unknown>;
+  client.createPod = async (input: { name: string }) => {
+    const pod = { id: `p-${pods.size + 1}`, name: input.name, status: "RUNNING", costPerHr: 0.08, dataCenterId: "EU-RO-1", gpuTypeId: null, gpuCount: 0, networkVolumeIds: [], ports: null, env: {}, createdAt: null, startedAt: null, raw: {} };
+    pods.set(pod.id, pod);
+    return pod;
+  };
+  client.getPod = async (id: string) => pods.get(id) ?? null;
+  client.terminatePod = async (id: string) => ({ terminated: true, alreadyGone: !pods.delete(id) });
+  const store = createMemoryVolumeLockStore();
+  const volumeLock = createVolumeLock({ store, isHolderActive: async () => true });
+  const { services } = fixture({ runpod, volumeLock });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
+  // A pod without the volume: no lock involved.
+  await services.createPod({ name: "ytm-scratch", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE" });
+  assert.equal(store.current(), null);
+  // A pod mounting the configured volume: takes `pod:<name>`; a second writer is refused; terminating it releases.
+  const pulling = await services.createPod({ name: "ytm-models-pull", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } });
+  assert.equal(store.current(), "pod:ytm-models-pull");
+  await assert.rejects(volumeLock.acquire("session:s1"), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /operator pod \(ytm-models-pull\)/.test(e.message));
+  await services.terminatePod(pulling.id);
+  assert.equal(store.current(), null);
+  // A createPod that fails releases the lock it took.
+  client.createPod = async () => {
+    throw new Error("no capacity");
+  };
+  await assert.rejects(services.createPod({ name: "ytm-models-pull-2", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } }));
+  assert.equal(store.current(), null);
 });

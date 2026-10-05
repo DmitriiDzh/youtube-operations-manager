@@ -19,7 +19,7 @@ import type { VolumeLockStore } from "../volume-lock";
 
 export function createVolumeLockStore(): VolumeLockStore {
   return {
-    tryAcquire: (owner) => tryAcquireMediaVolumeLock(owner),
+    tryAcquire: (owner, at) => tryAcquireMediaVolumeLock(owner, at),
     release: (owner) => releaseMediaVolumeLock(owner),
     holder: () => getMediaVolumeLockHolder(),
   };

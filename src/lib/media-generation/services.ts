@@ -12,6 +12,7 @@ import {
   type MediaSettings,
 } from "./contracts";
 import type { KeyFile } from "./key-file";
+import type { VolumeLock } from "./volume-lock";
 import {
   createNetworkVolumeInputSchema,
   createPodPassthroughSchema,
@@ -57,6 +58,8 @@ export type ServiceDependencies = {
   clock: { now(): Date };
   /** Who holds the volume lock right now (a session or pull still active), or null -- late-bound by the core. */
   activeVolumeHolder?: () => Promise<string | null>;
+  /** The volume lock itself, for the operator pod passthrough (an operator pod mounting the volume is a writer too). */
+  volumeLock?: VolumeLock;
   log?: (line: string) => void;
 };
 
@@ -165,6 +168,9 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const [credentials, settings, gatewayEnabled] = await Promise.all([credentialsStatus(), readSettings(), deps.store.getGatewayEnabled()]);
       const missing: string[] = [];
       if (!credentials.configured) missing.push("RunPod credentials");
+      // Outputs travel over the S3 API only: without the key pair a job could be approved, generated and never received
+      // (review round 13) -- so the pair is part of "ready", like the other inputs.
+      else if (!credentials.s3AccessKeyId) missing.push("S3 key pair (RunPod → Settings → S3 API keys)");
       if (!settings.datacenterId) missing.push("datacenter");
       if (!settings.gpuTypeId) missing.push("GPU type");
       if (!settings.networkVolumeId) missing.push("network volume");
@@ -393,13 +399,35 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       return pod ? withProxyUrl(pod) : null;
     },
 
+    /**
+     * Operator passthrough (CLI `pod-create`, the scripts). A pod that mounts the configured network volume is one more
+     * writer of that volume: it takes the same lock as sessions and pulls (`pod:<name>`, review round 13), held until
+     * the pod is gone (the lock's staleness check asks RunPod whether a live pod of that name still exists).
+     */
     async createPod(input: unknown): Promise<RunpodPod & { comfyUiProxyUrl: string }> {
       const parsed = parseWithSchema(createPodPassthroughSchema, input, "create pod");
-      return withProxyUrl(await (await runpodClient()).createPod(parsed as CreatePodInput));
+      const settings = await readSettings();
+      const mountsConfiguredVolume = Boolean(settings.networkVolumeId && parsed.mounts?.network?.some((m) => m.volumeId === settings.networkVolumeId));
+      const owner = mountsConfiguredVolume && deps.volumeLock ? (`pod:${parsed.name}` as const) : null;
+      if (owner) await deps.volumeLock!.acquire(owner);
+      try {
+        return withProxyUrl(await (await runpodClient()).createPod(parsed as CreatePodInput));
+      } catch (error) {
+        if (owner) await deps.volumeLock!.release(owner);
+        throw error;
+      }
     },
 
     async terminatePod(podId: string) {
-      return (await runpodClient()).terminatePod(podId);
+      const client = await runpodClient();
+      const pod = await client.getPod(podId).catch(() => null);
+      const result = await client.terminatePod(podId);
+      // Free the volume once the operator's pod is gone (the lock would otherwise expire only via the staleness check).
+      if (deps.volumeLock && pod?.name) {
+        const holder = await deps.volumeLock.holder();
+        if (holder?.owner === `pod:${pod.name}`) await deps.volumeLock.release(`pod:${pod.name}`);
+      }
+      return result;
     },
 
     // -- S3 passthrough (operator CLI; the exchange component is slice 3) ------------------------

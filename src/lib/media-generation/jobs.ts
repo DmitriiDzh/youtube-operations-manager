@@ -510,11 +510,15 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         await deps.sleep(pollMs);
         continue;
       }
-      if (!history) {
-        // No history entry is normal for the whole generation -- unless ComfyUI no longer knows the prompt at all
-        // (restarted, queue cleared): then nothing will ever arrive, and touching the session's activity every poll
-        // would keep a dead job billing the GPU until the generation deadline (review round 8). Activity is credited
-        // only when the prompt is confirmed queued/running; a transient /queue failure is left to the /history counter.
+      // "In progress" = no history entry yet, OR an entry without a verdict (a build that writes the entry at execution
+      // start, no `status`, no outputs): both are polled the same way (review round 13) -- progressed to `generating`
+      // and liveness-checked, never left to bill until the deadline.
+      const inProgress = !history || history.status === "unknown";
+      if (inProgress) {
+        // Unless ComfyUI no longer knows the prompt at all (restarted, queue cleared): then nothing will ever arrive, and
+        // touching the session's activity every poll would keep a dead job billing the GPU until the generation deadline
+        // (review round 8). Activity is credited only while the prompt is confirmed queued/running (re-checked on every
+        // Nth poll); a transient /queue failure is left to the /history counter.
         if (emptyPolls++ % QUEUE_CHECK_EVERY_POLLS === 0) {
           try {
             const queue = await comfy.getQueue();
@@ -525,16 +529,22 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           if (!promptKnown) {
             // It may have finished between the two reads: one more look at history before giving up.
             const finished = await comfy.getHistory(job.promptId).catch(() => null);
-            if (finished) continue;
-            await failJob(job, "ComfyUI no longer lists the prompt as queued or running and it is not in history (ComfyUI restarted or its queue was cleared)");
+            if (finished && finished.status !== "unknown") continue;
+            await failJob(
+              job,
+              finished
+                ? "ComfyUI finished the prompt without a status or outputs (not queued, not running, nothing saved)"
+                : "ComfyUI no longer lists the prompt as queued or running and it is not in history (ComfyUI restarted or its queue was cleared)"
+            );
             return;
           }
         }
         if (promptKnown) await deps.sessions.touchActivity(job.sessionId);
+        if (current.status === "submitted") await deps.store.jobs.transition(jobId, ["submitted"], { status: "generating" });
       } else {
         await deps.sessions.touchActivity(job.sessionId);
       }
-      if (history) {
+      if (history && !inProgress) {
         if (history.status === "error") {
           await failJob(job, `ComfyUI execution error: ${history.statusMessages.filter((m) => m.includes("error")).join(", ") || "unknown"}`);
           return;
@@ -562,8 +572,6 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           }));
           break;
         }
-      } else if (current.status === "submitted") {
-        await deps.store.jobs.transition(jobId, ["submitted"], { status: "generating" });
       }
       if (deps.clock.now().getTime() >= deadline) {
         await failJob(job, `no result after ${Math.round(maxGenerationMs / 60_000)} min`);
@@ -657,9 +665,17 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         forRetry.push({ ...output, note: null });
       }
     }
-    if (transientFailure && deps.clock.now().getTime() - (job.submittedAt ?? job.createdAt).getTime() <= TRANSFER_RETRY_WINDOW_MS) {
-      scheduleTransferRetry(jobId);
-      await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", outputsJson: JSON.stringify(forRetry), error: `pull failed: ${transientFailure}; retrying` });
+    if (transientFailure) {
+      if (deps.clock.now().getTime() - (job.submittedAt ?? job.createdAt).getTime() <= TRANSFER_RETRY_WINDOW_MS) {
+        scheduleTransferRetry(jobId);
+        await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", outputsJson: JSON.stringify(forRetry), error: `pull failed: ${transientFailure}; retrying` });
+        return;
+      }
+      // The window is over with an output still not received: that is a FAILURE, never a `done` that quietly lacks an
+      // output (review round 13); what was pulled stays recorded on the row.
+      transferBackoff.delete(jobId);
+      const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
+      await failJob(job, `not every output could be received within ${Math.round(TRANSFER_RETRY_WINDOW_MS / 3_600_000)} h (${notes.join("; ")})`, results);
       return;
     }
     transferBackoff.delete(jobId);
@@ -747,9 +763,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const template = await requireTemplate(parsed.templateId);
       const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
       const values = resolveParams(parameters, parsed.params);
-      // The outputs can only land in the channel's workspace folder: without one, nothing is submitted (and no
-      // GPU minute spent) -- `media_workspace_unavailable` at submit time, as the agent contract promises.
+      // The outputs can only land in the channel's workspace folder, and only travel over the S3 API: without either,
+      // nothing is submitted (and no GPU minute spent) -- `media_workspace_unavailable` / `media_generation_not_configured`
+      // at submit time, as the agent contract promises.
       await deps.resolveOutputRoot(parsed.channelId);
+      await deps.s3();
       const jobId = deps.generateId();
       const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, values, jobId);
       const now = deps.clock.now();

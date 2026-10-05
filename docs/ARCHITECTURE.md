@@ -2528,6 +2528,21 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `holdsVolumeLock` counts only a session past its `approved` write, so a lock left by a failed approve
   write is stale; `templateId` is validated against the account's templates like the other three pod
   inputs; `finish()` builds the pod facts once.
+- **The lock's own window, and the third writer (review round 13).** An owner acquires the volume lock
+  BEFORE its row is visible (approve → `approved` write, pull → reservation), so for milliseconds it is
+  not "active" to the staleness check: the lock row now carries its acquire time (`<owner> <epoch ms>`)
+  and a not-visibly-active holder is stolen only once older than a 2-minute grace -- a fresh one is a
+  conflict. Operator pods (CLI `pod-create`, `scripts/media/*.sh`) that mount the configured volume are
+  the third writer: the passthrough takes `pod:<name>` (active while a live pod of that name exists; the
+  terminate passthrough releases it). Readiness requires the S3 key pair (outputs travel over S3 only),
+  and `createJob` resolves the S3 client before submitting. The start wait marks the pod seen alive on
+  every successful poll, so a pod that vanishes mid-start after a crash is billed to its last sighting.
+  A history entry without a verdict (no `status`, no outputs) is in progress: progressed to `generating`
+  and liveness-checked like an absent entry. A transfer window that ends with an output still not
+  received is a failure, never a `done` missing an output. `credentials-test` is a gated CLI command (it
+  writes `verified_at`). The pod template ships no default `COMFY_TOKEN` (`pod-start.sh` refuses to expose
+  ComfyUI without one). `src/lib/shared-json` holds the one tolerant JSON reader set (`asRecord`,
+  `asRecordOrNull`, ...) that the media gateway and the transcript provider both import.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

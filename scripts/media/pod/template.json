@@ -5,7 +5,6 @@
   "disk": 20,
   "ports": ["8189/http", "22/tcp"],
   "env": {
-    "COMFY_TOKEN": "set-per-session-by-the-app",
     "YTM_POD_START": "/workspace/ytm/pod-start.sh"
   },
   "args": "bash -lc 'bash /workspace/ytm/pod-start.sh'",

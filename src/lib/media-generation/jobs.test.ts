@@ -967,7 +967,8 @@ test("review 8: a THROWN S3 failure while pulling (a 503 on the GET) keeps the j
   await g.runScheduled();
   const failed = await g.services.getJob({ jobId: job2.jobId });
   assert.equal(failed.status, "failed");
-  assert.match(failed.error ?? "", /no output could be pulled/);
+  // Review round 13: the window ending with an output still not received is reported as exactly that.
+  assert.match(failed.error ?? "", /not every output could be received within 24 h/);
 });
 
 test("review 8: a prompt ComfyUI no longer knows (not queued, not running, not in history) fails fast instead of billing the session until the generation deadline; a known prompt keeps being credited as activity", async () => {
@@ -1185,4 +1186,76 @@ test("review 12: a transfer that cannot be received backs off exponentially (15 
   f.setWorkspaceFails(false);
   await f.runScheduled();
   assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+});
+
+// -- review round 13 (2026-10-05) -----------------------------------------------------------------
+
+test("review 13: a history entry without a verdict (no status, no outputs) is in progress -- the job moves to generating and is liveness-checked; a prompt ComfyUI dropped fails fast", async () => {
+  const unknownEntry: ComfyHistoryEntry = { promptId: "prompt-1", status: "unknown", statusMessages: [], outputs: [], raw: {} };
+  const comfy = fakeComfy([unknownEntry], { queue: { running: ["prompt-1"], pending: [] } });
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  // Run one poll: the row progresses to `generating` (it used to stay `submitted` forever on such an entry).
+  const scheduledRun = f.services.processJob(job.jobId);
+  await scheduledRun;
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed"); // the 10 s test deadline, after polling
+  assert.ok(f.activity.length >= 10, "credited while ComfyUI listed it as running");
+
+  const dropped = fakeComfy([unknownEntry], { queue: { running: [], pending: [] } });
+  const g = fixture({ comfy: dropped });
+  const t2 = await importDefault(g.services);
+  const job2 = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await g.runScheduled();
+  const failed = await g.services.getJob({ jobId: job2.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /without a status or outputs/);
+  assert.equal(g.activity.length, 1, "never credited after ComfyUI stopped listing it");
+});
+
+test("review 13: when the retry window ends with an output still not received, the job is FAILED (what was pulled stays recorded), never a `done` missing an output", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "a.png", subfolder: "job-1" }, { nodeId: "9", kind: "images", filename: "b.png", subfolder: "job-1" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/a.png", new Uint8Array([1])], ["exchange/job-1/b.png", new Uint8Array([2])]]));
+  const f = fixture({ comfy, s3 });
+  const original = f.s3.client.getObjectToFile.bind(f.s3.client);
+  (f.s3.client as unknown as { getObjectToFile: (k: string, d: string) => Promise<unknown> }).getObjectToFile = async (key, dest) => {
+    if (key.endsWith("/b.png")) throw new Error("RunPod S3 returned HTTP 503");
+    return original(key, dest);
+  };
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "transferring");
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") }); // the window is over
+  f.advance(60_000);
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /not every output could be received/);
+  assert.ok(failed.outputs.find((o) => o.filename === "a.png")?.localPath, "the pulled output stays recorded");
+  assert.equal(failed.outputs.find((o) => o.filename === "b.png")?.localPath, null);
+});
+
+test("review 13: createJob refuses to submit when the S3 transport is not configured (outputs could never be received)", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const services = createMediaJobServices({
+    store: f.mem.store,
+    sessions: { getRunningSession: async (sessionId) => ({ sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "g", costPerHr: 1 }), comfyClientForSession: async () => f.comfy.client, touchActivity: async () => {} },
+    s3: async () => {
+      const { DomainError } = await import("./contracts");
+      throw new DomainError({ code: "media_generation_not_configured", message: "no S3 key pair" });
+    },
+    resolveOutputRoot: async () => "/ws/99 Data Exchange/From YTM",
+    fs: { mkdirp: async () => {}, sha256File: async () => "", remove: async () => {} },
+    registerAsset: async () => ({ assetId: "a" }),
+    findAssetByLocalPath: async () => null,
+    generateId: () => "job-x",
+    clock: { now: () => new Date() },
+    sleep: async () => {},
+    schedule: () => {},
+  });
+  await assert.rejects(services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
+  assert.equal(f.comfy.submits.length, 0);
 });

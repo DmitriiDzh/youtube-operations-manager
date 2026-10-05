@@ -1055,8 +1055,8 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 
 The operator's wrapper target for `scripts/media/*`; runs in-process against the same encrypted
 credential store, so no key is ever an argument or an environment variable. Same gates as the main
-CLI: "Operator CLI access" must be on; `volume-create`, `template-create`, `pod-create`, `pod-terminate`,
-`s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
+CLI: "Operator CLI access" must be on; `credentials-test` (it writes `verified_at`), `volume-create`,
+`template-create`, `pod-create`, `pod-terminate`, `s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
 `gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
 `template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `workflow-templates`,
 `workflow-template-import --file`, `jobs [sessionId]`, `job-get <id>`, `job-create --file`, `janitor [--delete]`, `models`,

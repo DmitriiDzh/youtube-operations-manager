@@ -35,11 +35,12 @@ test("updateMediaModelPullsJson: two connections interleaving read-modify-write 
     assert.ok(final.includes("A") && final.includes("B"), JSON.stringify(final));
     assert.ok(bCalls >= 1);
 
-    assert.deepEqual(await tryAcquireMediaVolumeLock("session:s1", dbA), { acquired: true, holder: "session:s1" });
-    assert.deepEqual(await tryAcquireMediaVolumeLock("pull:p1", dbB), { acquired: false, holder: "session:s1" });
+    const t0 = new Date("2026-10-05T12:00:00Z");
+    assert.deepEqual(await tryAcquireMediaVolumeLock("session:s1", t0, dbA), { acquired: true, holder: { owner: "session:s1", since: t0 } });
+    assert.deepEqual(await tryAcquireMediaVolumeLock("pull:p1", new Date(t0.getTime() + 1000), dbB), { acquired: false, holder: { owner: "session:s1", since: t0 } });
     assert.equal(await releaseMediaVolumeLock("pull:p1", dbB), false);
     assert.equal(await releaseMediaVolumeLock("session:s1", dbA), true);
-    assert.deepEqual(await tryAcquireMediaVolumeLock("pull:p1", dbB), { acquired: true, holder: "pull:p1" });
+    assert.deepEqual(await tryAcquireMediaVolumeLock("pull:p1", t0, dbB), { acquired: true, holder: { owner: "pull:p1", since: t0 } });
   } finally {
     a.close();
     b.close();

@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -7256,28 +7256,40 @@ const MEDIA_VOLUME_LOCK_KEY = "media_volume_lock";
  * row. `app_settings.key` is the primary key, so the insert is the atomic test-and-set -- a session
  * approve and a model pull cannot both hold it. Returns whoever holds it afterwards.
  */
-export async function tryAcquireMediaVolumeLock(owner: string, database: AppDb = db): Promise<{ acquired: boolean; holder: string }> {
+/** The row's value is `<owner> <acquired-at epoch ms>` (review round 13: the age tells a crash-stale lock from a fresh one). */
+function parseMediaVolumeLockValue(value: string): { owner: string; since: Date } {
+  const at = value.lastIndexOf(" ");
+  const sinceMs = at === -1 ? NaN : Number(value.slice(at + 1));
+  return Number.isFinite(sinceMs) ? { owner: value.slice(0, at), since: new Date(sinceMs) } : { owner: value, since: new Date(0) };
+}
+
+export async function tryAcquireMediaVolumeLock(owner: string, at: Date, database: AppDb = db): Promise<{ acquired: boolean; holder: { owner: string; since: Date } }> {
   // The holder may release between a no-op insert and the read-back; a null read-back then means "nobody holds it",
   // never "we do" -- insert again (review round 10). `acquired` is true only with OUR row in the table.
+  const value = `${owner} ${at.getTime()}`;
   for (let attempt = 0; attempt < 5; attempt++) {
-    await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value: owner }).onConflictDoNothing();
-    const holder = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
-    if (holder !== null) return { acquired: holder === owner, holder };
+    await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value }).onConflictDoNothing();
+    const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+    if (stored !== null) {
+      const holder = parseMediaVolumeLockValue(stored);
+      return { acquired: holder.owner === owner, holder };
+    }
   }
-  return { acquired: false, holder: "unknown (the lock row kept vanishing between insert and read)" };
+  return { acquired: false, holder: { owner: "unknown (the lock row kept vanishing between insert and read)", since: at } };
 }
 
 /** Deletes the row only when `owner` holds it (never another owner's lock). */
 export async function releaseMediaVolumeLock(owner: string, database: AppDb = db): Promise<boolean> {
   const rows = await database
     .delete(appSettings)
-    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), eq(appSettings.value, owner)))
+    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), like(appSettings.value, `${owner} %`)))
     .returning({ key: appSettings.key });
   return rows.length > 0;
 }
 
-export async function getMediaVolumeLockHolder(database: AppDb = db): Promise<string | null> {
-  return await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+export async function getMediaVolumeLockHolder(database: AppDb = db): Promise<{ owner: string; since: Date } | null> {
+  const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+  return stored === null ? null : parseMediaVolumeLockValue(stored);
 }
 
 /**

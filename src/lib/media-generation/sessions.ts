@@ -631,6 +631,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               lastDetail = `pod ${current?.status ?? "gone"}`;
               break;
             }
+            await deps.store.markSeenAlive(sessionId, deps.clock.now()); // billed at least until here (AC-P14-17)
             if (current.status === "RUNNING") {
               phase = "comfy";
               onStage("Waiting for ComfyUI to answer");
@@ -642,6 +643,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
               break;
             }
+            await deps.store.markSeenAlive(sessionId, deps.clock.now());
             try {
               await comfy.getSystemStats();
               const ready = deps.clock.now();

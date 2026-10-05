@@ -14,6 +14,7 @@ import { createMediaGenerationStore, createModelPullStore, createVolumeLockStore
 import { DomainError } from "./contracts";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
+import { findLivePodByName } from "./pod-lifecycle";
 import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
@@ -51,9 +52,19 @@ function buildCore(jobScheduling: JobScheduling) {
   // check asks the holder's own module whether that holder is still active (late-bound: both are built below).
   let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   let modelsRef: ReturnType<typeof createMediaModelServices> | null = null;
+  let baseRef: ReturnType<typeof createMediaGenerationServices> | null = null;
   const isHolderActive = async (holder: string): Promise<boolean> => {
     if (holder.startsWith("session:")) return (await sessionsRef?.holdsVolumeLock(holder.slice("session:".length))) ?? false;
     if (holder.startsWith("pull:")) return (await modelsRef?.isPullActive(holder.slice("pull:".length))) ?? false;
+    if (holder.startsWith("pod:")) {
+      // An operator pod (CLI/scripts) holds the volume while a live pod of its name exists; unknown (RunPod down) = active.
+      try {
+        const client = await baseRef!.resolveRunpodClient();
+        return Boolean(await findLivePodByName(client, holder.slice("pod:".length)));
+      } catch {
+        return true;
+      }
+    }
     return false;
   };
   const volumeLock = createVolumeLock({ store: createVolumeLockStore(), isHolderActive, log: (line) => console.warn(line) });
@@ -67,10 +78,12 @@ function buildCore(jobScheduling: JobScheduling) {
     clock: { now },
     activeVolumeHolder: async () => {
       const holder = await volumeLock.holder();
-      return holder && (await isHolderActive(holder)) ? holder : null;
+      return holder && (await isHolderActive(holder.owner)) ? holder.owner : null;
     },
+    volumeLock,
     log: (line) => console.warn(line),
   });
+  baseRef = base;
   const models = createMediaModelServices({
     store: createModelPullStore(),
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },

@@ -60,6 +60,7 @@ export const MEDIA_CLI_COMMANDS = [
 export type MediaCliCommand = (typeof MEDIA_CLI_COMMANDS)[number];
 
 const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>([
+  "credentials-test", // writes media_credentials.verified_at to the local database (review round 13)
   "volume-create",
   "template-create",
   "workflow-template-import",

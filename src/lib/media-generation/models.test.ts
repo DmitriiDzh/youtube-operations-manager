@@ -8,7 +8,7 @@ import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
 /** A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). */
 function testLock(opts: { heldBy?: string } = {}) {
   const store = createMemoryVolumeLockStore();
-  if (opts.heldBy) void store.tryAcquire(opts.heldBy);
+  if (opts.heldBy) void store.tryAcquire(opts.heldBy, new Date(0)); // an old, active holder
   return { lock: createVolumeLock({ store, isHolderActive: async () => true }), store };
 }
 
@@ -473,7 +473,7 @@ test("review 8/9 (AC-P14-18 as a constraint): the pull holds the volume lock fro
 
   // A holder that is no longer active (crash between its terminal write and its release) is stolen by the next acquire.
   const stale = createMemoryVolumeLockStore();
-  await stale.tryAcquire("session:dead");
+  await stale.tryAcquire("session:dead", new Date(0)); // long past the staleness grace
   const stealing = createVolumeLock({ store: stale, isHolderActive: async (h) => h !== "session:dead" });
   await stealing.acquire("pull:p2");
   assert.equal(stale.current(), "pull:p2");

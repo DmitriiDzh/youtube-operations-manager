@@ -9,7 +9,7 @@ import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
 /** A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). */
 function testLock(opts: { heldBy?: string } = {}) {
   const store = createMemoryVolumeLockStore();
-  if (opts.heldBy) void store.tryAcquire(opts.heldBy);
+  if (opts.heldBy) void store.tryAcquire(opts.heldBy, new Date(0)); // an old, active holder
   return { lock: createVolumeLock({ store, isHolderActive: async () => true }), store };
 }
 
@@ -979,4 +979,33 @@ test("review 12: holdsVolumeLock is true only for a session past its `approved` 
   assert.equal(await f.services.holdsVolumeLock(running.sessionId), true);
   await f.services.stopSession({ sessionId: running.sessionId });
   assert.equal(await f.services.holdsVolumeLock(running.sessionId), false);
+});
+
+// -- review round 13 (2026-10-05) -----------------------------------------------------------------
+
+test("review 13: every successful pod poll during the START wait marks the pod seen alive, so a pod that vanishes mid-start after a crash is billed to its last sighting, not 0 s (AC-P14-17)", async () => {
+  const runpod = fakeRunpod({ runningAfterPolls: 3 });
+  const f = fixture({ runpod, comfy: fakeComfy({ never: true }) });
+  const requested = await f.services.requestSession(operatorRequest);
+  // Snapshot the row as it is mid-start (5th pod poll): that is what a process dying right there would leave behind.
+  const original = runpod.client.getPod.bind(runpod.client);
+  let polls = 0;
+  let midStart: StoredSessionRow | null = null;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    if (++polls === 5) midStart = { ...f.mem.rows.get(requested.sessionId)! };
+    return original(id);
+  };
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId })); // ComfyUI never answers: start fails
+  assert.ok(midStart, "the snapshot was taken");
+  const row = midStart as unknown as StoredSessionRow;
+  assert.equal(row.status, "starting");
+  assert.ok(row.lastSeenAliveAt && row.startedAt && row.lastSeenAliveAt.getTime() > row.startedAt.getTime(), "seen alive during the start polls");
+  // Replay the crash: the row is as snapshotted, the pod was later killed by hand, the server reboots hours later.
+  f.mem.rows.set(requested.sessionId, row);
+  f.runpod.pods.delete("pod1");
+  f.advance(3 * 60 * 60_000);
+  await f.services.bootSweep();
+  const swept = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(swept.status, "interrupted");
+  assert.ok((swept.secondsUsed ?? 0) >= 15 && (swept.secondsUsed ?? 0) < 3600, `billed to the last sighting, got ${swept.secondsUsed}`);
 });

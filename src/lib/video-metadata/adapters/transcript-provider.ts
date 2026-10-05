@@ -1,3 +1,4 @@
+import { asRecordOrNull } from "@/lib/shared-json";
 import { createGoogleOAuthClient } from "@/lib/auth";
 import { createYoutubeClient } from "@/lib/youtube-read-gateway";
 import type {
@@ -66,11 +67,6 @@ function decodeTranscriptPayload(payload: ArrayBuffer | Buffer | string) {
   return payload.toString("utf8");
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null) return null;
-  return value as Record<string, unknown>;
-}
-
 function sanitizeReason(value: unknown) {
   if (typeof value !== "string") return undefined;
   const sanitized = value
@@ -83,13 +79,13 @@ function sanitizeReason(value: unknown) {
 }
 
 function extractHttpStatus(error: unknown) {
-  const root = asRecord(error);
+  const root = asRecordOrNull(error);
   const directStatus = root?.status;
   if (typeof directStatus === "number" && Number.isInteger(directStatus)) {
     return directStatus;
   }
 
-  const response = asRecord(root?.response);
+  const response = asRecordOrNull(root?.response);
   const responseStatus = response?.status;
   if (typeof responseStatus === "number" && Number.isInteger(responseStatus)) {
     return responseStatus;
@@ -99,16 +95,16 @@ function extractHttpStatus(error: unknown) {
 }
 
 function extractApiReason(error: unknown) {
-  const root = asRecord(error);
-  const response = asRecord(root?.response);
-  const data = asRecord(response?.data);
-  const dataError = asRecord(data?.error);
+  const root = asRecordOrNull(error);
+  const response = asRecordOrNull(root?.response);
+  const data = asRecordOrNull(response?.data);
+  const dataError = asRecordOrNull(data?.error);
 
   const candidateReasons = [
     Array.isArray(dataError?.errors)
-      ? asRecord(dataError.errors[0])?.reason
+      ? asRecordOrNull(dataError.errors[0])?.reason
       : undefined,
-    asRecord(root?.error)?.reason,
+    asRecordOrNull(root?.error)?.reason,
     root?.reason,
   ];
 
