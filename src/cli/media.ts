@@ -45,6 +45,9 @@ export const MEDIA_CLI_COMMANDS = [
   "job-get",
   "job-create",
   "janitor",
+  "models",
+  "model-pull",
+  "model-rm",
   "pods",
   "pod-get",
   "pod-create",
@@ -62,6 +65,8 @@ const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>
   "workflow-template-import",
   "job-create",
   "janitor",
+  "model-pull",
+  "model-rm",
   "pod-create",
   "pod-terminate",
   "s3-put",
@@ -78,6 +83,9 @@ export const HELP = [
   "  workflow-templates | workflow-template-import --file <template.json>   {name, workflow, parameters}",
   "  jobs [sessionId] | job-get <jobId> | job-create --file <job.json>      {sessionId, channelId, templateId, params}",
   "  janitor [--delete]                      exchange/ leftovers on the volume (dry run unless --delete)",
+  "  models                                  models/ on the volume + pulls in flight (each call advances the pulls)",
+  "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--cpu cpu3c] [--vcpu 2]",
+  "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
   "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
   "  pod-get <podId>",
@@ -221,6 +229,21 @@ export async function runMediaCli(args: {
       }
       case "janitor":
         data = await core.cleanupExchange({ dryRun: parsed.flags.delete !== true });
+        break;
+      case "models":
+        data = { pulls: await core.pollPulls(), models: await core.listModels() };
+        break;
+      case "model-pull":
+        data = await core.startPull({
+          repoId: requireFlag(parsed.flags, "repo"),
+          file: requireFlag(parsed.flags, "file"),
+          folder: requireFlag(parsed.flags, "folder"),
+          ...(typeof parsed.flags.cpu === "string" ? { cpuFlavorId: parsed.flags.cpu } : {}),
+          ...(typeof parsed.flags.vcpu === "string" ? { vcpuCount: Number(parsed.flags.vcpu) } : {}),
+        });
+        break;
+      case "model-rm":
+        data = await core.deleteModel({ key: requirePositional(parsed.positional, 0, "key") });
         break;
       case "volume-create":
         data = await core.createNetworkVolume({

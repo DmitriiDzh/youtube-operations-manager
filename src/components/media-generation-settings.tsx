@@ -115,9 +115,212 @@ export function MediaGenerationSettings({ activeChannelId = null }: { activeChan
       <VolumeCard overview={overview} onChanged={refresh} />
       <LimitsCard settings={overview.settings} onChanged={refresh} />
       <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} />
+      <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} />
       <WorkflowTemplatesCard />
       <JobsCard activeChannelId={activeChannelId} />
     </div>
+  );
+}
+
+type ModelFile = { key: string; folder: string; name: string; bytes: number; lastModified: string | null };
+type ModelPull = { pullId: string; podId: string; repoId: string; file: string; expectedKey: string; status: string; startedAt: string; finishedAt: string | null; bytes: number | null; error: string | null };
+const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"];
+
+function gb(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${bytes} B`;
+}
+
+// Phase 14 slice 4 (owner decision D5): the models on the network volume, and "add from Hugging Face"
+// through a cheap CPU pod attached to the volume (terminated as soon as the file is there). Every
+// listing is one S3 call made on an explicit Load/Refresh; while a pull runs the card refreshes itself.
+function ModelsCard({ configured }: { configured: boolean }) {
+  const [models, setModels] = useState<ModelFile[] | null>(null);
+  const [pulls, setPulls] = useState<ModelPull[]>([]);
+  const [repoId, setRepoId] = useState("");
+  const [file, setFile] = useState("");
+  const [folder, setFolder] = useState("checkpoints");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ModelFile | null>(null);
+
+  const load = useCallback(
+    () =>
+      requestJson<{ models: ModelFile[]; pulls: ModelPull[] }>("/api/media-generation/models").then(
+        (data) => {
+          setModels(data.models);
+          setPulls(data.pulls);
+          setError(null);
+        },
+        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to list the volume")
+      ),
+    []
+  );
+
+  const pulling = pulls.some((p) => p.status === "running");
+  useEffect(() => {
+    if (!pulling) return;
+    const timer = setInterval(() => void load(), 15_000);
+    return () => clearInterval(timer);
+  }, [pulling, load]);
+
+  async function startPull() {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson("/api/media-generation/models/pull", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repoId: repoId.trim(), file: file.trim(), folder }),
+      });
+      setFile("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start the pull");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelPull(pull: ModelPull) {
+    setBusy(true);
+    try {
+      await requestJson(`/api/media-generation/models/pull/${encodeURIComponent(pull.pullId)}/cancel`, { method: "POST" });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel the pull");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    const target = deleteTarget;
+    if (!target) return;
+    setDeleteTarget(null);
+    setBusy(true);
+    try {
+      await requestJson("/api/media-generation/models", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: target.key }) });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete the model");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const totalBytes = (models ?? []).reduce((sum, m) => sum + m.bytes, 0);
+
+  return (
+    <Card
+      title="Models on the volume"
+      help="The files under models/ on the network volume, read through RunPod's S3 API (no pod needed). 'Pull from Hugging Face' starts a small CPU pod attached to the volume that downloads one file straight into models/<folder>/ and is terminated as soon as the file is there (a few cents per pull); a GPU session cannot start while a pull is writing. ComfyUI finds the folders through extra_model_paths.yaml."
+    >
+      {!configured ? (
+        <p className="text-xs text-zinc-500">Save credentials and choose a network volume first.</p>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={load} disabled={busy} className={secondaryButton}>
+              {models ? "Refresh" : "Load models"}
+            </button>
+            {models && (
+              <span className="text-xs text-zinc-500">
+                {models.length} file(s), {gb(totalBytes)} ≈ ${((totalBytes / 1024 ** 3) * VOLUME_USD_PER_GB_MONTH).toFixed(2)}/month of the volume&rsquo;s price
+              </span>
+            )}
+          </div>
+          {models && models.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="min-w-[560px] w-full text-left text-xs text-zinc-400">
+                <thead>
+                  <tr className="text-zinc-500">
+                    <th className="py-1 pr-3">Folder</th>
+                    <th className="py-1 pr-3">File</th>
+                    <th className="py-1 pr-3">Size</th>
+                    <th className="py-1"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {models.map((m) => (
+                    <tr key={m.key} className="border-t border-zinc-800">
+                      <td className="py-1 pr-3">{m.folder}</td>
+                      <td className="py-1 pr-3 font-mono">{m.name}</td>
+                      <td className="py-1 pr-3 whitespace-nowrap">{gb(m.bytes)}</td>
+                      <td className="py-1">
+                        <button type="button" onClick={() => setDeleteTarget(m)} disabled={busy} className={dangerButton}>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {pulls.length > 0 && (
+            <ul className="space-y-1 text-xs text-zinc-400">
+              {pulls.slice(0, 5).map((p) => (
+                <li key={p.pullId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-1.5">
+                  <span>
+                    <span className={p.status === "running" ? "text-amber-400" : p.status === "done" ? "text-emerald-400" : "text-red-400"}>{p.status}</span>
+                    {" · "}
+                    <span className="font-mono">{p.repoId}/{p.file}</span>
+                    {" → "}
+                    {p.expectedKey}
+                    {p.bytes !== null ? ` · ${gb(p.bytes)}` : ""}
+                    {p.error ? ` · ${p.error}` : ""}
+                    {" · pod "}
+                    {p.podId}
+                  </span>
+                  {p.status === "running" && (
+                    <button type="button" onClick={() => cancelPull(p)} disabled={busy} className={secondaryButton}>
+                      Cancel
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="grid gap-2 sm:grid-cols-4">
+            <label className="block text-xs text-zinc-400">
+              Hugging Face repo
+              <input type="text" value={repoId} onChange={(e) => setRepoId(e.target.value)} className={inputClass} placeholder="Comfy-Org/flux1-schnell" />
+            </label>
+            <label className="block text-xs text-zinc-400">
+              File in the repo
+              <input type="text" value={file} onChange={(e) => setFile(e.target.value)} className={inputClass} placeholder="flux1-schnell-fp8.safetensors" />
+            </label>
+            <label className="block text-xs text-zinc-400">
+              Folder
+              <select value={folder} onChange={(e) => setFolder(e.target.value)} className={inputClass}>
+                {MODEL_FOLDERS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-end">
+              <button type="button" onClick={startPull} disabled={busy || pulling || !repoId.trim() || !file.trim()} className={primaryButton}>
+                {pulling ? "Pull running…" : "Pull from Hugging Face"}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-zinc-500">Check each model&rsquo;s licence for your use before pulling it; this app takes no position.</p>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete ${deleteTarget.name} from the volume?`}
+          description="The file is removed from the network volume; pull it again if a workflow needs it."
+          confirmLabel="Delete"
+          confirmVariant="danger"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={remove}
+        />
+      )}
+    </Card>
   );
 }
 

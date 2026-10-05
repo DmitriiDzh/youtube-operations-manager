@@ -7169,6 +7169,16 @@ export async function clearStoredMediaCredentials(database: AppDb = db): Promise
 
 const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
 const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
+const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
+
+/** Phase 14 slice 4: the model pulls in flight (CPU pods downloading onto the volume), as a JSON list; `null` = none ever. */
+export async function getMediaModelPullsJson(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
+}
+
+export async function setMediaModelPullsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_MODEL_PULLS_KEY, json, database);
+}
 
 /** The Settings → Media values as one JSON string (validated by `src/lib/media-generation/schemas.ts`); `null` = never saved. */
 export async function getMediaGenerationSettingsJson(database: AppDb = db): Promise<string | null> {

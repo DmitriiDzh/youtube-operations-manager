@@ -435,3 +435,32 @@ test("stopSession on a pending session is invalid; after done, comfyClientForSes
   await f.services.stopSession({ sessionId: requested.sessionId });
   await assert.rejects(f.services.comfyClientForSession(requested.sessionId), (e: unknown) => isDomainError(e) && e.code === "media_session_invalid_state");
 });
+
+test("AC-P14-18: approve is refused while a model pull is writing to the volume; the request stays pending and no pod is created", async () => {
+  const runpod = fakeRunpod();
+  const mem = memorySessionStore();
+  let now = new Date("2026-10-05T10:00:00Z");
+  const services = createMediaSessionServices({
+    store: mem.store,
+    base: {
+      getSettings: async () => READY_SETTINGS,
+      getOverview: async () => ({ ready: true, missing: [], gatewayEnabled: true }),
+      resolveRunpodClient: async () => runpod.client,
+      sealSecret: async (text) => encryptSecret(text, KEY),
+      openSecret: async (payload) => decryptSecret(payload, KEY),
+    },
+    createComfyClient: fakeComfy().factory,
+    comfyUiProxyBaseUrl: (podId, port) => `https://${podId}-${port}.example.test`,
+    generateId: () => "session-pull",
+    generateToken: () => "tok",
+    clock: { now: () => now },
+    sleep: async (ms) => {
+      now = new Date(now.getTime() + ms);
+    },
+    hasActiveModelPull: async () => true,
+  });
+  const requested = await services.requestSession(operatorRequest);
+  await assert.rejects(services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  assert.equal(mem.rows.get(requested.sessionId)?.status, "pending");
+  assert.ok(!runpod.calls.includes("createPod"));
+});

@@ -82,6 +82,8 @@ export type SessionServiceDependencies = {
   sleep(ms: number): Promise<void>;
   /** Start: pod creation -> ComfyUI answering. Stop: terminate -> confirmed gone. */
   timeouts?: { startMs?: number; pollMs?: number; stopMs?: number };
+  /** Slice 4 (AC-P14-18): a model pull shares the volume, so a session must not start while one runs. */
+  hasActiveModelPull?: () => Promise<boolean>;
   log?: (line: string) => void;
 };
 
@@ -347,6 +349,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const open = await deps.store.getOpen();
       if (open && open.id !== sessionId) {
         throw new DomainError({ code: "media_session_conflict", message: "Another session is already open on this device.", details: { openSessionId: open.id } });
+      }
+      if (deps.hasActiveModelPull && (await deps.hasActiveModelPull())) {
+        throw new DomainError({ code: "media_session_conflict", message: "A model pull is still writing to the network volume; wait for it to finish (Settings → Media → Models)." });
       }
       const client = await deps.base.resolveRunpodClient(); // credentials must resolve
       const token = deps.generateToken();

@@ -9,9 +9,10 @@ import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
-import { createMediaGenerationStore } from "./adapters/store";
+import { createMediaGenerationStore, createModelPullStore } from "./adapters/store";
 import { DomainError } from "./contracts";
 import { createMediaJobServices } from "./jobs";
+import { createMediaModelServices } from "./models";
 import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 
@@ -32,6 +33,12 @@ export function createMediaGenerationCore() {
     },
     clock: { now },
   });
+  const models = createMediaModelServices({
+    store: createModelPullStore(),
+    base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
+    generateId: () => randomUUID(),
+    clock: { now },
+  });
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     base,
@@ -41,6 +48,7 @@ export function createMediaGenerationCore() {
     generateToken: () => randomBytes(24).toString("base64url"),
     clock: { now },
     sleep,
+    hasActiveModelPull: () => models.hasActivePull(),
     log: (line) => console.warn(line),
   });
   const workspaces = createChannelWorkspacesCore();
@@ -87,7 +95,7 @@ export function createMediaGenerationCore() {
     schedule: (run) => void run().catch((error) => console.warn(`[media] job processing failed: ${error instanceof Error ? error.message : String(error)}`)),
     log: (line) => console.warn(line),
   });
-  return { ...base, ...sessions, ...jobs };
+  return { ...base, ...sessions, ...jobs, ...models };
 }
 
 export type MediaGenerationCore = ReturnType<typeof createMediaGenerationCore>;

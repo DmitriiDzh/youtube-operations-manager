@@ -1049,6 +1049,7 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 - `GET|POST /api/media-generation/jobs` — list (`?sessionId=&channelId=`) / the operator's own job `{ sessionId, channelId, templateId, params }` → 201 `{ job }` (`submitted`; parameters validated before any ComfyUI call: `media_job_params_invalid`); `GET /api/media-generation/jobs/{jobId}`; `POST /api/media-generation/jobs/{jobId}/cancel`
 - Job shape: `{ jobId, sessionId, channelId, templateId, templateVersion, params, status: queued|submitted|generating|transferring|done|failed|cancelled, createdBy, promptId, outputs: [{ nodeId, kind, filename, subfolder, remoteKey, localPath, bytes, sha256, remoteDeleted, assetId, note }], assetIds[], error, createdAt, submittedAt, finishedAt }`; `localPath` is under `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`
 - `POST /api/media-generation/exchange/janitor` — `{ dryRun?: boolean }` (default true) → `{ scanned, deleted[], kept: [{ key, reason }] }`; only `exchange/` on the volume, by ledger, terminal jobs only
+- `GET|DELETE /api/media-generation/models` — `{ models: [{ key, folder, name, bytes, lastModified }], pulls: [...] }` (one S3 listing of `models/`; each GET also advances the pulls) / `{ key }` deletes one `models/` object. `POST /api/media-generation/models/pull` — `{ repoId, file, folder, cpuFlavorId?, vcpuCount? }` → 201 `{ pull: { pullId, podId, repoId, file, expectedKey, status: running|done|failed|timeout, startedAt, finishedAt, bytes, error } }` (a CPU pod on the volume runs `hf download`; terminated once the file appears, dies or the 6 h cap passes); `POST /api/media-generation/models/pull/{pullId}/cancel`. A GPU session cannot start while a pull is running (AC-P14-18).
 
 ### Media CLI (`npm run media -- <command>`, Phase 14 slice 1)
 
@@ -1058,7 +1059,8 @@ CLI: "Operator CLI access" must be on; `volume-create`, `template-create`, `pod-
 `s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
 `gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
 `template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `workflow-templates`,
-`workflow-template-import --file`, `jobs [sessionId]`, `job-get <id>`, `job-create --file`, `janitor [--delete]`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
+`workflow-template-import --file`, `jobs [sessionId]`, `job-get <id>`, `job-create --file`, `janitor [--delete]`, `models`,
+`model-pull --repo --file --folder [--cpu] [--vcpu]`, `model-rm <key>`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
 `pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-put <file> <key>`, `s3-rm <key>`.
 JSON envelope on stdout, non-zero exit on failure. Pod objects carry `comfyUiProxyUrl` (the token-proxy
 port on RunPod's HTTP proxy), so no script spells the proxy host itself. There is deliberately no

@@ -2458,3 +2458,12 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   create and cancel pass the MCP mutation gate like `agent_create_collection_request`. No tool can approve,
   start or stop a session: those symbols are absent from `src/mcp` by inventory test (AC-P14-16). The CLI
   gets no agent commands (ADR 0013: the CLI is the operator's tool).
+- **Models panel (slice 4, `models.ts`, owner decision D5).** `listModels` is one S3 listing of `models/` on
+  the volume (never another prefix); `deleteModel` accepts only a `models/…` object key. `startPull` creates
+  a CPU pod (`python:3.12-slim`, default flavor `cpu3c`, 2 vCPU) with the volume at `/workspace` whose
+  command installs the Hugging Face CLI and downloads one file into `models/<folder>/`, then idles;
+  `pollPulls` (every GET of the Models card, every media watch tick) terminates the pod as soon as the
+  expected key has a size, or marks the pull failed when the pod died first, or timed out after 6 h --
+  never "stop". The in-flight list lives in `app_settings.media_model_pulls` (device-local). A GPU
+  session's approve is refused while a pull is running (shared volume, AC-P14-18); the CLI mirrors the
+  panel (`models`, `model-pull`, `model-rm`).

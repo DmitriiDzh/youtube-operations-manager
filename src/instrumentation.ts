@@ -193,6 +193,12 @@ async function startServerSession() {
     } catch {
       // RunPod unreachable, or nothing configured: try again next interval.
     }
+    try {
+      // Slice 4: a model pull's CPU pod is terminated as soon as its file is on the volume, even with no browser open.
+      await media.pollPulls();
+    } catch {
+      // same as above
+    }
     let intervalMs = 60_000;
     try {
       intervalMs = Math.max(MEDIA_WATCH_MIN_MS, (await media.getSettings()).watchIntervalSeconds * 1000);
