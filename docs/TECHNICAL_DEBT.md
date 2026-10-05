@@ -1757,3 +1757,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** (1) re-entry only; (2) an empty catalog/volume list in Settings until the key is corrected; (3) blast radius of the stored pair.
 - **Possible fix:** (1) a "rotate key file" action that re-encrypts; (2) pin the wrapper keys after slice 0; (3) none on our side.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-106 — Media generation: in-process job polling, best-effort shutdown termination, unverified live behaviour — OPEN, 2026-10-05
+
+- **What:** (1) A job's `/history` poll runs inside the web process (`schedule` in `src/lib/media-generation/index.ts`); a restart fails it as interrupted even if ComfyUI finished -- the output stays on the volume for the janitor, nothing is pulled. (2) SIGINT/SIGTERM termination of a running pod is best-effort (Next.js owns the exit); the boot sweep is the backstop, so a pod can outlive a crashed process until the next start (`pod-watch.sh` covers the gap outside the app). (3) Nothing in Phase 14 has run against a real RunPod account yet: the v2 list wrappers, `runpod/comfyui`'s start command, ComfyUI's `/history` keys for audio/video nodes and the proxy's 100 s request limit are all slice-0 checks (PHASE_14_PLAN.md §5). (4) The agent can keep a session alive indefinitely within `maxMinutes` by polling (every poll counts as activity): the caps, not the idle timeout, bound the spend.
+- **Effect:** (1) a lost output on restart (recoverable by hand from the volume); (2)/(3) money at risk until the live spike; (4) by design, bounded by the per-session and daily caps.
+- **Possible fix:** (1) resume polling from `promptId` at boot instead of failing; (3) the live spike, then pin the shapes; (4) count only job submits as activity if the owner prefers.
+- **Gate(s):** the live spike before any real use. **Status:** open.
