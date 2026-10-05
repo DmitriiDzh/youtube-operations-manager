@@ -5,7 +5,7 @@ token, and the Factory Operator's token, to be the same on every device. Variant
 pastes an already-issued token into Settings on each additional device. There is no automatic sync. Variant B
 (syncing token hashes through Syncthing) was considered and not chosen.
 
-**Status:** plan. Implementation starts only after the owner approves this plan.
+**Status:** approved by the owner (Telegram msg 1580, 2026-10-05); implemented on `feature/bl-130-agent-token-import`.
 
 ## 1. What exists today (`dev` at `6d13303`)
 

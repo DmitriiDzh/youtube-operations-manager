@@ -1772,3 +1772,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Possible fix:** (1) keep the session alive across a graceful restart instead of sweeping it; (3) the live spike, then pin the shapes; (4) count only job submits as activity if the owner prefers.
 - **Gate(s):** the live spike before any real use. **Status:** open.
 - **Slice 6 addition (2026-10-05):** (5) the Production balance reads RunPod's *legacy* GraphQL API (REST v2 has no balance endpoint); if RunPod retires it, the panel degrades to the v2 billing spend (no balance figure) -- re-check when RunPod announces a v2 balance endpoint. (6) With concurrent sessions the daily-cap check at approve is not atomic between two simultaneous approves (only the concurrency count is); the watcher stops every session once the day's total reaches the cap, so the overshoot is bounded by one watch interval of the sessions that slipped through.
+
+## RISK-108 — Agent tokens: one token may be valid on several devices, revocation is per device — OPEN, 2026-10-05
+
+- **What:** Since BL-130 (ADR 0024) the operator can register the same channel or Factory Operator token on several devices by pasting it. Each device keeps its own hash row (still device-local, nothing synced), so revoking or rotating on one device leaves the token valid on every other device where it was entered.
+- **Effect:** a leaked token must be revoked on each such device; until then it works there. Exposure boundary unchanged: loopback-only endpoints, same-OS-user readers (RISK-105, `docs/AGENT_ISOLATION_SETUP.md` §5).
+- **Possible fix:** synced revocation (variant B in `docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md`), not chosen by the owner.
+- **Re-evaluate:** if the MCP endpoints ever become reachable off-loopback, or if variant B is assigned.
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner choice, msg 1577).

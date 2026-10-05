@@ -911,6 +911,13 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
   previous token. Errors: `AGENT_TOKEN_CHANNEL_NOT_CONNECTED` (404),
   `AGENT_TOKEN_IDENTITY_MISMATCH` (409).
 - `DELETE /api/agent-tokens` with `{ channelId }` → `{ revoked: n }`. Idempotent.
+- `POST /api/agent-tokens/import` with `{ channelId, token, label? }` (BL-130, ADR 0024) → `201 { token: { tokenId, channelId, label, createdAt } }`,
+  `cache-control: no-store`, never the plaintext. Registers on this device a token issued on another one (new format
+  `ytom_ch_<channelId>.<secret>`); same identity checks as issuing; revokes the channel's previous token here; re-importing the active
+  token is a no-op. Errors: `AGENT_TOKEN_IMPORT_MALFORMED` (400), `AGENT_TOKEN_IMPORT_LEGACY_FORMAT` (400),
+  `AGENT_TOKEN_CHANNEL_MISMATCH` (409), `AGENT_TOKEN_IMPORT_REVOKED` (409), plus the two issue errors. Normal mutation gate (not a stop switch).
+- `POST /api/factory-agent-token/import` with `{ token, label? }` (BL-130) → `201 { token: { tokenId, label, createdAt } }`, same rules;
+  errors `AGENT_TOKEN_IMPORT_MALFORMED` (400), `AGENT_TOKEN_IMPORT_REVOKED` (409).
 - `GET /api/market-assignments?recordKind=<research_channel|topic|trend_candidate|discovery_candidate|research_request>`
   → `{ assignments: [{ recordKind, recordId, channelIds }] }`.
 - `PUT /api/market-assignments` with `{ recordKind, recordId, channelIds }` replaces that record's
