@@ -903,7 +903,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     }
     // An `approved` row with no error is still inside createPod in the background: the server refuses a Stop then (it would
     // orphan the pod), so none is offered until the pod exists or the start has reported a problem on the row.
-    if (s.status === "approved" && !s.error) return <span className="text-zinc-500">starting…</span>;
+    // After 15 min (start + stop budgets) the start is abandoned by age and the server accepts a Stop again.
+    if (s.status === "approved" && !s.error && nowMs - Date.parse(s.approvedAt ?? s.createdAt) < 15 * 60_000) return <span className="text-zinc-500">starting…</span>;
     return (
       <button type="button" onClick={() => setConfirming({ sessionId: s.sessionId, action: "stop" })} disabled={busy} className={dangerButton}>
         Stop

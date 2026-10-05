@@ -1476,3 +1476,21 @@ test("slice 0: a pod reported RUNNING whose container never starts (runtime null
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "failed");
   assert.equal(f.runpod.pods.has("pod1"), false);
 });
+
+// Independent review before the dev merge (PHASE_14_PLAN.md §5.2: "the watcher stops every active session once the day's
+// total reaches the cap"): a session still starting has a pod that bills, so the cap stops it too.
+test("§5.2: once today's cap is reached the watcher stops a session that is still starting (its pod already bills)", async () => {
+  const f = fixture({ settings: { maxUsdPerDay: 1, maxConcurrentSessions: 2 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  f.runpod.pods.set("podS", { status: "RUNNING", costPerHr: 0.69 });
+  const now = f.getNow();
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "starting", podId: "podS", startedAt: now, approvedAt: now, costPerHr: 0.69 });
+  // An earlier session today already spent $1.20 > the $1 cap.
+  f.mem.rows.set("old", { ...f.mem.rows.get(requested.sessionId)!, id: "old", status: "done", podId: "podOld", startedAt: new Date(now.getTime() - 3 * 3600_000), stoppedAt: new Date(now.getTime() - 3600_000), usdCharged: 1.2, secondsUsed: 7200 });
+  const ticks = await f.services.watchTick();
+  const tick = ticks.find((t) => t.sessionId === requested.sessionId)!;
+  assert.equal(tick.action, "stopped");
+  assert.match(tick.reason ?? "", /daily cap/);
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "done");
+  assert.equal(f.runpod.pods.has("podS"), false);
+});

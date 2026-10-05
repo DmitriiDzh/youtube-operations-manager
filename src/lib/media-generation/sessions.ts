@@ -650,6 +650,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const stopped = await retryStop(open, "stop retried by watcher", "done");
       return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason: open.stopReason };
     }
+    if (open.status === "starting" && !isStartAbandoned(open, now)) {
+      // The pod exists and bills while ComfyUI boots: the day's cap stops it too (§5.2 "every active session", independent
+      // review before the dev merge). An `approved` row has no pod yet and cannot be stopped without orphaning one.
+      const settings = await deps.base.getSettings();
+      if ((await spentTodayUsd(now)) >= settings.maxUsdPerDay) {
+        const reason = `daily cap reached ($${settings.maxUsdPerDay})`;
+        const stopped = await stopRow(open, reason);
+        return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
+      }
+      return { action: "none", sessionId: open.id, reason: null };
+    }
     if (open.status === "approved" || open.status === "starting") {
       if (!isStartAbandoned(open, now)) return { action: "none", sessionId: open.id, reason: null };
       const since = open.startedAt ?? open.approvedAt ?? open.createdAt;
@@ -920,16 +931,18 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
      * failure never skips the others -- it is reported as that session's error and the next tick retries.
      */
     async watchTick(): Promise<WatchTickResult[]> {
-      const results: WatchTickResult[] = [];
-      for (const open of await deps.store.listOpen()) {
-        try {
-          results.push(await watchOne(open));
-        } catch (cause) {
-          log(`[media] watcher: session ${open.id} failed this tick: ${cause instanceof Error ? cause.message : String(cause)}`);
-          results.push({ action: "none", sessionId: open.id, reason: `watch failed: ${cause instanceof Error ? cause.message : String(cause)}` });
-        }
-      }
-      return results;
+      // In parallel (independent review): each stop may wait up to the stop budget, and a fourth session must not bill on
+      // while the first three are confirmed one after another. Results keep the sessions' order.
+      return Promise.all(
+        (await deps.store.listOpen()).map(async (open): Promise<WatchTickResult> => {
+          try {
+            return await watchOne(open);
+          } catch (cause) {
+            log(`[media] watcher: session ${open.id} failed this tick: ${cause instanceof Error ? cause.message : String(cause)}`);
+            return { action: "none", sessionId: open.id, reason: `watch failed: ${cause instanceof Error ? cause.message : String(cause)}` };
+          }
+        })
+      );
     },
 
     /**

@@ -310,7 +310,7 @@ export function createRunpodApiClient(args: {
       const query = asRecord(asRecord(asRecord(pods.body).metadata).query);
       const podsUsd = total(pods.body);
       const networkVolumesUsd = total(volumes.body);
-      return { source: "billing", balanceUsd: null, spentUsd: podsUsd + networkVolumesUsd, podsUsd, networkVolumesUsd, from: asString(query.startTime), to: asString(query.endTime), balanceError };
+      return { source: "billing", balanceUsd: null, spentUsd: Math.round((podsUsd + networkVolumesUsd) * 100) / 100, podsUsd, networkVolumesUsd, from: asString(query.startTime), to: asString(query.endTime), balanceError };
     },
 
     /** One authenticated read with no side effect: 200 = the key works. */
