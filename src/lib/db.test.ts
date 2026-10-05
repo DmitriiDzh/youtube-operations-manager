@@ -871,7 +871,8 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
 // zeroed row (not absent), a category's counts are independent of the others, concurrent writes
 // are never lost, and -- the core behavior a rolling window actually exists to provide -- an
 // event outside the window is excluded from the count even though it is still in the table.
-// Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories (seven in all).
+// Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories; Phase 14 adds the three
+// media-gateway children (docs/roadmap/plans/PHASE_14_PLAN.md §2.1: one counter per child).
 test("getGatewayTrafficLast24h: every category reports a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
@@ -884,10 +885,13 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
       [
         "analytics_reads",
         "cloud_monitoring_reads",
+        "comfyui_api",
         "data_api_reads",
         "live_writes",
         "mcp_tool_calls",
         "reporting_reads",
+        "runpod_api",
+        "runpod_s3",
         "wikipedia_reads",
         "youtube_feed_reads",
       ]

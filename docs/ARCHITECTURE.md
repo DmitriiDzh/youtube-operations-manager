@@ -2357,3 +2357,47 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   in-memory cache for 30 minutes, never persisted.
 - **Not exposed to agents yet:** the Wikipedia signals and the Music chart. That depends on the separate
   agent-recommendations proposal.
+
+## 25. Remote media generation (RunPod + ComfyUI) — Phase 14, slice 1, branch `feature/phase-14-media-generation`
+
+Plan and acceptance criteria: `docs/roadmap/plans/PHASE_14_PLAN.md`; research:
+`docs/roadmap/plans/MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`. Slice 1 delivers the
+foundation only — gateways, credentials, settings, Settings UI, operator CLI. Sessions (pods that are
+approved per session and always terminated), jobs (ComfyUI prompts whose outputs are pulled over S3 into
+`99 Data Exchange/From YTM/media/<jobId>/`), the Models panel and the agent tools are later slices.
+
+- **Gateway (`src/lib/media-gateway/`).** One barrel over three children, one per external API
+  product, each checking the single "Media gateway" toggle and recording a traffic event: `runpod-api.ts`
+  (RunPod REST **v2** at `api.runpod.io/v2` — v1 at `rest.runpod.io` retires on 2026-11-15), `runpod-s3.ts`
+  (RunPod's S3-compatible network-volume API, signed by the hand-written SigV4 in `sigv4.ts`, verified
+  against the official AWS test vectors rather than adding the AWS SDK), `comfyui-api.ts` (the ComfyUI
+  server behind RunPod's HTTP proxy, bearer token per session). `inventory.test.ts` fails the suite if any
+  production file outside the gateway names a runpod.io host, or imports a child instead of the barrel.
+  There is deliberately no "stop pod" function anywhere: a stopped pod's disk is billed at twice the
+  running rate, so the only idle state this app knows is "terminated".
+- **Credentials (`src/lib/media-generation/`, owner instruction 2026-10-05).** The RunPod API key and the
+  optional S3 key pair are entered only in Settings → Media, encrypted as one AES-256-GCM blob in
+  `media_credentials` (schema v50, singleton, device-local: not in `SNAPSHOT_TRANSFERRED_TABLES`, not in
+  `sync-gateway`). **The encryption key is a file the app creates itself** (`media-generation.key` in the
+  app-data directory, written through `writeJsonFileAtomic`, mode 0600), not an environment variable —
+  unlike `ai-connections`/`cloud-connection` (ADR 0008). A database copied to another machine has no
+  matching key file and reads as `{ configured: false, reason: "key_file_missing" }`; no decryption is
+  attempted. A read never creates the key; only the operator's save does. Decryption happens inside the
+  service for the duration of one call and the plaintext reaches only the gateway factory. No route, CLI
+  command, log line or (future) agent tool returns a secret; the public status carries the key's first
+  characters, the S3 key id (RunPod's `user_…`, not a secret) and `verifiedAt`.
+- **Settings.** One JSON blob under `app_settings.media_generation_settings`, validated by
+  `mediaSettingsSchema` (defaults in `DEFAULT_MEDIA_SETTINGS`). Catalog-backed values are checked live on
+  save: the datacenter must be in `GET /catalog/data-centers`, the GPU in `GET /catalog/gpus`, the network
+  volume must exist and sit in the chosen datacenter (`media_settings_invalid`); numeric limits:
+  `watchIntervalSeconds ≥ 15`, `idleMinutes ≥ 1`, `maxUsdPerDay > 0` (AC-P14-19). Setting a catalog value
+  before credentials exist is refused (`media_generation_not_configured`), never silently accepted.
+- **Operator surfaces.** `src/app/api/media-generation/*` (session required, mutating methods behind
+  `src/proxy.ts`'s device gate), the Settings → Media sub-tab (`media-generation-settings.tsx`: every
+  RunPod call is an explicit click — Load / Test / Create — never on mount; creating a volume goes through
+  `ConfirmDialog` with the monthly price), and `src/cli/media.ts` (`npm run media -- …`), a separate entry
+  point from the main CLI (AGENTS.md §M) with the same gates (Operator CLI access; device mutation gate for
+  `volume-create`/`pod-create`/`pod-terminate`/`s3-rm`). Scripts under `scripts/media/` wrap this CLI so a
+  secret is never an argument or an environment variable (AC-P14-20).
+- **Independence (AGENTS.md §M).** With no credentials the feature answers "not configured" and makes no
+  outbound call; nothing else in the app imports it. Residual risks: RISK-105.

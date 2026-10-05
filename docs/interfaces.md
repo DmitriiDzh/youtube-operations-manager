@@ -1026,6 +1026,31 @@ instead, not a route here.
   "connectedEmail": "...", "scope": "...", "connectedAt": "..." }` — never includes a token
 - `POST /api/cloud-connection/disconnect` — revokes the token with Google, clears the stored grant
 
+### Media generation API (Phase 14 slice 1, `docs/roadmap/plans/PHASE_14_PLAN.md`)
+
+Operator-only (session required); never returns a stored secret. Every RunPod call behind these
+routes checks the "Media gateway" toggle and counts in the gateway traffic stats.
+
+- `GET /api/media-generation/overview` — `{ credentials, settings, gatewayEnabled, ready, missing[] }`
+- `GET|PUT|DELETE /api/media-generation/credentials` — status `{ configured, runpodKeyPrefix, s3AccessKeyId, verifiedAt, updatedAt }` or `{ configured: false, reason: "no_credentials" | "key_file_missing" }`; PUT body `{ runpodApiKey, s3AccessKeyId?, s3SecretAccessKey? }` (encrypted with the per-device key file); DELETE clears
+- `POST /api/media-generation/credentials/test` — one RunPod read (+ one S3 listing when configured) → `{ runpod, s3, verifiedAt }`
+- `GET|PUT /api/media-generation/settings` — `{ datacenterId, gpuTypeId, cloudType, networkVolumeId, templateId, maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds }`; PUT is a partial update, GPU/datacenter/volume are checked against RunPod's live catalog (`media_settings_invalid`)
+- `PUT /api/media-generation/gateway` — `{ enabled }` (the media gateway toggle)
+- `GET /api/media-generation/catalog` — `{ gpus[], dataCenters[] }` (two RunPod reads, on an explicit "Load")
+- `GET|POST /api/media-generation/network-volumes` — list / create `{ name, datacenterId, sizeGb }` (billed monthly by RunPod)
+- `GET /api/media-generation/templates` — `{ templates: [{ id, name }] }`
+
+### Media CLI (`npm run media -- <command>`, Phase 14 slice 1)
+
+The operator's wrapper target for `scripts/media/*`; runs in-process against the same encrypted
+credential store, so no key is ever an argument or an environment variable. Same gates as the main
+CLI: "Operator CLI access" must be on; `volume-create`, `pod-create`, `pod-terminate`, `s3-rm` pass the
+device mutation gate. Commands: `status`, `credentials-test`, `settings`, `gpus`, `datacenters`,
+`volumes`, `volume-create --name --dc --size`, `templates`, `pods`, `pod-get <id>`, `pod-create --file
+<body.json>`, `pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-rm <key>`. JSON
+envelope on stdout, non-zero exit on failure. There is deliberately no `pod-stop`: a stopped pod's disk
+is billed at the doubled rate, so the only idle state is "terminated".
+
 -> Next: [docs/troubleshooting.md](./troubleshooting.md)
 
 <- [Back to README](../README.md)

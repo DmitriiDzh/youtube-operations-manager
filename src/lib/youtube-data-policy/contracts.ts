@@ -157,6 +157,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   channel_workspaces: notApiData("local folder paths"),
   users: notApiData("OAuth identities/tokens (credentials, not API Data)"),
   cloud_connection: notApiData("Google Cloud OAuth grant (credentials)"),
+  media_credentials: notApiData("RunPod / S3 API keys (credentials, Phase 14)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),

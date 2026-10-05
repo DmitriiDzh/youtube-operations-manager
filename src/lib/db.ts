@@ -712,6 +712,35 @@ export const channelWorkspaces = sqliteTable(
 );
 
 /**
+ * Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.9), SCHEMA_MIGRATIONS version 50. The RunPod API
+ * key and the S3 API key pair the operator typed into Settings → Media, as ONE AES-256-GCM blob
+ * (`src/lib/media-generation/`). The encryption key is NOT an environment variable: the app
+ * generates it on first use and keeps it in a 0600 file in the app-data directory (owner
+ * instruction, Telegram 2026-10-05: "вводить через интерфейс настроек и сохранять закодировано
+ * локально на каждой машине"). A `playlist-manager.db` copied to another machine has no matching
+ * key file, so this row reads as "not configured" there, never as foreign plaintext.
+ *
+ * A singleton (`id = "default"`). `runpod_key_prefix` (the first characters of the key, for
+ * recognition in the UI) and `s3_access_key_id` (RunPod's `user_...` id, not a secret) are
+ * plaintext; `verified_at` is when a "Test" last succeeded.
+ *
+ * **Device-local, deliberately NOT in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * and not in `sync-gateway`, like `cloud_connection` and `ai_connection_credentials`.
+ */
+export const mediaCredentials = sqliteTable("media_credentials", {
+  id: text("id").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  runpodKeyPrefix: text("runpod_key_prefix").notNull(),
+  s3AccessKeyId: text("s3_access_key_id"),
+  verifiedAt: integer("verified_at", { mode: "timestamp" }),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -2772,6 +2801,24 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 50,
+    description:
+      "media_credentials -- encrypted RunPod / S3 API keys entered in Settings → Media, key file per device (Phase 14, docs/roadmap/plans/PHASE_14_PLAN.md §2.9); additive new table, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_credentials (" +
+          "id TEXT PRIMARY KEY, " +
+          "ciphertext TEXT NOT NULL, " +
+          "iv TEXT NOT NULL, " +
+          "auth_tag TEXT NOT NULL, " +
+          "runpod_key_prefix TEXT NOT NULL, " +
+          "s3_access_key_id TEXT, " +
+          "verified_at INTEGER, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -4661,7 +4708,11 @@ export type GatewayTrafficCategory =
   | "cloud_monitoring_reads"
   | "youtube_feed_reads"
   | "wikipedia_reads"
-  | "reporting_reads";
+  | "reporting_reads"
+  // Phase 14 -- the three media-gateway children (`src/lib/media-gateway/`), one counter each.
+  | "runpod_api"
+  | "runpod_s3"
+  | "comfyui_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -4680,6 +4731,9 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "youtube_feed_reads",
   "wikipedia_reads",
   "reporting_reads",
+  "runpod_api",
+  "runpod_s3",
+  "comfyui_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -6838,6 +6892,82 @@ export async function upsertStoredCloudConnection(
 
 export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
   await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- media generation: credentials singleton,
+// the settings blob and the gateway toggle. Read/written only through
+// `src/lib/media-generation/adapters/store.ts` and `src/lib/media-gateway/`.
+// ---------------------------------------------------------------------------
+
+const MEDIA_CREDENTIALS_SINGLETON_ID = "default";
+
+export type StoredMediaCredentials = {
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+  runpodKeyPrefix: string;
+  s3AccessKeyId: string | null;
+  verifiedAt: Date | null;
+  updatedAt: Date;
+};
+
+export async function getStoredMediaCredentials(database: AppDb = db): Promise<StoredMediaCredentials | null> {
+  const [row] = await database.select().from(mediaCredentials).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
+  if (!row) return null;
+  return {
+    ciphertext: row.ciphertext,
+    iv: row.iv,
+    authTag: row.authTag,
+    runpodKeyPrefix: row.runpodKeyPrefix,
+    s3AccessKeyId: row.s3AccessKeyId ?? null,
+    verifiedAt: row.verifiedAt ?? null,
+    updatedAt: row.updatedAt,
+  };
+}
+
+/** Replaces the whole blob (a new key set); `verifiedAt` resets, since nothing has been tested yet. */
+export async function upsertStoredMediaCredentials(
+  input: { ciphertext: string; iv: string; authTag: string; runpodKeyPrefix: string; s3AccessKeyId: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database
+    .insert(mediaCredentials)
+    .values({ id: MEDIA_CREDENTIALS_SINGLETON_ID, ...input, verifiedAt: null, updatedAt: now })
+    .onConflictDoUpdate({
+      target: mediaCredentials.id,
+      set: { ...input, verifiedAt: null, updatedAt: now },
+    });
+}
+
+export async function setStoredMediaCredentialsVerifiedAt(verifiedAt: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaCredentials).set({ verifiedAt }).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
+}
+
+export async function clearStoredMediaCredentials(database: AppDb = db): Promise<void> {
+  await database.delete(mediaCredentials).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
+}
+
+const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
+const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
+
+/** The Settings → Media values as one JSON string (validated by `src/lib/media-generation/schemas.ts`); `null` = never saved. */
+export async function getMediaGenerationSettingsJson(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_GENERATION_SETTINGS_KEY, database);
+}
+
+export async function setMediaGenerationSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_GENERATION_SETTINGS_KEY, json, database);
+}
+
+/** Phase 14: the media gateway (RunPod API, S3 API, ComfyUI) toggle. On unless turned off, persistent, like the read toggles. */
+export async function getMediaGatewayEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(MEDIA_GATEWAY_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setMediaGatewayEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_GATEWAY_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
 // ---------------------------------------------------------------------------

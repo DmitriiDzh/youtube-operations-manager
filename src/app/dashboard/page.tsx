@@ -33,6 +33,7 @@ import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
+import { MediaGenerationSettings } from "@/components/media-generation-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
@@ -114,6 +115,8 @@ const SETTINGS_SUB_TABS = [
   { value: "channels", label: "Channels" },
   { value: "ai-agent", label: "AI Agent" },
   { value: "sync", label: "Sync" },
+  // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6, owner decision D5): RunPod / ComfyUI setup.
+  { value: "media", label: "Media" },
   { value: "about", label: "About" },
 ] as const;
 type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
@@ -530,6 +533,12 @@ export default function Dashboard() {
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Automatic device sync">
             <DeviceAutoSyncSettings />
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "media" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — Media generation">
+            <MediaGenerationSettings />
           </FeatureErrorBoundary>
         </div>
 

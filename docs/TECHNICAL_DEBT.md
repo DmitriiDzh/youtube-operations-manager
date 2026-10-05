@@ -1750,3 +1750,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** none on quota safety; the owner may see a duplicate pending request or an over-estimate.
 - **Possible fix:** (2) a partial unique index or one transaction; (3) its own ADR if the owner asks for it.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-105 — Media generation: per-device key file has no rotation/backup; RunPod REST v2 list shapes unverified live — OPEN, 2026-10-05
+
+- **What:** (1) `media_credentials` is encrypted under `media-generation.key` in the app-data directory (Phase 14 §2.9); there is no rotation or backup procedure — losing the file means re-entering the keys in Settings (the same accepted shape as RISK-15/RISK-48, with the difference that nothing here needs `.env`). (2) `src/lib/media-gateway/runpod-api.ts` reads list responses through a tolerant wrapper-key extractor (`items`/`gpus`/`dataCenters`/...) because the v2 OpenAPI wrapper names were read from docs, not exercised; slice 0's live spike confirms them. (3) RunPod's S3 keys are per user, not per volume (docs); a leaked pair reaches every volume of the account.
+- **Effect:** (1) re-entry only; (2) an empty catalog/volume list in Settings until the key is corrected; (3) blast radius of the stored pair.
+- **Possible fix:** (1) a "rotate key file" action that re-encrypts; (2) pin the wrapper keys after slice 0; (3) none on our side.
+- **Gate(s):** none. **Status:** open.

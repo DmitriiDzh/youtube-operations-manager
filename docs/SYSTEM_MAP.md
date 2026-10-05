@@ -489,6 +489,18 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Настройки:** тумблеры «RSS feed reads» и «Wikipedia reads» в карточке чтения Settings → API.
 - **Подробно:** ARCHITECTURE §24, план `docs/roadmap/plans/PHASE_13_PLAN.md`.
 
+### 2.9x Phase 14 — удалённая генерация медиа (RunPod + ComfyUI) — **PARTIALLY IMPLEMENTED** (срез 1, ветка `feature/phase-14-media-generation`)
+
+- **Ответственность (срез 1):** ключи RunPod/S3 вводятся в Settings → Media и хранятся зашифрованно с ключом, который приложение само создаёт в файле `media-generation.key` (0600, app-data) — не переменная окружения; настройки (датацентр, GPU, cloud, network volume, шаблон, лимиты $/мин, таймаут простоя, интервал watcher'а) с проверкой по живому каталогу RunPod; operator CLI `npm run media -- …`. Сессии, задания, обмен через S3, панель Models, MCP-инструменты — **PLANNED** (срезы 2–5).
+- **Модули:**
+  - `src/lib/media-gateway/` — единый шлюз: `runpod-api.ts` (REST v2), `runpod-s3.ts` (+ `sigv4.ts`), `comfyui-api.ts`; один тумблер «Media gateway» и три счётчика трафика (`runpod_api`, `runpod_s3`, `comfyui_api`); `inventory.test.ts` запрещает обращение к хостам runpod.io вне шлюза;
+  - `src/lib/media-generation/` — credentials (AES-GCM, ключ-файл), settings (JSON в `app_settings`), каталог/volumes/pods через шлюз; никогда не возвращает секрет;
+  - `src/app/api/media-generation/*` — операторские маршруты (сессия обязательна);
+  - `src/components/media-generation-settings.tsx` — под-вкладка Settings → Media;
+  - `src/cli/media.ts` — operator CLI (гейт «Operator CLI access» + device mutation gate для мутаций).
+- **Схема:** v50 (`media_credentials`, device-local, не в snapshot/sync).
+- **Подробно:** ARCHITECTURE §25, план `docs/roadmap/plans/PHASE_14_PLAN.md`, исследование `MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`.
+
 ### 2.10 Web UI — **IMPLEMENTED**
 
 - **Ответственность:** дашборд оператора (`/dashboard`) с вкладками **Home** (с 2026-09-20, editorial-profile панель; с 2026-09-23 также карточки последнего видео/списка видео/канальной аналитики — §2.9n) / **Content** (с 2026-09-20, ex-Sync, Slice S2) / **Analytics** (с 2026-09-20 заглушка, с 2026-09-22 реальный сбор — Phase 8, §2.9i; с 2026-09-23 также живая вкладка "Overview" — §2.9n; с 2026-09-26 внутри Analytics ещё два под-таба — "Content" и "Audience" — §2.9t) / **Languages** (с 2026-09-20, объединяет прежние отдельные вкладки Localizations и AI Localization — `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md`) / Batches / **Research** (с 2026-09-26, Phase 9 слайс 2 — глобальный, не привязанный к каналу watchlist для market intelligence, §2.9v) / **Decisions** (с 2026-09-29, Phase 10 слайс 1 — hypotheses/experiments/outcomes, §2.9w) / **Settings** (Phase 6 "AI Connections") / **Device**. Хром вокруг вкладок — постоянный левый sidebar (иконка + label на каждую вкладку, активная подсвечена акцентным цветом) и верхний бар (активный канал, переключение канала, sign out) в стилистике YouTube Studio (`src/components/app-shell.tsx`), заменивший прежний горизонтальный pill-tab-bar. **Manual и Rules удалены 2026-09-20** (решение владельца проекта: «давай удалим их, т.к. пока не вижу им применения») — обе были унаследованы от исходной кодовой базы проекта (Phase 0/1) и не связаны с локализацией/Change Sets/Batches этого проекта; Home теперь дефолтная вкладка вместо Manual.
