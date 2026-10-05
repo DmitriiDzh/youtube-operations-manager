@@ -23,6 +23,12 @@ import {
   copyLegacyDatabaseInto,
   createIsolatedDb,
   getChannelWorkspacePath,
+  deleteLogicalPathRow,
+  getLogicalPathValue,
+  insertLogicalPathRow,
+  listLogicalPathRows,
+  listLogicalPathValues,
+  setLogicalPathValue,
   addChannelRecordAssignment,
   listChannelAssignedRecordIds,
   listRecordAssignmentsByKind,
@@ -2980,6 +2986,52 @@ test("channel_workspaces: per-device, per-channel isolation for get/list/set/cle
     assert.equal(await getChannelWorkspacePath("device-a", "UC_A", isolatedDb), null);
     assert.equal(await getChannelWorkspacePath("device-a", "UC_B", isolatedDb), "/work/b");
     assert.equal(await getChannelWorkspacePath("device-other", "UC_A", isolatedDb), "/elsewhere/a");
+  }));
+
+// Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md AC-FO-01/AC-FO-03): the
+// migration seeds exactly the two initial names (no values), a new path is just a row, and values
+// are scoped per (device, name).
+test("logical_paths: seeds exactly the two initial names without values; values are per device; new paths need no migration", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await tableExists(client, "logical_paths"), true);
+    assert.equal(await tableExists(client, "logical_path_values"), true);
+    const isolatedDb = createIsolatedDb(client);
+
+    assert.deepEqual(
+      (await listLogicalPathRows(isolatedDb)).map((r) => [r.name, r.audience]),
+      [
+        ["developer_exchange", "factory_only"],
+        ["factory_shared", "all_agents"],
+      ]
+    );
+    assert.deepEqual(await listLogicalPathValues("device-a", isolatedDb), []);
+
+    await setLogicalPathValue("device-a", "factory_shared", "C:\\Factory\\02 Shared Registry", isolatedDb);
+    await setLogicalPathValue("device-other", "factory_shared", "/Users/x/Factory/02 Shared Registry", isolatedDb);
+    assert.equal(await getLogicalPathValue("device-a", "factory_shared", isolatedDb), "C:\\Factory\\02 Shared Registry");
+    assert.equal(await getLogicalPathValue("device-other", "factory_shared", isolatedDb), "/Users/x/Factory/02 Shared Registry");
+    assert.equal(await getLogicalPathValue("device-a", "developer_exchange", isolatedDb), null);
+    assert.equal(await getLogicalPathValue("device-third", "factory_shared", isolatedDb), null);
+
+    await setLogicalPathValue("device-a", "factory_shared", "C:\\Factory\\Shared2", isolatedDb);
+    assert.equal(await getLogicalPathValue("device-a", "factory_shared", isolatedDb), "C:\\Factory\\Shared2");
+    assert.equal(await getLogicalPathValue("device-other", "factory_shared", isolatedDb), "/Users/x/Factory/02 Shared Registry");
+
+    // A third path is only a row: no schema change, and a duplicate name writes nothing.
+    assert.equal(await insertLogicalPathRow({ name: "script_library", audience: "all_agents", description: "" }, isolatedDb), true);
+    assert.equal(await insertLogicalPathRow({ name: "script_library", audience: "factory_only", description: "x" }, isolatedDb), false);
+    assert.equal((await listLogicalPathRows(isolatedDb)).find((r) => r.name === "script_library")?.audience, "all_agents");
+
+    await setLogicalPathValue("device-a", "factory_shared", null, isolatedDb);
+    assert.equal(await getLogicalPathValue("device-a", "factory_shared", isolatedDb), null);
+    assert.equal(await getLogicalPathValue("device-other", "factory_shared", isolatedDb), "/Users/x/Factory/02 Shared Registry");
+
+    // Deleting a definition removes its values for every device, and a missing name reports false.
+    await setLogicalPathValue("device-a", "script_library", "/s", isolatedDb);
+    assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), true);
+    assert.equal(await getLogicalPathValue("device-a", "script_library", isolatedDb), null);
+    assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), false);
   }));
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-11): at most one active token per channel,

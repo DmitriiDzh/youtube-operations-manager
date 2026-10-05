@@ -31,6 +31,11 @@ export type { SqlExecutor };
  *     never synced"), NOT a RISK-52-style omission -- do not "fix" it by adding it here the way
  *     the Phase 9/10 tables were. Rows are also keyed on the bootstrap `deviceId`, so a row from
  *     another device is invisible even if it arrived some other way.
+ *   - `logical_paths` / `logical_path_values` (Factory Operator access,
+ *     `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.2) -- named local paths and their
+ *     per-machine values; meaningless on another machine, and by owner decision (2026-10-05) each
+ *     machine configures only its own values. Deliberately device-local, never a RISK-52-style
+ *     omission; values are also keyed on the bootstrap `deviceId`.
  *   - `agent_channel_tokens` (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md` 12.1) -- per-machine
  *     agent credentials (hashes), device-local by design like `agent_connections`; never a
  *     RISK-52-style omission.
@@ -165,6 +170,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   ai_localization_generation_provenance: "propagated continuously by sync-gateway instead",
   ai_connections: "propagated continuously by sync-gateway instead",
   channel_workspaces: "per-device local filesystem paths (Phase 11)",
+  logical_paths: "per-device registry of named local paths (Factory Operator access, plan F1)",
+  logical_path_values: "per-device local filesystem path values of the registry (Factory Operator access, plan F1)",
   agent_channel_tokens: "per-machine agent credentials (Phase 12)",
   agent_connections: "retired (ADR 0011), table kept inert",
   agent_capability_zones: "retired (ADR 0011), table kept inert",

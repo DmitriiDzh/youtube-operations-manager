@@ -712,6 +712,38 @@ export const channelWorkspaces = sqliteTable(
 );
 
 /**
+ * Factory Operator access (`docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.2), SCHEMA_MIGRATIONS
+ * version 50. The registry of logical paths: a stable `name` plus, in `logicalPathValues`, one local
+ * path string per device. `audience` is `all_agents` (every channel agent may read it) or
+ * `factory_only` (only the Factory Operator role). New paths are rows, never a schema change.
+ *
+ * **Both tables are device-local, deliberately NOT in `SNAPSHOT_TRANSFERRED_TABLES`** and not in
+ * `sync-gateway` (owner decision, 2026-10-05: each machine configures only its own values). Values
+ * are keyed on the bootstrap `deviceId` and every read filters on it, same as `channelWorkspaces`.
+ */
+export const logicalPaths = sqliteTable("logical_paths", {
+  name: text("name").primaryKey(),
+  audience: text("audience").notNull(),
+  description: text("description").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const logicalPathValues = sqliteTable(
+  "logical_path_values",
+  {
+    deviceId: text("device_id").notNull(),
+    name: text("name").notNull(),
+    path: text("path").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.deviceId, table.name] })]
+);
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -2772,6 +2804,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 50,
+    description:
+      "logical_paths + logical_path_values -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F1): named paths with a per-device value. Device-local: excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway. Seeds only the two initial NAMES (no values); additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS logical_paths (" +
+          "name TEXT PRIMARY KEY, " +
+          "audience TEXT NOT NULL, " +
+          "description TEXT NOT NULL DEFAULT '', " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS logical_path_values (" +
+          "device_id TEXT NOT NULL, " +
+          "name TEXT NOT NULL, " +
+          "path TEXT NOT NULL, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (device_id, name))"
+      );
+      await client.execute(
+        "INSERT OR IGNORE INTO logical_paths (name, audience, description) VALUES " +
+          "('factory_shared', 'all_agents', 'Shared Registry folder, read-only for channels'), " +
+          "('developer_exchange', 'factory_only', 'Factory Operator <-> Developer exchange folder')"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -4649,6 +4708,83 @@ export async function setChannelWorkspacePath(
     .values({ deviceId, channelId, path, updatedAt })
     .onConflictDoUpdate({
       target: [channelWorkspaces.deviceId, channelWorkspaces.channelId],
+      set: { path, updatedAt },
+    });
+}
+
+export type StoredLogicalPath = { name: string; audience: string; description: string; createdAt: Date };
+
+/** Factory Operator access. Definitions are device-local; values are filtered on `deviceId`. */
+export async function listLogicalPathRows(database: AppDb = db): Promise<StoredLogicalPath[]> {
+  return database
+    .select({
+      name: logicalPaths.name,
+      audience: logicalPaths.audience,
+      description: logicalPaths.description,
+      createdAt: logicalPaths.createdAt,
+    })
+    .from(logicalPaths)
+    .orderBy(asc(logicalPaths.name));
+}
+
+/** Returns false (nothing written) when the name already exists. */
+export async function insertLogicalPathRow(
+  input: { name: string; audience: string; description: string },
+  database: AppDb = db
+): Promise<boolean> {
+  const inserted = await database
+    .insert(logicalPaths)
+    .values({ ...input, createdAt: new Date() })
+    .onConflictDoNothing()
+    .returning({ name: logicalPaths.name });
+  return inserted.length > 0;
+}
+
+/** Deletes the definition and every stored value for that name. Returns false if it did not exist. */
+export async function deleteLogicalPathRow(name: string, database: AppDb = db): Promise<boolean> {
+  await database.delete(logicalPathValues).where(eq(logicalPathValues.name, name));
+  const deleted = await database.delete(logicalPaths).where(eq(logicalPaths.name, name)).returning({ name: logicalPaths.name });
+  return deleted.length > 0;
+}
+
+export async function getLogicalPathValue(deviceId: string, name: string, database: AppDb = db): Promise<string | null> {
+  const rows = await database
+    .select({ path: logicalPathValues.path })
+    .from(logicalPathValues)
+    .where(and(eq(logicalPathValues.deviceId, deviceId), eq(logicalPathValues.name, name)))
+    .limit(1);
+  return rows[0]?.path ?? null;
+}
+
+export async function listLogicalPathValues(
+  deviceId: string,
+  database: AppDb = db
+): Promise<Array<{ name: string; path: string; updatedAt: Date }>> {
+  return database
+    .select({ name: logicalPathValues.name, path: logicalPathValues.path, updatedAt: logicalPathValues.updatedAt })
+    .from(logicalPathValues)
+    .where(eq(logicalPathValues.deviceId, deviceId));
+}
+
+/** `null` deletes this device's value for the name. */
+export async function setLogicalPathValue(
+  deviceId: string,
+  name: string,
+  path: string | null,
+  database: AppDb = db
+): Promise<void> {
+  if (path === null) {
+    await database
+      .delete(logicalPathValues)
+      .where(and(eq(logicalPathValues.deviceId, deviceId), eq(logicalPathValues.name, name)));
+    return;
+  }
+  const updatedAt = new Date();
+  await database
+    .insert(logicalPathValues)
+    .values({ deviceId, name, path, updatedAt })
+    .onConflictDoUpdate({
+      target: [logicalPathValues.deviceId, logicalPathValues.name],
       set: { path, updatedAt },
     });
 }
