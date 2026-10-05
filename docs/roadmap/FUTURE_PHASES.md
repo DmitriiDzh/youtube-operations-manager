@@ -665,6 +665,17 @@ the CLI agent mode are removed, not kept alongside. Reverses Phase 12's D0(b).
 Plan and acceptance criteria: `docs/roadmap/plans/HTTP_MCP_SERVER_PLAN.md`. ADR:
 `docs/decisions/0013-in-app-http-mcp-transport.md`. **Status: in progress.** Backlog: BL-113.
 
+## 16. Phase 14 — Remote media generation (RunPod pods + ComfyUI, S3 transport)
+
+**Recorded 2026-10-05, owner direction (Telegram, msgs 1471–1478).** The channel agent asks this product for
+generation sessions on RunPod/ComfyUI (images, video, music); models live on a network volume, the pod is
+created per approved session and always terminated (never stopped) by a watcher with an operator-set
+interval; outputs are pulled over RunPod's S3-compatible API into the channel's `99 Data Exchange/From YTM/`
+buffer and deleted from the volume; scripts for every operator/agent step. Owner decisions D1–D8 are in the
+plan. Research: `docs/roadmap/plans/MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`. Plan and
+acceptance criteria: `docs/roadmap/plans/PHASE_14_PLAN.md`. **Status: planned, not assigned.** Slice 0
+spends real money and needs its own go. Backlog: BL-128.
+
 ## 12. Current next-action marker
 
 Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8") — kept short

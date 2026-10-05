@@ -1,0 +1,185 @@
+# Phase 14 — Remote media generation (RunPod pods + ComfyUI, S3 transport): execution plan and acceptance criteria
+
+**Status: planned, not assigned.** Recorded 2026-10-05 after the owner answered the research document's
+decisions (Telegram, msgs 1474–1478). Research and sources:
+`docs/roadmap/plans/MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`. Implementation starts only on
+an explicit assignment (`AGENTS.md` §C); nothing here authorizes a real pod, a real volume, or any RunPod
+spend (`AGENTS.md` §K.4) — slice 0 is the first thing that spends money and needs its own "go".
+
+## 1. Owner decisions (verbatim where short)
+
+| ID | Decision |
+|---|---|
+| D1 | **Transport = RunPod S3-compatible API only.** No Syncthing on the pod. Outputs are written to the network volume by ComfyUI and pulled by this app over S3; the same API uploads models and cleans `exchange/`. (Owner: "согласен с твоими рекомендациями", conditioned on D2; D2 chose pods, for which the recommendation was S3-only.) |
+| D2 | **Pods, not serverless.** "сейчас кажется под более выгодным. Мы можем сделать скрипты которые будут следить за статусом и останавливать под чтобы он не стоял в холостую (частоту проверки пользователь сможет назначить сам в настройках)". Serverless stays a possible later compute adapter with the same job model. |
+| D3 | **Approval per session**, not per job: a human approves a session with `maxMinutes` / `maxUsd`; inside a running session the agent submits jobs freely; idle auto-terminate; per-day USD cap in Settings. ("ок") |
+| D4 | **Outputs land in the existing exchange buffer** `<workspace>/99 Data Exchange/From YTM/` (ADR 0019's owner-approved exception), under `media/<jobId>/`. Same rules as research export: the Manager creates and writes only its own files, keeps a ledger, never touches anything it did not create. No 30-day expiry (not API data). ("ок") |
+| D5 | **Settings UI in this app** for datacenter, GPU type (live list with $/h), volume size, caps, idle timeout, **watch interval**, plus a Models panel (volume contents via S3 listing, "add from URL" → pull onto the volume with a CPU pod). ("ок") |
+| D6 | ComfyUI behind a **token reverse proxy** on the exposed HTTP port; ComfyUI itself on `127.0.0.1`. ("ok") |
+| D7 | Workflow templates are **imported by the operator**; the agent only uses them with parameters. Prompts/editorial choices stay outside this repository (`AGENTS.md` §B). ("согласен") |
+| D8 | Name: **Phase 14 — Remote media generation (RunPod/ComfyUI)**. ("согласен") Whether slice 0 starts now was not answered → the plan is written first; slice 0 waits for its own go. |
+
+## 2. Design
+
+### 2.1 Modules (`AGENTS.md` §M — nothing existing changes behaviour; feature off = no credentials = no effect)
+
+```
+src/lib/media-gateway/           umbrella + inventory test (youtube-read-gateway pattern)
+  runpod-api.ts                  rest.runpod.io v1: pods create/get/terminate, gpu types, datacenters, network volumes, templates
+  runpod-s3.ts                   S3 API to the volume: list/head/get/put/delete + multipart (AWS SDK v3 S3 client, custom endpoint)
+  comfyui-api.ts                 /system_stats /prompt /history/{id} /queue /interrupt /upload/image, bearer token to the proxy
+src/lib/media-generation/        contracts / schemas / services / adapters
+  credentials                    singleton table, AES-GCM with MEDIA_GENERATION_ENCRYPTION_KEY (ADR 0008 pattern), device-local
+  settings                       dc, gpu profile, volume id/size, template id, maxUsdPerDay, idleMinutes, watchIntervalSeconds, caps
+  sessions                       pending → approved → starting → running → stopping → done | failed | rejected | interrupted
+  jobs                           queued → submitted → generating → transferring → done | failed | cancelled
+  workflow-templates             API-format JSON + declared parameters (name, type, node/input path, default, bounds)
+  exchange                       pull outputs over S3, verify, write into 99 Data Exchange/From YTM/media/<jobId>/, ledger, janitor
+  models                         volume listing, manifest, pull-via-CPU-pod orchestration
+  cost-ledger                    per-session seconds × costPerHr; per-day USD totals
+  watch                          idle/caps watcher (scheduler) + boot sweep
+scripts/media/                   operator/agent scripts (§2.8)
+```
+
+### 2.2 Tables (additive, one `SCHEMA_MIGRATIONS` version)
+
+- `media_credentials` (singleton, encrypted blob: RunPod API key, S3 access/secret; never in `SNAPSHOT_TRANSFERRED_TABLES`, never in sync-gateway).
+- `media_settings` (singleton, device-local plaintext: dc, gpuTypeId, cloudType, volumeId, templateId, caps, idleMinutes, watchIntervalSeconds, allowedCudaVersions).
+- `media_sessions` (id, channelId, status, requestedBy, estimate, caps, podId, publicUrl, costPerHr, startedAt, stoppedAt, secondsUsed, usdCharged, reason). Atomic transitions: `UPDATE … WHERE status = <expected> RETURNING` (ADR 0021 pattern). At most one non-terminal session per device (one pod at a time in this phase).
+- `media_jobs` (id, sessionId, channelId, templateId, params JSON, promptId, status, outputs JSON, error, createdBy, timestamps).
+- `media_workflow_templates` (id, name, version, workflowJson, parameters JSON, createdAt). Device-local in this phase; sync later if wanted.
+- `media_exchange_files` (jobId, remoteKey, localPath, bytes, sha256, pulledAt, remoteDeletedAt) — the ledger the janitor and the local writer act on, by ledger only (ADR 0019 rule).
+- `media_models` (key, bytes, sha256?, source URL, pulledAt) — cache of the volume listing + manifest.
+
+### 2.3 Session lifecycle
+
+```
+agent_request_media_session {channelId, maxMinutes, maxUsd?}  (or operator from the Media tab)
+  → pending; estimate = gpu costPerHr × maxMinutes/60 (upper bound), today's spend, cap, fitsToday
+Web: Approve (preconditions BEFORE transition: credentials resolve, settings complete, daily cap not used up,
+     no other non-terminal session, volume exists in the chosen dc, device may mutate)
+  → starting: POST /pods {templateId, networkVolumeId, gpuTypeIds, cloudType, ports ["8189/http"], env {COMFY_TOKEN}}
+  → poll GET /pods/{id} until RUNNING; then GET https://<podId>-8189.proxy.runpod.net/system_stats with the token → 200
+  → running (startedAt, costPerHr from the pod response)
+watcher (every watchIntervalSeconds, scheduler in src/instrumentation.ts):
+  → terminate when: idle ≥ idleMinutes with no non-terminal job, or minutes ≥ maxMinutes, or usd ≥ maxUsd,
+    or the pod disappeared/EXITED (→ interrupted)
+stopping: wait (bounded) for transferring jobs → POST terminate → verify GET /pods/{id} is 404/TERMINATED → done
+boot sweep: every session not terminal at boot → GET /pods/{id}; terminate if alive; mark interrupted
+app exit (idle-shutdown.ts, SIGINT/SIGTERM): a running session is "running work" → terminate the pod first (bounded),
+  then exit; a standalone scripts/media/pod-watch.sh (cron/launchd/Task Scheduler) is the safety net when the app is not running
+```
+
+"Stop" (RunPod `EXITED`) is never used: a stopped pod's disk is billed at the doubled rate.
+
+### 2.4 Job lifecycle
+
+```
+agent_create_media_job {sessionId, templateId, params, references?}
+  → validate params against the template's parameter schema (type, bounds, enum)
+  → references: PUT to the volume under exchange/<jobId>/in/ over S3 (ComfyUI input dir points at the volume's exchange/in),
+    or POST /upload/image for small images
+  → set every Save node's filename_prefix to "<jobId>/<name>"; ComfyUI --output-directory = /workspace/exchange
+  → POST /prompt → promptId (node_errors → failed, nothing billed beyond the session)
+  → poll GET /history/{promptId} every 3–5 s until outputs present or execution_error
+  → transferring: for each output: HeadObject (size) → GetObject to a temp file → sha256 → rename into
+    <workspace>/99 Data Exchange/From YTM/media/<jobId>/ → ledger row → DeleteObject on the volume → remoteDeletedAt
+  → register each file in asset-catalog (local_path; provenance: templateId+version, params, promptId, podId, gpu, models used,
+    comfy version, seconds, usd)
+  → done; agent_get_media_job returns local paths + asset ids
+janitor (session end + daily): ListObjects exchange/ → delete keys whose job is terminal and whose ledger row has localPath;
+  never anything outside exchange/; never a key of a non-terminal job; dry-run output available
+```
+
+### 2.5 Pod image and start script
+
+A RunPod template (created once by `scripts/media/template-create.sh`, id stored in settings) with image
+`runpod/comfyui` (or the image slice 0 proves works), `dockerStartCmd` → `/workspace/bin/pod-start.sh` from the
+volume: start ComfyUI `--listen 127.0.0.1 --port 8188 --output-directory /workspace/exchange --input-directory
+/workspace/exchange/in --extra-model-paths-config /workspace/extra_model_paths.yaml`; start Caddy on 8189 with a
+bearer check against `$COMFY_TOKEN` (generated per session by this app, passed in `env`) → 8188. No RunPod API key
+ever enters the pod.
+
+### 2.6 Settings → Media (D5)
+
+Sub-tab with cards, each in its own error boundary: Credentials (RunPod API key, S3 key pair; Test), Compute
+(datacenter from `GET /datacenters`-equivalent, GPU type from the gpu-types list with $/h, cloud type, template),
+Volume (id/size/dc; Create; monthly cost shown), Limits (maxUsdPerDay, default maxMinutes, idleMinutes,
+watchIntervalSeconds), Models (volume listing under `models/`, sizes, "Add from URL" → manifest + pull via CPU
+pod with progress overlay, Delete), Sessions (current session, Approve/Stop, cost so far), Templates (import
+API-format JSON, declare parameters, versions). Toggle-switch and no-native-dialog conventions as elsewhere.
+
+### 2.7 Agent surface (Agent API MINOR bump)
+
+READ: `agent_list_media_templates`, `agent_get_media_session`, `agent_get_media_job`, `agent_get_media_limits`.
+DRAFT (channel-bound, mutation-gated): `agent_request_media_session`, `agent_create_media_job`,
+`agent_cancel_media_job` (own, non-terminal). Approve/stop/reject: Web only, fenced by an inventory test over
+`src/mcp`, `src/lib/agent-operations` (`market-research-request-approval-inventory.test.ts` pattern). Responses
+never carry a credential, the proxy token, or the pod's raw env.
+
+### 2.8 Scripts (`scripts/media/`, `--help`, idempotent, secrets from env only, one machine-readable last line)
+
+| Script | Purpose |
+|---|---|
+| `volume-bootstrap.sh` | create the volume if missing; S3 layout `models/*`, `exchange/in`, `bin/`, `extra_model_paths.yaml`, `pod-start.sh` |
+| `template-create.sh` | create/update the RunPod template; prints `templateId` |
+| `models-pull.sh models.manifest` | CPU pod + `hf download` onto the volume, sha256 verify, terminate; small files via `aws s3 cp` |
+| `pod-start.sh` | runs inside the pod (ComfyUI + Caddy) |
+| `session-start.sh` / `session-stop.sh` | create pod from template / terminate + print seconds and cost |
+| `pod-watch.sh` | standalone watcher (interval from settings or arg): terminate idle/over-cap pods; the safety net outside the app |
+| `comfy-run.sh workflow.json --set k=v --wait` | manual submit/poll through the proxy |
+| `exchange-pull.sh <jobId>` | pull + delete one job's outputs over S3 (manual recovery) |
+| `exchange-janitor.sh [--dry-run]` | S3 cleanup of terminal leftovers |
+| `status.sh` | pods alive + $/h, volume size + $/month, today's spend, exchange leftovers |
+
+## 3. Slices (one branch `feature/phase-14-media-generation`, separate commits, one merge approval)
+
+| # | Slice | Contents |
+|---|---|---|
+| 0 | Scripts + live spike (**spends a few dollars; needs its own go**) | all scripts above; one real volume, one real pod, one image + one audio job end-to-end; measure cold start, transfer speed, model load from the volume; settle §5's verify list |
+| 1 | Gateways + credentials + settings + Settings UI (without Models/Sessions) | `media-gateway` children + inventory test; encrypted store; settings table; Credentials/Compute/Volume/Limits cards |
+| 2 | Sessions | table + transitions, approve/stop with progress overlay, watcher with configurable interval, boot sweep, app-exit handling, cost ledger, Sessions card |
+| 3 | Jobs + exchange + templates | templates import UI, job table, submit/poll, S3 pull into `99 Data Exchange/From YTM/media/`, ledger, asset-catalog registration, janitor |
+| 4 | Models panel | listing, manifest, add-from-URL pull via CPU pod, delete |
+| 5 | Agent surface | MCP tools, Agent API bump, fencing test, `AGENT_OPERATIONS_INTERFACE.md` §4p |
+| 6 | Docs + ADR + review | ADR "remote media generation sessions", SYSTEM_MAP/ARCHITECTURE/interfaces/TECHNICAL_DEBT/ROADMAP_STATUS, independent review, merge request |
+
+## 4. Acceptance criteria (from the decisions and the research, before any code — `AGENTS.md` §L)
+
+| ID | Criterion |
+|---|---|
+| AC-P14-01 | With no credentials configured, every other tab, route and scheduler job behaves exactly as before; the Media sub-tab shows "not configured" and no outbound call is made. |
+| AC-P14-02 | Credentials are stored encrypted; `GET` settings routes, agent tools, logs and snapshots never contain the RunPod key, the S3 secret, or a proxy token (inventory test + route tests). |
+| AC-P14-03 | A session request computes `estimateUsd = costPerHr × maxMinutes/60` locally with zero RunPod calls; `fitsToday = estimate ≤ (maxUsdPerDay − spentToday)`. A request that does not fit is still created as pending and shown as not fitting. |
+| AC-P14-04 | Approve runs every precondition before any status transition; a failing precondition leaves the request `pending` and creates no pod. |
+| AC-P14-05 | Only one non-terminal session per device: a second request while one is pending/approved/starting/running/stopping is rejected with a conflict error and creates no row. |
+| AC-P14-06 | The watcher terminates the pod when idle ≥ `idleMinutes` with no non-terminal job, when minutes ≥ `maxMinutes`, or when usd ≥ `maxUsd`; the interval used equals `watchIntervalSeconds` from settings (default 60, min 15). |
+| AC-P14-07 | After any terminal session state the pod is confirmed `TERMINATED`/absent via the pods API; the app never calls stop. A pod found `EXITED` is terminated and the session marked `interrupted`. |
+| AC-P14-08 | Boot sweep: a session left non-terminal when the process died is reconciled at boot (pod terminated if alive, session `interrupted`); seconds/usd recorded from the pod's timestamps when available. |
+| AC-P14-09 | App shutdown with a running session terminates the pod before exit (bounded wait); if termination fails the session stays `running` and the boot sweep handles it next start. |
+| AC-P14-10 | Job params are validated against the template's declared parameters; an unknown or out-of-bounds param is rejected before any ComfyUI call. |
+| AC-P14-11 | A `node_errors` reply marks the job `failed` with the ComfyUI message; a `/history` `execution_error` likewise; the session stays running. |
+| AC-P14-12 | Outputs are written only under `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`, via temp-name + rename, after sha256 of the downloaded bytes matches a second read-back; without a configured workspace the job fails with the research-export unavailability error and nothing is pulled or deleted. |
+| AC-P14-13 | The remote object is deleted only after the local file exists and its ledger row is written; a failed DeleteObject leaves `remoteDeletedAt` null and the janitor retries. |
+| AC-P14-14 | The janitor lists and deletes only under `exchange/`; keys of non-terminal jobs are never deleted; `models/` and `bin/` are never listed; `--dry-run` deletes nothing. |
+| AC-P14-15 | Each pulled file gets one asset-catalog entry (`local_path`) with provenance containing templateId+version, params, promptId, podId, gpu id, seconds and usd; no entry exists for a job that did not reach `done`. |
+| AC-P14-16 | Agent tools: `agent_create_media_job` for a session of another channel or a non-running session is rejected; approve/stop/reject are unreachable from `src/mcp` and `src/lib/agent-operations` (inventory test); `agent_get_media_limits` reports today's spend, cap and the current session state. |
+| AC-P14-17 | Cost ledger: `usdCharged = secondsUsed × costPerHr / 3600`, with `secondsUsed` from pod start to confirmed termination; daily totals drive the cap. |
+| AC-P14-18 | Models panel: "Add from URL" creates a manifest row and a CPU pod attached to the volume; the pod is terminated after success or failure; the listing shows the file with its size afterwards; the GPU session cannot start while a pull is running (shared volume). |
+| AC-P14-19 | Settings validation: GPU type and datacenter must come from the live lists; the volume's datacenter must equal the chosen datacenter; `watchIntervalSeconds` ≥ 15, `idleMinutes` ≥ 1, `maxUsdPerDay` > 0. |
+| AC-P14-20 | Scripts: each exits non-zero on failure, prints one final machine-readable line, never accepts a secret as an argument; `session-stop.sh` and `pod-watch.sh` verify termination via the API before reporting success. |
+
+## 5. Verify in slice 0 (not derivable from docs)
+
+1. `runpod/comfyui` (or chosen image) honours a custom `dockerStartCmd`; Caddy static binary runs there.
+2. Exact `/history` output keys for `SaveAudio` (ACE-Step) and the LTX-2 / Wan video save nodes; `filename_prefix` subfolders in each.
+3. Cold start seconds (`POST /pods` → `/system_stats` 200); first-job model load time from the network volume; whether the high-performance tier matters for video.
+4. Restricted RunPod API key granularity for pods + volumes.
+5. S3 `ListObjects`/`GetObject` throughput from the local machine for 100–500 MB video outputs.
+6. Whether an S3 key can be limited to one volume (docs say keys are per user).
+
+## 6. Not in scope
+
+Serverless compute (later adapter), concurrent sessions / multiple pods, any YouTube upload of generated media
+(Publishing Pipeline, `FUTURE_PHASES.md` §6a), prompt libraries or editorial logic (outside the repo, §B),
+syncing templates/sessions between devices, automatic model selection.
