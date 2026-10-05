@@ -5,7 +5,7 @@ import { loadEnvConfig } from "@next/env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
-import { DomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { recordGatewayCallOutcome } from "@/lib/db";
@@ -326,7 +326,8 @@ type McpToolHandlers = {
 };
 
 function toolErrorResult(error: unknown) {
-  if (error instanceof DomainError) {
+  // Structural check: the media core lives on globalThis and may throw another bundle's DomainError class (slice 6).
+  if (isDomainError(error)) {
     return {
       content: [
         {

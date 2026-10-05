@@ -215,8 +215,14 @@ export class DomainError extends Error {
   }
 }
 
+/**
+ * Structural, not only `instanceof` (Phase 14 slice 6, found live): a core cached on `globalThis` (the media core, built
+ * first by `src/instrumentation.ts`) throws the `DomainError` class of ANOTHER Next.js bundle, so a route's own
+ * `instanceof DomainError` is false and a 409 became a 500 "internal_error". Name + string code identify it either way.
+ */
 export function isDomainError(value: unknown): value is DomainError {
-  return value instanceof DomainError;
+  if (value instanceof DomainError) return true;
+  return value instanceof Error && value.name === "DomainError" && typeof (value as { code?: unknown }).code === "string";
 }
 
 export function formatZodError(error: ZodError) {

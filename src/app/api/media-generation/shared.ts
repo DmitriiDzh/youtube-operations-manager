@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
-import { createMediaGenerationCore, DomainError, type MediaGenerationCore } from "@/lib/media-generation";
+import { createMediaGenerationCore, DomainError, isDomainError, type MediaGenerationCore } from "@/lib/media-generation";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- operator-only routes for Settings → Media.
@@ -34,7 +34,7 @@ export function defaultMediaRouteDeps(): MediaRouteDeps {
 }
 
 export function mediaErrorResponse(error: unknown) {
-  if (error instanceof DomainError) {
+  if (isDomainError(error)) {
     return NextResponse.json({ error: error.code, message: error.message, details: error.details }, { status: getVideoMetadataErrorStatus(error.code) });
   }
   return NextResponse.json({ error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" }, { status: 500 });
