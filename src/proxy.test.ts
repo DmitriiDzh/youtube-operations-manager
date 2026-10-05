@@ -383,11 +383,15 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
   const stopSwitches: Array<[string, string]> = [
     ["POST", "/api/settings"],
     ["DELETE", "/api/agent-tokens"],
+    ["DELETE", "/api/factory-agent-token"],
     ["POST", "/api/channel-connections/disconnect"],
   ];
   const neighbours: Array<[string, string]> = [
     ["PUT", "/api/settings"],
     ["POST", "/api/agent-tokens"],
+    ["POST", "/api/factory-agent-token"],
+    ["PUT", "/api/logical-paths/value"],
+    ["DELETE", "/api/logical-paths"],
     ["POST", "/api/channel-connections/disconnect/extra"],
     ["PUT", "/api/channel-workspaces"],
   ];

@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "3.4.0"); // 3.2.0 (collection requests, ADR 0021) + MINOR: the seven media_generation capabilities (Phase 14 slice 5, docs/roadmap/plans/PHASE_14_PLAN.md §2.7); 3.4.0 MINOR: agent_get_media_limits adds openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(result.agentApiVersion, "3.4.0"); // 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));

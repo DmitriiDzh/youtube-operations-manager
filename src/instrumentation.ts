@@ -222,7 +222,7 @@ async function startServerSession() {
   };
   setTimeout(() => void mediaWatchLoop(), 30_000).unref();
   // Best effort only: Next.js's own signal handler owns the exit and may finish before this terminate is sent, so
-  // the boot sweep (above) is the authoritative cleanup for a Ctrl-C/kill with a running pod (RISK-106); the idle
+  // the boot sweep (above) is the authoritative cleanup for a Ctrl-C/kill with a running pod (RISK-107); the idle
   // auto-shutdown path below is the one that waits for the terminate.
   process.once("SIGINT", () => void media.stopForShutdown());
   process.once("SIGTERM", () => void media.stopForShutdown());

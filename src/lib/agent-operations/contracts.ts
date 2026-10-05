@@ -86,6 +86,7 @@ export const AGENT_CAPABILITY_DOMAINS = [
   "channel_workspace",
   // Phase 14 slice 5 -- remote media generation sessions and jobs on RunPod/ComfyUI.
   "media_generation",
+  "logical_paths",
 ] as const;
 export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 
@@ -123,6 +124,8 @@ export const AGENT_DATA_DOMAINS = [
   "channel_workspace_path",
   // Phase 14 -- generation sessions, jobs and their output files (paths + provenance; never a credential).
   "media_generation_jobs",
+  // Factory Operator access -- named local paths and their value on this device, never anything inside them.
+  "logical_path_values",
 ] as const;
 export type AgentDataDomain = (typeof AGENT_DATA_DOMAINS)[number];
 

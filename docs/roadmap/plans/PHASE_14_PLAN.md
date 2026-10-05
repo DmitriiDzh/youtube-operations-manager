@@ -169,7 +169,7 @@ runs through the app's own CLI with keys entered in Settings — no `.env` step 
 | 2 | Sessions | table + transitions, approve/stop with progress overlay, watcher with configurable interval, boot sweep, app-exit handling, cost ledger, Sessions card |
 | 3 | Jobs + exchange + templates | templates import UI, job table, submit/poll, S3 pull into `99 Data Exchange/From YTM/media/`, ledger, asset-catalog registration, janitor |
 | 4 | Models panel | listing, manifest, add-from-URL pull via CPU pod, delete |
-| 5 | Agent surface | MCP tools, Agent API bump, fencing test, `AGENT_OPERATIONS_INTERFACE.md` §4p |
+| 5 | Agent surface | MCP tools, Agent API bump, fencing test, `AGENT_OPERATIONS_INTERFACE.md` §4q |
 | 6 | Docs + ADR + review | ADR "remote media generation sessions", SYSTEM_MAP/ARCHITECTURE/interfaces/TECHNICAL_DEBT/ROADMAP_STATUS, independent review, merge request |
 
 ## 4. Acceptance criteria (from the decisions and the research, before any code — `AGENTS.md` §L)

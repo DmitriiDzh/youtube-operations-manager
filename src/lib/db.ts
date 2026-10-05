@@ -893,6 +893,55 @@ export const mediaExchangeFiles = sqliteTable(
 );
 
 /**
+ * Factory Operator access (`docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.2), SCHEMA_MIGRATIONS
+ * version 59 (50 on dev; renumbered at the Phase 14 merge). The registry of logical paths: a stable `name` plus, in `logicalPathValues`, one local
+ * path string per device. `audience` is `all_agents` (every channel agent may read it) or
+ * `factory_only` (only the Factory Operator role). New paths are rows, never a schema change.
+ *
+ * **Both tables are device-local, deliberately NOT in `SNAPSHOT_TRANSFERRED_TABLES`** and not in
+ * `sync-gateway` (owner decision, 2026-10-05: each machine configures only its own values). Values
+ * are keyed on the bootstrap `deviceId` and every read filters on it, same as `channelWorkspaces`.
+ */
+export const logicalPaths = sqliteTable("logical_paths", {
+  name: text("name").primaryKey(),
+  audience: text("audience").notNull(),
+  description: text("description").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const logicalPathValues = sqliteTable(
+  "logical_path_values",
+  {
+    deviceId: text("device_id").notNull(),
+    name: text("name").notNull(),
+    path: text("path").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.deviceId, table.name] })]
+);
+
+/**
+ * Factory Operator access (`docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.1), SCHEMA_MIGRATIONS
+ * version 60 (51 on dev; renumbered at the Phase 14 merge). The Factory Operator role's own agent token (`ytom_fo_...`): SHA-256 hash only, one active
+ * row at a time, NO channel and NO Google identity (unlike `agentChannelTokens`). Deliberately a
+ * separate table, so a channel token can never be looked up as a factory token or the reverse.
+ * Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway`.
+ */
+export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -3128,7 +3177,77 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS media_sessions_open_slot_idx ON media_sessions(open_slot)");
     },
   },
+  {
+    version: 59,
+    description:
+      "logical_paths + logical_path_values -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F1; numbered 50 on dev, renumbered 59 when Phase 14 -- whose 50–58 a real database already carried -- was merged): named paths with a per-device value. Device-local: excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway. Seeds only the two initial NAMES (no values); additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS logical_paths (" +
+          "name TEXT PRIMARY KEY, " +
+          "audience TEXT NOT NULL, " +
+          "description TEXT NOT NULL DEFAULT '', " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS logical_path_values (" +
+          "device_id TEXT NOT NULL, " +
+          "name TEXT NOT NULL, " +
+          "path TEXT NOT NULL, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (device_id, name))"
+      );
+      await client.execute(
+        "INSERT OR IGNORE INTO logical_paths (name, audience, description) VALUES " +
+          "('factory_shared', 'all_agents', 'Shared Registry folder, read-only for channels'), " +
+          "('developer_exchange', 'factory_only', 'Factory Operator <-> Developer exchange folder')"
+      );
+    },
+  },
+  {
+    version: 60,
+    description:
+      "factory_agent_tokens -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F2; numbered 51 on dev, renumbered 60 at the Phase 14 merge): the Factory Operator role's own agent token, SHA-256 hash only, no channel binding. Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway); additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS factory_agent_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+      // A database that already holds several active rows (only possible if two overlapping issue calls raced before this
+      // index existed) must not wedge boot: keep the newest active token, revoke the others, THEN add the index.
+      await client.execute(
+        "UPDATE factory_agent_tokens SET revoked_at = unixepoch() WHERE revoked_at IS NULL AND rowid NOT IN " +
+          "(SELECT MAX(rowid) FROM factory_agent_tokens WHERE revoked_at IS NULL)"
+      );
+      // At most ONE active row, enforced by the database (independent review): two overlapping issue calls can then
+      // never leave two valid tokens -- the loser fails closed instead of the Settings card hiding a live second token.
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS factory_agent_tokens_one_active_idx ON factory_agent_tokens((1)) WHERE revoked_at IS NULL"
+      );
+    },
+  },
 ];
+
+/**
+ * Phase 14 ⟷ Factory Operator merge (2026-10-05): both branches had used SCHEMA_MIGRATIONS versions 50/51. A real
+ * database already carried Phase 14's 50–58, so those kept their numbers and Factory Operator's two became 59/60.
+ * A database stamped 50 or 51 by a pre-merge `dev` build has the Factory Operator tables but NOT Phase 14's, and
+ * would otherwise skip Phase 14's 50/51 and wedge at 53 (`ALTER TABLE media_sessions` on a missing table). Such a
+ * database is recognised by its stamp in 50..58 with no `media_credentials` table and treated as stamped 49: every
+ * migration from 50 to 60 is idempotent (`IF NOT EXISTS`, duplicate-column guards, `INSERT OR IGNORE`), so re-running
+ * them converges. Exported for its test.
+ */
+export async function resolveMergedNumberingCollision(client: Client, foundVersion: number | null): Promise<number | null> {
+  if (foundVersion === null || foundVersion < 50 || foundVersion > 58) return foundVersion;
+  const media = await client.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_credentials'");
+  if (media.rows.length > 0) return foundVersion;
+  console.warn(`[db] schema stamped ${foundVersion} without the Phase 14 tables (a pre-merge dev build numbered Factory Operator 50/51); re-running migrations from 50`);
+  return 49;
+}
 
 export const SCHEMA_CURRENT_VERSION =
   SCHEMA_MIGRATIONS.length > 0
@@ -3172,7 +3291,7 @@ export async function initializeDatabaseSchema(
   // Reject a database reporting a version newer than this build supports *before* any
   // schema-mutating statement below runs (AC-SCHEMA-04) -- assertSupportedSchemaVersion only
   // ever performs a read.
-  const foundVersion = await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION);
+  const foundVersion = await resolveMergedNumberingCollision(client, await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION));
 
   // The `rules` table (auto-playlisting engine, from the project's original pre-rewrite baseline) is retired as of
   // 2026-09-20 -- its Drizzle definition, UI, and API routes are removed, per the project
@@ -5007,6 +5126,134 @@ export async function setChannelWorkspacePath(
       target: [channelWorkspaces.deviceId, channelWorkspaces.channelId],
       set: { path, updatedAt },
     });
+}
+
+export type StoredLogicalPath = { name: string; audience: string; description: string; createdAt: Date };
+
+/** Factory Operator access. Definitions are device-local; values are filtered on `deviceId`. */
+export async function listLogicalPathRows(database: AppDb = db): Promise<StoredLogicalPath[]> {
+  return database
+    .select({
+      name: logicalPaths.name,
+      audience: logicalPaths.audience,
+      description: logicalPaths.description,
+      createdAt: logicalPaths.createdAt,
+    })
+    .from(logicalPaths)
+    .orderBy(asc(logicalPaths.name));
+}
+
+/** Returns false (nothing written) when the name already exists. */
+export async function insertLogicalPathRow(
+  input: { name: string; audience: string; description: string },
+  database: AppDb = db
+): Promise<boolean> {
+  const inserted = await database
+    .insert(logicalPaths)
+    .values({ ...input, createdAt: new Date() })
+    .onConflictDoNothing()
+    .returning({ name: logicalPaths.name });
+  return inserted.length > 0;
+}
+
+/** Deletes the definition and every stored value for that name. Returns false if it did not exist. */
+export async function deleteLogicalPathRow(name: string, database: AppDb = db): Promise<boolean> {
+  return database.transaction(async (tx) => {
+    await tx.delete(logicalPathValues).where(eq(logicalPathValues.name, name));
+    const deleted = await tx.delete(logicalPaths).where(eq(logicalPaths.name, name)).returning({ name: logicalPaths.name });
+    return deleted.length > 0;
+  });
+}
+
+export async function getLogicalPathValue(deviceId: string, name: string, database: AppDb = db): Promise<string | null> {
+  const rows = await database
+    .select({ path: logicalPathValues.path })
+    .from(logicalPathValues)
+    .where(and(eq(logicalPathValues.deviceId, deviceId), eq(logicalPathValues.name, name)))
+    .limit(1);
+  return rows[0]?.path ?? null;
+}
+
+export async function listLogicalPathValues(
+  deviceId: string,
+  database: AppDb = db
+): Promise<Array<{ name: string; path: string; updatedAt: Date }>> {
+  return database
+    .select({ name: logicalPathValues.name, path: logicalPathValues.path, updatedAt: logicalPathValues.updatedAt })
+    .from(logicalPathValues)
+    .where(eq(logicalPathValues.deviceId, deviceId));
+}
+
+/** `null` deletes this device's value for the name. */
+export async function setLogicalPathValue(
+  deviceId: string,
+  name: string,
+  path: string | null,
+  database: AppDb = db
+): Promise<void> {
+  if (path === null) {
+    await database
+      .delete(logicalPathValues)
+      .where(and(eq(logicalPathValues.deviceId, deviceId), eq(logicalPathValues.name, name)));
+    return;
+  }
+  const updatedAt = new Date();
+  await database
+    .insert(logicalPathValues)
+    .values({ deviceId, name, path, updatedAt })
+    .onConflictDoUpdate({
+      target: [logicalPathValues.deviceId, logicalPathValues.name],
+      set: { path, updatedAt },
+    });
+}
+
+export type StoredFactoryAgentToken = { id: string; label: string | null; createdAt: Date; revokedAt: Date | null };
+
+const factoryAgentTokenColumns = {
+  id: factoryAgentTokens.id,
+  label: factoryAgentTokens.label,
+  createdAt: factoryAgentTokens.createdAt,
+  revokedAt: factoryAgentTokens.revokedAt,
+};
+
+/** Factory Operator access. Revokes any active token and inserts the new one in ONE transaction, so
+ * "at most one active factory token" can never be observed violated. */
+export async function replaceFactoryAgentToken(
+  input: { id: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx.update(factoryAgentTokens).set({ revokedAt: now }).where(isNull(factoryAgentTokens.revokedAt));
+    await tx.insert(factoryAgentTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when there was no active token). */
+export async function revokeFactoryAgentTokens(database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(factoryAgentTokens)
+    .set({ revokedAt: new Date() })
+    .where(isNull(factoryAgentTokens.revokedAt))
+    .returning({ id: factoryAgentTokens.id });
+  return revoked.length;
+}
+
+/** Active (non-revoked) factory token by hash, or null. */
+export async function findActiveFactoryAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredFactoryAgentToken | null> {
+  const rows = await database
+    .select(factoryAgentTokenColumns)
+    .from(factoryAgentTokens)
+    .where(and(eq(factoryAgentTokens.tokenHash, tokenHash), isNull(factoryAgentTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveFactoryAgentTokens(database: AppDb = db): Promise<StoredFactoryAgentToken[]> {
+  return database.select(factoryAgentTokenColumns).from(factoryAgentTokens).where(isNull(factoryAgentTokens.revokedAt));
 }
 
 export type GatewayTrafficCategory =

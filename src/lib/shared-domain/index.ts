@@ -195,7 +195,14 @@ export type DomainErrorCode =
   | "EXPERIMENT_CHANGE_SET_NOT_FOUND"
   | "EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH"
   | "EXPERIMENT_CHANGE_SET_TOO_LARGE"
-  | "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES";
+  | "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES"
+  // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md) -- logical path
+  // registry. NOT_FOUND also covers a name an agent is not allowed to see (indistinguishable).
+  // NOT_CONFIGURED_ON_DEVICE: the path exists but has no value on THIS machine.
+  | "LOGICAL_PATH_NOT_FOUND"
+  | "LOGICAL_PATH_ALREADY_EXISTS"
+  | "LOGICAL_PATH_VALUE_INVALID"
+  | "LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

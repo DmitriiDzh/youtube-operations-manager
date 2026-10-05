@@ -1,4 +1,4 @@
-# 0022. Remote media generation: human-approved pod sessions, S3-only transport, per-device key file
+# 0023. Remote media generation: human-approved pod sessions, S3-only transport, per-device key file
 
 Status: Accepted
 
@@ -50,22 +50,22 @@ How a session is authorised and paid for, how files travel, how the pod is secur
    copied database reads as "not configured".
 5. **Single gateway.** `src/lib/media-gateway/` (RunPod REST v2, S3, ComfyUI) is the only module that may
    reach a runpod.io host (inventory test); one "Media gateway" toggle and three traffic counters.
-6. **Agent surface (Agent API 3.3.0, domain `media_generation`)**: list templates, request/get session, get
+6. **Agent surface (Agent API 3.4.0 on `dev`, domain `media_generation`)**: list templates, request/get session, get
    limits, create/get/cancel job. Templates are operator-imported (D7); prompts are job parameters.
 
 ## Consequences
 
 - RunPod REST v1 is not used (it retires 2026-11-15). The v2 list-wrapper keys are read from docs and
-  confirmed by the live spike (RISK-105).
-- The key file has no rotation/backup procedure (RISK-105); the two older env-key modules are unchanged.
+  confirmed by the live spike (RISK-106).
+- The key file has no rotation/backup procedure (RISK-106); the two older env-key modules are unchanged.
 - Jobs poll in-process; a server restart fails the in-flight job as interrupted (its pod is swept too).
 - Serverless, YouTube upload of generated media and prompt libraries stay out of scope (concurrent sessions: see the amendment below).
 
 ## Compatibility / migration impact
 
 Purely additive: schema v50 (`media_credentials`), v51 (`media_sessions`), v52 (`media_workflow_templates`,
-`media_jobs`, `media_exchange_files`), v53 (`media_sessions.stopping_outcome`, nullable), v54 (`media_sessions.last_seen_alive_at`, nullable), v55 (`media_workflow_templates.output_node_ids_json`/`node_count`, nullable), v56 (index `creative_assets_reference_idx`), v57 (`media_sessions.terminate_sent_at`, nullable), all device-local; one more `app_settings` key (`media_volume_lock`, the session/pull mutual-exclusion row); three new `app_settings` keys; Agent API MINOR bump
-3.2.0 → 3.3.0 (new tools only). No existing route, tool, table or contract changed.
+`media_jobs`, `media_exchange_files`), v53 (`media_sessions.stopping_outcome`, nullable), v54 (`media_sessions.last_seen_alive_at`, nullable), v55 (`media_workflow_templates.output_node_ids_json`/`node_count`, nullable), v56 (index `creative_assets_reference_idx`), v57 (`media_sessions.terminate_sent_at`, nullable), v58 (`media_sessions_open_slot_idx` non-unique, slice 6), all device-local; Factory Operator's two migrations, numbered 50/51 on `dev`, became 59/60 at the merge (a real database already carried 50–58), and a database stamped 50/51 by a pre-merge `dev` build is re-run from 50 (`resolveMergedNumberingCollision`); one more `app_settings` key (`media_volume_lock`, the session/pull mutual-exclusion row); three new `app_settings` keys; Agent API MINOR bump
+3.3.0 → 3.4.0 after merging with `dev` (whose Factory Operator access took 3.3.0; new tools only). No existing route, tool, table or contract changed.
 
 ## Amendment 1 (2026-10-05, slice 6 -- owner, Telegram msgs 1549/1551/1553)
 

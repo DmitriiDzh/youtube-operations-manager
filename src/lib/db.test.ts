@@ -23,6 +23,16 @@ import {
   copyLegacyDatabaseInto,
   createIsolatedDb,
   getChannelWorkspacePath,
+  deleteLogicalPathRow,
+  findActiveFactoryAgentTokenByHash,
+  listActiveFactoryAgentTokens,
+  replaceFactoryAgentToken,
+  revokeFactoryAgentTokens,
+  getLogicalPathValue,
+  insertLogicalPathRow,
+  listLogicalPathRows,
+  listLogicalPathValues,
+  setLogicalPathValue,
   addChannelRecordAssignment,
   listChannelAssignedRecordIds,
   listRecordAssignmentsByKind,
@@ -2984,6 +2994,107 @@ test("channel_workspaces: per-device, per-channel isolation for get/list/set/cle
     assert.equal(await getChannelWorkspacePath("device-a", "UC_A", isolatedDb), null);
     assert.equal(await getChannelWorkspacePath("device-a", "UC_B", isolatedDb), "/work/b");
     assert.equal(await getChannelWorkspacePath("device-other", "UC_A", isolatedDb), "/elsewhere/a");
+  }));
+
+// Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md AC-FO-01/AC-FO-03): the
+// migration seeds exactly the two initial names (no values), a new path is just a row, and values
+// are scoped per (device, name).
+test("logical_paths: seeds exactly the two initial names without values; values are per device; new paths need no migration", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await tableExists(client, "logical_paths"), true);
+    assert.equal(await tableExists(client, "logical_path_values"), true);
+    const isolatedDb = createIsolatedDb(client);
+
+    assert.deepEqual(
+      (await listLogicalPathRows(isolatedDb)).map((r) => [r.name, r.audience]),
+      [
+        ["developer_exchange", "factory_only"],
+        ["factory_shared", "all_agents"],
+      ]
+    );
+    assert.deepEqual(await listLogicalPathValues("device-a", isolatedDb), []);
+
+    await setLogicalPathValue("device-a", "factory_shared", "C:\\Factory\\02 Shared Registry", isolatedDb);
+    await setLogicalPathValue("device-other", "factory_shared", "/Users/x/Factory/02 Shared Registry", isolatedDb);
+    assert.equal(await getLogicalPathValue("device-a", "factory_shared", isolatedDb), "C:\\Factory\\02 Shared Registry");
+    assert.equal(await getLogicalPathValue("device-other", "factory_shared", isolatedDb), "/Users/x/Factory/02 Shared Registry");
+    assert.equal(await getLogicalPathValue("device-a", "developer_exchange", isolatedDb), null);
+    assert.equal(await getLogicalPathValue("device-third", "factory_shared", isolatedDb), null);
+
+    await setLogicalPathValue("device-a", "factory_shared", "C:\\Factory\\Shared2", isolatedDb);
+    assert.equal(await getLogicalPathValue("device-a", "factory_shared", isolatedDb), "C:\\Factory\\Shared2");
+    assert.equal(await getLogicalPathValue("device-other", "factory_shared", isolatedDb), "/Users/x/Factory/02 Shared Registry");
+
+    // A third path is only a row: no schema change, and a duplicate name writes nothing.
+    assert.equal(await insertLogicalPathRow({ name: "script_library", audience: "all_agents", description: "" }, isolatedDb), true);
+    assert.equal(await insertLogicalPathRow({ name: "script_library", audience: "factory_only", description: "x" }, isolatedDb), false);
+    assert.equal((await listLogicalPathRows(isolatedDb)).find((r) => r.name === "script_library")?.audience, "all_agents");
+
+    await setLogicalPathValue("device-a", "factory_shared", null, isolatedDb);
+    assert.equal(await getLogicalPathValue("device-a", "factory_shared", isolatedDb), null);
+    assert.equal(await getLogicalPathValue("device-other", "factory_shared", isolatedDb), "/Users/x/Factory/02 Shared Registry");
+
+    // Deleting a definition removes its values for every device, and a missing name reports false.
+    await setLogicalPathValue("device-a", "script_library", "/s", isolatedDb);
+    assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), true);
+    assert.equal(await getLogicalPathValue("device-a", "script_library", isolatedDb), null);
+    assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), false);
+  }));
+
+// Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md AC-FO-10): at most one active
+// factory token, replaced atomically; revoked tokens are never found by hash; it lives in its own table.
+test("factory_agent_tokens: replace keeps one active token; revoke hides it; separate from channel tokens", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await tableExists(client, "factory_agent_tokens"), true);
+    const isolatedDb = createIsolatedDb(client);
+
+    await replaceFactoryAgentToken({ id: "f1", tokenHash: "h1", label: null }, isolatedDb);
+    await replaceFactoryAgentToken({ id: "f2", tokenHash: "h2", label: "fo" }, isolatedDb);
+    assert.equal(await findActiveFactoryAgentTokenByHash("h1", isolatedDb), null);
+    assert.equal((await findActiveFactoryAgentTokenByHash("h2", isolatedDb))?.id, "f2");
+    assert.deepEqual((await listActiveFactoryAgentTokens(isolatedDb)).map((t) => t.id), ["f2"]);
+
+    // A channel token with the same hash is a different table: it is never found as a factory token.
+    await replaceAgentChannelToken({ id: "c1", channelId: "UC_A", userId: "u-a", tokenHash: "hc", label: null }, isolatedDb);
+    assert.equal(await findActiveFactoryAgentTokenByHash("hc", isolatedDb), null);
+    assert.equal(await findActiveAgentChannelTokenByHash("h2", isolatedDb), null);
+
+    // The database itself refuses a second ACTIVE row (independent review): a racing second issue can never
+    // leave two valid tokens; it fails closed. A revoked row does not count.
+    await assert.rejects(
+      client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('f-race', 'h-race')"),
+      /UNIQUE|constraint/i
+    );
+    assert.equal(await findActiveFactoryAgentTokenByHash("h-race", isolatedDb), null);
+    assert.equal((await listActiveFactoryAgentTokens(isolatedDb)).length, 1);
+
+    assert.equal(await revokeFactoryAgentTokens(isolatedDb), 1);
+    assert.equal(await revokeFactoryAgentTokens(isolatedDb), 0);
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('f-after', 'h-after')");
+    assert.equal(await findActiveFactoryAgentTokenByHash("h2", isolatedDb), null);
+    assert.equal((await findActiveAgentChannelTokenByHash("hc", isolatedDb))?.id, "c1");
+  }));
+
+test("factory_agent_tokens: migration v60 (v51 before the Phase 14 merge) on a database that already holds several active rows keeps the newest and still boots", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // Simulate the pre-index state: drop the index, stamp 59 (the version right before this migration; 50 before the Phase 14
+    // merge renumbered it), leave three ACTIVE rows (plus one revoked).
+    await client.execute("DROP INDEX factory_agent_tokens_one_active_idx");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash, revoked_at) VALUES ('old-revoked', 'h0', 1)");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a1', 'h1')");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a2', 'h2')");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a3', 'h3')");
+    await client.execute("UPDATE schema_meta SET value = '59' WHERE key = 'schema_version'");
+
+    await initializeDatabaseSchema(client);
+
+    assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
+    const active = await client.execute("SELECT id FROM factory_agent_tokens WHERE revoked_at IS NULL");
+    assert.deepEqual(active.rows.map((row) => row.id), ["a3"], "only the newest active token survives");
+    await assert.rejects(client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a4', 'h4')"), /UNIQUE|constraint/i);
   }));
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-11): at most one active token per channel,

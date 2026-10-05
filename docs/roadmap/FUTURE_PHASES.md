@@ -674,7 +674,7 @@ interval; outputs are pulled over RunPod's S3-compatible API into the channel's 
 buffer and deleted from the volume; scripts for every operator/agent step. Owner decisions D1–D8 are in the
 plan. Research: `docs/roadmap/plans/MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`. Plan and
 acceptance criteria: `docs/roadmap/plans/PHASE_14_PLAN.md`. **Assigned 2026-10-05** (owner, msg 1484).
-**Status: slices 1–5 implemented on `feature/phase-14-media-generation`** (ADR 0022), awaiting review and
+**Status: slices 1–5 implemented on `feature/phase-14-media-generation`** (ADR 0023), awaiting review and
 merge approval; the live spike (slice 0) spends real money and still needs its own go. Backlog: BL-128.
 
 ## 12. Current next-action marker

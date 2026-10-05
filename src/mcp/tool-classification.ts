@@ -65,6 +65,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_find_comparable_videos: "bound",
   agent_list_asset_performance: "bound",
   agent_get_channel_workspace: "bound",
+  agent_list_logical_paths: "bound",
+  agent_get_logical_path: "bound",
   agent_export_research_data: "bound",
   query_competitors: "bound",
   query_market_intelligence: "bound",
