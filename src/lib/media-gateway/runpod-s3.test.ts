@@ -171,3 +171,12 @@ test("review 7: a key with the five characters encodeURIComponent leaves raw (!'
   await client.headObject("exchange/job1/final (v2)*!'_00001_.png");
   assert.equal(calls[0].url.pathname, "/vol123/exchange/job1/final%20%28v2%29%2A%21%27_00001_.png");
 });
+
+test("review 8: query values are encoded by the SigV4 encoder too (a space is %20, never a form '+'), so the wire query matches the signed canonical query", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => new Response("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>", { status: 200 }));
+  const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+  await client.listObjects({ prefix: "exchange/my job/~x", maxKeys: 5 });
+  assert.ok(calls[0].url.search.includes("prefix=exchange%2Fmy%20job%2F~x"), calls[0].url.search);
+  assert.ok(!calls[0].url.search.includes("+"));
+  assert.equal(calls[0].url.searchParams.get("prefix"), "exchange/my job/~x");
+});

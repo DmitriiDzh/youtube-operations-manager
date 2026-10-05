@@ -114,3 +114,24 @@ test("createAssetCatalogCore.registerAsset accepts and persists a linkedVideoId 
     [registered.assetId]
   );
 });
+
+// Phase 14 review round 8: the reference lookup must be WIRED in the real core (round 7 added it to the
+// services but not to createAssetCatalogCore, so production always answered null and a resumed media
+// transfer registered a duplicate). Real adapter, real database.
+test("createAssetCatalogCore.findAssetByReference reaches the real store: finds the registered local_path asset, null for another channel or value", async () => {
+  const core = createAssetCatalogCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+  await upsertChannel({
+    channelId,
+    title: "Asset catalog wiring test channel 4",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+  const localPath = `/ws/99 Data Exchange/From YTM/media/${randomUUID()}/out.png`;
+  const registered = await core.registerAsset({ channelId, assetType: "generated_image", referenceKind: "local_path", referenceValue: localPath });
+  const found = await core.findAssetByReference({ channelId, referenceKind: "local_path", referenceValue: localPath });
+  assert.equal(found?.assetId, registered.assetId);
+  assert.equal(await core.findAssetByReference({ channelId: `UC_OTHER_${randomUUID()}`, referenceKind: "local_path", referenceValue: localPath }), null);
+  assert.equal(await core.findAssetByReference({ channelId, referenceKind: "local_path", referenceValue: `${localPath}.other` }), null);
+});

@@ -127,9 +127,15 @@ test("AC-P14-18: a pull whose pod dies first fails (pod terminated anyway); one 
   assert.equal(timeout.status, "timeout");
   assert.ok(slow.calls.includes("terminate:cpupod1"));
 
+  // Review round 8: a pull is RESERVED before its createPod (so a concurrent approve sees it); a creation failure
+  // therefore leaves a terminal `failed` record (never a running one) -- the volume is free and no pod exists.
   const broken = fixture({ createFails: true });
   await assert.rejects(broken.services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" }));
-  assert.deepEqual(await broken.services.listPulls(), []);
+  const [record] = await broken.services.listPulls();
+  assert.equal(record.status, "failed");
+  assert.equal(record.podId, null);
+  assert.match(record.error ?? "", /pod creation failed/);
+  assert.equal(await broken.services.hasActivePull(), false);
 });
 
 test("startPull validates the repo id, the file path and the folder", async () => {
@@ -398,4 +404,103 @@ test("review 7: pulling a file whose key already exists on the volume is refused
   await f.services.deleteModel({ key: "models/vae/ae.safetensors" });
   const pull = await f.services.startPull({ repoId: "a/b", file: "ae.safetensors", folder: "vae" });
   assert.equal(pull.status, "running");
+});
+
+// -- review round 8 (2026-10-05) ------------------------------------------------------------------
+
+test("review 8 (AC-P14-18 without a window): a pull is visible as active from BEFORE its createPod returns, and backs off when a session was approved meanwhile", async () => {
+  // 1. Reserved before createPod: hasActivePull() is already true while RunPod is still creating the pod.
+  let releaseCreate: () => void = () => undefined;
+  const gate = new Promise<void>((r) => (releaseCreate = r));
+  let seenDuringCreate: boolean | null = null;
+  const objects = new Map<string, number>();
+  let json: string | null = null;
+  const client = {
+    async createPod() {
+      await gate;
+      return { id: "cpupod1", status: "PROVISIONING", costPerHr: 0.08 };
+    },
+    async getPod(id: string) {
+      return { id, status: "RUNNING" };
+    },
+    async terminatePod() {
+      return { terminated: true, alreadyGone: false };
+    },
+    async listPods() {
+      return [];
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  // Answers for the two open-pod checks of one startPull: before the reservation, and after it.
+  let openPodAnswers: boolean[] = [false, false];
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "pull-1",
+    clock: { now: () => new Date("2026-10-05T12:00:00Z") },
+    hasOpenPod: async () => openPodAnswers.shift() ?? false,
+  });
+  const starting = services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  await new Promise((r) => setTimeout(r, 0));
+  seenDuringCreate = await services.hasActivePull();
+  releaseCreate();
+  const pull = await starting;
+  assert.equal(seenDuringCreate, true, "an approve running during createPod must see the pull");
+  assert.equal(pull.podId, "cpupod1");
+
+  // 2. The re-check after the reservation: no open pod at the first check, a session approved in between (its
+  // `approved` write landed after this pull's reservation) -> the reservation is voided, no pod created.
+  json = null;
+  openPodAnswers = [false, true];
+  let created = 0;
+  (client as unknown as { createPod: () => Promise<unknown> }).createPod = async () => {
+    created++;
+    return { id: "cpupod2", status: "PROVISIONING" };
+  };
+  await assert.rejects(services.startPull({ repoId: "a/b", file: "d.bin", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  assert.equal(created, 0);
+  assert.equal(await services.hasActivePull(), false);
+  assert.equal((await services.listPulls())[0].status, "failed");
+});
+
+test("review 8: a reservation whose createPod never returned is settled by the poll after a grace period -- adopted when a pod of its name exists, voided otherwise", async () => {
+  // Simulate a process that died inside createPod: a reserved record with no pod.
+  const now = new Date("2026-10-05T12:00:00Z");
+  const reserved = { pullId: "r1", podId: null, repoId: "a/b", file: "c.bin", expectedKey: "models/vae/c.bin", status: "running", startedAt: now.toISOString(), finishedAt: null, bytes: null, error: null };
+  let json: string | null = JSON.stringify([reserved]);
+  const objects = new Map<string, number>();
+  let pods: Array<{ id: string; name: string; status: string }> = [];
+  const client = {
+    async listPods() {
+      return pods;
+    },
+    async getPod(id: string) {
+      return { id, status: "RUNNING" };
+    },
+    async terminatePod() {
+      return { terminated: true, alreadyGone: false };
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  let clock = now;
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "x",
+    clock: { now: () => clock },
+  });
+  // Inside the grace period: left alone (its startPull may still be inside createPod).
+  assert.equal((await services.pollPulls())[0].podId, null);
+  assert.equal(await services.hasActivePull(), true);
+  // Past it, a pod of the deterministic name exists -> adopted.
+  clock = new Date(now.getTime() + 3 * 60_000);
+  pods = [{ id: "cpupod7", name: "ytm-models-pull-r1", status: "RUNNING" }];
+  assert.equal((await services.pollPulls())[0].podId, "cpupod7");
+  // Another reservation past the grace with no pod -> void.
+  json = JSON.stringify([{ ...reserved, pullId: "r2" }]);
+  pods = [];
+  const [voided] = await services.pollPulls();
+  assert.equal(voided.status, "failed");
+  assert.match(voided.error ?? "", /no pod was ever created/);
+  assert.equal(await services.hasActivePull(), false);
 });

@@ -40,6 +40,9 @@ export type StoredTemplateRow = {
   description: string | null;
   workflowJson: string;
   parametersJson: string;
+  /** Derived at import/update (schema v55) so a listing never re-parses the whole graph; null on rows written before v55. */
+  outputNodeIdsJson: string | null;
+  nodeCount: number | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -66,8 +69,8 @@ export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: s
 
 export type MediaJobStore = {
   templates: {
-    insert(row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string }): Promise<StoredTemplateRow>;
-    update(id: string, patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string }): Promise<StoredTemplateRow | null>;
+    insert(row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number }): Promise<StoredTemplateRow>;
+    update(id: string, patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number }): Promise<StoredTemplateRow | null>;
     get(id: string): Promise<StoredTemplateRow | null>;
     list(): Promise<StoredTemplateRow[]>;
     delete(id: string): Promise<boolean>;
@@ -129,6 +132,8 @@ const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 const TRANSFER_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 /** A `queued` row younger than this is a `createJob` still submitting, not a leftover. */
 const SUBMIT_GRACE_MS = 5 * 60_000;
+/** While `/history` has no entry, every Nth poll asks `/queue` whether ComfyUI still knows the prompt at all. */
+const QUEUE_CHECK_EVERY_POLLS = 15;
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> } & Record<string, unknown>>;
 
@@ -155,15 +160,22 @@ export function outputNodeIds(graph: Graph): string[] {
 }
 
 export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate {
-  const graph = JSON.parse(row.workflowJson) as Graph;
+  // The graph is parsed only for a row written before schema v55 recorded these two facts.
+  const shape =
+    row.outputNodeIdsJson !== null && row.nodeCount !== null
+      ? { outputNodeIds: JSON.parse(row.outputNodeIdsJson) as string[], nodeCount: row.nodeCount }
+      : (() => {
+          const graph = JSON.parse(row.workflowJson) as Graph;
+          return { outputNodeIds: outputNodeIds(graph), nodeCount: Object.keys(graph).length };
+        })();
   return {
     templateId: row.id,
     name: row.name,
     version: row.version,
     description: row.description,
     parameters: JSON.parse(row.parametersJson) as MediaTemplateParameter[],
-    outputNodeIds: outputNodeIds(graph),
-    nodeCount: Object.keys(graph).length,
+    outputNodeIds: shape.outputNodeIds,
+    nodeCount: shape.nodeCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -194,6 +206,28 @@ export function toPublicJob(row: StoredJobRow): MediaJob {
  * required ones, wrong types, out-of-bounds numbers and non-enum values are all rejected before any
  * ComfyUI call. Returns the complete value map (defaults filled in).
  */
+/** One value against one declared parameter: the problem, or null. Shared by job params and template defaults. */
+export function checkParameterValue(p: MediaTemplateParameter, value: string | number | boolean): string | null {
+  switch (p.type) {
+    case "string":
+    case "text":
+      if (typeof value !== "string") return `"${p.name}" must be a string`;
+      if (p.max !== null && value.length > p.max) return `"${p.name}" is longer than ${p.max} characters`;
+      return null;
+    case "number":
+    case "integer":
+      if (typeof value !== "number" || !Number.isFinite(value)) return `"${p.name}" must be a number`;
+      if (p.type === "integer" && !Number.isInteger(value)) return `"${p.name}" must be an integer`;
+      if (p.min !== null && value < p.min) return `"${p.name}" is below ${p.min}`;
+      if (p.max !== null && value > p.max) return `"${p.name}" is above ${p.max}`;
+      return null;
+    case "boolean":
+      return typeof value !== "boolean" ? `"${p.name}" must be true or false` : null;
+    case "enum":
+      return typeof value !== "string" || !(p.enum ?? []).includes(value) ? `"${p.name}" must be one of ${(p.enum ?? []).join(", ")}` : null;
+  }
+}
+
 export function resolveParams(parameters: MediaTemplateParameter[], given: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
   const declared = new Map(parameters.map((p) => [p.name, p]));
   const problems: string[] = [];
@@ -205,26 +239,8 @@ export function resolveParams(parameters: MediaTemplateParameter[], given: Recor
       if (p.required) problems.push(`"${p.name}" is required`);
       continue;
     }
-    switch (p.type) {
-      case "string":
-      case "text":
-        if (typeof value !== "string") problems.push(`"${p.name}" must be a string`);
-        else if (p.max !== null && value.length > p.max) problems.push(`"${p.name}" is longer than ${p.max} characters`);
-        break;
-      case "number":
-      case "integer":
-        if (typeof value !== "number" || !Number.isFinite(value)) problems.push(`"${p.name}" must be a number`);
-        else if (p.type === "integer" && !Number.isInteger(value)) problems.push(`"${p.name}" must be an integer`);
-        else if (p.min !== null && value < p.min) problems.push(`"${p.name}" is below ${p.min}`);
-        else if (p.max !== null && value > p.max) problems.push(`"${p.name}" is above ${p.max}`);
-        break;
-      case "boolean":
-        if (typeof value !== "boolean") problems.push(`"${p.name}" must be true or false`);
-        break;
-      case "enum":
-        if (typeof value !== "string" || !(p.enum ?? []).includes(value)) problems.push(`"${p.name}" must be one of ${(p.enum ?? []).join(", ")}`);
-        break;
-    }
+    const problem = checkParameterValue(p, value);
+    if (problem) problems.push(problem);
     resolved[p.name] = value;
   }
   if (problems.length > 0) {
@@ -304,6 +320,12 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       if (!node) problems.push(`parameter "${p.name}": node ${p.nodeId} is not in the workflow`);
       else if (!(p.input in node.inputs)) problems.push(`parameter "${p.name}": node ${p.nodeId} has no input "${p.input}"`);
       if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
+      // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
+      // (blaming the caller's params); refuse it at import instead (review round 8).
+      if (p.default !== null && p.default !== undefined) {
+        const problem = checkParameterValue(p, p.default);
+        if (problem) problems.push(`parameter "${p.name}": its default is invalid -- ${problem}`);
+      }
     }
     const names = parameters.map((p) => p.name);
     if (new Set(names).size !== names.length) problems.push("parameter names must be unique");
@@ -426,6 +448,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
     const deadline = deps.clock.now().getTime() + maxGenerationMs;
     let outputs: MediaJobOutput[] = [];
+    let emptyPolls = 0;
     for (;;) {
       const current = await deps.store.jobs.get(jobId);
       if (!current || (current.status !== "submitted" && current.status !== "generating")) return; // cancelled or swept meanwhile
@@ -445,7 +468,31 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         await deps.sleep(pollMs);
         continue;
       }
-      await deps.sessions.touchActivity(job.sessionId);
+      if (!history) {
+        // No history entry is normal for the whole generation -- unless ComfyUI no longer knows the prompt at all
+        // (restarted, queue cleared): then nothing will ever arrive, and touching the session's activity every poll
+        // would keep a dead job billing the GPU until the generation deadline (review round 8). Activity is credited
+        // only when the prompt is confirmed queued/running; a transient /queue failure is left to the /history counter.
+        if (emptyPolls++ % QUEUE_CHECK_EVERY_POLLS === 0) {
+          let known = true;
+          try {
+            const queue = await comfy.getQueue();
+            known = queue.runningPromptIds.includes(job.promptId) || queue.pendingPromptIds.includes(job.promptId);
+          } catch {
+            known = true;
+          }
+          if (!known) {
+            // It may have finished between the two reads: one more look at history before giving up.
+            const finished = await comfy.getHistory(job.promptId).catch(() => null);
+            if (finished) continue;
+            await failJob(job, "ComfyUI no longer lists the prompt as queued or running and it is not in history (ComfyUI restarted or its queue was cleared)");
+            return;
+          }
+          await deps.sessions.touchActivity(job.sessionId);
+        }
+      } else {
+        await deps.sessions.touchActivity(job.sessionId);
+      }
       if (history) {
         if (history.status === "error") {
           await failJob(job, `ComfyUI execution error: ${history.statusMessages.filter((m) => m.includes("error")).join(", ") || "unknown"}`);
@@ -529,9 +576,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       costPerHr: session?.costPerHr ?? null,
     };
     const results: MediaJobOutput[] = [];
+    /** What the row keeps for a retry: pulled outputs as pulled, a transiently failed one with its note cleared. */
+    const forRetry: MediaJobOutput[] = [];
+    let transientFailure: string | null = null;
     for (const output of outputs) {
       if (output.localPath) {
         results.push(output); // already pulled by an earlier attempt
+        forRetry.push(output);
         continue;
       }
       const ledger = await deps.store.ledger.get(output.remoteKey);
@@ -539,14 +590,27 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         // Pulled by an earlier attempt that died before the job row recorded it: the file is local (ledger), so only
         // the catalog step is (re)done -- reusing the entry if that attempt got that far (review round 6).
         const earlier = { ...output, localPath: ledger.localPath, bytes: ledger.bytes, sha256: ledger.sha256, remoteDeleted: ledger.remoteDeletedAt !== null, note: output.note ?? "pulled by an earlier attempt" };
-        results.push(await catalogOutput(job, earlier, path.basename(ledger.localPath), provenance));
+        const cataloged = await catalogOutput(job, earlier, path.basename(ledger.localPath), provenance);
+        results.push(cataloged);
+        forRetry.push(cataloged);
         continue;
       }
       try {
-        results.push(await pullOutput(job, output, outputDir, s3, provenance));
+        const pulled = await pullOutput(job, output, outputDir, s3, provenance);
+        results.push(pulled);
+        forRetry.push(pulled);
       } catch (error) {
-        results.push({ ...output, note: `pull failed: ${error instanceof Error ? error.message : String(error)}` });
+        // A THROW here is infrastructure (S3 503, a read error), not a verdict about the output: the job keeps
+        // `transferring` and the watch loop retries within the window (review round 8); a verdict ("outside the job's
+        // folder", "verification failed") is a note, never a throw.
+        transientFailure = error instanceof Error ? error.message : String(error);
+        results.push({ ...output, note: `pull failed: ${transientFailure}` });
+        forRetry.push({ ...output, note: null });
       }
+    }
+    if (transientFailure && deps.clock.now().getTime() - (job.submittedAt ?? job.createdAt).getTime() <= TRANSFER_RETRY_WINDOW_MS) {
+      await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", outputsJson: JSON.stringify(forRetry), error: `pull failed: ${transientFailure}; retrying` });
+      return;
     }
     const pulled = results.filter((r) => r.localPath);
     const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
@@ -576,6 +640,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         description: parsed.description ?? null,
         workflowJson: JSON.stringify(parsed.workflow),
         parametersJson: JSON.stringify(parameters),
+        outputNodeIdsJson: JSON.stringify(outputNodeIds(parsed.workflow as Graph)),
+        nodeCount: Object.keys(parsed.workflow).length,
       });
       return toPublicTemplate(row);
     },
@@ -591,6 +657,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         ...(parsed.description !== undefined ? { description: parsed.description ?? null } : {}),
         workflowJson: JSON.stringify(graph),
         parametersJson: JSON.stringify(parameters),
+        outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)),
+        nodeCount: Object.keys(graph).length,
       });
       if (!row) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: parsed.templateId } });
       return toPublicTemplate(row);

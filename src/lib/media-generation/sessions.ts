@@ -9,6 +9,7 @@ import {
   type MediaSessionStatus,
   type MediaSettings,
 } from "./contracts";
+import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import { parseWithSchema, rejectSessionInputSchema, requestSessionInputSchema, sessionIdInputSchema, stopSessionInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -191,19 +192,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     return { secondsUsed, usdCharged };
   }
 
-  /** `alreadyGone`: RunPod had no such pod before our terminate -- it stopped billing at some unknown earlier time. */
-  async function terminateAndConfirm(client: RunpodApiClient, podId: string): Promise<{ confirmed: boolean; lastStatus: string | null; alreadyGone: boolean }> {
-    const terminated = await client.terminatePod(podId);
-    const alreadyGone = terminated.alreadyGone;
-    const deadline = deps.clock.now().getTime() + stopTimeoutMs;
-    let lastStatus: string | null = null;
-    for (;;) {
-      const pod = await client.getPod(podId);
-      if (!pod || pod.status === "TERMINATED") return { confirmed: true, lastStatus: pod?.status ?? null, alreadyGone };
-      lastStatus = pod.status;
-      if (deps.clock.now().getTime() >= deadline) return { confirmed: false, lastStatus, alreadyGone };
-      await deps.sleep(pollMs);
-    }
+  /** Shared with model pulls (`pod-lifecycle.ts`); `alreadyGone` = RunPod had no such pod before our terminate. */
+  function terminateAndConfirm(client: RunpodApiClient, podId: string): Promise<TerminateOutcome> {
+    return terminateAndConfirmPod(client, podId, { now: () => deps.clock.now(), sleep: deps.sleep }, { timeoutMs: stopTimeoutMs, pollMs });
   }
 
   /**
@@ -303,7 +294,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
       try {
         const client = await deps.base.resolveRunpodClient();
-        const orphan = (await client.listPods()).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
+        const orphan = await findLivePodByName(client, podNameFor(open.id));
         if (orphan) {
           podId = orphan.id;
           // The pod billed from its creation; record that like abortStart does (AC-P14-17).
@@ -496,6 +487,21 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         tokenAuthTag: sealed.authTag,
       });
       if (!approved) throw invalidState(sessionId, "pending", (await requireRow(sessionId)).status);
+      // AC-P14-18 without a window (review round 8): a pull reserves itself BEFORE its createPod and re-checks the open
+      // pod after; this side re-checks the pull AFTER its own `approved` write (which `hasOpenPod` counts), so whichever
+      // of the two wrote second sees the other. A pull that slipped in puts the request back to `pending`.
+      if (deps.hasActiveModelPull && (await deps.hasActiveModelPull())) {
+        await deps.store.transition(sessionId, ["approved"], {
+          status: "pending",
+          approvedAt: null,
+          approvedByUserId: null,
+          tokenCiphertext: null,
+          tokenIv: null,
+          tokenAuthTag: null,
+          error: "a model pull started while this request was being approved; approve again once it finishes",
+        });
+        throw new DomainError({ code: "media_session_conflict", message: "A model pull started meanwhile and is writing to the network volume; the request stays pending -- approve again once it finishes." });
+      }
 
       onStage("Creating the pod");
       let pod: RunpodPod;
@@ -516,7 +522,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
         let orphan: RunpodPod | undefined;
         try {
-          orphan = (await client.listPods()).find((p) => p.name === podNameFor(sessionId) && p.status !== "TERMINATED");
+          orphan = await findLivePodByName(client, podNameFor(sessionId));
         } catch {
           orphan = undefined;
         }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { DomainError, type MediaSettings } from "./contracts";
+import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { parseWithSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,8 @@ const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae"
 const DEFAULT_PULL_CAP_MS = 6 * 60 * 60_000;
 const TERMINATE_CONFIRM_MS = 60_000;
 const TERMINATE_POLL_MS = 5_000;
+/** A reserved pull (podId null) older than this with no pod of its name is void (its createPod never returned). */
+const RESERVATION_GRACE_MS = 2 * 60_000;
 
 /** Deterministic, so a pod created by a `createPod` call that failed after the fact can still be found. */
 export function pullPodNameFor(pullId: string): string {
@@ -42,7 +45,8 @@ export const modelKeySchema = z
 
 export type ModelPull = {
   pullId: string;
-  podId: string;
+  /** `null` while the pull is RESERVED (recorded before its createPod returned, review round 8). */
+  podId: string | null;
   repoId: string;
   file: string;
   expectedKey: string;
@@ -137,16 +141,13 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
    * `hasActivePull` keeps telling the truth about the volume.
    */
   async function finishPull(pull: ModelPull, status: ModelPull["status"], extra: { bytes?: number | null; error?: string | null }): Promise<ModelPull> {
-    const client = await deps.base.resolveRunpodClient();
     try {
-      await client.terminatePod(pull.podId);
-      // The volume is shared: the pull is over only once RunPod confirms the pod is gone (bounded wait), like sessions do.
-      const deadline = deps.clock.now().getTime() + TERMINATE_CONFIRM_MS;
-      for (;;) {
-        const current = await client.getPod(pull.podId);
-        if (!current || current.status === "TERMINATED") break;
-        if (deps.clock.now().getTime() >= deadline) throw new Error(`pod still ${current.status} after terminate`);
-        await sleepFn(TERMINATE_POLL_MS);
+      if (pull.podId) {
+        // The volume is shared: the pull is over only once RunPod confirms the pod is gone (bounded wait), the same
+        // shared step the GPU sessions use (`pod-lifecycle.ts`).
+        const client = await deps.base.resolveRunpodClient();
+        const result = await terminateAndConfirm(client, pull.podId, { now: () => deps.clock.now(), sleep: sleepFn }, { timeoutMs: TERMINATE_CONFIRM_MS, pollMs: TERMINATE_POLL_MS });
+        if (!result.confirmed) throw new Error(`pod still ${result.lastStatus} after terminate`);
       }
     } catch (cause) {
       const stillRunning: ModelPull = {
@@ -250,6 +251,14 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     }
     const pullId = deps.generateId();
     const podName = pullPodNameFor(pullId);
+    // RESERVE first (AC-P14-18 without a window, review round 8): from here `hasActivePull` is true, so a session approve
+    // that runs concurrently sees it; then re-check the open pod -- an approve that wrote `approved` meanwhile is seen here.
+    const reserved: ModelPull = { pullId, podId: null, repoId: parsed.repoId, file: parsed.file, expectedKey, status: "running", startedAt: deps.clock.now().toISOString(), finishedAt: null, bytes: null, error: null };
+    await savePull(reserved);
+    if (deps.hasOpenPod && (await deps.hasOpenPod())) {
+      await savePull({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: "a generation session was approved meanwhile" });
+      throw new DomainError({ code: "media_session_conflict", message: "A generation session was approved meanwhile; wait for it to end before pulling models." });
+    }
     let pod: { id: string };
     try {
       pod = await client.createPod({
@@ -264,22 +273,14 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       });
     } catch (error) {
       // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
-      const orphan = (await client.listPods().catch(() => [])).find((p) => p.name === podName && p.status !== "TERMINATED");
-      if (!orphan) throw error;
+      const orphan = await findLivePodByName(client, podName).catch(() => undefined);
+      if (!orphan) {
+        await savePull({ ...reserved, status: "failed", finishedAt: deps.clock.now().toISOString(), error: `pod creation failed: ${error instanceof Error ? error.message : String(error)}` });
+        throw error;
+      }
       pod = orphan;
     }
-    const pull: ModelPull = {
-      pullId,
-      podId: pod.id,
-      repoId: parsed.repoId,
-      file: parsed.file,
-      expectedKey,
-      status: "running",
-      startedAt: deps.clock.now().toISOString(),
-      finishedAt: null,
-      bytes: null,
-      error: null,
-    };
+    const pull: ModelPull = { ...reserved, podId: pod.id };
     await savePull(pull);
     return pull;
   }
@@ -296,6 +297,15 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     const client = await deps.base.resolveRunpodClient();
     const now = deps.clock.now().getTime();
     for (const pull of running) {
+      if (!pull.podId) {
+        // Reserved but never given a pod: its startPull is still inside createPod, or died there. Past a short grace the
+        // deterministic name settles it -- a pod that exists is adopted, none means the reservation is void.
+        if (now - Date.parse(pull.startedAt) <= RESERVATION_GRACE_MS) continue;
+        const orphan = await findLivePodByName(client, pullPodNameFor(pull.pullId)).catch(() => undefined);
+        if (orphan) await savePull({ ...pull, podId: orphan.id });
+        else await savePull({ ...pull, status: "failed", finishedAt: deps.clock.now().toISOString(), error: "reserved, but no pod was ever created" });
+        continue;
+      }
       const head = await s3.headObject(pull.expectedKey);
       if (head && head.size > 0) {
         await finishPull(pull, "done", { bytes: head.size });

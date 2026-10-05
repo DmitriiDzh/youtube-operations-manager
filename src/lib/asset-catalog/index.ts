@@ -13,6 +13,7 @@ export function createAssetCatalogCore() {
     insertAsset: store.insertAsset,
     listAssetsByChannel: store.listAssetsByChannel,
     getAssetById: store.getAssetById,
+    getAssetByReference: store.getAssetByReference,
     async videoBelongsToChannel(channelId: string, videoId: string) {
       const videos = await channelStore.listVideosByChannel(channelId);
       return videos.some((video) => video.videoId === videoId);

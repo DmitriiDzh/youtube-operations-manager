@@ -126,11 +126,18 @@ function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boole
   return { client, calls, files };
 }
 
-function fakeComfy(script: Array<ComfyHistoryEntry | null>, options: { submitFails?: boolean } = {}) {
+function fakeComfy(script: Array<ComfyHistoryEntry | null>, options: { submitFails?: boolean; queue?: { running: string[]; pending: string[] } } = {}) {
   const submits: Array<Record<string, unknown>> = [];
   let interrupts = 0;
+  let queueChecks = 0;
   const queue = [...script];
   const client = {
+    // Default: ComfyUI knows the prompt (running) until history reports it.
+    async getQueue() {
+      queueChecks++;
+      const q = options.queue ?? { running: ["prompt-1"], pending: [] };
+      return { running: q.running.length, pending: q.pending.length, runningPromptIds: q.running, pendingPromptIds: q.pending };
+    },
     async submitPrompt(input: { prompt: Record<string, unknown> }) {
       if (options.submitFails) {
         const { DomainError } = await import("./contracts");
@@ -146,7 +153,7 @@ function fakeComfy(script: Array<ComfyHistoryEntry | null>, options: { submitFai
       interrupts++;
     },
   } as unknown as ComfyUiClient;
-  return { client, submits, interrupts: () => interrupts };
+  return { client, submits, interrupts: () => interrupts, queueChecks: () => queueChecks };
 }
 
 function completed(outputs: Array<{ nodeId: string; kind: string; filename: string; subfolder: string }>): ComfyHistoryEntry {
@@ -901,4 +908,92 @@ test("review 7: preview (`temp`) files are not job outputs -- a Save + Preview w
   assert.equal(failed.status, "failed");
   assert.match(failed.error ?? "", /without any saved output/);
   assert.deepEqual(failed.outputs, []);
+});
+
+// -- review round 8 (2026-10-05) ------------------------------------------------------------------
+
+test("review 8: a THROWN S3 failure while pulling (a 503 on the GET) keeps the job transferring for a retry -- the next attempt pulls the output; past the window it fails", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  const original = f.s3.client.getObjectToFile.bind(f.s3.client);
+  let failures = 1;
+  (f.s3.client as { getObjectToFile: (k: string, d: string) => Promise<unknown> }).getObjectToFile = async (key, dest) => {
+    if (failures-- > 0) {
+      const { DomainError } = await import("./contracts");
+      throw new DomainError({ code: "runpod_s3_unavailable", message: "RunPod S3 returned HTTP 503" });
+    }
+    return original(key, dest);
+  };
+  await f.runScheduled();
+  const retrying = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(retrying.status, "transferring");
+  assert.match(retrying.error ?? "", /pull failed: RunPod S3 returned HTTP 503; retrying/);
+  assert.equal(retrying.outputs[0].note, null, "the recorded output is clean for the retry");
+  assert.equal(f.registered.length, 0);
+  // The watch loop's resume pass retries the transfer; S3 is back.
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.ok(done.outputs[0].localPath);
+  assert.deepEqual(done.assetIds, ["asset-1"]);
+
+  // Past the retry window the same failure is final.
+  const g = fixture();
+  const t2 = await importDefault(g.services);
+  const job2 = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  (g.s3.client as unknown as { getObjectToFile: () => Promise<unknown> }).getObjectToFile = async () => {
+    throw new Error("RunPod S3 returned HTTP 503");
+  };
+  g.mem.jobs.set(job2.jobId, { ...g.mem.jobs.get(job2.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") });
+  await g.runScheduled();
+  const failed = await g.services.getJob({ jobId: job2.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /no output could be pulled/);
+});
+
+test("review 8: a prompt ComfyUI no longer knows (not queued, not running, not in history) fails fast instead of billing the session until the generation deadline; a known prompt keeps being credited as activity", async () => {
+  const forgotten = fakeComfy([null], { queue: { running: [], pending: [] } }); // ComfyUI restarted: history empty, queue empty
+  const f = fixture({ comfy: forgotten });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /no longer lists the prompt/);
+  assert.equal(forgotten.queueChecks(), 1);
+  assert.equal(f.activity.length, 1, "only the submit itself counted as activity; the dead poll never did");
+
+  // Known prompt: activity is credited (on the queue-confirmed polls), the loop runs to the deadline as before.
+  const known = fakeComfy([null], { queue: { running: [], pending: ["prompt-1"] } });
+  const g = fixture({ comfy: known });
+  const t2 = await importDefault(g.services);
+  const job2 = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await g.runScheduled();
+  assert.equal((await g.services.getJob({ jobId: job2.jobId })).status, "failed"); // the 10 s test deadline
+  assert.ok(g.activity.length >= 2, "the submit plus at least one confirmed poll");
+});
+
+test("review 8: a template whose parameter default cannot pass its own type/bounds/enum is refused at import (it would fail every job that omits the parameter)", async () => {
+  const { services } = fixture();
+  const bad = (p: Record<string, unknown>) => services.importWorkflowTemplate({ name: "t", workflow: GRAPH, parameters: [p] });
+  await assert.rejects(bad({ name: "sampler", type: "enum", nodeId: "4", input: "ckpt_name", enum: ["a", "b"], default: "ddim" }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /default is invalid/.test(e.message));
+  await assert.rejects(bad({ name: "steps", type: "integer", nodeId: "3", input: "steps", min: 1, default: 0 }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid");
+  await assert.rejects(bad({ name: "steps", type: "integer", nodeId: "3", input: "steps", default: 2.5 }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid");
+  const ok = await services.importWorkflowTemplate({ name: "t", workflow: GRAPH, parameters: [{ name: "steps", type: "integer", nodeId: "3", input: "steps", min: 1, max: 50, default: 20 }] });
+  assert.equal(ok.parameters[0].default, 20);
+});
+
+test("review 8: a template listing uses the shape recorded at import (no graph parse per call); a row from before v55 still falls back to parsing", async () => {
+  const { toPublicTemplate } = await import("./jobs");
+  const recorded = { id: "t", name: "t", version: 1, description: null, workflowJson: "{not json", parametersJson: "[]", outputNodeIdsJson: JSON.stringify(["9"]), nodeCount: 4, createdAt: new Date(), updatedAt: new Date() };
+  assert.deepEqual([toPublicTemplate(recorded).outputNodeIds, toPublicTemplate(recorded).nodeCount], [["9"], 4]);
+  const legacy = { ...recorded, workflowJson: JSON.stringify(GRAPH), outputNodeIdsJson: null, nodeCount: null };
+  assert.deepEqual([toPublicTemplate(legacy).outputNodeIds, toPublicTemplate(legacy).nodeCount], [["9"], 4]);
+  const { services, mem } = fixture();
+  const imported = await services.importWorkflowTemplate({ name: "txt2img", workflow: GRAPH, parameters: PARAMETERS });
+  const row = mem.templates.get(imported.templateId)!;
+  assert.equal(row.outputNodeIdsJson, JSON.stringify(["9"]));
+  assert.equal(row.nodeCount, 4);
 });

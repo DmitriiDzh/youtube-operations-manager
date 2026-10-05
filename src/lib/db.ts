@@ -821,6 +821,9 @@ export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
   description: text("description"),
   workflowJson: text("workflow_json").notNull(),
   parametersJson: text("parameters_json").notNull(),
+  /** Schema v55 (review round 8): derived at import/update so a listing never re-parses the graph; null before v55. */
+  outputNodeIdsJson: text("output_node_ids_json"),
+  nodeCount: integer("node_count"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -3070,6 +3073,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         await client.execute("ALTER TABLE media_sessions ADD COLUMN last_seen_alive_at INTEGER");
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 55,
+    description:
+      "media_workflow_templates.output_node_ids_json + node_count -- derived at import/update so listing templates never re-parses every graph (Phase 14 review round 8); additive nullable columns, rows written earlier fall back to parsing",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE media_workflow_templates ADD COLUMN output_node_ids_json TEXT", "ALTER TABLE media_workflow_templates ADD COLUMN node_count INTEGER"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
       }
     },
   },
@@ -7360,7 +7377,7 @@ export type NewStoredMediaJob = typeof mediaJobs.$inferInsert;
 export type StoredMediaExchangeFile = typeof mediaExchangeFiles.$inferSelect;
 
 export async function insertMediaWorkflowTemplate(
-  row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string },
+  row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson?: string; nodeCount?: number },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate> {
   const now = new Date();
@@ -7374,7 +7391,7 @@ export async function insertMediaWorkflowTemplate(
 /** Replaces the graph/parameters and bumps `version`; `null` = no such template. */
 export async function updateMediaWorkflowTemplate(
   id: string,
-  patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string },
+  patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const rows = await database

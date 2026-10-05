@@ -90,7 +90,10 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
     // The same encoder as the SigV4 canonical URI (`!'()*` included), so the bytes on the wire and the signed
     // path never diverge for a key like `exchange/<job>/final (v2)_00001_.png` (review round 7).
     url.pathname = `/${config.volumeId}${key ? `/${key.split("/").map(awsUriEncode).join("/")}` : ""}`;
-    for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v);
+    // The query is encoded by the SigV4 encoder as well (`URLSearchParams` would form-encode a space as `+` and `~`
+    // as `%7E`, diverging from the signed canonical query -- review round 8).
+    const pairs = Object.entries(query ?? {}).map(([k, v]) => `${awsUriEncode(k)}=${awsUriEncode(v)}`);
+    url.search = pairs.length > 0 ? `?${pairs.join("&")}` : "";
     return url;
   }
 

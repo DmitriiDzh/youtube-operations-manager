@@ -2461,6 +2461,21 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   encoder for the wire URL too; `findAssetByLocalPath` is one indexed lookup
   (`getCreativeAssetByReference` → `assetCatalog.findAssetByReference`), not a channel-wide scan; the
   CLI `janitor` accepts only the bare `--delete` switch.
+- **Closed race, shared lifecycle, bounded polling (review round 8).** AC-P14-18 (no GPU session while a pull
+  writes the volume) had a window: both sides checked, then wrote. Now a pull RESERVES its record (podId
+  null) before its `createPod` and re-checks the open pod after; an approve re-checks the pull after its own
+  `approved` write (which `hasOpenPod` counts) and puts the request back to `pending` if one slipped in --
+  whichever wrote second sees the other. A reservation with no pod past a 2-minute grace is adopted (pod of
+  its deterministic name) or voided by the poll. `pod-lifecycle.ts` holds the ONE terminate-and-confirm and
+  find-pod-by-name implementation sessions and pulls both call (AGENTS.md §M). The job poll loop credits
+  session activity only for a prompt ComfyUI confirms (history, or `/queue` every 15th empty poll) and fails
+  fast when the prompt is neither queued, running nor in history (ComfyUI restarted) instead of billing to
+  the generation deadline. A THROWN per-object S3 failure during transfer keeps the job `transferring` for
+  the retry window (a verdict such as "outside the job's folder" stays a note). Template defaults are
+  validated against their own type/bounds/enum at import (`checkParameterValue`, shared with job params);
+  `output_node_ids_json`/`node_count` (schema v55) are derived at import/update so a listing never
+  re-parses graphs; `createAssetCatalogCore` wires `getAssetByReference` (round 7 had added it to the
+  services only); S3 query strings use the SigV4 encoder (a space is `%20`, never `+`).
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

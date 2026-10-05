@@ -13,8 +13,9 @@ import {
   updateMediaWorkflowTemplate,
   upsertMediaExchangeFile,
   type StoredMediaJob,
+  type StoredMediaWorkflowTemplate,
 } from "@/lib/db";
-import type { MediaJobStore, StoredJobRow } from "../jobs";
+import type { MediaJobStore, StoredJobRow, StoredTemplateRow } from "../jobs";
 
 function jobFromDb(row: StoredMediaJob): StoredJobRow {
   return {
@@ -36,13 +37,17 @@ function jobFromDb(row: StoredMediaJob): StoredJobRow {
   };
 }
 
+function templateFromDb(t: StoredMediaWorkflowTemplate): StoredTemplateRow {
+  return { ...t, description: t.description ?? null, outputNodeIdsJson: t.outputNodeIdsJson ?? null, nodeCount: t.nodeCount ?? null };
+}
+
 export function createMediaJobStore(): MediaJobStore {
   return {
     templates: {
-      insert: (row) => insertMediaWorkflowTemplate(row).then((t) => ({ ...t, description: t.description ?? null })),
-      update: (id, patch) => updateMediaWorkflowTemplate(id, patch).then((t) => (t ? { ...t, description: t.description ?? null } : null)),
-      get: (id) => getMediaWorkflowTemplateById(id).then((t) => (t ? { ...t, description: t.description ?? null } : null)),
-      list: () => listMediaWorkflowTemplates().then((rows) => rows.map((t) => ({ ...t, description: t.description ?? null }))),
+      insert: (row) => insertMediaWorkflowTemplate(row).then(templateFromDb),
+      update: (id, patch) => updateMediaWorkflowTemplate(id, patch).then((t) => (t ? templateFromDb(t) : null)),
+      get: (id) => getMediaWorkflowTemplateById(id).then((t) => (t ? templateFromDb(t) : null)),
+      list: () => listMediaWorkflowTemplates().then((rows) => rows.map(templateFromDb)),
       delete: (id) => deleteMediaWorkflowTemplate(id),
     },
     jobs: {

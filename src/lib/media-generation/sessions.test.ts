@@ -833,3 +833,41 @@ test("review 7: the watcher's 'pod disappeared' closes the window at the previou
   assert.equal(s.status, "done");
   assert.equal(s.secondsUsed, 125); // 5 s start poll + 120 s
 });
+
+// -- review round 8 (2026-10-05) ------------------------------------------------------------------
+
+test("review 8 (AC-P14-18 without a window): a model pull that reserved itself between the approve's first check and its `approved` write is seen by the re-check -- the request goes back to pending, no pod is created", async () => {
+  let checks = 0;
+  const runpod = fakeRunpod();
+  const mem = memorySessionStore();
+  let now = new Date("2026-10-05T10:00:00Z");
+  const services = createMediaSessionServices({
+    store: mem.store,
+    base: {
+      getSettings: async () => READY_SETTINGS,
+      getOverview: async () => ({ ready: true, missing: [], gatewayEnabled: true }),
+      resolveRunpodClient: async () => runpod.client,
+      sealSecret: async (text) => encryptSecret(text, KEY),
+      openSecret: async (payload) => decryptSecret(payload, KEY),
+    },
+    createComfyClient: fakeComfy().factory,
+    comfyUiProxyBaseUrl: (podId, port) => `https://${podId}-${port}.example.test`,
+    generateId: () => "session-1",
+    generateToken: () => "tok",
+    clock: { now: () => now },
+    sleep: async (ms) => {
+      now = new Date(now.getTime() + ms);
+    },
+    // First check (before the `approved` write): no pull. Second check (after it): a pull reserved itself meanwhile.
+    hasActiveModelPull: async () => ++checks >= 2,
+  });
+  const requested = await services.requestSession(operatorRequest);
+  await assert.rejects(services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  const row = mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "pending");
+  assert.equal(row.approvedAt, null);
+  assert.equal(row.tokenCiphertext, null);
+  assert.match(row.error ?? "", /model pull started/);
+  assert.ok(!runpod.calls.includes("createPod"));
+  assert.equal(checks, 2);
+});
