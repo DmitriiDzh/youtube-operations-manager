@@ -1,0 +1,109 @@
+"use client";
+
+import { useRef, useState } from "react";
+
+/**
+ * BL-130 (`docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md` §2.4) -- "Use an existing token": registers on
+ * this device a token already issued on another one, so one agent configuration works everywhere.
+ * Shared by the channel token field and the Factory Operator token settings (`AGENTS.md` §M). The
+ * pasted value goes only into the POST body: it is never rendered back, logged, or kept after submit.
+ * No native dialogs.
+ */
+export function AgentTokenImportForm<TSummary>({
+  endpoint,
+  extraBody,
+  placeholder,
+  replacesActive,
+  onImported,
+}: {
+  endpoint: string;
+  extraBody?: Record<string, string>;
+  placeholder: string;
+  /** True when this device already has an active token that the import will replace. */
+  replacesActive: boolean;
+  onImported: (summary: TSummary) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Synchronous guard against a double submit (the `busy` state updates a render late).
+  const inflight = useRef(false);
+
+  function close() {
+    setOpen(false);
+    setValue("");
+    setError(null);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (inflight.current || value.trim() === "") return;
+    inflight.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...extraBody, token: value }),
+      });
+      const data = (await res.json()) as { token?: TSummary; message?: string };
+      if (!res.ok || !data.token) {
+        setError(data.message ?? "Failed to import the token");
+        return;
+      }
+      onImported(data.token);
+      close();
+    } catch {
+      setError("Failed to import the token");
+    } finally {
+      inflight.current = false;
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
+        Use an existing token
+      </button>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950/40 p-2">
+      <p className="text-xs text-zinc-400">
+        Paste a token issued on another device. The same token then works on both devices.
+        {replacesActive && " It replaces this device's current token."} Revoking a token applies only to the device where you revoke it.
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={placeholder}
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Existing token"
+          className="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 font-mono text-xs text-zinc-100"
+        />
+        <button
+          type="submit"
+          disabled={busy || value.trim() === ""}
+          className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {busy ? "Importing..." : "Import"}
+        </button>
+        <button type="button" onClick={close} className="rounded-md px-2 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">
+          Cancel
+        </button>
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-red-400">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
