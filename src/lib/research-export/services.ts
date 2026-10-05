@@ -1,4 +1,5 @@
 import path from "node:path";
+import { DATA_EXCHANGE_DIR_NAME, FROM_YTM_DIR_NAME, SENT_TO_YTM_DIR_NAME, resolveFromYtmDir } from "@/lib/workspace-exchange";
 import {
   CHANNEL_SNAPSHOT_COLUMNS,
   DomainError,
@@ -50,16 +51,11 @@ export type ResearchExportDeps = {
   };
 };
 
-/**
- * The ONE place inside the operator's channel workspace the Manager writes to (owner decision 2026-10-04, ADR 0019 amendment): a fixed,
- * deliberate exception to "the Manager touches nothing in a project". Only research exports go here, and only files this module created
- * are ever deleted from it.
- */
-export const DATA_EXCHANGE_DIR_NAME = "99 Data Exchange";
-/** Manager -> project scripts (what this module writes). */
-export const FROM_YTM_DIR_NAME = "From YTM";
-/** Project -> Manager (reserved for future inbound material; the Manager only creates the empty folder, it never writes there). */
-export const SENT_TO_YTM_DIR_NAME = "Sent to YTM";
+// The ONE place inside the operator's channel workspace the Manager writes to (owner decision 2026-10-04, ADR 0019 amendment): a fixed,
+// deliberate exception to "the Manager touches nothing in a project". Only research exports go here, and only files this module created
+// are ever deleted from it. The folder resolution itself moved to the shared `workspace-exchange` module (AGENTS.md §M) once Phase 14's
+// media outputs needed the same folder; the names are re-exported here unchanged.
+export { DATA_EXCHANGE_DIR_NAME, FROM_YTM_DIR_NAME, SENT_TO_YTM_DIR_NAME };
 
 function stamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -87,32 +83,13 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
         message: `The channel's workspace folder cannot be used for an export: ${reason}`,
         details: { channelId, reason },
       });
-    const validation = await deps.validateWorkspacePath(workspace);
-    if (!validation.ok) throw unavailable(validation.reason);
-
-    const realWorkspace = await deps.fs.realpath(workspace).catch(() => null);
-    if (!realWorkspace) throw unavailable("path does not exist or is not accessible");
-    const exchange = path.join(realWorkspace, DATA_EXCHANGE_DIR_NAME);
-    const dir = path.join(exchange, FROM_YTM_DIR_NAME);
-    // Buffer folders, not storage: each is created if missing (a symlink or non-folder is refused), and the receiving side deletes what it has processed.
-    for (const folder of [exchange, dir, path.join(exchange, SENT_TO_YTM_DIR_NAME)]) {
-      const label = path.relative(realWorkspace, folder);
-      const existing = await deps.fs.lstat(folder);
-      if (existing && (existing.isSymbolicLink || !existing.isDirectory)) throw unavailable(`${label} is not a plain folder inside the workspace`);
-      if (!existing) {
-        // The folder cannot be created (read-only volume, permissions, ...): a clear error and nothing written.
-        try {
-          await deps.fs.mkdir(folder);
-        } catch (error) {
-          throw unavailable(`${label} could not be created (${error instanceof Error ? error.message : String(error)})`);
-        }
-      }
-    }
-    const realDir = await deps.fs.realpath(dir).catch(() => null);
-    if (!realDir || realDir === realWorkspace || !deps.isPathInsideOrEqual(realWorkspace, realDir)) {
-      throw unavailable(`${DATA_EXCHANGE_DIR_NAME}/${FROM_YTM_DIR_NAME} resolves outside the workspace`);
-    }
-    return realDir;
+    return resolveFromYtmDir({
+      workspace,
+      fs: deps.fs,
+      validateWorkspacePath: deps.validateWorkspacePath,
+      isPathInsideOrEqual: deps.isPathInsideOrEqual,
+      unavailable,
+    });
   }
 
   async function writeAll(dir: string, prepared: Prepared[]): Promise<ExportedFile[]> {

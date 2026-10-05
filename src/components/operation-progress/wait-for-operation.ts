@@ -1,3 +1,4 @@
+import { sleep as sharedSleep } from "@/lib/shared-async";
 /**
  * Waits for a server-run operation (operation registry, ADR 0015) to end, without showing anything.
  * Used when a start request was refused with 409 `operation_already_running`: the same work is already
@@ -20,7 +21,7 @@ export async function waitForOperation(
   const intervalMs = options.intervalMs ?? 1_000;
   const timeoutMs = options.timeoutMs ?? 10 * 60_000;
   const doFetch = options.fetchImpl ?? fetch;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep ?? sharedSleep;
   const now = options.now ?? Date.now;
   const startedAt = now();
 

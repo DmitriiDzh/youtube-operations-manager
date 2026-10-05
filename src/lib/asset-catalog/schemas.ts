@@ -32,6 +32,14 @@ export const listAssetsInputSchema = z
   })
   .strict();
 
+export const findAssetByReferenceInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    referenceKind: assetReferenceKindSchema,
+    referenceValue: z.string().min(1),
+  })
+  .strict();
+
 export const getAssetContextInputSchema = z
   .object({
     channelId: z.string().min(1),

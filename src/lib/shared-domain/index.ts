@@ -110,6 +110,34 @@ export type DomainErrorCode =
   // one of this installation's connected channels (never "does not exist" vs. "not connected").
   | "CHANNEL_WORKSPACE_PATH_INVALID"
   | "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED"
+  // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- remote media generation on RunPod/ComfyUI.
+  // NOT_CONFIGURED: no credentials/settings on this device (the feature is simply off, AC-P14-01).
+  // GATEWAY_DISABLED: the operator's "Media gateway" toggle is off. CREDENTIALS_INVALID: RunPod or
+  // the S3 API rejected the stored key (401/403), or a test call failed. *_UNAVAILABLE: the
+  // external service answered with an error or did not answer. SETTINGS_INVALID: a value that is
+  // syntactically fine but not in the live catalog / inconsistent (AC-P14-19).
+  | "media_generation_not_configured"
+  | "media_gateway_disabled"
+  | "media_credentials_invalid"
+  | "media_settings_invalid"
+  | "runpod_api_unavailable"
+  | "runpod_forbidden"
+  | "runpod_s3_unavailable"
+  | "comfyui_unavailable"
+  | "comfyui_rejected"
+  // Phase 14 slice 2 -- generation sessions (one pod, approved by a human, always terminated).
+  | "media_session_not_found"
+  | "media_session_conflict"
+  | "media_session_invalid_state"
+  | "media_daily_cap_reached"
+  | "media_session_start_failed"
+  // Phase 14 slice 3 -- workflow templates, jobs and the exchange folder.
+  | "media_template_not_found"
+  | "media_template_invalid"
+  | "media_job_not_found"
+  | "media_job_invalid_state"
+  | "media_job_params_invalid"
+  | "media_workspace_unavailable"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
@@ -194,8 +222,14 @@ export class DomainError extends Error {
   }
 }
 
+/**
+ * Structural, not only `instanceof` (Phase 14 slice 6, found live): a core cached on `globalThis` (the media core, built
+ * first by `src/instrumentation.ts`) throws the `DomainError` class of ANOTHER Next.js bundle, so a route's own
+ * `instanceof DomainError` is false and a 409 became a 500 "internal_error". Name + string code identify it either way.
+ */
 export function isDomainError(value: unknown): value is DomainError {
-  return value instanceof DomainError;
+  if (value instanceof DomainError) return true;
+  return value instanceof Error && value.name === "DomainError" && typeof (value as { code?: unknown }).code === "string";
 }
 
 export function formatZodError(error: ZodError) {

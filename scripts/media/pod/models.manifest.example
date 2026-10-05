@@ -1,0 +1,9 @@
+# Models to pull onto the network volume (scripts/media/models-pull.sh).
+# One per line: <huggingface repo id> <tab> <file path inside the repo> <tab> <models/ subfolder>
+# Lines starting with # are ignored. The example rows are placeholders -- pick the models you actually
+# use and check each model's licence for commercial use yourself (this repository takes no position).
+#
+# Comfy-Org/flux1-schnell	flux1-schnell-fp8.safetensors	checkpoints
+# Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors	diffusion_models
+# Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/vae/wan2.2_vae.safetensors	vae
+# Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders

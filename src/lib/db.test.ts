@@ -881,7 +881,8 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
 // zeroed row (not absent), a category's counts are independent of the others, concurrent writes
 // are never lost, and -- the core behavior a rolling window actually exists to provide -- an
 // event outside the window is excluded from the count even though it is still in the table.
-// Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories (seven in all).
+// Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories; Phase 14 adds the three
+// media-gateway children (docs/roadmap/plans/PHASE_14_PLAN.md §2.1: one counter per child).
 test("getGatewayTrafficLast24h: every category reports a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
@@ -894,10 +895,13 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
       [
         "analytics_reads",
         "cloud_monitoring_reads",
+        "comfyui_api",
         "data_api_reads",
         "live_writes",
         "mcp_tool_calls",
         "reporting_reads",
+        "runpod_api",
+        "runpod_s3",
         "wikipedia_reads",
         "youtube_feed_reads",
       ]
@@ -3073,16 +3077,17 @@ test("factory_agent_tokens: replace keeps one active token; revoke hides it; sep
     assert.equal((await findActiveAgentChannelTokenByHash("hc", isolatedDb))?.id, "c1");
   }));
 
-test("factory_agent_tokens: migration v51 on a database that already holds several active rows keeps the newest and still boots", () =>
+test("factory_agent_tokens: migration v60 (v51 before the Phase 14 merge) on a database that already holds several active rows keeps the newest and still boots", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
-    // Simulate the pre-index state: drop the index, stamp 50, leave three ACTIVE rows (plus one revoked).
+    // Simulate the pre-index state: drop the index, stamp 59 (the version right before this migration; 50 before the Phase 14
+    // merge renumbered it), leave three ACTIVE rows (plus one revoked).
     await client.execute("DROP INDEX factory_agent_tokens_one_active_idx");
     await client.execute("INSERT INTO factory_agent_tokens (id, token_hash, revoked_at) VALUES ('old-revoked', 'h0', 1)");
     await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a1', 'h1')");
     await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a2', 'h2')");
     await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a3', 'h3')");
-    await client.execute("UPDATE schema_meta SET value = '50' WHERE key = 'schema_version'");
+    await client.execute("UPDATE schema_meta SET value = '59' WHERE key = 'schema_version'");
 
     await initializeDatabaseSchema(client);
 

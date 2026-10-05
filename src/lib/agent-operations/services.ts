@@ -426,6 +426,65 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "The local production-workspace folder path the operator set for a channel on THIS device (Settings -> Channels), returned as an absolute path string, or { configured: false } when none is set (never an empty-string path). Implemented as the `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command (`src/lib/channel-workspaces/`). This application never opens, lists, reads, writes, or re-validates anything inside the folder -- the string is returned exactly as stored, even if the folder has since been moved or deleted. Device-local: never synced or handed off, and a path set on another device is never returned. Read-only: no agent-callable way exists to set or clear it -- only the operator, through the Settings UI (`PUT /api/channel-workspaces`), the same self-authorization concern owner spec §17 raised for `local_path` asset registration. Requires channelId to be the caller's currently-active channel.",
   },
+  // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7) -- remote media generation on RunPod/ComfyUI. An agent REQUESTS a
+  // session and READS it; a human approves/starts/stops it in Production → Sessions (Web-only, fenced by session-approval-inventory.test.ts).
+  // Inside a running session the agent submits jobs freely; outputs land in the channel's workspace `99 Data Exchange/From YTM/media/`.
+  {
+    id: "media_generation.list_media_templates",
+    mcpTools: ["agent_list_media_templates"],
+    domain: "media_generation",
+    permission: "READ",
+    description:
+      "The ComfyUI workflow templates the operator imported, with their declared parameters (the only values a job may set), output node ids and version. Templates are technical graphs; prompts and every creative choice are job parameters. Implemented as the `agent_list_media_templates` MCP tool (`src/lib/media-generation/`). Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "media_generation.request_media_session",
+    mcpTools: ["agent_request_media_session"],
+    domain: "media_generation",
+    permission: "DRAFT",
+    description:
+      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Production -> Sessions; the agent can neither approve, start nor stop it. Several sessions may be open at once; at most maxConcurrentSessions hold a pod at the same time (bounded at approve). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
+  },
+  {
+    id: "media_generation.get_media_session",
+    mcpTools: ["agent_get_media_session"],
+    domain: "media_generation",
+    permission: "READ",
+    description:
+      "One session by id, or this channel's recent sessions: status, caps, estimate, the pod's real $/h, live secondsUsed/usdCharged, stop reason or error. `running` is the only state that accepts jobs. Never the proxy token. A session of another channel behaves like one that does not exist. Implemented as the `agent_get_media_session` MCP tool. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "media_generation.get_media_limits",
+    mcpTools: ["agent_get_media_limits"],
+    domain: "media_generation",
+    permission: "READ",
+    description:
+      "The owner's media limits in USD (maxUsdPerDay, spentTodayUsd, remainingTodayUsd), defaultMaxMinutes, idleMinutes, whether the setup is complete (ready/missing), this channel's open sessions (openSessions; openSession = the first), maxConcurrentSessions, activeSessionCount and deviceHasOpenSession. Local read only. Implemented as the `agent_get_media_limits` MCP tool. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "media_generation.create_media_job",
+    mcpTools: ["agent_create_media_job"],
+    domain: "media_generation",
+    permission: "DRAFT",
+    description:
+      "Submits one generation job { sessionId, templateId, params } to a RUNNING session's ComfyUI. Parameters are validated against the template before anything is sent (media_job_params_invalid). Generation and transfer run in the background: when `done`, every output is an absolute path under <channel workspace>/99 Data Exchange/From YTM/media/<jobId>/ plus a registered asset with provenance, and the file is deleted from the server volume. Implemented as the `agent_create_media_job` MCP tool. Mutates local state and reaches ComfyUI, gated like agent_request_media_session. Requires channelId to be the caller's currently-active channel and the session to belong to it.",
+  },
+  {
+    id: "media_generation.get_media_job",
+    mcpTools: ["agent_get_media_job"],
+    domain: "media_generation",
+    permission: "READ",
+    description:
+      "One job by id, or this channel's recent jobs (optionally one session's): status (queued|submitted|generating|transferring|done|failed|cancelled), resolved params, promptId, outputs with localPath/bytes/sha256/assetId/note, assetIds, error. Local read only. A job of another channel behaves like one that does not exist. Implemented as the `agent_get_media_job` MCP tool. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "media_generation.cancel_media_job",
+    mcpTools: ["agent_cancel_media_job"],
+    domain: "media_generation",
+    permission: "DRAFT",
+    description:
+      "Cancels one of this channel's queued or generating jobs (best-effort interrupt of ComfyUI); a transferring or finished job is refused. Never stops the session. Implemented as the `agent_cancel_media_job` MCP tool; gated like agent_create_media_job. Requires channelId to be the caller's currently-active channel.",
+  },
   // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4) -- registered directly as the
   // `agent_list_logical_paths` / `agent_get_logical_path` MCP tools calling `createLogicalPathsCore()`
   // (`src/lib/logical-paths/`), NOT wrapped by this module -- same pattern as channel_workspace above.

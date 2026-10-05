@@ -20,6 +20,7 @@ function createFixture(
   overrides: Partial<{
     videosByChannel: Record<string, string[]>;
     idSequence: string[];
+    withReferenceLookup: boolean;
   }> = {}
 ) {
   const store = new Map<string, FakeAsset>();
@@ -53,6 +54,13 @@ function createFixture(
     async getAssetById(assetId) {
       return store.get(assetId) ?? null;
     },
+    ...(overrides.withReferenceLookup
+      ? {
+          async getAssetByReference(channelId: string, referenceKind: string, referenceValue: string) {
+            return [...store.values()].find((a) => a.channelId === channelId && a.referenceKind === referenceKind && a.referenceValue === referenceValue) ?? null;
+          },
+        }
+      : {}),
     async videoBelongsToChannel(channelId, videoId) {
       return (overrides.videosByChannel?.[channelId] ?? []).includes(videoId);
     },
@@ -244,4 +252,18 @@ test("registerAsset rejects an unexpected input field as validation_failed", asy
       }),
     (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
   );
+});
+
+// Phase 14 review round 7: a resumed media transfer asks for the asset already cataloged for a local file.
+test("findAssetByReference: one lookup by (channel, kind, value); null when nothing matches, when another channel holds it, or when the store cannot look up by reference", async () => {
+  const { services } = createFixture({ withReferenceLookup: true });
+  const asset = await services.registerAsset({ channelId: "UC_A", assetType: "generated_image", referenceKind: "local_path", referenceValue: "/ws/out.png" });
+  const found = await services.findAssetByReference({ channelId: "UC_A", referenceKind: "local_path", referenceValue: "/ws/out.png" });
+  assert.equal(found?.assetId, asset.assetId);
+  assert.equal(await services.findAssetByReference({ channelId: "UC_B", referenceKind: "local_path", referenceValue: "/ws/out.png" }), null);
+  assert.equal(await services.findAssetByReference({ channelId: "UC_A", referenceKind: "url", referenceValue: "/ws/out.png" }), null);
+  await assert.rejects(services.findAssetByReference({ channelId: "UC_A", referenceKind: "nope", referenceValue: "x" }), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
+  const noLookup = createFixture();
+  await noLookup.services.registerAsset({ channelId: "UC_A", assetType: "generated_image", referenceKind: "local_path", referenceValue: "/ws/out.png" });
+  assert.equal(await noLookup.services.findAssetByReference({ channelId: "UC_A", referenceKind: "local_path", referenceValue: "/ws/out.png" }), null);
 });

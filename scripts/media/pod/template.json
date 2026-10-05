@@ -1,0 +1,15 @@
+{
+  "name": "ytm-comfyui-v2",
+  "image": "runpod/comfyui:1.4.0-comfyuiv0.35.0-cuda12.8",
+  "category": "NVIDIA",
+  "disk": 20,
+  "ports": ["8189/http", "22/tcp"],
+  "env": {
+    "YTM_POD_START": "/workspace/ytm/pod-start.sh"
+  },
+  "entrypoint": ["bash", "/workspace/ytm/pod-start.sh"],
+  "startSsh": true,
+  "startJupyter": false,
+  "public": false,
+  "serverless": false
+}

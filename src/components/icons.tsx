@@ -110,3 +110,13 @@ export function DecisionsIcon(props: SVGProps<SVGSVGElement>) {
     </IconBase>
   );
 }
+
+// Phase 14 slice 6: the Production section (remote media generation) -- a film-frame glyph.
+export function ProductionIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4" />
+    </IconBase>
+  );
+}

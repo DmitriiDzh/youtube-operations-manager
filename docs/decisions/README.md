@@ -74,3 +74,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0020](0020-send-approved-from-languages.md) | Send approved changes from the Languages tab in one click through the existing live-batch pipeline (no second write path) | Accepted |
 | [0021](0021-agent-collection-requests.md) | Agent-created competitor collection requests, approved by a human (blocking run of the regular collection; no force) | Accepted |
 | [0022](0022-factory-operator-access.md) | Factory Operator access: a logical path registry and a second, read-only agent role with its own token, endpoint and tools | Accepted |
+| [0023](0023-remote-media-generation-sessions.md) | Remote media generation (Phase 14): human-approved RunPod pod sessions, S3-only transport into `99 Data Exchange/From YTM`, per-device key file, single media gateway | Accepted |

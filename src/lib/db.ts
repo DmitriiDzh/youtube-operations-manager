@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
+import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -712,8 +713,188 @@ export const channelWorkspaces = sqliteTable(
 );
 
 /**
+ * Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.9), SCHEMA_MIGRATIONS version 50. The RunPod API
+ * key and the S3 API key pair the operator typed into Settings → Media, as ONE AES-256-GCM blob
+ * (`src/lib/media-generation/`). The encryption key is NOT an environment variable: the app
+ * generates it on first use and keeps it in a 0600 file in the app-data directory (owner
+ * instruction, Telegram 2026-10-05: "вводить через интерфейс настроек и сохранять закодировано
+ * локально на каждой машине"). A `playlist-manager.db` copied to another machine has no matching
+ * key file, so this row reads as "not configured" there, never as foreign plaintext.
+ *
+ * A singleton (`id = "default"`). `runpod_key_prefix` (the first characters of the key, for
+ * recognition in the UI) and `s3_access_key_id` (RunPod's `user_...` id, not a secret) are
+ * plaintext; `verified_at` is when a "Test" last succeeded.
+ *
+ * **Device-local, deliberately NOT in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * and not in `sync-gateway`, like `cloud_connection` and `ai_connection_credentials`.
+ */
+export const mediaCredentials = sqliteTable("media_credentials", {
+  id: text("id").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  runpodKeyPrefix: text("runpod_key_prefix").notNull(),
+  s3AccessKeyId: text("s3_access_key_id"),
+  verifiedAt: integer("verified_at", { mode: "timestamp" }),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// The status lists have ONE owner, the pure contracts module (review round 21): never a hand copy here that could drift
+// from what the domain treats as terminal (the copy decides whether the open slot is freed).
+export { MEDIA_SESSION_STATUSES };
+export type MediaSessionStatusValue = MediaSessionStatus;
+
+/**
+ * Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3), SCHEMA_MIGRATIONS version 51. One
+ * generation session = one RunPod pod, requested by the operator or an agent, approved by a human,
+ * watched (idle / minutes / USD caps) and always TERMINATED (never stopped). Transitions are atomic
+ * `UPDATE ... WHERE status IN (...) RETURNING`, like `market_collection_requests`.
+ *
+ * `open_slot` is 1 while the session is non-terminal and NULL once terminal. Until schema v58 a UNIQUE
+ * index on it made "one open session per device" a database fact; slice 6 (owner, 2026-10-05) allows
+ * concurrent sessions, so the index is plain and the bound is `approveMediaSessionGuarded`'s single
+ * guarded UPDATE (active count < `maxConcurrentSessions`). The ComfyUI proxy token is stored encrypted
+ * under the same per-device key as `media_credentials` and never returned by any read.
+ *
+ * **Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES`** -- a pod is owned by the server process
+ * that started it (its watcher and boot sweep run there); another device must not inherit it.
+ */
+export const mediaSessions = sqliteTable(
+  "media_sessions",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    status: text("status", { enum: MEDIA_SESSION_STATUSES }).notNull().default("pending"),
+    openSlot: integer("open_slot"),
+    requestedBy: text("requested_by", { enum: ["operator", "agent"] }).notNull(),
+    reason: text("reason"),
+    maxMinutes: integer("max_minutes").notNull(),
+    maxUsd: real("max_usd"),
+    estimateUsd: real("estimate_usd").notNull(),
+    fitsToday: integer("fits_today", { mode: "boolean" }).notNull(),
+    costPerHr: real("cost_per_hr"),
+    gpuTypeId: text("gpu_type_id"),
+    datacenterId: text("datacenter_id"),
+    podId: text("pod_id"),
+    comfyUiProxyUrl: text("comfy_ui_proxy_url"),
+    tokenCiphertext: text("token_ciphertext"),
+    tokenIv: text("token_iv"),
+    tokenAuthTag: text("token_auth_tag"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    approvedAt: integer("approved_at", { mode: "timestamp" }),
+    approvedByUserId: text("approved_by_user_id"),
+    startedAt: integer("started_at", { mode: "timestamp" }),
+    readyAt: integer("ready_at", { mode: "timestamp" }),
+    lastActivityAt: integer("last_activity_at", { mode: "timestamp" }),
+    stoppedAt: integer("stopped_at", { mode: "timestamp" }),
+    secondsUsed: integer("seconds_used"),
+    usdCharged: real("usd_charged"),
+    stopReason: text("stop_reason"),
+    error: text("error"),
+    /**
+     * Schema v53 (review round 6): the terminal status a `stopping` row is heading for (`done` for an
+     * operator/watcher/shutdown stop, `failed` for an aborted start, `interrupted` for a boot sweep), so a
+     * retried stop reports what really happened instead of defaulting to `done`.
+     */
+    stoppingOutcome: text("stopping_outcome", { enum: ["done", "failed", "interrupted"] }),
+    /**
+     * Schema v54 (review round 7): the last moment THIS app saw the pod alive (readiness, every watcher
+     * tick). When the pod is already gone at a reconciliation, the billable window is closed here, not at
+     * `now()` -- a pod terminated by hand hours before a reboot must not be billed up to the reboot.
+     */
+    lastSeenAliveAt: integer("last_seen_alive_at", { mode: "timestamp" }),
+    /**
+     * Schema v57 (review round 19): when this app's terminate DELETE went through for the pod. A later retry whose DELETE
+     * answers 404 then bills to this moment (the pod died by OUR hand then), not to the last sighting.
+     */
+    terminateSentAt: integer("terminate_sent_at", { mode: "timestamp" }),
+  },
+  (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
+);
+
+/**
+ * Phase 14 slice 3 (PHASE_14_PLAN.md §2.4, owner decision D7), SCHEMA_MIGRATIONS version 52. An
+ * operator-imported ComfyUI workflow in API format plus the parameters an agent may set (name ->
+ * node/input, type, bounds). Technical graphs only: prompts arrive as job parameters, never live here.
+ * Device-local in this phase (not in `SNAPSHOT_TRANSFERRED_TABLES`); `version` increments on edit so a
+ * job's provenance names the exact graph it ran.
+ */
+export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  version: integer("version").notNull().default(1),
+  description: text("description"),
+  workflowJson: text("workflow_json").notNull(),
+  parametersJson: text("parameters_json").notNull(),
+  /** Schema v55 (review round 8): derived at import/update so a listing never re-parses the graph; null before v55. */
+  outputNodeIdsJson: text("output_node_ids_json"),
+  nodeCount: integer("node_count"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
+export type MediaJobStatusValue = (typeof MEDIA_JOB_STATUSES)[number];
+
+/**
+ * SCHEMA_MIGRATIONS version 52. One ComfyUI prompt inside a running session: template + params ->
+ * prompt_id -> outputs pulled over S3 into `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`
+ * and registered in `creative_assets`. Transitions are atomic like `media_sessions`. Device-local.
+ */
+export const mediaJobs = sqliteTable(
+  "media_jobs",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    templateId: text("template_id").notNull(),
+    templateVersion: integer("template_version").notNull(),
+    paramsJson: text("params_json").notNull(),
+    status: text("status", { enum: MEDIA_JOB_STATUSES }).notNull().default("queued"),
+    createdBy: text("created_by", { enum: ["operator", "agent"] }).notNull(),
+    promptId: text("prompt_id"),
+    outputsJson: text("outputs_json"),
+    assetIdsJson: text("asset_ids_json"),
+    error: text("error"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    submittedAt: integer("submitted_at", { mode: "timestamp" }),
+    finishedAt: integer("finished_at", { mode: "timestamp" }),
+  },
+  (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 52. The ledger the exchange janitor and the local writer act on -- BY
+ * LEDGER ONLY (ADR 0019's rule): a remote key is deleted from the volume only after its row says the
+ * file exists locally; nothing outside `exchange/` is ever listed or deleted. Device-local.
+ */
+export const mediaExchangeFiles = sqliteTable(
+  "media_exchange_files",
+  {
+    remoteKey: text("remote_key").primaryKey(),
+    jobId: text("job_id").notNull(),
+    localPath: text("local_path").notNull(),
+    bytes: integer("bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    pulledAt: integer("pulled_at", { mode: "timestamp" }).notNull(),
+    remoteDeletedAt: integer("remote_deleted_at", { mode: "timestamp" }),
+  },
+  (table) => [index("media_exchange_files_job_idx").on(table.jobId)]
+);
+
+/**
  * Factory Operator access (`docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.2), SCHEMA_MIGRATIONS
- * version 50. The registry of logical paths: a stable `name` plus, in `logicalPathValues`, one local
+ * version 59 (50 on dev; renumbered at the Phase 14 merge). The registry of logical paths: a stable `name` plus, in `logicalPathValues`, one local
  * path string per device. `audience` is `all_agents` (every channel agent may read it) or
  * `factory_only` (only the Factory Operator role). New paths are rows, never a schema change.
  *
@@ -745,7 +926,7 @@ export const logicalPathValues = sqliteTable(
 
 /**
  * Factory Operator access (`docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.1), SCHEMA_MIGRATIONS
- * version 51. The Factory Operator role's own agent token (`ytom_fo_...`): SHA-256 hash only, one active
+ * version 60 (51 on dev; renumbered at the Phase 14 merge). The Factory Operator role's own agent token (`ytom_fo_...`): SHA-256 hash only, one active
  * row at a time, NO channel and NO Google identity (unlike `agentChannelTokens`). Deliberately a
  * separate table, so a channel token can never be looked up as a factory token or the reverse.
  * Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway`.
@@ -978,7 +1159,7 @@ export const creativeAssets = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date()),
   },
-  (table) => [index("creative_assets_channel_id_idx").on(table.channelId)]
+  (table) => [index("creative_assets_channel_id_idx").on(table.channelId), index("creative_assets_reference_idx").on(table.channelId, table.referenceKind, table.referenceValue)]
 );
 
 /**
@@ -2824,7 +3005,182 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 50,
     description:
-      "logical_paths + logical_path_values -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F1): named paths with a per-device value. Device-local: excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway. Seeds only the two initial NAMES (no values); additive, existing data untouched",
+      "media_credentials -- encrypted RunPod / S3 API keys entered in Settings → Media, key file per device (Phase 14, docs/roadmap/plans/PHASE_14_PLAN.md §2.9); additive new table, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_credentials (" +
+          "id TEXT PRIMARY KEY, " +
+          "ciphertext TEXT NOT NULL, " +
+          "iv TEXT NOT NULL, " +
+          "auth_tag TEXT NOT NULL, " +
+          "runpod_key_prefix TEXT NOT NULL, " +
+          "s3_access_key_id TEXT, " +
+          "verified_at INTEGER, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+    },
+  },
+  {
+    version: 51,
+    description:
+      "media_sessions -- RunPod pod sessions approved by a human, watched and always terminated (Phase 14 slice 2, docs/roadmap/plans/PHASE_14_PLAN.md §2.3); additive new table, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_sessions (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'pending', " +
+          "open_slot INTEGER, " +
+          "requested_by TEXT NOT NULL, " +
+          "reason TEXT, " +
+          "max_minutes INTEGER NOT NULL, " +
+          "max_usd REAL, " +
+          "estimate_usd REAL NOT NULL, " +
+          "fits_today INTEGER NOT NULL, " +
+          "cost_per_hr REAL, " +
+          "gpu_type_id TEXT, " +
+          "datacenter_id TEXT, " +
+          "pod_id TEXT, " +
+          "comfy_ui_proxy_url TEXT, " +
+          "token_ciphertext TEXT, " +
+          "token_iv TEXT, " +
+          "token_auth_tag TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "approved_at INTEGER, " +
+          "approved_by_user_id TEXT, " +
+          "started_at INTEGER, " +
+          "ready_at INTEGER, " +
+          "last_activity_at INTEGER, " +
+          "stopped_at INTEGER, " +
+          "seconds_used INTEGER, " +
+          "usd_charged REAL, " +
+          "stop_reason TEXT, " +
+          "error TEXT)"
+      );
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS media_sessions_open_slot_idx ON media_sessions(open_slot)");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_sessions_status_idx ON media_sessions(status)");
+    },
+  },
+  {
+    version: 52,
+    description:
+      "media_workflow_templates, media_jobs, media_exchange_files -- ComfyUI workflow templates, generation jobs and the pulled-file ledger (Phase 14 slice 3, docs/roadmap/plans/PHASE_14_PLAN.md §2.4); additive new tables, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_workflow_templates (" +
+          "id TEXT PRIMARY KEY, " +
+          "name TEXT NOT NULL, " +
+          "version INTEGER NOT NULL DEFAULT 1, " +
+          "description TEXT, " +
+          "workflow_json TEXT NOT NULL, " +
+          "parameters_json TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_jobs (" +
+          "id TEXT PRIMARY KEY, " +
+          "session_id TEXT NOT NULL, " +
+          "channel_id TEXT NOT NULL, " +
+          "template_id TEXT NOT NULL, " +
+          "template_version INTEGER NOT NULL, " +
+          "params_json TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'queued', " +
+          "created_by TEXT NOT NULL, " +
+          "prompt_id TEXT, " +
+          "outputs_json TEXT, " +
+          "asset_ids_json TEXT, " +
+          "error TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "submitted_at INTEGER, " +
+          "finished_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_session_idx ON media_jobs(session_id)");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_status_idx ON media_jobs(status)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_exchange_files (" +
+          "remote_key TEXT PRIMARY KEY, " +
+          "job_id TEXT NOT NULL, " +
+          "local_path TEXT NOT NULL, " +
+          "bytes INTEGER NOT NULL, " +
+          "sha256 TEXT NOT NULL, " +
+          "pulled_at INTEGER NOT NULL, " +
+          "remote_deleted_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_exchange_files_job_idx ON media_exchange_files(job_id)");
+    },
+  },
+  {
+    version: 53,
+    description:
+      "media_sessions.stopping_outcome -- the terminal status a `stopping` session is heading for, so a retried stop reports failed/interrupted/done truthfully (Phase 14 review round 6); additive nullable column, existing rows untouched",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN stopping_outcome TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 54,
+    description:
+      "media_sessions.last_seen_alive_at -- when the app last saw the session's pod alive, so a pod already gone at a reconciliation is billed up to then, not up to the reboot (Phase 14 review round 7); additive nullable column, existing rows untouched",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN last_seen_alive_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 55,
+    description:
+      "media_workflow_templates.output_node_ids_json + node_count -- derived at import/update so listing templates never re-parses every graph (Phase 14 review round 8); additive nullable columns, rows written earlier fall back to parsing",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE media_workflow_templates ADD COLUMN output_node_ids_json TEXT", "ALTER TABLE media_workflow_templates ADD COLUMN node_count INTEGER"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 56,
+    description:
+      "creative_assets(channel_id, reference_kind, reference_value) index -- the media job pipeline looks an asset up by its local path per pulled output (Phase 14 review round 14); additive index, data untouched",
+    apply: async (client) => {
+      await client.execute("CREATE INDEX IF NOT EXISTS creative_assets_reference_idx ON creative_assets(channel_id, reference_kind, reference_value)");
+    },
+  },
+  {
+    version: 57,
+    description:
+      "media_sessions.terminate_sent_at -- when the app's terminate DELETE went through, so a retried stop whose DELETE answers 404 bills to that moment (Phase 14 review round 19); additive nullable column, existing rows untouched",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN terminate_sent_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 58,
+    description:
+      "media_sessions_open_slot_idx becomes a plain index -- concurrent generation sessions (Phase 14 slice 6, owner 2026-10-05); the concurrency bound moves to the guarded approve UPDATE; rows untouched",
+    apply: async (client) => {
+      await client.execute("DROP INDEX IF EXISTS media_sessions_open_slot_idx");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_sessions_open_slot_idx ON media_sessions(open_slot)");
+    },
+  },
+  {
+    version: 59,
+    description:
+      "logical_paths + logical_path_values -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F1; numbered 50 on dev, renumbered 59 when Phase 14 -- whose 50–58 a real database already carried -- was merged): named paths with a per-device value. Device-local: excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway. Seeds only the two initial NAMES (no values); additive, existing data untouched",
     apply: async (client) => {
       await client.execute(
         "CREATE TABLE IF NOT EXISTS logical_paths (" +
@@ -2849,9 +3205,9 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     },
   },
   {
-    version: 51,
+    version: 60,
     description:
-      "factory_agent_tokens -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F2): the Factory Operator role's own agent token, SHA-256 hash only, no channel binding. Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway); additive, existing data untouched",
+      "factory_agent_tokens -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F2; numbered 51 on dev, renumbered 60 at the Phase 14 merge): the Factory Operator role's own agent token, SHA-256 hash only, no channel binding. Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway); additive, existing data untouched",
     apply: async (client) => {
       await client.execute(
         "CREATE TABLE IF NOT EXISTS factory_agent_tokens (" +
@@ -2875,6 +3231,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     },
   },
 ];
+
+/**
+ * Phase 14 ⟷ Factory Operator merge (2026-10-05): both branches had used SCHEMA_MIGRATIONS versions 50/51. A real
+ * database already carried Phase 14's 50–58, so those kept their numbers and Factory Operator's two became 59/60.
+ * A database stamped 50 or 51 by a pre-merge `dev` build has the Factory Operator tables but NOT Phase 14's, and
+ * would otherwise skip Phase 14's 50/51 and wedge at 53 (`ALTER TABLE media_sessions` on a missing table). Such a
+ * database is recognised by its stamp in 50..58 with no `media_credentials` table and treated as stamped 49: every
+ * migration from 50 to 60 is idempotent (`IF NOT EXISTS`, duplicate-column guards, `INSERT OR IGNORE`), so re-running
+ * them converges. Exported for its test.
+ */
+export async function resolveMergedNumberingCollision(client: Client, foundVersion: number | null): Promise<number | null> {
+  if (foundVersion === null || foundVersion < 50 || foundVersion > 58) return foundVersion;
+  const media = await client.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_credentials'");
+  if (media.rows.length > 0) return foundVersion;
+  console.warn(`[db] schema stamped ${foundVersion} without the Phase 14 tables (a pre-merge dev build numbered Factory Operator 50/51); re-running migrations from 50`);
+  return 49;
+}
 
 export const SCHEMA_CURRENT_VERSION =
   SCHEMA_MIGRATIONS.length > 0
@@ -2918,7 +3291,7 @@ export async function initializeDatabaseSchema(
   // Reject a database reporting a version newer than this build supports *before* any
   // schema-mutating statement below runs (AC-SCHEMA-04) -- assertSupportedSchemaVersion only
   // ever performs a read.
-  const foundVersion = await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION);
+  const foundVersion = await resolveMergedNumberingCollision(client, await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION));
 
   // The `rules` table (auto-playlisting engine, from the project's original pre-rewrite baseline) is retired as of
   // 2026-09-20 -- its Drizzle definition, UI, and API routes are removed, per the project
@@ -4891,7 +5264,11 @@ export type GatewayTrafficCategory =
   | "cloud_monitoring_reads"
   | "youtube_feed_reads"
   | "wikipedia_reads"
-  | "reporting_reads";
+  | "reporting_reads"
+  // Phase 14 -- the three media-gateway children (`src/lib/media-gateway/`), one counter each.
+  | "runpod_api"
+  | "runpod_s3"
+  | "comfyui_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -4910,6 +5287,9 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "youtube_feed_reads",
   "wikipedia_reads",
   "reporting_reads",
+  "runpod_api",
+  "runpod_s3",
+  "comfyui_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -6891,6 +7271,27 @@ export async function getCreativeAssetById(
   return row ?? null;
 }
 
+/**
+ * One asset by its reference within a channel (Phase 14 review round 7: the media job pipeline asks
+ * "is this local file already cataloged?" per pulled output -- one query on
+ * `creative_assets_reference_idx` (schema v56), never a full channel listing scanned in JS). Newest
+ * first when several rows share a reference.
+ */
+export async function getCreativeAssetByReference(
+  channelId: string,
+  referenceKind: string,
+  referenceValue: string,
+  database: AppDb = db
+): Promise<StoredCreativeAsset | null> {
+  const [row] = await database
+    .select()
+    .from(creativeAssets)
+    .where(and(eq(creativeAssets.channelId, channelId), eq(creativeAssets.referenceKind, referenceKind), eq(creativeAssets.referenceValue, referenceValue)))
+    .orderBy(desc(creativeAssets.createdAt))
+    .limit(1);
+  return row ?? null;
+}
+
 export type StoredContentProposal = {
   id: string;
   channelId: string;
@@ -7068,6 +7469,388 @@ export async function upsertStoredCloudConnection(
 
 export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
   await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md) -- media generation: credentials singleton,
+// the settings blob and the gateway toggle. Read/written only through
+// `src/lib/media-generation/adapters/store.ts` and `src/lib/media-gateway/`.
+// ---------------------------------------------------------------------------
+
+const MEDIA_CREDENTIALS_SINGLETON_ID = "default";
+
+export type StoredMediaCredentials = {
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+  runpodKeyPrefix: string;
+  s3AccessKeyId: string | null;
+  verifiedAt: Date | null;
+  updatedAt: Date;
+};
+
+export async function getStoredMediaCredentials(database: AppDb = db): Promise<StoredMediaCredentials | null> {
+  const [row] = await database.select().from(mediaCredentials).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
+  if (!row) return null;
+  return {
+    ciphertext: row.ciphertext,
+    iv: row.iv,
+    authTag: row.authTag,
+    runpodKeyPrefix: row.runpodKeyPrefix,
+    s3AccessKeyId: row.s3AccessKeyId ?? null,
+    verifiedAt: row.verifiedAt ?? null,
+    updatedAt: row.updatedAt,
+  };
+}
+
+/** Replaces the whole blob (a new key set); `verifiedAt` resets, since nothing has been tested yet. */
+export async function upsertStoredMediaCredentials(
+  input: { ciphertext: string; iv: string; authTag: string; runpodKeyPrefix: string; s3AccessKeyId: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database
+    .insert(mediaCredentials)
+    .values({ id: MEDIA_CREDENTIALS_SINGLETON_ID, ...input, verifiedAt: null, updatedAt: now })
+    .onConflictDoUpdate({
+      target: mediaCredentials.id,
+      set: { ...input, verifiedAt: null, updatedAt: now },
+    });
+}
+
+export async function setStoredMediaCredentialsVerifiedAt(verifiedAt: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaCredentials).set({ verifiedAt }).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
+}
+
+export async function clearStoredMediaCredentials(database: AppDb = db): Promise<void> {
+  await database.delete(mediaCredentials).where(eq(mediaCredentials.id, MEDIA_CREDENTIALS_SINGLETON_ID));
+}
+
+const MEDIA_GENERATION_SETTINGS_KEY = "media_generation_settings";
+const MEDIA_GATEWAY_ENABLED_SETTING_KEY = "media_gateway_enabled";
+const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
+
+/** Phase 14 slice 4: the model pulls in flight (CPU pods downloading onto the volume), as a JSON list; `null` = none ever. */
+export async function getMediaModelPullsJson(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
+}
+
+const MEDIA_VOLUME_LOCK_KEY = "media_volume_lock";
+
+/**
+ * Phase 14 review round 9 (`src/lib/media-generation/volume-lock.ts`): the one "network volume is busy"
+ * row. `app_settings.key` is the primary key, so the insert is the atomic test-and-set -- a session
+ * approve and a model pull cannot both hold it. Returns whoever holds it afterwards.
+ */
+/**
+ * The row's value is JSON `{ owner, since }` (review round 13: the age tells a crash-stale lock from a fresh one;
+ * round 16: JSON, so an owner name with spaces, `_`/`%`, or non-BMP characters is matched exactly by `json_extract`).
+ */
+function parseMediaVolumeLockValue(value: string): { owner: string; since: Date } {
+  try {
+    const parsed = JSON.parse(value) as { owner?: unknown; since?: unknown };
+    if (typeof parsed.owner === "string" && typeof parsed.since === "number" && Number.isFinite(parsed.since)) return { owner: parsed.owner, since: new Date(parsed.since) };
+  } catch {
+    // a pre-JSON value (never shipped; defensive)
+  }
+  return { owner: value, since: new Date(0) };
+}
+
+export async function tryAcquireMediaVolumeLock(
+  owner: string,
+  at: Date,
+  database: AppDb = db
+): Promise<{ acquired: boolean; holder: { owner: string; since: Date } | null; activeSessions: number }> {
+  // The holder may release between a no-op insert and the read-back; a null read-back then means "nobody holds it",
+  // never "we do" -- insert again (review round 10). `acquired` is true only with OUR row in the table.
+  // Slice 6: the row is the EXCLUSIVE hold (a pull, an operator pod); generation sessions hold the volume SHARED by
+  // being active rows, so the insert itself is guarded by "no active session" -- the mirror of the approve UPDATE's
+  // "no lock row" guard (`approveMediaSessionGuarded`), one statement each.
+  const value = JSON.stringify({ owner, since: at.getTime() });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await database.run(
+      sql`INSERT INTO app_settings (key, value) SELECT ${MEDIA_VOLUME_LOCK_KEY}, ${value} WHERE NOT EXISTS (SELECT 1 FROM media_sessions WHERE status IN ${[...MEDIA_SESSION_ACTIVE_STATUSES]}) ON CONFLICT(key) DO NOTHING`
+    );
+    const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+    if (stored !== null) {
+      const holder = parseMediaVolumeLockValue(stored);
+      // Ours only if it is OUR row (owner and acquire time): a row the same owner inserted earlier is "already held".
+      return { acquired: holder.owner === owner && holder.since.getTime() === at.getTime(), holder, activeSessions: 0 };
+    }
+    const activeSessions = await countActiveMediaSessions(database);
+    if (activeSessions > 0) return { acquired: false, holder: null, activeSessions };
+  }
+  return { acquired: false, holder: { owner: "unknown (the lock row kept vanishing between insert and read)", since: at }, activeSessions: 0 };
+}
+
+/** Deletes the row only when `owner` holds it (never another owner's lock). */
+export async function releaseMediaVolumeLock(owner: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .delete(appSettings)
+    // Exact owner match on the JSON field: never a prefix/LIKE comparison that a space, `_`/`%` or a non-BMP character could fool.
+    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), sql`json_extract(${appSettings.value}, '$.owner') = ${owner}`))
+    .returning({ key: appSettings.key });
+  return rows.length > 0;
+}
+
+export async function getMediaVolumeLockHolder(database: AppDb = db): Promise<{ owner: string; since: Date } | null> {
+  const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
+  return stored === null ? null : parseMediaVolumeLockValue(stored);
+}
+
+/**
+ * The only writer: a read-modify-write of the pulls list as a compare-and-swap (the single guarded
+ * UPDATE/INSERT idiom this file uses everywhere -- see `claimBatchExecution` and the note above
+ * `claimVideoExecution` on why an explicit multi-statement transaction is NOT used across separate
+ * connections), so the web server's watch loop and the operator CLI -- separate processes -- never
+ * overwrite each other's change (review rounds 6 and 12). A lost race re-reads and re-applies `mutate`.
+ */
+export async function updateMediaModelPullsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const current = await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
+    const next = mutate(current);
+    if (current === null) {
+      await database.insert(appSettings).values({ key: MEDIA_MODEL_PULLS_KEY, value: next }).onConflictDoNothing();
+      if ((await getAppSetting(MEDIA_MODEL_PULLS_KEY, database)) === next) return next;
+      continue; // someone else inserted first: re-read and re-apply
+    }
+    const rows = await database
+      .update(appSettings)
+      .set({ value: next })
+      .where(and(eq(appSettings.key, MEDIA_MODEL_PULLS_KEY), eq(appSettings.value, current)))
+      .returning({ key: appSettings.key });
+    if (rows.length > 0) return next;
+  }
+  throw new Error("the model pulls list kept changing under this update (10 attempts); try again");
+}
+
+/** The Settings → Media values as one JSON string (validated by `src/lib/media-generation/schemas.ts`); `null` = never saved. */
+export async function getMediaGenerationSettingsJson(database: AppDb = db): Promise<string | null> {
+  return await getAppSetting(MEDIA_GENERATION_SETTINGS_KEY, database);
+}
+
+export async function setMediaGenerationSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_GENERATION_SETTINGS_KEY, json, database);
+}
+
+/** Phase 14: the media gateway (RunPod API, S3 API, ComfyUI) toggle. On unless turned off, persistent, like the read toggles. */
+export async function getMediaGatewayEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(MEDIA_GATEWAY_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setMediaGatewayEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_GATEWAY_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+// -- media_sessions (Phase 14 slice 2); read/written only by src/lib/media-generation/adapters/session-store.ts --
+
+export type StoredMediaSession = typeof mediaSessions.$inferSelect;
+export type NewStoredMediaSession = typeof mediaSessions.$inferInsert;
+
+
+/** Slice 6: never a conflict any more -- concurrent sessions are bounded at approve, not at request. */
+export async function insertMediaSession(row: NewStoredMediaSession, database: AppDb = db): Promise<StoredMediaSession> {
+  const [inserted] = await database
+    .insert(mediaSessions)
+    .values({ ...row, openSlot: 1 })
+    .returning();
+  return inserted;
+}
+
+export async function getMediaSessionById(id: string, database: AppDb = db): Promise<StoredMediaSession | null> {
+  const [row] = await database.select().from(mediaSessions).where(eq(mediaSessions.id, id));
+  return row ?? null;
+}
+
+/** Every non-terminal session (pending included), oldest first. */
+export async function listOpenMediaSessions(database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database.select().from(mediaSessions).where(eq(mediaSessions.openSlot, 1)).orderBy(asc(mediaSessions.createdAt), asc(mediaSessions.id));
+}
+
+/**
+ * Slice 6 (PHASE_14_PLAN.md §5.2, AC-P14-22/23): `pending -> approved` as ONE statement guarded by
+ * (a) fewer than `maxActive` sessions holding a pod and (b) no exclusive volume-lock row (a model pull or an
+ * operator pod writing the volume). SQLite serializes writers, so two approves -- or an approve and a pull's
+ * lock insert (`tryAcquireMediaVolumeLock`, guarded the other way round) -- can never both pass. `null` = one of
+ * the guards (or the row's status) refused; the caller re-reads to say which.
+ */
+export async function approveMediaSessionGuarded(
+  id: string,
+  set: Partial<Omit<NewStoredMediaSession, "id" | "openSlot" | "status">>,
+  maxActive: number,
+  database: AppDb = db
+): Promise<StoredMediaSession | null> {
+  const rows = await database
+    .update(mediaSessions)
+    .set({ ...set, status: "approved", openSlot: 1 })
+    .where(
+      and(
+        eq(mediaSessions.id, id),
+        eq(mediaSessions.status, "pending"),
+        sql`(SELECT count(*) FROM media_sessions WHERE status IN ${[...MEDIA_SESSION_ACTIVE_STATUSES]}) < ${maxActive}`,
+        sql`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ${MEDIA_VOLUME_LOCK_KEY})`
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function countActiveMediaSessions(database: AppDb = db): Promise<number> {
+  const [row] = await database.select({ n: sql<number>`count(*)` }).from(mediaSessions).where(inArray(mediaSessions.status, [...MEDIA_SESSION_ACTIVE_STATUSES]));
+  return Number(row?.n ?? 0);
+}
+
+/** Newest first; `channelId` filters IN the query (never a post-filter of a capped page -- review round 6). */
+export async function listMediaSessions(limit = 50, channelId?: string, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(channelId ? eq(mediaSessions.channelId, channelId) : undefined)
+    .orderBy(desc(mediaSessions.createdAt))
+    .limit(limit);
+}
+
+/** Sessions whose pod bills in the window (for the daily spend): started, with no stop yet, or started/stopped on or after `since`. */
+export async function listMediaSessionsBillableSince(since: Date, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(and(isNotNull(mediaSessions.startedAt), or(isNull(mediaSessions.stoppedAt), gte(mediaSessions.startedAt, since), gte(mediaSessions.stoppedAt, since))));
+}
+
+/**
+ * The one atomic transition: `UPDATE ... WHERE id = ? AND status IN (from) RETURNING`. A terminal
+ * target frees the open slot in the same statement. `null` = the row was not in one of `from`.
+ */
+export async function transitionMediaSession(
+  id: string,
+  from: readonly MediaSessionStatusValue[],
+  set: Partial<Omit<NewStoredMediaSession, "id" | "openSlot">> & { status: MediaSessionStatusValue },
+  database: AppDb = db
+): Promise<StoredMediaSession | null> {
+  const rows = await database
+    .update(mediaSessions)
+    .set({ ...set, openSlot: MEDIA_SESSION_TERMINAL_STATUSES.includes(set.status) ? null : 1 })
+    .where(and(eq(mediaSessions.id, id), inArray(mediaSessions.status, [...from])))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function touchMediaSessionActivity(id: string, at: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaSessions).set({ lastActivityAt: at }).where(and(eq(mediaSessions.id, id), eq(mediaSessions.status, "running")));
+}
+
+/** The watcher saw the pod alive (schema v54); only a non-terminal row takes it. */
+export async function markMediaSessionSeenAlive(id: string, at: Date, database: AppDb = db): Promise<void> {
+  await database
+    .update(mediaSessions)
+    .set({ lastSeenAliveAt: at })
+    .where(and(eq(mediaSessions.id, id), notInArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES])));
+}
+
+// -- media_workflow_templates / media_jobs / media_exchange_files (Phase 14 slice 3); read/written only by
+// src/lib/media-generation/adapters/job-store.ts --
+
+export type StoredMediaWorkflowTemplate = typeof mediaWorkflowTemplates.$inferSelect;
+export type StoredMediaJob = typeof mediaJobs.$inferSelect;
+export type NewStoredMediaJob = typeof mediaJobs.$inferInsert;
+export type StoredMediaExchangeFile = typeof mediaExchangeFiles.$inferSelect;
+
+export async function insertMediaWorkflowTemplate(
+  row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson?: string; nodeCount?: number },
+  database: AppDb = db
+): Promise<StoredMediaWorkflowTemplate> {
+  const now = new Date();
+  const [inserted] = await database
+    .insert(mediaWorkflowTemplates)
+    .values({ ...row, version: 1, createdAt: now, updatedAt: now })
+    .returning();
+  return inserted;
+}
+
+/** Replaces the graph/parameters and bumps `version`; `null` = no such template. */
+export async function updateMediaWorkflowTemplate(
+  id: string,
+  patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number },
+  database: AppDb = db
+): Promise<StoredMediaWorkflowTemplate | null> {
+  const rows = await database
+    .update(mediaWorkflowTemplates)
+    // `version` is what job provenance records: it moves only when the graph or the parameters change (review round 9).
+    .set({ ...patch, ...(patch.workflowJson !== undefined || patch.parametersJson !== undefined ? { version: sql`${mediaWorkflowTemplates.version} + 1` } : {}), updatedAt: new Date() })
+    .where(eq(mediaWorkflowTemplates.id, id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function getMediaWorkflowTemplateById(id: string, database: AppDb = db): Promise<StoredMediaWorkflowTemplate | null> {
+  const [row] = await database.select().from(mediaWorkflowTemplates).where(eq(mediaWorkflowTemplates.id, id));
+  return row ?? null;
+}
+
+export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<StoredMediaWorkflowTemplate[]> {
+  return database.select().from(mediaWorkflowTemplates).orderBy(asc(mediaWorkflowTemplates.name));
+}
+
+export async function deleteMediaWorkflowTemplate(id: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database.delete(mediaWorkflowTemplates).where(eq(mediaWorkflowTemplates.id, id)).returning({ id: mediaWorkflowTemplates.id });
+  return rows.length > 0;
+}
+
+export async function insertMediaJob(row: NewStoredMediaJob, database: AppDb = db): Promise<StoredMediaJob> {
+  const [inserted] = await database.insert(mediaJobs).values(row).returning();
+  return inserted;
+}
+
+export async function getMediaJobById(id: string, database: AppDb = db): Promise<StoredMediaJob | null> {
+  const [row] = await database.select().from(mediaJobs).where(eq(mediaJobs.id, id));
+  return row ?? null;
+}
+
+export async function listMediaJobs(filter: { sessionId?: string; channelId?: string; limit?: number }, database: AppDb = db): Promise<StoredMediaJob[]> {
+  const conditions = [];
+  if (filter.sessionId) conditions.push(eq(mediaJobs.sessionId, filter.sessionId));
+  if (filter.channelId) conditions.push(eq(mediaJobs.channelId, filter.channelId));
+  const query = database.select().from(mediaJobs);
+  const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
+  return filtered.orderBy(desc(mediaJobs.createdAt)).limit(filter.limit ?? 50);
+}
+
+export async function listNonTerminalMediaJobs(database: AppDb = db): Promise<StoredMediaJob[]> {
+  return database.select().from(mediaJobs).where(inArray(mediaJobs.status, ["queued", "submitted", "generating", "transferring"]));
+}
+
+export async function transitionMediaJob(
+  id: string,
+  from: readonly MediaJobStatusValue[],
+  set: Partial<Omit<NewStoredMediaJob, "id">> & { status: MediaJobStatusValue },
+  database: AppDb = db
+): Promise<StoredMediaJob | null> {
+  const rows = await database
+    .update(mediaJobs)
+    .set(set)
+    .where(and(eq(mediaJobs.id, id), inArray(mediaJobs.status, [...from])))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function upsertMediaExchangeFile(
+  row: { remoteKey: string; jobId: string; localPath: string; bytes: number; sha256: string; pulledAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .insert(mediaExchangeFiles)
+    .values({ ...row, remoteDeletedAt: null })
+    .onConflictDoUpdate({ target: mediaExchangeFiles.remoteKey, set: { ...row, remoteDeletedAt: null } });
+}
+
+export async function markMediaExchangeFileRemoteDeleted(remoteKey: string, at: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaExchangeFiles).set({ remoteDeletedAt: at }).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
+}
+
+export async function getMediaExchangeFile(remoteKey: string, database: AppDb = db): Promise<StoredMediaExchangeFile | null> {
+  const [row] = await database.select().from(mediaExchangeFiles).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
+  return row ?? null;
 }
 
 // ---------------------------------------------------------------------------

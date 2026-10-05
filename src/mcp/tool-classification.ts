@@ -79,4 +79,12 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_list_hypotheses: "bound",
   agent_get_hypothesis_trail: "bound",
   create_experiment_proposal: "bound",
+  // Phase 14 slice 5 -- remote media generation: request/read/jobs only (approve/start/stop are Web-only, never registered).
+  agent_list_media_templates: "bound",
+  agent_request_media_session: "bound",
+  agent_get_media_session: "bound",
+  agent_get_media_limits: "bound",
+  agent_create_media_job: "bound",
+  agent_get_media_job: "bound",
+  agent_cancel_media_job: "bound",
 });

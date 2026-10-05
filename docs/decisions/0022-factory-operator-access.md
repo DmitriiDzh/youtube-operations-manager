@@ -18,12 +18,12 @@ it a flag on the existing endpoint would make isolation depend on one missing ch
 
 ## Decision
 
-1. **Registry of logical paths** (`src/lib/logical-paths/`, tables `logical_paths` and `logical_path_values`, schema v50): a stable name, an audience
+1. **Registry of logical paths** (`src/lib/logical-paths/`, tables `logical_paths` and `logical_path_values`, schema v59 — numbered v50 on `dev`, renumbered at the Phase 14 merge): a stable name, an audience
    (`all_agents` or `factory_only`) and one validated path string per device. Seeded names only: `factory_shared` (`all_agents`),
    `developer_exchange` (`factory_only`). New paths are rows, not schema changes. Both tables are device-local (not in `SNAPSHOT_TRANSFERRED_TABLES`, not
    in sync-gateway); values are keyed on the bootstrap `deviceId`. The registry is paths-as-strings only: it never opens, lists or reads inside a path, and a
    read never creates the `deviceId`. Only the operator creates, sets or deletes (`/api/logical-paths`, Settings).
-2. **Separate role, token, endpoint and server.** The Factory Operator has its own token (`ytom_fo_`, table `factory_agent_tokens`, schema v51, SHA-256 hash
+2. **Separate role, token, endpoint and server.** The Factory Operator has its own token (`ytom_fo_`, table `factory_agent_tokens`, schema v60 (v51 before the Phase 14 merge), SHA-256 hash
    only, one active, no channel, no Google identity), its own endpoint `POST /api/mcp/factory` and its own MCP server (`src/mcp/factory-server.ts`), not a
    subset of `createMcpServer`. A channel token is rejected on the factory endpoint and a factory token on `/api/mcp`, by prefix and by separate tables
    (both `AGENT_TOKEN_INVALID`). Shared safeguards are unchanged: loopback only, the master "MCP connection" switch, per-call re-verification, device-local

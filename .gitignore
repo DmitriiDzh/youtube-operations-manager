@@ -41,6 +41,8 @@ yarn-error.log*
 data/oauth/
 data/tokens/
 credentials/
+# Phase 14: the media-generation credentials ROUTE is source, not a secrets folder (review round 12).
+!src/app/api/media-generation/credentials/
 client_secret*.json
 token*.json
 

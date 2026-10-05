@@ -170,6 +170,63 @@ async function startServerSession() {
   setTimeout(publishQuotaLedgerQuietly, 45_000).unref();
   setInterval(publishQuotaLedgerQuietly, 120_000).unref();
 
+  // Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3): generation sessions = RunPod pods that
+  // must never outlive this process. Boot sweep first (a pod left by a dead process is terminated and
+  // its session marked interrupted; AC-P14-08), then the watcher at the operator-set interval
+  // (idle / minutes / USD caps, pod disappeared; AC-P14-06/07), and a best-effort terminate on
+  // SIGINT/SIGTERM (AC-P14-09; the signal handlers stay non-blocking, Next.js owns the exit). With
+  // no credentials configured every step answers "nothing to do" and makes no outbound call.
+  const { createMediaGenerationCore } = await import("@/lib/media-generation");
+  const media = createMediaGenerationCore();
+  // NOT awaited (review round 7): a sweep that must terminate and confirm a pod can take minutes when RunPod
+  // is slow, and nothing served over HTTP depends on it -- only the watch loop does, which waits for it below.
+  // Jobs left mid-flight by a dead process fail as interrupted right after (their pod was just swept too).
+  const mediaBootSweep = media
+    .bootSweep()
+    .catch(() => undefined)
+    .then(() => media.sweepInterruptedJobs())
+    .catch(() => undefined);
+  // The exchange janitor (AC-P14-14): terminal leftovers under exchange/ on the volume, by ledger only. Daily, real deletes.
+  const MEDIA_JANITOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const janitorQuietly = () => void media.cleanupExchange({ dryRun: false }).catch(() => undefined);
+  setTimeout(janitorQuietly, 10 * 60_000).unref();
+  setInterval(janitorQuietly, MEDIA_JANITOR_INTERVAL_MS).unref();
+  const MEDIA_WATCH_MIN_MS = 15_000;
+  const mediaWatchLoop = async () => {
+    await mediaBootSweep; // never rejects; already settled on every tick but the first
+    try {
+      // First: jobs nobody is polling (the operator CLI's detached core, a stuck transfer) -- their first poll
+      // counts as session activity, so this runs BEFORE the idle check below.
+      await media.resumeInFlightJobs();
+    } catch {
+      // RunPod unreachable, or nothing configured: try again next interval.
+    }
+    try {
+      await media.watchTick();
+    } catch {
+      // same as above
+    }
+    try {
+      // Slice 4: a model pull's CPU pod is terminated as soon as its file is on the volume, even with no browser open.
+      await media.pollPulls();
+    } catch {
+      // same as above
+    }
+    let intervalMs = 60_000;
+    try {
+      intervalMs = Math.max(MEDIA_WATCH_MIN_MS, (await media.getSettings()).watchIntervalSeconds * 1000);
+    } catch {
+      // keep the default
+    }
+    setTimeout(() => void mediaWatchLoop(), intervalMs).unref();
+  };
+  setTimeout(() => void mediaWatchLoop(), 30_000).unref();
+  // Best effort only: Next.js's own signal handler owns the exit and may finish before this terminate is sent, so
+  // the boot sweep (above) is the authoritative cleanup for a Ctrl-C/kill with a running pod (RISK-107); the idle
+  // auto-shutdown path below is the one that waits for the terminate.
+  process.once("SIGINT", () => void media.stopForShutdown());
+  process.once("SIGTERM", () => void media.stopForShutdown());
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
@@ -183,11 +240,17 @@ async function startServerSession() {
     isBusy: async () => {
       if (getOperationRegistry().hasActive()) return true;
       if ((await getOperationLock(rawSqlClient)) !== null) return true;
+      // Phase 14: a pod in flight or a generating job is work, even though an MCP-driven agent sends this
+      // server no HTTP traffic (an idle exit would terminate the pod mid-generation; capped by MAX_IDLE_DEFERRAL_MS).
+      if (await media.hasOpenPod().catch(() => false)) return true;
+      if (await media.hasInFlightJobs().catch(() => false)) return true;
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },
     onIdle: () =>
       void resetQuietly()
+        // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
+        .then(() => media.stopForShutdown())
         .then(() => ticking ?? undefined)
         .then(() => tickQuietly({ force: true, exportOnly: true }))
         .finally(() => process.exit(0)),

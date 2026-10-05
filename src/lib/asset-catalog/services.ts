@@ -1,5 +1,6 @@
 import { DomainError, type CreativeAsset } from "./contracts";
 import {
+  findAssetByReferenceInputSchema,
   getAssetContextInputSchema,
   getAssetContextOutputSchema,
   listAssetsInputSchema,
@@ -70,6 +71,8 @@ type ServiceDependencies = {
     filters: { videoId?: string; assetType?: string }
   ): Promise<StoredCreativeAssetForService[]>;
   getAssetById(assetId: string): Promise<StoredCreativeAssetForService | null>;
+  /** Optional (Phase 14): one indexed lookup by reference within a channel; absent = "not supported", never a scan. */
+  getAssetByReference?(channelId: string, referenceKind: string, referenceValue: string): Promise<StoredCreativeAssetForService | null>;
   // Reused unchanged from `changesets`' own channel/video store adapter (AGENTS.md §D) -- the
   // one legitimate way this module verifies a `linkedVideoId` actually belongs to the requesting
   // channel, since the DB-level foreign key on `linked_video_id` only proves the video exists
@@ -140,6 +143,19 @@ export function createAssetCatalogServices(deps: ServiceDependencies) {
 
       const output = { assets: rows.map(toCreativeAsset) };
       return parseWithSchema(listAssetsOutputSchema, output, "list assets output");
+    },
+
+    /**
+     * Phase 14 (media generation, review round 7): the asset already cataloged for a reference in this
+     * channel, or null -- one query by `(channelId, referenceKind, referenceValue)`, so a resumed
+     * transfer can reuse an entry an earlier attempt registered instead of scanning the channel's
+     * whole catalog per output. Same channel-scoping note as `listAssets`.
+     */
+    async findAssetByReference(input: unknown): Promise<CreativeAsset | null> {
+      const parsedInput = parseWithSchema(findAssetByReferenceInputSchema, input, "find asset by reference input");
+      if (!deps.getAssetByReference) return null;
+      const row = await deps.getAssetByReference(parsedInput.channelId, parsedInput.referenceKind, parsedInput.referenceValue);
+      return row ? toCreativeAsset(row) : null;
     },
 
     /** Owner spec §25's `get_asset_context`. Same channel-scoping note as `listAssets` above. */

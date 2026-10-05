@@ -35,6 +35,8 @@ import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
+import { RunpodConnectionSettings } from "@/components/media-generation-settings";
+import { ProductionPanel } from "@/components/production-panel";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
@@ -49,6 +51,7 @@ import {
   AnalyticsIcon,
   BatchesIcon,
   ContentIcon,
+  ProductionIcon,
   DecisionsIcon,
   DeviceIcon,
   HomeIcon,
@@ -70,6 +73,9 @@ export type ChannelInfo = {
 const NAV_ITEMS = [
   { value: "home", label: "Home", icon: HomeIcon },
   { value: "content", label: "Content", icon: ContentIcon },
+  // Phase 14 slice 6 (owner, Telegram 2026-10-05, msg 1549): remote media generation -- sessions, jobs, models,
+  // workflow templates and their setup -- right after Content. The RunPod keys stay in Settings → RunPod.
+  { value: "production", label: "Production", icon: ProductionIcon },
   { value: "analytics", label: "Analytics", icon: AnalyticsIcon },
   { value: "languages", label: "Languages", icon: LocalizationsIcon },
   { value: "batches", label: "Batches", icon: BatchesIcon },
@@ -116,6 +122,9 @@ const SETTINGS_SUB_TABS = [
   { value: "channels", label: "Channels" },
   { value: "ai-agent", label: "AI Agent" },
   { value: "sync", label: "Sync" },
+  // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6, D5): the RunPod connection only since slice 6 (owner, msg 1549);
+  // everything else is the Production section.
+  { value: "runpod", label: "RunPod" },
   { value: "about", label: "About" },
 ] as const;
 type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
@@ -331,6 +340,14 @@ export default function Dashboard() {
         </FeatureErrorBoundary>
       )}
 
+      {tab === "production" && (
+        <FeatureErrorBoundary label="Production">
+          <div key={channel?.id ?? "no-channel"}>
+            <ProductionPanel activeChannelId={channel?.id ?? null} />
+          </div>
+        </FeatureErrorBoundary>
+      )}
+
       {tab === "analytics" && (
         <FeatureErrorBoundary label="Analytics">
           <div key={channel?.id ?? "no-channel"}>
@@ -538,6 +555,12 @@ export default function Dashboard() {
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Automatic device sync">
             <DeviceAutoSyncSettings />
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "runpod" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — RunPod">
+            <RunpodConnectionSettings />
           </FeatureErrorBoundary>
         </div>
 

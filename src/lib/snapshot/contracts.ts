@@ -191,6 +191,11 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   reporting_sync_attempts: "last Reporting API sync attempt of this device (BL-114): time, outcome, error text",
   workspace_export_files: "ledger of research export files written on THIS computer (ADR 0019): paths and expiry, meaningless on another device",
   channel_reach_daily: "accepted limitation (RISK-52, same as video_metrics_daily): collected impressions/CTR stay local (BL-114)",
+  media_credentials: "encrypted RunPod / S3 API keys (Phase 14); the key file is per device, so the row is unreadable anywhere else",
+  media_sessions: "generation sessions = pods started by THIS device's server process (Phase 14); the watcher and boot sweep that own them run here only",
+  media_workflow_templates: "operator-imported ComfyUI workflow graphs (Phase 14); device-local in this phase",
+  media_jobs: "generation jobs of this device's sessions (Phase 14); outputs land in this device's workspace folder",
+  media_exchange_files: "ledger of files this device pulled from the network volume into the workspace (Phase 14); paths are meaningless elsewhere",
 });
 
 /**
