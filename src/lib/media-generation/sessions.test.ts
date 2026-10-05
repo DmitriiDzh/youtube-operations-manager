@@ -967,3 +967,16 @@ test("review 11: a Stop whose terminate throws leaves the session `stopping` WIT
   assert.equal(row.status, "stopping");
   assert.match(row.error ?? "", /terminate failed: RunPod API returned HTTP 502; the watcher retries/);
 });
+
+// -- review round 12 (2026-10-05) -----------------------------------------------------------------
+
+test("review 12: holdsVolumeLock is true only for a session past its `approved` write (a pending one never holds the volume, so a lock it left behind is stale)", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  assert.equal(await f.services.holdsVolumeLock(requested.sessionId), false);
+  assert.equal(await f.services.holdsVolumeLock("nope"), false);
+  const running = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(await f.services.holdsVolumeLock(running.sessionId), true);
+  await f.services.stopSession({ sessionId: running.sessionId });
+  assert.equal(await f.services.holdsVolumeLock(running.sessionId), false);
+});

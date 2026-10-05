@@ -2514,6 +2514,20 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   number widget, per the project's settings-widget rule); the Jobs card polls only `/jobs` every 5 s and its
   context every 60 s. `src/lib/shared-async` holds the one `sleep` (unref'd for the detached CLI) and
   `round2`; `key-file.ts` has no `this`.
+- **The route that was never committed, and verdict vs. outage (review round 12).** `.gitignore`'s
+  `credentials/` pattern had swallowed `src/app/api/media-generation/credentials/` (the GET/PUT/DELETE
+  route, `credentials/test` and their test) -- un-ignored and committed; without it no RunPod key could be
+  saved on another checkout. `updateMediaModelPullsJson` is a compare-and-swap (guarded UPDATE / INSERT ON
+  CONFLICT DO NOTHING, re-applied on a lost race), the single-statement idiom `db.ts` uses everywhere
+  instead of a cross-connection transaction. The ComfyUI gateway distinguishes `comfyui_rejected` (a 4xx
+  with a JSON body: ComfyUI's own verdict, 422) from `comfyui_unavailable` (5xx, a proxy's HTML, a
+  timeout, 502); the poll loop fails at once on the former and retries only the latter. A 0-byte HEAD is
+  "not there yet" (never recorded, never deleted). A `transferring` job that cannot be received backs off
+  exponentially (15 s → 10 min cap, per process) instead of being re-driven every tick for 24 h.
+  `getRunningSession` answers null for an unknown session id (never a throw out of the resume loop);
+  `holdsVolumeLock` counts only a session past its `approved` write, so a lock left by a failed approve
+  write is stale; `templateId` is validated against the account's templates like the other three pod
+  inputs; `finish()` builds the pod facts once.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

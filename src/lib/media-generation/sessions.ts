@@ -231,8 +231,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     podFacts: { podId?: string; startedAt?: Date; costPerHr?: number | null } = {}
   ): Promise<StoredSessionRow | null> {
     const stoppedAt = extra.stoppedAt ?? deps.clock.now();
-    const effective: StoredSessionRow = { ...row, ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}), ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}) };
-    const cost = finalCost(effective, stoppedAt);
+    // The facts are built ONCE: the cost is computed from exactly what the row will record (review round 12).
+    const facts = {
+      ...(podFacts.podId ? { podId: podFacts.podId } : {}),
+      ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}),
+      ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}),
+    };
+    const cost = finalCost({ ...row, ...facts }, stoppedAt);
     const terminal = await deps.store.transition(row.id, from, {
       status,
       stoppedAt,
@@ -240,9 +245,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       usdCharged: cost.usdCharged,
       stopReason: extra.stopReason ?? null,
       error: extra.error ?? null,
-      ...(podFacts.podId ? { podId: podFacts.podId } : {}),
-      ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}),
-      ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}),
+      ...facts,
     });
     // Terminal = the volume is free again. (A crash between these two writes leaves a lock whose holder is terminal;
     // the next acquire sees that and steals it.)
@@ -649,7 +652,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               }
               return toPublicSession(running, ready);
             } catch (error) {
-              if (error instanceof DomainError && error.code !== "comfyui_unavailable") throw error;
+              if (error instanceof DomainError && error.code !== "comfyui_unavailable" && error.code !== "comfyui_rejected") throw error;
               lastDetail = error instanceof Error ? error.message : String(error);
             }
           }
@@ -758,9 +761,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       return { swept: [open.id] };
     },
 
-    /** For the volume lock's staleness check: the id of the device's one non-terminal session, if any. */
-    async getOpenSessionId(): Promise<string | null> {
-      return (await deps.store.getOpen())?.id ?? null;
+    /**
+     * For the volume lock's staleness check: does this session legitimately hold the volume right now? Only a session
+     * past its `approved` write can (a `pending` one never does -- a lock left by an approve whose write threw is stale).
+     */
+    async holdsVolumeLock(sessionId: string): Promise<boolean> {
+      const row = await deps.store.get(sessionId);
+      return Boolean(row && ["approved", "starting", "running", "stopping"].includes(row.status));
     },
 
     /** For the idle auto-shutdown: a pod in flight is work (an MCP-driven session makes no HTTP traffic to this server). */

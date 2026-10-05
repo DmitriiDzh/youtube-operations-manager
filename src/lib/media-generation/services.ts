@@ -253,7 +253,11 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
         next.gpuTypeId !== null &&
         update.gpuTypeId === undefined;
       if (repriceGpu) update.gpuTypeId = next.gpuTypeId;
-      const needsCatalog = (update.gpuTypeId !== undefined && update.gpuTypeId !== null) || (update.networkVolumeId !== undefined && update.networkVolumeId !== null) || (update.datacenterId !== undefined && update.datacenterId !== null);
+      const needsCatalog =
+        (update.gpuTypeId !== undefined && update.gpuTypeId !== null) ||
+        (update.networkVolumeId !== undefined && update.networkVolumeId !== null) ||
+        (update.datacenterId !== undefined && update.datacenterId !== null) ||
+        (update.templateId !== undefined && update.templateId !== null);
       if (needsCatalog) {
         const client = await runpodClient();
         if (next.datacenterId && update.datacenterId !== undefined) {
@@ -279,6 +283,14 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
           }
           // Captured here so a session estimate needs no RunPod call (AC-P14-03).
           next.gpuOnDemandPricePerHr = gpu.onDemandPricePerHr;
+        }
+        if (next.templateId && update.templateId !== undefined) {
+          // The fourth value createPod depends on (review round 12): a deleted or mistyped template is refused here, not
+          // by a failed createPod after a human approved a session.
+          const templates = await client.listTemplates();
+          if (!templates.some((t) => t.id === next.templateId)) {
+            throw new DomainError({ code: "media_settings_invalid", message: `Pod template "${next.templateId}" is not in your RunPod account's templates.`, details: { field: "templateId" } });
+          }
         }
         if (next.networkVolumeId && (update.networkVolumeId !== undefined || update.datacenterId !== undefined)) {
           const volume = await client.getNetworkVolume(next.networkVolumeId);

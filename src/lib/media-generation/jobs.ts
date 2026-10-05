@@ -130,6 +130,8 @@ const DEFAULT_MAX_GENERATION_MS = 2 * 60 * 60_000;
 const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 /** How long a `transferring` job keeps being retried when its outputs cannot be received yet. */
 const TRANSFER_RETRY_WINDOW_MS = 24 * 60 * 60_000;
+const TRANSFER_BACKOFF_BASE_MS = 15_000;
+const TRANSFER_BACKOFF_CAP_MS = 10 * 60_000;
 /** A `queued` row younger than this is a `createJob` still submitting, not a leftover. */
 const SUBMIT_GRACE_MS = 5 * 60_000;
 /** While `/history` has no entry, every Nth poll asks `/queue` whether ComfyUI still knows the prompt at all. */
@@ -382,11 +384,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     const head = await s3.headObject(output.remoteKey);
     // The S3 view of the volume can lag behind ComfyUI's just-closed file (review round 10): "not there yet" and "not
     // all there yet" are THROWN so the transfer stays `transferring` and is retried within the window, never a verdict.
-    if (!head) throw new Error("output not visible on the volume yet");
+    // A 0-byte object is the same lag (the file is open, nothing flushed yet): never "complete" -- the empty stream would
+    // hash equal to its empty read-back, be recorded, and the only copy DELETED (review round 12).
+    if (!head || head.size === 0) throw new Error("output not visible on the volume yet");
     const localPath = path.join(outputDir, fileName);
     const pulled = await s3.getObjectToFile(output.remoteKey, localPath);
     const readBack = await deps.fs.sha256File(localPath);
-    if (readBack !== pulled.sha256 || (head.size > 0 && pulled.bytes !== head.size)) {
+    if (readBack !== pulled.sha256 || pulled.bytes !== head.size || pulled.bytes === 0) {
       // Never leave a file that failed verification in the operator's folder looking like a result; the remote copy stays.
       await deps.fs.remove(localPath).catch((error) => log(`[media] could not remove unverified ${localPath}: ${error instanceof Error ? error.message : String(error)}`));
       throw new Error(`verification failed (stream ${pulled.sha256.slice(0, 8)}, file ${readBack.slice(0, 8)}, ${pulled.bytes}/${head.size} bytes); the file was removed`);
@@ -431,6 +435,16 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
   /** Jobs this process is polling right now (so a resume never starts a second loop for the same job). */
   const inFlight = new Set<string>();
+  /**
+   * A `transferring` job that could not be received is retried with exponential backoff (15 s → 10 min cap), not on
+   * every watch tick for 24 h (review round 12). Per process: the web server is the only resumer.
+   */
+  const transferBackoff = new Map<string, { attempt: number; notBefore: number }>();
+  function scheduleTransferRetry(jobId: string): void {
+    const attempt = (transferBackoff.get(jobId)?.attempt ?? 0) + 1;
+    const delay = Math.min(TRANSFER_BACKOFF_BASE_MS * 2 ** (attempt - 1), TRANSFER_BACKOFF_CAP_MS);
+    transferBackoff.set(jobId, { attempt, notBefore: deps.clock.now().getTime() + delay });
+  }
 
   /** The poll/transfer loop for one submitted job (background in production, inline in tests). */
   async function processJob(jobId: string): Promise<void> {
@@ -480,6 +494,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         history = await comfy.getHistory(job.promptId);
         pollFailures = 0;
       } catch (error) {
+        if (error instanceof DomainError && error.code === "comfyui_rejected") {
+          // ComfyUI's own verdict (an unknown prompt, a 4xx with a body): definitive, no retries.
+          await failJob(job, `ComfyUI rejected the poll: ${describeComfyRejection(error)}`);
+          return;
+        }
         // One 502/timeout through RunPod's proxy is routine during a heavy generation: fail only after a run of them,
         // or once the session itself is gone.
         pollFailures++;
@@ -577,8 +596,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const message = `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`;
       const since = (job.submittedAt ?? job.createdAt).getTime();
       if (deps.clock.now().getTime() - since > TRANSFER_RETRY_WINDOW_MS) {
+        transferBackoff.delete(jobId);
         await failJob(job, `${message} (gave up after ${Math.round(TRANSFER_RETRY_WINDOW_MS / 3_600_000)} h)`, outputs);
       } else {
+        scheduleTransferRetry(jobId);
         await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", error: `${message}; retrying` });
       }
       return;
@@ -637,9 +658,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
     }
     if (transientFailure && deps.clock.now().getTime() - (job.submittedAt ?? job.createdAt).getTime() <= TRANSFER_RETRY_WINDOW_MS) {
+      scheduleTransferRetry(jobId);
       await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", outputsJson: JSON.stringify(forRetry), error: `pull failed: ${transientFailure}; retrying` });
       return;
     }
+    transferBackoff.delete(jobId);
     const pulled = results.filter((r) => r.localPath);
     const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
     if (pulled.length === 0) {
@@ -831,6 +854,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           await failJob(row, "the session is no longer running");
           continue;
         }
+        const backoff = transferBackoff.get(row.id);
+        if (row.status === "transferring" && backoff && backoff.notBefore > deps.clock.now().getTime()) continue; // not yet
         resumed.push(row.id);
         deps.schedule(() => processJob(row.id));
       }

@@ -43,11 +43,17 @@ test("submitPrompt posts {prompt, client_id} with the bearer token and returns p
   assert.deepEqual(JSON.parse(String(calls[0].init.body)), { prompt: { "3": { class_type: "KSampler", inputs: {} } }, client_id: "c1" });
 });
 
-test("a validation failure (400 with node_errors) is comfyui_unavailable carrying the node errors", async () => {
+// Review round 12: a 4xx WITH a JSON body is ComfyUI's own verdict -- `comfyui_rejected` (definitive, 422); the
+// earlier expectation of `comfyui_unavailable` conflated it with a transient proxy failure.
+test("a validation failure (400 with node_errors) is comfyui_rejected carrying the node errors; a proxy's HTML 4xx or a 5xx is comfyui_unavailable", async () => {
   const { fetchImpl } = fakeFetch(() => ({ status: 400, body: { error: { type: "prompt_outputs_failed_validation" }, node_errors: { "3": { errors: [] } } } }));
   const client = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl, authorize: noAuth });
+  const proxy404 = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 404, body: "<html>not found</html>" })).fetchImpl, authorize: noAuth });
+  await assert.rejects(proxy404.getHistory("p"), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
+  const down = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 502, body: { error: "bad gateway" } })).fetchImpl, authorize: noAuth });
+  await assert.rejects(down.getHistory("p"), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
   await assert.rejects(client.submitPrompt({ prompt: {} }), (e: unknown) => {
-    if (!isDomainError(e) || e.code !== "comfyui_unavailable") return false;
+    if (!isDomainError(e) || e.code !== "comfyui_rejected") return false;
     const body = (e.details as { body?: { node_errors?: unknown } }).body;
     return body?.node_errors !== undefined;
   });

@@ -86,6 +86,7 @@ const DOMAIN_ERROR_STATUS = {
   runpod_api_unavailable: 502,
   runpod_s3_unavailable: 502,
   comfyui_unavailable: 502,
+  comfyui_rejected: 422,
   media_session_not_found: 404,
   media_session_conflict: 409,
   media_session_invalid_state: 409,

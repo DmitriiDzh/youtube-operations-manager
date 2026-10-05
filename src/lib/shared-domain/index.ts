@@ -123,6 +123,7 @@ export type DomainErrorCode =
   | "runpod_api_unavailable"
   | "runpod_s3_unavailable"
   | "comfyui_unavailable"
+  | "comfyui_rejected"
   // Phase 14 slice 2 -- generation sessions (one pod, approved by a human, always terminated).
   | "media_session_not_found"
   | "media_session_conflict"

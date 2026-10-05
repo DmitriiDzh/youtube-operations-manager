@@ -135,7 +135,7 @@ export function MediaGenerationSettings({ activeChannelId = null }: { activeChan
 }
 
 type ModelFile = { key: string; folder: string; name: string; bytes: number; lastModified: string | null };
-type ModelPull = { pullId: string; podId: string; repoId: string; file: string; expectedKey: string; status: string; startedAt: string; finishedAt: string | null; bytes: number | null; error: string | null };
+type ModelPull = { pullId: string; podId: string | null; repoId: string; file: string; expectedKey: string; status: string; startedAt: string; finishedAt: string | null; bytes: number | null; error: string | null };
 const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"];
 
 function gb(bytes: number): string {
@@ -281,8 +281,7 @@ function ModelsCard({ configured }: { configured: boolean }) {
                     {p.expectedKey}
                     {p.bytes !== null ? ` · ${gb(p.bytes)}` : ""}
                     {p.error ? ` · ${p.error}` : ""}
-                    {" · pod "}
-                    {p.podId}
+                    {p.podId ? ` · pod ${p.podId}` : " · reserving a pod…"}
                   </span>
                   {p.status === "running" && (
                     <button type="button" onClick={() => cancelPull(p)} disabled={busy} className={secondaryButton}>
@@ -981,7 +980,7 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
 }
 
 function ReadinessBanner({ overview }: { overview: Overview }) {
-  if (overview.ready) return <p className="text-xs text-emerald-400">Media generation is configured. Sessions and jobs arrive in the next slices.</p>;
+  if (overview.ready) return <p className="text-xs text-emerald-400">Media generation is configured: request and approve a session below, then submit jobs.</p>;
   return <p className="text-xs text-zinc-500">Not ready yet — missing: {overview.missing.join(", ")}.</p>;
 }
 

@@ -133,9 +133,13 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
       }
     }
     if (!response.ok) {
+      // A 4xx WITH a JSON body is ComfyUI's own verdict (a prompt that failed validation, an unknown prompt): definitive,
+      // `comfyui_rejected`. Anything else (5xx, a proxy's HTML/plain-text 4xx, a timeout) is `comfyui_unavailable` --
+      // transient, retried by the poll loop (review round 12).
+      const definitive = response.status >= 400 && response.status < 500 && body !== null && typeof body === "object" && !("raw" in (body as Record<string, unknown>));
       throw new DomainError({
-        code: "comfyui_unavailable",
-        message: `ComfyUI returned HTTP ${response.status} for ${method} ${path}.`,
+        code: definitive ? "comfyui_rejected" : "comfyui_unavailable",
+        message: `ComfyUI ${definitive ? "rejected" : "returned HTTP"} ${definitive ? `${method} ${path} (HTTP ${response.status})` : `${response.status} for ${method} ${path}`}.`,
         details: { method, path, status: response.status, body },
       });
     }

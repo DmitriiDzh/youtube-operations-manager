@@ -52,7 +52,7 @@ function buildCore(jobScheduling: JobScheduling) {
   let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   let modelsRef: ReturnType<typeof createMediaModelServices> | null = null;
   const isHolderActive = async (holder: string): Promise<boolean> => {
-    if (holder.startsWith("session:")) return (await sessionsRef?.getOpenSessionId()) === holder.slice("session:".length);
+    if (holder.startsWith("session:")) return (await sessionsRef?.holdsVolumeLock(holder.slice("session:".length))) ?? false;
     if (holder.startsWith("pull:")) return (await modelsRef?.isPullActive(holder.slice("pull:".length))) ?? false;
     return false;
   };
@@ -98,7 +98,14 @@ function buildCore(jobScheduling: JobScheduling) {
     store: createMediaJobStore(),
     sessions: {
       async getRunningSession(sessionId) {
-        const session = await sessions.getSession({ sessionId });
+        // Contracted as "null when not running"; an unknown id is "not running", never a throw out of a resume loop.
+        let session;
+        try {
+          session = await sessions.getSession({ sessionId });
+        } catch (error) {
+          if (error instanceof DomainError && error.code === "media_session_not_found") return null;
+          throw error;
+        }
         return session.status === "running"
           ? { sessionId: session.sessionId, channelId: session.channelId, podId: session.podId, gpuTypeId: session.gpuTypeId, costPerHr: session.costPerHr }
           : null;

@@ -7281,20 +7281,29 @@ export async function getMediaVolumeLockHolder(database: AppDb = db): Promise<st
 }
 
 /**
- * The only writer: a read-modify-write of the pulls list in ONE write transaction (libSQL's `BEGIN IMMEDIATE`), so the
- * web server's watch loop and the operator CLI -- separate processes -- never overwrite each other's
- * change (review round 6). Returns what was written.
+ * The only writer: a read-modify-write of the pulls list as a compare-and-swap (the single guarded
+ * UPDATE/INSERT idiom this file uses everywhere -- see `claimBatchExecution` and the note above
+ * `claimVideoExecution` on why an explicit multi-statement transaction is NOT used across separate
+ * connections), so the web server's watch loop and the operator CLI -- separate processes -- never
+ * overwrite each other's change (review rounds 6 and 12). A lost race re-reads and re-applies `mutate`.
  */
 export async function updateMediaModelPullsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
-  return database.transaction(async (tx) => {
-    const [row] = await tx.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, MEDIA_MODEL_PULLS_KEY));
-    const next = mutate(row?.value ?? null);
-    await tx
-      .insert(appSettings)
-      .values({ key: MEDIA_MODEL_PULLS_KEY, value: next })
-      .onConflictDoUpdate({ target: appSettings.key, set: { value: next } });
-    return next;
-  });
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const current = await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
+    const next = mutate(current);
+    if (current === null) {
+      await database.insert(appSettings).values({ key: MEDIA_MODEL_PULLS_KEY, value: next }).onConflictDoNothing();
+      if ((await getAppSetting(MEDIA_MODEL_PULLS_KEY, database)) === next) return next;
+      continue; // someone else inserted first: re-read and re-apply
+    }
+    const rows = await database
+      .update(appSettings)
+      .set({ value: next })
+      .where(and(eq(appSettings.key, MEDIA_MODEL_PULLS_KEY), eq(appSettings.value, current)))
+      .returning({ key: appSettings.key });
+    if (rows.length > 0) return next;
+  }
+  throw new Error("the model pulls list kept changing under this update (10 attempts); try again");
 }
 
 /** The Settings → Media values as one JSON string (validated by `src/lib/media-generation/schemas.ts`); `null` = never saved. */

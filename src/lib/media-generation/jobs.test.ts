@@ -231,7 +231,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, setWorkspaceFails: (v: boolean) => void (workspaceFails = v) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -803,6 +803,7 @@ test("review 6: a download that fails verification is removed from the workspace
   assert.ok(!f.s3.calls.includes("delete:exchange/job-1/ComfyUI_00001_.png"), "the remote copy is kept for a retry");
   assert.equal(f.registered.length, 0);
   f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") }); // past the window
+  f.advance(20_000); // past the transfer backoff (review round 12)
   await f.services.resumeInFlightJobs();
   await f.runScheduled();
   const failed = await f.services.getJob({ jobId: job.jobId });
@@ -825,6 +826,7 @@ test("review 6: a transfer resumed from the ledger still registers the asset (on
     status: "transferring",
     outputsJson: JSON.stringify([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null, note: null }]),
   });
+  f.advance(20_000); // past the transfer backoff (review round 12)
   await f.services.resumeInFlightJobs();
   await f.runScheduled();
   const done = await f.services.getJob({ jobId: job.jobId });
@@ -945,7 +947,8 @@ test("review 8: a THROWN S3 failure while pulling (a 503 on the GET) keeps the j
   assert.match(retrying.error ?? "", /pull failed: RunPod S3 returned HTTP 503; retrying/);
   assert.equal(retrying.outputs[0].note, null, "the recorded output is clean for the retry");
   assert.equal(f.registered.length, 0);
-  // The watch loop's resume pass retries the transfer; S3 is back.
+  // The watch loop's resume pass retries the transfer once the backoff passed; S3 is back.
+  f.advance(20_000);
   await f.services.resumeInFlightJobs();
   await f.runScheduled();
   const done = await f.services.getJob({ jobId: job.jobId });
@@ -1041,6 +1044,7 @@ test("review 9: an output pulled earlier whose asset registration failed is cata
       { nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath, bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), remoteDeleted: true, assetId: null, note: "pulled, but asset registration failed: DB busy" },
     ]),
   });
+  f.advance(20_000); // past the transfer backoff (review round 12)
   await f.services.resumeInFlightJobs();
   await f.runScheduled();
   const done = await f.services.getJob({ jobId: job.jobId });
@@ -1083,6 +1087,7 @@ test("review 10: an output not yet visible in the S3 view of the volume is retri
     return r;
   };
   (f.s3.client as unknown as Record<string, unknown>).deleteObject = live.client.deleteObject;
+  f.advance(20_000); // past the transfer backoff (review round 12)
   await f.services.resumeInFlightJobs();
   await f.runScheduled();
   const done = await f.services.getJob({ jobId: job.jobId });
@@ -1118,4 +1123,66 @@ test("review 11: a Save node whose filename_prefix is a link (not a string) is r
   const { services } = fixture();
   const graph = { ...GRAPH, "12": { class_type: "SaveImage", inputs: { filename_prefix: ["13", 0], images: ["3", 0] } }, "13": { class_type: "StringConcatenate", inputs: { string_a: "x", string_b: "y" } } };
   await assert.rejects(services.importWorkflowTemplate({ name: "t", workflow: graph, parameters: [] }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /node 12 \(SaveImage\): filename_prefix must be a literal string/.test(e.message));
+});
+
+// -- review round 12 (2026-10-05) -----------------------------------------------------------------
+
+test("review 12: a 0-byte object (the file is open, nothing flushed) is 'not there yet' -- never recorded, never deleted; the retry pulls the real bytes", async () => {
+  const objects = new Map([["exchange/job-1/ComfyUI_00001_.png", new Uint8Array(0)]]);
+  const s3 = fakeS3(objects);
+  const f = fixture({ s3 });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const retrying = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(retrying.status, "transferring");
+  assert.ok(!f.s3.calls.some((c) => c.startsWith("delete:")), "the only copy is never deleted on a 0-byte read");
+  assert.equal(await f.mem.store.ledger.get("exchange/job-1/ComfyUI_00001_.png"), null);
+  objects.set("exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9]));
+  f.advance(60_000); // past the first backoff step
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.equal(done.outputs[0].bytes, 3);
+});
+
+test("review 12: a definitive ComfyUI rejection while polling (comfyui_rejected) fails the job at once; a transient failure is still retried", async () => {
+  const comfy = fakeComfy([null]);
+  (comfy.client as unknown as { getHistory: () => Promise<unknown> }).getHistory = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "comfyui_rejected", message: "ComfyUI rejected GET /history/prompt-1 (HTTP 400).", details: { body: { error: "unknown prompt" } } });
+  };
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /ComfyUI rejected the poll/);
+  assert.equal(f.activity.length, 1, "no retries: only the submit counted");
+});
+
+test("review 12: a transfer that cannot be received backs off exponentially (15 s, 30 s, ...) instead of being re-driven on every watch tick", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  f.setWorkspaceFails(true);
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "transferring");
+  // A tick 5 s later: skipped (first backoff step is 15 s).
+  f.advance(5_000);
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [] });
+  // 15 s after the failure: retried (fails again -> next step 30 s).
+  f.advance(10_000);
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [job.jobId] });
+  await f.runScheduled();
+  f.advance(20_000);
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [] });
+  f.advance(10_000);
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [job.jobId] });
+  // The workspace is back: the next retry completes the transfer and the backoff is forgotten.
+  f.setWorkspaceFails(false);
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
 });

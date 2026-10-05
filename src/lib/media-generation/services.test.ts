@@ -113,7 +113,7 @@ function fakeRunpod(options: { verifyFails?: boolean } = {}): { factory: (apiKey
       return { terminated: true as const, alreadyGone: false };
     },
     async listTemplates() {
-      return [];
+      return [{ id: "tpl1", name: "comfy", raw: {} }]; // the account's one pod template (validated on save since review round 12)
     },
   } as unknown as RunpodApiClient;
   return {
@@ -442,4 +442,13 @@ test("review 11: a GPU the catalog does not offer in the chosen datacenter is re
   await assert.rejects(services.updateSettings({ datacenterId: "EU-RO-1", gpuTypeId: "NVIDIA GeForce RTX 4090" }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /not offered in datacenter EU-RO-1/.test(e.message));
   const ok = await services.updateSettings({ datacenterId: "US-TX-3", gpuTypeId: "NVIDIA GeForce RTX 4090" });
   assert.equal(ok.gpuOnDemandPricePerHr, 0.69);
+});
+
+test("review 12: a pod template id is validated against the account's templates when it changes (like the datacenter, GPU and volume)", async () => {
+  const runpod = fakeRunpod();
+  (runpod.client as unknown as { listTemplates: () => Promise<unknown[]> }).listTemplates = async () => [{ id: "tpl-real", name: "comfy", raw: {} }];
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await assert.rejects(services.updateSettings({ templateId: "tpl-typo" }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /not in your RunPod account/.test(e.message));
+  assert.equal((await services.updateSettings({ templateId: "tpl-real" })).templateId, "tpl-real");
 });
