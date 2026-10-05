@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
+import { sleep } from "@/lib/shared-async";
 import { DomainError, type MediaSettings } from "./contracts";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { parseWithSchema } from "./schemas";
@@ -112,7 +113,7 @@ function trimPulls(pulls: ModelPull[]): ModelPull[] {
 
 export function createMediaModelServices(deps: ModelServiceDependencies) {
   const pullCapMs = deps.pullCapMs ?? DEFAULT_PULL_CAP_MS;
-  const sleepFn = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleepFn = deps.sleep ?? sleep;
 
   // Within THIS process every mutation runs through one chain (the watch loop, startPull and cancelPull
   // share the core); across processes the store's own transaction does the same job.

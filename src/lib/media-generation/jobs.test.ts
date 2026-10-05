@@ -1103,3 +1103,19 @@ test("review 10: a declared minimum length is enforced for string/text parameter
   assert.throws(() => resolveParams(params, { prompt: "" }), (e: unknown) => isDomainError(e) && /shorter than 1/.test(e.message));
   assert.deepEqual(resolveParams(params, { prompt: "a cat" }), { prompt: "a cat" });
 });
+
+// -- review round 11 (2026-10-05) -----------------------------------------------------------------
+
+test("review 11: while the prompt is known to ComfyUI, EVERY poll credits session activity (idleMinutes can be 1 minute), not only every 15th", async () => {
+  const f = fixture({ comfy: fakeComfy([null], { queue: { running: ["prompt-1"], pending: [] } }) });
+  const t = await importDefault(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled(); // polls every 1 s until the 10 s test deadline
+  assert.ok(f.activity.length >= 10, `expected a touch per poll, got ${f.activity.length}`);
+});
+
+test("review 11: a Save node whose filename_prefix is a link (not a string) is refused at import -- it could never be prefixed with <jobId>/", async () => {
+  const { services } = fixture();
+  const graph = { ...GRAPH, "12": { class_type: "SaveImage", inputs: { filename_prefix: ["13", 0], images: ["3", 0] } }, "13": { class_type: "StringConcatenate", inputs: { string_a: "x", string_b: "y" } } };
+  await assert.rejects(services.importWorkflowTemplate({ name: "t", workflow: graph, parameters: [] }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /node 12 \(SaveImage\): filename_prefix must be a literal string/.test(e.message));
+});

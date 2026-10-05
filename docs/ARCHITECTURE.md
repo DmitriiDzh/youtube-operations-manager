@@ -2502,6 +2502,18 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `filename_prefix`; `min` is enforced for string/text parameters; a datacenter change re-validates and
   re-prices the kept GPU; `models-pull.sh` quotes manifest values like `buildPullCommand`; the Settings
   card imports `NETWORK_VOLUME_USD_PER_GB_MONTH` instead of restating it.
+- **Readiness, activity cadence and settings drift (review round 11).** `getSystemStats` is "up" only with
+  ComfyUI's documented `system`/`devices` shape (a proxy's placeholder 200 is not). While ComfyUI confirms
+  the prompt (history, or `/queue` on every 15th empty poll), EVERY poll credits session activity, so the
+  1-minute minimum idle timeout cannot fire mid-generation. Approve refuses a request whose saved
+  GPU/datacenter/price no longer match Settings → Media (`media_settings_invalid`): the estimate, the cap
+  check and the record must describe the pod that is billed. Settings refuse a GPU the catalog does not
+  offer in the chosen datacenter (`gpu.dataCenters`). A Save node whose `filename_prefix` is a link is
+  refused at import. A Stop whose terminate throws records the cause on the `stopping` row. The money
+  fields of the Settings card are controlled text inputs (`parseMoney`: "2.5" and "2,5", never a native
+  number widget, per the project's settings-widget rule); the Jobs card polls only `/jobs` every 5 s and its
+  context every 60 s. `src/lib/shared-async` holds the one `sleep` (unref'd for the detached CLI) and
+  `round2`; `key-file.ts` has no `this`.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

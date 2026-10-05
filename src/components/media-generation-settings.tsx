@@ -48,6 +48,18 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const inputClass = "w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 focus:border-zinc-500 focus:outline-none";
+
+/**
+ * Money fields are controlled TEXT inputs (never `type="number"`, whose decimal separator is browser-locale dependent and
+ * which turns a cleared field into 0 -- the project's standing rule for settings widgets): "2.5" and "2,5" both parse;
+ * anything else, or a non-positive value, is null and the form says so instead of saving 0.
+ */
+export function parseMoney(text: string): number | null {
+  const normalized = text.trim().replace(",", ".");
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return null;
+  const value = Number(normalized);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
 const primaryButton = "rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50";
 const secondaryButton = "rounded-md border border-zinc-700 bg-zinc-800 px-4 py-1.5 text-sm font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50";
 const dangerButton = "rounded-md border border-red-900 bg-red-950/50 px-4 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950 disabled:opacity-50";
@@ -489,15 +501,24 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
   const [janitorReport, setJanitorReport] = useState<string | null>(null);
   const [confirmJanitor, setConfirmJanitor] = useState(false);
 
-  const fetchAll = useCallback(
+  // Only the job list changes every few seconds while a job runs; the templates and the open session are fetched on
+  // mount, after an action, and at a slow cadence (review round 11: three endpoints every 5 s for a 2 h job was ~1,400
+  // needless requests per hour each).
+  const fetchJobs = useCallback(
+    () =>
+      requestJson<{ jobs: Job[] }>("/api/media-generation/jobs").then(
+        (j) => setJobs(j.jobs),
+        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load jobs")
+      ),
+    []
+  );
+  const fetchContext = useCallback(
     () =>
       Promise.all([
-        requestJson<{ jobs: Job[] }>("/api/media-generation/jobs"),
         requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
         requestJson<{ limits: { openSession: { sessionId: string; status: string } | null } }>("/api/media-generation/sessions"),
       ]).then(
-        ([j, t, s]) => {
-          setJobs(j.jobs);
+        ([t, s]) => {
           setTemplates(t.templates);
           setOpenSession(s.limits.openSession);
         },
@@ -505,6 +526,7 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
       ),
     []
   );
+  const fetchAll = useCallback(() => Promise.all([fetchJobs(), fetchContext()]).then(() => undefined), [fetchJobs, fetchContext]);
 
   useEffect(() => {
     fetchAll();
@@ -513,9 +535,13 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
   const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
   useEffect(() => {
     if (!hasActive) return;
-    const timer = setInterval(() => void fetchAll(), 5_000);
-    return () => clearInterval(timer);
-  }, [hasActive, fetchAll]);
+    const jobsTimer = setInterval(() => void fetchJobs(), 5_000);
+    const contextTimer = setInterval(() => void fetchContext(), 60_000);
+    return () => {
+      clearInterval(jobsTimer);
+      clearInterval(contextTimer);
+    };
+  }, [hasActive, fetchJobs, fetchContext]);
 
   async function run() {
     if (!activeChannelId || !openSession) return;
@@ -739,6 +765,11 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
 
   async function request() {
     if (!activeChannelId) return;
+    const parsedMaxUsd = maxUsd.trim() ? parseMoney(maxUsd) : null;
+    if (maxUsd.trim() && parsedMaxUsd === null) {
+      setError("Max USD must be a positive amount like 2.5");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -748,7 +779,7 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
         body: JSON.stringify({
           channelId: activeChannelId,
           ...(maxMinutes ? { maxMinutes } : {}),
-          ...(maxUsd.trim() ? { maxUsd: Number(maxUsd) } : {}),
+          ...(maxUsd.trim() ? { maxUsd: parsedMaxUsd } : {}),
         }),
       });
       await fetchAll();
@@ -881,7 +912,7 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
               </label>
               <label className="block text-xs text-zinc-400">
                 Max USD (optional)
-                <input type="number" min={0.01} step={0.5} value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder="no cap" />
+                <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder="no cap (e.g. 2.5)" />
               </label>
               <div className="flex items-end">
                 <button type="button" onClick={request} disabled={busy} className={primaryButton}>
@@ -1421,30 +1452,36 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
 
 function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
   const [draft, setDraft] = useState({
-    maxUsdPerDay: settings.maxUsdPerDay,
     defaultMaxMinutes: settings.defaultMaxMinutes,
     idleMinutes: settings.idleMinutes,
     watchIntervalSeconds: settings.watchIntervalSeconds,
   });
+  // The daily cap is money: a controlled text field (see parseMoney), not a native number input.
+  const [maxUsdPerDayText, setMaxUsdPerDayText] = useState(String(settings.maxUsdPerDay));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft({
-      maxUsdPerDay: settings.maxUsdPerDay,
       defaultMaxMinutes: settings.defaultMaxMinutes,
       idleMinutes: settings.idleMinutes,
       watchIntervalSeconds: settings.watchIntervalSeconds,
     });
+    setMaxUsdPerDayText(String(settings.maxUsdPerDay));
   }, [settings.maxUsdPerDay, settings.defaultMaxMinutes, settings.idleMinutes, settings.watchIntervalSeconds]);
 
   async function save() {
+    const maxUsdPerDay = parseMoney(maxUsdPerDayText);
+    if (maxUsdPerDay === null) {
+      setError("Max USD per day must be a positive amount like 10 or 2.5");
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) });
+      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...draft, maxUsdPerDay }) });
       setNotice("Saved.");
       await onChanged();
     } catch (err) {
@@ -1454,14 +1491,14 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
     }
   }
 
-  const field = (label: string, key: keyof typeof draft, props: { min: number; max: number; step?: number }) => (
+  const field = (label: string, key: keyof typeof draft, props: { min: number; max: number }) => (
     <label className="block text-xs text-zinc-400">
       {label}
       <input
         type="number"
         min={props.min}
         max={props.max}
-        step={props.step ?? 1}
+        step={1}
         value={draft[key]}
         onChange={(e) => setDraft({ ...draft, [key]: Number(e.target.value) })}
         className={inputClass}
@@ -1475,7 +1512,10 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
       help="Daily spend cap across sessions; the default length of a session request; how long a running session may sit without jobs before its pod is terminated; and how often the watcher checks (at least every 15 seconds)."
     >
       <div className="grid gap-2 sm:grid-cols-2">
-        {field("Max USD per day", "maxUsdPerDay", { min: 0.01, max: 10000, step: 0.5 })}
+        <label className="block text-xs text-zinc-400">
+          Max USD per day
+          <input type="text" inputMode="decimal" value={maxUsdPerDayText} onChange={(e) => setMaxUsdPerDayText(e.target.value)} className={inputClass} placeholder="e.g. 10" />
+        </label>
         {field("Default session length (minutes)", "defaultMaxMinutes", { min: 1, max: 1440 })}
         {field("Idle timeout (minutes)", "idleMinutes", { min: 1, max: 1440 })}
         {field("Watch interval (seconds)", "watchIntervalSeconds", { min: 15, max: 3600 })}

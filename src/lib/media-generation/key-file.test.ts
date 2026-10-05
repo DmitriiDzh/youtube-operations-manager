@@ -70,3 +70,13 @@ test("the real file adapter writes media-generation.key under the app-data dir w
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("review 11: the key-file methods work detached (no `this`)", async () => {
+  let content: string | null = null;
+  const access: KeyFileAccess = { read: async () => content, write: async (c) => void (content = JSON.stringify(c)), randomBytes: (n) => Buffer.alloc(n, 7) };
+  const { readOrCreateKey, readKey } = createKeyFile(access);
+  assert.equal(await readKey(), null);
+  const created = await readOrCreateKey();
+  assert.equal(created.length, 32);
+  assert.deepEqual(await readKey(), created);
+});

@@ -11,6 +11,7 @@ import {
 } from "./contracts";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import type { VolumeLock } from "./volume-lock";
+import { round2 } from "@/lib/shared-async";
 import { parseWithSchema, rejectSessionInputSchema, requestSessionInputSchema, sessionIdInputSchema, stopSessionInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -122,10 +123,6 @@ export function podNameFor(sessionId: string): string {
 /** The cap's day is the operator's machine's local day (this app runs on that machine), not UTC. */
 function startOfLocalDay(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 export function liveSeconds(row: StoredSessionRow, now: Date): number | null {
@@ -266,8 +263,16 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const finished = await finish(stopping, ["stopping"], outcome, terminal);
       return finished ?? stopping;
     }
-    const client = await deps.base.resolveRunpodClient();
-    const result = await terminateAndConfirm(client, stopping.podId);
+    let result: TerminateOutcome;
+    try {
+      const client = await deps.base.resolveRunpodClient();
+      result = await terminateAndConfirm(client, stopping.podId);
+    } catch (cause) {
+      // The row stays `stopping` (the watcher retries); say why on the row, not only in the one HTTP response (review round 11).
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      await deps.store.transition(row.id, ["stopping"], { status: "stopping", error: `terminate failed: ${detail}; the watcher retries` });
+      throw cause;
+    }
     if (!result.confirmed) {
       log(`[media] pod ${stopping.podId} still ${result.lastStatus} after terminate; session ${row.id} stays stopping`);
       const kept = await deps.store.transition(row.id, ["stopping"], { status: "stopping", error: `pod still ${result.lastStatus} after terminate; retrying` });
@@ -481,6 +486,16 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const open = await deps.store.getOpen();
       if (open && open.id !== sessionId) {
         throw new DomainError({ code: "media_session_conflict", message: "Another session is already open on this device.", details: { openSessionId: open.id } });
+      }
+      // The request's estimate, cap check and record describe the GPU/datacenter saved when it was made; the pod is built
+      // from the CURRENT settings. If they diverged, the approval would bill something the record never describes
+      // (review round 11): refuse, the requester asks again against the new settings.
+      if (row.gpuTypeId !== settings.gpuTypeId || row.datacenterId !== settings.datacenterId || row.costPerHr !== settings.gpuOnDemandPricePerHr) {
+        throw new DomainError({
+          code: "media_settings_invalid",
+          message: `Settings → Media changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
+          details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
+        });
       }
       const client = await deps.base.resolveRunpodClient(); // credentials must resolve
       const token = deps.generateToken();

@@ -42,16 +42,18 @@ function invalid(detail: string): DomainError {
 }
 
 export function createKeyFile(access: KeyFileAccess) {
+  /** Reads the key; `null` if no file exists yet (reads never create one). */
+  async function readKey(): Promise<Buffer | null> {
+    const text = await access.read();
+    return text === null ? null : parseKeyFile(text);
+  }
+  // Plain closures, no `this`: the methods keep working when passed detached (review round 11).
   return {
-    /** Reads the key; `null` if no file exists yet (reads never create one). */
-    async readKey(): Promise<Buffer | null> {
-      const text = await access.read();
-      return text === null ? null : parseKeyFile(text);
-    },
+    readKey,
 
     /** Reads the key, creating it on first use -- for the operator's "save credentials" only. */
     async readOrCreateKey(): Promise<Buffer> {
-      const existing = await this.readKey();
+      const existing = await readKey();
       if (existing) return existing;
       const key = access.randomBytes(KEY_BYTES);
       await access.write({ version: 1, key: key.toString("base64") });

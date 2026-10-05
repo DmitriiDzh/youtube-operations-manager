@@ -339,6 +339,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     const names = parameters.map((p) => p.name);
     if (new Set(names).size !== names.length) problems.push("parameter names must be unique");
     if (outputNodeIds(graph).length === 0) problems.push("the workflow has no Save node (no input named filename_prefix), so it would produce nothing to pull");
+    // A Save node whose filename_prefix is a link (not a string) could not be rewritten to <jobId>/: its files would land
+    // outside the job's folder, never pulled and never cleaned (review round 11).
+    for (const [id, node] of Object.entries(graph)) {
+      if (node.inputs && "filename_prefix" in node.inputs && typeof node.inputs.filename_prefix !== "string") {
+        problems.push(`node ${id} (${node.class_type}): filename_prefix must be a literal string, not a link, so the job can prefix it with <jobId>/`);
+      }
+    }
     if (problems.length > 0) throw new DomainError({ code: "media_template_invalid", message: `Invalid workflow template: ${problems.join("; ")}`, details: { problems } });
   }
 
@@ -461,6 +468,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     const deadline = deps.clock.now().getTime() + maxGenerationMs;
     let outputs: MediaJobOutput[] = [];
     let emptyPolls = 0;
+    // Just submitted = ComfyUI knows the prompt; re-confirmed through /queue on every Nth empty poll (review round 8).
+    // While it is known, EVERY poll credits activity: with idleMinutes at its 1-minute minimum, a once-a-minute touch
+    // would race the watcher mid-generation (review round 11).
+    let promptKnown = true;
     for (;;) {
       const current = await deps.store.jobs.get(jobId);
       if (!current || (current.status !== "submitted" && current.status !== "generating")) return; // cancelled or swept meanwhile
@@ -486,22 +497,21 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         // would keep a dead job billing the GPU until the generation deadline (review round 8). Activity is credited
         // only when the prompt is confirmed queued/running; a transient /queue failure is left to the /history counter.
         if (emptyPolls++ % QUEUE_CHECK_EVERY_POLLS === 0) {
-          let known = true;
           try {
             const queue = await comfy.getQueue();
-            known = queue.runningPromptIds.includes(job.promptId) || queue.pendingPromptIds.includes(job.promptId);
+            promptKnown = queue.runningPromptIds.includes(job.promptId) || queue.pendingPromptIds.includes(job.promptId);
           } catch {
-            known = true;
+            promptKnown = true;
           }
-          if (!known) {
+          if (!promptKnown) {
             // It may have finished between the two reads: one more look at history before giving up.
             const finished = await comfy.getHistory(job.promptId).catch(() => null);
             if (finished) continue;
             await failJob(job, "ComfyUI no longer lists the prompt as queued or running and it is not in history (ComfyUI restarted or its queue was cleared)");
             return;
           }
-          await deps.sessions.touchActivity(job.sessionId);
         }
+        if (promptKnown) await deps.sessions.touchActivity(job.sessionId);
       } else {
         await deps.sessions.touchActivity(job.sessionId);
       }

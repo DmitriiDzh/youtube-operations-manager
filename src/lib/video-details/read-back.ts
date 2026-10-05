@@ -1,3 +1,4 @@
+import { sleep as sharedSleep } from "@/lib/shared-async";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "./contracts";
 
 /** YouTube applies some fields (observed live: `defaultAudioLanguage`, 2026-10-03) with a delay, so
@@ -30,7 +31,7 @@ export async function readBackUntilApplied(args: {
 }): Promise<VideoDetailsSnapshot> {
   const retries = args.retries ?? READ_BACK_RETRIES;
   const delayMs = args.delayMs ?? READ_BACK_RETRY_DELAY_MS;
-  const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep = args.sleep ?? sharedSleep;
   let snapshot = await args.read();
   for (let attempt = 0; attempt < retries && !patchReadBack(snapshot, args.patch); attempt++) {
     await sleep(delayMs);

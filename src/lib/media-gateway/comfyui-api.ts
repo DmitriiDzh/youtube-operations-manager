@@ -148,7 +148,13 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
     /** Readiness probe: 200 with device info once ComfyUI is up behind the proxy. */
     async getSystemStats(): Promise<Record<string, unknown>> {
       const { body } = await request("GET", "/system_stats");
-      return asRecord(body);
+      const stats = asRecord(body);
+      // A 200 is not "ComfyUI is up": RunPod's proxy or the pod's reverse proxy can answer a placeholder page while ComfyUI
+      // still boots (review round 11). The documented shape has `system` and `devices`.
+      if (!("system" in stats) || !("devices" in stats)) {
+        throw new DomainError({ code: "comfyui_unavailable", message: "GET /system_stats did not return ComfyUI's system stats (still booting, or another server answered).", details: { keys: Object.keys(stats).slice(0, 10) } });
+      }
+      return stats;
     },
 
     /**

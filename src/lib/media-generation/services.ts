@@ -268,6 +268,15 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
           if (!gpu) {
             throw new DomainError({ code: "media_settings_invalid", message: `GPU type "${next.gpuTypeId}" is not in RunPod's catalog.`, details: { field: "gpuTypeId" } });
           }
+          // The catalog lists where each GPU is offered: a GPU/datacenter pair RunPod does not offer is refused here, not
+          // at approve time by a failed createPod (review round 11). An empty list means the API did not say -- allowed.
+          if (next.datacenterId && gpu.dataCenters.length > 0 && !gpu.dataCenters.some((dc) => dc.id === next.datacenterId)) {
+            throw new DomainError({
+              code: "media_settings_invalid",
+              message: `GPU type "${next.gpuTypeId}" is not offered in datacenter ${next.datacenterId} (offered in: ${gpu.dataCenters.map((dc) => dc.id).join(", ")}).`,
+              details: { field: "gpuTypeId", datacenterId: next.datacenterId, offeredIn: gpu.dataCenters.map((dc) => dc.id) },
+            });
+          }
           // Captured here so a session estimate needs no RunPod call (AC-P14-03).
           next.gpuOnDemandPricePerHr = gpu.onDemandPricePerHr;
         }

@@ -914,3 +914,56 @@ test("review 9: when createPod fails AND RunPod cannot be asked whether the pod 
   assert.equal(f.runpod.pods.has("pod9"), false);
   assert.equal(f.lock.current(), null);
 });
+
+// -- review round 11 (2026-10-05) -----------------------------------------------------------------
+
+test("review 11: approve is refused when Settings → Media changed the GPU/datacenter/price since the request -- the estimate, the cap check and the record would describe a different pod than the one billed", async () => {
+  const settings = { ...READY_SETTINGS };
+  const runpod = fakeRunpod();
+  const mem = memorySessionStore();
+  let now = new Date("2026-10-05T10:00:00Z");
+  const services = createMediaSessionServices({
+    store: mem.store,
+    base: {
+      getSettings: async () => settings,
+      getOverview: async () => ({ ready: true, missing: [], gatewayEnabled: true }),
+      resolveRunpodClient: async () => runpod.client,
+      sealSecret: async (text) => encryptSecret(text, KEY),
+      openSecret: async (payload) => decryptSecret(payload, KEY),
+    },
+    createComfyClient: fakeComfy().factory,
+    comfyUiProxyBaseUrl: (podId, port) => `https://${podId}-${port}.example.test`,
+    generateId: () => "session-1",
+    generateToken: () => "tok",
+    clock: { now: () => now },
+    sleep: async (ms) => {
+      now = new Date(now.getTime() + ms);
+    },
+    timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
+    volumeLock: testLock().lock,
+  });
+  const requested = await services.requestSession(operatorRequest); // estimated at the 4090's $0.6/h
+  settings.gpuTypeId = "NVIDIA H100 80GB HBM3";
+  settings.gpuOnDemandPricePerHr = 4;
+  await assert.rejects(services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /changed since this request/.test(e.message));
+  assert.equal(mem.rows.get(requested.sessionId)!.status, "pending");
+  assert.ok(!runpod.calls.includes("createPod"));
+  // Requested again under the new settings: approved with the H100's price on the record.
+  await services.rejectSession({ sessionId: requested.sessionId, reason: "settings changed" });
+  const again = await services.requestSession(operatorRequest);
+  assert.equal(again.costPerHr, 4);
+  const running = await services.approveAndStartSession({ sessionId: again.sessionId });
+  assert.equal(running.status, "running");
+});
+
+test("review 11: a Stop whose terminate throws leaves the session `stopping` WITH the cause on the row (the watcher retries and the card can say why)", async () => {
+  const f = fixture();
+  const running = await startRunning(f);
+  (f.runpod.client as unknown as { terminatePod: () => Promise<unknown> }).terminatePod = async () => {
+    throw new Error("RunPod API returned HTTP 502");
+  };
+  await assert.rejects(f.services.stopSession({ sessionId: running.sessionId }), (e: unknown) => e instanceof Error && /HTTP 502/.test(e.message));
+  const row = f.mem.rows.get(running.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.match(row.error ?? "", /terminate failed: RunPod API returned HTTP 502; the watcher retries/);
+});

@@ -4,6 +4,7 @@ import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
+import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
@@ -44,7 +45,8 @@ const DETACHED_KEY = Symbol.for("youtube-operations-manager.media-generation-cor
 
 function buildCore(jobScheduling: JobScheduling) {
   const now = () => new Date();
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  // The detached CLI must be able to exit while a confirm poll's timer is pending.
+  const sleep = (ms: number) => sharedSleep(ms, { unref: jobScheduling === "detached" });
   // The one "volume busy" lock (review round 9, `volume-lock.ts`): sessions and pulls both take it; its staleness
   // check asks the holder's own module whether that holder is still active (late-bound: both are built below).
   let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;

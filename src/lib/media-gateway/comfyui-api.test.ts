@@ -141,3 +141,12 @@ test("review 3: an execution error keeps the node and exception message the agen
   assert.equal(entry?.status, "error");
   assert.deepEqual(entry?.statusMessages, ["execution_start", "execution_error: Model not found: big.safetensors @ node CheckpointLoaderSimple #4"]);
 });
+
+test("review 11: getSystemStats requires ComfyUI's documented shape -- a placeholder 200 (HTML, or JSON without system/devices) is comfyui_unavailable, never 'up'", async () => {
+  const html = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 200, body: "<html>starting</html>" })).fetchImpl, authorize: noAuth });
+  await assert.rejects(html.getSystemStats(), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
+  const partial = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 200, body: { ok: true } })).fetchImpl, authorize: noAuth });
+  await assert.rejects(partial.getSystemStats(), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
+  const up = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 200, body: { system: { os: "posix" }, devices: [{ name: "cuda:0" }] } })).fetchImpl, authorize: noAuth });
+  assert.deepEqual(Object.keys(await up.getSystemStats()).sort(), ["devices", "system"]);
+});

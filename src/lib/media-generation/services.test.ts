@@ -431,3 +431,15 @@ test("review 10: changing the datacenter re-validates and re-prices the kept GPU
   assert.equal(moved.datacenterId, "US-TX-3");
   assert.equal(moved.gpuOnDemandPricePerHr, 0.59);
 });
+
+test("review 11: a GPU the catalog does not offer in the chosen datacenter is refused at settings time (AC-P14-19), not by a failed createPod at approve", async () => {
+  const runpod = fakeRunpod();
+  (runpod.client as unknown as { listGpuTypes: () => Promise<unknown[]> }).listGpuTypes = async () => [
+    { id: "NVIDIA GeForce RTX 4090", displayName: "RTX 4090", memoryInGb: 24, secureCloud: true, communityCloud: true, onDemandPricePerHr: 0.69, spotPricePerHr: null, estimatedAvailability: "HIGH", dataCenters: [{ id: "US-TX-3", countryCode: "US", estimatedAvailability: "HIGH" }] },
+  ];
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await assert.rejects(services.updateSettings({ datacenterId: "EU-RO-1", gpuTypeId: "NVIDIA GeForce RTX 4090" }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /not offered in datacenter EU-RO-1/.test(e.message));
+  const ok = await services.updateSettings({ datacenterId: "US-TX-3", gpuTypeId: "NVIDIA GeForce RTX 4090" });
+  assert.equal(ok.gpuOnDemandPricePerHr, 0.69);
+});
