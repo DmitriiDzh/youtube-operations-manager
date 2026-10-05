@@ -349,3 +349,12 @@ Acceptance criteria will be written per slice at assignment time from this docum
 
 Once D1–D4 and D8 are answered, the next step is a `PHASE_14_PLAN.md` with per-slice acceptance criteria,
 a `FUTURE_PHASES.md` §16 entry, and a `BACKLOG.md` row — then slice 0 on its own feature branch.
+
+## 9. Decisions recorded (2026-10-05, Telegram msgs 1474–1478)
+
+D1 **S3-only transport** (the Syncthing recommendation in §0/§3 is superseded: once the owner accepted S3,
+Syncthing's only remaining benefit — push — is unnecessary, because `/history` names the exact files to pull).
+D2 **pods**, with a watcher script/scheduler that terminates idle pods at an operator-set interval. D3 per-session
+approval with caps. D4 outputs go to the existing `99 Data Exchange/From YTM/` buffer (ADR 0019). D5 full
+Settings UI incl. a Models panel. D6 token proxy. D7 operator-imported templates. D8 "Phase 14". Resulting plan:
+`PHASE_14_PLAN.md`.
