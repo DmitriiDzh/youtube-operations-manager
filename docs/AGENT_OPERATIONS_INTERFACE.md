@@ -1106,5 +1106,7 @@ estimate = saved GPU price × minutes / 60, no RunPod call); a human approves/st
 `session-approval-inventory.test.ts` from `src/mcp`, `src/cli`, `src/lib/agent-operations`); while it is `running` the agent submits jobs
 against operator-imported workflow templates (parameters validated before any ComfyUI call); outputs are pulled to
 `<channel workspace>/99 Data Exchange/From YTM/media/<jobId>/`, registered in the asset catalog with provenance, and deleted from the
-server volume. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
+server volume. A final job's folder ends with `manifest.json` (FO-REQ-0002: job, template, params, device, every delivered file with
+`bytes`/`sha256`, missing outputs); `done` is only reached once it is on disk. On another device (folder synced by a file-sync tool) the
+folder is complete when the manifest exists AND every listed file is present with its `bytes`. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
 idle / minutes / USD; every job submit or poll counts as activity. Contract: `docs/interfaces.md`.
