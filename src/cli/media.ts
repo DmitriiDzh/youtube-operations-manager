@@ -228,9 +228,17 @@ export async function runMediaCli(args: {
         data = await core.createJob({ ...(body && typeof body === "object" ? (body as Record<string, unknown>) : {}), createdBy: "operator" });
         break;
       }
-      case "janitor":
-        data = await core.cleanupExchange({ dryRun: parsed.flags.delete !== true });
+      case "janitor": {
+        // `--delete` is a bare switch. The generic parser would swallow a following token as its value
+        // (`janitor --delete exchange/` -> delete="exchange/"), which must not silently become a dry run
+        // nor a real delete the operator did not spell out: refuse anything but the bare switch.
+        const del = parsed.flags.delete;
+        if (parsed.positional.length > 0 || (del !== undefined && del !== true)) {
+          throw new DomainError({ code: "validation_failed", message: "janitor takes no arguments besides the bare --delete switch (it always covers all of exchange/)" });
+        }
+        data = await core.cleanupExchange({ dryRun: del !== true });
         break;
+      }
       case "models":
         // Read-only: the web server's watch loop advances the pulls (terminates finished pods), never a listing.
         data = { pulls: await core.listPulls(), models: await core.listModels() };

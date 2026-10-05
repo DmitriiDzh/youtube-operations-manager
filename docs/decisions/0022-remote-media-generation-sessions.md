@@ -64,5 +64,5 @@ How a session is authorised and paid for, how files travel, how the pod is secur
 ## Compatibility / migration impact
 
 Purely additive: schema v50 (`media_credentials`), v51 (`media_sessions`), v52 (`media_workflow_templates`,
-`media_jobs`, `media_exchange_files`), v53 (`media_sessions.stopping_outcome`, nullable), all device-local; three new `app_settings` keys; Agent API MINOR bump
+`media_jobs`, `media_exchange_files`), v53 (`media_sessions.stopping_outcome`, nullable), v54 (`media_sessions.last_seen_alive_at`, nullable), all device-local; three new `app_settings` keys; Agent API MINOR bump
 3.2.0 → 3.3.0 (new tools only). No existing route, tool, table or contract changed.

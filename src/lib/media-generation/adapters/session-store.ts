@@ -4,6 +4,7 @@ import {
   insertMediaSession,
   listMediaSessions,
   listMediaSessionsBillableSince,
+  markMediaSessionSeenAlive,
   touchMediaSessionActivity,
   transitionMediaSession,
   type StoredMediaSession,
@@ -41,6 +42,7 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     stopReason: row.stopReason ?? null,
     error: row.error ?? null,
     stoppingOutcome: row.stoppingOutcome ?? null,
+    lastSeenAliveAt: row.lastSeenAliveAt ?? null,
   };
 }
 
@@ -69,5 +71,6 @@ export function createMediaSessionStore(): MediaSessionStore {
       return row ? fromDb(row) : null;
     },
     touchActivity: (id, at) => touchMediaSessionActivity(id, at),
+    markSeenAlive: (id, at) => markMediaSessionSeenAlive(id, at),
   };
 }

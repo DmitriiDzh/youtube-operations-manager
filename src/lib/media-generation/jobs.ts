@@ -257,6 +257,36 @@ function assetTypeFor(kind: string): "generated_image" | "audio_track" | "video_
   return "other";
 }
 
+/**
+ * The text an agent can act on when ComfyUI refuses a prompt (AC-P14-11): the gateway's HTTP message
+ * plus ComfyUI's own `error.message`/`details` and every node's `errors[].message` from the 400 body
+ * (`{ error, node_errors: { <nodeId>: { class_type, errors: [{ message, details }] } } }`), bounded.
+ */
+export function describeComfyRejection(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof DomainError)) return message;
+  const details = (error.details ?? {}) as Record<string, unknown>;
+  const body = (details.body ?? details) as Record<string, unknown>;
+  const parts: string[] = [];
+  const top = body.error;
+  if (top && typeof top === "object") {
+    const t = top as Record<string, unknown>;
+    const text = [t.message, t.details].filter((v): v is string => typeof v === "string" && v.length > 0).join(": ");
+    if (text) parts.push(text);
+  } else if (typeof top === "string") parts.push(top);
+  const nodeErrors = (body.node_errors ?? body.nodeErrors) as Record<string, unknown> | undefined;
+  if (nodeErrors && typeof nodeErrors === "object") {
+    for (const [nodeId, value] of Object.entries(nodeErrors)) {
+      const node = (value ?? {}) as Record<string, unknown>;
+      const errors = Array.isArray(node.errors) ? (node.errors as Array<Record<string, unknown>>) : [];
+      const texts = errors.map((e) => [e.message, e.details].filter((v): v is string => typeof v === "string" && v.length > 0).join(": ")).filter(Boolean);
+      parts.push(`node ${nodeId}${typeof node.class_type === "string" ? ` (${node.class_type})` : ""}: ${texts.join("; ") || "invalid"}`);
+    }
+  }
+  const full = parts.length > 0 ? `${message} -- ${parts.join(" | ")}` : message;
+  return full.length > 2000 ? `${full.slice(0, 1997)}...` : full;
+}
+
 function safeFileName(name: string): string | null {
   if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") return null;
   return name;
@@ -422,7 +452,14 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           return;
         }
         if (history.status === "completed") {
-          outputs = history.outputs.map((o) => ({
+          // Only saved files (`type: "output"`) are results; a PreviewImage's `temp` files live in ComfyUI's temp dir,
+          // not under exchange/<jobId>/, so they are neither pullable nor a reason to call the job partial.
+          const saved = history.outputs.filter((o) => o.type === "output");
+          if (saved.length === 0) {
+            await failJob(job, `the prompt completed without any saved output (${history.outputs.length} preview/temp file(s) only; the workflow needs a Save node)`);
+            return;
+          }
+          outputs = saved.map((o) => ({
             nodeId: o.nodeId,
             kind: o.kind,
             filename: o.filename,
@@ -513,8 +550,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
     const pulled = results.filter((r) => r.localPath);
     const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
-    if (pulled.length === 0 && results.length > 0) {
-      await failJob(job, `no output could be pulled (${notes.join("; ")})`, results);
+    if (pulled.length === 0) {
+      await failJob(job, results.length === 0 ? "nothing was produced" : `no output could be pulled (${notes.join("; ")})`, results);
       return;
     }
     await deps.store.jobs.transition(jobId, ["transferring"], {
@@ -590,6 +627,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const template = await requireTemplate(parsed.templateId);
       const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
       const values = resolveParams(parameters, parsed.params);
+      // The outputs can only land in the channel's workspace folder: without one, nothing is submitted (and no
+      // GPU minute spent) -- `media_workspace_unavailable` at submit time, as the agent contract promises.
+      await deps.resolveOutputRoot(parsed.channelId);
       const jobId = deps.generateId();
       const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, values, jobId);
       const now = deps.clock.now();
@@ -621,8 +661,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       try {
         submitted = await comfy.submitPrompt({ prompt, clientId: `ytm-${jobId}` });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await failJob(row, `ComfyUI rejected the prompt: ${message}`);
+        await failJob(row, `ComfyUI rejected the prompt: ${describeComfyRejection(error)}`);
         throw error;
       }
       await deps.sessions.touchActivity(parsed.sessionId);

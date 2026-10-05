@@ -58,6 +58,10 @@ function memorySessionStore() {
       const row = rows.get(id);
       if (row && row.status === "running") rows.set(id, { ...row, lastActivityAt: at });
     },
+    async markSeenAlive(id, at) {
+      const row = rows.get(id);
+      if (row && !TERMINAL.has(row.status)) rows.set(id, { ...row, lastSeenAliveAt: at });
+    },
   };
   return { store, rows };
 }
@@ -778,4 +782,54 @@ test("review 6: listSessions filters by channel in the store query, so a channel
   assert.ok(!page.some((s) => s.channelId === "UC_A"), "a capped page without the filter would hide it");
   const filtered = await f.services.listSessions(20, "UC_A");
   assert.deepEqual(filtered.map((s) => s.sessionId), [mine.sessionId]);
+});
+
+// -- review round 7 (2026-10-05) ------------------------------------------------------------------
+
+test("review 7: a pod found ALREADY gone at the boot sweep is billed until the app last saw it alive, not until the reboot (AC-P14-08/17); a pod still alive is billed to its confirmed termination", async () => {
+  const f = fixture();
+  const running = await startRunning(f); // startedAt = T0; the start loop's one 5 s poll puts readiness at T0+5s
+  const started = f.mem.rows.get(running.sessionId)!.startedAt!.getTime();
+  assert.equal(f.getNow().getTime(), started + 5_000);
+  f.advance(5 * 60_000);
+  assert.equal((await f.services.watchTick()).action, "none"); // the watcher sees the pod alive at T0+5s+5min
+  assert.equal(f.mem.rows.get(running.sessionId)!.lastSeenAliveAt?.getTime(), started + 305_000);
+  // The process dies; the operator kills the pod by hand a minute later; the server comes back 6 hours on.
+  f.runpod.pods.delete("pod1");
+  f.advance(6 * 60 * 60_000);
+  await f.services.bootSweep();
+  const row = f.mem.rows.get(running.sessionId)!;
+  assert.equal(row.status, "interrupted");
+  assert.equal(row.secondsUsed, 305, "305 s seen alive, not 6 h");
+  assert.equal(row.usdCharged, 0.06); // 305 × 0.69 / 3600 = 0.0585
+  assert.match(row.error ?? "", /already gone; billed until it was last seen alive/);
+  assert.ok((await f.services.getLimits()).remainingTodayUsd > 9, "the daily cap is not eaten by phantom hours");
+
+  // Contrast: the pod is still running at the sweep -> billed to the confirmed termination (now).
+  const g = fixture();
+  const alive = await startRunning(g);
+  g.advance(6 * 60 * 60_000);
+  await g.services.bootSweep();
+  assert.equal(g.mem.rows.get(alive.sessionId)!.secondsUsed, 6 * 3600 + 5); // the 5 s start poll + 6 h
+});
+
+test("review 7: the watcher's 'pod disappeared' closes the window at the previous sighting, and an operator Stop of a vanished pod does the same", async () => {
+  const f = fixture();
+  const running = await startRunning(f);
+  f.advance(60_000);
+  await f.services.watchTick(); // seen alive at startedAt + 5 s (start poll) + 60 s
+  f.runpod.pods.delete("pod1");
+  f.advance(30 * 60_000);
+  assert.equal((await f.services.watchTick()).action, "interrupted");
+  assert.equal(f.mem.rows.get(running.sessionId)!.secondsUsed, 65);
+
+  const g = fixture();
+  const stopped = await startRunning(g);
+  g.advance(120_000);
+  await g.services.watchTick();
+  g.runpod.pods.delete("pod1");
+  g.advance(10 * 60_000);
+  const s = await g.services.stopSession({ sessionId: stopped.sessionId, reason: "stopped by operator" });
+  assert.equal(s.status, "done");
+  assert.equal(s.secondsUsed, 125); // 5 s start poll + 120 s
 });

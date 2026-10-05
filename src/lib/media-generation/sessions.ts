@@ -51,6 +51,8 @@ export type StoredSessionRow = {
   error: string | null;
   /** The terminal status a `stopping` row is heading for (schema v53), so a retried stop reports it truthfully. */
   stoppingOutcome: StoppingOutcome | null;
+  /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
+  lastSeenAliveAt: Date | null;
 };
 
 export type StoppingOutcome = "done" | "failed" | "interrupted";
@@ -69,6 +71,8 @@ export type MediaSessionStore = {
   /** Atomic `from -> set.status`; `null` = not in `from`. */
   transition(id: string, from: readonly MediaSessionStatus[], set: SessionPatch): Promise<StoredSessionRow | null>;
   touchActivity(id: string, at: Date): Promise<void>;
+  /** The pod was seen alive at `at` (readiness, every watcher tick); a terminal row ignores it. */
+  markSeenAlive(id: string, at: Date): Promise<void>;
 };
 
 export type SessionServiceDependencies = {
@@ -187,17 +191,36 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     return { secondsUsed, usdCharged };
   }
 
-  async function terminateAndConfirm(client: RunpodApiClient, podId: string): Promise<{ confirmed: boolean; lastStatus: string | null }> {
-    await client.terminatePod(podId);
+  /** `alreadyGone`: RunPod had no such pod before our terminate -- it stopped billing at some unknown earlier time. */
+  async function terminateAndConfirm(client: RunpodApiClient, podId: string): Promise<{ confirmed: boolean; lastStatus: string | null; alreadyGone: boolean }> {
+    const terminated = await client.terminatePod(podId);
+    const alreadyGone = terminated.alreadyGone;
     const deadline = deps.clock.now().getTime() + stopTimeoutMs;
     let lastStatus: string | null = null;
     for (;;) {
       const pod = await client.getPod(podId);
-      if (!pod || pod.status === "TERMINATED") return { confirmed: true, lastStatus: pod?.status ?? null };
+      if (!pod || pod.status === "TERMINATED") return { confirmed: true, lastStatus: pod?.status ?? null, alreadyGone };
       lastStatus = pod.status;
-      if (deps.clock.now().getTime() >= deadline) return { confirmed: false, lastStatus };
+      if (deps.clock.now().getTime() >= deadline) return { confirmed: false, lastStatus, alreadyGone };
       await deps.sleep(pollMs);
     }
+  }
+
+  /**
+   * Where the billable window of a pod found ALREADY gone closes (AC-P14-08: the pod's own timestamps when
+   * available -- and a pod RunPod no longer lists has none): the last moment this app saw it alive, never
+   * `now()`, so a pod terminated by hand hours before a reboot is not billed up to the reboot. Bounded by
+   * `startedAt` below and `now` above.
+   */
+  function lastKnownAlive(row: StoredSessionRow, now: Date): Date {
+    const candidates = [row.lastSeenAliveAt, row.lastActivityAt, row.readyAt, row.startedAt].filter((d): d is Date => d !== null);
+    if (candidates.length === 0) return now;
+    const latest = new Date(Math.max(...candidates.map((d) => d.getTime())));
+    return latest.getTime() > now.getTime() ? now : latest;
+  }
+
+  function goneNote(row: StoredSessionRow, at: Date): string {
+    return `pod was already gone; billed until it was last seen alive at ${at.toISOString()} (the RunPod invoice is authoritative)`;
   }
 
   /**
@@ -208,11 +231,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     row: StoredSessionRow,
     from: readonly MediaSessionStatus[],
     status: Extract<MediaSessionStatus, "done" | "failed" | "interrupted">,
-    extra: { stopReason?: string | null; error?: string | null },
+    extra: { stopReason?: string | null; error?: string | null; stoppedAt?: Date },
     /** Pod facts to record alongside (a pod that existed but was never written to the row, AC-P14-17). */
     podFacts: { podId?: string; startedAt?: Date; costPerHr?: number | null } = {}
   ): Promise<StoredSessionRow | null> {
-    const stoppedAt = deps.clock.now();
+    const stoppedAt = extra.stoppedAt ?? deps.clock.now();
     const effective: StoredSessionRow = { ...row, ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}), ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}) };
     const cost = finalCost(effective, stoppedAt);
     return deps.store.transition(row.id, from, {
@@ -247,6 +270,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       log(`[media] pod ${stopping.podId} still ${result.lastStatus} after terminate; session ${row.id} stays stopping`);
       const kept = await deps.store.transition(row.id, ["stopping"], { status: "stopping", error: `pod still ${result.lastStatus} after terminate; retrying` });
       return kept ?? stopping;
+    }
+    if (result.alreadyGone) {
+      const gone = lastKnownAlive(stopping, deps.clock.now());
+      const finished = await finish(stopping, ["stopping"], outcome, { ...terminal, error: goneNote(stopping, gone), stoppedAt: gone });
+      return finished ?? stopping;
     }
     const finished = await finish(stopping, ["stopping"], outcome, terminal);
     return finished ?? stopping;
@@ -290,12 +318,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       }
       if (orphanFacts) await deps.store.transition(open.id, ["approved"], { status: "approved", ...orphanFacts });
     }
+    let alreadyGone = false;
     if (podId) {
       let unconfirmed: string | null = null;
       try {
         const client = await deps.base.resolveRunpodClient();
         const result = await terminateAndConfirm(client, podId);
         if (!result.confirmed) unconfirmed = `pod still ${result.lastStatus} after terminate`;
+        alreadyGone = result.alreadyGone;
       } catch (cause) {
         unconfirmed = `pod ${podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
       }
@@ -311,7 +341,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return "retrying";
       }
     }
-    await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: reason }, orphanFacts ?? {});
+    const now = deps.clock.now();
+    const effective = { ...open, ...(orphanFacts ?? {}) };
+    const gone = alreadyGone ? lastKnownAlive(effective, now) : now;
+    await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: alreadyGone ? `${reason}; ${goneNote(effective, gone)}` : reason, stoppedAt: gone }, orphanFacts ?? {});
     return "reconciled";
   }
 
@@ -395,6 +428,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         stopReason: null,
         error: null,
         stoppingOutcome: null,
+        lastSeenAliveAt: null,
       });
       if (!row) {
         const open = await deps.store.getOpen();
@@ -578,7 +612,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             try {
               await comfy.getSystemStats();
               const ready = deps.clock.now();
-              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, error: null });
+              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null });
               if (!running) {
                 lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
                 break;
@@ -652,7 +686,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const client = await deps.base.resolveRunpodClient();
       const pod = open.podId ? await client.getPod(open.podId) : null;
       if (!pod || pod.status === "TERMINATED") {
-        await finish(open, ["running"], "interrupted", { error: "pod disappeared" });
+        const gone = lastKnownAlive(open, now);
+        await finish(open, ["running"], "interrupted", { error: `pod disappeared; ${goneNote(open, gone)}`, stoppedAt: gone });
         return { action: "interrupted", sessionId: open.id, reason: "pod disappeared" };
       }
       if (pod.status === "EXITED" || pod.status === "ERROR") {
@@ -660,6 +695,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         const stopped = await stopRow(open, `pod was ${pod.status}; terminated`, "interrupted");
         return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: `pod ${pod.status}` };
       }
+      await deps.store.markSeenAlive(open.id, now);
 
       const minutes = open.startedAt ? (now.getTime() - open.startedAt.getTime()) / 60_000 : 0;
       const idleMinutes = (now.getTime() - (open.lastActivityAt ?? open.readyAt ?? open.startedAt ?? now).getTime()) / 60_000;

@@ -2445,7 +2445,23 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   may have created (`findAssetByLocalPath`). A ComfyUI history entry without a `status` block but with
   outputs is `completed`; `agent_get_media_session`'s list filters by channel in the query. Dead surface
   removed: `uploadImage`/`viewUrl` on the ComfyUI client, `listMediaExchangeFilesByJob`.
-- **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53, owner decisions D2/D3).** A session is one
+- **Bounded billing and submit-time checks (review round 7).** `media_sessions.last_seen_alive_at` (schema v54)
+  is written at readiness and on every watcher tick that finds the pod alive; when a reconciliation (boot
+  sweep, watcher, operator Stop) finds the pod ALREADY gone, the billable window closes at that last
+  sighting, not at `now()` (the row's `error` says so and defers to the RunPod invoice) -- a pod killed by
+  hand hours before a reboot no longer eats the daily cap. A pod still alive is billed to its confirmed
+  termination as before. `createJob` resolves the channel's workspace folder BEFORE any ComfyUI call
+  (`media_workspace_unavailable` at submit, as the agent contract promises; no GPU minute spent on a job
+  that could never land); a 400 from `/prompt` is stored with ComfyUI's own `error`/`node_errors` text
+  (`describeComfyRejection`, bounded to 2000 chars); history outputs are filtered to `type: "output"` (a
+  PreviewImage's `temp` files are neither pullable nor a reason to mark the job partial) and a prompt that
+  saved nothing fails. `startPull` refuses a key that already exists on the volume (the poll would call it
+  done on the first tick); the boot sweep is no longer awaited in `register()` (the watch loop waits for
+  it instead, so a slow RunPod cannot hold HTTP startup for minutes); S3 object paths use the SigV4
+  encoder for the wire URL too; `findAssetByLocalPath` is one indexed lookup
+  (`getCreativeAssetByReference` → `assetCatalog.findAssetByReference`), not a channel-wide scan; the
+  CLI `janitor` accepts only the bare `--delete` switch.
+- **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod
   calls, AC-P14-03) and `fitsToday` against the daily cap; a request that does not fit is still created

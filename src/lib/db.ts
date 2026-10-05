@@ -797,6 +797,12 @@ export const mediaSessions = sqliteTable(
      * retried stop reports what really happened instead of defaulting to `done`.
      */
     stoppingOutcome: text("stopping_outcome", { enum: ["done", "failed", "interrupted"] }),
+    /**
+     * Schema v54 (review round 7): the last moment THIS app saw the pod alive (readiness, every watcher
+     * tick). When the pod is already gone at a reconciliation, the billable window is closed here, not at
+     * `now()` -- a pod terminated by hand hours before a reboot must not be billed up to the reboot.
+     */
+    lastSeenAliveAt: integer("last_seen_alive_at", { mode: "timestamp" }),
   },
   (table) => [uniqueIndex("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -3050,6 +3056,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     apply: async (client) => {
       try {
         await client.execute("ALTER TABLE media_sessions ADD COLUMN stopping_outcome TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 54,
+    description:
+      "media_sessions.last_seen_alive_at -- when the app last saw the session's pod alive, so a pod already gone at a reconciliation is billed up to then, not up to the reboot (Phase 14 review round 7); additive nullable column, existing rows untouched",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN last_seen_alive_at INTEGER");
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
@@ -6951,6 +6969,26 @@ export async function getCreativeAssetById(
   return row ?? null;
 }
 
+/**
+ * One asset by its reference within a channel (Phase 14 review round 7: the media job pipeline asks
+ * "is this local file already cataloged?" per pulled output -- one query, never a full channel listing
+ * scanned in JS). Newest first when several rows share a reference.
+ */
+export async function getCreativeAssetByReference(
+  channelId: string,
+  referenceKind: string,
+  referenceValue: string,
+  database: AppDb = db
+): Promise<StoredCreativeAsset | null> {
+  const [row] = await database
+    .select()
+    .from(creativeAssets)
+    .where(and(eq(creativeAssets.channelId, channelId), eq(creativeAssets.referenceKind, referenceKind), eq(creativeAssets.referenceValue, referenceValue)))
+    .orderBy(desc(creativeAssets.createdAt))
+    .limit(1);
+  return row ?? null;
+}
+
 export type StoredContentProposal = {
   id: string;
   channelId: string;
@@ -7303,6 +7341,14 @@ export async function transitionMediaSession(
 
 export async function touchMediaSessionActivity(id: string, at: Date, database: AppDb = db): Promise<void> {
   await database.update(mediaSessions).set({ lastActivityAt: at }).where(and(eq(mediaSessions.id, id), eq(mediaSessions.status, "running")));
+}
+
+/** The watcher saw the pod alive (schema v54); only a non-terminal row takes it. */
+export async function markMediaSessionSeenAlive(id: string, at: Date, database: AppDb = db): Promise<void> {
+  await database
+    .update(mediaSessions)
+    .set({ lastSeenAliveAt: at })
+    .where(and(eq(mediaSessions.id, id), notInArray(mediaSessions.status, [...MEDIA_SESSION_TERMINAL_STATUSES])));
 }
 
 // -- media_workflow_templates / media_jobs / media_exchange_files (Phase 14 slice 3); read/written only by

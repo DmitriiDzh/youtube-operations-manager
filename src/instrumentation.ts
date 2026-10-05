@@ -178,9 +178,14 @@ async function startServerSession() {
   // no credentials configured every step answers "nothing to do" and makes no outbound call.
   const { createMediaGenerationCore } = await import("@/lib/media-generation");
   const media = createMediaGenerationCore();
-  await media.bootSweep().catch(() => undefined);
-  // Jobs left mid-flight by a dead process fail as interrupted (their pod was just swept too).
-  await media.sweepInterruptedJobs().catch(() => undefined);
+  // NOT awaited (review round 7): a sweep that must terminate and confirm a pod can take minutes when RunPod
+  // is slow, and nothing served over HTTP depends on it -- only the watch loop does, which waits for it below.
+  // Jobs left mid-flight by a dead process fail as interrupted right after (their pod was just swept too).
+  const mediaBootSweep = media
+    .bootSweep()
+    .catch(() => undefined)
+    .then(() => media.sweepInterruptedJobs())
+    .catch(() => undefined);
   // The exchange janitor (AC-P14-14): terminal leftovers under exchange/ on the volume, by ledger only. Daily, real deletes.
   const MEDIA_JANITOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
   const janitorQuietly = () => void media.cleanupExchange({ dryRun: false }).catch(() => undefined);
@@ -188,6 +193,7 @@ async function startServerSession() {
   setInterval(janitorQuietly, MEDIA_JANITOR_INTERVAL_MS).unref();
   const MEDIA_WATCH_MIN_MS = 15_000;
   const mediaWatchLoop = async () => {
+    await mediaBootSweep; // never rejects; already settled on every tick but the first
     try {
       // First: jobs nobody is polling (the operator CLI's detached core, a stuck transfer) -- their first poll
       // counts as session activity, so this runs BEFORE the idle check below.

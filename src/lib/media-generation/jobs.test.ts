@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type { ComfyHistoryEntry, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
 import { isDomainError, type MediaTemplateParameter } from "./contracts";
-import { buildPrompt, createMediaJobServices, outputNodeIds, resolveParams, type ExchangeLedgerRow, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
+import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeLedgerRow, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
 
 // Expected behaviour from docs/roadmap/plans/PHASE_14_PLAN.md §2.4 and §4 (AC-P14-10..15), written
 // before this module. Hashes are computed with node:crypto over fixed byte strings, independently of
@@ -160,6 +160,9 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   const registered: Array<Record<string, unknown>> = [];
   const removed: string[] = [];
   const activity: string[] = [];
+  // Mutable: review round 7 made createJob check the workspace at submit, so a transfer-time failure is simulated
+  // by flipping this AFTER the submit (the drive unmounting between generation and transfer).
+  let workspaceFails = opts.workspaceFails ?? false;
   let now = new Date("2026-10-05T12:00:00Z");
   let ids = 0;
   const scheduled: Array<() => Promise<void>> = [];
@@ -174,7 +177,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     },
     s3: async () => s3.client,
     resolveOutputRoot: async () => {
-      if (opts.workspaceFails) {
+      if (workspaceFails) {
         const { DomainError } = await import("./contracts");
         throw new DomainError({ code: "media_workspace_unavailable", message: "no workspace" });
       }
@@ -220,7 +223,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, setWorkspaceFails: (v: boolean) => void (workspaceFails = v) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -359,15 +362,23 @@ test("AC-P14-15: no asset is registered for a job that did not reach done (execu
   assert.equal(outside.registered.length, 0);
   assert.ok(!outside.s3.calls.some((c) => c.startsWith("delete:")), "nothing outside the job folder is ever deleted");
 
+  // A workspace that is gone BEFORE submit: refused at submit (review round 7, the agent contract's
+  // `media_workspace_unavailable`), so no job, no asset, nothing pulled. One that goes away AFTER the
+  // generation completed is transient: the job stays `transferring` for a retry, never `done` (review round 4).
   const noWorkspace = fixture({ workspaceFails: true });
   const t3 = await importDefault(noWorkspace.services);
-  const j3 = await noWorkspace.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t3.templateId, params: { prompt: "x" }, createdBy: "agent" });
-  await noWorkspace.runScheduled();
-  const r3 = await noWorkspace.services.getJob({ jobId: j3.jobId });
-  // Review round 4: a missing workspace is transient (the drive may come back) -- the job stays `transferring` for a retry, never `done`.
-  assert.equal(r3.status, "transferring");
-  assert.match(r3.error ?? "", /cannot receive outputs/);
-  assert.ok(!noWorkspace.s3.calls.some((c) => c.startsWith("get:") || c.startsWith("delete:")), "nothing is pulled or deleted without a workspace");
+  await assert.rejects(noWorkspace.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t3.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_workspace_unavailable");
+  assert.equal(noWorkspace.registered.length, 0);
+  const lostWorkspace = fixture();
+  const t4 = await importDefault(lostWorkspace.services);
+  const j4 = await lostWorkspace.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t4.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  lostWorkspace.setWorkspaceFails(true);
+  await lostWorkspace.runScheduled();
+  const r4 = await lostWorkspace.services.getJob({ jobId: j4.jobId });
+  assert.equal(r4.status, "transferring");
+  assert.match(r4.error ?? "", /cannot receive outputs/);
+  assert.equal(lostWorkspace.registered.length, 0);
+  assert.ok(!lostWorkspace.s3.calls.some((c) => c.startsWith("get:") || c.startsWith("delete:")), "nothing is pulled or deleted without a workspace");
 });
 
 test("AC-P14-11: a ComfyUI validation failure marks the job failed with the message and rethrows; the session stays untouched", async () => {
@@ -614,9 +625,10 @@ test("review 2: the janitor keeps a failed job's completed-but-unpulled outputs 
     ["exchange/job-9/partial.png", new Uint8Array([1])],
   ]);
   const s3 = fakeS3(objects);
-  const f = fixture({ s3, workspaceFails: true }); // the transfer fails after ComfyUI completed
+  const f = fixture({ s3 });
   const t = await importDefault(f.services);
   const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  f.setWorkspaceFails(true); // the transfer fails after ComfyUI completed
   await f.runScheduled();
   assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "transferring"); // review round 4: retried, not failed
   // The retry window expired: the job ends failed with its completed outputs still recorded (and still only on the volume).
@@ -700,9 +712,10 @@ test("review 4: a submitted job whose session is gone is failed by the resume pa
 });
 
 test("review 4: a transient 'cannot receive outputs' keeps the job transferring for a retry instead of failing it", async () => {
-  const f = fixture({ workspaceFails: true });
+  const f = fixture();
   const t = await importDefault(f.services);
   const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  f.setWorkspaceFails(true); // the drive unmounts between generation and transfer
   await f.runScheduled();
   const r = await f.services.getJob({ jobId: job.jobId });
   assert.equal(r.status, "transferring");
@@ -815,4 +828,77 @@ test("review 6: a transfer resumed from the ledger still registers the asset (on
   const done2 = await again.services.getJob({ jobId: job2.jobId });
   assert.deepEqual(done2.assetIds, ["asset-1"]);
   assert.equal(again.registered.length, 1, "no duplicate catalog entry");
+});
+
+// -- review round 7 (2026-10-05) ------------------------------------------------------------------
+
+test("review 7: createJob refuses a channel without a workspace folder BEFORE any ComfyUI call (media_workspace_unavailable at submit, no GPU minute spent)", async () => {
+  const f = fixture({ workspaceFails: true });
+  const t = await importDefault(f.services);
+  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_workspace_unavailable");
+  assert.equal(f.comfy.submits.length, 0);
+  assert.equal(f.mem.jobs.size, 0, "no job row either");
+});
+
+test("review 7: a prompt ComfyUI rejects is recorded with ComfyUI's own node/input errors, not only the HTTP status (AC-P14-11)", async () => {
+  const { DomainError } = await import("./contracts");
+  const rejection = new DomainError({
+    code: "comfyui_unavailable",
+    message: "ComfyUI returned HTTP 400 for POST /prompt.",
+    details: {
+      body: {
+        error: { type: "prompt_outputs_failed_validation", message: "Prompt outputs failed validation", details: "" },
+        node_errors: { "4": { class_type: "CheckpointLoaderSimple", errors: [{ type: "value_not_in_list", message: "Value not in list", details: "ckpt_name: 'big.safetensors' not in ['model.safetensors']" }] } },
+      },
+    },
+  });
+  const text = describeComfyRejection(rejection);
+  assert.match(text, /HTTP 400/);
+  assert.match(text, /Prompt outputs failed validation/);
+  assert.match(text, /node 4 \(CheckpointLoaderSimple\): Value not in list: ckpt_name: 'big\.safetensors' not in \['model\.safetensors'\]/);
+  assert.equal(describeComfyRejection(new Error("socket hang up")), "socket hang up");
+  assert.ok(describeComfyRejection(new DomainError({ code: "comfyui_unavailable", message: "x", details: { body: { node_errors: { "1": { errors: [{ message: "m".repeat(5000) }] } } } } })).length <= 2000);
+
+  // End to end: the stored job error carries the node id from the 400 body.
+  const comfy = fakeComfy([], { submitFails: true });
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }));
+  const failed = [...f.mem.jobs.values()][0];
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /node 6/);
+});
+
+test("review 7: preview (`temp`) files are not job outputs -- a Save + Preview workflow ends done with no error; a preview-only result fails as 'no saved output'", async () => {
+  const withPreview = fakeComfy([
+    null,
+    {
+      promptId: "prompt-1",
+      status: "completed",
+      statusMessages: [],
+      outputs: [
+        { nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", type: "output" },
+        { nodeId: "11", kind: "images", filename: "ComfyUI_temp_abcd_00001_.png", subfolder: "", type: "temp" },
+      ],
+      raw: {},
+    },
+  ]);
+  const f = fixture({ comfy: withPreview });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.equal(done.error, null);
+  assert.deepEqual(done.outputs.map((o) => o.filename), ["ComfyUI_00001_.png"]);
+
+  const previewOnly = fakeComfy([null, { promptId: "prompt-1", status: "completed", statusMessages: [], outputs: [{ nodeId: "11", kind: "images", filename: "t.png", subfolder: "", type: "temp" }], raw: {} }]);
+  const g = fixture({ comfy: previewOnly });
+  const t2 = await importDefault(g.services);
+  const job2 = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await g.runScheduled();
+  const failed = await g.services.getJob({ jobId: job2.jobId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /without any saved output/);
+  assert.deepEqual(failed.outputs, []);
 });

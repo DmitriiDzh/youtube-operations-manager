@@ -238,6 +238,16 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     const client = await deps.base.resolveRunpodClient();
     // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.
     const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${parsed.file}`;
+    // The poll declares the pull done when the key has a size: a key that already exists would be "done" on the
+    // first tick while the pod still downloads (review round 7). Re-pulling means deleting the old copy first.
+    const existing = await (await deps.base.s3()).headObject(expectedKey);
+    if (existing && existing.size > 0) {
+      throw new DomainError({
+        code: "validation_failed",
+        message: `${expectedKey} already exists on the volume (${existing.size} bytes); delete it first (Settings → Media → Models, or \`media model-rm\`) to pull it again.`,
+        details: { key: expectedKey, bytes: existing.size },
+      });
+    }
     const pullId = deps.generateId();
     const podName = pullPodNameFor(pullId);
     let pod: { id: string };

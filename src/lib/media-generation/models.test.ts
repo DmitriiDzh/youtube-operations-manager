@@ -252,7 +252,7 @@ test("review 4: the Hugging Face CLI's .cache litter is not listed as a model", 
 // -- review round 5 (2026-10-05) ------------------------------------------------------------------
 
 test("review 5: a pull is terminal only once RunPod confirms the pod is gone; a pod that lingers keeps the pull running (volume still busy)", async () => {
-  const objects = new Map<string, number>([["models/vae/c.bin", 5]]);
+  const objects = new Map<string, number>(); // the file lands after the pull starts (a pre-existing key is refused since review round 7)
   let json: string | null = null;
   let status = "RUNNING";
   const client = {
@@ -278,6 +278,7 @@ test("review 5: a pull is terminal only once RunPod confirms the pod is gone; a 
     },
   });
   await services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  objects.set("models/vae/c.bin", 5);
   const [lingering] = await services.pollPulls();
   assert.equal(lingering.status, "running");
   assert.match(lingering.error ?? "", /still RUNNING after terminate/);
@@ -330,7 +331,9 @@ test("review 6: two PROCESSES (the web watch loop and the operator CLI) mutating
   const s3 = {
     async headObject(key: string) {
       headCalls++;
-      if (headCalls === 1) await headGate; // the web loop's slow S3 call, during which the CLI appends a pull
+      // Call 1 is startPull's own "does the key exist" check (review round 7); call 2 is the web loop's slow poll,
+      // during which the CLI appends a pull.
+      if (headCalls === 2) await headGate;
       const size = objects.get(key);
       return size === undefined ? null : { size, etag: null, lastModified: null };
     },
@@ -386,4 +389,13 @@ test("review 6: listPulls is read-only -- it never terminates a pod or rewrites 
   assert.equal(pull.status, "running");
   assert.equal(f.calls.length, before, "no RunPod/S3 call from a listing");
   assert.ok(!f.calls.includes("terminate:cpupod1"));
+});
+
+test("review 7: pulling a file whose key already exists on the volume is refused before any pod is created (the poll would call it done at once); after a delete it is accepted", async () => {
+  const f = fixture({ objects: new Map([["models/vae/ae.safetensors", 1000]]) });
+  await assert.rejects(f.services.startPull({ repoId: "a/b", file: "ae.safetensors", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && /already exists/.test(e.message));
+  assert.ok(!f.calls.some((c) => c.startsWith("createPod")));
+  await f.services.deleteModel({ key: "models/vae/ae.safetensors" });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "ae.safetensors", folder: "vae" });
+  assert.equal(pull.status, "running");
 });

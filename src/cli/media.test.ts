@@ -132,3 +132,22 @@ test("a DomainError from the core becomes the JSON error envelope with its code"
   assert.equal(await runMediaCli({ argv: ["status"], core, operatorCliEnabled: async () => true, writeStdout: out.writeStdout }), 1);
   assert.equal(JSON.parse(out.lines[0]).error.code, "media_generation_not_configured");
 });
+
+test("review 7: janitor accepts only the bare --delete switch -- a value after it or a positional is refused instead of silently becoming a dry run", async () => {
+  const calls: string[] = [];
+  const core = {
+    cleanupExchange: async (input: { dryRun?: boolean }) => {
+      calls.push(`janitor:${input.dryRun}`);
+      return { scanned: 0, deleted: [], kept: [] };
+    },
+  } as unknown as MediaGenerationCore;
+  const out = capture();
+  const run = (argv: string[]) => runMediaCli({ argv, core, operatorCliEnabled: async () => true, assertDeviceAvailable: async () => {}, writeStdout: out.writeStdout });
+  assert.equal(await run(["janitor", "--delete", "exchange/"]), 1);
+  assert.equal(JSON.parse(out.lines.at(-1)!).error.code, "validation_failed");
+  assert.equal(await run(["janitor", "exchange/"]), 1);
+  assert.deepEqual(calls, []);
+  assert.equal(await run(["janitor"]), 0);
+  assert.equal(await run(["janitor", "--delete"]), 0);
+  assert.deepEqual(calls, ["janitor:true", "janitor:false"]);
+});

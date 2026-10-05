@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
-import { EMPTY_PAYLOAD_SHA256, sha256Hex, signSigV4 } from "./sigv4";
+import { awsUriEncode, EMPTY_PAYLOAD_SHA256, sha256Hex, signSigV4 } from "./sigv4";
 
 // ---------------------------------------------------------------------------
 // Phase 14 -- the single funnel for RunPod's S3-compatible network-volume API
@@ -87,7 +87,9 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
 
   function objectUrl(key: string, query?: Record<string, string>): URL {
     const url = new URL(endpoint);
-    url.pathname = `/${config.volumeId}${key ? `/${key.split("/").map(encodeURIComponent).join("/")}` : ""}`;
+    // The same encoder as the SigV4 canonical URI (`!'()*` included), so the bytes on the wire and the signed
+    // path never diverge for a key like `exchange/<job>/final (v2)_00001_.png` (review round 7).
+    url.pathname = `/${config.volumeId}${key ? `/${key.split("/").map(awsUriEncode).join("/")}` : ""}`;
     for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v);
     return url;
   }

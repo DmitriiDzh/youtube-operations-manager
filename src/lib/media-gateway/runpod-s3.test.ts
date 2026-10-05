@@ -164,3 +164,10 @@ test("review 5: the client's methods work when destructured (no `this` dependenc
   assert.deepEqual(await listAllObjects("exchange/"), []);
   assert.deepEqual(await testAccess(), { ok: true });
 });
+
+test("review 7: a key with the five characters encodeURIComponent leaves raw (!'()*) is sent exactly as the SigV4 canonical path encodes it", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => new Response(null, { status: 200, headers: { "content-length": "1" } }));
+  const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+  await client.headObject("exchange/job1/final (v2)*!'_00001_.png");
+  assert.equal(calls[0].url.pathname, "/vol123/exchange/job1/final%20%28v2%29%2A%21%27_00001_.png");
+});
