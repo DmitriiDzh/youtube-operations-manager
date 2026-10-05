@@ -230,7 +230,9 @@ export function createRunpodApiClient(args: {
   return {
     /** One authenticated read with no side effect: 200 = the key works. */
     async verifyKey(): Promise<{ ok: true }> {
-      await request("GET", "/account/ssh-keys");
+      // A read in the scope the app actually needs (pods), so a Restricted key for pods + storage -- what the Settings help
+      // advises -- passes; an account-scope probe could 403 on it (review round 21; confirmed only by slice 0, RISK-106).
+      await request("GET", "/pods?limit=1");
       return { ok: true };
     },
 

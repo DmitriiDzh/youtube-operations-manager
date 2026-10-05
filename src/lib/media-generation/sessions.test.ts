@@ -1300,3 +1300,24 @@ test("review 20: a watcher stop that races an operator Stop never relabels the o
   assert.equal(done.stopReason, "stopped by operator");
   assert.equal(done.error, null);
 });
+
+// -- review round 21 (2026-10-05) -----------------------------------------------------------------
+
+test("review 21: the boot sweep honors a DELETE an earlier attempt recorded (terminateSentAt) -- billed to it, no 'vanished on its own' note", async () => {
+  const f = fixture();
+  const running = await startRunning(f);
+  f.advance(60_000);
+  await f.services.watchTick(); // seen alive at +65 s
+  f.advance(30_000);
+  const deletedAt = f.getNow();
+  // An earlier attempt's DELETE went through (recorded) and the process died before any terminal write; the pod is gone.
+  f.mem.rows.set(running.sessionId, { ...f.mem.rows.get(running.sessionId)!, terminateSentAt: deletedAt });
+  f.runpod.pods.delete("pod1");
+  f.advance(3 * 60 * 60_000);
+  await f.services.bootSweep();
+  const row = f.mem.rows.get(running.sessionId)!;
+  assert.equal(row.status, "interrupted");
+  assert.equal(row.stoppedAt?.getTime(), deletedAt.getTime());
+  assert.equal(row.secondsUsed, 5 + 60 + 30);
+  assert.ok(!/already gone/.test(row.error ?? ""));
+});

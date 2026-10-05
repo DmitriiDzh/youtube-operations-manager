@@ -8,8 +8,3 @@ export function sleep(ms: number, options: { unref?: boolean } = {}): Promise<vo
     if (options.unref && typeof timer === "object" && timer !== null && "unref" in timer) (timer as { unref(): void }).unref();
   });
 }
-
-/** Two decimals, the money rounding every media estimate/cost uses. */
-export function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}

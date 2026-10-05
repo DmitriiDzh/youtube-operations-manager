@@ -56,7 +56,7 @@ export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(
 
 // -- workflow templates and jobs (slice 3) ---------------------------------------------------------
 
-const parameterNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/, "a parameter name is an identifier (letters, digits, _)");
+export const parameterNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/, "a parameter name is an identifier (letters, digits, _)");
 const scalarSchema = z.union([z.string().max(20_000), z.number(), z.boolean()]);
 
 export const templateParameterSchema = z

@@ -32,7 +32,7 @@ test("every call carries the bearer key, the v2 base URL, and passes the gateway
     },
   });
   await client.verifyKey();
-  assert.equal(calls[0].url, "https://api.runpod.io/v2/account/ssh-keys");
+  assert.equal(calls[0].url, "https://api.runpod.io/v2/pods?limit=1");
   assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer rpa_secret");
   assert.deepEqual(authorized, ["runpod_api"]);
 });

@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
+import { MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -740,8 +741,10 @@ export const mediaCredentials = sqliteTable("media_credentials", {
     .$defaultFn(() => new Date()),
 });
 
-export const MEDIA_SESSION_STATUSES = ["pending", "approved", "starting", "running", "stopping", "done", "failed", "rejected", "interrupted"] as const;
-export type MediaSessionStatusValue = (typeof MEDIA_SESSION_STATUSES)[number];
+// The status lists have ONE owner, the pure contracts module (review round 21): never a hand copy here that could drift
+// from what the domain treats as terminal (the copy decides whether the open slot is freed).
+export { MEDIA_SESSION_STATUSES };
+export type MediaSessionStatusValue = MediaSessionStatus;
 
 /**
  * Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3), SCHEMA_MIGRATIONS version 51. One
@@ -7376,7 +7379,6 @@ export async function setMediaGatewayEnabled(enabled: boolean, database: AppDb =
 export type StoredMediaSession = typeof mediaSessions.$inferSelect;
 export type NewStoredMediaSession = typeof mediaSessions.$inferInsert;
 
-const MEDIA_SESSION_TERMINAL_STATUSES: readonly MediaSessionStatusValue[] = ["done", "failed", "rejected", "interrupted"];
 
 function isOpenSlotConflict(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);

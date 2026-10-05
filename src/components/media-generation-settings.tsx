@@ -653,7 +653,7 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
                   <td className="py-1 pr-3">{j.status}</td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
                   <td className="py-1 pr-3 font-mono">
-                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split("/").slice(-2).join("/") : `${o.filename} (${o.note ?? "pending"})`)).join(", ")}
+                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split(/[\\/]/).slice(-2).join("/") : `${o.filename} (${o.note ?? "pending"})`)).join(", ")}
                   </td>
                   <td className="py-1 pr-3">{j.error ?? ""}</td>
                   <td className="py-1">

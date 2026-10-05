@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { round2, sleep } from "./index";
+import { round2 } from "@/lib/shared-money";
+import { sleep } from "./index";
 
-// Phase 14 review round 11 (AGENTS.md §M): the one sleep/round2 every media loop and estimate uses.
+// Phase 14 review rounds 11/21 (AGENTS.md §M): the one sleep (shared-async) and round2 (shared-money) the media code uses.
 test("sleep resolves after the delay (an unref'd timer never holds a process open)", async () => {
   const before = Date.now();
   await sleep(15);

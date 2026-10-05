@@ -82,9 +82,11 @@ export type MediaGenerationOverview = {
 
 // -- sessions (slice 2, PHASE_14_PLAN.md §2.3) ---------------------------------------------------
 
-export type MediaSessionStatus = "pending" | "approved" | "starting" | "running" | "stopping" | "done" | "failed" | "rejected" | "interrupted";
+/** The ONE list of session statuses and its terminal subset (review round 21): `db.ts` imports these for the column enum and for freeing the open slot. */
+export const MEDIA_SESSION_STATUSES = ["pending", "approved", "starting", "running", "stopping", "done", "failed", "rejected", "interrupted"] as const;
+export type MediaSessionStatus = (typeof MEDIA_SESSION_STATUSES)[number];
 export const MEDIA_SESSION_TERMINAL_STATUSES: readonly MediaSessionStatus[] = ["done", "failed", "rejected", "interrupted"];
-export const MEDIA_SESSION_NON_TERMINAL_STATUSES: readonly MediaSessionStatus[] = ["pending", "approved", "starting", "running", "stopping"];
+export const MEDIA_SESSION_NON_TERMINAL_STATUSES: readonly MediaSessionStatus[] = MEDIA_SESSION_STATUSES.filter((s) => !MEDIA_SESSION_TERMINAL_STATUSES.includes(s));
 
 /** Public shape -- never the proxy token. */
 export type MediaSession = {

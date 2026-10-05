@@ -976,7 +976,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         // BY LEDGER ONLY (ADR 0019's rule): a key is deleted only when its row says the file is local. A failed or
         // cancelled job's leftovers may be a finished generation nobody recorded (restart mid-generation) -- the only
         // copy -- so they stay until pulled by hand (`scripts/media/s3.sh`), never auto-deleted.
-        if (!ledger || !ledger.localPath) {
+        if (!ledger) {
           kept.push({ key, reason: `${job.status} job, not in the ledger` });
           continue;
         }

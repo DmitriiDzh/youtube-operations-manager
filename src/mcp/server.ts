@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createJobInputSchema, requestSessionInputSchema } from "@/lib/media-generation/schemas";
 import { loadEnvConfig } from "@next/env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -200,26 +201,13 @@ type MediaGenerationCoreSubset = Pick<
   "requestSession" | "getSession" | "listSessions" | "getLimits" | "listWorkflowTemplates" | "createJob" | "getJob" | "listJobs" | "cancelJob"
 >;
 const mediaChannelIdSchema = z.string().min(1).max(64);
-const mediaParamNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/);
 const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
-const agentRequestMediaSessionInputSchema = z
-  .object({
-    channelId: mediaChannelIdSchema,
-    maxMinutes: z.number().int().min(1).max(1440).optional(),
-    maxUsd: z.number().gt(0).max(10_000).optional(),
-    reason: z.string().trim().max(500).optional(),
-  })
-  .strict();
+// Derived from the core's own schemas (review round 21): the bounds an agent sees are exactly the ones the core enforces;
+// only the caller-identity field (`requestedBy`/`createdBy`) is the server's to set, never the agent's.
+const agentRequestMediaSessionInputSchema = requestSessionInputSchema.omit({ requestedBy: true });
 const agentGetMediaSessionInputSchema = z.object({ channelId: mediaChannelIdSchema, sessionId: z.string().min(1).max(64).optional() }).strict();
 const agentGetMediaLimitsInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
-const agentCreateMediaJobInputSchema = z
-  .object({
-    channelId: mediaChannelIdSchema,
-    sessionId: z.string().min(1).max(64),
-    templateId: z.string().min(1).max(64),
-    params: z.record(mediaParamNameSchema, z.union([z.string().max(20_000), z.number(), z.boolean()])).default({}),
-  })
-  .strict();
+const agentCreateMediaJobInputSchema = createJobInputSchema.omit({ createdBy: true });
 const agentGetMediaJobInputSchema = z
   .object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() })
   .strict();

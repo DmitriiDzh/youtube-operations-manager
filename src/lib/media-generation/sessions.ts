@@ -11,7 +11,7 @@ import {
 } from "./contracts";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import type { VolumeLock } from "./volume-lock";
-import { round2 } from "@/lib/shared-async";
+import { round2 } from "@/lib/shared-money";
 import { parseWithSchema, rejectSessionInputSchema, requestSessionInputSchema, sessionIdInputSchema, stopSessionInputSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -401,6 +401,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     }
     const now = deps.clock.now();
     const effective = { ...open, ...(orphanFacts ?? {}) };
+    // The same billing rule as stopRow (review round 21): gone because an earlier DELETE of ours went through -> billed
+    // to that DELETE, no "vanished on its own" note; gone on its own -> billed to the last sighting.
+    const latest = (await deps.store.get(open.id)) ?? open;
+    if (alreadyGone && latest.terminateSentAt) {
+      await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: reason, stoppedAt: latest.terminateSentAt }, orphanFacts ?? {});
+      return "reconciled";
+    }
     const gone = alreadyGone ? lastKnownAlive(effective, now) : now;
     await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: alreadyGone ? `${reason}; ${goneNote(effective, gone)}` : reason, stoppedAt: gone }, orphanFacts ?? {});
     return "reconciled";

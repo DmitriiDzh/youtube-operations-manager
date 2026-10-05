@@ -107,7 +107,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       else dropped.push(key);
     }
     for (const key of Object.keys(stored)) if (!(key in mediaSettingsSchema.shape)) dropped.push(key);
-    (deps.log ?? (() => undefined))(`[media] stored settings partly invalid; kept the valid keys, defaulted: ${dropped.join(", ") || "(none)"}`);
+    log(`[media] stored settings partly invalid; kept the valid keys, defaulted: ${dropped.join(", ") || "(none)"}`);
     const salvagedResult = mediaSettingsSchema.safeParse(salvaged);
     return salvagedResult.success ? salvagedResult.data : { ...DEFAULT_MEDIA_SETTINGS };
   }

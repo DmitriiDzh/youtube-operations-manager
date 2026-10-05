@@ -2627,6 +2627,12 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   is `media_credentials_invalid`. The janitor's `deleted` lists only what was really deleted; a dry run
   reports `wouldDelete`. The dead "another session is open" check in approve is gone (the unique open-slot
   index is the guarantee); `job-run.sh` refuses a `--param` without `=`.
+- **Single owners (review round 21).** The session status lists live once, in the pure `contracts.ts`; `db.ts`
+  imports them for the column enum and for freeing the open slot. The MCP tool input schemas are the core's
+  `requestSessionInputSchema`/`createJobInputSchema` minus the server-set identity field. The boot sweep's
+  already-gone path honors a recorded `terminateSentAt` like `stopRow`. `round2` moved to
+  `src/lib/shared-money`. `verifyKey` probes `GET /pods?limit=1` (the scope the app needs). The job outputs
+  cell shortens Windows paths too.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod
