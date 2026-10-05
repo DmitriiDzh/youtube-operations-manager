@@ -171,14 +171,21 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
     },
 
     /** Queue entries are `[number, prompt_id, prompt, extra, outputs]` tuples; the ids are what a cancel needs. */
-    async getQueue(): Promise<{ running: number; pending: number; runningPromptIds: string[]; pendingPromptIds: string[] }> {
+    async getQueue(): Promise<{ running: number; pending: number; runningPromptIds: string[]; pendingPromptIds: string[]; entries: Array<{ promptId: string; clientId: string | null; state: "running" | "pending" }> }> {
       const { body } = await request("GET", "/queue");
       const record = asRecord(body);
-      const ids = (entries: unknown): string[] =>
-        Array.isArray(entries) ? entries.map((e) => (Array.isArray(e) && typeof e[1] === "string" ? e[1] : null)).filter((id): id is string => id !== null) : [];
-      const runningPromptIds = ids(record.queue_running);
-      const pendingPromptIds = ids(record.queue_pending);
-      return { running: runningPromptIds.length, pending: pendingPromptIds.length, runningPromptIds, pendingPromptIds };
+      // Each entry is `[number, prompt_id, prompt, extra_data, outputs_to_execute]`; `extra_data.client_id` is what a
+      // submit sent, so a prompt whose POST /prompt response was lost can still be found (review round 17).
+      const parse = (entries: unknown, state: "running" | "pending") =>
+        Array.isArray(entries)
+          ? entries
+              .map((e) => (Array.isArray(e) && typeof e[1] === "string" ? { promptId: e[1] as string, clientId: typeof asRecord(e[3]).client_id === "string" ? (asRecord(e[3]).client_id as string) : null, state } : null))
+              .filter((entry): entry is { promptId: string; clientId: string | null; state: "running" | "pending" } => entry !== null)
+          : [];
+      const entries = [...parse(record.queue_running, "running"), ...parse(record.queue_pending, "pending")];
+      const runningPromptIds = entries.filter((e) => e.state === "running").map((e) => e.promptId);
+      const pendingPromptIds = entries.filter((e) => e.state === "pending").map((e) => e.promptId);
+      return { running: runningPromptIds.length, pending: pendingPromptIds.length, runningPromptIds, pendingPromptIds, entries };
     },
 
     /** Interrupts whatever ComfyUI is executing RIGHT NOW -- only correct for a job known to be the running one. */

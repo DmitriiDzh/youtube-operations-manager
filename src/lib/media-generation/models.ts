@@ -164,10 +164,22 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       await savePull(stillRunning);
       return stillRunning;
     }
+    // The pod is gone (possibly killed before its own `rm -rf .cache` ran, review round 17): the HF CLI's cache keys under
+    // the pull's folder are deleted over S3 so nothing invisible stays on the paid volume. Best effort.
+    await cleanupPullCache(pull.expectedKey).catch(() => undefined);
     const finished: ModelPull = { ...pull, status, finishedAt: deps.clock.now().toISOString(), bytes: extra.bytes ?? null, error: extra.error ?? null };
     await savePull(finished);
     await deps.volumeLock.release(`pull:${pull.pullId}`);
     return finished;
+  }
+
+  /** Deletes `models/<folder>/.cache/**` for the folder of `expectedKey` (the HF CLI's download cache). */
+  async function cleanupPullCache(expectedKey: string): Promise<void> {
+    const folder = expectedKey.slice(MODELS_PREFIX.length).split("/")[0];
+    if (!folder) return;
+    const s3 = await deps.base.s3();
+    const prefix = `${MODELS_PREFIX}${folder}/.cache/`;
+    for (const object of await s3.listAllObjects(prefix)) await s3.deleteObject(object.key);
   }
 
   return {

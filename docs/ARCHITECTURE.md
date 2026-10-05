@@ -2581,6 +2581,18 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   session belongs to another channel. The UI uses the core's own public types (`MediaSession`, ...), not
   hand copies. `isStartAbandoned` and `retryOrFail` are the single statements of the abandonment and the
   transfer-retry rules.
+- **Tolerance where it was missing, no zombie prompts (review round 17).** The readiness wait tolerates up to
+  five consecutive RunPod failures (a 502 or a timeout on `getPod` no longer terminates a healthy,
+  almost-ready pod) and a DB hiccup on the seen-alive mark. A lost `POST /prompt` response is not a
+  rejection: the queue is asked for the entry with `client_id ytm-<jobId>` (the gateway's `getQueue` now
+  exposes `entries` with client ids) and the prompt is adopted; only `comfyui_rejected` fails the job as
+  rejected. Every failure exit of the poll loop (deadline, a run of poll failures) withdraws the prompt
+  (`withdrawPrompt`, the one interrupt/dequeue sequence a cancel uses too). The boot sweep moves a
+  `running`/`starting` row to `stopping` before terminating, so nothing reads it as running meanwhile. A
+  finished pull deletes `models/<folder>/.cache/**` over S3 (the pod may be killed before its own cleanup).
+  `hasInFlightJobs` ignores a `transferring` job sleeping in its backoff, so the idle shutdown is not
+  deferred for it. The integer Settings fields (minutes, seconds, GB) are controlled text inputs parsed on
+  save (`parseInteger`), like the money fields.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

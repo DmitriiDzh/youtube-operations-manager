@@ -507,13 +507,15 @@ test("review: the watcher terminates a running session once the day's total spen
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
 });
 
-test("review: a RunPod error while polling the new pod never leaves it behind -- terminated and the session failed", async () => {
+test("review: a RunPod outage while polling the new pod never leaves it behind -- terminated and the session failed", async () => {
+  // Review round 17: a single blip is tolerated (see the round-17 test); it takes a RUN of failures to abort -- and then
+  // the pod is still terminated, never left behind.
   const runpod = fakeRunpod();
   const original = runpod.client.getPod.bind(runpod.client);
   let polls = 0;
   (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
     polls++;
-    if (polls === 1) {
+    if (polls <= 5) {
       const { DomainError } = await import("./contracts");
       throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 502" });
     }
@@ -1105,4 +1107,50 @@ test("review 15: a pod created after the session was stopped meanwhile, whose te
   assert.equal(row.status, "failed");
   assert.equal(row.podId, "pod1", "the late pod is recorded on the terminal row");
   assert.match(row.error ?? "", /terminate it by hand \(media pod-terminate pod1\)/);
+});
+
+// -- review round 17 (2026-10-05) -----------------------------------------------------------------
+
+test("review 17: one transient RunPod failure during the readiness wait is tolerated (the pod is NOT terminated); a run of five is not", async () => {
+  const runpod = fakeRunpod({ runningAfterPolls: 2 });
+  const f = fixture({ runpod });
+  const original = runpod.client.getPod.bind(runpod.client);
+  let calls = 0;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    if (++calls === 2) throw new Error("RunPod API returned HTTP 502"); // one blip while the pod boots
+    return original(id);
+  };
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.ok(f.runpod.pods.has("pod1"), "the healthy pod was never terminated");
+
+  const flaky = fakeRunpod();
+  const g = fixture({ runpod: flaky });
+  (flaky.client as unknown as { getPod: () => Promise<unknown> }).getPod = async () => {
+    throw new Error("RunPod API returned HTTP 502");
+  };
+  const requested = await g.services.requestSession(operatorRequest);
+  await assert.rejects(g.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed" && /HTTP 502/.test(e.message));
+  // RunPod is still down, so the terminate cannot be CONFIRMED: the row stays `stopping` with the pod recorded (never
+  // freed on a guess); once RunPod answers, the watcher finishes it `failed`.
+  const row = g.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod1");
+  (flaky.client as unknown as { getPod: (id: string) => Promise<unknown> }).getPod = async () => null;
+  assert.equal((await g.services.watchTick()).action, "stopped");
+  assert.equal(g.mem.rows.get(requested.sessionId)!.status, "failed");
+});
+
+test("review 17: the boot sweep moves a running session to `stopping` BEFORE terminating, so nothing reads it as running while the terminate is confirmed", async () => {
+  const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
+  const running = await startRunning(f);
+  const seen: string[] = [];
+  const originalTerminate = f.runpod.client.terminatePod.bind(f.runpod.client);
+  (f.runpod.client as unknown as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => {
+    seen.push(f.mem.rows.get(running.sessionId)!.status);
+    return originalTerminate(id);
+  };
+  await f.services.bootSweep();
+  assert.deepEqual(seen, ["stopping"], "the row was `stopping` when RunPod was asked to terminate");
+  assert.equal(f.mem.rows.get(running.sessionId)!.status, "stopping"); // unconfirmed -> stays stopping for the watcher
 });

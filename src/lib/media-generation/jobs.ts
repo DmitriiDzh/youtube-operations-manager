@@ -438,6 +438,21 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
   }
 
+  /**
+   * Takes a prompt off ComfyUI (best effort): interrupted if it is the one executing, removed if it is queued. The ONE
+   * sequence a cancel, a withdrawn submit and every failure exit of the poll loop use (review round 17: a job failed by
+   * its deadline or by a run of poll failures must not leave a zombie prompt on the GPU).
+   */
+  async function withdrawPrompt(comfy: ComfyUiClient, promptId: string): Promise<void> {
+    try {
+      const queue = await comfy.getQueue();
+      if (queue.runningPromptIds.includes(promptId)) await comfy.interrupt();
+      else if (queue.pendingPromptIds.includes(promptId)) await comfy.deleteQueued([promptId]);
+    } catch (error) {
+      log(`[media] could not withdraw prompt ${promptId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   /** Jobs this process is polling right now (so a resume never starts a second loop for the same job). */
   const inFlight = new Set<string>();
   /**
@@ -508,6 +523,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         const stillRunning = await deps.sessions.getRunningSession(job.sessionId);
         if (!stillRunning || pollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
           await failJob(job, `ComfyUI unreachable (${pollFailures} consecutive polls): ${error instanceof Error ? error.message : String(error)}`);
+          if (stillRunning) await withdrawPrompt(comfy, job.promptId);
           return;
         }
         await deps.sleep(pollMs);
@@ -578,6 +594,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
       if (deps.clock.now().getTime() >= deadline) {
         await failJob(job, `no result after ${Math.round(maxGenerationMs / 60_000)} min`);
+        await withdrawPrompt(comfy, job.promptId); // never a zombie prompt billing the GPU behind the next job
         return;
       }
       await deps.sleep(pollMs);
@@ -799,24 +816,32 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         await failJob(row, `no ComfyUI client: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
       }
-      let submitted;
+      let submitted: { promptId: string };
       try {
         submitted = await comfy.submitPrompt({ prompt, clientId: `ytm-${jobId}` });
       } catch (error) {
-        await failJob(row, `ComfyUI rejected the prompt: ${describeComfyRejection(error)}`);
-        throw error;
+        if (error instanceof DomainError && error.code === "comfyui_rejected") {
+          await failJob(row, `ComfyUI rejected the prompt: ${describeComfyRejection(error)}`);
+          throw error;
+        }
+        // A lost RESPONSE is not a rejection: ComfyUI may have accepted the prompt (proxy 502, 30 s timeout) and be
+        // executing it. The queue says -- every submit carries client_id `ytm-<jobId>` (review round 17).
+        const adopted = await comfy
+          .getQueue()
+          .then((queue) => queue.entries.find((e) => e.clientId === `ytm-${jobId}`) ?? null)
+          .catch(() => null);
+        if (!adopted) {
+          await failJob(row, `the prompt could not be submitted (ComfyUI unreachable: ${error instanceof Error ? error.message : String(error)}); it is not in ComfyUI's queue`);
+          throw error;
+        }
+        log(`[media] submit response lost for job ${jobId}, but ComfyUI queued it as ${adopted.promptId}; adopting`);
+        submitted = { promptId: adopted.promptId };
       }
       await deps.sessions.touchActivity(parsed.sessionId);
       const updated = await deps.store.jobs.transition(jobId, ["queued"], { status: "submitted", promptId: submitted.promptId, submittedAt: deps.clock.now() });
       if (!updated) {
         // Cancelled or swept while the submit was in flight: the prompt must not run unowned.
-        try {
-          const queue = await comfy.getQueue();
-          if (queue.runningPromptIds.includes(submitted.promptId)) await comfy.interrupt();
-          else await comfy.deleteQueued([submitted.promptId]);
-        } catch {
-          // best effort
-        }
+        await withdrawPrompt(comfy, submitted.promptId);
         const current = await requireJob(jobId);
         throw new DomainError({ code: "media_job_invalid_state", message: `Job was ${current.status} before the submit completed; the prompt was withdrawn`, details: { jobId, status: current.status } });
       }
@@ -844,11 +869,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       if (!cancelled) throw new DomainError({ code: "media_job_invalid_state", message: `Job is ${row.status}; only a queued or generating job can be cancelled`, details: { jobId, status: row.status } });
       if (row.promptId) {
         try {
-          // /interrupt aborts whatever ComfyUI is executing -- only this job's prompt may be interrupted; a queued one is removed from the queue.
           const comfy = await deps.sessions.comfyClientForSession(row.sessionId);
-          const queue = await comfy.getQueue();
-          if (queue.runningPromptIds.includes(row.promptId)) await comfy.interrupt();
-          else if (queue.pendingPromptIds.includes(row.promptId)) await comfy.deleteQueued([row.promptId]);
+          await withdrawPrompt(comfy, row.promptId);
         } catch {
           // the session may be gone already; the job is cancelled either way
         }
@@ -889,7 +911,14 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
     /** For the idle auto-shutdown: a job in flight is work even when no HTTP request is (an MCP-driven session). */
     async hasInFlightJobs(): Promise<boolean> {
-      return (await deps.store.jobs.listNonTerminal()).length > 0;
+      // A `transferring` job sleeping in its backoff is not work the idle shutdown should wait for (review round 17): only
+      // a job being polled, or one whose next transfer attempt is due, counts.
+      const now = deps.clock.now().getTime();
+      return (await deps.store.jobs.listNonTerminal()).some((row) => {
+        if (row.status !== "transferring") return true;
+        const backoff = transferBackoff.get(row.id);
+        return !backoff || backoff.notBefore <= now;
+      });
     },
 
     /** Boot: a job left non-terminal by a dead process fails as interrupted (its pod is gone by then too). */

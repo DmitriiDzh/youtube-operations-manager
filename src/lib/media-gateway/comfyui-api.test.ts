@@ -132,7 +132,16 @@ test("review: getQueue exposes the running and pending prompt ids; deleteQueued 
     call.init.method === "POST" ? { status: 200, body: {} } : { status: 200, body: { queue_running: [[0, "p-run", {}, {}, []]], queue_pending: [[1, "p-wait", {}, {}, []]] } }
   );
   const client = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl, authorize: noAuth });
-  assert.deepEqual(await client.getQueue(), { running: 1, pending: 1, runningPromptIds: ["p-run"], pendingPromptIds: ["p-wait"] });
+  assert.deepEqual(await client.getQueue(), {
+    running: 1,
+    pending: 1,
+    runningPromptIds: ["p-run"],
+    pendingPromptIds: ["p-wait"],
+    entries: [
+      { promptId: "p-run", clientId: null, state: "running" },
+      { promptId: "p-wait", clientId: null, state: "pending" },
+    ],
+  });
   await client.deleteQueued([]);
   assert.equal(calls.length, 1);
   await client.deleteQueued(["p-wait"]);
@@ -155,4 +164,19 @@ test("review 11: getSystemStats requires ComfyUI's documented shape -- a placeho
   await assert.rejects(partial.getSystemStats(), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
   const up = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl: fakeFetch(() => ({ status: 200, body: { system: { os: "posix" }, devices: [{ name: "cuda:0" }] } })).fetchImpl, authorize: noAuth });
   assert.deepEqual(Object.keys(await up.getSystemStats()).sort(), ["devices", "system"]);
+});
+
+test("review 17: getQueue exposes each entry's client_id (extra_data) so a prompt whose submit response was lost can be found", async () => {
+  const { fetchImpl } = fakeFetch(() => ({
+    status: 200,
+    body: { queue_running: [[0, "p-run", {}, { client_id: "ytm-job-1" }, ["9"]]], queue_pending: [[1, "p-wait", {}, {}, ["9"]], [2, "p-other", {}, { client_id: "ytm-job-2" }, ["9"]]] },
+  }));
+  const client = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl, authorize: noAuth });
+  const queue = await client.getQueue();
+  assert.deepEqual(queue.entries, [
+    { promptId: "p-run", clientId: "ytm-job-1", state: "running" },
+    { promptId: "p-wait", clientId: null, state: "pending" },
+    { promptId: "p-other", clientId: "ytm-job-2", state: "pending" },
+  ]);
+  assert.deepEqual(queue.runningPromptIds, ["p-run"]);
 });

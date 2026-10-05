@@ -114,6 +114,8 @@ const DEFAULT_STOP_TIMEOUT_MS = 90_000;
  * (30 s) after the stop budget -- about 2.5 min -- with 5 min there is room, not a 30 s coin toss.
  */
 const ABANDONED_START_GRACE_MS = 5 * 60_000;
+/** Consecutive RunPod failures tolerated while waiting for a new pod (the same tolerance the job poller has). */
+const MAX_START_POLL_FAILURES = 5;
 
 /** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
 export function podNameFor(sessionId: string): string {
@@ -340,6 +342,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     }
     let alreadyGone = false;
     if (podId) {
+      // While the terminate is being confirmed (up to the stop budget) the row must not read `running`/`starting` to the
+      // UI, MCP or createJob (review round 17): `stopping` first, like stopRow.
+      if (open.status === "starting" || open.status === "running") {
+        await deps.store.transition(open.id, ["starting", "running"], { status: "stopping", ...(orphanFacts ?? {}), stopReason: reason, stoppingOutcome: outcome });
+      }
       let unconfirmed: string | null = null;
       try {
         const client = await deps.base.resolveRunpodClient();
@@ -654,27 +661,51 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const comfy = deps.createComfyClient({ baseUrl: comfyUiProxyUrl, token });
       let phase: "pod" | "comfy" = "pod";
       let lastDetail = "";
+      // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
+      // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
+      let pollFailures = 0;
+      const getPodTolerant = async (): Promise<{ ok: true; pod: RunpodPod | null } | { ok: false }> => {
+        try {
+          const current = await client.getPod(pod.id);
+          pollFailures = 0;
+          return { ok: true, pod: current };
+        } catch (error) {
+          if (++pollFailures >= MAX_START_POLL_FAILURES) throw error;
+          lastDetail = `RunPod unreachable (${pollFailures}×): ${error instanceof Error ? error.message : String(error)}`;
+          return { ok: false };
+        }
+      };
+      const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
       try {
         for (;;) {
+          const polled = await getPodTolerant();
+          if (!polled.ok) {
+            if (deps.clock.now().getTime() >= deadline) {
+              lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
+              break;
+            }
+            await deps.sleep(pollMs);
+            continue;
+          }
           if (phase === "pod") {
-            const current = await client.getPod(pod.id);
+            const current = polled.pod;
             if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
               lastDetail = `pod ${current?.status ?? "gone"}`;
               break;
             }
-            await deps.store.markSeenAlive(sessionId, deps.clock.now()); // billed at least until here (AC-P14-17)
+            await seenAlive(); // billed at least until here (AC-P14-17)
             if (current.status === "RUNNING") {
               phase = "comfy";
               onStage("Waiting for ComfyUI to answer");
             }
           } else {
             // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
-            const current = await client.getPod(pod.id);
+            const current = polled.pod;
             if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
               lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
               break;
             }
-            await deps.store.markSeenAlive(sessionId, deps.clock.now());
+            await seenAlive();
             try {
               await comfy.getSystemStats();
               const ready = deps.clock.now();

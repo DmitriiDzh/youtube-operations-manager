@@ -137,12 +137,19 @@ function fakeComfy(script: Array<ComfyHistoryEntry | null>, options: { submitFai
     async getQueue() {
       queueChecks++;
       const q = options.queue ?? { running: ["prompt-1"], pending: [] };
-      return { running: q.running.length, pending: q.pending.length, runningPromptIds: q.running, pendingPromptIds: q.pending };
+      return {
+        running: q.running.length,
+        pending: q.pending.length,
+        runningPromptIds: q.running,
+        pendingPromptIds: q.pending,
+        entries: [...q.running.map((promptId) => ({ promptId, clientId: null, state: "running" as const })), ...q.pending.map((promptId) => ({ promptId, clientId: null, state: "pending" as const }))],
+      };
     },
     async submitPrompt(input: { prompt: Record<string, unknown> }) {
       if (options.submitFails) {
+        // A 400 with node_errors is ComfyUI's own verdict: `comfyui_rejected` (the gateway's contract since review round 12).
         const { DomainError } = await import("./contracts");
-        throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI returned HTTP 400", details: { body: { node_errors: { "6": {} } } } });
+        throw new DomainError({ code: "comfyui_rejected", message: "ComfyUI rejected POST /prompt (HTTP 400)", details: { body: { node_errors: { "6": {} } } } });
       }
       submits.push(input.prompt);
       return { promptId: "prompt-1", queueNumber: 0 };
@@ -396,7 +403,7 @@ test("AC-P14-15: no asset is registered for a job that did not reach done (execu
 test("AC-P14-11: a ComfyUI validation failure marks the job failed with the message and rethrows; the session stays untouched", async () => {
   const f = fixture({ comfy: fakeComfy([], { submitFails: true }) });
   const t = await importDefault(f.services);
-  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "comfyui_unavailable");
+  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "comfyui_rejected");
   const jobs = await f.services.listJobs({ sessionId: "s1" });
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].status, "failed");
@@ -488,7 +495,7 @@ function fakeComfyWithQueue(opts: { running: string[]; pending: string[] }) {
   const base = fakeComfy([null]);
   const deleted: string[][] = [];
   const client = base.client as unknown as Record<string, unknown>;
-  client.getQueue = async () => ({ running: opts.running.length, pending: opts.pending.length, runningPromptIds: opts.running, pendingPromptIds: opts.pending });
+  client.getQueue = async () => ({ running: opts.running.length, pending: opts.pending.length, runningPromptIds: opts.running, pendingPromptIds: opts.pending, entries: [] });
   client.deleteQueued = async (ids: string[]) => {
     deleted.push(ids);
   };
@@ -1303,4 +1310,57 @@ test("review 16: the generation deadline counts from the job's submit, so a resu
   await f.runScheduled();
   assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
   assert.ok(f.activity.length - pollsBefore <= 2, `polled ${f.activity.length - pollsBefore} times, expected the remaining ~1 s only`);
+});
+
+// -- review round 17 (2026-10-05) -----------------------------------------------------------------
+
+test("review 17: a lost POST /prompt response is not a rejection -- the prompt ComfyUI queued under client_id ytm-<jobId> is adopted; one that is not queued fails as 'could not be submitted'", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  (comfy.client as unknown as { submitPrompt: () => Promise<unknown> }).submitPrompt = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI request failed: timeout" });
+  };
+  (comfy.client as unknown as Record<string, unknown>).getQueue = async () => ({ running: 1, pending: 0, runningPromptIds: ["prompt-1"], pendingPromptIds: [], entries: [{ promptId: "prompt-1", clientId: "ytm-job-1", state: "running" }] });
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  assert.equal(job.status, "submitted");
+  assert.equal(job.promptId, "prompt-1", "adopted from the queue");
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+
+  const lost = fakeComfy([null]);
+  (lost.client as unknown as { submitPrompt: () => Promise<unknown> }).submitPrompt = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI request failed: timeout" });
+  };
+  (lost.client as unknown as Record<string, unknown>).getQueue = async () => ({ running: 0, pending: 0, runningPromptIds: [], pendingPromptIds: [], entries: [] });
+  const g = fixture({ comfy: lost });
+  const t2 = await importDefault(g.services);
+  await assert.rejects(g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" }));
+  const failed = [...g.mem.jobs.values()][0];
+  assert.match(failed.error ?? "", /could not be submitted \(ComfyUI unreachable/);
+  assert.ok(!/rejected/.test(failed.error ?? ""));
+});
+
+test("review 17: a job failed by its deadline (or by a run of poll failures) withdraws its prompt from ComfyUI -- no zombie prompt keeps the GPU busy", async () => {
+  const comfy = fakeComfy([null]); // never completes; the fake queue lists prompt-1 as running
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
+  assert.equal(comfy.interrupts(), 1, "the running prompt was interrupted");
+});
+
+test("review 17: hasInFlightJobs ignores a transferring job that is sleeping in its backoff (the idle shutdown must not wait for it) but counts one whose attempt is due", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  f.setWorkspaceFails(true);
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "transferring");
+  assert.equal(await f.services.hasInFlightJobs(), false, "sleeping in its 15 s backoff");
+  f.advance(20_000);
+  assert.equal(await f.services.hasInFlightJobs(), true, "its attempt is due");
 });

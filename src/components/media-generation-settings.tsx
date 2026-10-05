@@ -50,6 +50,14 @@ const inputClass = "w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py
  * which turns a cleared field into 0 -- the project's standing rule for settings widgets): "2.5" and "2,5" both parse;
  * anything else, or a non-positive value, is null and the form says so instead of saving 0.
  */
+/** Integer counts (minutes, seconds, GB) follow the same rule: a controlled text field, parsed and range-checked on save. */
+export function parseInteger(text: string, range: { min: number; max: number }): number | null {
+  const normalized = text.trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const value = Number(normalized);
+  return Number.isSafeInteger(value) && value >= range.min && value <= range.max ? value : null;
+}
+
 export function parseMoney(text: string): number | null {
   const normalized = text.trim().replace(",", ".");
   if (!/^\d+(\.\d+)?$/.test(normalized)) return null;
@@ -702,7 +710,7 @@ function minutesLabel(seconds: number | null): string {
 function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChannelId: string | null }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [limits, setLimits] = useState<SessionLimits | null>(null);
-  const [maxMinutes, setMaxMinutes] = useState<number | null>(null);
+  const [maxMinutesText, setMaxMinutesText] = useState<string>("");
   const [maxUsd, setMaxUsd] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -740,6 +748,11 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
     const parsedMaxUsd = maxUsd.trim() ? parseMoney(maxUsd) : null;
     if (maxUsd.trim() && parsedMaxUsd === null) {
       setError("Max USD must be a positive amount like 2.5");
+      return;
+    }
+    const maxMinutes = maxMinutesText.trim() ? parseInteger(maxMinutesText, { min: 1, max: 1440 }) : null;
+    if (maxMinutesText.trim() && maxMinutes === null) {
+      setError("Max minutes must be a whole number between 1 and 1440");
       return;
     }
     setBusy(true);
@@ -880,7 +893,7 @@ function SessionsCard({ ready, activeChannelId }: { ready: boolean; activeChanne
             <div className="grid gap-2 sm:grid-cols-3">
               <label className="block text-xs text-zinc-400">
                 Max minutes
-                <input type="number" min={1} max={1440} value={maxMinutes ?? limits?.defaultMaxMinutes ?? 60} onChange={(e) => setMaxMinutes(Number(e.target.value))} className={inputClass} />
+                <input type="text" inputMode="numeric" value={maxMinutesText} onChange={(e) => setMaxMinutesText(e.target.value)} className={inputClass} placeholder={`default ${limits?.defaultMaxMinutes ?? 60}`} />
               </label>
               <label className="block text-xs text-zinc-400">
                 Max USD (optional)
@@ -1303,7 +1316,8 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState(settings.networkVolumeId ?? "");
   const [newName, setNewName] = useState("models");
-  const [newSize, setNewSize] = useState(150);
+  const [newSizeText, setNewSizeText] = useState("150");
+  const newSize = parseInteger(newSizeText, { min: 10, max: 4000 });
   const [confirmCreate, setConfirmCreate] = useState(false);
 
   useEffect(() => {
@@ -1405,9 +1419,9 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
                 <p className="mb-2 text-xs text-zinc-400">Create a new volume in {settings.datacenterId ?? "the chosen datacenter (set it under Compute first)"}:</p>
                 <div className="grid gap-2 sm:grid-cols-3">
                   <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className={inputClass} placeholder="name" />
-                  <input type="number" min={10} max={4000} value={newSize} onChange={(e) => setNewSize(Number(e.target.value))} className={inputClass} />
-                  <button type="button" onClick={() => setConfirmCreate(true)} disabled={busy || !settings.datacenterId || !newName.trim() || newSize < 10} className={secondaryButton}>
-                    Create (${monthly(newSize)}/month)
+                  <input type="text" inputMode="numeric" value={newSizeText} onChange={(e) => setNewSizeText(e.target.value)} className={inputClass} placeholder="10–4000" />
+                  <button type="button" onClick={() => setConfirmCreate(true)} disabled={busy || !settings.datacenterId || !newName.trim() || newSize === null} className={secondaryButton}>
+                    Create ({newSize === null ? "size 10–4000 GB" : `$${monthly(newSize)}/month`})
                   </button>
                 </div>
               </div>
@@ -1420,7 +1434,7 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
       {confirmCreate && (
         <ConfirmDialog
           title={`Create a ${newSize} GB network volume in ${settings.datacenterId}?`}
-          description={`RunPod bills about $${monthly(newSize)} per month for it from now until you delete it in the RunPod console.`}
+          description={`RunPod bills about $${monthly(newSize ?? 0)} per month for it from now until you delete it in the RunPod console.`}
           confirmLabel="Create volume"
           onCancel={() => setConfirmCreate(false)}
           onConfirm={create}
@@ -1431,12 +1445,13 @@ function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: ()
 }
 
 function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  // Every field is a controlled text input parsed on save (parseInteger / parseMoney): never a native number widget
+  // (locale-dependent, and a cleared field would silently become 0).
   const [draft, setDraft] = useState({
-    defaultMaxMinutes: settings.defaultMaxMinutes,
-    idleMinutes: settings.idleMinutes,
-    watchIntervalSeconds: settings.watchIntervalSeconds,
+    defaultMaxMinutes: String(settings.defaultMaxMinutes),
+    idleMinutes: String(settings.idleMinutes),
+    watchIntervalSeconds: String(settings.watchIntervalSeconds),
   });
-  // The daily cap is money: a controlled text field (see parseMoney), not a native number input.
   const [maxUsdPerDayText, setMaxUsdPerDayText] = useState(String(settings.maxUsdPerDay));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1444,9 +1459,9 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
 
   useEffect(() => {
     setDraft({
-      defaultMaxMinutes: settings.defaultMaxMinutes,
-      idleMinutes: settings.idleMinutes,
-      watchIntervalSeconds: settings.watchIntervalSeconds,
+      defaultMaxMinutes: String(settings.defaultMaxMinutes),
+      idleMinutes: String(settings.idleMinutes),
+      watchIntervalSeconds: String(settings.watchIntervalSeconds),
     });
     setMaxUsdPerDayText(String(settings.maxUsdPerDay));
   }, [settings.maxUsdPerDay, settings.defaultMaxMinutes, settings.idleMinutes, settings.watchIntervalSeconds]);
@@ -1457,11 +1472,18 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
       setError("Max USD per day must be a positive amount like 10 or 2.5");
       return;
     }
+    const defaultMaxMinutes = parseInteger(draft.defaultMaxMinutes, { min: 1, max: 1440 });
+    const idleMinutes = parseInteger(draft.idleMinutes, { min: 1, max: 1440 });
+    const watchIntervalSeconds = parseInteger(draft.watchIntervalSeconds, { min: 15, max: 3600 });
+    if (defaultMaxMinutes === null || idleMinutes === null || watchIntervalSeconds === null) {
+      setError("Session length and idle timeout must be whole minutes (1–1440); the watch interval whole seconds (15–3600)");
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...draft, maxUsdPerDay }) });
+      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds }) });
       setNotice("Saved.");
       await onChanged();
     } catch (err) {
@@ -1473,16 +1495,8 @@ function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: ()
 
   const field = (label: string, key: keyof typeof draft, props: { min: number; max: number }) => (
     <label className="block text-xs text-zinc-400">
-      {label}
-      <input
-        type="number"
-        min={props.min}
-        max={props.max}
-        step={1}
-        value={draft[key]}
-        onChange={(e) => setDraft({ ...draft, [key]: Number(e.target.value) })}
-        className={inputClass}
-      />
+      {label} ({props.min}–{props.max})
+      <input type="text" inputMode="numeric" value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} className={inputClass} />
     </label>
   );
 

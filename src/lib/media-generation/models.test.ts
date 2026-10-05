@@ -611,3 +611,18 @@ test("review 16: cancelling a RESERVED pull first looks for a pod of its determi
   assert.deepEqual(calls, ["terminate:cpupod5"]);
   assert.equal(store.current(), null);
 });
+
+test("review 17: after a pull ends, the HF CLI's cache keys under models/<folder>/.cache/ are deleted over S3 (the pod may have been killed before its own cleanup ran)", async () => {
+  const f = fixture();
+  await f.services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  f.objects.set("models/vae/c.bin", 10);
+  f.objects.set("models/vae/.cache/huggingface/download/c.bin.metadata", 1);
+  f.objects.set("models/vae/.cache/huggingface/download/c.bin.lock", 0);
+  f.objects.set("models/checkpoints/.cache/other.lock", 0); // another folder: untouched
+  const [done] = await f.services.pollPulls();
+  assert.equal(done.status, "done");
+  assert.ok(f.calls.includes("delete:models/vae/.cache/huggingface/download/c.bin.metadata"));
+  assert.ok(f.calls.includes("delete:models/vae/.cache/huggingface/download/c.bin.lock"));
+  assert.ok(f.objects.has("models/checkpoints/.cache/other.lock"));
+  assert.ok(f.objects.has("models/vae/c.bin"));
+});
