@@ -111,6 +111,50 @@ test("listGpuTypes asks the catalog for POD availability and maps price/availabi
   ]);
 });
 
+// Slice 0 (2026-10-05): the LIVE catalog shapes, recorded from the real RunPod v2 API (abridged to the fields read).
+test("slice 0: the live GPU catalog shape -- name/memory/secure/community, price.<cloud> per cloud (0 = not offered), availability per datacenter", async () => {
+  const live = {
+    gpus: [
+      { availability: "LOW", community: true, dataCenters: [{ availability: "LOW", id: "EU-RO-1", name: "EU-RO-1" }, { availability: "LOW", id: "EUR-IS-1", name: "EUR-IS-1" }], id: "NVIDIA GeForce RTX 4090", manufacturer: "NVIDIA", maxCount: { community: 8, secure: 8 }, memory: 24, name: "RTX 4090", pool: "ADA_24", price: { community: 0.34, secure: 0.74, serverless: 1.1 }, secure: true },
+      { availability: "NONE", community: true, id: "NVIDIA A100-SXM4-40GB", manufacturer: "NVIDIA", maxCount: { community: 2, secure: 0 }, memory: 40, name: "A100 SXM 40GB", pool: null, price: { community: 1, secure: 0 }, secure: false },
+    ],
+  };
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 200, body: live })).fetchImpl });
+  const secure = await client.listGpuTypes({ cloud: "SECURE" });
+  assert.deepEqual(secure[0], {
+    id: "NVIDIA GeForce RTX 4090",
+    displayName: "RTX 4090",
+    memoryInGb: 24,
+    secureCloud: true,
+    communityCloud: true,
+    onDemandPricePerHr: 0.74,
+    spotPricePerHr: null,
+    estimatedAvailability: "LOW",
+    dataCenters: [
+      { id: "EU-RO-1", countryCode: null, estimatedAvailability: "LOW" },
+      { id: "EUR-IS-1", countryCode: null, estimatedAvailability: "LOW" },
+    ],
+  });
+  assert.equal(secure[1].onDemandPricePerHr, null, "price 0 = not offered on Secure Cloud");
+  assert.equal(secure[1].secureCloud, false);
+  const community = await client.listGpuTypes({ cloud: "COMMUNITY" });
+  assert.equal(community[0].onDemandPricePerHr, 0.34);
+});
+
+test("slice 0: the datacenter catalog lives at /catalog/datacenters and carries the network-volume tiers", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({
+    status: 200,
+    body: { dataCenters: [{ compliance: [], globalNetwork: true, id: "EU-RO-1", name: "EU-RO-1", networkVolumeTypes: ["STANDARD"], region: "EUROPE" }, { compliance: [], globalNetwork: true, id: "EU-CZ-1", name: "EU-CZ-1", networkVolumeTypes: [], region: "EUROPE" }] },
+  }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  const dcs = await client.listDataCenters();
+  assert.equal(new URL(calls[0].url).pathname, "/v2/catalog/datacenters");
+  assert.deepEqual(dcs, [
+    { id: "EU-RO-1", countryCode: null, region: "EUROPE", networkVolumeTypes: ["STANDARD"] },
+    { id: "EU-CZ-1", countryCode: null, region: "EUROPE", networkVolumeTypes: [] },
+  ]);
+});
+
 test("createNetworkVolume posts name/dataCenterId/size; the response maps size -> sizeGb", async () => {
   const { fetchImpl, calls } = fakeFetch(() => ({ status: 201, body: { id: "vol1", name: "models", dataCenterId: "EU-RO-1", size: 150, usedSize: 0, createdAt: "2026-10-05T00:00:00Z" } }));
   const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });

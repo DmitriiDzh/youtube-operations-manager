@@ -29,8 +29,17 @@ type CredentialsStatus = MediaCredentialsStatus;
 type Settings = MediaSettings;
 type Overview = MediaGenerationOverview;
 
-type Gpu = { id: string; displayName: string; memoryInGb: number | null; onDemandPricePerHr: number | null; estimatedAvailability: string | null; secureCloud: boolean; communityCloud: boolean };
-type DataCenter = { id: string; countryCode: string | null; region: string | null };
+type Gpu = {
+  id: string;
+  displayName: string;
+  memoryInGb: number | null;
+  onDemandPricePerHr: number | null;
+  estimatedAvailability: string | null;
+  secureCloud: boolean;
+  communityCloud: boolean;
+  dataCenters: Array<{ id: string; estimatedAvailability: string | null }>;
+};
+type DataCenter = { id: string; countryCode: string | null; region: string | null; networkVolumeTypes: string[] };
 type Volume = { id: string; name: string; dataCenterId: string; sizeGb: number; usedSizeGb: number | null };
 type Template = { id: string; name: string };
 type TestResult = { runpod: { ok: true } | { ok: false; message: string }; s3: { ok: true } | { ok: false; message: string } | { skipped: true; reason: string }; verifiedAt: string | null };
@@ -1267,7 +1276,8 @@ function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview: Overvi
                   {catalog.dataCenters.map((dc) => (
                     <option key={dc.id} value={dc.id}>
                       {dc.id}
-                      {dc.countryCode ? ` (${dc.countryCode})` : ""}
+                      {dc.region ? ` · ${dc.region.toLowerCase().replace(/_/g, " ")}` : ""}
+                      {dc.networkVolumeTypes.length > 0 ? ` · volumes: ${dc.networkVolumeTypes.join(", ").toLowerCase().replace(/_/g, " ")}` : " · no network volumes"}
                     </option>
                   ))}
                 </select>
@@ -1281,7 +1291,14 @@ function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview: Overvi
                       {g.displayName}
                       {g.memoryInGb ? ` · ${g.memoryInGb} GB` : ""}
                       {g.onDemandPricePerHr !== null ? ` · $${g.onDemandPricePerHr.toFixed(2)}/h` : ""}
-                      {g.estimatedAvailability ? ` · ${g.estimatedAvailability.toLowerCase()} availability` : ""}
+                      {draft.datacenterId
+                        ? (() => {
+                            const here = g.dataCenters.find((dc) => dc.id === draft.datacenterId);
+                            return here ? ` · ${(here.estimatedAvailability ?? "available").toLowerCase()} in ${draft.datacenterId}` : ` · not available in ${draft.datacenterId} now`;
+                          })()
+                        : g.estimatedAvailability
+                          ? ` · ${g.estimatedAvailability.toLowerCase()} availability`
+                          : ""}
                     </option>
                   ))}
                 </select>

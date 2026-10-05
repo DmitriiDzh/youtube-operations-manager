@@ -27,7 +27,13 @@ export type RunpodGpuType = {
   dataCenters: Array<{ id: string; countryCode: string | null; estimatedAvailability: string | null }>;
 };
 
-export type RunpodDataCenter = { id: string; countryCode: string | null; region: string | null };
+export type RunpodDataCenter = {
+  id: string;
+  countryCode: string | null;
+  region: string | null;
+  /** Network-volume tiers offered there (`STANDARD`, `HIGH_PERFORMANCE`); empty = no network volumes in this datacenter. */
+  networkVolumeTypes: string[];
+};
 
 export type RunpodNetworkVolume = {
   id: string;
@@ -95,21 +101,30 @@ export function extractList(body: unknown, preferredKeys: string[]): unknown[] {
   return [];
 }
 
-export function toGpuType(raw: unknown): RunpodGpuType {
+/**
+ * One catalog GPU. The live v2 shape (observed in slice 0, 2026-10-05) is
+ * `{ id, name, memory, secure, community, availability, price: { secure, community, serverless }, dataCenters: [{ id, availability }] }`
+ * -- `price.<cloud>` is the on-demand USD/h for that cloud, 0 when the GPU is not offered there. The older field names
+ * (`displayName`, `memoryInGb`, `secureCloud`, `lowestPrice.uninterruptablePrice`) are still read as a fallback.
+ */
+export function toGpuType(raw: unknown, cloud: "SECURE" | "COMMUNITY" = "SECURE"): RunpodGpuType {
   const r = asRecord(raw);
   const lowest = asRecord(r.lowestPrice);
+  const price = asRecord(r.price);
+  const positive = (n: number | null) => (n !== null && n > 0 ? n : null);
+  const cloudPrice = positive(asNumber(cloud === "COMMUNITY" ? price.community : price.secure));
   return {
     id: asString(r.id) ?? "",
-    displayName: asString(r.displayName) ?? asString(r.id) ?? "",
-    memoryInGb: asNumber(r.memoryInGb),
-    secureCloud: r.secureCloud === true,
-    communityCloud: r.communityCloud === true,
-    onDemandPricePerHr: asNumber(lowest.uninterruptablePrice),
+    displayName: asString(r.name) ?? asString(r.displayName) ?? asString(r.id) ?? "",
+    memoryInGb: asNumber(r.memory) ?? asNumber(r.memoryInGb),
+    secureCloud: r.secure === true || r.secureCloud === true,
+    communityCloud: r.community === true || r.communityCloud === true,
+    onDemandPricePerHr: cloudPrice ?? positive(asNumber(lowest.uninterruptablePrice)),
     spotPricePerHr: asNumber(lowest.minimumBidPrice),
-    estimatedAvailability: asString(r.estimatedAvailability),
+    estimatedAvailability: asString(r.availability) ?? asString(r.estimatedAvailability),
     dataCenters: extractList(r.dataCenters, []).map((dc) => {
       const d = asRecord(dc);
-      return { id: asString(d.id) ?? "", countryCode: asString(d.countryCode), estimatedAvailability: asString(d.estimatedAvailability) };
+      return { id: asString(d.id) ?? "", countryCode: asString(d.countryCode), estimatedAvailability: asString(d.availability) ?? asString(d.estimatedAvailability) };
     }),
   };
 }
@@ -240,15 +255,17 @@ export function createRunpodApiClient(args: {
       const params = new URLSearchParams({ include: "AVAILABILITY", product: "POD" });
       if (options.cloud) params.set("cloud", options.cloud);
       const { body } = await request("GET", `/catalog/gpus?${params.toString()}`);
-      return extractList(body, ["gpus"]).map(toGpuType).filter((g) => g.id);
+      return extractList(body, ["gpus"]).map((g) => toGpuType(g, options.cloud ?? "SECURE")).filter((g) => g.id);
     },
 
     async listDataCenters(): Promise<RunpodDataCenter[]> {
-      const { body } = await request("GET", "/catalog/data-centers");
+      // `/catalog/datacenters` (slice 0, 2026-10-05: `/catalog/data-centers` is a 404).
+      const { body } = await request("GET", "/catalog/datacenters");
       return extractList(body, ["dataCenters"])
         .map((raw) => {
           const r = asRecord(raw);
-          return { id: asString(r.id) ?? "", countryCode: asString(r.countryCode), region: asString(r.region) };
+          const types = Array.isArray(r.networkVolumeTypes) ? r.networkVolumeTypes.filter((t): t is string => typeof t === "string") : [];
+          return { id: asString(r.id) ?? "", countryCode: asString(r.countryCode), region: asString(r.region), networkVolumeTypes: types };
         })
         .filter((dc) => dc.id);
     },
