@@ -51,6 +51,68 @@ export const requestSessionInputSchema = z
   .strict();
 
 export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(64) }).strict();
+
+// -- workflow templates and jobs (slice 3) ---------------------------------------------------------
+
+const parameterNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/, "a parameter name is an identifier (letters, digits, _)");
+const scalarSchema = z.union([z.string().max(20_000), z.number(), z.boolean()]);
+
+export const templateParameterSchema = z
+  .object({
+    name: parameterNameSchema,
+    type: z.enum(["string", "text", "number", "integer", "boolean", "enum"]),
+    nodeId: z.string().min(1).max(64),
+    input: z.string().min(1).max(128),
+    required: z.boolean().optional(),
+    default: scalarSchema.nullable().optional(),
+    min: z.number().nullable().optional(),
+    max: z.number().nullable().optional(),
+    enum: z.array(z.string().min(1).max(500)).min(1).max(200).nullable().optional(),
+    description: z.string().max(500).nullable().optional(),
+  })
+  .strict();
+
+/** A ComfyUI API-format graph: `{ [nodeId]: { class_type, inputs } }`. */
+export const workflowGraphSchema = z
+  .record(
+    z.string().min(1).max(64),
+    z
+      .object({
+        class_type: z.string().min(1).max(200),
+        inputs: z.record(z.string(), z.unknown()),
+        _meta: z.record(z.string(), z.unknown()).optional(),
+      })
+      .passthrough()
+  )
+  .refine((graph) => Object.keys(graph).length > 0 && Object.keys(graph).length <= 2000, "a workflow has between 1 and 2000 nodes");
+
+export const importTemplateInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(1000).nullable().optional(),
+    workflow: workflowGraphSchema,
+    parameters: z.array(templateParameterSchema).max(100),
+  })
+  .strict();
+
+export const updateTemplateInputSchema = importTemplateInputSchema.partial().extend({ templateId: z.string().min(1).max(64) }).strict();
+export const templateIdInputSchema = z.object({ templateId: z.string().min(1).max(64) }).strict();
+
+export const createJobInputSchema = z
+  .object({
+    sessionId: z.string().min(1).max(64),
+    channelId: z.string().min(1).max(64),
+    templateId: z.string().min(1).max(64),
+    params: z.record(parameterNameSchema, scalarSchema).default({}),
+    createdBy: z.enum(["operator", "agent"]),
+  })
+  .strict();
+
+export const jobIdInputSchema = z.object({ jobId: z.string().min(1).max(64) }).strict();
+export const listJobsInputSchema = z.object({ sessionId: z.string().min(1).max(64).optional(), channelId: z.string().min(1).max(64).optional(), limit: z.number().int().min(1).max(200).optional() }).strict();
+
+export type ImportTemplateInput = z.infer<typeof importTemplateInputSchema>;
+export type CreateJobInput = z.infer<typeof createJobInputSchema>;
 export const stopSessionInputSchema = z.object({ sessionId: z.string().min(1).max(64), reason: z.string().trim().max(200).optional() }).strict();
 export const rejectSessionInputSchema = z.object({ sessionId: z.string().min(1).max(64), reason: z.string().trim().min(1).max(500) }).strict();
 

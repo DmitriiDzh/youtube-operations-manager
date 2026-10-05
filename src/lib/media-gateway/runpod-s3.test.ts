@@ -100,7 +100,11 @@ test("getObjectToFile streams to a temp file then renames; a failed download lea
     );
     const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
     const dest = path.join(dir, "nested", "out.bin");
-    assert.deepEqual(await client.getObjectToFile("exchange/j/out.bin", dest), { bytes: 5 });
+    // sha256 of bytes 01 02 03 04 05, computed independently (`printf '\x01\x02\x03\x04\x05' | shasum -a 256`).
+    assert.deepEqual(await client.getObjectToFile("exchange/j/out.bin", dest), {
+      bytes: 5,
+      sha256: "74f81fe167d99b4cb41d6d0ccda82278caee9f3e2f25d5e5a3936ff3dcec60d0",
+    });
     assert.deepEqual([...(await readFile(dest))], [1, 2, 3, 4, 5]);
     await assert.rejects(client.getObjectToFile("exchange/j/bad", path.join(dir, "bad.bin")), (e: unknown) => isDomainError(e) && e.code === "runpod_s3_unavailable");
     await assert.rejects(readFile(path.join(dir, "bad.bin")));

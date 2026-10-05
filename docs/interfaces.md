@@ -1044,6 +1044,10 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 - `POST /api/media-generation/sessions/{sessionId}/stop` — `{ reason? }`; terminates the pod and confirms it is gone (never "stop")
 - `POST /api/media-generation/sessions/{sessionId}/reject` — `{ reason }` for a pending request
 - Session shape: `{ sessionId, channelId, status: pending|approved|starting|running|stopping|done|failed|rejected|interrupted, requestedBy, maxMinutes, maxUsd, estimateUsd, fitsToday, costPerHr, podId, comfyUiProxyUrl, createdAt, startedAt, readyAt, stoppedAt, secondsUsed, usdCharged, stopReason, error }` — never the proxy token
+- `GET|POST /api/media-generation/workflow-templates` — list / import `{ name, description?, workflow (ComfyUI API-format graph), parameters: [{ name, type: string|text|number|integer|boolean|enum, nodeId, input, required?, default?, min?, max?, enum?, description? }] }` (operator only, D7); `GET|PUT|DELETE /api/media-generation/workflow-templates/{templateId}` (PUT bumps `version`)
+- `GET|POST /api/media-generation/jobs` — list (`?sessionId=&channelId=`) / the operator's own job `{ sessionId, channelId, templateId, params }` → 201 `{ job }` (`submitted`; parameters validated before any ComfyUI call: `media_job_params_invalid`); `GET /api/media-generation/jobs/{jobId}`; `POST /api/media-generation/jobs/{jobId}/cancel`
+- Job shape: `{ jobId, sessionId, channelId, templateId, templateVersion, params, status: queued|submitted|generating|transferring|done|failed|cancelled, createdBy, promptId, outputs: [{ nodeId, kind, filename, subfolder, remoteKey, localPath, bytes, sha256, remoteDeleted, assetId, note }], assetIds[], error, createdAt, submittedAt, finishedAt }`; `localPath` is under `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`
+- `POST /api/media-generation/exchange/janitor` — `{ dryRun?: boolean }` (default true) → `{ scanned, deleted[], kept: [{ key, reason }] }`; only `exchange/` on the volume, by ledger, terminal jobs only
 
 ### Media CLI (`npm run media -- <command>`, Phase 14 slice 1)
 
@@ -1052,14 +1056,16 @@ credential store, so no key is ever an argument or an environment variable. Same
 CLI: "Operator CLI access" must be on; `volume-create`, `template-create`, `pod-create`, `pod-terminate`,
 `s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
 `gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
-`template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
+`template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `workflow-templates`,
+`workflow-template-import --file`, `jobs [sessionId]`, `job-get <id>`, `job-create --file`, `janitor [--delete]`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
 `pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-put <file> <key>`, `s3-rm <key>`.
 JSON envelope on stdout, non-zero exit on failure. Pod objects carry `comfyUiProxyUrl` (the token-proxy
 port on RunPod's HTTP proxy), so no script spells the proxy host itself. There is deliberately no
 `pod-stop`: a stopped pod's disk is billed at the doubled rate, so the only idle state is "terminated".
 Scripts: `scripts/media/README.md` (status, credentials-test, catalog, volumes, volume-create,
-volume-bootstrap, models-pull, template-create, pods, pod-create, pod-terminate, pod-watch, s3; the
-pod-side `pod/pod-start.sh`, `pod/Caddyfile`, `pod/extra_model_paths.yaml`, `pod/template.json`).
+volume-bootstrap, models-pull, template-create, pods, pod-create, pod-terminate, pod-watch, s3,
+job-run, exchange-janitor; the pod-side `pod/pod-start.sh`, `pod/Caddyfile`, `pod/extra_model_paths.yaml`,
+`pod/template.json`).
 
 -> Next: [docs/troubleshooting.md](./troubleshooting.md)
 

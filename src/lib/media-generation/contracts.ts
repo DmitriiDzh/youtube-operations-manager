@@ -129,6 +129,82 @@ export type MediaSessionLimits = {
   missing: string[];
 };
 
+// -- workflow templates and jobs (slice 3, PHASE_14_PLAN.md §2.4, owner decision D7) ------------------
+
+export type MediaParameterType = "string" | "text" | "number" | "integer" | "boolean" | "enum";
+
+/** One value an agent may set on an imported graph: which node input it writes, with its bounds. */
+export type MediaTemplateParameter = {
+  name: string;
+  type: MediaParameterType;
+  nodeId: string;
+  input: string;
+  required: boolean;
+  default: string | number | boolean | null;
+  min: number | null;
+  max: number | null;
+  enum: string[] | null;
+  description: string | null;
+};
+
+export type MediaWorkflowTemplate = {
+  templateId: string;
+  name: string;
+  version: number;
+  description: string | null;
+  parameters: MediaTemplateParameter[];
+  /** Node ids whose `filename_prefix` is rewritten to `<jobId>/...` so outputs land in the job's folder. */
+  outputNodeIds: string[];
+  nodeCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MediaJobStatus = "queued" | "submitted" | "generating" | "transferring" | "done" | "failed" | "cancelled";
+export const MEDIA_JOB_TERMINAL_STATUSES: readonly MediaJobStatus[] = ["done", "failed", "cancelled"];
+
+export type MediaJobOutput = {
+  nodeId: string;
+  /** ComfyUI's output kind (`images`, `audio`, `gifs`, ...). */
+  kind: string;
+  filename: string;
+  subfolder: string;
+  remoteKey: string;
+  /** Absolute path under `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`, once pulled. */
+  localPath: string | null;
+  bytes: number | null;
+  sha256: string | null;
+  remoteDeleted: boolean;
+  assetId: string | null;
+  /** Set when the file could not be pulled or was outside the job's folder. */
+  note: string | null;
+};
+
+export type MediaJob = {
+  jobId: string;
+  sessionId: string;
+  channelId: string;
+  templateId: string;
+  templateVersion: number;
+  params: Record<string, string | number | boolean>;
+  status: MediaJobStatus;
+  createdBy: "operator" | "agent";
+  promptId: string | null;
+  outputs: MediaJobOutput[];
+  assetIds: string[];
+  error: string | null;
+  createdAt: string;
+  submittedAt: string | null;
+  finishedAt: string | null;
+};
+
+/** Where this job's outputs are written locally, relative to the From YTM folder. */
+export const MEDIA_OUTPUT_SUBDIR = "media";
+/** The volume prefix ComfyUI writes to (`--output-directory /workspace/exchange`) and the only prefix the janitor touches. */
+export const EXCHANGE_PREFIX = "exchange/";
+/** Reference inputs for ComfyUI (`--input-directory /workspace/exchange/in`); never cleaned by the janitor. */
+export const EXCHANGE_INPUT_PREFIX = "exchange/in/";
+
 export type MediaCredentialsTestResult = {
   runpod: { ok: true } | { ok: false; message: string };
   s3: { ok: true } | { ok: false; message: string } | { skipped: true; reason: string };

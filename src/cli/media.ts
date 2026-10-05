@@ -39,6 +39,12 @@ export const MEDIA_CLI_COMMANDS = [
   "template-create",
   "cpus",
   "sessions",
+  "workflow-templates",
+  "workflow-template-import",
+  "jobs",
+  "job-get",
+  "job-create",
+  "janitor",
   "pods",
   "pod-get",
   "pod-create",
@@ -53,6 +59,9 @@ export type MediaCliCommand = (typeof MEDIA_CLI_COMMANDS)[number];
 const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>([
   "volume-create",
   "template-create",
+  "workflow-template-import",
+  "job-create",
+  "janitor",
   "pod-create",
   "pod-terminate",
   "s3-put",
@@ -66,6 +75,9 @@ export const HELP = [
   "  settings                                the stored Settings → Media values",
   "  gpus | cpus | datacenters | volumes | templates | pods",
   "  sessions                                recent generation sessions + limits (approve/stop are Web-only)",
+  "  workflow-templates | workflow-template-import --file <template.json>   {name, workflow, parameters}",
+  "  jobs [sessionId] | job-get <jobId> | job-create --file <job.json>      {sessionId, channelId, templateId, params}",
+  "  janitor [--delete]                      exchange/ leftovers on the volume (dry run unless --delete)",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
   "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
   "  pod-get <podId>",
@@ -189,6 +201,26 @@ export async function runMediaCli(args: {
         break;
       case "sessions":
         data = { sessions: await core.listSessions(20), limits: await core.getLimits() };
+        break;
+      case "workflow-templates":
+        data = await core.listWorkflowTemplates();
+        break;
+      case "workflow-template-import":
+        data = await core.importWorkflowTemplate(await readJsonFile(readFileText, parsed.flags));
+        break;
+      case "jobs":
+        data = await core.listJobs(parsed.positional[0] ? { sessionId: parsed.positional[0] } : {});
+        break;
+      case "job-get":
+        data = await core.getJob({ jobId: requirePositional(parsed.positional, 0, "jobId") });
+        break;
+      case "job-create": {
+        const body = await readJsonFile(readFileText, parsed.flags);
+        data = await core.createJob({ ...(body && typeof body === "object" ? (body as Record<string, unknown>) : {}), createdBy: "operator" });
+        break;
+      }
+      case "janitor":
+        data = await core.cleanupExchange({ dryRun: parsed.flags.delete !== true });
         break;
       case "volume-create":
         data = await core.createNetworkVolume({

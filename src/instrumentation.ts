@@ -179,6 +179,13 @@ async function startServerSession() {
   const { createMediaGenerationCore } = await import("@/lib/media-generation");
   const media = createMediaGenerationCore();
   await media.bootSweep().catch(() => undefined);
+  // Jobs left mid-flight by a dead process fail as interrupted (their pod was just swept too).
+  await media.sweepInterruptedJobs().catch(() => undefined);
+  // The exchange janitor (AC-P14-14): terminal leftovers under exchange/ on the volume, by ledger only. Daily, real deletes.
+  const MEDIA_JANITOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const janitorQuietly = () => void media.cleanupExchange({ dryRun: false }).catch(() => undefined);
+  setTimeout(janitorQuietly, 10 * 60_000).unref();
+  setInterval(janitorQuietly, MEDIA_JANITOR_INTERVAL_MS).unref();
   const MEDIA_WATCH_MIN_MS = 15_000;
   const mediaWatchLoop = async () => {
     try {

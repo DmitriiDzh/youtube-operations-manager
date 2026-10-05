@@ -115,7 +115,353 @@ export function MediaGenerationSettings({ activeChannelId = null }: { activeChan
       <VolumeCard overview={overview} onChanged={refresh} />
       <LimitsCard settings={overview.settings} onChanged={refresh} />
       <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} />
+      <WorkflowTemplatesCard />
+      <JobsCard activeChannelId={activeChannelId} />
     </div>
+  );
+}
+
+type WorkflowTemplate = { templateId: string; name: string; version: number; description: string | null; parameters: Array<{ name: string; type: string; required: boolean; default: unknown; description: string | null }>; outputNodeIds: string[]; nodeCount: number };
+
+// Phase 14 slice 3 (owner decision D7): templates are imported by the operator -- a ComfyUI API-format
+// graph (Save As (API Format) in ComfyUI) plus the parameters an agent may set. Prompts are job
+// parameters, never part of a template.
+function WorkflowTemplatesCard() {
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [name, setName] = useState("");
+  const [workflowText, setWorkflowText] = useState("");
+  const [parametersText, setParametersText] = useState('[\n  { "name": "prompt", "type": "text", "nodeId": "6", "input": "text", "required": true }\n]');
+  const [showImport, setShowImport] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WorkflowTemplate | null>(null);
+
+  const fetchTemplates = useCallback(
+    () =>
+      requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates").then(
+        (data) => setTemplates(data.templates),
+        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load templates")
+      ),
+    []
+  );
+
+  useEffect(() => {
+    fetchTemplates();
+  }, [fetchTemplates]);
+
+  async function importTemplate() {
+    setBusy(true);
+    setError(null);
+    try {
+      let workflow: unknown;
+      let parameters: unknown;
+      try {
+        workflow = JSON.parse(workflowText);
+        parameters = JSON.parse(parametersText);
+      } catch {
+        throw new Error("Workflow and parameters must be valid JSON");
+      }
+      await requestJson("/api/media-generation/workflow-templates", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, workflow, parameters }),
+      });
+      setName("");
+      setWorkflowText("");
+      setShowImport(false);
+      await fetchTemplates();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import the template");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    const target = deleteTarget;
+    if (!target) return;
+    setDeleteTarget(null);
+    setBusy(true);
+    try {
+      await requestJson(`/api/media-generation/workflow-templates/${encodeURIComponent(target.templateId)}`, { method: "DELETE" });
+      await fetchTemplates();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete the template");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card
+      title="Workflow templates"
+      help="A template is a ComfyUI workflow exported in API format (ComfyUI → Workflow → Export (API)) plus the parameters a job may set: each parameter names a node id and an input of that node, with a type and optional bounds. Every Save node's filename_prefix is rewritten per job so outputs land in that job's folder. Prompts are job parameters, not template content."
+    >
+      {templates.length === 0 ? (
+        <p className="text-xs text-zinc-500">No templates yet.</p>
+      ) : (
+        <ul className="space-y-1 text-sm text-zinc-300">
+          {templates.map((t) => (
+            <li key={t.templateId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
+              <span>
+                <span className="font-medium text-zinc-100">{t.name}</span> <span className="text-xs text-zinc-500">v{t.version} · {t.nodeCount} nodes · {t.outputNodeIds.length} output node(s) · id {t.templateId}</span>
+                <br />
+                <span className="text-xs text-zinc-500">
+                  {t.parameters.map((p) => `${p.name}${p.required ? "*" : ""}: ${p.type}`).join(", ") || "no parameters"}
+                </span>
+              </span>
+              <button type="button" onClick={() => setDeleteTarget(t)} disabled={busy} className={dangerButton}>
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {showImport ? (
+        <div className="space-y-2">
+          <label className="block text-xs text-zinc-400">
+            Name
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} placeholder="txt2img FLUX" />
+          </label>
+          <label className="block text-xs text-zinc-400">
+            Workflow JSON (API format)
+            <textarea value={workflowText} onChange={(e) => setWorkflowText(e.target.value)} className={`${inputClass} h-40 font-mono text-xs`} placeholder='{"3": {"class_type": "KSampler", "inputs": {...}}, ...}' />
+          </label>
+          <label className="block text-xs text-zinc-400">
+            Parameters JSON
+            <textarea value={parametersText} onChange={(e) => setParametersText(e.target.value)} className={`${inputClass} h-28 font-mono text-xs`} />
+          </label>
+          <div className="flex gap-2">
+            <button type="button" onClick={importTemplate} disabled={busy || !name.trim() || !workflowText.trim()} className={primaryButton}>
+              {busy ? "Importing…" : "Import"}
+            </button>
+            <button type="button" onClick={() => setShowImport(false)} disabled={busy} className={secondaryButton}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setShowImport(true)} className={secondaryButton}>
+          Import a template
+        </button>
+      )}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete the template "${deleteTarget.name}"?`}
+          description="Finished jobs keep their own provenance; new jobs can no longer use it."
+          confirmLabel="Delete"
+          confirmVariant="danger"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={remove}
+        />
+      )}
+    </Card>
+  );
+}
+
+type Job = {
+  jobId: string;
+  sessionId: string;
+  templateId: string;
+  status: string;
+  createdBy: string;
+  params: Record<string, string | number | boolean>;
+  outputs: Array<{ filename: string; localPath: string | null; note: string | null; assetId: string | null }>;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+};
+
+// Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
+// job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
+function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [openSession, setOpenSession] = useState<{ sessionId: string; status: string } | null>(null);
+  const [templateId, setTemplateId] = useState("");
+  const [paramsText, setParamsText] = useState("{}");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [janitorReport, setJanitorReport] = useState<string | null>(null);
+  const [confirmJanitor, setConfirmJanitor] = useState(false);
+
+  const fetchAll = useCallback(
+    () =>
+      Promise.all([
+        requestJson<{ jobs: Job[] }>("/api/media-generation/jobs"),
+        requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
+        requestJson<{ limits: { openSession: { sessionId: string; status: string } | null } }>("/api/media-generation/sessions"),
+      ]).then(
+        ([j, t, s]) => {
+          setJobs(j.jobs);
+          setTemplates(t.templates);
+          setOpenSession(s.limits.openSession);
+        },
+        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load jobs")
+      ),
+    []
+  );
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
+  useEffect(() => {
+    if (!hasActive) return;
+    const timer = setInterval(() => void fetchAll(), 5_000);
+    return () => clearInterval(timer);
+  }, [hasActive, fetchAll]);
+
+  async function run() {
+    if (!activeChannelId || !openSession) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let params: unknown;
+      try {
+        params = JSON.parse(paramsText || "{}");
+      } catch {
+        throw new Error("Parameters must be valid JSON");
+      }
+      await requestJson("/api/media-generation/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: openSession.sessionId, channelId: activeChannelId, templateId, params }),
+      });
+      await fetchAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to submit the job");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancel(job: Job) {
+    setBusy(true);
+    try {
+      await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+      await fetchAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel the job");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function janitor(dryRun: boolean) {
+    setConfirmJanitor(false);
+    setBusy(true);
+    setError(null);
+    try {
+      const report = await requestJson<{ scanned: number; deleted: string[]; kept: Array<{ key: string; reason: string }> }>("/api/media-generation/exchange/janitor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dryRun }),
+      });
+      setJanitorReport(`${dryRun ? "Would delete" : "Deleted"} ${report.deleted.length} of ${report.scanned} object(s); kept ${report.kept.length}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Janitor failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canRun = Boolean(activeChannelId) && openSession?.status === "running" && templates.length > 0;
+
+  return (
+    <Card
+      title="Jobs"
+      help="A job fills a template's parameters, submits the prompt to the running session's ComfyUI and, once it finishes, pulls every output over the S3 API into <workspace>/99 Data Exchange/From YTM/media/<jobId>/, deletes it from the volume and registers it in the asset catalog with its provenance. The janitor removes leftovers of finished jobs from the volume (dry run first)."
+    >
+      {!canRun ? (
+        <p className="text-xs text-zinc-500">
+          {!activeChannelId ? "Select an active channel." : openSession?.status !== "running" ? "Start a session first." : "Import a workflow template first."}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="block text-xs text-zinc-400">
+              Template
+              <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputClass}>
+                <option value="">— choose —</option>
+                {templates.map((t) => (
+                  <option key={t.templateId} value={t.templateId}>
+                    {t.name} v{t.version}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs text-zinc-400">
+              Parameters JSON
+              <textarea value={paramsText} onChange={(e) => setParamsText(e.target.value)} className={`${inputClass} h-20 font-mono text-xs`} placeholder='{"prompt": "..."}' />
+            </label>
+          </div>
+          <button type="button" onClick={run} disabled={busy || !templateId} className={primaryButton}>
+            {busy ? "Working…" : "Run job"}
+          </button>
+        </div>
+      )}
+
+      {jobs.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
+            <thead>
+              <tr className="text-zinc-500">
+                <th className="py-1 pr-3">When</th>
+                <th className="py-1 pr-3">Status</th>
+                <th className="py-1 pr-3">By</th>
+                <th className="py-1 pr-3">Outputs</th>
+                <th className="py-1 pr-3">Error / notes</th>
+                <th className="py-1"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.slice(0, 12).map((j) => (
+                <tr key={j.jobId} className="border-t border-zinc-800 align-top">
+                  <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(j.createdAt)}</td>
+                  <td className="py-1 pr-3">{j.status}</td>
+                  <td className="py-1 pr-3">{j.createdBy}</td>
+                  <td className="py-1 pr-3 font-mono">
+                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split("/").slice(-2).join("/") : `${o.filename} (${o.note ?? "pending"})`)).join(", ")}
+                  </td>
+                  <td className="py-1 pr-3">{j.error ?? ""}</td>
+                  <td className="py-1">
+                    {["queued", "submitted", "generating"].includes(j.status) && (
+                      <button type="button" onClick={() => cancel(j)} disabled={busy} className={secondaryButton}>
+                        Cancel
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3">
+        <button type="button" onClick={() => janitor(true)} disabled={busy} className={secondaryButton}>
+          Janitor: dry run
+        </button>
+        <button type="button" onClick={() => setConfirmJanitor(true)} disabled={busy} className={dangerButton}>
+          Janitor: delete leftovers
+        </button>
+        {janitorReport && <span className="text-xs text-zinc-400">{janitorReport}</span>}
+      </div>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {confirmJanitor && (
+        <ConfirmDialog
+          title="Delete finished jobs' leftovers from the volume?"
+          description="Only objects under exchange/ that belong to finished jobs of this device (and are already in your workspace, or belong to failed/cancelled jobs) are deleted. Models and reference inputs are never touched."
+          confirmLabel="Delete leftovers"
+          confirmVariant="danger"
+          onCancel={() => setConfirmJanitor(false)}
+          onConfirm={() => janitor(false)}
+        />
+      )}
+    </Card>
   );
 }
 

@@ -20,6 +20,11 @@ Setup order (slice 0):
 6. `scripts/media/pod-create.sh` — starts a ComfyUI pod with a fresh token; `pod-terminate.sh <id>`
    when done. `pod-watch.sh` terminates anything running past the limit (cron-able).
 7. `scripts/media/s3.sh ls exchange/` — files on the volume without a pod.
+8. With a session approved in Settings → Media → Sessions and a workflow template imported:
+   `scripts/media/job-run.sh --template <id> --channel <UC…> --param prompt="a cat"` submits a job and
+   waits; outputs land in `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`.
+9. `scripts/media/exchange-janitor.sh [--delete]` — leftovers of finished jobs under `exchange/` on
+   the volume (dry run by default; the server also runs it daily).
 
 There is deliberately no "stop pod" anywhere: a stopped pod's disk is billed at twice the running
 rate, so the only idle state is "terminated"; models survive on the network volume.

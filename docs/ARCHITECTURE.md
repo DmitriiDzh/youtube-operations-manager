@@ -2424,3 +2424,28 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   handlers call `stopForShutdown` first (AC-P14-09; the signal path is best-effort, the boot sweep is
   the backstop). Cost: `usdCharged = secondsUsed × costPerHr / 3600`, seconds from pod creation to
   confirmed termination, live while running; the daily total sums sessions started today (AC-P14-17).
+- **Templates, jobs and the exchange (slice 3, `jobs.ts`, schema v52, owner decisions D1/D4/D7).** A
+  workflow template is an operator-imported ComfyUI graph in API format plus declared parameters
+  (`name → nodeId/input`, type, bounds); import validates that every parameter targets an existing node
+  input and that the graph has at least one Save node (an input named `filename_prefix`); editing bumps
+  `version`, which a job's provenance records. `createJob` (operator now, agent in slice 5) requires a
+  running session of the same channel, validates the values against the declared parameters before any
+  ComfyUI call (AC-P14-10), writes them into a clone of the graph, rewrites every Save node's
+  `filename_prefix` to `<jobId>/<base>` so the outputs land under `/workspace/exchange/<jobId>/` on the
+  volume, submits `POST /prompt` through the token proxy and starts a background poll of
+  `/history/{promptId}` (every 4 s, 2 h cap; each poll counts as session activity). `node_errors` or an
+  `execution_error` mark the job `failed` with ComfyUI's message (AC-P14-11). On completion each output
+  is pulled over the S3 API: `HEAD` → `GET` to a temp name + rename (the gateway hashes the stream) → a
+  second SHA-256 of the file on disk must match (AC-P14-12) → ledger row in `media_exchange_files` →
+  `DELETE` on the volume (a failed delete leaves `remoteDeletedAt` null for the janitor, AC-P14-13) →
+  one `creative_assets` entry (`local_path`, type by output kind, provenance with template id+version,
+  params, promptId, podId, gpu, cost, sha256). Outputs are written only under `<workspace>/99 Data
+  Exchange/From YTM/media/<jobId>/` — the folder is resolved by the shared `src/lib/workspace-exchange/`
+  module (extracted from research-export, AGENTS.md §M: same symlink/containment proofs as ADR 0019);
+  without a configured workspace the job fails and nothing is pulled or deleted. An output reported
+  outside the job's folder is never pulled or deleted. **Janitor** (`cleanupExchange`, AC-P14-14): lists
+  only `exchange/`, skips `exchange/in/` (reference inputs) and keys of unknown or non-terminal jobs,
+  deletes a key only when its job is terminal and either its ledger row says the file is local or the
+  job failed/was cancelled; dry run by default (Settings button, CLI `janitor`), real deletes daily from
+  `src/instrumentation.ts` and on demand. Jobs left mid-flight by a dead process fail as interrupted at
+  boot, right after the session sweep.

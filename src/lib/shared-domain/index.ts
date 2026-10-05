@@ -129,6 +129,13 @@ export type DomainErrorCode =
   | "media_session_invalid_state"
   | "media_daily_cap_reached"
   | "media_session_start_failed"
+  // Phase 14 slice 3 -- workflow templates, jobs and the exchange folder.
+  | "media_template_not_found"
+  | "media_template_invalid"
+  | "media_job_not_found"
+  | "media_job_invalid_state"
+  | "media_job_params_invalid"
+  | "media_workspace_unavailable"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

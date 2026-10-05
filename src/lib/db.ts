@@ -796,6 +796,79 @@ export const mediaSessions = sqliteTable(
 );
 
 /**
+ * Phase 14 slice 3 (PHASE_14_PLAN.md §2.4, owner decision D7), SCHEMA_MIGRATIONS version 52. An
+ * operator-imported ComfyUI workflow in API format plus the parameters an agent may set (name ->
+ * node/input, type, bounds). Technical graphs only: prompts arrive as job parameters, never live here.
+ * Device-local in this phase (not in `SNAPSHOT_TRANSFERRED_TABLES`); `version` increments on edit so a
+ * job's provenance names the exact graph it ran.
+ */
+export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  version: integer("version").notNull().default(1),
+  description: text("description"),
+  workflowJson: text("workflow_json").notNull(),
+  parametersJson: text("parameters_json").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
+export type MediaJobStatusValue = (typeof MEDIA_JOB_STATUSES)[number];
+
+/**
+ * SCHEMA_MIGRATIONS version 52. One ComfyUI prompt inside a running session: template + params ->
+ * prompt_id -> outputs pulled over S3 into `<workspace>/99 Data Exchange/From YTM/media/<jobId>/`
+ * and registered in `creative_assets`. Transitions are atomic like `media_sessions`. Device-local.
+ */
+export const mediaJobs = sqliteTable(
+  "media_jobs",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    templateId: text("template_id").notNull(),
+    templateVersion: integer("template_version").notNull(),
+    paramsJson: text("params_json").notNull(),
+    status: text("status", { enum: MEDIA_JOB_STATUSES }).notNull().default("queued"),
+    createdBy: text("created_by", { enum: ["operator", "agent"] }).notNull(),
+    promptId: text("prompt_id"),
+    outputsJson: text("outputs_json"),
+    assetIdsJson: text("asset_ids_json"),
+    error: text("error"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    submittedAt: integer("submitted_at", { mode: "timestamp" }),
+    finishedAt: integer("finished_at", { mode: "timestamp" }),
+  },
+  (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 52. The ledger the exchange janitor and the local writer act on -- BY
+ * LEDGER ONLY (ADR 0019's rule): a remote key is deleted from the volume only after its row says the
+ * file exists locally; nothing outside `exchange/` is ever listed or deleted. Device-local.
+ */
+export const mediaExchangeFiles = sqliteTable(
+  "media_exchange_files",
+  {
+    remoteKey: text("remote_key").primaryKey(),
+    jobId: text("job_id").notNull(),
+    localPath: text("local_path").notNull(),
+    bytes: integer("bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    pulledAt: integer("pulled_at", { mode: "timestamp" }).notNull(),
+    remoteDeletedAt: integer("remote_deleted_at", { mode: "timestamp" }),
+  },
+  (table) => [index("media_exchange_files_job_idx").on(table.jobId)]
+);
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -2913,6 +2986,55 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS media_sessions_open_slot_idx ON media_sessions(open_slot)");
       await client.execute("CREATE INDEX IF NOT EXISTS media_sessions_status_idx ON media_sessions(status)");
+    },
+  },
+  {
+    version: 52,
+    description:
+      "media_workflow_templates, media_jobs, media_exchange_files -- ComfyUI workflow templates, generation jobs and the pulled-file ledger (Phase 14 slice 3, docs/roadmap/plans/PHASE_14_PLAN.md §2.4); additive new tables, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_workflow_templates (" +
+          "id TEXT PRIMARY KEY, " +
+          "name TEXT NOT NULL, " +
+          "version INTEGER NOT NULL DEFAULT 1, " +
+          "description TEXT, " +
+          "workflow_json TEXT NOT NULL, " +
+          "parameters_json TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_jobs (" +
+          "id TEXT PRIMARY KEY, " +
+          "session_id TEXT NOT NULL, " +
+          "channel_id TEXT NOT NULL, " +
+          "template_id TEXT NOT NULL, " +
+          "template_version INTEGER NOT NULL, " +
+          "params_json TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'queued', " +
+          "created_by TEXT NOT NULL, " +
+          "prompt_id TEXT, " +
+          "outputs_json TEXT, " +
+          "asset_ids_json TEXT, " +
+          "error TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "submitted_at INTEGER, " +
+          "finished_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_session_idx ON media_jobs(session_id)");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_status_idx ON media_jobs(status)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_exchange_files (" +
+          "remote_key TEXT PRIMARY KEY, " +
+          "job_id TEXT NOT NULL, " +
+          "local_path TEXT NOT NULL, " +
+          "bytes INTEGER NOT NULL, " +
+          "sha256 TEXT NOT NULL, " +
+          "pulled_at INTEGER NOT NULL, " +
+          "remote_deleted_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_exchange_files_job_idx ON media_exchange_files(job_id)");
     },
   },
 ];
@@ -7131,6 +7253,114 @@ export async function transitionMediaSession(
 
 export async function touchMediaSessionActivity(id: string, at: Date, database: AppDb = db): Promise<void> {
   await database.update(mediaSessions).set({ lastActivityAt: at }).where(and(eq(mediaSessions.id, id), eq(mediaSessions.status, "running")));
+}
+
+// -- media_workflow_templates / media_jobs / media_exchange_files (Phase 14 slice 3); read/written only by
+// src/lib/media-generation/adapters/job-store.ts --
+
+export type StoredMediaWorkflowTemplate = typeof mediaWorkflowTemplates.$inferSelect;
+export type StoredMediaJob = typeof mediaJobs.$inferSelect;
+export type NewStoredMediaJob = typeof mediaJobs.$inferInsert;
+export type StoredMediaExchangeFile = typeof mediaExchangeFiles.$inferSelect;
+
+export async function insertMediaWorkflowTemplate(
+  row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string },
+  database: AppDb = db
+): Promise<StoredMediaWorkflowTemplate> {
+  const now = new Date();
+  const [inserted] = await database
+    .insert(mediaWorkflowTemplates)
+    .values({ ...row, version: 1, createdAt: now, updatedAt: now })
+    .returning();
+  return inserted;
+}
+
+/** Replaces the graph/parameters and bumps `version`; `null` = no such template. */
+export async function updateMediaWorkflowTemplate(
+  id: string,
+  patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string },
+  database: AppDb = db
+): Promise<StoredMediaWorkflowTemplate | null> {
+  const rows = await database
+    .update(mediaWorkflowTemplates)
+    .set({ ...patch, version: sql`${mediaWorkflowTemplates.version} + 1`, updatedAt: new Date() })
+    .where(eq(mediaWorkflowTemplates.id, id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function getMediaWorkflowTemplateById(id: string, database: AppDb = db): Promise<StoredMediaWorkflowTemplate | null> {
+  const [row] = await database.select().from(mediaWorkflowTemplates).where(eq(mediaWorkflowTemplates.id, id));
+  return row ?? null;
+}
+
+export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<StoredMediaWorkflowTemplate[]> {
+  return database.select().from(mediaWorkflowTemplates).orderBy(asc(mediaWorkflowTemplates.name));
+}
+
+export async function deleteMediaWorkflowTemplate(id: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database.delete(mediaWorkflowTemplates).where(eq(mediaWorkflowTemplates.id, id)).returning({ id: mediaWorkflowTemplates.id });
+  return rows.length > 0;
+}
+
+export async function insertMediaJob(row: NewStoredMediaJob, database: AppDb = db): Promise<StoredMediaJob> {
+  const [inserted] = await database.insert(mediaJobs).values(row).returning();
+  return inserted;
+}
+
+export async function getMediaJobById(id: string, database: AppDb = db): Promise<StoredMediaJob | null> {
+  const [row] = await database.select().from(mediaJobs).where(eq(mediaJobs.id, id));
+  return row ?? null;
+}
+
+export async function listMediaJobs(filter: { sessionId?: string; channelId?: string; limit?: number }, database: AppDb = db): Promise<StoredMediaJob[]> {
+  const conditions = [];
+  if (filter.sessionId) conditions.push(eq(mediaJobs.sessionId, filter.sessionId));
+  if (filter.channelId) conditions.push(eq(mediaJobs.channelId, filter.channelId));
+  const query = database.select().from(mediaJobs);
+  const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
+  return filtered.orderBy(desc(mediaJobs.createdAt)).limit(filter.limit ?? 50);
+}
+
+export async function listNonTerminalMediaJobs(database: AppDb = db): Promise<StoredMediaJob[]> {
+  return database.select().from(mediaJobs).where(inArray(mediaJobs.status, ["queued", "submitted", "generating", "transferring"]));
+}
+
+export async function transitionMediaJob(
+  id: string,
+  from: readonly MediaJobStatusValue[],
+  set: Partial<Omit<NewStoredMediaJob, "id">> & { status: MediaJobStatusValue },
+  database: AppDb = db
+): Promise<StoredMediaJob | null> {
+  const rows = await database
+    .update(mediaJobs)
+    .set(set)
+    .where(and(eq(mediaJobs.id, id), inArray(mediaJobs.status, [...from])))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function upsertMediaExchangeFile(
+  row: { remoteKey: string; jobId: string; localPath: string; bytes: number; sha256: string; pulledAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .insert(mediaExchangeFiles)
+    .values({ ...row, remoteDeletedAt: null })
+    .onConflictDoUpdate({ target: mediaExchangeFiles.remoteKey, set: { ...row, remoteDeletedAt: null } });
+}
+
+export async function markMediaExchangeFileRemoteDeleted(remoteKey: string, at: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaExchangeFiles).set({ remoteDeletedAt: at }).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
+}
+
+export async function getMediaExchangeFile(remoteKey: string, database: AppDb = db): Promise<StoredMediaExchangeFile | null> {
+  const [row] = await database.select().from(mediaExchangeFiles).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
+  return row ?? null;
+}
+
+export async function listMediaExchangeFilesByJob(jobId: string, database: AppDb = db): Promise<StoredMediaExchangeFile[]> {
+  return database.select().from(mediaExchangeFiles).where(eq(mediaExchangeFiles.jobId, jobId));
 }
 
 // ---------------------------------------------------------------------------

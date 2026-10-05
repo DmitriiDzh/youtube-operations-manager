@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
@@ -163,17 +164,19 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       };
     },
 
-    /** Streams the object to `destinationPath` via a temp file + rename; returns bytes written. */
-    async getObjectToFile(key: string, destinationPath: string): Promise<{ bytes: number }> {
+    /** Streams the object to `destinationPath` via a temp file + rename; returns the bytes written and their SHA-256. */
+    async getObjectToFile(key: string, destinationPath: string): Promise<{ bytes: number; sha256: string }> {
       const response = await signedFetch("GET", objectUrl(key));
       if (!response.ok || !response.body) throw failure(response, "GET", key);
       await mkdir(path.dirname(destinationPath), { recursive: true });
       const tmpPath = `${destinationPath}.part`;
       let bytes = 0;
+      const hash = createHash("sha256");
       try {
         const counting = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream<Uint8Array>);
         counting.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
+          hash.update(chunk);
         });
         await pipeline(counting, createWriteStream(tmpPath, { flags: "wx" }));
         await rename(tmpPath, destinationPath);
@@ -181,7 +184,7 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
         await rm(tmpPath, { force: true });
         throw error;
       }
-      return { bytes };
+      return { bytes, sha256: hash.digest("hex") };
     },
 
     async getObjectText(key: string): Promise<string | null> {
