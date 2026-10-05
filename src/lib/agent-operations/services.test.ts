@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "3.2.0"); // 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
+  assert.equal(result.agentApiVersion, "3.3.0"); // 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0; 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));

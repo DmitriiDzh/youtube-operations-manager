@@ -78,6 +78,7 @@ import {
   getChannelWorkspaceInputSchema,
   type ChannelWorkspacesCore,
 } from "@/lib/channel-workspaces";
+import { createLogicalPathsCore, getLogicalPathInputSchema, type LogicalPathsCore } from "@/lib/logical-paths";
 import {
   createResearchExportCore,
   exportResearchDataInputSchema,
@@ -290,6 +291,8 @@ type McpToolHandlers = {
   agentGetHypothesisTrail: (input: unknown) => Promise<ToolResponse>;
   createExperimentProposal: (input: unknown) => Promise<ToolResponse>;
   agentGetChannelWorkspace: (input: unknown) => Promise<ToolResponse>;
+  agentListLogicalPaths: (input: unknown) => Promise<ToolResponse>;
+  agentGetLogicalPath: (input: unknown) => Promise<ToolResponse>;
   agentExportResearchData: (input: unknown) => Promise<ToolResponse>;
   queryMarketOverview: (input: unknown) => Promise<ToolResponse>;
 };
@@ -536,7 +539,11 @@ export function createMcpToolHandlers(
   // BL-118 -- the channel breakdown (traffic sources, devices, ...) the Content tab already computes; a LIVE Analytics API read.
   breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore(),
   // Research export (ADR 0019) -- the Manager writes flat CSV/JSON files into the channel's workspace `99 Data Exchange/From YTM/` folder (fixed name, owner-approved exception).
-  researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore()
+  researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore(),
+  // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4) -- the logical path registry, registered directly
+  // here (not through `agentOperationsCore`, AGENTS.md §M). Read-only subset, fixed to the `channel` scope: a channel agent can only
+  // ever see `all_agents` paths. Creating, changing or deleting a path is operator-only (`/api/logical-paths`).
+  logicalPathsCore: Pick<LogicalPathsCore, "readPath" | "listReadable"> = createLogicalPathsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1188,6 +1195,35 @@ export function createMcpToolHandlers(
      * the core never touches anything at or under the workspace path, never creates the device
      * identity (review round 1), and nothing here can set or clear the path.
      */
+    /**
+     * Factory Operator access, F4 -- the logical path registry, channel scope. Instance-wide data (not channel data), so no
+     * `assertActiveChannel`: the bound token is what authorises the call, exactly like `agentGetCapabilities`. The core is
+     * pinned to the `channel` scope HERE, never taken from input, so no argument can widen what an agent sees.
+     */
+    async agentListLogicalPaths(input: unknown): Promise<ToolResponse> {
+      const parsedInput = z.object({}).strict().safeParse(input ?? {});
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+      try {
+        return toolSuccessResult({ paths: await logicalPathsCore.listReadable("channel") });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentGetLogicalPath(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getLogicalPathInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+      try {
+        return toolSuccessResult(await logicalPathsCore.readPath(parsedInput.data, "channel"));
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     async agentGetChannelWorkspace(input: unknown): Promise<ToolResponse> {
       const parsedInput = getChannelWorkspaceInputSchema.safeParse(input);
       if (!parsedInput.success) {
@@ -2083,6 +2119,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // Phase 11 -- a pure local read of one stored string, never a mutation -- ungated, same
     // classification as agentGetChannelContext above.
     agentGetChannelWorkspace: handlers.agentGetChannelWorkspace,
+    // Factory Operator access -- pure local reads of the registry, never a mutation -- ungated.
+    agentListLogicalPaths: handlers.agentListLogicalPaths,
+    agentGetLogicalPath: handlers.agentGetLogicalPath,
     // Research export -- writes files and a ledger row: gated.
     agentExportResearchData: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentExportResearchData(input),
     // Pure local read -- ungated, like queryCompetitors.
@@ -2701,6 +2740,27 @@ export function createMcpServer(
       inputSchema: getChannelWorkspaceInputSchema,
     },
     (args) => handlers.agentGetChannelWorkspace(args)
+  );
+
+  // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4) -- instance-wide registry reads, not channel-scoped.
+  registerTool(
+    "agent_list_logical_paths",
+    {
+      description:
+        "List the logical paths every agent may read, with THIS computer's value: { name, description, configured, path }. configured:false means the operator has not set a folder for it on this computer (never an empty path). Paths the operator reserved for other roles are not listed. Device-local: a value set on another computer is never returned. This application never opens, lists or reads anything inside a path; check it with your own filesystem tools. Read-only: no MCP tool or CLI command can create, set or delete a path -- only the operator, in Settings.",
+      inputSchema: z.object({}).strict(),
+    },
+    (args) => handlers.agentListLogicalPaths(args)
+  );
+
+  registerTool(
+    "agent_get_logical_path",
+    {
+      description:
+        "Get one logical path's value on THIS computer by its name (e.g. factory_shared), as an absolute path string. Fails with LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE when the operator has not set a folder for it on this computer (never returns an empty path), and with LOGICAL_PATH_NOT_FOUND for an unknown name or a name that is not available to agents (the two are indistinguishable). The string is returned exactly as stored, even if the folder has since been moved or deleted. Read-only.",
+      inputSchema: getLogicalPathInputSchema,
+    },
+    (args) => handlers.agentGetLogicalPath(args)
   );
 
   registerTool(

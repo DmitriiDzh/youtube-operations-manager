@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.2.0"); // 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
+  assert.equal(payload.agentApiVersion, "3.3.0"); // 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0; 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -5940,4 +5940,84 @@ test("MCP agent_create_collection_request: alreadyRequested discloses a requestI
     { channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", requestId: "cr-mine" },
     { channelId: "UCbbbbbbbbbbbbbbbbbbbbbb" },
   ]);
+});
+
+// Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4, AC-FO-05/09/13) -- agent_list_logical_paths and
+// agent_get_logical_path. Positional args up to the new trailing logicalPathsCore parameter (index 15).
+function makeLogicalPathHandlers(logicalPathsCore: Parameters<typeof createMcpToolHandlers>[15]) {
+  // Indexes 3..14 keep their real defaults (undefined); only the trailing parameter is injected.
+  const create = createMcpToolHandlers as (...args: unknown[]) => ReturnType<typeof createMcpToolHandlers>;
+  return create(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), ...Array.from({ length: 12 }, () => undefined), logicalPathsCore);
+}
+
+test("MCP agent_get_logical_path / agent_list_logical_paths always ask the registry for the CHANNEL scope, whatever the input", async () => {
+  const scopes: string[] = [];
+  const handlers = makeLogicalPathHandlers({
+    async readPath(input, scope) {
+      scopes.push(scope);
+      return { name: (input as { name: string }).name, path: "/Factory/02 Shared Registry" };
+    },
+    async listReadable(scope) {
+      scopes.push(scope);
+      return [{ name: "factory_shared", description: "", configured: true, path: "/Factory/02 Shared Registry" }];
+    },
+  });
+
+  const one = await handlers.agentGetLogicalPath({ name: "factory_shared" });
+  assert.equal(one.isError, undefined);
+  assert.deepEqual(JSON.parse(one.content[0]?.text ?? "{}"), { name: "factory_shared", path: "/Factory/02 Shared Registry" });
+
+  const list = await handlers.agentListLogicalPaths({});
+  assert.deepEqual(JSON.parse(list.content[0]?.text ?? "{}").paths.map((p: { name: string }) => p.name), ["factory_shared"]);
+  assert.deepEqual(scopes, ["channel", "channel"]);
+
+  // A caller cannot widen the scope through input: an extra field is rejected before the registry is reached.
+  for (const result of [
+    await handlers.agentGetLogicalPath({ name: "developer_exchange", scope: "factory" }),
+    await handlers.agentGetLogicalPath({ name: "factory_shared", path: "/etc" }),
+    await handlers.agentListLogicalPaths({ scope: "factory" }),
+  ]) {
+    assert.equal(result.isError, true);
+    assert.equal(JSON.parse(result.content[0]?.text ?? "{}").error.code, "validation_failed");
+  }
+  assert.deepEqual(scopes, ["channel", "channel"], "a rejected input never reaches the registry");
+});
+
+test("MCP agent_get_logical_path maps registry errors to stable codes and leaks no path in them", async () => {
+  const { DomainError } = await import("@/lib/shared-domain");
+  for (const code of ["LOGICAL_PATH_NOT_FOUND", "LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE"] as const) {
+    const handlers = makeLogicalPathHandlers({
+      async readPath() {
+        throw new DomainError({ code, message: "m", details: { name: "x" } });
+      },
+      async listReadable() {
+        return [];
+      },
+    });
+    const result = await handlers.agentGetLogicalPath({ name: "some_name" });
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content[0]?.text ?? "{}");
+    assert.equal(payload.error.code, code);
+    assert.equal(JSON.stringify(payload).includes("\\"), false);
+  }
+});
+
+test("MCP server registers exactly the two read-only logical path tools for a channel session, and no tool that can set one", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
+  assert.ok(tools.agent_list_logical_paths);
+  assert.ok(tools.agent_get_logical_path);
+  assert.deepEqual(Object.keys(tools).filter((name) => name.includes("logical_path")).sort(), ["agent_get_logical_path", "agent_list_logical_paths"]);
+  assert.equal(Object.keys(tools).some((name) => name.startsWith("factory_")), false);
+});
+
+test("agent_get_capabilities lists the two logical path capabilities as READ, tied to their MCP tools", async () => {
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const payload = JSON.parse((await handlers.agentGetCapabilities({})).content[0]?.text ?? "{}");
+  const byId = new Map((payload.capabilities as Array<{ id: string; permission: string; mcpTools?: string[] }>).map((c) => [c.id, c]));
+  assert.equal(byId.get("logical_paths.list_logical_paths")?.permission, "READ");
+  assert.deepEqual(byId.get("logical_paths.list_logical_paths")?.mcpTools, ["agent_list_logical_paths"]);
+  assert.equal(byId.get("logical_paths.get_logical_path")?.permission, "READ");
+  assert.deepEqual(byId.get("logical_paths.get_logical_path")?.mcpTools, ["agent_get_logical_path"]);
+  assert.ok(payload.dataDomains.includes("logical_path_values"));
 });
