@@ -188,6 +188,8 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   // by flipping this AFTER the submit (the drive unmounting between generation and transfer).
   let workspaceFails = opts.workspaceFails ?? false;
   let manifestWriteFails = false;
+  let s3Fails = false;
+  let outputRoot = "/ws/99 Data Exchange/From YTM";
   const manifests = new Map<string, string>();
   let now = new Date("2026-10-05T12:00:00Z");
   let ids = 0;
@@ -201,13 +203,16 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
         activity.push(sessionId);
       },
     },
-    s3: async () => s3.client,
+    s3: async () => {
+      if (s3Fails) throw new Error("media gateway is turned off");
+      return s3.client;
+    },
     resolveOutputRoot: async () => {
       if (workspaceFails) {
         const { DomainError } = await import("./contracts");
         throw new DomainError({ code: "media_workspace_unavailable", message: "no workspace" });
       }
-      return "/ws/99 Data Exchange/From YTM";
+      return outputRoot;
     },
     fs: {
       mkdirp: async () => {},
@@ -255,7 +260,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -1559,4 +1564,69 @@ test("FO-REQ-0002: a job that never reached the transfer (generation timeout, ca
   await f.runScheduled();
   assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
   assert.equal(f.manifests.size, 0);
+});
+
+// Independent review of the manifest branch (2026-10-06).
+
+function partialDeliveryFixture() {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "a.png", subfolder: "job-1" }, { nodeId: "9", kind: "images", filename: "b.png", subfolder: "job-1" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/a.png", new Uint8Array([1])], ["exchange/job-1/b.png", new Uint8Array([2])]]));
+  const f = fixture({ comfy, s3 });
+  let bFails = true;
+  const original = f.s3.client.getObjectToFile.bind(f.s3.client);
+  (f.s3.client as unknown as { getObjectToFile: (k: string, d: string) => Promise<unknown> }).getObjectToFile = async (key, dest) => {
+    if (bFails && key.endsWith("/b.png")) throw new Error("RunPod S3 returned HTTP 503");
+    return original(key, dest);
+  };
+  return { f, setBFails: (v: boolean) => void (bFails = v) };
+}
+
+test("review: a job whose folder already holds a delivered file still gets its failed manifest when the last attempt cannot even reach S3", async () => {
+  const { f } = partialDeliveryFixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "transferring");
+  f.setS3Fails(true); // the operator turned the media gateway off
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") }); // the window is over
+  f.advance(60_000);
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
+  const manifest = JSON.parse(f.manifests.get(MANIFEST_PATH)!);
+  assert.equal(manifest.status, "failed");
+  assert.deepEqual(manifest.outputs.map((o: { path: string }) => o.path), ["a.png"]);
+  assert.deepEqual(manifest.missing.map((o: { filename: string }) => o.filename), ["b.png"]);
+});
+
+test("review: a file delivered into the channel's OLD workspace folder is reported missing, never listed at a path outside the manifest's folder", async () => {
+  const { f, setBFails } = partialDeliveryFixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  f.setOutputRoot("/new-ws/99 Data Exchange/From YTM"); // the operator moved the channel's workspace meanwhile
+  setBFails(false);
+  f.advance(60_000);
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+  const manifest = JSON.parse(f.manifests.get("/new-ws/99 Data Exchange/From YTM/media/job-1/manifest.json")!);
+  assert.deepEqual(manifest.outputs.map((o: { path: string }) => o.path), ["b.png"]);
+  assert.equal(manifest.missing.length, 1);
+  assert.equal(manifest.missing[0].filename, "a.png");
+  assert.equal(manifest.missing[0].note, "delivered outside this folder: /ws/99 Data Exchange/From YTM/media/job-1/a.png");
+});
+
+test("review: a Save subfolder named like the manifest (any case) is reserved too -- never pulled, so no directory can block the manifest", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "x.png", subfolder: "job-1/Manifest.JSON" }, { nodeId: "9", kind: "images", filename: "ok.png", subfolder: "job-1" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/Manifest.JSON/x.png", new Uint8Array([3])], ["exchange/job-1/ok.png", new Uint8Array([4])]]));
+  const f = fixture({ comfy, s3 });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+  assert.ok(!f.s3.calls.includes("get:exchange/job-1/Manifest.JSON/x.png"));
+  const manifest = JSON.parse(f.manifests.get(MANIFEST_PATH)!);
+  assert.deepEqual(manifest.outputs.map((o: { path: string }) => o.path), ["ok.png"]);
+  assert.match(manifest.missing[0].note, /reserved/);
 });

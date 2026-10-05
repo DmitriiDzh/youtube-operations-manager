@@ -282,6 +282,10 @@ function assetTypeFor(kind: string): "generated_image" | "audio_track" | "video_
   return "other";
 }
 
+function isInside(relative: string): boolean {
+  return relative !== "" && !path.isAbsolute(relative) && relative.split(path.sep)[0] !== "..";
+}
+
 const MANIFEST_KIND: Record<ReturnType<typeof assetTypeFor>, MediaJobManifest["outputs"][number]["kind"]> = {
   generated_image: "image",
   audio_track: "audio",
@@ -304,7 +308,13 @@ export function buildJobManifest(input: {
   device: { deviceId: string | null; hostname: string | null };
 }): MediaJobManifest {
   const { job } = input;
-  const delivered = input.outputs.filter((o): o is MediaJobOutput & { localPath: string; bytes: number; sha256: string } => Boolean(o.localPath) && o.bytes !== null && o.sha256 !== null);
+  const relativePath = (localPath: string) => path.relative(input.outputDir, localPath);
+  // Only files inside THIS folder are listed as delivered: an output pulled before the channel's workspace was moved
+  // lives elsewhere and could never be found next to the manifest -- it is reported under `missing` instead.
+  const delivered = input.outputs.filter(
+    (o): o is MediaJobOutput & { localPath: string; bytes: number; sha256: string } =>
+      Boolean(o.localPath) && o.bytes !== null && o.sha256 !== null && isInside(relativePath(o.localPath!)),
+  );
   return {
     schema: "ytm.media-job-manifest",
     schemaVersion: 1,
@@ -322,7 +332,7 @@ export function buildJobManifest(input: {
     device: { deviceId: input.device.deviceId, hostname: input.device.hostname },
     // `/` on every platform: the folder is read on the other OS too (Syncthing between the Mac and Windows).
     outputs: delivered.map((o) => ({
-      path: path.relative(input.outputDir, o.localPath).split(path.sep).join("/"),
+      path: relativePath(o.localPath).split(path.sep).join("/"),
       kind: MANIFEST_KIND[assetTypeFor(o.kind)],
       comfyKind: o.kind,
       nodeId: o.nodeId,
@@ -331,7 +341,13 @@ export function buildJobManifest(input: {
       assetId: o.assetId,
       note: o.note,
     })),
-    missing: input.outputs.filter((o) => !delivered.includes(o as (typeof delivered)[number])).map((o) => ({ nodeId: o.nodeId, comfyKind: o.kind, filename: o.filename, subfolder: o.subfolder, note: o.note })),
+    missing: input.outputs.filter((o) => !delivered.includes(o as (typeof delivered)[number])).map((o) => ({
+      nodeId: o.nodeId,
+      comfyKind: o.kind,
+      filename: o.filename,
+      subfolder: o.subfolder,
+      note: o.localPath && o.bytes !== null && o.sha256 !== null ? `delivered outside this folder: ${o.localPath}` : o.note,
+    })),
   };
 }
 
@@ -455,9 +471,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     const fileName = safeFileName(output.filename);
     if (!fileName) return { ...output, note: "unsafe file name; not pulled" };
     if (!safeRemoteKey(output.remoteKey) || !output.remoteKey.startsWith(`${EXCHANGE_PREFIX}${job.id}/`)) return { ...output, note: "output outside the job's folder; not pulled" };
-    // The manifest's own name at the job's top level (case-insensitive: the macOS and Windows file systems are) is
-    // reserved -- pulling it would be overwritten by the manifest, and the remote copy is deleted after a pull.
-    if (output.remoteKey.toLowerCase() === `${EXCHANGE_PREFIX}${job.id}/${MEDIA_JOB_MANIFEST_FILE}`.toLowerCase()) {
+    // The manifest's own name (and its `.part`) as the FIRST segment below the job's folder is reserved, as a file or as
+    // a subfolder (case-insensitive: the macOS and Windows file systems are): a file would be overwritten by the
+    // manifest (the remote copy is deleted after a pull), a directory would make every manifest write fail.
+    const firstSegment = output.remoteKey.slice(`${EXCHANGE_PREFIX}${job.id}/`.length).split("/")[0].toLowerCase();
+    if (firstSegment === MEDIA_JOB_MANIFEST_FILE || firstSegment === `${MEDIA_JOB_MANIFEST_FILE}.part`) {
       return { ...output, note: `reserved file name (${MEDIA_JOB_MANIFEST_FILE}); not pulled` };
     }
     const head = await s3.headObject(output.remoteKey);
@@ -708,19 +726,21 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   async function transferOutputs(job: StoredJobRow, outputs: MediaJobOutput[]): Promise<void> {
     const jobId = job.id;
     const session = await deps.sessions.getRunningSession(job.sessionId);
-    let outputDir: string;
+    let outputDir: string | null = null;
     let s3: RunpodS3Client;
+    const template = await deps.store.templates.get(job.templateId);
     try {
-      outputDir = path.join(await deps.resolveOutputRoot(job.channelId), MEDIA_OUTPUT_SUBDIR, job.id);
-      await deps.fs.mkdirp(outputDir);
+      const dir = path.join(await deps.resolveOutputRoot(job.channelId), MEDIA_OUTPUT_SUBDIR, job.id);
+      await deps.fs.mkdirp(dir);
+      outputDir = dir;
       s3 = await deps.s3();
     } catch (error) {
       // A transient cause (workspace drive unmounted, gateway toggle off, S3 unreachable): keep `transferring` so the
-      // watch loop retries, up to the retry window; the recorded outputs stay on the volume meanwhile.
-      await retryOrFail(job, `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`, outputs, outputs);
+      // watch loop retries, up to the retry window; the recorded outputs stay on the volume meanwhile. Once the folder
+      // exists (an earlier attempt may have delivered into it), a failure past the window still gets its manifest.
+      await retryOrFail(job, `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`, outputs, outputs, outputDir ? { outputDir, templateName: template?.name ?? null } : undefined);
       return;
     }
-    const template = await deps.store.templates.get(job.templateId);
     const provenance = {
       source: "media_generation",
       jobId: job.id,
@@ -798,13 +818,16 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       await retryOrFail(job, `cannot write ${MEDIA_JOB_MANIFEST_FILE}: ${manifestError instanceof Error ? manifestError.message : String(manifestError)}`, forRetry, results, delivery);
       return;
     }
-    await deps.store.jobs.transition(jobId, ["transferring"], {
+    const done = await deps.store.jobs.transition(jobId, ["transferring"], {
       status: "done",
       outputsJson: JSON.stringify(results),
       assetIdsJson: JSON.stringify(pulled.map((r) => r.assetId).filter(Boolean)),
       error,
       finishedAt,
     });
+    // Within this process `inFlight` makes this unreachable (nothing else moves a `transferring` row); only another
+    // process could, and the manifest would then say `done` for a row that is not. Logged, never silent.
+    if (!done) log(`[media] job ${jobId} left \`transferring\` before it could be marked done; its manifest says done`);
   }
 
   return {

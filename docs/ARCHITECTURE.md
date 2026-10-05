@@ -2714,8 +2714,10 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   without a configured workspace the job fails and nothing is pulled or deleted. An output reported
   outside the job's folder is never pulled or deleted. **Manifest** (FO-REQ-0002): `buildJobManifest` (explicit
   allowlist) → `manifest.json` written last via `.part` + rename; for `done` before the transition (a failed write is a
-  transient transfer failure, retried within the window), for `failed`-with-folder after it, best effort; the name is
-  reserved at the job's top level (such an output is not pulled). Device = bootstrap `deviceId` + `os.hostname()`. **Janitor** (`cleanupExchange`, AC-P14-14): lists
+  transient transfer failure, retried within the window, then failed), for `failed`-with-folder after it, best effort;
+  only files inside the folder are listed (an earlier workspace's file goes to `missing`); the name is reserved as the
+  first segment below the job's folder (such an output is not pulled). A `done` transition that finds the row already
+  moved (only possible from another process) is logged. Device = bootstrap `deviceId` + `os.hostname()`. **Janitor** (`cleanupExchange`, AC-P14-14): lists
   only `exchange/`, skips `exchange/in/` (reference inputs) and keys of unknown or non-terminal jobs,
   deletes a key only when its job is terminal and either its ledger row says the file is local or the
   job failed/was cancelled; dry run by default (Settings button, CLI `janitor`), real deletes daily from
