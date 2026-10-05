@@ -1,5 +1,6 @@
 import {
   findActiveFactoryAgentTokenByHash,
+  findFactoryAgentTokenByHash,
   listActiveFactoryAgentTokens,
   replaceFactoryAgentToken,
   revokeFactoryAgentTokens,
@@ -11,6 +12,7 @@ export function createFactoryTokenStore(): FactoryTokenStore {
     replace: (input) => replaceFactoryAgentToken(input),
     revoke: () => revokeFactoryAgentTokens(),
     findActiveByHash: (tokenHash) => findActiveFactoryAgentTokenByHash(tokenHash),
+    findByHash: (tokenHash) => findFactoryAgentTokenByHash(tokenHash),
     listActive: () => listActiveFactoryAgentTokens(),
   };
 }

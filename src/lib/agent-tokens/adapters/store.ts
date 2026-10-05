@@ -1,5 +1,6 @@
 import {
   findActiveAgentChannelTokenByHash,
+  findAgentChannelTokenByHash,
   listActiveAgentChannelTokens,
   replaceAgentChannelToken,
   revokeAgentChannelTokens,
@@ -11,6 +12,7 @@ export function createAgentTokenStore(): AgentTokenStore {
     replace: (input) => replaceAgentChannelToken(input),
     revokeForChannel: (channelId) => revokeAgentChannelTokens(channelId),
     findActiveByHash: (tokenHash) => findActiveAgentChannelTokenByHash(tokenHash),
+    findByHash: (tokenHash) => findAgentChannelTokenByHash(tokenHash),
     listActive: () => listActiveAgentChannelTokens(),
   };
 }

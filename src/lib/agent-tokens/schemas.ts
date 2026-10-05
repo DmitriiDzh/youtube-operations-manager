@@ -15,3 +15,13 @@ export const revokeAgentTokenInputSchema = z
     channelId: channelIdSchema,
   })
   .strict();
+
+/** BL-130. `token` is only typed here: its format is checked by the service, which reports
+ * `AGENT_TOKEN_IMPORT_MALFORMED` without ever echoing the submitted value. */
+export const importAgentTokenInputSchema = z
+  .object({
+    channelId: channelIdSchema,
+    token: z.string(),
+    label: z.string().trim().max(100).optional(),
+  })
+  .strict();

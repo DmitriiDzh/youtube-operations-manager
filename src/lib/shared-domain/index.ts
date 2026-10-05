@@ -157,6 +157,15 @@ export type DomainErrorCode =
   | "AGENT_TOKEN_IDENTITY_MISMATCH"
   | "AGENT_SESSION_CREDENTIAL_OVERRIDE"
   | "AGENT_SESSION_OPERATOR_ONLY"
+  // BL-130 (docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md) -- an operator importing an already-issued
+  // token on another device. MALFORMED: not a token of this kind (wrong prefix, length, alphabet).
+  // LEGACY_FORMAT: a channel token issued before channel ids were embedded -- reissue it instead.
+  // CHANNEL_MISMATCH: the token's embedded channel is not the channel it is being imported into.
+  // REVOKED: this device already revoked that token; a revoked token stays revoked here.
+  | "AGENT_TOKEN_IMPORT_MALFORMED"
+  | "AGENT_TOKEN_IMPORT_LEGACY_FORMAT"
+  | "AGENT_TOKEN_CHANNEL_MISMATCH"
+  | "AGENT_TOKEN_IMPORT_REVOKED"
   // Owner-reported: the generic "Connection failed" Cloud Connection callback message gave no way
   // to tell "Google rejected the token exchange" (most often: docs/decisions/0008-cloud-connection.md's
   // separate `/api/cloud-connection/callback` redirect URI was never added to the OAuth client's own

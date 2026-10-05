@@ -23,6 +23,10 @@ function createMemoryStore() {
     async findActiveByHash(tokenHash) {
       return rows.find((row) => row.tokenHash === tokenHash && !row.revoked) ?? null;
     },
+    async findByHash(tokenHash) {
+      const row = rows.find((candidate) => candidate.tokenHash === tokenHash);
+      return row ? { ...row, revokedAt: row.revoked ? new Date("2026-10-05T12:00:00Z") : null } : null;
+    },
     async listActive() {
       return rows.filter((row) => !row.revoked);
     },
@@ -120,6 +124,7 @@ test("AC-FO-06: a factory token is rejected by the channel-token verifier, and a
       async replace() {},
       async revokeForChannel() { return 0; },
       async findActiveByHash(hash) { return channelRows.find((row) => row.tokenHash === hash) ?? null; },
+      async findByHash() { return null; },
       async listActive() { return channelRows; },
     },
     getChannelConnectedUserId: async () => "u-a",
@@ -145,6 +150,7 @@ test("AC-FO-10: revoking the factory token does not touch the channel token stor
       async replace() {},
       async revokeForChannel() { channelRevokeCalls++; return 0; },
       async findActiveByHash() { return null; },
+      async findByHash() { return null; },
       async listActive() { return []; },
     },
     getChannelConnectedUserId: async () => null,

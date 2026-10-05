@@ -25,6 +25,10 @@ function createMemoryTokenStore() {
     async findActiveByHash(hash) {
       return rows.find((row) => row.tokenHash === hash && !row.revoked) ?? null;
     },
+    async findByHash(hash) {
+      const row = rows.find((candidate) => candidate.tokenHash === hash);
+      return row ? { ...row, revokedAt: row.revoked ? new Date("2026-10-05T12:00:00Z") : null } : null;
+    },
     async listActive() {
       return rows.filter((row) => !row.revoked);
     },
@@ -141,7 +145,7 @@ test("AC-FO-06: missing token -> 401 AGENT_TOKEN_REQUIRED; unknown, channel-type
   const issued = await tokenServices.issueToken({});
   const channelToken = (
     await createAgentTokenServices({
-      store: { async replace() {}, async revokeForChannel() { return 0; }, async findActiveByHash() { return null; }, async listActive() { return []; } },
+      store: { async replace() {}, async revokeForChannel() { return 0; }, async findActiveByHash() { return null; }, async findByHash() { return null; }, async listActive() { return []; } },
       getChannelConnectedUserId: async () => "u-a",
       getLiveChannelIdForUser: async () => "UC_A",
       generateSecret: () => "ch1",
