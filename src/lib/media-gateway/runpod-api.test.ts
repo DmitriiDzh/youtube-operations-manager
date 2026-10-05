@@ -264,3 +264,16 @@ test("review 5: listPods follows the v2 cursor pagination", async () => {
   assert.equal(calls.length, 2);
   assert.equal(new URL(calls[1].url).searchParams.get("cursor"), "c2");
 });
+
+// Slice 0 (2026-10-05): the live API rejects `dataCenterId` and `dataCenter` in POST /pods (422 "additional property");
+// with `dataCenterIds: [...]` the body passes validation (an unknown GPU id then fails as "Unknown GPU type").
+test("slice 0: createPod sends the datacenter as dataCenterIds: [id] and never dataCenterId", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 201, body: { id: "pod1", name: "ytm-media-x", desiredStatus: "RUNNING" } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  await client.createPod({ name: "ytm-media-x", templateId: "tpl", gpu: { id: "NVIDIA GeForce RTX 4090", count: 1 }, cloud: "SECURE", dataCenterId: "EU-RO-1", mounts: { network: [{ volumeId: "vol", path: "/workspace" }] }, ports: ["8189/http"], env: { COMFY_TOKEN: "t" } });
+  const sent = JSON.parse(String(calls[0].init.body)) as Record<string, unknown>;
+  assert.deepEqual(sent.dataCenterIds, ["EU-RO-1"]);
+  assert.equal("dataCenterId" in sent, false);
+  await client.createPod({ name: "no-dc", image: "x" });
+  assert.equal("dataCenterIds" in (JSON.parse(String(calls[1].init.body)) as Record<string, unknown>), false);
+});

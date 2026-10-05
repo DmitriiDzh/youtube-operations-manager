@@ -319,7 +319,10 @@ export function createRunpodApiClient(args: {
     },
 
     async createPod(input: CreatePodInput): Promise<RunpodPod> {
-      const { body } = await request("POST", "/pods", input);
+      // The live API takes the datacenter as an ARRAY `dataCenterIds` (slice 0, 2026-10-05: both `dataCenterId` and
+      // `dataCenter` are 422 "additional property"); callers keep passing the one datacenter they mean.
+      const { dataCenterId, ...rest } = input;
+      const { body } = await request("POST", "/pods", { ...rest, ...(dataCenterId ? { dataCenterIds: [dataCenterId] } : {}) });
       return toPod(body);
     },
 
