@@ -744,6 +744,23 @@ export const logicalPathValues = sqliteTable(
 );
 
 /**
+ * Factory Operator access (`docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md` §2.1), SCHEMA_MIGRATIONS
+ * version 51. The Factory Operator role's own agent token (`ytom_fo_...`): SHA-256 hash only, one active
+ * row at a time, NO channel and NO Google identity (unlike `agentChannelTokens`). Deliberately a
+ * separate table, so a channel token can never be looked up as a factory token or the reverse.
+ * Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway`.
+ */
+export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -2831,6 +2848,21 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 51,
+    description:
+      "factory_agent_tokens -- Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F2): the Factory Operator role's own agent token, SHA-256 hash only, no channel binding. Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway); additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS factory_agent_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -4787,6 +4819,55 @@ export async function setLogicalPathValue(
       target: [logicalPathValues.deviceId, logicalPathValues.name],
       set: { path, updatedAt },
     });
+}
+
+export type StoredFactoryAgentToken = { id: string; label: string | null; createdAt: Date; revokedAt: Date | null };
+
+const factoryAgentTokenColumns = {
+  id: factoryAgentTokens.id,
+  label: factoryAgentTokens.label,
+  createdAt: factoryAgentTokens.createdAt,
+  revokedAt: factoryAgentTokens.revokedAt,
+};
+
+/** Factory Operator access. Revokes any active token and inserts the new one in ONE transaction, so
+ * "at most one active factory token" can never be observed violated. */
+export async function replaceFactoryAgentToken(
+  input: { id: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx.update(factoryAgentTokens).set({ revokedAt: now }).where(isNull(factoryAgentTokens.revokedAt));
+    await tx.insert(factoryAgentTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when there was no active token). */
+export async function revokeFactoryAgentTokens(database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(factoryAgentTokens)
+    .set({ revokedAt: new Date() })
+    .where(isNull(factoryAgentTokens.revokedAt))
+    .returning({ id: factoryAgentTokens.id });
+  return revoked.length;
+}
+
+/** Active (non-revoked) factory token by hash, or null. */
+export async function findActiveFactoryAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredFactoryAgentToken | null> {
+  const rows = await database
+    .select(factoryAgentTokenColumns)
+    .from(factoryAgentTokens)
+    .where(and(eq(factoryAgentTokens.tokenHash, tokenHash), isNull(factoryAgentTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveFactoryAgentTokens(database: AppDb = db): Promise<StoredFactoryAgentToken[]> {
+  return database.select(factoryAgentTokenColumns).from(factoryAgentTokens).where(isNull(factoryAgentTokens.revokedAt));
 }
 
 export type GatewayTrafficCategory =

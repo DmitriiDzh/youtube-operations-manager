@@ -19,6 +19,7 @@ import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
 import { LogicalPathsSettings } from "@/components/logical-paths-settings";
+import { FactoryAgentTokenSettings } from "@/components/factory-agent-token-settings";
 import { OperatorCliSettings } from "@/components/operator-cli-settings";
 import { MarketOverviewPanel } from "@/components/market-overview-panel";
 import { MarketResearchPanel } from "@/components/market-research-panel";
@@ -508,6 +509,9 @@ export default function Dashboard() {
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Logical paths">
             <LogicalPathsSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Factory Operator token">
+            <FactoryAgentTokenSettings />
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — AI providers">
             <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">

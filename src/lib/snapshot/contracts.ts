@@ -39,6 +39,9 @@ export type { SqlExecutor };
  *   - `agent_channel_tokens` (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md` 12.1) -- per-machine
  *     agent credentials (hashes), device-local by design like `agent_connections`; never a
  *     RISK-52-style omission.
+ *   - `factory_agent_tokens` (Factory Operator access, `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`
+ *     F2) -- the Factory Operator role's agent credential (hash only), device-local by design exactly
+ *     like `agent_channel_tokens`; never a RISK-52-style omission.
  *   - `rules` (auto-add-to-playlist rules, from the project's original pre-rewrite baseline) -- this feature's own
  *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
  *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is
@@ -173,6 +176,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   logical_paths: "per-device registry of named local paths (Factory Operator access, plan F1)",
   logical_path_values: "per-device local filesystem path values of the registry (Factory Operator access, plan F1)",
   agent_channel_tokens: "per-machine agent credentials (Phase 12)",
+  factory_agent_tokens: "per-machine Factory Operator agent credential hash (Factory Operator access, plan F2)",
   agent_connections: "retired (ADR 0011), table kept inert",
   agent_capability_zones: "retired (ADR 0011), table kept inert",
   app_settings: "per-device settings and toggles (Live writes, MCP, reads, ...)",

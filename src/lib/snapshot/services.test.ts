@@ -793,7 +793,7 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
 // device's own rows survive an import.
 test("applySnapshotToDatabase: logical_paths and logical_path_values are device-local -- never exported, receiving device's own rows survive", () =>
   withTempDir("snapshot-test-", async (dir) => {
-    for (const table of ["logical_paths", "logical_path_values"]) {
+    for (const table of ["logical_paths", "logical_path_values", "factory_agent_tokens"]) {
       assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes(table), false);
     }
 

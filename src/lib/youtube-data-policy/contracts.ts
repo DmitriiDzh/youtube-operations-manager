@@ -162,6 +162,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),
+  factory_agent_tokens: notApiData("agent credentials (hashes)"),
   agent_connections: notApiData("retired, inert"),
   agent_capability_zones: notApiData("retired, inert"),
   app_settings: notApiData("app toggles and status"),

@@ -24,6 +24,10 @@ import {
   createIsolatedDb,
   getChannelWorkspacePath,
   deleteLogicalPathRow,
+  findActiveFactoryAgentTokenByHash,
+  listActiveFactoryAgentTokens,
+  replaceFactoryAgentToken,
+  revokeFactoryAgentTokens,
   getLogicalPathValue,
   insertLogicalPathRow,
   listLogicalPathRows,
@@ -3032,6 +3036,31 @@ test("logical_paths: seeds exactly the two initial names without values; values 
     assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), true);
     assert.equal(await getLogicalPathValue("device-a", "script_library", isolatedDb), null);
     assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), false);
+  }));
+
+// Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md AC-FO-10): at most one active
+// factory token, replaced atomically; revoked tokens are never found by hash; it lives in its own table.
+test("factory_agent_tokens: replace keeps one active token; revoke hides it; separate from channel tokens", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await tableExists(client, "factory_agent_tokens"), true);
+    const isolatedDb = createIsolatedDb(client);
+
+    await replaceFactoryAgentToken({ id: "f1", tokenHash: "h1", label: null }, isolatedDb);
+    await replaceFactoryAgentToken({ id: "f2", tokenHash: "h2", label: "fo" }, isolatedDb);
+    assert.equal(await findActiveFactoryAgentTokenByHash("h1", isolatedDb), null);
+    assert.equal((await findActiveFactoryAgentTokenByHash("h2", isolatedDb))?.id, "f2");
+    assert.deepEqual((await listActiveFactoryAgentTokens(isolatedDb)).map((t) => t.id), ["f2"]);
+
+    // A channel token with the same hash is a different table: it is never found as a factory token.
+    await replaceAgentChannelToken({ id: "c1", channelId: "UC_A", userId: "u-a", tokenHash: "hc", label: null }, isolatedDb);
+    assert.equal(await findActiveFactoryAgentTokenByHash("hc", isolatedDb), null);
+    assert.equal(await findActiveAgentChannelTokenByHash("h2", isolatedDb), null);
+
+    assert.equal(await revokeFactoryAgentTokens(isolatedDb), 1);
+    assert.equal(await revokeFactoryAgentTokens(isolatedDb), 0);
+    assert.equal(await findActiveFactoryAgentTokenByHash("h2", isolatedDb), null);
+    assert.equal((await findActiveAgentChannelTokenByHash("hc", isolatedDb))?.id, "c1");
   }));
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-11): at most one active token per channel,
