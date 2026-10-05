@@ -66,7 +66,7 @@ Do not create `OPERATIONS_AGENT_GUIDE.md` or any equivalently-scoped document. O
 - Read the relevant existing code before replacing or duplicating a subsystem.
 - Preserve working OAuth, YouTube integration, Web UI, CLI, MCP, API, and safety behavior where practical.
 - Do not create parallel implementations of existing functionality without a documented reason (see `docs/DEVELOPMENT_PLAYBOOK.md` §6.2/§6.4 — one YouTube client, one guardrail, one contracts/schemas/services/adapters pattern per domain).
-- This repository has no upstream relationship to any other codebase — `origin` is its only git remote, and it is developed as a fully independent project.
+- This repository has no upstream relationship to any other codebase — `origin` is its only git remote, and it is developed as a fully independent project. Never add another remote (in particular none pointing at the TubeMaster repository this project was originally bootstrapped from) and never fetch from, merge from, or cherry-pick from one; the owner wants no changes from that repository (2026-10-05).
 
 ## E. Mandatory test/lint/build validation
 
