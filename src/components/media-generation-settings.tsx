@@ -901,6 +901,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
         </div>
       );
     }
+    // An `approved` row with no error is still inside createPod in the background: the server refuses a Stop then (it would
+    // orphan the pod), so none is offered until the pod exists or the start has reported a problem on the row.
+    if (s.status === "approved" && !s.error) return <span className="text-zinc-500">starting…</span>;
     return (
       <button type="button" onClick={() => setConfirming({ sessionId: s.sessionId, action: "stop" })} disabled={busy} className={dangerButton}>
         Stop

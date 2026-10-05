@@ -2393,7 +2393,7 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `watchIntervalSeconds ≥ 15`, `idleMinutes ≥ 1`, `maxUsdPerDay > 0` (AC-P14-19). Setting a catalog value
   before credentials exist is refused (`media_generation_not_configured`), never silently accepted.
 - **Operator surfaces.** `src/app/api/media-generation/*` (session required, mutating methods behind
-  `src/proxy.ts`'s device gate), the Settings → Media sub-tab (`media-generation-settings.tsx`: every
+  `src/proxy.ts`'s device gate), the Production section and Settings → RunPod (slice 6; `production-panel.tsx`, `media-generation-settings.tsx`: every
   RunPod call is an explicit click — Load / Test / Create — never on mount; creating a volume goes through
   `ConfirmDialog` with the monthly price), and `src/cli/media.ts` (`npm run media -- …`), a separate entry
   point from the main CLI (AGENTS.md §M) with the same gates (Operator CLI access; device mutation gate for
@@ -2506,7 +2506,7 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   ComfyUI's documented `system`/`devices` shape (a proxy's placeholder 200 is not). While ComfyUI confirms
   the prompt (history, or `/queue` on every 15th empty poll), EVERY poll credits session activity, so the
   1-minute minimum idle timeout cannot fire mid-generation. Approve refuses a request whose saved
-  GPU/datacenter/price no longer match Settings → Media (`media_settings_invalid`): the estimate, the cap
+  GPU/datacenter/price no longer match Production → Setup (`media_settings_invalid`): the estimate, the cap
   check and the record must describe the pod that is billed. Settings refuse a GPU the catalog does not
   offer in the chosen datacenter (`gpu.dataCenters`). A Save node whose `filename_prefix` is a link is
   refused at import. A Stop whose terminate throws records the cause on the `stopping` row. The money
