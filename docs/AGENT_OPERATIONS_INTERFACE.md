@@ -1078,3 +1078,16 @@ a request may end `done` with every channel `skipped_*` (read the per-channel re
 - Channel scoping is never automatic -- every capability that takes a `channelId` must itself
   verify the request belongs to that channel (`AGENTS.md` §F), the same discipline every other
   channel-scoped module in this codebase already follows.
+
+## 4p. Remote media generation (Phase 14 slice 5, `docs/roadmap/plans/PHASE_14_PLAN.md` §2.7) -- IMPLEMENTED; `AGENT_API_VERSION` 3.3.0
+
+MINOR bump 3.2.0 -> 3.3.0: seven capabilities in the new `media_generation` domain (`src/lib/media-generation/`, registered directly in
+`src/mcp/server.ts`, AGENTS.md §M). READ: `agent_list_media_templates`, `agent_get_media_session`, `agent_get_media_limits`,
+`agent_get_media_job`. DRAFT (channel-bound, mutation-gated): `agent_request_media_session`, `agent_create_media_job`,
+`agent_cancel_media_job`. Model: the agent REQUESTS a session (one RunPod GPU pod running ComfyUI, caps `maxMinutes`/`maxUsd`; a local
+estimate = saved GPU price × minutes / 60, no RunPod call); a human approves/starts/stops it in Settings → Media (Web-only, fenced by
+`session-approval-inventory.test.ts` from `src/mcp`, `src/cli`, `src/lib/agent-operations`); while it is `running` the agent submits jobs
+against operator-imported workflow templates (parameters validated before any ComfyUI call); outputs are pulled to
+`<channel workspace>/99 Data Exchange/From YTM/media/<jobId>/`, registered in the asset catalog with provenance, and deleted from the
+server volume. One open session per device; a session/job of another channel is reported as not found. The watcher terminates the pod on
+idle / minutes / USD; every job submit or poll counts as activity. Contract: `docs/interfaces.md`.

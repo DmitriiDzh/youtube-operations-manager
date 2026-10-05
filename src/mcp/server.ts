@@ -68,6 +68,7 @@ import {
 } from "@/lib/analytics/schemas";
 import { labelAgeGender, labelContentFormat, labelCountry, labelDeviceType, labelSubscribedStatus, labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media-generation";
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
@@ -190,6 +191,40 @@ type DecisionEngineCoreSubset = Pick<DecisionEngineCore, "listHypotheses" | "get
 const agentListHypothesesInputSchema = z.object({}).strict();
 const agentGetCollectionLimitsInputSchema = z.object({}).strict();
 
+// Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7) -- remote media generation. Every tool
+// takes the caller's channelId (asserted to be the active/bound channel, like agent_get_channel_workspace);
+// a session or job of another channel behaves like one that does not exist. Approving/starting/stopping
+// a session is Web-only and deliberately absent from this subset (fenced by session-approval-inventory.test.ts).
+type MediaGenerationCoreSubset = Pick<
+  MediaGenerationCore,
+  "requestSession" | "getSession" | "listSessions" | "getLimits" | "listWorkflowTemplates" | "createJob" | "getJob" | "listJobs" | "cancelJob"
+>;
+const mediaChannelIdSchema = z.string().min(1).max(64);
+const mediaParamNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/);
+const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
+const agentRequestMediaSessionInputSchema = z
+  .object({
+    channelId: mediaChannelIdSchema,
+    maxMinutes: z.number().int().min(1).max(1440).optional(),
+    maxUsd: z.number().gt(0).max(10_000).optional(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
+const agentGetMediaSessionInputSchema = z.object({ channelId: mediaChannelIdSchema, sessionId: z.string().min(1).max(64).optional() }).strict();
+const agentGetMediaLimitsInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
+const agentCreateMediaJobInputSchema = z
+  .object({
+    channelId: mediaChannelIdSchema,
+    sessionId: z.string().min(1).max(64),
+    templateId: z.string().min(1).max(64),
+    params: z.record(mediaParamNameSchema, z.union([z.string().max(20_000), z.number(), z.boolean()])).default({}),
+  })
+  .strict();
+const agentGetMediaJobInputSchema = z
+  .object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() })
+  .strict();
+const agentCancelMediaJobInputSchema = z.object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64) }).strict();
+
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
 // two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
 // agent over MCP/CLI too -- no new validation, persistence, or approval logic; both handlers call
@@ -292,6 +327,14 @@ type McpToolHandlers = {
   agentGetChannelWorkspace: (input: unknown) => Promise<ToolResponse>;
   agentExportResearchData: (input: unknown) => Promise<ToolResponse>;
   queryMarketOverview: (input: unknown) => Promise<ToolResponse>;
+  // Phase 14 slice 5 -- remote media generation.
+  agentListMediaTemplates: (input: unknown) => Promise<ToolResponse>;
+  agentRequestMediaSession: (input: unknown) => Promise<ToolResponse>;
+  agentGetMediaSession: (input: unknown) => Promise<ToolResponse>;
+  agentGetMediaLimits: (input: unknown) => Promise<ToolResponse>;
+  agentCreateMediaJob: (input: unknown) => Promise<ToolResponse>;
+  agentGetMediaJob: (input: unknown) => Promise<ToolResponse>;
+  agentCancelMediaJob: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -536,7 +579,10 @@ export function createMcpToolHandlers(
   // BL-118 -- the channel breakdown (traffic sources, devices, ...) the Content tab already computes; a LIVE Analytics API read.
   breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore(),
   // Research export (ADR 0019) -- the Manager writes flat CSV/JSON files into the channel's workspace `99 Data Exchange/From YTM/` folder (fixed name, owner-approved exception).
-  researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore()
+  researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore(),
+  // Phase 14 slice 5 -- registered directly here (AGENTS.md §M: agent-operations gains no dependency on it). Request/read/job subset only:
+  // approving, starting and stopping a session are Web-only (session-approval-inventory.test.ts).
+  mediaGenerationCore: MediaGenerationCoreSubset = createMediaGenerationCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1202,6 +1248,119 @@ export function createMcpToolHandlers(
         });
         const result = await channelWorkspacesCore.getWorkspace(parsedInput.data);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    // -- Phase 14 slice 5: remote media generation (PHASE_14_PLAN.md §2.7) ---------------------------------------------------------
+    // Every tool asserts the caller's channelId is the active/bound channel first; a session/job of another channel is reported as
+    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Settings → Media).
+
+    async agentListMediaTemplates(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentListMediaTemplatesInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        return toolSuccessResult({ templates: await mediaGenerationCore.listWorkflowTemplates() });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentRequestMediaSession(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentRequestMediaSessionInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        const session = await mediaGenerationCore.requestSession({ ...parsedInput.data, requestedBy: "agent" });
+        return toolSuccessResult({ session });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentGetMediaSession(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentGetMediaSessionInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        if (parsedInput.data.sessionId) {
+          const session = await mediaGenerationCore.getSession({ sessionId: parsedInput.data.sessionId });
+          if (session.channelId !== parsedInput.data.channelId) {
+            throw new DomainError({ code: "media_session_not_found", message: "No session with this id", details: { sessionId: parsedInput.data.sessionId } });
+          }
+          return toolSuccessResult({ session });
+        }
+        const sessions = (await mediaGenerationCore.listSessions(50)).filter((s) => s.channelId === parsedInput.data.channelId).slice(0, 20);
+        return toolSuccessResult({ sessions });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentGetMediaLimits(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentGetMediaLimitsInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        const limits = await mediaGenerationCore.getLimits();
+        // The open session is disclosed only when it belongs to this channel; its existence still counts (one per device).
+        const openSession = limits.openSession && limits.openSession.channelId === parsedInput.data.channelId ? limits.openSession : null;
+        return toolSuccessResult({ ...limits, openSession, deviceHasOpenSession: limits.openSession !== null });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentCreateMediaJob(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentCreateMediaJobInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        const job = await mediaGenerationCore.createJob({ ...parsedInput.data, createdBy: "agent" });
+        return toolSuccessResult({ job });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentGetMediaJob(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentGetMediaJobInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        if (parsedInput.data.jobId) {
+          const job = await mediaGenerationCore.getJob({ jobId: parsedInput.data.jobId });
+          if (job.channelId !== parsedInput.data.channelId) {
+            throw new DomainError({ code: "media_job_not_found", message: "No job with this id", details: { jobId: parsedInput.data.jobId } });
+          }
+          return toolSuccessResult({ job });
+        }
+        const jobs = await mediaGenerationCore.listJobs({ channelId: parsedInput.data.channelId, ...(parsedInput.data.sessionId ? { sessionId: parsedInput.data.sessionId } : {}) });
+        return toolSuccessResult({ jobs });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentCancelMediaJob(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentCancelMediaJobInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        const existing = await mediaGenerationCore.getJob({ jobId: parsedInput.data.jobId });
+        if (existing.channelId !== parsedInput.data.channelId) {
+          throw new DomainError({ code: "media_job_not_found", message: "No job with this id", details: { jobId: parsedInput.data.jobId } });
+        }
+        return toolSuccessResult({ job: await mediaGenerationCore.cancelJob({ jobId: parsedInput.data.jobId }) });
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -2087,6 +2246,15 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentExportResearchData: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentExportResearchData(input),
     // Pure local read -- ungated, like queryCompetitors.
     queryMarketOverview: handlers.queryMarketOverview,
+    // Phase 14 slice 5 -- a session request and a job create/cancel write local rows (a job also reaches ComfyUI) -- gated like
+    // agentCreateCollectionRequest; the template/session/limits/job reads are pure local reads -- ungated.
+    agentListMediaTemplates: handlers.agentListMediaTemplates,
+    agentRequestMediaSession: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentRequestMediaSession(input),
+    agentGetMediaSession: handlers.agentGetMediaSession,
+    agentGetMediaLimits: handlers.agentGetMediaLimits,
+    agentCreateMediaJob: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentCreateMediaJob(input),
+    agentGetMediaJob: handlers.agentGetMediaJob,
+    agentCancelMediaJob: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentCancelMediaJob(input),
   };
 }
 
@@ -2817,6 +2985,79 @@ export function createMcpServer(
       inputSchema: agentGetHypothesisTrailInputSchema,
     },
     (args) => handlers.agentGetHypothesisTrail(args)
+  );
+
+  // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7): remote media generation on RunPod/ComfyUI. The agent requests a
+  // SESSION (one GPU pod with caps), a human approves it in Settings → Media, then the agent submits JOBS freely until the session is
+  // stopped (idle / minutes / USD cap / human). No tool here can approve, start or stop a session.
+  registerTool(
+    "agent_list_media_templates",
+    {
+      description:
+        "Phase 14: the ComfyUI workflow templates the operator imported (Settings -> Media), each with its declared parameters -- the only values a job may set: { name, type: string|text|number|integer|boolean|enum, required, default, min, max, enum, description } -- plus outputNodeIds (the Save nodes whose files become the job's outputs) and version. Templates are technical graphs; the prompt text and every creative choice are YOUR job parameters. Local read only. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentListMediaTemplatesInputSchema,
+    },
+    (args) => handlers.agentListMediaTemplates(args)
+  );
+
+  registerTool(
+    "agent_request_media_session",
+    {
+      description:
+        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Settings -> Media; you can neither approve, start nor stop it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. At most ONE session (pending/approved/starting/running/stopping) exists per device: media_session_conflict means another is open (possibly another channel's -- see agent_get_media_limits.deviceHasOpenSession). Errors: media_generation_not_configured (the operator has not finished Settings -> Media), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentRequestMediaSessionInputSchema,
+    },
+    (args) => handlers.agentRequestMediaSession(args)
+  );
+
+  registerTool(
+    "agent_get_media_session",
+    {
+      description:
+        "Phase 14: one session by sessionId, or (no sessionId) this channel's recent sessions (latest 20). Fields: status (pending|approved|starting|running|stopping|done|failed|rejected|interrupted), requestedBy, maxMinutes, maxUsd, estimateUsd, fitsToday, costPerHr (the pod's real $/h once started), podId, startedAt/readyAt/stoppedAt, secondsUsed and usdCharged (live while running), stopReason, error. `running` is the only state in which jobs can be submitted. Local read only, never the proxy token. A session of another channel behaves like one that does not exist (media_session_not_found). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentGetMediaSessionInputSchema,
+    },
+    (args) => handlers.agentGetMediaSession(args)
+  );
+
+  registerTool(
+    "agent_get_media_limits",
+    {
+      description:
+        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> Media), openSession (this channel's open session, if any) and deviceHasOpenSession (true when ANY channel's session is open -- a new request would be refused). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentGetMediaLimitsInputSchema,
+    },
+    (args) => handlers.agentGetMediaLimits(args)
+  );
+
+  registerTool(
+    "agent_create_media_job",
+    {
+      description:
+        "Phase 14: submits one generation job to a RUNNING session's ComfyUI: { sessionId, templateId, params: { <parameter name>: value } }. Parameters are validated against the template's declared parameters BEFORE anything is sent (media_job_params_invalid lists every problem: unknown name, missing required, wrong type, out of bounds, not in enum); a missing optional parameter takes its default. The Save nodes' filename_prefix is rewritten per job, so outputs always land under the job's own folder. Returns the job (status `submitted`, promptId); generation and transfer continue in the background: poll agent_get_media_job until status is done|failed|cancelled. When `done`, outputs[].localPath are absolute paths under <channel workspace>/99 Data Exchange/From YTM/media/<jobId>/ (the same folder agent_get_channel_workspace returns) and assetIds are the catalog entries registered for them (agent_get_asset_context) with full provenance; the files are deleted from the server volume once pulled. Errors: media_session_invalid_state (session not running), media_template_not_found, comfyui_unavailable (ComfyUI rejected the prompt -- the job is recorded as failed with the message), media_workspace_unavailable (the operator has not set this channel's workspace folder, so outputs cannot be received). Every submit and poll counts as session activity (resets the idle timeout). Requires channelId to be the caller's currently-active channel and the session to belong to it.",
+      inputSchema: agentCreateMediaJobInputSchema,
+    },
+    (args) => handlers.agentCreateMediaJob(args)
+  );
+
+  registerTool(
+    "agent_get_media_job",
+    {
+      description:
+        "Phase 14: one job by jobId, or (no jobId) this channel's recent jobs (optionally one session's with sessionId). Fields: status (queued|submitted|generating|transferring|done|failed|cancelled), templateId/templateVersion, params as resolved (defaults filled in), promptId, outputs [{ nodeId, kind: images|audio|gifs|..., filename, localPath (absolute, null until pulled), bytes, sha256, remoteDeleted, assetId, note (why a file was not pulled) }], assetIds, error (a failure reason, or notes for a done job with a skipped output), timestamps. Local read only. A job of another channel behaves like one that does not exist (media_job_not_found). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentGetMediaJobInputSchema,
+    },
+    (args) => handlers.agentGetMediaJob(args)
+  );
+
+  registerTool(
+    "agent_cancel_media_job",
+    {
+      description:
+        "Phase 14: cancels one of this channel's queued or generating jobs (ComfyUI's current execution is interrupted on a best-effort basis); a job already transferring or finished is refused with media_job_invalid_state. Never stops the session itself. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentCancelMediaJobInputSchema,
+    },
+    (args) => handlers.agentCancelMediaJob(args)
   );
 
   registerTool(

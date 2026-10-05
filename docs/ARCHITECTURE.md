@@ -2449,3 +2449,12 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   job failed/was cancelled; dry run by default (Settings button, CLI `janitor`), real deletes daily from
   `src/instrumentation.ts` and on demand. Jobs left mid-flight by a dead process fail as interrupted at
   boot, right after the session sweep.
+- **Agent surface (slice 5, Agent API 3.3.0).** Seven `agent_*` MCP tools in a new `media_generation`
+  capability domain, registered directly in `src/mcp/server.ts` against a request/read/job subset of the
+  core (`MediaGenerationCoreSubset`): list templates, request a session, get session(s), get limits, create
+  / get / cancel a job. Every tool asserts `channelId` is the caller's active (bound) channel first; a
+  session or job of another channel is reported as not found; `agent_get_media_limits` discloses only this
+  channel's open session but reports `deviceHasOpenSession` so the agent understands a conflict. Request,
+  create and cancel pass the MCP mutation gate like `agent_create_collection_request`. No tool can approve,
+  start or stop a session: those symbols are absent from `src/mcp` by inventory test (AC-P14-16). The CLI
+  gets no agent commands (ADR 0013: the CLI is the operator's tool).

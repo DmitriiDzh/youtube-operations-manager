@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.2.0"); // 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
+  assert.equal(payload.agentApiVersion, "3.3.0"); // 3.2.0 (collection requests, ADR 0021) + MINOR: the seven media_generation capabilities (Phase 14 slice 5)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -5940,4 +5940,140 @@ test("MCP agent_create_collection_request: alreadyRequested discloses a requestI
     { channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", requestId: "cr-mine" },
     { channelId: "UCbbbbbbbbbbbbbbbbbbbbbb" },
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7, AC-P14-16): the seven media_generation tools. Expected behaviour comes
+// from the plan: channel-bound, request/read/job only, approve/start/stop never registered, create/request/cancel gated.
+// ---------------------------------------------------------------------------
+
+function makeMediaHandlers(options: { channelOfSession?: string; channelOfJob?: string } = {}) {
+  const calls: Array<{ method: string; input: unknown }> = [];
+  const session = { sessionId: "ms-1", channelId: options.channelOfSession ?? "UC_1", status: "running", podId: "pod1" };
+  const job = { jobId: "mj-1", sessionId: "ms-1", channelId: options.channelOfJob ?? "UC_1", status: "submitted" };
+  const mediaCore = {
+    requestSession: async (input: unknown) => {
+      calls.push({ method: "requestSession", input });
+      return { ...session, status: "pending", requestedBy: (input as { requestedBy: string }).requestedBy };
+    },
+    getSession: async () => session,
+    listSessions: async () => [session, { ...session, sessionId: "ms-other", channelId: "UC_other" }],
+    getLimits: async () => ({ maxUsdPerDay: 10, spentTodayUsd: 1, remainingTodayUsd: 9, defaultMaxMinutes: 60, idleMinutes: 10, watchIntervalSeconds: 60, openSession: { ...session, channelId: "UC_other" }, ready: true, missing: [] }),
+    listWorkflowTemplates: async () => [{ templateId: "t1", name: "txt2img" }],
+    createJob: async (input: unknown) => {
+      calls.push({ method: "createJob", input });
+      return job;
+    },
+    getJob: async () => job,
+    listJobs: async (input: unknown) => {
+      calls.push({ method: "listJobs", input });
+      return [job];
+    },
+    cancelJob: async (input: unknown) => {
+      calls.push({ method: "cancelJob", input });
+      return { ...job, status: "cancelled" };
+    },
+  };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, mediaCore as never
+  );
+  return { handlers, calls };
+}
+
+test("MCP server registers the seven media tools and NO tool that can approve, start or stop a session", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
+  const media = Object.keys(tools).filter((name) => name.includes("media")).sort();
+  assert.deepEqual(media, [
+    "agent_cancel_media_job",
+    "agent_create_media_job",
+    "agent_get_media_job",
+    "agent_get_media_limits",
+    "agent_get_media_session",
+    "agent_list_media_templates",
+    "agent_request_media_session",
+  ]);
+  assert.ok(!Object.keys(tools).some((name) => /media.*(approve|start|stop|reject)/.test(name)));
+  for (const name of media) assert.equal(MCP_TOOL_CLASSIFICATION[name], "bound");
+});
+
+test("MCP agent_request_media_session stamps requestedBy:agent and forwards the caps; a non-active channel is refused before the core", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const ok = await handlers.agentRequestMediaSession({ channelId: "UC_1", maxMinutes: 30, maxUsd: 2, reason: "thumbnails" });
+  assert.equal(ok.isError, undefined);
+  assert.deepEqual(calls, [{ method: "requestSession", input: { channelId: "UC_1", maxMinutes: 30, maxUsd: 2, reason: "thumbnails", requestedBy: "agent" } }]);
+  assert.equal(parseToolJson(ok).session.requestedBy, "agent");
+
+  const strict = makeMediaHandlers();
+  const rejectingAccess = {
+    ...makeChannelAccessCoreStub(),
+    assertActiveChannel: async () => {
+      throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "not active" });
+    },
+  };
+  const handlers2 = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, rejectingAccess,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    {
+      requestSession: async () => {
+        throw new Error("must not be reached");
+      },
+    } as never
+  );
+  const refused = await handlers2.agentRequestMediaSession({ channelId: "UC_2" });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "CHANNEL_NOT_AUTHORIZED");
+  assert.deepEqual(strict.calls, []);
+  // Strict input: a requestedBy field cannot be supplied by the caller.
+  const extra = await handlers.agentRequestMediaSession({ channelId: "UC_1", requestedBy: "operator" });
+  assert.equal(parseToolJson(extra).error.code, "validation_failed");
+});
+
+test("MCP agent_get_media_session / agent_get_media_job: another channel's session or job is reported as not found; lists are narrowed to the channel", async () => {
+  const other = makeMediaHandlers({ channelOfSession: "UC_other", channelOfJob: "UC_other" });
+  assert.equal(parseToolJson(await other.handlers.agentGetMediaSession({ channelId: "UC_1", sessionId: "ms-1" })).error.code, "media_session_not_found");
+  assert.equal(parseToolJson(await other.handlers.agentGetMediaJob({ channelId: "UC_1", jobId: "mj-1" })).error.code, "media_job_not_found");
+  assert.equal(parseToolJson(await other.handlers.agentCancelMediaJob({ channelId: "UC_1", jobId: "mj-1" })).error.code, "media_job_not_found");
+  assert.ok(!other.calls.some((c) => c.method === "cancelJob"));
+
+  const mine = makeMediaHandlers();
+  const sessions = parseToolJson(await mine.handlers.agentGetMediaSession({ channelId: "UC_1" })).sessions;
+  assert.deepEqual(sessions.map((s: { sessionId: string }) => s.sessionId), ["ms-1"]);
+  await mine.handlers.agentGetMediaJob({ channelId: "UC_1", sessionId: "ms-1" });
+  assert.deepEqual(mine.calls.at(-1), { method: "listJobs", input: { channelId: "UC_1", sessionId: "ms-1" } });
+});
+
+test("MCP agent_get_media_limits hides another channel's open session but reports deviceHasOpenSession", async () => {
+  const { handlers } = makeMediaHandlers();
+  const limits = parseToolJson(await handlers.agentGetMediaLimits({ channelId: "UC_1" }));
+  assert.equal(limits.openSession, null);
+  assert.equal(limits.deviceHasOpenSession, true);
+  assert.equal(limits.remainingTodayUsd, 9);
+});
+
+test("MCP agent_create_media_job stamps createdBy:agent; request/create/cancel are rejected while the operation lock is held, the reads are not", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const ok = await handlers.agentCreateMediaJob({ channelId: "UC_1", sessionId: "ms-1", templateId: "t1", params: { prompt: "a cat" } });
+  assert.equal(ok.isError, undefined);
+  assert.deepEqual(calls, [{ method: "createJob", input: { channelId: "UC_1", sessionId: "ms-1", templateId: "t1", params: { prompt: "a cat" }, createdBy: "agent" } }]);
+
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const locked = makeMediaHandlers();
+    for (const blocked of [
+      await locked.handlers.agentRequestMediaSession({ channelId: "UC_1" }),
+      await locked.handlers.agentCreateMediaJob({ channelId: "UC_1", sessionId: "ms-1", templateId: "t1" }),
+      await locked.handlers.agentCancelMediaJob({ channelId: "UC_1", jobId: "mj-1" }),
+    ]) {
+      assert.equal(blocked.isError, true);
+      assert.equal(parseToolJson(blocked).error.code, "operation_lock_held");
+    }
+    assert.deepEqual(locked.calls, []);
+    assert.equal((await locked.handlers.agentListMediaTemplates({ channelId: "UC_1" })).isError, undefined);
+    assert.equal((await locked.handlers.agentGetMediaLimits({ channelId: "UC_1" })).isError, undefined);
+    assert.equal((await locked.handlers.agentGetMediaJob({ channelId: "UC_1" })).isError, undefined);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });
