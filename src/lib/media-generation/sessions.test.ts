@@ -76,7 +76,7 @@ function memorySessionStore() {
 
 type PodState = { status: string; costPerHr: number };
 
-function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; terminateSticks?: boolean } = {}) {
+function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; terminateSticks?: boolean; containerNeverStarts?: boolean } = {}) {
   const pods = new Map<string, PodState>();
   const calls: string[] = [];
   let created = 0;
@@ -91,6 +91,8 @@ function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; t
     gpuCount: 1,
     networkVolumeIds: ["vol-eu"],
     ports: null,
+    // Like the live API: `RUNNING` + a runtime once the container is up; `containerNeverStarts` = RUNNING with no runtime.
+    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts ? 5 : null,
     env: {},
     createdAt: null,
     startedAt: null,
@@ -1320,4 +1322,21 @@ test("review 21: the boot sweep honors a DELETE an earlier attempt recorded (ter
   assert.equal(row.stoppedAt?.getTime(), deletedAt.getTime());
   assert.equal(row.secondsUsed, 5 + 60 + 30);
   assert.ok(!/already gone/.test(row.error ?? ""));
+});
+
+// -- slice 0 (2026-10-05): RUNNING is not "container up" -------------------------------------------
+
+test("slice 0: a pod reported RUNNING whose container never starts (runtime null) is NOT waited on as ComfyUI -- the start times out saying the container never started, and the pod is terminated", async () => {
+  const comfy = fakeComfy();
+  const f = fixture({ runpod: fakeRunpod({ containerNeverStarts: true }), comfy });
+  const requested = await f.services.requestSession(operatorRequest);
+  const stages: string[] = [];
+  await assert.rejects(
+    f.services.approveAndStartSession({ sessionId: requested.sessionId, onStage: (s) => stages.push(s) }),
+    (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed" && /container never started/.test(e.message)
+  );
+  assert.ok(stages.includes("Downloading the image and starting the container"));
+  assert.ok(!stages.includes("Waiting for ComfyUI to answer"), "ComfyUI is never polled before the container is up");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "failed");
+  assert.equal(f.runpod.pods.has("pod1"), false);
 });

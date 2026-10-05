@@ -747,9 +747,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               break;
             }
             await seenAlive(); // billed at least until here (AC-P14-17)
-            if (current.status === "RUNNING") {
+            // RunPod says RUNNING while the image still downloads; the container is up only once `runtime` appears
+            // (slice 0). Until then the honest stage is "downloading the image", and a timeout says the container never started.
+            if (current.status === "RUNNING" && current.containerUptimeSec !== null) {
               phase = "comfy";
               onStage("Waiting for ComfyUI to answer");
+            } else if (current.status === "RUNNING") {
+              lastDetail = "the container never started on the host (image download or host problem)";
+              onStage("Downloading the image and starting the container");
             }
           } else {
             // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.

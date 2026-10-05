@@ -277,3 +277,13 @@ test("slice 0: createPod sends the datacenter as dataCenterIds: [id] and never d
   await client.createPod({ name: "no-dc", image: "x" });
   assert.equal("dataCenterIds" in (JSON.parse(String(calls[1].init.body)) as Record<string, unknown>), false);
 });
+
+test("slice 0: toPod reads container uptime from runtime -- null while RUNNING with no runtime (image still downloading)", async () => {
+  const { toPod } = await import("./runpod-api");
+  const downloading = toPod({ id: "p", name: "n", status: "RUNNING", runtime: null, cost: 0.74 });
+  assert.equal(downloading.status, "RUNNING");
+  assert.equal(downloading.containerUptimeSec, null);
+  const up = toPod({ id: "p", name: "n", status: "RUNNING", runtime: { uptime: 26, ports: [{ ip: "100.65.21.246", private: 8189, public: 60335, type: "http" }] } });
+  assert.equal(up.containerUptimeSec, 26);
+  assert.equal(up.ports?.[0].private, 8189);
+});

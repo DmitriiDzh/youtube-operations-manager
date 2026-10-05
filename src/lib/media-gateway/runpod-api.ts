@@ -58,6 +58,12 @@ export type RunpodPod = {
   networkVolumeIds: string[];
   /** Public ports as the runtime reports them (`null` until the pod runs). */
   ports: Array<{ private: number; public: number | null; type: string; ip: string | null }> | null;
+  /**
+   * Whether the CONTAINER is actually up (slice 0, 2026-10-05): the live API reports `status: "RUNNING"` from the moment
+   * the pod is scheduled -- while the image is still downloading -- and only `runtime` (null until then, then
+   * `{ uptime, ports, ... }`) says the container started. Seconds since the container started, or `null` when it has not.
+   */
+  containerUptimeSec: number | null;
   env: Record<string, string>;
   createdAt: string | null;
   startedAt: string | null;
@@ -172,6 +178,7 @@ export function toPod(raw: unknown): RunpodPod {
     gpuTypeId: asString(gpu.id),
     gpuCount: asNumber(gpu.count),
     networkVolumeIds: extractList(mounts.network, []).map((m) => asString(asRecord(m).volumeId) ?? "").filter(Boolean),
+    containerUptimeSec: r.runtime && typeof r.runtime === "object" ? (asNumber(runtime.uptime) ?? 0) : null,
     ports: Array.isArray(runtime.ports)
       ? runtime.ports.map((p) => {
           const port = asRecord(p);
