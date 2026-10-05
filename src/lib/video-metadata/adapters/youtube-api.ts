@@ -1,14 +1,15 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import {
-  applyVideoMetadataUpdate,
   createYoutubeClient,
   getMyChannelId,
   getVideoById,
   getVideoMetadataContext,
   listVideosByChannel,
-} from "@/lib/youtube";
+} from "@/lib/youtube-read-gateway";
+import { applyVideoMetadataUpdate, assertLiveWritesAuthorized } from "@/lib/youtube-write-gateway";
 import {
   DomainError,
+  isDomainError,
   type MetadataSyncProposal,
   type ResolvedCredentials,
   type VideoMetadataContext,
@@ -31,7 +32,7 @@ export function createYoutubeApiAdapter() {
       channelId?: string;
       maxResults?: number;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const channelId = args.channelId ?? (await getMyChannelId(youtube));
 
       if (!channelId) {
@@ -45,7 +46,7 @@ export function createYoutubeApiAdapter() {
     },
 
     async getVideo(args: { credentials: ResolvedCredentials; videoId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const video = await getVideoById(youtube, args.videoId);
 
       if (!video) {
@@ -60,7 +61,7 @@ export function createYoutubeApiAdapter() {
     },
 
     async getVideoMetadataContext(args: { credentials: ResolvedCredentials; videoId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const context = await getVideoMetadataContext(youtube, args.videoId);
 
       if (!context) {
@@ -78,7 +79,6 @@ export function createYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       proposal: MetadataSyncProposal;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
       const targetLocalization = args.proposal.update.localizations[args.proposal.targetLanguage];
 
       if (!targetLocalization) {
@@ -91,12 +91,16 @@ export function createYoutubeApiAdapter() {
         });
       }
 
+      await assertLiveWritesAuthorized();
+      const youtube = await createAuthorizedClient(args.credentials);
+
       try {
         await applyVideoMetadataUpdate({
           youtube,
           update: args.proposal.update,
         });
       } catch (error) {
+        if (isDomainError(error)) throw error;
         throw new DomainError({
           code: "update_failed",
           message: "Failed to update YouTube metadata",

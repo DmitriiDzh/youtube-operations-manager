@@ -1,14 +1,18 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import {
-  addVideoToPlaylistForAuthenticated,
-  createPlaylistForAuthenticated,
   createYoutubeClient,
-  deletePlaylistItemById,
   getPlaylistForUpdate as getPlaylistForUpdateFromYoutube,
   listPlaylistItemIdsByVideo,
   listPlaylistsForAuthenticated,
+} from "@/lib/youtube-read-gateway";
+import {
+  addVideoToPlaylistForAuthenticated,
+  assertLiveWritesAuthorized,
+  createPlaylistForAuthenticated,
+  deletePlaylistForAuthenticated,
+  deletePlaylistItemById,
   updatePlaylistForAuthenticated,
-} from "@/lib/youtube";
+} from "@/lib/youtube-write-gateway";
 import type {
   Playlist,
   PlaylistPrivacyStatus,
@@ -28,7 +32,7 @@ function createAuthorizedClient(credentials: ResolvedCredentials) {
 export function createPlaylistYoutubeApiAdapter() {
   return {
     async listPlaylists(args: { credentials: ResolvedCredentials }): Promise<Playlist[]> {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return listPlaylistsForAuthenticated(youtube);
     },
 
@@ -38,7 +42,8 @@ export function createPlaylistYoutubeApiAdapter() {
       description?: string;
       privacyStatus: PlaylistPrivacyStatus;
     }): Promise<Playlist> {
-      const youtube = createAuthorizedClient(args.credentials);
+      await assertLiveWritesAuthorized();
+      const youtube = await createAuthorizedClient(args.credentials);
       return createPlaylistForAuthenticated(
         youtube,
         args.title,
@@ -48,7 +53,7 @@ export function createPlaylistYoutubeApiAdapter() {
     },
 
     async getPlaylistForUpdate(args: { credentials: ResolvedCredentials; playlistId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return getPlaylistForUpdateFromYoutube(youtube, args.playlistId);
     },
 
@@ -59,7 +64,8 @@ export function createPlaylistYoutubeApiAdapter() {
       description: string;
       privacyStatus: PlaylistPrivacyStatus;
     }): Promise<Playlist> {
-      const youtube = createAuthorizedClient(args.credentials);
+      await assertLiveWritesAuthorized();
+      const youtube = await createAuthorizedClient(args.credentials);
       return updatePlaylistForAuthenticated({
         youtube,
         playlistId: args.playlistId,
@@ -70,7 +76,7 @@ export function createPlaylistYoutubeApiAdapter() {
     },
 
     async getPlaylistForDelete(args: { credentials: ResolvedCredentials; playlistId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const response = await youtube.playlists.list({
         part: ["id", "snippet"],
         id: [args.playlistId],
@@ -90,8 +96,9 @@ export function createPlaylistYoutubeApiAdapter() {
     },
 
     async deletePlaylist(args: { credentials: ResolvedCredentials; playlistId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
-      await youtube.playlists.delete({ id: args.playlistId });
+      await assertLiveWritesAuthorized();
+      const youtube = await createAuthorizedClient(args.credentials);
+      await deletePlaylistForAuthenticated(youtube, args.playlistId);
     },
 
     async addVideoToPlaylist(args: {
@@ -99,7 +106,8 @@ export function createPlaylistYoutubeApiAdapter() {
       playlistId: string;
       videoId: string;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      await assertLiveWritesAuthorized();
+      const youtube = await createAuthorizedClient(args.credentials);
       await addVideoToPlaylistForAuthenticated(youtube, args.videoId, args.playlistId);
     },
 
@@ -107,12 +115,13 @@ export function createPlaylistYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       playlistId: string;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return listPlaylistItemIdsByVideo(youtube, args.playlistId);
     },
 
     async deletePlaylistItem(args: { credentials: ResolvedCredentials; playlistItemId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      await assertLiveWritesAuthorized();
+      const youtube = await createAuthorizedClient(args.credentials);
       await deletePlaylistItemById(youtube, args.playlistItemId);
     },
   };

@@ -336,6 +336,30 @@ test("AC-BATCH-01/02: batch creation freezes membership into one ledger row per 
   );
 });
 
+test("BL-010 getBatchWithLedgerRows: returns the batch and exactly its ledger rows for the owning channel; another channel gets batch_not_found and no rows", async () => {
+  const harness = createHarness();
+  const batch = await createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    selections: [
+      { videoId: "v1", changeIds: ["c1"] },
+      { videoId: "v2", changeIds: ["c2"] },
+    ],
+  });
+
+  const result = await harness.services.getBatchWithLedgerRows("UC_TEST", batch.id);
+  assert.equal(result.batch.id, batch.id);
+  assert.deepEqual(result.ledgerRows.map((r) => r.videoId).sort(), ["v1", "v2"]);
+
+  await assert.rejects(
+    () => harness.services.getBatchWithLedgerRows("UC_OTHER", batch.id),
+    (error: unknown) => error instanceof DomainError && error.code === "batch_not_found"
+  );
+  await assert.rejects(
+    () => harness.services.getBatchWithLedgerRows("UC_TEST", "no-such-batch"),
+    (error: unknown) => error instanceof DomainError
+  );
+});
+
 test("AC-LEDGER-01: every ledger row starts PENDING with no per-change duplication", async () => {
   const harness = createHarness();
 

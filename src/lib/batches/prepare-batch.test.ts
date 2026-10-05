@@ -216,6 +216,8 @@ function createHarness(options: {
   backupHealthy?: boolean;
   backupFailsForVideoId?: string;
   auditFailsForVideoId?: string;
+  channelBaseline?: string | null;
+  channelBaselineAudio?: string | null;
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -240,6 +242,7 @@ function createHarness(options: {
         return { expectedChannelId: args.expectedChannelId ?? "UC_TEST", shouldPersistSelection: false, userId: "user-1" };
       },
     },
+    channelLanguageBaseline: options.channelBaseline === undefined ? undefined : { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null, getExpectedDefaultAudioLanguage: async () => options.channelBaselineAudio ?? null },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
         fetchFreshCalls.push(args.videoId);
@@ -541,4 +544,125 @@ test("minimal isolation: one video's FAILED does not stop the rest of the batch 
   const byVideo = Object.fromEntries(result.rows.map((r) => [r.videoId, r.status]));
   assert.equal(byVideo.v1, "FAILED");
   assert.equal(byVideo.v2, "DRY_RUN_COMPLETE");
+});
+
+// ---------------------------------------------------------------------------
+// Owner authorization 2026-10-02 ("Разрешаю чтобы дефолтный язык подставлялся в батчи, при загрузке
+// файлов на перевод"): a video with NO defaultLanguage gets the channel baseline written with its
+// localizations. Expected values stated by hand from that instruction + PROJECT_SPEC §14.
+// ---------------------------------------------------------------------------
+const NO_DEFAULT = (localizations: Record<string, { title: string; description: string }> = {}) => ({
+  snippet: { title: "T", description: "D", defaultLanguage: null },
+  localizations,
+});
+
+test("channel baseline: a video without defaultLanguage gets the baseline in the payload; backup keeps the ORIGINAL (null)", async () => {
+  const harness = createHarness({ channelBaseline: "en", channelBaselineAudio: "en", freshByVideoId: { v1: NO_DEFAULT() } });
+  const batch = await createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    dryRun: true,
+    selections: [{ videoId: "v1", changeIds: ["c1"] }],
+  });
+
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+  const row = result.rows[0];
+
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  assert.equal(row.status === "DRY_RUN_COMPLETE" && row.appliedDefaultLanguage, "en");
+  assert.equal(row.status === "DRY_RUN_COMPLETE" && row.payload.snippet.defaultLanguage, "en");
+  assert.deepEqual(row.status === "DRY_RUN_COMPLETE" && row.payload.localizations, { es: { title: "Proposed", description: "" } });
+  assert.equal((harness.backupWrites[0].snapshot as { defaultLanguage: string | null }).defaultLanguage, null);
+});
+
+test("channel baseline: no baseline configured -> still blocked exactly as before (AC-DEFAULTLANG-01)", async () => {
+  for (const channelBaseline of [undefined, null]) {
+    const harness = createHarness({ channelBaseline, freshByVideoId: { v1: NO_DEFAULT() } });
+    const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+    const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+    assert.equal(result.rows[0].status, "FAILED");
+    assert.match((result.rows[0] as { error: string }).error, /no defaultLanguage/);
+    assert.equal(harness.backupWrites.length, 0);
+  }
+});
+
+test("channel baseline (owner decision 2026-10-04, replaces 'baseline never overrides'): a video whose own defaultLanguage differs from the channel default fails closed and nothing is backed up or sent", async () => {
+  const harness = createHarness({
+    channelBaseline: "en",
+    freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "ja" }, localizations: {} } },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+  assert.equal(result.rows[0].status, "FAILED");
+  assert.match((result.rows[0] as { error: string }).error, /"ja".*"en"|Language defaults/);
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("channel baseline: a video whose defaultLanguage equals the channel default is written with it (nothing 'applied')", async () => {
+  const harness = createHarness({
+    channelBaseline: "en", channelBaselineAudio: "en",
+    freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: {} } },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const row = (await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } })).rows[0];
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+  assert.equal(row.status === "DRY_RUN_COMPLETE" && row.payload.snippet.defaultLanguage, "en");
+  assert.equal(row.status === "DRY_RUN_COMPLETE" && row.appliedDefaultLanguage, null);
+});
+
+test("channel baseline audio (owner decision 2026-10-04): the channel's audio language is always sent, whatever the video has now (en-US, zxx or none)", async () => {
+  for (const own of ["en-US", "zxx", undefined]) {
+    const harness = createHarness({
+      channelBaseline: "en",
+      channelBaselineAudio: "en",
+      freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "en", ...(own ? { defaultAudioLanguage: own } : {}) }, localizations: {} } },
+    });
+    const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+    const row = (await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } })).rows[0];
+    assert.equal(row.status, "DRY_RUN_COMPLETE", String(own));
+    assert.equal(row.status === "DRY_RUN_COMPLETE" && row.payload.snippet.defaultAudioLanguage, "en", String(own));
+  }
+});
+
+test("channel baseline audio (review): with no channel audio language set the batch fails closed -- a write without it would reset the video's audio language", async () => {
+  const harness = createHarness({
+    channelBaseline: "en",
+    freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "en", defaultAudioLanguage: "zxx" }, localizations: {} } },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const row = (await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } })).rows[0];
+  assert.equal(row.status, "FAILED");
+  assert.match((row as { error: string }).error, /no audio language set/);
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("channel baseline (review): the language comparison ignores letter case (en vs EN is no mismatch)", async () => {
+  const harness = createHarness({
+    channelBaseline: "EN",
+    channelBaselineAudio: "en",
+    freshByVideoId: { v1: { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: {} } },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const row = (await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } })).rows[0];
+  assert.equal(row.status, "DRY_RUN_COMPLETE");
+});
+
+test("channel baseline: a change targeting the baseline language itself fails closed (would overwrite snippet title)", async () => {
+  const harness = createHarness({ channelBaseline: "en", freshByVideoId: { v1: NO_DEFAULT() } });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] },
+    { c1: { language: "en" } }
+  );
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+  assert.equal(result.rows[0].status, "FAILED");
+  assert.match((result.rows[0] as { error: string }).error, /collide/);
+  assert.equal(harness.backupWrites.length, 0);
+});
+
+test("channel baseline: an existing remote localization under the baseline code fails closed (would be dropped)", async () => {
+  const harness = createHarness({ channelBaseline: "en", freshByVideoId: { v1: NO_DEFAULT({ en: { title: "Remote EN", description: "x" } }) } });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+  assert.equal(result.rows[0].status, "FAILED");
+  assert.match((result.rows[0] as { error: string }).error, /collide/);
 });

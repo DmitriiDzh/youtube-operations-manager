@@ -1,6 +1,6 @@
-import { z, ZodError } from "zod";
-import { DomainError } from "./contracts";
+import { z } from "zod";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+export { parseWithSchema, formatZodError } from "./contracts";
 
 const localizationOverviewRowSchema = z
   .object({
@@ -8,10 +8,13 @@ const localizationOverviewRowSchema = z
     title: z.string(),
     thumbnailUrl: z.string().nullable(),
     publishedAt: z.string(),
+    privacyStatus: z.string(),
+    publishAt: z.string().nullable(),
     defaultLanguage: z.string().nullable(),
     presentLanguages: z.array(z.string()),
     missingLanguages: z.array(z.string()),
     status: z.enum(["complete", "missing"]),
+    lastSyncedAt: z.string(),
   })
   .strict();
 
@@ -27,8 +30,17 @@ export const localizationOverviewOutputSchema = z
     channelId: z.string().min(1),
     channelTitle: z.string(),
     languages: z.array(z.string()),
+    trackedLanguages: z.array(z.string()),
     totalVideos: z.number().int().nonnegative(),
     videos: z.array(localizationOverviewRowSchema),
+  })
+  .strict();
+
+export const manageTrackedLanguageInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    language: z.string().min(1),
   })
   .strict();
 
@@ -73,24 +85,4 @@ export type LocalizationOverviewOutput = z.infer<typeof localizationOverviewOutp
 export type VideoLocalizationDetailInput = z.infer<typeof videoLocalizationDetailInputSchema>;
 export type VideoLocalizationDetailOutput = z.infer<typeof videoLocalizationDetailOutputSchema>;
 export type ExportLocalizationsInput = z.infer<typeof exportLocalizationsInputSchema>;
-
-export function formatZodError(error: ZodError) {
-  return error.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-}
-
-export function parseWithSchema<T>(schema: z.ZodType<T>, payload: unknown, context: string): T {
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new DomainError({
-      code: "validation_failed",
-      message: `Invalid ${context}`,
-      details: formatZodError(parsed.error),
-    });
-  }
-
-  return parsed.data;
-}
+export type ManageTrackedLanguageInput = z.infer<typeof manageTrackedLanguageInputSchema>;

@@ -30,11 +30,14 @@ import {
   checkDefaultLanguage,
   classifyFreshStateAgainstAttempt,
   detectPreWriteConflict,
+  readCurrentValue,
   type FreshVideoContext,
   type PendingChange,
 } from "./merge";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import type { CredentialRef, ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import { runWithQuotaContext, type QuotaContext } from "@/lib/youtube-quota";
+import { beginBatchExecution, endBatchExecution, isBatchCancelRequested, requestBatchCancelFlag } from "./execution-control";
+import type { CredentialRef, ResolvedCredentials } from "@/lib/shared-domain";
 
 type BatchStoreDeps = {
   createBatchWithLedger(input: {
@@ -87,7 +90,7 @@ type AuditDeps = {
     batchId: string;
     ledgerRowId: string;
     videoId: string;
-    eventType: "PREPARATION" | "ATTEMPT" | "RESULT" | "CONFLICT" | "VERIFICATION" | "DRY_RUN" | "RECONCILIATION";
+    eventType: "PREPARATION" | "ATTEMPT" | "RESULT" | "CONFLICT" | "VERIFICATION" | "DRY_RUN" | "RECONCILIATION" | "CANCELLED";
     detail: unknown;
   }): Promise<void>;
 };
@@ -140,14 +143,29 @@ type BackupDeps = {
   checkInfrastructureHealth(): Promise<{ healthy: boolean; error?: string }>;
   captureBackup(args: {
     channelId: string;
-    batchId: string;
+    operationId: string;
     videoId: string;
-    snapshot: { defaultLanguage: string | null; existingLocalizations: Record<string, { title: string; description: string }> };
+    snapshot: {
+      kind: "localization";
+      defaultLanguage: string | null;
+      existingLocalizations: Record<string, { title: string; description: string }>;
+    };
   }): Promise<{ path: string; capturedAt: string }>;
+};
+
+/**
+ * Owner authorization 2026-10-02 (Telegram: "Разрешаю чтобы дефолтный язык подставлялся в батчи,
+ * при загрузке файлов на перевод"): the one deliberate exception to DEC-OQ-2 / AC-DEFAULTLANG-01.
+ * Optional so a wiring that does not supply it keeps the original block-only behavior.
+ */
+type ChannelLanguageBaselineDeps = {
+  getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+  getExpectedDefaultAudioLanguage?(channelId: string): Promise<string | null>;
 };
 
 type ServiceDependencies = {
   batchStore: BatchStoreDeps;
+  channelLanguageBaseline?: ChannelLanguageBaselineDeps;
   changeSetStore: ChangeSetStoreDeps;
   authResolver: AuthResolverDeps;
   writeContext: WriteContextDeps;
@@ -155,7 +173,57 @@ type ServiceDependencies = {
   backup: BackupDeps;
   audit: AuditDeps;
   clock: ClockDeps;
+  /**
+   * Optional: after a write is confirmed by the read-back, the local copy of the video takes the confirmed values (owner request 2026-10-04: the
+   * Languages table must not need Sync Now after a send). A failure here never changes the row's SUCCESS -- YouTube already has the write.
+   */
+  localMirror?: {
+    applyConfirmedWrite(input: {
+      channelId: string;
+      videoId: string;
+      title: string;
+      description: string;
+      defaultLanguage: string | null;
+      defaultAudioLanguage: string | null;
+      localizations: Record<string, { title: string; description: string }>;
+    }): Promise<boolean>;
+  };
   retryConfig?: RetryConfig;
+  /**
+   * Pauses (ms) before each EXTRA post-write verification read when the first read still shows the
+   * pre-write baseline -- a fresh `videos.list` straight after `videos.update` can be stale
+   * (propagation lag, see classifyFreshStateAgainstAttempt's "matches_baseline"). Omitted/empty =
+   * a single read (what unit tests rely on); production wiring (`index.ts`) supplies real delays.
+   */
+  verifyRetryDelaysMs?: number[];
+  /**
+   * The same device-availability gate `src/proxy.ts` applies to a mutating request (docs/TECHNICAL_DEBT.md
+   * RISK-94). The proxy only sees the START of `execute`; this is called before every row that has not
+   * started, so an export / import / unavailable device appearing mid-run stops the remaining rows
+   * instead of letting a long run write on. Throws to refuse. Optional so tests and any other wiring
+   * keep their behavior.
+   */
+  assertMutationAllowed?: () => Promise<void>;
+  /**
+   * BL-117 slice 2 -- the pre-flight quota guard (`src/lib/quota-guard`). Optional so tests and any other wiring keep their
+   * behavior; production wiring (`index.ts`) always supplies it. `checkWriteRun(videos)` says whether writing `videos`
+   * videos now fits into the Data API quota that is left.
+   */
+  quotaGuard?: {
+    checkWriteRun(videos: number): Promise<
+      | { decision: "allow"; estimatedUnits: number; remainingUnits: number; fitVideos: number }
+      | { decision: "insufficient"; estimatedUnits: number; remainingUnits: number; fitVideos: number; resetsAt: string | null }
+      | { decision: "unknown"; estimatedUnits: number; cloudConnected: boolean }
+    >;
+  };
+  /** Atomically splits a never-executed live batch (see `splitPendingBatchForQuota` in db.ts). Optional like `quotaGuard`. */
+  splitPendingBatch?: (input: {
+    batchId: string;
+    fitCount: number;
+    fitsBatchId: string | null;
+    restBatchId: string | null;
+    newRowIds: () => string;
+  }) => Promise<{ fitsBatchId: string | null; restBatchId: string | null; fitRows: number; restRows: number } | null>;
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -174,6 +242,7 @@ function toBatch(record: StoredBatchRecord): Batch {
     createdAt: record.createdAt.toISOString(),
     startedAt: record.startedAt ? record.startedAt.toISOString() : null,
     completedAt: record.completedAt ? record.completedAt.toISOString() : null,
+    splitInto: record.splitInto ?? null,
   };
 }
 
@@ -214,36 +283,78 @@ function allowedFromStatuses(to: LedgerStatus): LedgerStatus[] {
 }
 
 /**
+ * The non-throwing predicate half of `assertApprovalStillValid` below, exported so a caller that
+ * needs to SILENTLY FILTER a list of candidate changes (rather than abort on the first ineligible
+ * one) can reuse the exact same eligibility rule instead of hand-copying it -- found necessary by
+ * independent review of Phase 10: `decision-engine`'s own experiment-execution resolver had
+ * hand-copied this predicate's first half only (missing the `approvedValue`-vs-`proposedValue`
+ * check entirely), which would only have caught the "edited after approval" case by accident, if
+ * ever, since nothing kept the copy in sync with this function's own history of fixes. Deliberately
+ * typed structurally (only the fields this rule actually needs) rather than against
+ * `PendingChangeRecord` specifically, so `changesets`' own differently-named `Change` type (which
+ * has the same fields) can satisfy it without an import into this module going the wrong direction.
+ */
+export function isApprovalStillValid(change: {
+  approvalStatus: string;
+  validationStatus: string;
+  conflictStatus: string;
+  approvedValue: string | null;
+  proposedValue: string;
+}): boolean {
+  if (change.approvalStatus !== "approved" || change.validationStatus !== "valid" || change.conflictStatus !== "none") {
+    return false;
+  }
+  // Independent-review finding (2026-09-18, Slice 5) / AC-BATCH-03 sub-case (c), AC-TIMEOUT-02:
+  // `approvalStatus === "approved"` alone does not prove the CURRENT `proposedValue` is the one
+  // that was actually approved -- a change edited in place after approval, without a fresh
+  // approve/reject cycle, would pass the check above while carrying a value nobody ever approved.
+  // `approvedValue` is the frozen snapshot taken at approval time (mirrors changesets' own
+  // `Change.approvedValue`); a mismatch means the payload would be built from neither a known-good
+  // stale value nor a properly re-approved new one, so it must be treated as ineligible, exactly
+  // as an already-invalidated approval is.
+  return change.approvedValue === null || change.approvedValue === change.proposedValue;
+}
+
+/**
  * AC-BATCH-03 / AC-MERGE-04: a change must be exactly `approved` + `valid` +
  * non-conflicting to be published, checked identically whether this is the first time
  * (batch creation) or a re-check immediately before send (§0.F Step 4's "re-run the full
  * safety pipeline") -- one function, two call sites, per architectural decision #3.
  */
 function assertApprovalStillValid(change: PendingChangeRecord): void {
-  if (change.approvalStatus !== "approved" || change.validationStatus !== "valid" || change.conflictStatus !== "none") {
+  if (!isApprovalStillValid(change)) {
     throw new DomainError({
       code: "change_approval_invalid",
-      message: `Change ${change.id} is not (or is no longer) approved/valid/non-conflicting -- approvalStatus=${change.approvalStatus}, validationStatus=${change.validationStatus}, conflictStatus=${change.conflictStatus}`,
-      details: { changeId: change.id },
-    });
-  }
-
-  // Independent-review finding (2026-09-18, Slice 5) / AC-BATCH-03 sub-case (c),
-  // AC-TIMEOUT-02: `approvalStatus === "approved"` alone does not prove the CURRENT
-  // `proposedValue` is the one that was actually approved -- a change edited in place
-  // after approval, without a fresh approve/reject cycle, would pass the check above
-  // while carrying a value nobody ever approved. `approvedValue` is the frozen snapshot
-  // taken at approval time (mirrors changesets' own `Change.approvedValue`); a mismatch
-  // means the payload would be built from neither a known-good stale value nor a
-  // properly re-approved new one, so the write must be blocked outright, exactly as an
-  // already-invalidated approval is.
-  if (change.approvedValue !== null && change.approvedValue !== change.proposedValue) {
-    throw new DomainError({
-      code: "change_approval_invalid",
-      message: `Change ${change.id} was edited after approval -- its current proposedValue no longer matches the value that was actually approved`,
+      message:
+        change.approvalStatus !== "approved" || change.validationStatus !== "valid" || change.conflictStatus !== "none"
+          ? `Change ${change.id} is not (or is no longer) approved/valid/non-conflicting -- approvalStatus=${change.approvalStatus}, validationStatus=${change.validationStatus}, conflictStatus=${change.conflictStatus}`
+          : `Change ${change.id} was edited after approval -- its current proposedValue no longer matches the value that was actually approved`,
       details: { changeId: change.id, approvedValue: change.approvedValue, proposedValue: change.proposedValue },
     });
   }
+}
+
+/** Compact, non-sensitive diagnosis for a verification mismatch audit event: per changed field,
+ * whether the freshly read value equals the requested / baseline value, plus lengths only (never
+ * the text itself). */
+function describeObservedState(changes: PendingChange[], fresh: FreshVideoContext | null) {
+  if (!fresh) return null;
+  return changes.map((change) => {
+    const current = readCurrentValue(fresh, change.language, change.field);
+    return {
+      language: change.language,
+      field: change.field,
+      equalsRequested: current === change.proposedValue,
+      equalsBaseline: current === change.baselineValue,
+      observedLength: current.length,
+      requestedLength: change.proposedValue.length,
+    };
+  });
+}
+
+/** BL-117: the quota history groups every API call of one batch run under this label. */
+function batchQuotaContext(batchId: string): QuotaContext {
+  return { kind: "batch", id: batchId, label: `Batch ${batchId.slice(0, 8)}` };
 }
 
 export function createBatchServices(deps: ServiceDependencies) {
@@ -371,6 +482,17 @@ export function createBatchServices(deps: ServiceDependencies) {
     return rows.map(toLedgerRow);
   }
 
+  /**
+   * The ownership-checked read every surface (Web UI route, MCP `batch_get`, CLI `batch get`) returns: the batch AFTER proving it belongs to
+   * `channelId` (AGENTS.md §F -- never a bare `getBatch(batchId)`), together with its ledger rows. One implementation instead of the same
+   * composition copied into three call sites (BL-010).
+   */
+  async function getBatchWithLedgerRows(channelId: string, batchId: string): Promise<{ batch: Batch; ledgerRows: LedgerRow[] }> {
+    const batch = await requireBatchForChannel(channelId, batchId);
+    const ledgerRows = await listLedgerRows(batchId);
+    return { batch, ledgerRows };
+  }
+
   /** Atomic PENDING -> RUNNING claim; fails if the batch is already running (AC-CONCURRENCY-02/03). */
   async function claimBatchExecution(batchId: string): Promise<{ runId: string }> {
     await requireBatch(batchId);
@@ -433,6 +555,29 @@ export function createBatchServices(deps: ServiceDependencies) {
     };
   }
 
+  /** After a confirmed write: the local copy takes the read-back values (see `localMirror`). Never throws -- a failure only leaves the copy for the next Sync Now. */
+  async function confirmLocalMirror(
+    batch: StoredBatchRecord,
+    row: StoredLedgerRowRecord,
+    verifyRaw: { snippet: Record<string, unknown>; localizations: Record<string, { title: string; description: string }> } | null
+  ): Promise<void> {
+    if (!deps.localMirror || !verifyRaw) return;
+    try {
+      const confirmed = toFreshVideoContext(verifyRaw);
+      await deps.localMirror.applyConfirmedWrite({
+        channelId: batch.channelId,
+        videoId: row.videoId,
+        title: confirmed.snippet.title,
+        description: confirmed.snippet.description,
+        defaultLanguage: confirmed.snippet.defaultLanguage,
+        defaultAudioLanguage: typeof confirmed.snippet.defaultAudioLanguage === "string" ? confirmed.snippet.defaultAudioLanguage : null,
+        localizations: confirmed.localizations,
+      });
+    } catch (error) {
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { localMirrorUpdateFailed: error instanceof Error ? error.message : String(error) } });
+    }
+  }
+
   async function loadChangesForRow(row: StoredLedgerRowRecord): Promise<PendingChangeRecord[]> {
     return Promise.all(row.changeIds.map((changeId) => requireChangeForVideo(changeId, row.videoId)));
   }
@@ -444,13 +589,14 @@ export function createBatchServices(deps: ServiceDependencies) {
       field: change.field,
       baselineValue: change.baselineValue,
       proposedValue: change.proposedValue,
+      changeType: change.changeType,
     }));
   }
 
   type SafetyPipelineResult =
     | { outcome: "FAILED"; error: string }
     | { outcome: "CONFLICT"; conflictingChangeIds: string[] }
-    | { outcome: "READY"; payload: PreparedPayload; changes: PendingChangeRecord[] };
+    | { outcome: "READY"; payload: PreparedPayload; changes: PendingChangeRecord[]; appliedDefaultLanguage: string | null };
 
   /**
    * The single shared "is it still safe to send this payload right now" pipeline:
@@ -488,9 +634,51 @@ export function createBatchServices(deps: ServiceDependencies) {
     }
     const fresh = toFreshVideoContext(rawFresh);
 
+    // The channel's language baseline (Languages -> Language defaults) is the single source of truth for
+    // the video's language fields on every batch write (owner decision 2026-10-04): `videos.update`
+    // replaces the whole `snippet`, so a field left out is reset by YouTube (live: a Tropico batch sent
+    // no audio language and all 53 videos turned `en-US`). Per-video values are never echoed for these
+    // two fields. No baseline set -> the older behaviour (own defaultLanguage echoed, audio omitted).
+    // `fresh` stays the untouched remote state (conflict detection, backup); only `mergeBase` carries
+    // the baseline values.
+    let appliedDefaultLanguage: string | null = null;
+    let mergeBase = fresh;
+    const baselineLanguage = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(batch.channelId)) ?? null;
+    const baselineAudio = (await deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage?.(batch.channelId)) ?? null;
     const defaultLanguageCheck = checkDefaultLanguage(fresh.snippet);
     if (!defaultLanguageCheck.ok) {
-      return { outcome: "FAILED", error: defaultLanguageCheck.reason };
+      // Owner exception to DEC-OQ-2 (2026-10-02): a video with NO defaultLanguage gets the baseline.
+      if (!baselineLanguage) {
+        return { outcome: "FAILED", error: defaultLanguageCheck.reason };
+      }
+      // The baseline language's text would become the snippet title/description; a change for it,
+      // or an existing remote localization under that code, would be silently overwritten/dropped.
+      const collides =
+        changeRecords.some((change) => change.language === baselineLanguage) ||
+        Object.prototype.hasOwnProperty.call(fresh.localizations, baselineLanguage);
+      if (collides) {
+        return {
+          outcome: "FAILED",
+          error: `Video has no defaultLanguage and the channel default "${baselineLanguage}" cannot be applied: this video already has, or is being given, a "${baselineLanguage}" localization, which would collide with the snippet title/description. Set the video's language manually.`,
+        };
+      }
+      appliedDefaultLanguage = baselineLanguage;
+      mergeBase = { ...fresh, snippet: { ...fresh.snippet, defaultLanguage: baselineLanguage } };
+    } else if (baselineLanguage && fresh.snippet.defaultLanguage?.toLowerCase() !== baselineLanguage.toLowerCase()) {
+      // Re-labelling a video that already has another language would mislabel its existing title/description:
+      // fail closed and point to the tool that fixes the mismatch deliberately.
+      return {
+        outcome: "FAILED",
+        error: `Video's defaultLanguage on YouTube is "${fresh.snippet.defaultLanguage}" but the channel default is "${baselineLanguage}". Fix the mismatch first (Languages -> Language defaults), then retry.`,
+      };
+    }
+    // With the baseline source wired but no audio language set, the write would silently reset the video's
+    // audio language (the Tropico incident): fail closed, in dry runs too, so it is seen before a live batch.
+    if (deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage && !baselineAudio) {
+      return {
+        outcome: "FAILED",
+        error: "The channel has no audio language set (Languages -> Language defaults). A write without it would reset the video's audio language on YouTube; set it first, then retry.",
+      };
     }
 
     const pendingChanges = toPendingChanges(changeRecords);
@@ -504,21 +692,34 @@ export function createBatchServices(deps: ServiceDependencies) {
       try {
         await deps.backup.captureBackup({
           channelId: batch.channelId,
-          batchId: batch.id,
+          operationId: batch.id,
           videoId: row.videoId,
-          snapshot: { defaultLanguage: fresh.snippet.defaultLanguage, existingLocalizations: fresh.localizations },
+          snapshot: {
+            kind: "localization",
+            defaultLanguage: fresh.snippet.defaultLanguage,
+            existingLocalizations: fresh.localizations,
+          },
         });
       } catch (error) {
         return { outcome: "FAILED", error: error instanceof DomainError ? error.message : String(error) };
       }
     }
 
-    const merged = buildSafeLocalizationsPayload(fresh, pendingChanges);
+    let merged: ReturnType<typeof buildSafeLocalizationsPayload>;
+    try {
+      merged = buildSafeLocalizationsPayload(mergeBase, pendingChanges, { defaultAudioLanguage: baselineAudio });
+    } catch (error) {
+      // Only the defense-in-depth defaultLanguage-deletion guard inside
+      // buildSafeLocalizationsPayload throws (see merge.ts) -- fail closed the same way
+      // every other step of this pipeline does, rather than letting it propagate as an
+      // unhandled rejection.
+      return { outcome: "FAILED", error: error instanceof Error ? error.message : String(error) };
+    }
     // videoId is attached here, once, at the single point PreparedPayload is constructed
     // -- see contracts.ts's PreparedPayload doc comment for why it lives on the payload
     // itself rather than as a second argument threaded separately into attemptWrite.
     const payload: PreparedPayload = { videoId: row.videoId, ...merged };
-    return { outcome: "READY", payload, changes: changeRecords };
+    return { outcome: "READY", payload, changes: changeRecords, appliedDefaultLanguage };
   }
 
   /**
@@ -557,14 +758,48 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     if (batch.dryRun) {
       await transitionLedgerStatus(row.id, "DRY_RUN_COMPLETE");
-      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "DRY_RUN", detail: { payload: result.payload } });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "DRY_RUN", detail: { payload: result.payload, defaultLanguageApplied: result.appliedDefaultLanguage } });
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-      return { ledgerRowId: row.id, videoId: row.videoId, status: "DRY_RUN_COMPLETE", payload: result.payload };
+      return { ledgerRowId: row.id, videoId: row.videoId, status: "DRY_RUN_COMPLETE", payload: result.payload, appliedDefaultLanguage: result.appliedDefaultLanguage };
     }
 
     await transitionLedgerStatus(row.id, "AWAITING_EXECUTION");
     // Live batch: prepared and ready, video lock stays held -- executeBatch continues.
-    return { ledgerRowId: row.id, videoId: row.videoId, status: "AWAITING_EXECUTION", payload: result.payload };
+    return { ledgerRowId: row.id, videoId: row.videoId, status: "AWAITING_EXECUTION", payload: result.payload, appliedDefaultLanguage: result.appliedDefaultLanguage };
+  }
+
+  /**
+   * Cancels ONE row that has not begun an attempt (ADR 0016): moves it to the terminal CANCELLED
+   * state, releases its video lock and records a CANCELLED audit event. Returns whether the row was
+   * actually transitioned -- a concurrent worker may have moved it first, and the caller must report
+   * what was persisted, not what it hoped for (RISK-31).
+   */
+  async function cancelNotStartedRow(batch: StoredBatchRecord, row: StoredLedgerRowRecord): Promise<boolean> {
+    if (row.status !== "PENDING" && row.status !== "AWAITING_EXECUTION") return false;
+    const transitioned = await batchStore.transitionLedgerRowStatus({ ledgerRowId: row.id, from: [row.status], to: "CANCELLED" });
+    // Only when the guarded transition really happened: a false result means the row is no longer in the
+    // status seen here (a concurrent worker may already have moved it to APPLYING), and releasing the
+    // lock of a row whose write is in flight would break per-video exclusivity. A PENDING row never
+    // held the lock, so this is a safe no-op for it.
+    if (transitioned) {
+      await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+      await audit.record({
+        batchId: batch.id,
+        ledgerRowId: row.id,
+        videoId: row.videoId,
+        eventType: "CANCELLED",
+        detail: { previousStatus: row.status, reason: "cancelled by the operator before this video was written" },
+      });
+    }
+    return transitioned;
+  }
+
+  /** Asks the execution of `batchId` running IN THIS PROCESS to stop before its next row. Refused
+   * (`accepted: false`) when nothing is executing -- never leaves a flag behind for a later run. */
+  async function requestBatchCancel(batchId: string): Promise<{ accepted: boolean }> {
+    const accepted = requestBatchCancelFlag(batchId);
+    if (accepted) logger.info({ event: "batch.cancel_requested", context: { batchId } });
+    return { accepted };
   }
 
   /**
@@ -643,6 +878,38 @@ export function createBatchServices(deps: ServiceDependencies) {
     const outcomes: PreparedRowOutcome[] = [];
 
     for (const row of ledgerRows) {
+      // ADR 0016: a cancel stops preparation before the next row; the rest end CANCELLED.
+      if (isBatchCancelRequested(input.batchId)) {
+        if (await cancelNotStartedRow(batch, row)) {
+          outcomes.push({ ledgerRowId: row.id, videoId: row.videoId, status: "CANCELLED" });
+        }
+        continue;
+      }
+      // RISK-94: preparation writes local state (ledger, locks, backups) -- stop if the device became
+      // unavailable for mutation (export/import running) since the batch started.
+      if (deps.assertMutationAllowed) {
+        let refusal: string | null = null;
+        try {
+          await deps.assertMutationAllowed();
+        } catch (error) {
+          refusal = error instanceof Error ? error.message : String(error);
+        }
+        if (refusal !== null) {
+          for (const pending of await batchStore.listLedgerRowsByBatch(input.batchId)) {
+            if (pending.status === "PENDING" || pending.status === "AWAITING_EXECUTION") {
+              const aborted = await batchStore.transitionLedgerRowStatus({ ledgerRowId: pending.id, from: [pending.status], to: "ABORTED_SYSTEMIC" });
+              if (aborted) await releaseVideoLock({ batchId: batch.id, videoId: pending.videoId });
+            }
+          }
+          await batchStore.markBatchTerminal(input.batchId, "ABORTED");
+          logger.error({ event: "batch.aborted_systemic", context: { batchId: input.batchId, reason: "device_unavailable", detail: refusal } });
+          throw new DomainError({
+            code: "device_unavailable",
+            message: `Batch stopped before writing: ${refusal}`,
+            details: { batchId: input.batchId },
+          });
+        }
+      }
       try {
         outcomes.push(await prepareLedgerRow({ row, batch, credentials }));
       } catch (error) {
@@ -866,11 +1133,27 @@ export function createBatchServices(deps: ServiceDependencies) {
       return { ledgerRowId: row.id, videoId: row.videoId, status: "SUCCESS", ownResponseObserved: false };
     };
 
-    const finalizeConflict = async (): Promise<ExecutionResult> => {
+    // (independent review, review series cycle 2): the reconciliation-detected CONFLICT path
+    // is one of (now) four code paths that can produce a CONFLICT ExecutionResult -- the other
+    // three all include conflictingChangeIds, and this one previously didn't. `freshRead` is
+    // whichever read (`read1`/`read2`, below) actually classified as "diverged" by
+    // classifyFreshStateAgainstAttempt; its own "diverged" already means "at least one change's
+    // current value differs from its baseline" -- exactly detectPreWriteConflict's own conflict
+    // condition on that same (pendingChanges, freshRead) pair -- so calling it here can only
+    // ever confirm the same changes are conflicting, never return "none" (independent review,
+    // review series cycle 3 -- simplified from an earlier version with an unreachable "none"
+    // fallback branch, which read as a live safety net for a scenario that cannot occur). When
+    // no read was ever received at all (`freshRead` is `null`, itself classified as "diverged"),
+    // every pending change for this row is conservatively reported as conflicting, since there
+    // is no fresh value to narrow the list down from -- this remains the only real fallback.
+    const finalizeConflict = async (freshRead: FreshVideoContext | null): Promise<ExecutionResult> => {
+      const conflictResult = freshRead ? detectPreWriteConflict(pendingChanges, freshRead) : null;
+      const conflictingChangeIds =
+        conflictResult?.status === "conflict" ? conflictResult.conflictingChangeIds : pendingChanges.map((c) => c.id);
       await transitionLedgerStatus(row.id, "CONFLICT");
-      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { detectedVia: "reconciliation" } });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { detectedVia: "reconciliation", conflictingChangeIds } });
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-      return { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT" };
+      return { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT", conflictingChangeIds };
     };
 
     const finalizeUnknown = async (reason: string): Promise<ExecutionResult> => {
@@ -882,11 +1165,12 @@ export function createBatchServices(deps: ServiceDependencies) {
     };
 
     const read1 = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-    const classification1 = read1 ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(read1)) : "diverged";
+    const freshContext1 = read1 ? toFreshVideoContext(read1) : null;
+    const classification1 = freshContext1 ? classifyFreshStateAgainstAttempt(pendingChanges, freshContext1) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 1, classification: classification1 } });
 
     if (classification1 === "matches_requested") return finalizeSuccess();
-    if (classification1 === "diverged") return finalizeConflict();
+    if (classification1 === "diverged") return finalizeConflict(freshContext1);
 
     // matches_baseline -- inconclusive by itself (§0.F Step 1), proceed to Step 2.
     await deps.clock.wait(retryConfig.baseDelayMs);
@@ -974,17 +1258,43 @@ export function createBatchServices(deps: ServiceDependencies) {
     changes: PendingChangeRecord[];
     credentials: ResolvedCredentials;
     executor: WriteExecutor;
+    /** Set when the safety pipeline injected the channel baseline as this video's defaultLanguage. */
+    appliedDefaultLanguage?: string | null;
   }): Promise<ExecutionResult> {
     const { row, batch, payload, changes, credentials, executor } = args;
+    const appliedDefaultLanguage = args.appliedDefaultLanguage ?? null;
     const pendingChanges = toPendingChanges(changes);
 
     let attemptCount = 0;
     for (;;) {
       attemptCount++;
       const { attemptId, attemptNumber } = await beginAttempt(row.id, payload);
-      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "ATTEMPT", detail: { attemptId, attemptNumber } });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "ATTEMPT", detail: { attemptId, attemptNumber, ...(appliedDefaultLanguage ? { defaultLanguageApplied: appliedDefaultLanguage } : {}) } });
 
-      const result = await executor.attemptWrite(payload);
+      let result: Awaited<ReturnType<WriteExecutor["attemptWrite"]>>;
+      try {
+        result = await executor.attemptWrite(payload);
+      } catch (error) {
+        // Architecture audit 2026-10-01 (H1): the Live-writes gate refused this attempt BEFORE
+        // anything was sent (it runs ahead of the client/network in attemptWrite). That is a
+        // definite, clean FAILED -- never left APPLYING, which would count as an unresolved
+        // execution and put the whole device into recovery mode. Systemic: the remaining rows would
+        // be refused the same way, so the batch stops here. Any other thrown error keeps its prior
+        // (uncaught) behavior -- its outcome is genuinely unknown.
+        if (!(error instanceof Error && (error as { code?: unknown }).code === "live_writes_disabled")) throw error;
+        const detail = "live_writes_disabled: the Live writes toggle is off -- nothing was sent to YouTube";
+        await completeAttempt(attemptId, "FAILED", detail);
+        await audit.record({
+          batchId: batch.id,
+          ledgerRowId: row.id,
+          videoId: row.videoId,
+          eventType: "RESULT",
+          detail: { attemptId, attemptNumber, outcome: "FAILED", ownResponseObserved: false, detail },
+        });
+        await transitionLedgerStatus(row.id, "FAILED", { error: detail });
+        await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+        return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail, systemic: true };
+      }
       const outcomeDetail = result.outcome === "SUCCESS" ? result.detail ?? null : result.detail;
       await completeAttempt(attemptId, result.outcome, outcomeDetail);
       await audit.record({
@@ -996,23 +1306,42 @@ export function createBatchServices(deps: ServiceDependencies) {
       });
 
       if (result.outcome === "SUCCESS") {
-        const verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-        const verifyClassification = verifyRaw
-          ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(verifyRaw))
-          : "diverged";
+        let verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
+        // An injected defaultLanguage is part of what this write promised: the read-back must show it.
+        const classifyVerify = (raw: typeof verifyRaw) => {
+          if (!raw) return "diverged" as const;
+          const context = toFreshVideoContext(raw);
+          const classification = classifyFreshStateAgainstAttempt(pendingChanges, context);
+          if (classification === "matches_requested" && appliedDefaultLanguage && context.snippet.defaultLanguage !== appliedDefaultLanguage) {
+            return "matches_baseline" as const;
+          }
+          return classification;
+        };
+        let verifyClassification = classifyVerify(verifyRaw);
+        for (const delayMs of deps.verifyRetryDelaysMs ?? []) {
+          if (verifyClassification !== "matches_baseline") break;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
+          verifyClassification = classifyVerify(verifyRaw);
+        }
 
         if (verifyClassification === "matches_requested") {
           await transitionLedgerStatus(row.id, "SUCCESS", {
             verificationResult: { resolvedVia: "own_response", ownResponseObserved: true, confirmedAt: new Date().toISOString() },
           });
-          await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "own_response", ownResponseObserved: true, confirmed: true } });
+          await confirmLocalMirror(batch, row, verifyRaw);
+          // The audio language is not in YouTube's documented settable list: record what was asked and what is
+          // now live, so a silently ignored field is visible in the audit instead of only on the video later.
+          const requestedAudio = typeof payload.snippet.defaultAudioLanguage === "string" ? payload.snippet.defaultAudioLanguage : null;
+          const observedAudio = verifyRaw && typeof verifyRaw.snippet.defaultAudioLanguage === "string" ? verifyRaw.snippet.defaultAudioLanguage : null;
+          await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "own_response", ownResponseObserved: true, confirmed: true, ...(requestedAudio ? { audioLanguage: { requested: requestedAudio, observed: observedAudio, matches: requestedAudio === observedAudio } } : {}) } });
           await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
           return { ledgerRowId: row.id, videoId: row.videoId, status: "SUCCESS", ownResponseObserved: true };
         }
 
         // AC-VERIFY-01/AC-CONFLICT-02: a 200 response alone is never sufficient -- a
         // mismatch here means either a partial apply or a same-instant external race.
-        await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { confirmed: false, classification: verifyClassification } });
+        await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { confirmed: false, classification: verifyClassification, observed: describeObservedState(pendingChanges, verifyRaw ? toFreshVideoContext(verifyRaw) : null) } });
         await transitionLedgerStatus(row.id, "FAILED", { error: "Post-write verification mismatch: confirmed remote state does not match the requested value" });
         await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
         return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail: "verification_mismatch" };
@@ -1131,6 +1460,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         verificationResult: { resolvedVia: "crash_recovery_reverification", ownResponseObserved: true, confirmedAt: new Date().toISOString() },
       });
       await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "crash_recovery_reverification", ownResponseObserved: true } });
+      await confirmLocalMirror(batch, row, verifyRaw);
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
       return "SUCCESS";
     }
@@ -1147,6 +1477,14 @@ export function createBatchServices(deps: ServiceDependencies) {
    * remote state or applies an already-known, durably-recorded outcome.
    */
   async function recoverBatch(input: {
+    batchId: string;
+    credentialRef: CredentialRef;
+    expectedChannelId?: string;
+  }): Promise<BatchRecoveryResult> {
+    return runWithQuotaContext(batchQuotaContext(input.batchId), () => recoverBatchRun(input));
+  }
+
+  async function recoverBatchRun(input: {
     batchId: string;
     credentialRef: CredentialRef;
     expectedChannelId?: string;
@@ -1224,7 +1562,146 @@ export function createBatchServices(deps: ServiceDependencies) {
    * run, which `docs/acceptance/PHASE_5_ACCEPTANCE.md` §0.B item C never requires to be
    * globally ordered, only reconstructable per video.
    */
+  /**
+   * BL-117 slice 2 (owner decision 2026-10-03: block a batch that certainly needs more quota than is available, before it
+   * starts, so it cannot be cut off half way and lose data). Runs BEFORE any claim, backup, lock or API call: a refusal
+   * changes nothing. Dry-run batches cost no quota and are never checked. For a resumed (RUNNING) batch only the rows still
+   * to be written count. Refusals are the typed errors `quota_insufficient` (numbers + whether the batch can be split) and
+   * `quota_unknown` (the quota could not be read; `acknowledgeUnknownQuota` lets the user proceed knowingly).
+   */
+  async function assertQuotaAllowsRun(batchId: string, acknowledgeUnknown: boolean): Promise<void> {
+    if (!deps.quotaGuard) return;
+    const batch = await requireBatch(batchId);
+    if (batch.dryRun) return;
+
+    const rows = await batchStore.listLedgerRowsByBatch(batchId);
+    const rowsToWrite = rows.filter((r) => r.status === "PENDING" || r.status === "AWAITING_EXECUTION").length;
+    if (rowsToWrite === 0) return;
+
+    const verdict = await deps.quotaGuard.checkWriteRun(rowsToWrite);
+    if (verdict.decision === "allow") return;
+
+    if (verdict.decision === "unknown") {
+      if (acknowledgeUnknown) return;
+      throw new DomainError({
+        code: "quota_unknown",
+        message: verdict.cloudConnected
+          ? "The remaining YouTube quota could not be read just now, so this batch cannot be checked against it."
+          : "Google Cloud is not connected, so the remaining YouTube quota cannot be checked before this batch starts.",
+        details: { estimatedUnits: verdict.estimatedUnits, rowsToWrite, cloudConnected: verdict.cloudConnected },
+      });
+    }
+
+    throw new DomainError({
+      code: "quota_insufficient",
+      message:
+        `This batch needs about ${verdict.estimatedUnits} units of YouTube quota but only ${verdict.remainingUnits} are available, ` +
+        "so it was not started (stopping half way could leave some videos written and others not).",
+      details: {
+        batchId,
+        estimatedUnits: verdict.estimatedUnits,
+        remainingUnits: verdict.remainingUnits,
+        rowsToWrite,
+        fitVideos: verdict.fitVideos,
+        resetsAt: verdict.resetsAt,
+        // Only a never-executed batch can be split into "what fits now" and "the rest".
+        canSplit: batch.status === "PENDING" && rows.every((r) => r.status === "PENDING") && verdict.fitVideos > 0,
+      },
+    });
+  }
+
+  /**
+   * BL-117 slice 2 -- turns a blocked, never-executed live batch into (a) a batch of the videos that fit into the quota left now
+   * and (b) a new batch of the rest to run later, closing the original so no video can be written twice. All in one transaction
+   * (`splitPendingBatchForQuota`); videos keep their original order. Nothing is written to YouTube.
+   */
+  async function splitBatchForQuota(input: { batchId: string }): Promise<{
+    fitsBatchId: string | null;
+    restBatchId: string | null;
+    fitRows: number;
+    restRows: number;
+    estimatedUnits: number;
+    remainingUnits: number;
+  }> {
+    const batch = await requireBatch(input.batchId);
+    if (!deps.quotaGuard || !deps.splitPendingBatch) {
+      throw new DomainError({ code: "validation_failed", message: "Quota-based splitting is not available in this setup." });
+    }
+    if (batch.dryRun || batch.status !== "PENDING") {
+      throw new DomainError({
+        code: "validation_failed",
+        message: "Only a live batch that has not started yet can be split.",
+        details: { batchId: input.batchId, status: batch.status, dryRun: batch.dryRun },
+      });
+    }
+    const rows = await batchStore.listLedgerRowsByBatch(input.batchId);
+    const verdict = await deps.quotaGuard.checkWriteRun(rows.length);
+    if (verdict.decision === "unknown") {
+      throw new DomainError({
+        code: "quota_unknown",
+        message: "The remaining YouTube quota cannot be read, so a batch that fits it cannot be prepared.",
+        details: { estimatedUnits: verdict.estimatedUnits, rowsToWrite: rows.length, cloudConnected: verdict.cloudConnected },
+      });
+    }
+    if (verdict.decision === "allow") {
+      throw new DomainError({
+        code: "validation_failed",
+        message: "This batch fits the quota that is left; nothing needs to be split.",
+        details: { estimatedUnits: verdict.estimatedUnits, remainingUnits: verdict.remainingUnits },
+      });
+    }
+    if (verdict.fitVideos <= 0) {
+      throw new DomainError({
+        code: "quota_insufficient",
+        message: "Not even one video fits into the quota that is left right now.",
+        details: { batchId: input.batchId, remainingUnits: verdict.remainingUnits, resetsAt: verdict.resetsAt, canSplit: false },
+      });
+    }
+
+    const fitCount = Math.min(verdict.fitVideos, rows.length);
+    const restCount = rows.length - fitCount;
+    const result = await deps.splitPendingBatch({
+      batchId: input.batchId,
+      fitCount,
+      fitsBatchId: fitCount > 0 ? idGenerator() : null,
+      restBatchId: restCount > 0 ? idGenerator() : null,
+      newRowIds: idGenerator,
+    });
+    if (!result) {
+      throw new DomainError({
+        code: "batch_already_running",
+        message: "This batch changed while it was being split (it may have been started). Nothing was changed.",
+        details: { batchId: input.batchId },
+      });
+    }
+    logger.info({
+      event: "batch.split_for_quota",
+      context: { batchId: input.batchId, fitsBatchId: result.fitsBatchId, restBatchId: result.restBatchId, fitRows: result.fitRows, restRows: result.restRows },
+    });
+    return { ...result, estimatedUnits: verdict.estimatedUnits, remainingUnits: verdict.remainingUnits };
+  }
+
   async function executeBatch(input: {
+    batchId: string;
+    credentialRef: CredentialRef;
+    expectedChannelId?: string;
+    executor: WriteExecutor;
+    /** BL-117: the user chose to run although the quota left could not be read (Cloud not connected). */
+    acknowledgeUnknownQuota?: boolean;
+  }): Promise<BatchExecutionSummary> {
+    await assertQuotaAllowsRun(input.batchId, input.acknowledgeUnknownQuota === true);
+
+    // Registers this run so `requestBatchCancel` can reach it, and (always) unregisters it so no
+    // cancel flag can outlive the run.
+    const token = beginBatchExecution(input.batchId);
+    try {
+      return await runWithQuotaContext(batchQuotaContext(input.batchId), () => executeBatchRun(input));
+    } finally {
+      endBatchExecution(input.batchId, token);
+    }
+  }
+
+  async function executeBatchRun(input: {
     batchId: string;
     credentialRef: CredentialRef;
     expectedChannelId?: string;
@@ -1242,15 +1719,85 @@ export function createBatchServices(deps: ServiceDependencies) {
     const batch = await requireBatch(input.batchId);
     const credentials = await deps.authResolver.resolve({ credentialRef: input.credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] });
 
+    // RISK-28 (docs/TECHNICAL_DEBT.md): prepareBatchExecution's own assertWriteChannel call
+    // above only runs when this batch was still PENDING (a wholly-fresh execution). Resuming a
+    // batch already RUNNING (after a crash/restart, or a new process picking it up later)
+    // skipped straight past that check with the credentials resolved here -- if the local OAuth
+    // session had since been reauthenticated to a different YouTube channel, writes would
+    // proceed against the wrong channel instead of failing closed (AGENTS.md §G). Re-run the
+    // exact same guardrail here, against the exact credentials this call will actually use for
+    // every row below, regardless of whether the batch was PENDING or already RUNNING.
+    try {
+      await deps.writeContext.assertWriteChannel({
+        credentialRef: input.credentialRef,
+        credentials,
+        expectedChannelId: input.expectedChannelId ?? batch.channelId,
+      });
+    } catch (error) {
+      await batchStore.markBatchTerminal(input.batchId, "ABORTED");
+      logger.error({ event: "batch.aborted_systemic", context: { batchId: input.batchId, reason: "identity_guardrail" } });
+      throw error;
+    }
+
     const rows = await batchStore.listLedgerRowsByBatch(input.batchId);
     const results: ExecutionResult[] = new Array(rows.length);
     let haltedSystemically = false;
+    let cancelObserved = false;
 
     async function processRow(row: StoredLedgerRowRecord, index: number): Promise<void> {
+      const notStarted = row.status === "PENDING" || row.status === "AWAITING_EXECUTION";
+
+      // ADR 0016: a cancel is honoured BEFORE a row starts. A row already in flight is never touched.
+      if (!haltedSystemically && notStarted && isBatchCancelRequested(input.batchId)) {
+        cancelObserved = true;
+        if (await cancelNotStartedRow(batch, row)) {
+          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CANCELLED" };
+        } else {
+          const current = await batchStore.getLedgerRow(row.id);
+          results[index] = current
+            ? { ledgerRowId: row.id, videoId: row.videoId, status: current.status, detail: current.error ?? undefined }
+            : { ledgerRowId: row.id, videoId: row.videoId, status: "CANCELLED", detail: "ledger row disappeared" };
+        }
+        return;
+      }
+
+      // RISK-94: the proxy gated only the START of execute; re-check the device before every row.
+      if (!haltedSystemically && notStarted && deps.assertMutationAllowed) {
+        try {
+          await deps.assertMutationAllowed();
+        } catch (error) {
+          haltedSystemically = true;
+          logger.error({
+            event: "batch.systemic_failure_mid_execution",
+            context: { batchId: batch.id, ledgerRowId: row.id, detail: `device unavailable: ${error instanceof Error ? error.message : String(error)}` },
+          });
+        }
+      }
+
       if (haltedSystemically) {
         if (row.status === "PENDING" || row.status === "AWAITING_EXECUTION") {
-          await batchStore.transitionLedgerRowStatus({ ledgerRowId: row.id, from: [row.status], to: "ABORTED_SYSTEMIC" });
-          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
+          // RISK-31 (docs/TECHNICAL_DEBT.md): `row` is the in-memory snapshot taken before this
+          // async call; a concurrent worker (batch.concurrency up to 5) may have already
+          // changed this row's real persisted status, making the guarded UPDATE below a no-op.
+          // The reported outcome must reflect what was *actually persisted*, not be assumed --
+          // otherwise the returned summary drifts from the ledger it is supposed to describe.
+          const transitioned = await batchStore.transitionLedgerRowStatus({
+            ledgerRowId: row.id,
+            from: [row.status],
+            to: "ABORTED_SYSTEMIC",
+          });
+          if (transitioned) {
+            // A terminal row must not hold its video lock (see recoverLedgerRow). Prepared rows
+            // (AWAITING_EXECUTION) hold one; without this a halted batch left its videos locked and
+            // every later batch for them failed with video_locked (RISK-90: no UI way to clear it).
+            await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+            results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
+          } else {
+            const current = await batchStore.getLedgerRow(row.id);
+            results[index] = current
+              ? { ledgerRowId: row.id, videoId: row.videoId, status: current.status, detail: current.error ?? undefined }
+              : { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC", detail: "ledger row disappeared" };
+          }
         } else {
           results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: row.status, detail: row.error ?? undefined };
         }
@@ -1297,6 +1844,7 @@ export function createBatchServices(deps: ServiceDependencies) {
             videoId: prepared.videoId,
             status: prepared.status,
             detail: "error" in prepared ? prepared.error : undefined,
+            conflictingChangeIds: "conflictingChangeIds" in prepared ? prepared.conflictingChangeIds : undefined,
           };
           return;
         }
@@ -1325,7 +1873,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         await transitionLedgerStatus(row.id, "CONFLICT");
         await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { conflictingChangeIds: safety.conflictingChangeIds } });
         await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT" };
+        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT", conflictingChangeIds: safety.conflictingChangeIds };
         return;
       }
 
@@ -1336,6 +1884,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         changes: safety.changes,
         credentials,
         executor: input.executor,
+        appliedDefaultLanguage: safety.appliedDefaultLanguage,
       });
       results[index] = result;
 
@@ -1347,13 +1896,16 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     await runWithConcurrencyLimit(rows, batch.concurrency, processRow);
 
-    if (!haltedSystemically) {
+    // Rows cancelled during PREPARATION (before this loop) show up as CANCELLED results too.
+    const cancelled = cancelObserved || results.some((result) => result?.status === "CANCELLED");
+
+    if (!haltedSystemically && !cancelled) {
       await batchStore.markBatchTerminal(input.batchId, "COMPLETED");
     } else {
       await batchStore.markBatchTerminal(input.batchId, "ABORTED");
     }
 
-    return { batchId: input.batchId, results, haltedSystemically };
+    return { batchId: input.batchId, results, haltedSystemically, cancelled };
   }
 
   /** Downloadable error report (AC-ISOLATION-03): every non-successful item, with detail. */
@@ -1382,6 +1934,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     getBatch,
     listBatchesByChannel,
     requireBatchForChannel,
+    getBatchWithLedgerRows,
     listLedgerRows,
     claimBatchExecution,
     completeBatchExecution,
@@ -1396,6 +1949,10 @@ export function createBatchServices(deps: ServiceDependencies) {
     prepareBatchExecution,
     executeWithRetry,
     executeBatch,
+    splitBatchForQuota,
+    requestBatchCancel,
+    /** Test seam only: exposes the single-row cancel helper so the lost-race case can be driven directly. */
+    cancelNotStartedRowForTest: async (batchId: string, row: StoredLedgerRowRecord) => cancelNotStartedRow(await requireBatch(batchId), row),
     resolveUnknownLedgerRow,
     recoverLedgerRow,
     recoverBatch,

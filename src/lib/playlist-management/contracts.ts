@@ -1,11 +1,14 @@
 import {
   DomainError,
   isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
   type CredentialRef,
   type DomainErrorCode,
   type DomainErrorShape,
   type ResolvedCredentials,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 
 export type {
   CredentialRef,
@@ -14,7 +17,7 @@ export type {
   ResolvedCredentials,
 };
 
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };
 
 export type Playlist = {
   id: string;

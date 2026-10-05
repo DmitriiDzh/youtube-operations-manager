@@ -5,8 +5,8 @@
 // AC-BACKUP-01: backup content exactly matches the pre-write snapshot passed in.
 // AC-BACKUP-02: a per-item backup failure (store healthy) throws backup_item_failed,
 //   scoped to that video only.
-// AC-BACKUP-03: a second capture for the same video under a DIFFERENT batchId does not
-//   touch the first backup's file; capturing the exact same (channelId, batchId,
+// AC-BACKUP-03: a second capture for the same video under a DIFFERENT operationId does not
+//   touch the first backup's file; capturing the exact same (channelId, operationId,
 //   videoId) twice fails rather than silently overwriting.
 // AC-BACKUP-04: infrastructure-wide unavailability is checked once, up front, via
 //   checkInfrastructureHealth -- distinct from an item-level failure.
@@ -38,20 +38,21 @@ test("AC-BACKUP-01: captured backup content exactly matches the pre-write snapsh
     });
 
     const snapshot = {
+      kind: "localization" as const,
       defaultLanguage: "en",
       existingLocalizations: { es: { title: "Titulo Original", description: "Desc" } },
     };
 
     const record = await services.captureBackup({
       channelId: "UC_TEST",
-      batchId: "batch-1",
+      operationId: "batch-1",
       videoId: "v1",
       snapshot,
     });
 
     const content = JSON.parse(await readFile(record.path, "utf8"));
-    assert.equal(content.defaultLanguage, "en");
-    assert.deepEqual(content.existingLocalizations, snapshot.existingLocalizations);
+    assert.equal(content.snapshot.defaultLanguage, "en");
+    assert.deepEqual(content.snapshot.existingLocalizations, snapshot.existingLocalizations);
     assert.equal(content.videoId, "v1");
   });
 });
@@ -74,9 +75,9 @@ test("AC-BACKUP-02: a per-item write failure is reported as backup_item_failed, 
     () =>
       services.captureBackup({
         channelId: "UC_TEST",
-        batchId: "batch-1",
+        operationId: "batch-1",
         videoId: "v1",
-        snapshot: { defaultLanguage: "en", existingLocalizations: {} },
+        snapshot: { kind: "localization", defaultLanguage: "en", existingLocalizations: {} },
       }),
     (error: unknown) => error instanceof DomainError && error.code === "backup_item_failed"
   );
@@ -85,9 +86,9 @@ test("AC-BACKUP-02: a per-item write failure is reported as backup_item_failed, 
   // to v1, not the whole store.
   const record = await services.captureBackup({
     channelId: "UC_TEST",
-    batchId: "batch-1",
+    operationId: "batch-1",
     videoId: "v2",
-    snapshot: { defaultLanguage: "en", existingLocalizations: {} },
+    snapshot: { kind: "localization", defaultLanguage: "en", existingLocalizations: {} },
   });
   assert.equal(record.path, "/fake/v2.json");
 });
@@ -101,39 +102,51 @@ test("AC-BACKUP-03: backups are never overwritten -- a prior backup's content is
 
     await services.captureBackup({
       channelId: "UC_TEST",
-      batchId: "batch-1",
+      operationId: "batch-1",
       videoId: "v1",
-      snapshot: { defaultLanguage: "en", existingLocalizations: { es: { title: "First", description: "" } } },
+      snapshot: {
+        kind: "localization",
+        defaultLanguage: "en",
+        existingLocalizations: { es: { title: "First", description: "" } },
+      },
     });
 
     // A second batch targeting the same video gets its own, distinct path.
     const second = await services.captureBackup({
       channelId: "UC_TEST",
-      batchId: "batch-2",
+      operationId: "batch-2",
       videoId: "v1",
-      snapshot: { defaultLanguage: "en", existingLocalizations: { es: { title: "Second", description: "" } } },
+      snapshot: {
+        kind: "localization",
+        defaultLanguage: "en",
+        existingLocalizations: { es: { title: "Second", description: "" } },
+      },
     });
 
     const firstPath = path.join(root, "UC_TEST", "batch-1", "v1.metadata_before.json");
     const firstContent = JSON.parse(await readFile(firstPath, "utf8"));
-    assert.equal(firstContent.existingLocalizations.es.title, "First");
+    assert.equal(firstContent.snapshot.existingLocalizations.es.title, "First");
     assert.notEqual(second.path, firstPath);
 
-    // Attempting to capture the exact same (channelId, batchId, videoId) again must fail
+    // Attempting to capture the exact same (channelId, operationId, videoId) again must fail
     // rather than silently overwrite.
     await assert.rejects(
       () =>
         services.captureBackup({
           channelId: "UC_TEST",
-          batchId: "batch-1",
+          operationId: "batch-1",
           videoId: "v1",
-          snapshot: { defaultLanguage: "en", existingLocalizations: { es: { title: "Overwrite attempt", description: "" } } },
+          snapshot: {
+            kind: "localization",
+            defaultLanguage: "en",
+            existingLocalizations: { es: { title: "Overwrite attempt", description: "" } },
+          },
         }),
       (error: unknown) => error instanceof DomainError && error.code === "backup_item_failed"
     );
 
     const stillFirstContent = JSON.parse(await readFile(firstPath, "utf8"));
-    assert.equal(stillFirstContent.existingLocalizations.es.title, "First");
+    assert.equal(stillFirstContent.snapshot.existingLocalizations.es.title, "First");
   });
 });
 

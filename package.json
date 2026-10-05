@@ -1,24 +1,28 @@
 {
-  "name": "tubemaster",
+  "name": "youtube-operations-manager",
   "version": "0.1.1",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "predev": "node scripts/write-build-info.mjs",
+    "dev": "next dev -H 127.0.0.1",
+    "prebuild": "node scripts/write-build-info.mjs",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "cli:video-metadata": "node --import tsx src/cli/video-metadata.ts",
-    "mcp:video-metadata": "node --import tsx src/mcp/server.ts"
+    "operation-lock": "node --import tsx src/cli/operation-lock.ts",
+    "publish:snapshot": "node scripts/publish-snapshot.mjs"
   },
   "dependencies": {
+    "@automerge/automerge": "^3.5.0",
     "@libsql/client": "^0.17.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "drizzle-orm": "^0.45.2",
     "exceljs": "^4.4.0",
     "googleapis": "^171.4.0",
-    "next": "16.3.5",
+    "next": "16.3.8",
     "next-auth": "^4.24.15",
     "react": "19.2.4",
     "react-dom": "19.2.4",

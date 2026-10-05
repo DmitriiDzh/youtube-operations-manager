@@ -1,0 +1,260 @@
+"use client";
+
+import { ownSettingsUnavailable } from "./settings-unavailable";
+import { useCallback, useEffect, useState } from "react";
+import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
+import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
+import { InfoTooltip } from "./info-tooltip";
+import { SettingsSectionRow } from "./settings-section-row";
+import { ToggleSwitch } from "./toggle-switch";
+
+type Settings = {
+  dataApiReadsEnabled: boolean;
+  analyticsReadsEnabled: boolean;
+  youtubeFeedReadsEnabled: boolean;
+  wikipediaReadsEnabled: boolean;
+  reportingReadsEnabled: boolean;
+  gatewayTraffic?: GatewayTrafficWindowView[];
+  cloudQuotaStatus?: { connected?: boolean; tokenRefreshFailed?: boolean; dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView; reporting?: ServiceQuotaStatusView };
+};
+
+/**
+ * Settings-tab toggles for the two `src/lib/youtube-read-gateway/` children (owner instruction,
+ * 2026-09-22, Telegram: "выведи такие же тумблеры в настройки по запросам API (теперь входящим).
+ * Делаем отдельный тумблер на каждый модуль / шлюз API чтения"), `docs/decisions/0007-youtube-
+ * read-gateway.md`. Unlike `LiveWritesSettings`' toggles, both default to **enabled** and persist
+ * across restarts (see `src/lib/db.ts`'s `getDataApiReadsEnabled` for the full rationale) -- no
+ * confirmation dialog on turning one on, since neither direction here grants a new capability the
+ * way Live writes/MCP connection do; it is a pure pause/resume of outbound reads.
+ *
+ * Disabling a category also fails any write path that depends on that category's reads (Batches'
+ * write-client construction, `write-context`'s pre-write identity check) -- intentional, stated
+ * in the toggle's own description below rather than left as a surprise.
+ */
+export function ReadGatewaySettings() {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [draft, setDraft] = useState<Settings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+
+  const fetchSettings = useCallback(async () => {
+    const res = await fetch("/api/settings");
+    if (!res.ok) return;
+    const data = (await res.json()) as Settings;
+    if (ownSettingsUnavailable(data, ["dataApiReadsEnabled", "analyticsReadsEnabled", "youtubeFeedReadsEnabled", "wikipediaReadsEnabled", "reportingReadsEnabled"])) return;
+    setSettings(data);
+    setDraft(data);
+  }, []);
+
+  useEffect(() => {
+    fetchSettings();
+  }, [fetchSettings]);
+
+  async function save(next: Settings) {
+    setSaving(true);
+    setError(null);
+    setSavedNotice(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Only this card's own two fields (architecture-audit review): POSTing the whole mount-time
+        // snapshot re-sent stale values of OTHER cards' settings -- e.g. silently turning Live writes
+        // back on after it had been switched off in its own card, or saving a `null` placeholder of
+        // a field whose read failed.
+        body: JSON.stringify({
+          dataApiReadsEnabled: next.dataApiReadsEnabled,
+          analyticsReadsEnabled: next.analyticsReadsEnabled,
+          youtubeFeedReadsEnabled: next.youtubeFeedReadsEnabled,
+          wikipediaReadsEnabled: next.wikipediaReadsEnabled,
+          reportingReadsEnabled: next.reportingReadsEnabled,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      setSettings(data);
+      setDraft(data);
+      setSavedNotice("Saved.");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!draft) return null;
+
+  const dirty =
+    settings &&
+    (draft.dataApiReadsEnabled !== settings.dataApiReadsEnabled ||
+      draft.analyticsReadsEnabled !== settings.analyticsReadsEnabled ||
+      draft.youtubeFeedReadsEnabled !== settings.youtubeFeedReadsEnabled ||
+      draft.wikipediaReadsEnabled !== settings.wikipediaReadsEnabled ||
+      draft.reportingReadsEnabled !== settings.reportingReadsEnabled);
+
+  return (
+    <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <SettingsSectionRow
+        left={
+          <div>
+            <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+              Data API reads
+              <InfoTooltip>
+                On by default. Governs every real call to the YouTube Data API v3 (channel sync,
+                video listing, playlists). Turning this off also fails any write path that depends
+                on a read first (Batches, the pre-write channel identity check) -- Live writes
+                above still separately governs whether a write is otherwise allowed.
+              </InfoTooltip>
+            </h3>
+            <div className="mt-2 flex items-center gap-2">
+              <ToggleSwitch
+                label="Enable Data API reads"
+                checked={draft.dataApiReadsEnabled}
+                onChange={(checked) => setDraft({ ...draft, dataApiReadsEnabled: checked })}
+              />
+              <span className="text-sm text-zinc-300">Enable Data API reads</span>
+            </div>
+          </div>
+        }
+        right={
+          <>
+            <GatewayTrafficStats
+              size="lg"
+              window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
+            />
+            <CloudQuotaProgress size="lg" tokenRefreshFailed={settings?.cloudQuotaStatus?.tokenRefreshFailed} status={settings?.cloudQuotaStatus?.dataApi} historyService="data" />
+          </>
+        }
+      />
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                Analytics reads
+                <InfoTooltip>
+                  On by default. Governs every real call to the YouTube Analytics API (the
+                  Analytics tab&apos;s manual and automatic collection).
+                </InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable Analytics reads"
+                  checked={draft.analyticsReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, analyticsReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable Analytics reads</span>
+              </div>
+            </div>
+          }
+          right={
+            <>
+              <GatewayTrafficStats
+                size="lg"
+                window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
+              />
+              <CloudQuotaProgress size="lg" tokenRefreshFailed={settings?.cloudQuotaStatus?.tokenRefreshFailed} status={settings?.cloudQuotaStatus?.analytics} historyService="analytics" />
+            </>
+          }
+        />
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                RSS feed reads
+                <InfoTooltip>On by default. YouTube&apos;s public RSS feeds of channels&apos; newest uploads -- no quota at all. Research lists watchlist channels&apos; latest videos from the uploads playlist (1 quota unit); the RSS feed is the fallback when that call fails, e.g. when quota is exhausted. If this is off, there is no fallback.</InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable RSS feed reads"
+                  checked={draft.youtubeFeedReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, youtubeFeedReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable RSS feed reads</span>
+              </div>
+            </div>
+          }
+          right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "youtube_feed_reads")} />}
+        />
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                Wikipedia reads
+                <InfoTooltip>On by default. Daily page views of Wikipedia articles linked to Research topics -- an interest signal from outside YouTube. Free, no key.</InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable Wikipedia reads"
+                  checked={draft.wikipediaReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, wikipediaReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable Wikipedia reads</span>
+              </div>
+            </div>
+          }
+          right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "wikipedia_reads")} />}
+        />
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                Reporting reads
+                <InfoTooltip>On by default. Governs every real call to the YouTube Reporting API -- the bulk daily reports that carry thumbnail impressions and click-through rate, which the Analytics API does not return. Free; separate from the Analytics reads toggle.</InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable Reporting reads"
+                  checked={draft.reportingReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, reportingReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable Reporting reads</span>
+              </div>
+            </div>
+          }
+          right={
+            <>
+              <GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "reporting_reads")} />
+              <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.reporting} />
+              {settings?.cloudQuotaStatus?.connected && !settings.cloudQuotaStatus.reporting && (
+                <p className="text-xs text-zinc-500">No daily quota figure is available from Google Cloud for the Reporting API (not reported, or the lookup failed).</p>
+              )}
+            </>
+          }
+        />
+      </div>
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {savedNotice && !dirty && <p className="text-xs text-emerald-400">{savedNotice}</p>}
+
+      <div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
+        <button
+          onClick={() => save(draft)}
+          disabled={saving || !dirty}
+          className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Save / Apply"}
+        </button>
+        {dirty && (
+          <button onClick={() => setDraft(settings)} className="text-xs text-zinc-500 hover:text-zinc-300">
+            Discard changes
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

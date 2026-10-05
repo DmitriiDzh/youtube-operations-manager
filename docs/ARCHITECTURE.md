@@ -1,6 +1,6 @@
 # ARCHITECTURE.md
 
-Living architecture reference for this repository. For the historical TubeMaster-derived baseline and Phase 0/1 verification, see `docs/UPSTREAM_ANALYSIS.md` and `docs/UPSTREAM_BASELINE.md`. For the product roadmap and safety rules, see `docs/PROJECT_SPEC.md`. For how to extend this architecture, see `docs/DEVELOPMENT_PLAYBOOK.md`. For the current risk register and release gates, see `docs/TECHNICAL_DEBT.md`. For significant architectural decisions and their rationale, see `docs/decisions/`.
+Living architecture reference for this repository. For the product roadmap and safety rules, see `docs/PROJECT_SPEC.md`. For how to extend this architecture, see `docs/DEVELOPMENT_PLAYBOOK.md`. For the current risk register and release gates, see `docs/TECHNICAL_DEBT.md`. For significant architectural decisions and their rationale, see `docs/decisions/`.
 
 This document is updated whenever a phase changes the architecture. Current as of **Phase 4 (XLSX import, draft state, change sets, diff/approval UI)**; Phase 4.5 added no new architecture, only this documentation-consistency pass and §12 below.
 
@@ -33,7 +33,7 @@ Every interface (Web UI route handlers, CLI, MCP) calls the same domain-module c
 
 ## 3. Domain module layering (`src/lib/*`)
 
-Every domain module under `src/lib/` follows the same four-file layering, introduced with the original TubeMaster codebase and preserved for every module added since:
+Every domain module under `src/lib/` follows the same four-file layering, introduced early in this project and preserved for every module added since:
 
 ```text
 contracts.ts   — plain TS types + the shared DomainError class (stable error codes)
@@ -76,12 +76,12 @@ Web UI / API → core.syncChannel({ credentialRef, channelId? })
   8. return { channel, videoCount, syncedAt }
 ```
 
-Steps 4–5 are the two YouTube-quota-relevant calls. Step 4 uses the **uploads-playlist enumeration strategy** (never `search.list`), matching `docs/PROJECT_SPEC.md` §9. Step 5 batches up to 50 video IDs per `videos.list` call — for a channel with, say, 420 videos, this is **9 API calls total for full metadata**, not 420. See `src/lib/youtube.ts`:
+Steps 4–5 are the two YouTube-quota-relevant calls. Step 4 uses the **uploads-playlist enumeration strategy** (never `search.list`), matching `docs/PROJECT_SPEC.md` §9. Step 5 batches up to 50 video IDs per `videos.list` call — for a channel with, say, 420 videos, this is **9 API calls total for full metadata**, not 420. See `src/lib/youtube-read-gateway/data-api.ts` (the single read-side child module for the YouTube Data API v3, reached only through the `@/lib/youtube-read-gateway` barrel — `docs/decisions/0007-youtube-read-gateway.md`; this file was `src/lib/youtube.ts` before that refactor):
 
 - `listUploadsPlaylistVideoIds(youtube, uploadsPlaylistId)` — paginated enumeration, dedupes video IDs.
 - `getVideosMetadataContextBatch(youtube, videoIds)` — chunks `videoIds` into groups of ≤50 and issues one `videos.list` call per chunk.
 
-Both are unit-tested directly against a mocked `youtube_v3.Youtube`-shaped client in `src/lib/youtube.test.ts` (not just indirectly through the service layer), specifically to verify the chunking math (120 ids → 3 calls of 50/50/20) independent of any service-level mocking.
+Both are unit-tested directly against a mocked `youtube_v3.Youtube`-shaped client in `src/lib/youtube-read-gateway/data-api.test.ts` (not just indirectly through the service layer), specifically to verify the chunking math (120 ids → 3 calls of 50/50/20) independent of any service-level mocking.
 
 ### 4.3 Why this phase has no write-context guardrail check
 
@@ -101,7 +101,7 @@ lastSyncedAt, etag
 
 ### 4.5 Re-sync semantics (no draft/remote distinction yet)
 
-A re-sync **replaces** each video's persisted remote-mirror fields (title, description, localizations, etc.) with the freshly fetched values — there is currently no draft or change-set concept for this phase to protect (per `docs/PROJECT_SPEC.md` §58, the localization draft/apply workflow is an explicit non-goal until Phase 4+). Once drafts exist, sync must be revisited to detect and flag conflicts (`docs/PROJECT_SPEC.md` §30) rather than silently overwriting — **this is a known, intentional limitation of Phase 2, still true after Phase 3** (which adds no draft state either), not an oversight; see `docs/UPSTREAM_ANALYSIS.md` §7 item 4 and §10 (Extension points) below.
+A re-sync **replaces** each video's persisted remote-mirror fields (title, description, localizations, etc.) with the freshly fetched values — there is currently no draft or change-set concept for this phase to protect (per `docs/PROJECT_SPEC.md` §58, the localization draft/apply workflow is an explicit non-goal until Phase 4+). Once drafts exist, sync must be revisited to detect and flag conflicts (`docs/PROJECT_SPEC.md` §30) rather than silently overwriting — **this is a known, intentional limitation of Phase 2, still true after Phase 3** (which adds no draft state either), not an oversight; see §10 (Extension points) below.
 
 ---
 
@@ -284,7 +284,7 @@ Every route requires a NextAuth session and maps `DomainError` via the same shar
 
 The two multipart import routes reject a request whose `Content-Length` header already exceeds `MAX_WORKBOOK_BYTES` (25MB) before calling `request.formData()`, in addition to `parseAndValidateWorkbook`'s own size/row-count checks that run after parsing. This is a **best-effort** guard, not a complete one: `request.formData()` in this runtime has no built-in body-size cap, so a request sent without a `Content-Length` header (e.g. chunked transfer) is still fully buffered into memory before the post-parse limit takes effect. A byte-counting streaming multipart reader would close this residually but was judged disproportionate for a local-first, single-operator tool where the only way to reach this endpoint at all is an authenticated NextAuth session on the operator's own machine; revisit if this application is ever exposed beyond localhost.
 
-**No per-user ownership boundary on channels or change sets exists** — this is not a Phase 4 gap but the same app-wide model already in place for `channel-sync`/`localization` (`listChannels()` returns every locally synced channel regardless of which session requested it; see §7.1's "not an ownership boundary, since this is a single-operator local-first tool," `docs/PROJECT_SPEC.md` §37). Any authenticated session can read/import/approve for any locally synced channel. This is an explicit, pre-existing product assumption (single trusted local operator), not something Phase 4 introduced or should silently work around; it would need to be revisited before this app is ever exposed to more than one trusted operator or beyond localhost.
+**Every channel-scoped read is now filtered to the caller's active channel** (`docs/decisions/0004-active-channel-read-scoping.md`, closing `docs/TECHNICAL_DEBT.md` RISK-02, 2026-09-20) — `channel-sync`'s `listChannels()`/`listSyncedVideos()`, and every changesets/batches/localization/ai-localization read endpoint across Web API, MCP, and CLI, reject or omit any `channelId` that isn't the session's currently active one (`users.selectedChannelId`, kept fresh from `GET /api/youtube/channel-info` and `channel-sync`'s implicit "sync my own channel" path — see `src/lib/channel-access`). This does **not** make the application multi-operator-safe in general (no per-user data separation, no auth roles) — it specifically closes "every locally-known channel is visible to any session," which was the concrete leak observed (a device that had synced several different Google accounts' channels over time showed all of them). `channels.connectedUserId` remains traceability-only, not an ownership boundary, per §7.1 below.
 
 ### 6.13 Web UI (additive)
 
@@ -293,14 +293,24 @@ The two multipart import routes reject a request whose `Content-Length` header a
 ### 6.14 Deviations from a literal reading of `docs/PROJECT_SPEC.md` §11 (Fourth Agent Assignment)
 
 - **No `credentialRef`/OAuth involvement in `changesets/`**: like `localization/`, this module makes no YouTube API calls, so there is nothing to authorize beyond the existing NextAuth session check every route already performs. `credentialRef` was deliberately not threaded through (it would be accepted-but-unused, as it effectively already is in `localization/`'s schemas).
-- **Deletion remains fully deferred** (not just soft-deferred): Phase 4 has no explicit "propose deletion of a localization" affordance at all, per §8's stated preference ("prefer deferring deletion if that produces a safer and simpler design").
+- **Deletion remained fully deferred through Phase 4** (not just soft-deferred): no explicit "propose deletion of a localization" affordance existed at all, per `docs/PROJECT_SPEC.md` §16's original "deletion must be an explicit operation" language (this file previously mis-cited that guidance as "§8," corrected here — §8 is "Channel and Account Model," unrelated). **Superseded 2026-09-20:** the project owner explicitly authorized building a real deletion capability (Studio-parity Languages redesign, `docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md` §7.2), and `docs/PROJECT_SPEC.md` §16 was updated the same day with the permanent constraint that decision came with (multi-step confirmation, a local recovery window before any deletion is treated as final, restore-as-a-full-write). **Backend proposal path implemented 2026-09-21 — see §6.15.** UI and the restore mechanism remain planned.
 - **A pure `applyProposedValueUpdate`-style function for manual edits was not added**: no Phase 4 interface lets a human edit a `proposedValue` directly (values only ever come from the imported XLSX). The one real in-scope trigger for "approval must be invalidated because what it approved is no longer valid" — a re-sync revealing the remote changed — **is** implemented and tested (§6.7/§6.9). A generic "edit an approved proposal directly" pathway is left for a future `MANUAL_EDIT` source, which the `ChangeSetSource` type already reserves space for.
+
+### 6.15 Localization deletion — backend proposal path (2026-09-21, `docs/PROJECT_SPEC.md` §16)
+
+`ChangeType` gained a fourth value, `"delete"`, and `ChangeSetSource` gained `"deletion"`. `changesets.proposeLocalizationDeletion({channelId, videoId, language})` is the only entrypoint that creates a `"delete"`-typed `Change`: it looks up the video's currently-synced state, refuses (`DomainError("deletion_targets_default_language")`) if `language` equals the video's own `defaultLanguage`, refuses (`not_found`) if there is no existing localization for that language, and otherwise persists a two-`Change` (title + description) Change Set through the exact same `persistChangeSet` path (and therefore the exact same review/approve/reject/conflict-revalidation machinery, §6.6-§6.9) every other Change Set already uses — a deletion proposal is reviewed and approved like any other change, never applied as a side effect of proposing it.
+
+The `defaultLanguage` refusal is the safety-critical part: that language's title/description live on the video's `snippet`, never in a `localizations` map entry, so a `"delete"` change reaching `src/lib/batches/merge.ts:buildSafeLocalizationsPayload` for it would (absent a guard) fall into the existing default-language branch and overwrite the video's real title/description with an empty string — the exact opposite of "remove a localization." `proposeLocalizationDeletion` is the primary guard (refuses before any `Change` is even created); `buildSafeLocalizationsPayload` carries the identical check as defense-in-depth and throws (fails closed, converted to a `FAILED` ledger outcome by its one call site in `src/lib/batches/services.ts`) if a `"delete"` change for the default language ever reaches it regardless.
+
+Merge semantics for an approved deletion: `buildSafeLocalizationsPayload` collects every `"delete"`-typed change's `language` into a `Set` while processing the batch's other changes normally, then deletes each collected language from the final `localizations` object **after** the main loop — so a `"delete"` always wins over a same-locale `"modify"` in the same approved set, independent of which one appears first in the change list (tested both orders, `src/lib/batches/merge.test.ts`).
+
+**Deliberately out of scope for this slice** (advisor-reviewed before implementation): no UI triggers a deletion proposal yet (`change-set-review.tsx`/`languages-manager.tsx` only got a one-line source-label fix so a `"deletion"` Change Set doesn't mis-render as "XLSX import" if one is ever created some other way), and no restore mechanism exists — §16's 30-day local recovery window is a UI/data-retention feature that has no testable effect while `assertLiveWritesAuthorized()` (§2.9a) still blocks every real YouTube write unconditionally; building it now would be exercised only against a payload that can never actually leave this database. Both are planned for a later, separately-assigned slice.
 
 ---
 
 ## 7. Persistence (Phase 2/3)
 
-### 7.1 Schema (additive to the existing TubeMaster-derived tables)
+### 7.1 Schema (additive to the pre-existing baseline tables)
 
 ```text
 users     (unchanged)   — id, email, name, image, accessToken, refreshToken, tokenExpiry, oauthScope, selectedChannelId
@@ -316,7 +326,7 @@ videos    (new)         — id (videoId, PK), channelId (FK → channels.id), ti
 
 `thumbnails` and `existingLocalizations` are stored as JSON text columns (`thumbnailsJson`/`localizationsJson`), parsed/serialized at the persistence boundary in `src/lib/db.ts` (`mapStoredVideo`/`upsertVideos`). This mirrors the existing codebase's preference for plain SQLite columns over a JSON-mode ORM feature, and keeps the schema readable directly in a SQLite browser.
 
-`channels.id` is the canonical YouTube `channelId` (never a title) and is the primary key — a channel is a single global entity; `connectedUserId` records which local OAuth user last connected/synced it, for traceability only (not an ownership boundary, since this is a single-operator local-first tool per `docs/PROJECT_SPEC.md` §37).
+`channels.id` is the canonical YouTube `channelId` (never a title) and is the primary key — a channel is a single global entity; `connectedUserId` records which local OAuth user last connected/synced it, for traceability only, not an ownership boundary (`docs/PROJECT_SPEC.md` §37 sets the local-first/desktop deployment target this reflects, though it does not itself use the phrase "single operator" — a citation this document previously stated more strongly than the source; the actual read-scoping enforcement is `selectedChannelId`/`docs/decisions/0004-active-channel-read-scoping.md`, not `connectedUserId`).
 
 ### 7.2 Migration strategy decision (documented per this phase's explicit requirement)
 
@@ -326,7 +336,7 @@ Reasoning:
 
 1. **The Phase 2 schema change is purely additive** — two brand-new tables (`channels`, `videos`), zero changes to existing table shapes, zero data migrations, zero destructive operations. The existing pattern already handles this exact case correctly (it was used to add `selected_channel_id` and `oauth_scope` to `users` previously) and was re-verified working in this phase (`channels`/`videos` tables confirmed created on boot against a real SQLite file).
 2. **`AGENTS.md`/`docs/PROJECT_SPEC.md` both require avoiding broad rewrites and explaining *why* before changing database architecture** (§3, Rule 5). Switching to Drizzle Kit migrations now — while `drizzle-kit` is an installed-but-unused devDependency — would be exactly the kind of architectural change the spec asks to justify in writing before doing, and there is no concrete need yet: no destructive schema change, no multi-environment migration ordering problem, no team-coordination requirement (single local SQLite file per operator).
-3. **This is not a permanent decision.** `docs/UPSTREAM_ANALYSIS.md` §9 (risk #2) already flagged that the idempotent-ALTER pattern will become error-prone as more tables accumulate. Phase 4 added two more tables (`change_sets`, `changes`, §6.10) purely additively, confirming the decision still holds; `batches`/`audit`/`backups` remain future additions per the roadmap. The threshold for revisiting this is unchanged: **the first schema change that is not purely additive** (a column type change, a `NOT NULL` backfill, a data transformation, or a multi-step migration ordering requirement) — at that point, introduce Drizzle Kit migrations via a dedicated ADR (`docs/decisions/00X-database-migrations.md`, per `docs/PROJECT_SPEC.md` §45), not silently.
+3. **This is not a permanent decision.** The project's original architecture review already flagged that the idempotent-ALTER pattern will become error-prone as more tables accumulate. Phase 4 added two more tables (`change_sets`, `changes`, §6.10) purely additively, confirming the decision still holds; `batches`/`audit`/`backups` remain future additions per the roadmap. The threshold for revisiting this is unchanged: **the first schema change that is not purely additive** (a column type change, a `NOT NULL` backfill, a data transformation, or a multi-step migration ordering requirement) — at that point, introduce Drizzle Kit migrations via a dedicated ADR (`docs/decisions/00X-database-migrations.md`, per `docs/PROJECT_SPEC.md` §45), not silently.
 
 ### 7.3 Persistence access (`src/lib/db.ts`)
 
@@ -364,23 +374,25 @@ All routes require an authenticated NextAuth session (`getServerSession`), match
 
 ## 9. Web UI (Phase 2/3, additive)
 
-Two tabs were added to the existing dashboard (`src/app/dashboard/page.tsx`), alongside **Manual** and **Rules**:
+Two tabs were added to the existing dashboard (`src/app/dashboard/page.tsx`), alongside **Manual** and **Rules** (both removed 2026-09-20, see note below):
 
-- **Sync** (Phase 2) — `src/components/channel-sync.tsx`: select a previously-synced channel or trigger a first sync, browse the resulting video list with thumbnail/title/publish date/privacy/default language, see existing localization languages as badges.
-- **Localizations** (Phase 3, extended in Phase 4) — `src/components/localization-manager.tsx`: channel picker, search + status filter (All/Missing/Complete), a table with one column per language that exists anywhere in the channel (✓/— per video), click-to-expand per-video detail, three export actions (selected/filtered/all) that download the XLSX file client-side, plus the Phase 4 Import panel and change-set list (§6.13).
+- **Content** (Phase 2; restyled 2026-09-20, `docs/roadmap/plans/STUDIO_PARITY_PLAN.md` Slice S2, formerly named "Sync") — `src/components/content-manager.tsx`: a Studio-shaped video table (Video/Access/Date/Views/Comments columns, search + privacy filter, client-side column sorting via `src/components/content-sort.ts` — header click toggles asc/desc with a ▲/▼ indicator, default Publish date newest-first, missing values always last — pagination) for the single active channel (no channel picker — `docs/decisions/0004-active-channel-read-scoping.md`), with a staleness-gated (~20 min) automatic re-sync on tab activation and a manual "Sync now" for an explicit forced refresh (`docs/roadmap/plans/TAB_REFRESH_AND_CHANNEL_UI_PLAN.md` §4). Existing localization languages still shown as badges under each title — a capability this app has that Studio's own Content page doesn't, kept rather than dropped for parity's sake.
+- **Languages** (Phase 3, extended in Phase 4; merged with AI Localization 2026-09-20, redesigned again 2026-09-21, `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md` and `LANGUAGES_UX_REDESIGN_PLAN.md`) — `src/components/languages-manager.tsx`: one table is the primary surface (Video/Published/one ✓-or-— column per language actually present in the channel/Last modified, sortable by any header). One shared row-selection set drives both bulk AI generation and XLSX export; checking ≥1 row opens a contextual bar ("Generate with AI ▾"/"Export to XLSX"). Clicking a video opens it in the shared `video-detail-modal.tsx` popup (§2.9e in `docs/SYSTEM_MAP.md` — not a row expansion, since 2026-09-21) showing the original title/description, every existing locale, and an inline "Generate with AI for this video" mini-form/review step feeding the same Change-Set-creation path as the bulk flow. A small "+N" button under each language header bulk-selects every video missing it. XLSX import/export remains a secondary, collapsed-by-default section. A change-set queue below the table is filtered by three sub-tabs ("Все"/"В процессе"/"Одобрено") mapped onto `ChangeSet.status`, not onto any per-video state Studio's own UI assumes but this app's approval model doesn't have. "Одобрено" never implies a real YouTube write happened (Phase 5's write barrier is unaffected). See `docs/SYSTEM_MAP.md` §2.9/§2.9b/§2.9e for the full, current detail — this paragraph is kept intentionally brief and should be treated as a pointer, not the source of truth, for exactly which UI slice shipped when.
 
-Both follow the existing component conventions (Tailwind dark theme, same button/card styling as `ManualMode`). No existing tab, route, or component was modified beyond adding the new tab entries and their conditional render branches.
+Both follow the existing component conventions (Tailwind dark theme, same button/card styling used throughout the dashboard). No existing tab, route, or component was modified beyond adding the new tab entries, their conditional render branches, and (for the 2026-09-20 merge) the `LocalizationOverviewRow.lastSyncedAt` field and `ChangeSetReview`'s optional callback described above.
+
+**Removed, 2026-09-20 (project owner: "давай удалим их, т.к. пока не вижу им применения"):** the **Manual** tab (`src/components/manual-mode.tsx`, deleted) and the **Rules** tab (auto-playlisting: `src/components/{rule-form,rule-list,run-button}.tsx`, `src/app/api/{rules,run}/route.ts`, all deleted) -- both inherited from the project's original pre-rewrite baseline (Phase 0/1), unrelated to this project's own localization/Change-Set/Batch feature set. `src/lib/playlist-management/` and its Web API routes (`/api/youtube/{videos,playlists,create-playlist,add-to-playlist,remove-from-playlist}`) were deliberately **kept** -- they are the same domain module the MCP `playlist_*` tools and CLI `playlist` namespace already depend on (`docs/SYSTEM_MAP.md` §2.12/§2.13), a programmatic surface independent of whether a Web UI tab exists for it (`AGENTS.md` §B's dev/ops split -- a future operations agent can still manage playlists via MCP/API with no Manual tab present). The `rules` database table's own `CREATE TABLE IF NOT EXISTS` statement was deliberately left in `src/lib/db.ts`'s frozen baseline rather than replaced with a `DROP TABLE` migration -- see the comment immediately above it for why (a subtractive schema change needs its own ADR per `docs/decisions/0001-additive-idempotent-schema-strategy.md`, not needed here since nothing reads/writes that table anymore).
 
 ## 10. What remains deliberately unimplemented after Phase 4
 
 Per each phase's explicit scope boundaries (also see `docs/PROJECT_SPEC.md` §58 non-goals):
 
 - **No YouTube localization writes anywhere in the codebase** — no `videos.update` call in `channel-sync/`, `localization/`, or `changesets/`. Approving a change is a local database state transition only (§6.9). This is the single most important invariant Phase 5 must preserve until its write pipeline is proven safe.
-- No AI generation.
+- No AI generation. **Update, Phase 6 Slice 1 (2026-09-19):** a first AI Localization vertical slice now exists (`src/lib/ai-localization/`, `docs/SYSTEM_MAP.md` §2.9b) — a deterministic mock `LocalizationProvider` only, generating proposals that flow into the exact same, unmodified Phase 4 Change Set/approval pipeline. No real, paid AI provider is implemented or selected; that remains a separate, explicit future decision (`docs/PROJECT_SPEC.md` §32). **Update, 2026-09-20:** the domain module and this scope boundary are unchanged; only its UI entry point moved, from a standalone "AI Localization" tab into the merged "Languages" tab as the primary action (§9 above).
 - No backup/audit/batch-execution infrastructure for *remote writes* — Phase 4 introduced `change_sets`/`changes` (local, reversible, non-destructive persistence) but nothing that would back a YouTube write batch (immutable pre-write backup, per-item execution ledger, audit log) — those remain Phase 5 scope (`docs/PROJECT_SPEC.md` §64).
 - No CLI or MCP tools for sync, localization, import, or change-set review yet — only the Web UI and the underlying API routes exist; CLI/MCP parity is additive future work (see §11). `docs/PROJECT_SPEC.md` §21 explicitly said not to implement this in Phase 4 unless essential, and it was not essential here.
 - No configured target-language list for a channel (§5.4 above) — the Localizations sheet only reflects what already exists remotely; still true after Phase 4 (import validates against arbitrary language codes, it does not introduce a per-channel target-language configuration).
-- No deletion proposal model (§6.14) — deferred per `docs/PROJECT_SPEC.md` §8's stated preference.
+- No deletion proposal model (§6.14) — deferred per `docs/PROJECT_SPEC.md` §16's original stated preference through Phase 4; superseded 2026-09-20, see §6.14's updated note.
 - **A fresh, immediately-pre-write remote-state check does not exist** — Phase 4's conflict detection is bounded by the last channel sync (§6.6); Phase 5 must add a live check right before any actual `videos.update` call.
 
 ## 11. Extension points confirmed by these phases
@@ -388,6 +400,10 @@ Per each phase's explicit scope boundaries (also see `docs/PROJECT_SPEC.md` §58
 - **Localization writes (Phase 5)**: will reuse `write-context.assertWriteChannel` (unchanged) and a `changesets`-approved `Change`'s `approvedValue` as the payload source, merged against the *freshly re-fetched* remote localizations via `mergeLocalizations`/`buildSafeVideoUpdatePayload` (`docs/PROJECT_SPEC.md` §21) — Phase 4's `Change.approvalStatus === "approved"` rows are exactly the input Phase 5's batch executor should consume.
 - **Batch execution / ledger / audit (Phase 5)**: `changesets/services.ts`'s `approveAllValid`/`getChangeSet` already return the "what should be applied" set; Phase 5 adds the write-time ledger (`PENDING`/`APPLYING`/`SUCCESS`/`FAILED`/`CONFLICT` per change) as a new concern layered on top of, not replacing, `Change.approvalStatus`.
 - **CLI/MCP sync + localization + changesets parity (Phase 5+)**: `createChannelSyncCore()`, `createLocalizationCore()`, and now `createChangeSetCore()` are all interface-agnostic; adding CLI namespaces and MCP tools (`changeset_list`, `changeset_get`, `changeset_approve`, per `docs/PROJECT_SPEC.md` §49) is additive, following the exact registration pattern already used for `metadata`/`playlist` tools.
+- **AI Localization real-provider integration (Phase 6+)**: `src/lib/ai-localization/provider-registry.ts`'s `resolveLocalizationProvider` is the single point where a real `LocalizationProvider` (OpenAI/Anthropic/DeepL/etc.) would be added, once selected and explicitly authorized — no other file in this module needs to change, since `services.ts` only depends on the `LocalizationProvider` interface, never on the mock's identity.
+- **Channel Editorial Profiles (Phase 6, 2026-09-19)**: `src/lib/db.ts`'s `channelEditorialProfiles` (one row per channel, versioned) and `aiLocalizationGenerationProvenance` (immutable, one row per Change Set created from a generation that echoed back its provenance) are purely additive tables owned entirely by `src/lib/ai-localization/` — no other domain module reads them. `mergeEditorialContext` (`services.ts`) is the single place the per-field profile/per-request combination rule is implemented; a future real provider or a future richer profile shape both extend from this one seam.
+- **Provider-Agnostic AI Connections (Phase 6, 2026-09-19)**: `src/lib/ai-connections/` sits between `src/lib/ai-localization/` and any real model endpoint. `src/lib/ai-localization/services.ts` only gained one optional dependency (`resolveConnectionProvider(connectionId): Promise<LocalizationProvider>`) and one optional input field (`connectionId`) — it still only ever depends on the `LocalizationProvider` interface it always depended on, never on connections/adapters/credentials directly, which is what lets a future second real protocol adapter (e.g. an Anthropic-native one) be added by adding one file to `src/lib/ai-connections/adapters/` and one entry to `adapters/registry.ts`, with zero changes to `ai-localization`. Credential encryption (`crypto.ts`, AES-256-GCM) and endpoint SSRF validation (`endpoint-security.ts`) are self-contained, dependency-free (Node's built-in `crypto`/`dns`/`net` only) utilities with no coupling to any other domain module. See `docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md` §2 for the credential-storage architectural decision (encrypted-at-rest chosen over OS-keychain) and `docs/TECHNICAL_DEBT.md` RISK-14/15 for the two residual, documented limitations (DNS-rebinding TOCTOU; no key-rotation tooling).
+- **MCP/CLI tools for AI Localization generate + create-Change-Set (BL-075/BL-078, 2026-09-23)**: research done ahead of this slice (owner request, "заменить Excel на JSON/MCP-систему для локализации, т.к. перевод делать должен агент, а не человек") found that XLSX was never actually the agent's authoring interface -- it is a separate, optional path for a human editing a spreadsheet by hand. The "Generate with AI" workflow (`generateProposals` -> human review -> `createChangeSetFromGeneration`) already bypassed XLSX entirely, reusing the exact same Change Set persistence/approval/write pipeline XLSX-imported changes go through. The actual, narrower gap: no MCP/CLI tool could reach either of those two service functions -- an external agent could only create a Change Set via the existing `changeset_create_from_import` tool, which requires uploading XLSX bytes. `ai_localization_generate`/`ai_localization_create_change_set` (MCP) and `ai-localization generate`/`ai-localization create-change-set` (CLI) close exactly that gap: both call the identical, already-tested `generateProposals`/`createChangeSetFromGeneration` functions the Web UI's own `POST .../ai-localization/{generate,change-sets}` routes already call, with **zero new validation, persistence, or approval logic**. `generateProposals` persists nothing (ungated, like `localization_import_preview`); `createChangeSetFromGeneration` persists a new Change Set (gated by the same device-availability check as `changeset_create_from_import`) but the resulting Change Set and every Change on it always start `pending` -- there is no code path anywhere, old or new, that can mark an AI-authored proposal already-approved (AGENTS.md §G, "AI may propose, human approves" is untouched). `getEditorialProfile`/`saveEditorialProfile`/`getGenerationProvenance` and any approve/reject/apply path were explicitly left out of this slice's scope. XLSX import/export were not touched, deprecated, or hidden -- they remain exactly as they were, as a human-editing option alongside AI generation, per this backlog item's own recorded open question (not yet resolved, and not blocking this slice).
 
 ---
 
@@ -397,9 +413,1947 @@ Consolidated here so no reader has to infer these from scattered footnotes. Full
 
 1. **Approval does not mean applied to YouTube.** `Change.approvalStatus === "approved"` is a local SQLite state only (§6.9 above). No code path in `src/lib/changesets/` calls `googleapis`.
 2. **Phase 4 detects conflicts against the last synchronized SQLite snapshot, not live YouTube state** (§6.6 above; this remains true for the Phase 4 `changesets/` module specifically). A fresh remote-state check immediately before any write is mandatory for Phase 5 (`docs/TECHNICAL_DEBT.md` RISK-03) — **update, 2026-09-17/18:** implemented for the Phase 5 batch pipeline's preparation and send-time re-check (Slices 2-4, `docs/SYSTEM_MAP.md` §2.9a); RISK-03 stays `OPEN` in `docs/TECHNICAL_DEBT.md` because no real write can be issued yet to prove the end-to-end path.
-3. **The application currently follows a single-operator model.** No per-user ownership boundary exists for channels or change sets (§6.12 above, `docs/TECHNICAL_DEBT.md` RISK-02) — any authenticated local session can access any locally synced channel's data.
+3. **The application currently follows a single-operator model; RISK-02 was narrowed, not removed, by the 2026-09-20 fix.** Every channel-scoped read is now filtered to the caller's active channel (§6.12 above, `docs/decisions/0004-active-channel-read-scoping.md`), closing the specific leak of "any session sees every locally-known channel." There is still no per-user authentication/role model, no data separation between two people sharing one active-channel identity, and no CSRF protection — this remains a single-trusted-operator tool, not a general multi-tenant one (`docs/TECHNICAL_DEBT.md` RISK-02's Gate D items beyond the closed one).
 4. **Change Set CLI/MCP interfaces are not yet implemented.** Phase 4's full workflow (import, diff, approve/reject) exists only through the Web UI and its API routes (`docs/TECHNICAL_DEBT.md` RISK-04). The future operations agent cannot use this workflow until MCP tools exist for it.
 5. **Browser verification with a real authenticated session remains incomplete unless independently verified.** Phase 4's acceptance review ran the full domain-service pipeline against a real local database and a real XLSX export/import round trip, and 226 automated tests pass — but no session has performed a real Google OAuth sign-in through an actual browser and exercised the dashboard UI end to end (`docs/TECHNICAL_DEBT.md` RISK-05). Do not treat automated test coverage as equivalent to that verification.
 6. **Two critical npm audit findings — update, 2026-09-18: patched** (`next`→16.3.5, `next-auth`→4.24.15; see `docs/TECHNICAL_DEBT.md` RISK-06, which still tracks 20 remaining, non-critical, mostly dev-only/unused-code-path advisories).
 
 None of these are Phase 4.5 defects — they are pre-existing, now-consolidated facts about the current state of the system, gated for resolution per `docs/TECHNICAL_DEBT.md`'s gate classifications and the release-readiness checkpoints (Gates A–D) referenced there.
+
+---
+
+## 13. Pre-Release: Cross-Platform Persistence & Device Handoff (Variant A)
+
+**Not a numbered product phase** — an explicit, separately-assigned pre-release task ("Pre-Release
+— Cross-Platform Persistence & Syncthing Handoff"), distinct from and not authorizing Phase 7.
+Full acceptance contract: `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md`. Architectural
+decision: `docs/decisions/0002-additive-schema-versioning.md`.
+
+### 13.1 Purpose and scope
+
+Makes the application safe to run alternately on Windows and macOS, with Syncthing as an
+external file-transport only (never a database), under a strict single-active-device model
+(Variant A — no simultaneous multi-device editing, no automatic database merging). Since
+2026-10-01 the handoff itself is scheduled automatically (§23, ADR 0012), but it is still one writer
+at a time and Syncthing is still the only transport. Four new leaf/near-leaf modules plus one small domain-adjacent module:
+
+```text
+src/lib/platform-paths/    — pure resolveAppPaths(platform, env, homedir); zero I/O
+src/lib/bootstrap-config/  — device-local bootstrap-config.json (deviceId, syncthingRootPath)
+src/lib/schema-versioning/ — schema_meta + reject-newer-before-mutation + ordered migrations
+src/lib/db-backup/         — copyDatabaseConsistently() over VACUUM INTO (shared utility)
+src/lib/operation-lock/    — app_operation_locks: real SQLite-level device-local exclusivity
+src/lib/snapshot/          — scrub-then-checksum export/import pipeline, explicit table allowlist
+src/lib/device-handoff/    — orchestration: exportHandoff/importHandoff/recovery-mode gate
+```
+
+`src/lib/db.ts` itself changed in three ways: its client now opens at
+`getProductionAppPaths().dbPath` instead of `<cwd>/data/playlist-manager.db`; a one-time,
+non-destructive migration copies a legacy database into the new location on first boot only;
+`initializeDatabaseSchema` gained the version-check-first ordering described in §13.2.
+
+### 13.2 Schema versioning ordering (docs/decisions/0002-*.md)
+
+```text
+initializeDatabaseSchema(client):
+  1. PRAGMA busy_timeout / journal_mode = WAL           (non-schema-mutating)
+  2. assertSupportedSchemaVersion(client, CURRENT)      (read-only; throws before any mutation
+                                                          if the DB reports a newer version)
+  3. existing additive baseline block, unchanged         (schema version 1, retroactively)
+  4. runSchemaMigrations(...)                            (ordered, each stamps schema_meta only
+                                                          on its own success)
+```
+
+A database reporting a version newer than `SCHEMA_CURRENT_VERSION` is rejected before step 3
+ever runs — proven, not merely asserted, by a test that snapshots `sqlite_master` before and
+after a rejected attempt and asserts byte-for-byte identity (`src/lib/db.test.ts`,
+`src/lib/schema-versioning/services.test.ts`).
+
+### 13.3 Snapshot format and the transfer allowlist
+
+A published snapshot is a directory (`<snapshotId>/manifest.json` + `data.db` + implicit
+per-file checksum inside the manifest) written first to a `.staging-<uuid>` directory and only
+made visible under its final name via an atomic rename, after `manifest.json`'s `complete: true`
+is the last thing written. `data.db` is produced by `VACUUM INTO` (a transactionally-consistent
+snapshot, sidestepping the WAL/SHM-file problem entirely) and then scrubbed via an **explicit
+transfer allowlist** (`SNAPSHOT_TRANSFERRED_TABLES`, `src/lib/snapshot/contracts.ts`) — any table
+not on that list is dropped and the file `VACUUM`d again, fail-safe by construction: a future new
+table is excluded by default unless a reviewer deliberately adds it to the allowlist. `users` and
+`ai_connection_credentials` are never on it.
+
+### 13.4 Import: per-table merge, not a whole-file swap
+
+Import never replaces the live database file. It ATTACHes a migrated, verified, private working
+copy of the snapshot's `data.db` to the live connection and, in one transaction, fully replaces
+every table on `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` — as of M6 (2026-09-23,
+`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`), the four Category D
+write-pipeline tables (`batches`, `batch_ledger_rows`, `batch_attempts`, `audit_events`), **plus, as
+of Phase 9 slice 9H part A (2026-09-27), all 12 Phase 9 market-intelligence tables** (`research_
+channels`, `research_evidence`, `market_channel_snapshots`, `market_video_snapshots`, `market_
+intelligence_collection_runs`, `market_discovery_candidates`, `market_discovery_runs`, `market_
+topics`, `market_topic_assignments`, `market_trend_candidates`, `market_trend_evidence`, `market_
+research_requests`) — closing RISK-52's market-intelligence portion per the owner's own 2026-09-26
+decision (`docs/roadmap/plans/PHASE_9_PLAN.md` §12 point 5), which had been recorded as resolved
+but never actually implemented until this fix. `SNAPSHOT_TRANSFERRED_TABLES` (the snapshot *file's*
+own contents, §13.3) additionally includes
+`schema_meta` — never touched by this replace loop, only read by `migrateStagedCopy` to migrate
+the *staged* copy before merging. Everything this mechanism used to also carry, beyond today's
+four, has since moved away by one of three routes: `channels`/`videos` to an independent
+per-device resync from the real YouTube API (§2 Category A of the migration plan — there is no
+local-only write path for either, so nothing to transfer); `rules` dropped outright, not resynced
+anywhere, since its own feature (UI/API/Drizzle definition) was already removed 2026-09-20 and
+there is nothing left to carry; and `change_sets`/`changes`/`channel_editorial_profiles`/
+`ai_localization_generation_provenance`/`ai_connections` now propagate continuously via
+`src/lib/sync-gateway/` instead — see §13.5 below. `ai_connections`'
+own upsert-by-id special case (`INSERT OR REPLACE ... SELECT`, kept because `INSERT ... SELECT ...
+ON CONFLICT DO UPDATE` was found unsupported by this `@libsql/client` build's SQLite) was removed
+along with it; every remaining transferred table now goes through the same plain replace path.
+`users` and `ai_connection_credentials` are never referenced by this code path at all — there is
+no "exclude" branch to bypass, because no code path here can reach them structurally. `users.id`
+was confirmed, by reading `src/lib/auth.ts`'s `session()` callback and `src/lib/db.ts`'s
+`upsertUserOAuthOnSignIn`, to be the Google OAuth `sub` claim — a stable, provider-issued
+identity, not a locally-generated artifact — which is why no identifier remapping is ever needed
+for `channels.connectedUserId`/`rules.userId` across devices.
+
+### 13.5 Why this mechanism still exists after `sync-gateway`: a narrow, explicit ownership handoff
+
+Every table this mechanism used to carry that COULD move to `sync-gateway`'s continuous CRDT
+propagation has (`docs/SYSTEM_MAP.md` §2.9h/§2.9m); this mechanism's remaining four tables physically cannot
+(`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`: no CRDT equivalent for SQL
+compare-and-set/UNIQUE-constraint concurrency guards or for `AUTOINCREMENT`-derived audit
+ordering). Rather than deleting cross-device continuity for them outright, the owner chose (after
+a web-research pass on 2026-09-23 confirming this shape is the industry-standard answer, not an
+ad-hoc compromise — SQLite single-writer replication tools like LiteFS/Litestream use exactly this
+"explicit, atomic primary handoff, never a live merge" pattern for primary failover, as do
+distributed job schedulers for lease-based worker handoff) to keep this mechanism alive, scoped
+down to exactly these four tables: an explicit, human-triggered, atomic whole-copy transfer of
+write-pipeline ownership between devices, never a background/automatic sync.
+
+### 13.6 Restricted recovery mode is computed, never cached
+
+If the imported (migrated, merged) data contains any `batch_ledger_rows` row whose status is
+`APPLYING` or `UNKNOWN` (a real YouTube write may have been sent with an uncertain outcome), the
+device activates the import but every subsequent mutating action — local-state or
+YouTube-write — is refused. This is implemented as a **live, uncached recomputation** on every
+check (`isDeviceInRecoveryMode`/`assertDeviceAvailableForMutation`, re-querying
+`batch_ledger_rows` each time), specifically so that no stored flag exists anywhere that an
+operator action could accidentally or deliberately flip. The one operator action available
+(`acknowledgeRecoveryDiagnostics`) writes only to a separate, append-only
+`recovery_acknowledgements` table and never touches `batch_ledger_rows` — proven by a dedicated
+test (`docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md` AC-HANDOFF-05) that asserts the
+row is byte-identical before/after and the gate is still engaged immediately after. This task
+builds no new recovery/reconciliation algorithm — the gate only lifts when Phase 5's existing,
+unmodified mechanism (RISK-09 §0.F) resolves the underlying rows to a terminal state, which
+currently has no in-app trigger (`docs/TECHNICAL_DEBT.md` RISK-16, tracked, not fixed here).
+
+### 13.7 One gate, three call sites
+
+`src/lib/device-handoff/services.ts`'s `assertDeviceAvailableForMutation` (operation-lock check,
+then recovery-mode check) is the single implementation; it is called from three independent
+choke points, not reimplemented at each: `src/proxy.ts` (Next.js 16's renamed `middleware.ts` —
+confirmed via `node_modules/next/dist/docs/` to default to the Node.js runtime, which is what
+makes querying the local libSQL database directly from it possible) for every mutating `/api/**`
+request; `src/cli/video-metadata.ts`'s `runCliCommand`, for every CLI command outside an explicit
+read-only allowlist; `src/mcp/server.ts`'s `createMcpToolHandlers`, wrapping every tool classified
+as a local- or remote-mutation per `docs/DEVELOPMENT_PLAYBOOK.md` §6.7. `app_operation_locks`
+itself is a real SQLite-level exclusivity mechanism (the `INSERT` against a fixed row id is what
+actually enforces it, across any connection/process to the same file) — the three choke points
+give the broader "no new work starts" product behavior for the whole export/import window, not
+just the instant of the file copy.
+
+### 13.8 Known limitations
+
+- No macOS runtime validation — path-resolution logic is unit-tested for both platforms via
+  injection; only Windows has actually been run (`docs/TECHNICAL_DEBT.md` RISK-17).
+- No in-app way to leave restricted recovery mode yet — depends on RISK-04's CLI/MCP Batch
+  tooling, which does not exist (RISK-16).
+- No installer/auto-updater for a standalone `published/<version>/` release copy (no `.git`);
+  release layout is documented (`docs/RELEASE_LAYOUT.md`) but not automated there, per that
+  task's own explicit scope boundary. `scripts/{macos,windows}/start.{sh,bat}` never touch git,
+  the network, or the working tree at all (an earlier version did run `git pull --ff-only`
+  itself; removed 2026-09-21 at the project owner's explicit request — keeping a git checkout
+  current is the operator's own responsibility now). They do detect a stale `.next` build when
+  run from a git checkout, by comparing the checked-out commit against a marker file recording
+  which commit was last built, and rebuild automatically — this is what makes the operator's own
+  `git pull` actually take effect on the next launch, rather than silently continuing to serve a
+  build from before that pull (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).
+
+## 14. Phase 8 (Intelligence Foundation) — foundation + 4 follow-up slices, all merged
+
+### 14.1 Status
+
+Assigned 2026-09-22 (Telegram, project owner: "Приступить к полной реализации фазы 8"). The
+original foundation work landed on `feature/phase-8-intelligence-foundation`, merged into `dev` in
+`6f75ccf` (owner approval per `AGENTS.md` §K.2) — see `docs/ROADMAP_STATUS.md`'s BL-055..BL-059
+rows for the full merge history; this subsection's own wording below predates that merge and is
+kept for its historical detail, not as a claim about current branch state. `docs/roadmap/plans/PHASE_8_PLAN.md`
+§6 slice 2
+(the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
+§8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
+OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
+`views` alone) — see §14.2 below for the schema consequence.
+
+**All four slices are now implemented:** slice 1 (OAuth scope, BL-056) — `YOUTUBE_ANALYTICS_READ_SCOPE`
+added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`, no separate re-consent mechanism needed (every
+sign-in path already forces full consent, `docs/SYSTEM_MAP.md` §2.1); slice 2 (table, BL-055);
+slice 3 (Analytics adapter + domain module, BL-057) — `collectMetrics`/`listMetrics`, tested
+against mocked HTTP, but the per-video query shape (one call per video vs. a hypothetical bulk
+query) remains unconfirmed against a real API response, since that needs the owner's own
+re-consent to test; slice 4 (manual "collect now" trigger + Web UI, BL-058). A fifth item, BL-059
+(daily staleness-based auto-collection + a configurable local sync-time/timezone setting,
+superseding the plan's original "no scheduling" boundary, plan §10 items 3-4), is also done —
+see §14.6.
+
+**Live-verified against the real "Tropico Jazz" channel** (`claude-in-chrome`, 2026-09-22, twice):
+the manual trigger correctly reaches and fails at `AUTH_SCOPE_INSUFFICIENT` (the real stored token
+predates BL-056's scope); the dashboard-mount auto-collect effect (BL-059) correctly fires once,
+reaches the same point, and — per its own documented mark-then-run tradeoff — marks
+`analyticsLastAutoCollectedAt` even though the underlying collection failed. That real timestamp
+was reset back to `NULL` on the real channel after verification (a throwaway script, not
+committed) specifically so the owner's own first post-re-consent dashboard load is not skipped
+until the next day's boundary. Zero console errors across both verification passes.
+
+### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` versions 8-9)
+
+```text
+video_metrics_daily (new, v8) — channelId, videoId, metricDate (ISO date), metricName (e.g. "views"),
+                                 metricValue (REAL), collectedAt
+                                 PRIMARY KEY (videoId, metricDate, metricName)
+                                 + index on channelId
+channels.analytics_last_auto_collected_at (new column, v9) — nullable timestamp, BL-059's
+                                 per-channel "when did the daily auto-collection last actually
+                                 run" marker
+```
+
+`channels.analyticsLastAutoCollectedAt` mirrors the existing `lastSyncedAt` column's own shape
+exactly (same table, same nullable-timestamp pattern) — deliberately NOT derived from
+`MAX(video_metrics_daily.collected_at)`, since that column is a per-row last-*write* time: a
+manual re-collection of an old date range would bump it without today's actual auto-collection
+run ever having happened, silently defeating the staleness check's own purpose. See
+`src/lib/analytics/staleness.ts`'s own doc comment and §14.6 below.
+
+No `videos`/`channels` schema change — this is a purely additive new table alongside the existing
+"current snapshot" `videos` table, storing a time-series `videos` was never meant to hold.
+`channelId` is stored directly on the row (per `docs/PROJECT_SPEC.md` §33's canonical
+`channelId`/`videoId`/`date` linkage) rather than requiring a join through `videos` to scope a
+query to a channel, and stays a plain, non-FK column (denormalized convenience only, never an
+identity/authorization boundary — `write-context.assertWriteChannel` remains that).
+
+**`videoId` has a foreign key on `videos.id`**, matching `PHASE_8_PLAN.md` §5's own DDL exactly.
+An earlier draft of this section claimed "deliberately no foreign key," following the
+`video_edit_audit_events` precedent (§13; this database defaults to `foreign_keys=ON`,
+`docs/TECHNICAL_DEBT.md` RISK-33) and reasoning that an FK here would add a new table-ordering
+constraint to `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`). An independent
+review caught that this doesn't survive reading those two functions: both already wrap their
+*entire* drop/replace sequence in `PRAGMA foreign_keys = OFF` ... `ON` regardless of any
+relationship, so an FK here adds no new ordering constraint to either. Unlike
+`video_edit_audit_events` (an audit trail that must genuinely outlive the row it describes), this
+table has no such requirement, so there was no remaining reason to deviate from the plan's own
+explicit schema — corrected in `src/lib/db.ts` and here.
+
+### 14.3 Persistence access (`src/lib/db.ts`, additive)
+
+```text
+upsertVideoMetric(input)          — insert-or-update by the table's own primary key; re-collecting
+                                     an already-collected date overwrites metricValue/collectedAt,
+                                     never creates a duplicate row (tested against real SQLite)
+listVideoMetricsByVideo(videoId)  — full metric history for one video
+```
+
+`src/lib/analytics/adapters/store.ts` now wraps both (§14.4) — no longer a bare `db.test.ts`-only
+pair.
+
+### 14.4 Analytics domain module (`src/lib/analytics/`)
+
+Follows the standard `contracts/schemas/services/adapters/index` layering (§6.2). One operation,
+`collectMetrics({credentialRef, channelId, startDate, endDate, metricNames?})`: for every video
+`videoStore.listVideosByChannel(channelId)` returns, calls the low-level
+`queryVideoAnalyticsReport` (§14 area / `src/lib/youtube-read-gateway/analytics-api.ts`) once and upserts every
+returned `(date, metric)` pair via `upsertVideoMetric`. `metricNames` defaults to
+`ANALYTICS_METRIC_NAMES` (the full non-monetary list, `PHASE_8_PLAN.md` §10 item 2) when omitted.
+
+Channel-context validation mirrors `channel-sync/services.ts`'s `listSyncedVideos` exactly: since
+this service already receives `credentialRef`, it calls `channelAccess.assertActiveChannel`
+itself (once, here) rather than deferring to a future route — a future BL-058 route must not add
+a second check. A video genuinely belonging to a different channel can never be reached through a
+given `channelId` by construction (`listVideosByChannel(channelId)` only returns that channel's
+own rows), proven by an explicit cross-channel test (`services.test.ts`) rather than left as an
+inferred property.
+
+One video's Analytics call throwing is isolated into `skippedVideoIds` (logged), never failing the
+whole channel's run — mirrors `change-drafts-sync`'s per-peer isolation. `upsertsIssued` counts
+upsert *attempts*, not distinct new rows — re-collecting an already-collected range reports a
+nonzero count even though the underlying rows were only overwritten, not created (see the field's
+own doc comment in `contracts.ts`). A metric absent/non-finite in a given API response row is
+silently omitted from that row's upserts, never defaulted to `0` (matches `videos.viewCount`'s
+existing nullable-never-zeroed convention, §2.7).
+
+An automated `write-path-inventory.test.ts` (mirroring `ai-localization`'s) proves no file in this
+module references any `videos`/`channels`-mutating `db.ts` function or any
+`youtube-write-gateway` symbol — the plan's §7 "never writes to videos/channels" acceptance
+criterion as a structural, automated check, not an inference from the dependency-injection shape
+alone.
+
+`credentialRef` shapes with no `userId` (e.g. a hypothetical future CLI caller passing raw tokens)
+can never pass `assertActiveChannel` and so can never use this service — documented as a known
+constraint in the function's own doc comment, not a bug.
+
+A second read-only operation, `listMetrics({credentialRef, channelId})`, returns every already-
+collected `(videoId, metricDate, metricName, metricValue)` row for the channel (via a new
+`listVideoMetricsByChannel` in `db.ts`, mirroring `listVideoMetricsByVideo`'s own shape) — pure
+local read, no `authResolver`/YouTube call, same active-channel check as `collectMetrics`.
+
+### 14.5 Manual "collect now" trigger + Web UI (BL-058) — **IMPLEMENTED**
+
+`POST /api/channels/[channelId]/analytics/collect` (real local-state mutation — writes
+`video_metrics_daily` rows — gated normally by `src/proxy.ts`'s blanket device-availability check,
+deliberately NOT added to its read-only exemption list) and `GET /api/channels/[channelId]/analytics`
+(pure read, ungated) call `collectMetrics`/`listMetrics` directly. Neither route calls
+`channelAccess.assertActiveChannel` itself — both services already do, mirroring
+`channel-sync`'s own `videos/route.ts`, not `ai-localization`'s routes (whose services don't
+receive `credentialRef` the same way).
+
+Web UI: `src/components/analytics-manager.tsx`, replacing the Studio-parity S6-stub "coming soon"
+placeholder in the Analytics tab (`docs/roadmap/BACKLOG.md` BL-017). A date-range form (local-date
+defaults, ending *yesterday* — the Analytics API's own documented behavior is that a `day`-dimension
+query never returns the most recent day(s) yet, so defaulting to "today" would look like a silent
+partial failure) plus a "Collect now" button, and a paginated read-only table of whatever
+`GET .../analytics` returns (no video-title join — this component only knows about metrics, video
+metadata display stays `content-manager.tsx`'s concern).
+
+**Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
+tab resolves the active channel and loads its (empty) collected-metrics table correctly; clicking
+"Collect now" exercises the real chain (session → active-channel check → credential resolution →
+scope check) end to end and correctly fails with `AUTH_SCOPE_INSUFFICIENT` — the real stored
+token predates BL-056's scope addition, so this is exactly the expected, correct outcome pending
+the owner's own re-consent, not a bug. Zero console errors throughout.
+
+### 14.6 Daily staleness-based auto-collection (BL-059) — **IMPLEMENTED**
+
+The owner's own rule, verbatim (Telegram msg 356, items 3-6): a daily check "при входе в наш
+дашборд" (on entering the dashboard), comparing "now" against a **wall-clock local boundary**
+(e.g. 12:05), not an elapsed-duration window — a run at 11:59 local today is still stale, a run at
+12:06 local today is fresh. This app has no background daemon/cron separate from the Next.js
+server process, so the check runs once per dashboard mount
+(`src/app/dashboard/page.tsx`'s `autoCollectTriggeredRef`-guarded effect, independent of which tab
+is active), not on a repeating interval — reusing the same "check once per mount, not a
+continuous poll" discipline `content-manager.tsx`'s own `AUTO_RESYNC_STALENESS_MS` pattern
+already established, generalized from "20 minutes" to "once a day."
+
+**`src/lib/analytics/staleness.ts`** (pure, no I/O): `isAnalyticsCollectionStale` formats both
+"now" and the last-collected instant into the target IANA timezone's own local calendar
+date + time strings (one `Intl.DateTimeFormat` each) and compares those strings — deliberately
+NOT an offset-arithmetic instant conversion (`Date.UTC` + `formatToParts` + diff-correction),
+which is unnecessary for a pure comparison and easy to get subtly wrong. `Intl` already applies
+the zone's real DST rules to each instant independently, proven by a dedicated test that gets a
+*different* result for the same wall-clock UTC hour in January (EST) vs. July (EDT) for
+`America/New_York` — the owner's own "зимнее/летнее время" concern, verified, not assumed.
+`computeDefaultAutoCollectionRange` (same file) picks the unattended run's date range — 7 days,
+ending yesterday, matching the manual UI's own default (`AUTO_COLLECTION_RANGE_DAYS`,
+`contracts.ts`) — via pure calendar-day arithmetic on the zone's own Y-M-D components, so it has
+no DST edge case to reason about (a calendar day is a calendar day in every zone).
+
+**Settings:** two new `app_settings` keys (reusing the existing key/value table, `docs/SYSTEM_MAP.md`
+§2.9f, not a new table) — `analytics_sync_local_time` (default `"12:05"`) and
+`analytics_sync_timezone` (default: this machine's own OS timezone, detected via
+`Intl.DateTimeFormat().resolvedOptions().timeZone` the first time it's ever read, then persisted —
+never re-detected on a later read, so an explicit owner override is never silently clobbered;
+safe specifically because this app's server and the operator's browser are the same machine, the
+established "local-first single-operator tool" model). Both are validated at the `/api/settings`
+write boundary (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) rather than letting a bad value
+throw inside the staleness check on a later dashboard load. UI: `src/components/analytics-sync-settings.tsx`
+(Settings tab) — plain text/time inputs, not `ToggleSwitch` (these aren't booleans).
+
+**Concurrency (advisor review):** `runAutoCollectionIfStale` marks
+`channels.analyticsLastAutoCollectedAt` **before** calling `collectMetrics`, not after. Two
+browser tabs mounting the dashboard at the same moment would otherwise both see "stale" and both
+run a full per-video collection, doubling real Analytics API quota for no benefit — marking first
+means the second caller sees fresh and no-ops (proven by a dedicated test simulating two
+sequential calls at the same instant). The accepted tradeoff: if the collection itself then fails
+or crashes mid-run, today's window is still marked "collected" and won't retry until tomorrow's
+boundary — judged the better failure mode than doubling quota on every multi-tab load.
+
+**`GET /api/settings` is not purely read-only**: `getAnalyticsSyncSettings`'s detect-and-persist
+behavior means a plain `GET` can write the OS-detected timezone on first read (stated in that
+route's own doc comment, not left as a surprise).
+
+**Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
+dashboard-mount effect fires exactly once and reaches the real `runAutoCollectionIfStale` →
+`collectMetrics` chain, correctly failing at `AUTH_SCOPE_INSUFFICIENT` for the same
+not-yet-re-consented reason as §14.5's manual trigger. Confirmed directly against the real
+database that this **did** mark `analyticsLastAutoCollectedAt` despite the underlying collection
+failing — exactly the documented mark-then-run tradeoff, not a bug — and then reset that column
+back to `NULL` on the real channel afterward (a throwaway, uncommitted script) so the owner's own
+first post-re-consent dashboard load is not skipped until the next day's boundary. Separately
+confirmed the real machine's OS timezone (`Europe/Helsinki`) was correctly auto-detected and
+persisted to `app_settings` on the first `GET /api/settings` call. Zero console errors.
+
+**Build-time note, observed not introduced:** `npm run build`'s "Collecting page data" step
+occasionally logs a `SQLITE_BUSY: database is locked` (or, once, a stale-schema-version rejection
+from a leftover local DB state during this session's own testing) from one of several parallel
+build workers racing to initialize the same real local database file — confirmed present on a
+clean pre-BL-059 tree too (`git stash -u` + rebuild), so this is a pre-existing characteristic of
+this dev environment's multi-worker build touching a real, singleton-guarded database file, not a
+regression from this slice. Build exit code is unaffected (0) both with and without BL-059.
+
+### 14.7 Known limitations
+
+No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
+primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
+end-to-end. See `docs/roadmap/BACKLOG.md` BL-056/BL-057/BL-058/BL-059 for the current status of
+the remaining slices.
+
+`metricValue` is `REAL NOT NULL` (changed 2026-09-22, before this table ever merged to `dev` —
+`docs/roadmap/plans/PHASE_8_PLAN.md` §10 item 2). The plan's original DDL had it as `INTEGER`,
+correct for `views` alone; once the owner authorized collecting every metric
+`yt-analytics.readonly` covers, several of those (e.g. `averageViewPercentage`,
+`annotationClickThroughRate`) are inherently fractional, so the column was widened to `REAL`
+(exact for both integer counts and fractional rates) rather than adding a second,
+metric-type-dependent column. Because this happened before the table shipped anywhere, no ADR was
+needed (`docs/decisions/0001-additive-idempotent-schema-strategy.md`'s "non-additive change" gate
+applies to a change against an already-released schema, not an in-progress, unmerged one) — any
+*future* change to this column's type would need one.
+
+`video_metrics_daily` is **deliberately not added to `SNAPSHOT_TRANSFERRED_TABLES`**
+(`src/lib/snapshot/contracts.ts`) in this slice — collected metrics stay device-local and do not
+travel with a device handoff/snapshot import. Accepted limitation, parallel in kind to RISK-33's
+own `rules.user_id` orphan case: a snapshot-import replace of `videos` (`SNAPSHOT_REPLACE_ON_IMPORT_TABLES`
+already includes `videos`) can leave a local `video_metrics_daily` row referencing a `videoId` no
+longer present in the receiving device's `videos` table after import — this never crashes (FK
+enforcement is disabled for that entire operation, same as every other table it processes), it
+just leaves a stale row. `docs/PROJECT_SPEC.md` §33 frames this data as the future basis for real
+recommendations, so unlike `video_edit_audit_events` (a local audit trail with no such framing),
+losing collected history silently on every handoff is worth flagging explicitly rather than
+letting it repeat as an unstated gap — revisit whether this table should join
+`SNAPSHOT_TRANSFERRED_TABLES` once real collection (slice 3+) makes the data worth carrying
+across devices.
+
+### 14.8 Channel-level Analytics reads for Studio-Parity S6b (`getChannelOverview`) — **IMPLEMENTED**
+
+Every read documented above (§14.1-§14.7) is per-video: one `reports.query` call per synced
+video, `filters=video==<id>`. Studio's own Analytics "Overview" tab (BL-072,
+`docs/roadmap/plans/STUDIO_PARITY_PLAN.md` §4 Slice S6b) needs channel-level totals instead —
+summing per-video rows would silently miss any activity not attributable to a currently-synced
+video (a deleted video, or subscribers gained from the channel page itself), the same class of
+undercounting problem RISK-33-style orphan rows already illustrate elsewhere in this document.
+
+A throwaway diagnostic route (never committed, same technique BL-057 used) confirmed live against
+a real channel that dropping `filters=video==...` entirely — `ids=channel==<id>`,
+`dimensions=day`, no filter — is accepted by the real API and returns genuine per-day channel
+totals. This is a *different* report shape from the one BL-057 already ruled out (a bulk
+`dimensions=video,day` query across every video with no filter, which the API rejects outright) —
+dropping the dimension, not just the filter, is what makes the difference. `queryChannelAnalyticsReport`
+(`youtube-read-gateway/analytics-api.ts`) is this second report shape; both it and the existing
+per-video report now share one response parser (`parseDayDimensionReport`) rather than duplicating
+the name-based column-lookup logic.
+
+`getChannelOverview` (`src/lib/analytics/services.ts`) is deliberately a **live read, never
+persisted** — unlike `collectMetrics`, it writes nothing to `video_metrics_daily` or any new
+table, and so is not subject to `collectMetrics`'s own once-a-day freshness gate (§14.6); it is
+already gated by the existing per-category "Analytics reads enabled" toggle every
+`createYoutubeAnalyticsClient` call goes through. It issues exactly two calls — the requested
+period and the immediately-preceding period of the same length (`analytics/period.ts`'s pure
+`computePreviousPeriod`) — and sums each into totals itself, rather than a third "totals only, no
+dimensions" call; one report shape, two date ranges. A day the API omits from its response
+contributes `0` to that sum, which is a true fact about the sum (no rows means no reported
+activity), not the same "silently defaulted a missing per-day-per-metric value to 0" case
+`collectMetrics`'s own doc comment warns against for raw per-row display.
+
+Also confirmed live and worth recording here since it corrects §7 of `contracts.ts`'s own
+provenance note: `impressions`/`impressionClickThroughRate` (Studio's thumbnail-impressions/CTR
+widgets, both on Home and on Analytics' Content sub-tab), under those exact names, are rejected by
+the real API as unknown metric identifiers. These are not the same as the `annotation*`/`card*`
+legacy metrics already in `ANALYTICS_METRIC_NAMES` (dead since 2019, always zero) — they are a
+structurally different capability. **Corrected 2026-09-26 (§14.12 below, found during the deep-
+parity plan's own research):** the real identifiers Google actually shipped
+(`videoThumbnailImpressions`/`videoThumbnailImpressionsClickThroughRate`, added 2026-01-15) *are*
+recognized by the API — the 2026-09-23 rejection above was the wrong names, not a capability gap —
+but they belong to a structurally different YouTube Reporting API v1 "Reach report" (a bulk,
+scheduled-job system), never this ad-hoc `reports.query` endpoint, so the practical conclusion is
+unchanged: no code path in this repository requests them, and none can via this endpoint regardless
+of naming.
+
+**Totals will not exactly match Studio's own displayed numbers for the same nominal date range,
+and this is expected, not a bug.** Cross-checked live 2026-09-23 against the real "Rural Japan
+Music" channel for the identical "Aug 26 - Sep 22" window Studio itself showed earlier the same
+session: Studio displayed 2,052 views / 379.7 watch-time hours / +18 net subscribers; this
+endpoint returned 1,966 / 364.1 hours / +17 for the exact same request. Inspecting the raw
+response showed why: the API's `daily` rows stopped at `2026-09-20` -- no row at all for
+`2026-09-21`/`2026-09-22`, even though both were inside the requested range. This is the same
+reporting lag `PHASE_8_PLAN.md` §10 item 4 already documents for the per-video report (the API
+does not yet report the most recent day(s) of any range) -- Studio's own internal dashboard
+evidently draws from a less-lagged data source than the public Analytics API `reports.query`
+exposes. Nothing here should try to "fix" this by guessing or interpolating the missing days;
+`getChannelOverview` correctly sums exactly what the API has processed as of query time, and the
+chart's `zeroFillDailySeries` correctly stops at the last date actually present rather than
+padding through `endDate` with fabricated zeros (see its own doc comment). A future slice
+re-querying a completed period after the lag has cleared would show a different, larger total for
+the same historical dates -- this is inherent to using the public API, not a caching bug to chase.
+
+### 14.9 Data-quality diagnostics (`getDataQualityReport`) — Phase 8 follow-up, slice 2 of 4
+
+`docs/roadmap/FUTURE_PHASES.md` §4's "data-quality/missing-data diagnostics" line item. New
+additive table `analytics_collection_runs` (`SCHEMA_MIGRATIONS` version 13) -- one append-only row
+per `collectMetrics` invocation, recording the requested date range, video count, upserts issued,
+and which video IDs were skipped due to a per-video failure.
+
+**Why a separate history table is needed, not just a scan of `video_metrics_daily`:** live-verified
+2026-09-23 against a real low-traffic video that the Analytics API silently OMITS a day from its
+`reports.query` response when that video had zero activity that day -- it is never returned as a
+zero-value row. An absent `video_metrics_daily` row is therefore ambiguous between "never
+collected" and "collected, zero activity" without an independent record of which ranges collection
+actually attempted.
+
+`computeDataQualityReport` (`src/lib/analytics/data-quality.ts`, pure, no I/O) classifies each date
+in the requested range as covered (a recorded run's own range includes it, OR at least one real
+`video_metrics_daily` row exists for that date -- the latter fallback exists specifically for data
+collected *before* this table existed, which would otherwise show as "never collected" purely
+because the tracking mechanism postdates it), uncovered (a genuine gap), or too-recent (within
+`ANALYTICS_REPORTING_LAG_DAYS` = 2 days of "now" -- the same reporting lag §14.8 documents, which
+means even a requested collection wouldn't have data yet, so this is never flagged as a real gap).
+Skipped-video aggregation only counts runs whose own range overlaps the requested range.
+
+Live-verified against the real "Tropico Jazz" channel: a 28-day report correctly found only 6 of
+28 days actually covered (the channel's real collected history is a narrow 6-day band, `2026-09-15`
+through `2026-09-20` -- confirmed directly against `video_metrics_daily`'s own distinct dates), a
+genuine, previously-invisible data gap this feature exists to surface, not a bug in the check
+itself.
+
+Exposed via `GET .../analytics/data-quality`, the MCP tool `analytics_data_quality`, and the CLI's
+`analytics data-quality` command -- all three read-only, ungated, following the same pattern as
+`analytics_list`/`analytics_overview` (BL-073). `analytics_collection_runs` is deliberately kept
+out of `SNAPSHOT_TRANSFERRED_TABLES`, the same as `video_metrics_daily` itself (§14.7) -- a
+re-derivable, device-local history, not data that needs to survive a device handoff.
+
+### 14.10 Comparable-age video comparison (`getComparableAgeComparison`) — Phase 8 follow-up, slice 3 of 4
+
+`docs/roadmap/FUTURE_PHASES.md` §4's "comparing videos at comparable ages" line item. Given 2-10
+`videoIds` on the same channel, aligns each video's already-collected `video_metrics_daily` rows by
+**days since publish** rather than calendar date, so videos published on different dates can be
+compared at the same point in their own lifecycle (mirroring YouTube Studio's own "Compare videos"
+growth-curve feature).
+
+**Pacific-Time day alignment (`src/lib/analytics/comparable-age.ts`, pure, no I/O):**
+`video_metrics_daily.metricDate` is the Analytics API's own `day` dimension, a Pacific-Time
+calendar day (§14.7/`youtube-read-gateway/analytics-api.ts`). `videos.publishedAt` is a UTC instant
+from the Data API. Day 0 of a video's life is therefore its **Pacific-Time** calendar date of
+`publishedAt` (`toPacificCalendarDate`, via `Intl.DateTimeFormat` with `timeZone:
+"America/Los_Angeles"`), never the UTC calendar date -- a video published shortly after UTC
+midnight can otherwise land a full day off relative to every other video it's compared against. Day
+offsets are a pure calendar-day diff of two `YYYY-MM-DD` strings via `Date.UTC` (`diffCalendarDays`,
+mirroring `period.ts`'s own DST-safe convention), never a raw millisecond subtraction. Day 0 is
+necessarily a **partial day** (the hours before publication aren't part of the video's life, but
+the Analytics API only reports whole-day totals) -- the same approximation Studio's own feature
+makes.
+
+**Only additive metrics are offered for comparison.** `CUMULATIVE_COMPARISON_METRIC_NAMES` is an
+explicit allowlist (views, likes, estimatedMinutesWatched, subscribersGained, etc.) excluding every
+ratio/average entry in `ANALYTICS_METRIC_NAMES` (`averageViewDuration`,
+`annotationClickThroughRate`, etc.) -- summing a ratio across days produces a meaningless number.
+Requesting a non-additive metric is rejected as `validation_failed`.
+
+**A missing day is "unknown," never a fabricated zero, and this slice deliberately does NOT reuse
+`analytics_collection_runs`'s channel-level coverage to infer "known zero."** §14.9 already
+established that `analytics_collection_runs` records which channel-wide date *ranges* were
+attempted, not which specific videos a given past run actually queried -- a video published after
+an older run's own snapshot of `videos` was never attempted by it, and there is no historical record
+of channel membership to check against. Given that unresolved ambiguity, a real `video_metrics_daily`
+row is the only fact this module treats as "known"; every other day-offset is "unknown." This means:
+raw `points` never include a fabricated zero, and the running `cumulativePoints` total stops dead at
+the last contiguous known day from day 0 (never skips a gap and keeps summing past it). This is the
+same "a materially larger data model than this diagnostic's actual purpose justifies as a first
+slice" tradeoff §14.9 already accepted for its own, narrower scope -- a more precise model would need
+an additive `analytics_collection_runs.queriedVideoIdsJson` column and is left as a future follow-up,
+not attempted here.
+
+**Real-data caveat, confirmed by directly querying two real channels' `video_metrics_daily` before
+designing this feature's response shape:** the daily auto-collection window only covers the most
+recent ~7 calendar days per run (§14.6), not "the video's first 7 days since publish." For a video
+published more than about a week before regular collection started for its channel, `points` will
+typically have no entries for low day-offsets (0-7) specifically, and `cumulativePoints` will
+typically be empty entirely (it always starts from day 0, so a missing day 0 halts it before it
+starts) -- not a bug, a genuine, expected data-coverage gap. `points` for that same video may still
+be non-empty overall if the rolling collection window happened to cover some LATER day-offset --
+an empty `cumulativePoints` does not imply an empty `points`. On the two real channels used to validate this feature ("Rural Japan
+Music", "Tropico Jazz"), this happens to be a much smaller problem than it first appears, because
+both channels upload frequently enough that the rolling 7-day window naturally overlaps most recent
+videos' own early days -- but a video from more than ~1-2 weeks ago will still show sparse or empty
+low-day-offset data until a manual historical backfill is run for it specifically. No backfill
+mechanism was added by this slice -- widening `AUTO_COLLECTION_RANGE_DAYS` or adding a backfill path
+was explicitly out of scope: the once-a-day freshness gate (§14.6) is the owner's own explicit rule
+("ни человеку, ни агенту, ни каким-то скриптам") and is not something this slice may work around.
+
+**No ranking, no "outperforming" language, no headline verdict** -- `docs/roadmap/FUTURE_PHASES.md`
+§4's own constraint ("distinguish observed facts from interpretations... avoid unsupported
+conclusions from small samples"). The response is the same raw per-video series for every caller,
+human or agent, to draw its own conclusion from.
+
+Every requested `videoId` is checked against `videoStore.listVideoDetailsByChannel(channelId)`
+(`docs/DEVELOPMENT_PLAYBOOK.md` §6.6) -- an id that doesn't resolve to the given channel is reported
+back as `validation_failed` with the offending id(s) in `details`, never silently dropped from the
+comparison. Exposed via `GET .../analytics/comparable-age`, the MCP tool
+`analytics_comparable_age`, and the CLI's `analytics comparable-age` command -- all three pure local
+reads (never a live YouTube call), read-only, ungated, following the same pattern as
+`analytics_list`/`analytics_data_quality` (unlike `analytics_overview`, which is a live, gated
+Analytics API read -- see §14.8).
+
+### 14.11 Weekly analytics reports (`runWeeklyReportIfDue`/`listWeeklyReports`/`getWeeklyReport`) — Phase 8 follow-up, slice 4 of 4
+
+`docs/roadmap/FUTURE_PHASES.md` §4's "analytical reports and weekly channel reviews" line item --
+the last of Phase 8's four follow-up slices. A frozen, reproducible snapshot per channel per
+Monday-Sunday week, computed entirely from already-collected local `video_metrics_daily` rows --
+**never a live YouTube API call**, matching the deliverable's own wording ("reproducible analytical
+reports from stored historical data").
+
+**Trigger (owner instruction, 2026-09-23): "Давай завяжемся на то же время что мы выбираем в
+настройках -- 12-05 сейчас по понедельникам."** Reuses the exact `localTime`/`timezone` pair the
+daily auto-collection boundary already reads from Settings (§14.6) -- no separate weekly-report
+setting. `computeDueReportWeek` (`src/lib/analytics/weekly-report.ts`, pure, no I/O) determines the
+single most recently completed week whose Monday-`localTime` boundary has passed, using the same
+zoned-string-comparison technique `staleness.ts`'s `isAnalyticsCollectionStale` already uses (DST-
+correct with no manual offset code). Missed weeks are never backfilled -- a long-dormant app only
+ever gets the single most recently due week on its next dashboard load, the same "no backfill"
+philosophy §14.10 already established for comparable-age comparisons.
+
+**`status: "final"` vs `"provisional"` (advisor review, 2026-09-23):** the trigger boundary (Monday
+12:05, the operator's own local clock) does not line up with the Analytics API's own reporting lag
+(§14.8's 1-2 day lag) or with `video_metrics_daily`'s Pacific-Time day-numbering (§14.10) -- for an
+operator outside Pacific Time, the just-completed week's own last day or two may genuinely not be
+collected yet at the moment the trigger fires. Rather than freeze an undercounted snapshot forever,
+a report is `"provisional"` whenever any date in ITS OWN week is still uncovered or too-recent
+(`computeDataQualityReport`, §14.9, run against the report's own week); the next dashboard load's
+trigger check regenerates (replaces) a provisional report for the same week once it clears, and
+never touches an already-`"final"` row. `runWeeklyReportIfDue` (`services.ts`) does a cheap
+read-before-write early exit, but the actual "never overwrite a final row" guarantee is enforced at
+the DB layer, inside `db.ts`'s `upsertWeeklyReport` itself (a conditional `ON CONFLICT ... DO
+UPDATE ... WHERE status != 'final'`) -- the service's own check-then-act is not atomic across two
+concurrent callers (e.g. two open dashboard tabs both triggering the generate-if-due route near the
+same moment), a real race an independent review found (2026-09-23) and this DB-level guard closes.
+
+**Week-over-week `percentChange` is `null` (the whole object, not per-field) unless BOTH the
+current and previous week are fully covered** -- comparing a real week against a mostly-uncollected
+previous week (the exact situation the real "Tropico Jazz" channel is in today, per §14.9) would
+measure collection coverage, not real change, which `FUTURE_PHASES.md` §4's own "avoid unsupported
+conclusions from small samples" constraint forbids. Each week's own `currentWeekDataQuality`/
+`previousWeekDataQuality` (the full `computeDataQualityReport` shape) is embedded in the stored
+snapshot, so a reader can see exactly why a comparison is or isn't present.
+
+**`syncedVideoTotals`, not "channel totals" (advisor review, 2026-09-23):** named and documented
+(via `SYNCED_VIDEO_TOTALS_METRIC_DEFINITIONS`, embedded in every stored report) as a sum over
+currently-synced videos' own `video_metrics_daily` rows -- the same undercounting caveat §14.8
+already documents for any per-video-summed total (excludes deleted videos, and for subscriber
+metrics, excludes activity not attributable to a specific video). Never presented as, or confused
+with, YouTube Studio's own channel-wide subscriber count.
+
+**Provenance, per `FUTURE_PHASES.md` §4's "clear provenance and documented metric definitions"
+requirement:** every stored report embeds `reportFormatVersion`, `generatedAt`, `source` (a fixed
+string stating the local-only origin), and `metricDefinitions` -- and is re-validated through
+`weeklyReportContentSchema` (a strict zod schema mirroring `WeeklyReportContent` field-for-field) on
+every READ, not just on write, so a corrupted or malformed stored row fails loudly
+(`validation_failed`) rather than silently serving a partial report.
+
+**Schema:** `analytics_weekly_reports` (`SCHEMA_MIGRATIONS` version 14) -- one row per
+`(channel_id, week_start_date)` (`UNIQUE` index), `report_json` holding the full serialized
+`WeeklyReportContent`. Deliberately kept out of `SNAPSHOT_TRANSFERRED_TABLES`, the same reasoning as
+`video_metrics_daily`/`analytics_collection_runs` (§14.7/§14.9): derived, re-computable data that
+never needs to travel with a device handoff.
+
+**Trigger wiring:** `POST .../analytics/weekly-reports/generate-if-due`, called once per dashboard
+mount (`src/app/dashboard/page.tsx`) chained via `.finally()` AFTER the existing auto-collect
+trigger resolves -- so a Monday dashboard load's weekly snapshot sees whatever that same load's own
+auto-collect just refreshed, not last week's data. Gated by `src/proxy.ts` like any other mutating
+POST (a real local-persistence mutation when it decides a new/replacement snapshot is due).
+
+**Read surfaces, all read-only, ungated, no generate-on-demand tool exposed to agents (same
+exclusion reasoning as `collectMetrics`/`runAutoCollectionIfStale`, §14.5/§14.6):** `GET
+.../analytics/weekly-reports` (list, newest week first), `GET
+.../analytics/weekly-reports/[weekStartDate]` (one report, `{ report: null }` if none exists yet),
+MCP `analytics_weekly_reports_list`/`analytics_weekly_report_get`, CLI `analytics weekly-reports`/
+`analytics weekly-report-get`.
+
+**Known, tracked duplication (`docs/TECHNICAL_DEBT.md` RISK-50):** the report's own `topContent`
+ranking (group `views` by video, sum, sort, top 5) is a second implementation of the same
+aggregation the client-side `use-top-videos.ts` hook already does for the Analytics
+Overview/Content tabs (§14.12 below) -- not unified in this slice (see RISK-50 for why; that entry
+itself needed a 2026-09-26 correction since the client-side implementation it names moved from
+`channel-overview-panel.tsx`'s own inline `fetchTopContent` into that shared hook).
+
+### 14.12 Content/Audience breakdown cards + video retention curve (deep-parity plan, BL-092..098) — **IMPLEMENTED, not yet in `dev`**
+
+`docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md` -- extends §14.8's Overview-only Studio
+parity to the Content and Audience sub-tabs, plus closes §14.8's own impressions/CTR question
+(corrected above, not merely repeated).
+
+**One new report shape, one new gateway function, reused seven ways.** Every capability this slice
+adds -- traffic sources, device type, age/gender, geography, subscribed status, content format,
+and the video retention curve -- shares an identical wire shape once dimension/metric names differ:
+a single date range, no `day` dimension, one row per distinct dimension-value combination, an
+optional `filters=video==<id>` for the one per-video case (retention). `queryChannelBreakdownReport`
+(`youtube-read-gateway/analytics-api.ts`) is the single function for all seven, live-confirmed
+against a real channel for each one individually before being written (not assumed from
+documentation) -- the same "never trust a documented name until a real response confirms it"
+discipline `CHANNEL_OVERVIEW_METRIC_NAMES`'s own doc comment (§14.8) already established, now paying
+off in the other direction: all seven confirmed clean on the first live-probe attempt, no retry
+needed for any of them (unlike impressions/CTR below, the one capability this research effort found
+genuinely needed correcting after a wrong initial assumption).
+
+**Two service methods, both live reads, never persisted** (same `getChannelOverview` precedent as
+§14.8, not `collectMetrics`'s daily-collection model): `getChannelBreakdown` (parameterized by
+`CHANNEL_BREAKDOWN_PRESETS`, `contracts.ts` -- the dimension/metric pair for each of the six
+breakdown kinds) and `getVideoRetentionCurve` (the one case needing a `videoId`, which it verifies
+belongs to `channelId` via `videoStore.listVideosByChannel` before querying -- the same discipline
+§14.10's `getComparableAgeComparison` already uses for its own `videoIds` input).
+
+**Impressions/CTR, corrected (see §14.8's own updated paragraph above for the full story):** the
+real identifiers Google shipped 2026-01-15 are recognized by the API but belong to a structurally
+different Reporting API v1 bulk-job "Reach report," never this app's ad-hoc query gateway --
+confirmed by exhausting every plausible request shape against the real API (channel-level, with
+`dimensions=day`, paired with `views`, filtered to one video) and getting "query not supported" for
+every one once the metric name itself stopped being rejected outright. This capability is
+**out of scope**, not merely unbuilt -- reaching it would need a second, structurally different
+Google API integration this repository has never built (a scheduled-job model: create a job, then
+poll/download generated report files, rather than a single request/response call).
+
+**Realtime panel, also confirmed out of scope:** a direct probe for "today"/"the last 48 hours"
+against the same query endpoint returned empty rows -- the documented 48-72 hour processing delay
+(already the reason `computeDefaultAutoCollectionRange`, §14.6, targets "yesterday" rather than
+"today") applies uniformly to both the ad-hoc query API and the bulk Reporting API. Studio's own
+live-updating 48h/hourly panel and live subscriber ticker are built on infrastructure neither public
+surface exposes.
+
+**Content-format label casing, genuinely unresolved (independent review, round 1, 2026-09-26):**
+this session directly observed a real API response returning `"videoOnDemand"` (lowerCamelCase) for
+`creatorContentType`, but a later review round found Google's own published dimension docs state
+uppercase-snake-case values (`VIDEO_ON_DEMAND`, `SHORTS`, `LIVE_STREAM`, `STORY`). A live re-probe to
+settle the discrepancy hit an unrelated OAuth token-refresh failure and could not complete this
+session. `breakdown-labels.ts` maps both casings rather than picking one, with the discrepancy
+documented in a code comment -- treat this as open until re-probed against a real response.
+
+**Traffic-source label accuracy (independent review, rounds 2-3, 2026-09-26):** three
+`insightTrafficSourceType` labels were found copied from the enum name's own surface resemblance to
+a familiar term rather than checked against Google's documented meaning -- exactly the §L failure
+mode this whole plan's own research discipline was meant to avoid, caught this time by review
+rather than by a live probe. `SUBSCRIBER` was labeled "Subscription feed," but Google's own docs
+describe it as views referred from either the YouTube homepage feed *or* subscription features --
+homepage-feed views are commonly the larger share of this bucket for many channels. `CAMPAIGN_CARD`
+was labeled "Campaign card" (reading it as a UI card, by association with the unrelated legacy
+`card*` end-screen metrics), but Google's docs describe it as views from a claimed, user-uploaded
+video the content owner used to promote the viewed content -- a Content ID promotion mechanism, not
+a literal card. `PROMOTED` was labeled "Promoted content," dropping the documented "unpaid"
+qualifier that distinguishes it from `ADVERTISING` (the actual paid-promotion source) sitting right
+next to it in the same list. All three corrected to match their documented scope.
+
+### 14.13 Impressions and CTR from the YouTube Reporting API (`src/lib/reach-reports/`) — BL-114, on `feature/bl-114-reporting-api-reach`
+
+Decision record: `docs/decisions/0014-youtube-reporting-api-gateway-child.md`.
+
+- **Why a separate mechanism.** The Analytics `reports.query` endpoint rejects the thumbnail impressions / CTR metrics (§14.4's live probes); they exist only in the Reporting API v1's Reach reports. That API is bulk and scheduled: the app creates a **job** for a report type, Google generates one file per day, the app downloads and stores them. Google backfills 30 days before job creation, first files appear within ~48 h, backfill files expire after 30 days and regular ones after 60 -- so the app persists everything it downloads.
+- **Gateway.** `youtube-read-gateway/reporting-api.ts` is the third `googleapis` child. The client constructor (`createYoutubeReportingClient`) is the single choke point for the **Reporting reads** toggle and the `reporting_reads` traffic counter. `jobs.reports` is a nested resource that the quota-classification proxy does not wrap, so each call goes through `callYoutubeApi` explicitly. A report's `downloadUrl` comes from an API response, so the download refuses any host except `youtubereporting.googleapis.com` before any credential is sent. Creating a job is **not** a YouTube write (ADR 0014): no Live writes, no write gateway.
+- **Module.** `reach-reports` follows the usual layering and does not import `analytics` (AGENTS.md §M): turning Reporting off, or a failure here, never affects the Analytics tab or `agent_query_channel_analytics`.
+  - `syncReachReports`: `assertActiveChannel` (fail closed, before any credential use) -> `ensureReportingJob` (reuse an existing job, never duplicate) -> list files -> skip ids already in the ledger -> process oldest `createTime` first -> per file: download, parse by header name, map, import in one transaction. One bad file lands in `failures` and is retried next time. `onlyIfDue` skips the whole run if the job was checked, or a sync attempted with outcome `ok`/`partial`, less than 6 h ago (a `failed` attempt does not throttle: its cause is usually fixable). Every attempt after the channel check is recorded in `reporting_sync_attempts` (outcome `ok` / `partial` / `failed`, error text, failed files); a failure that stops the sync before any import is recorded and then rethrown. Failed files are deliberately **not** put in the file ledger, so they stay retryable.
+  - **Import rules** (`reach-csv.ts`, `importReachReport`): a file is rejected whole for a missing documented column, a row naming another channel, an unreadable date/number, or two rows for one (video, day). A file for a period that already has an imported file replaces that file's rows only if its `createTime` is later (also dropping videos it no longer lists); an older file is recorded as superseded and changes nothing.
+  - `getReachStatus`: a local read for the Analytics card (`GET .../reach/status`): job, `createTime + 48 h` as the expected first file (`firstFileOverdue` only when no file is imported and that time has passed), last attempt, next automatic check (`last check + 6 h`), file list (period, rows, status). Settings shows only the quota (`cloud-quotas` `reporting`, `youtubereporting.googleapis.com`), never job/file status.
+  - `getChannelReach`: a local read. `state` separates no job / job but no file yet / data, so an empty result is never read as zero. CTR is a ratio, so totals are **impressions-weighted** (clicks = ctr x impressions); a row without a CTR contributes to neither side, and no CTR at all gives `null`, never 0.
+- **Storage (schema v38, plus `reporting_sync_attempts` in v40).** `reporting_jobs` (job per channel and report type; Google stays the source of truth), `reporting_report_files` (ledger + supersession status), `channel_reach_daily` (primary key channel/date/video, no FK to `videos`, nullable `ctr`). Classified device-local in `snapshot/contracts.ts` (same accepted limitation as `video_metrics_daily`, RISK-52) and `authorized` in `youtube-data-policy` (III.E.4.b names Reporting API data).
+- **Unverified until real data exists:** the report's `date` format (both `YYYYMMDD` and `YYYY-MM-DD` are accepted) and the CTR scale (ratio assumed, `reach-format.ts` is the one place to change).
+- **Not in this slice:** `channel_reach_combined_a1` (by traffic source / device), an agent tool that triggers a sync, video titles beside the ids in the UI table.
+
+## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
+
+### 15.1 Status and scope
+
+Owner instruction, 2026-09-22 (Telegram): a real Google Cloud Quotas/Monitoring integration was
+requested to give the gateway traffic counters (§2.9k of `docs/SYSTEM_MAP.md`) actual limit/usage
+numbers, not just local attempt counts. Research this session established the requirement splits
+into two separate Google Cloud APIs (`docs/decisions/0008-cloud-connection.md` has the full trail):
+Cloud Quotas API (`quotaInfos.list`, limits only, requires the full `cloud-platform` scope — no
+narrower option per Google's own REST reference) and Cloud Monitoring API (`timeseries.list`,
+actual usage, `monitoring.read` suffices but `cloud-platform` is a superset). The owner then added
+an identity constraint: this grant must survive a channel re-login/switch (`users` does not).
+
+This section covers **only slice 1**: the connection itself. No Cloud Quotas/Monitoring API call
+exists in this codebase yet — `resolveCloudCredentials()` (below) is built for a future slice to
+call, not called from anywhere in production code today.
+
+### 15.2 Why a new, independent module
+
+`AGENTS.md` §M (feature-module independence) requires shared logic used by more than one large
+feature vertical to live in its own module, never grafted onto an unrelated one. This credential
+does not fit either existing OAuth surface:
+
+- Not `users` (`src/lib/db.ts`) — that table is channel-login-scoped, replaced on every re-login;
+  the owner's own requirement is that this grant survive exactly that event.
+- Not `ai_connection_credentials` — a different feature's own secret, encrypted under
+  `AI_CONNECTIONS_ENCRYPTION_KEY`. Reusing that key would make the Cloud-quota feature fail closed
+  whenever the unrelated AI-localization module's key is absent, and vice versa.
+- Not `youtube-read-gateway` (`docs/decisions/0007-youtube-read-gateway.md`) — that gateway is
+  explicitly scoped to "a real YouTube-family read client" with per-channel identity; Cloud Quotas
+  and Monitoring are a different Google product family entirely, with a device-level, not
+  channel-level, identity model.
+
+`src/lib/cloud-connection/` therefore follows the same contracts/schemas/services/adapters shape
+every other domain module uses (`docs/DEVELOPMENT_PLAYBOOK.md` §6.2), with its own singleton table,
+its own encryption key, and its own OAuth entry points.
+
+### 15.3 Storage
+
+`cloud_connection` (`src/lib/db.ts`, SCHEMA_MIGRATIONS version 11) is a true singleton — exactly
+zero or one row, always keyed on a fixed internal id never exposed to callers. `accessToken`/
+`refreshToken`/`tokenExpiry` are serialized as one JSON blob and encrypted as a single unit
+(AES-256-GCM, `src/lib/cloud-connection/crypto.ts`, the same approach `ai-connections/crypto.ts`
+already uses, under its own `CLOUD_CONNECTION_ENCRYPTION_KEY` env var — deliberately not
+`AI_CONNECTIONS_ENCRYPTION_KEY`). `connectedEmail`/`scope`/`connectedAt` are plaintext columns,
+never secrets, shown as-is in the Settings tab.
+
+**Plaintext was considered and rejected**, unlike `users`' own accepted RISK-07 tradeoff: this is a
+real Google Cloud grant (`monitoring.read`, narrowed 2026-09-22 from the originally-requested full
+`cloud-platform` once §16.2 found the Cloud Quotas API unnecessary — a materially narrower scope
+than before, but still not a YouTube-scoped token), so plaintext storage was judged not an
+acceptable default here — not a blanket "encrypt everything" policy this codebase otherwise
+follows (`users` remains plaintext, tracked and accepted as RISK-07).
+
+**Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) — same
+reasoning as `users`/`ai_connection_credentials`: device-local, re-established per device via its
+own Connect flow, never handed off with a snapshot/device-handoff import.
+
+### 15.4 OAuth flow
+
+Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `authOptions`/
+`GoogleProvider`) — a full-page browser redirect, not a NextAuth provider:
+
+1. `GET /api/cloud-connection/start` — requires an active channel-login session (any authenticated
+   user of this app, independent of which channel is currently active). Builds Google's consent
+   URL via `createGoogleOAuthClient(redirectUri).generateAuthUrl(...)` requesting
+   `https://www.googleapis.com/auth/monitoring.read` (narrowed 2026-09-22 from the originally
+   broader `cloud-platform` once §16.2 found the Cloud Quotas API unnecessary) **plus
+   `openid`/`email`** (needed only so the callback can resolve *which* account connected — see
+   the correction note below), with a random `state` stored in a short-lived (600s) httpOnly
+   cookie scoped to `/api/cloud-connection`, and
+   redirects the browser there.
+2. `GET /api/cloud-connection/callback` — reads `code`/`state` from the query string and the
+   expected state from the cookie; a mismatch (or a missing code/state, or an `error` param from
+   Google) is refused before any token exchange. On success, exchanges the code
+   (`oauthClient.getToken`), fetches the connected account's email via the existing
+   `fetchGoogleIdentity` helper (shown in Settings only, never used for anything else — this grant
+   is entirely independent of channel identity), encrypts the token set, and upserts the one
+   `cloud_connection` row. Always redirects back to `/dashboard` with a `?cloudConnection=
+   connected|error` query param the Settings card reads client-side (via
+   `window.location.search`, not `useSearchParams()` — `/dashboard` is statically prerendered, and
+   `useSearchParams()` would force a Suspense boundary just for this one-time banner). **Catches
+   every error from `completeConnect`, not only `DomainError`** — a full-page OAuth redirect has
+   no JS error handling available to the browser either way, so an unexpected error is logged
+   server-side and still redirects cleanly rather than surfacing a raw framework 500 page.
+   **Correction, found live, 2026-09-22:** the first real connection attempt requested only
+   `cloud-platform` and this route only caught `DomainError` — `fetchGoogleIdentity` threw
+   "Unable to fetch user identity from Google" (a `cloud-platform`-only token cannot read an
+   `id_token` or the userinfo endpoint, both of which need `openid`/`email`), and the uncaught
+   error surfaced as a raw "localhost is currently unable to handle this request" page. Both
+   fixed together: the requested scope now includes `openid`/`email`, and this route catches
+   everything.
+3. `GET /api/cloud-connection/status` — the public shape only (`{ connected, connectedEmail,
+   scope, connectedAt }` or `{ connected: false }`), never the token.
+4. `POST /api/cloud-connection/disconnect` — revokes the refresh (or access, if no refresh) token
+   with Google via the existing `revokeGoogleToken` helper, then clears the stored row regardless
+   of whether the revoke call itself succeeded (a token Google no longer recognizes must not be
+   left stored as if it were still usable).
+
+### 15.5 Refresh
+
+`resolveCloudCredentials()` mirrors the refresh pattern already established in
+`src/lib/video-metadata/adapters/google-auth.ts`'s `resolveGoogleCredentials`: check the stored
+`tokenExpiry` against the current time; if not expired, return the stored access token unchanged;
+if expired, call `oauthClient.refreshAccessToken()` with the stored refresh token, re-encrypt and
+persist the refreshed token set, and return the new access token. Throws (fails closed) if no
+connection is stored, or if the token is expired with no refresh token available. Not called from
+any production code path yet — reserved for the future Cloud Quotas/Monitoring slice.
+
+### 15.6 What remains deliberately unimplemented
+
+No Cloud Quotas API (`quotaInfos.list`) or Cloud Monitoring API (`timeseries.list`) call exists
+anywhere in this codebase. No Settings UI shows a quota number or usage percentage — only
+connect/disconnect status. Encryption-key rotation/backup tooling does not exist (RISK-48,
+`docs/TECHNICAL_DEBT.md`, the same accepted shape as RISK-15's AI-connections equivalent).
+
+## 16. Cloud Quotas (`src/lib/cloud-quotas/`) — real limit/usage numbers, slice 3 of `docs/decisions/0008-cloud-connection.md`'s plan
+
+### 16.1 What this replaces
+
+Section 15 established the Cloud connection (a device-persistent OAuth grant). This section covers
+the actual real numbers that connection was for: the gateway traffic counters (§2.9k of
+`docs/SYSTEM_MAP.md`) show local attempt counts, not how close the project actually is to Google's
+own limits — this module closes that gap.
+
+### 16.2 The Cloud Quotas API turned out to be unnecessary
+
+The original plan (`docs/decisions/0008-cloud-connection.md`) assumed the Cloud Quotas API
+(`quotaInfos.list`) would supply the limit half and Cloud Monitoring API (`timeSeries.list`) the
+usage half. A live spike (2026-09-22, using a temporary diagnostic route reusing the app's own
+session-based credential resolution, removed immediately after use — same pattern as the earlier
+Phase 8 bulk-query probe) found:
+
+- Cloud Quotas API is disabled for this project (`403 SERVICE_DISABLED`) and was never enabled.
+- Cloud Monitoring API, already usable via the existing Cloud connection, exposes BOTH numbers on
+  its own: `serviceruntime.googleapis.com/quota/limit` (a GAUGE, filtered to
+  `limit_name="defaultPerDayPerProject"`) for the limit, and
+  `serviceruntime.googleapis.com/quota/rate/net_usage` (a DELTA, summed over the query window) for
+  usage. The BETA `quota/ratev2/*` metrics returned no data for this project and are not used.
+
+This means Cloud Quotas API integration was dropped entirely — `src/lib/cloud-quotas/` only ever
+calls Cloud Monitoring API's REST endpoints, via plain `fetch` (never the `googleapis` npm client,
+mirroring `src/lib/auth.ts`'s own existing convention for simple REST calls like
+`revokeGoogleToken`/`fetchGoogleIdentity`). Because no file in this module imports from
+`"googleapis"`, `read-gateway-inventory.test.ts`'s project-wide check does not need to be amended
+for this module at all — there is nothing for it to catch.
+
+### 16.3 Project number
+
+Cloud Monitoring's REST endpoints are scoped to `projects/{project}`. Rather than adding a new
+configuration value, the project owner pointed out directly that Google's own OAuth client ID
+format already encodes it: `{project_number}-{random}.apps.googleusercontent.com`. Confirmed real
+and correct against the live spike. `deriveGoogleCloudProjectNumber()` (`src/lib/cloud-quotas/
+index.ts`) extracts it from the existing `GOOGLE_CLIENT_ID` via a simple regex; returns `null`
+(never throws) if unset or malformed, and the whole quota-status pipeline degrades to "unknown"
+rather than crashing in that case.
+
+### 16.4 Two independent pools, one shared UI number
+
+`youtube.googleapis.com` covers both Data API v3 reads and Live writes (the same underlying Google
+service — confirmed live: identical numbers appeared under both toggles' progress bars at the same
+moment); `youtubeanalytics.googleapis.com` is a separate service with its own pool (confirmed:
+10,000/day vs 100,000/day respectively at spike time). Per the owner's own instruction ("Можем пока
+что отображать на Live write и на Data reads один и тот же счетчик"), `getQuotaStatus()`'s
+`dataApi` field is deliberately reused by both `LiveWritesSettings` and `ReadGatewaySettings` in
+the UI, rather than computing or displaying two separate numbers for what is actually one pool.
+
+### 16.5 A real bug found and fixed before this shipped
+
+The first live check after wiring the UI showed `analytics: null` despite the spike having
+confirmed real Analytics quota data minutes earlier. Root cause: `quota/limit` is not a constant
+heartbeat metric — Google only emits a fresh sample when the service actually receives traffic.
+Data API v3 (near-constant traffic from ordinary use) always had a sample in a 1-hour lookback
+window; the much less frequently called Analytics API often did not, making its card silently show
+"unknown" even though the connection and the real limit were both fine. Fixed by widening
+`fetchDailyQuotaLimit`'s window to 25 hours (a day plus buffer, the same margin
+`gateway_call_events`' 7-day retention already uses around its own 24h window) — verified live
+afterward: `analytics: { limit: 100000, usedLast24h: 176 }` came back correctly.
+
+### 16.6 Failure handling
+
+`getQuotaStatus()` never throws over an external Monitoring API problem. Each service's real fetch
+is wrapped independently: a failure (rate limit, transient network error, the API becoming
+disabled) degrades that one service to `null` ("unknown," never a fabricated `0`) without affecting
+the other service or crashing the `/api/settings` response the Settings tab depends on. Not
+connected at all, or `GOOGLE_CLIENT_ID` missing/malformed, degrades both services to `null` up
+front without making any real network call.
+
+### 16.7 What remains deliberately unimplemented
+
+No caching or throttling — every `/api/settings` GET while the Settings tab is open makes 4 real
+Cloud Monitoring API calls (limit + usage × 2 services). Acceptable for a personal, low-traffic
+project (Monitoring reads are not the kind of API this project is trying to conserve quota on) but
+not optimized; revisit if this becomes a real cost or latency concern. No dedicated
+`/api/cloud-quotas` route exists — the numbers ride along inside the existing `/api/settings`
+snapshot both consuming components already fetch.
+
+### 16.8 Cloud Monitoring reads get the same traffic counter as the other gateways
+
+Owner instruction, 2026-09-22, once told checking Google Cloud's own quota numbers is itself a
+real API call: *"в таком случае на него нам нужно повесить такие же счетчики, как на другие API.
+Он сделан по такой же схеме модуля / шлюза? чтобы все такие запросы шли только через него и
+никак иначе?"* -- confirming the same single-gateway-per-API-category principle
+(`docs/decisions/0007-youtube-read-gateway.md`) should apply here too.
+
+`monitoring-client.ts`'s `callMonitoring` function is already the one choke point both
+`fetchDailyQuotaLimit` and `fetchDailyQuotaUsage` (including its pagination loop) go through --
+extended to call `recordGatewayCallOutcome("cloud_monitoring_reads", "allowed")` on every real
+attempt, mirroring `assertDataApiReadsAuthorized`'s own pattern
+(`src/lib/youtube-read-gateway/data-api.ts`). A fifth `GatewayTrafficCategory` value
+(`src/lib/db.ts`) means it renders through the exact same `GatewayTrafficStats` component the
+other three gateways already use -- shown in the "Google Cloud connection" Settings card. It never
+records a `blocked` outcome: there is no enable/disable toggle for this category, so every
+attempt is allowed by definition (unlike `mcp_tool_calls`, which records `blocked` for a call
+rejected because its agent token is no longer valid -- Phase 12; BL-091's zone rejections were
+retired with the zones -- see `src/lib/db.ts`'s own doc comment on `gatewayCallEvents`).
+
+**Mechanical enforcement is a literal-string check, not an import check**, unlike
+`read-gateway-inventory.test.ts`: this module never imports `googleapis` at all (§16.2), so there
+is nothing for that kind of check to catch. `cloud-quotas-inventory.test.ts` instead fails the
+build if any production file outside `adapters/monitoring-client.ts` contains the URL literal
+`https://monitoring.googleapis.com` -- catching a future accidental second call site that would
+silently bypass both this counter and the single-funnel property it exists to protect. The check
+is scoped to the full URL, not the bare host name, because `QuotaService`
+(`src/lib/cloud-quotas/contracts.ts`) and `services.ts` legitimately reference the bare
+`"monitoring.googleapis.com"` string as a parameter value (identifying which service's quota to
+ask about) without themselves ever constructing a request URL.
+
+### 16.9 A third quota card: Cloud Monitoring's own limit/usage, per-minute not per-day
+
+Same day, once told checking the other two services' quota is itself a real (separately quota'd)
+API call, the owner noticed an inconsistency: *"Не вижу прогресс бара у Google Cloud connection"*
+-- the other three gateway cards each show both a traffic count and a real quota progress bar, but
+the Cloud connection card only had the former.
+
+A first attempt reused `dataApi`/`analytics`'s own `defaultPerDayPerProject`-based fetch for
+`monitoring.googleapis.com` and got `null` back. A follow-up live probe (same temporary-route
+pattern, removed after use) found why: Cloud Monitoring API's own quota in this project is modeled
+entirely per-MINUTE, not per-day -- `DefaultRequestsPerMinutePerUser` (effectively unlimited,
+`9223372036854775807`) and `QueryRequestsPerMinutePerProject` (a real 6000/min cap) -- there is no
+`defaultPerDayPerProject` entry to match against at all, unlike the other two services.
+`fetchDailyQuotaLimit` correctly returned `null` (no fabricated number) rather than inventing a
+daily figure from a per-minute one.
+
+**Fixed by adding a genuinely separate per-minute code path, not by reusing the daily one:**
+`fetchPerMinuteQuotaLimit` (filters `limit_name="QueryRequestsPerMinutePerProject"` instead of
+`defaultPerDayPerProject`) and `fetchLatestMinuteUsage` (the single most recent 1-minute DELTA
+point, scoped to the matching `quota_metric` -- usage has no `limit_name` label of its own, only
+`quota_metric`, confirmed against real data -- and summed only across points sharing that one
+most-recent `endTime`, since more than one series, e.g. per `method`, can report into the same
+quota pool). Deliberately never sums across a 24h window the way `fetchDailyQuotaUsage` does: each
+point already represents one minute's usage, so summing several minutes would compare multiple
+minutes' worth of usage against a single-minute limit, always reading as "over."
+
+`CloudQuotaStatus.monitoring` is typed `PerMinuteQuotaStatus` (`{ limit, usedLastMinute }`), a
+distinct shape from `ServiceQuotaStatus`'s `usedLast24h` -- the two are not interchangeable, and
+mixing them up would silently misrepresent the window a number describes. Rendered via a
+dedicated `CloudQuotaProgressPerMinute` component (not the shared `CloudQuotaProgress`), with its
+own label ("per minute," not "24h") and its own accent color -- indigo, matching the "Connect
+Google Cloud"/"Save / Apply" buttons (owner instruction: "можем и цвет ему дать фиолетовый, так же
+как у кнопки соединения с Cloud"), so it reads as structurally different from the other three red
+24h bars at a glance, not a fourth copy of the same thing. `ProgressBar` itself gained an optional
+`color` prop (`"red" | "indigo"`, default `"red"`) to support this without forking the component.
+
+## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, in progress, not yet in `dev`
+
+Owner instruction, Telegram 2026-09-23: a full 34-section spec ("Phase 7 — Agent Operations
+Interface for Codex") authorizing design and incremental implementation of a versioned interface
+external operational agents consume, without per-slice approval (only the final `dev` merge needs
+explicit sign-off). **The full technical design, permission model, error vocabulary, and
+per-slice implementation status live exclusively in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's
+status table -- this heading deliberately never names which slice is implemented**, so it never
+needs updating as slices land; consult §7 of that document instead, every time.
+
+In one sentence: this application remains the sole source of truth for owned-channel data,
+analytics, and the write-safety pipeline; the agent is a reasoning/proposal layer that must
+re-request context rather than cache a private copy, and can only ever hold `READ`+`DRAFT`
+permissions (never `APPROVE`/`EXECUTE`) until a future, separate, explicit owner decision widens
+that. This phase's planned scope spans contracts/capability-discovery, channel/video context, an
+analytics wrapper, a new creative-asset catalog, draft provenance, bulk-localization integration,
+content-proposal/artifact registration, a Codex operations-workspace template, and independent
+review -- **which of these is actually implemented as of any given moment is tracked exclusively
+in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
+
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9H (parts A-C) + 9I
+
+Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
+implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
+§2a's Operational Validation Gate default ordering for Phase 9 specifically (see `FUTURE_PHASES.md`
+§12). **Detailed design, slice breakdown, and acceptance criteria live in
+`docs/roadmap/plans/PHASE_9_PLAN.md` and `docs/SYSTEM_MAP.md` §2.9v -- this section states only the
+one architectural decision worth recording permanently here, not the full slice-by-slice detail.**
+
+**The one new trust boundary this phase introduces:** every table this application had before Phase
+9 implicitly assumes the operator owns the channel/video a row describes (`channels.id` is always a
+channel `write-context.assertWriteChannel` could plausibly authorize a write against). Phase 9 is
+the first phase whose entire purpose is data about a channel the operator does *not* own. Rather
+than adding a nullable "is this owned?" flag to an existing table, this is enforced structurally:
+`research_channels`/`research_evidence` are new, separate tables, never joined with
+`channels`/`videos`, and a mechanical inventory test
+(`src/lib/market-intelligence/write-path-inventory.test.ts`) fails the suite if any file in this
+module ever references `write-context`/`assertWriteChannel`/`youtube-write-gateway`. This is the
+same "enforce the invariant mechanically, not by convention" pattern already used for the read/write
+gateways (§17's own reuse of `AGENTS.md` §G) and for `ai-connections`'/`shared-xlsx`'s own inventory
+tests -- applied here to a new *data-ownership* boundary rather than a new *call-site* boundary.
+
+The one real outbound YouTube call this phase makes (`getPublicChannelSnapshot`,
+`src/lib/youtube-read-gateway/data-api.ts`) is a new function on the existing single read gateway
+(`docs/decisions/0007-youtube-read-gateway.md`), never a new client or a direct `googleapis` import
+-- confirming that gateway's own design already generalizes to reading an arbitrary, non-owned
+channel's public data by explicit id, which this phase needed and which nothing before it had
+exercised.
+
+**Slice 4 (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`, 2026-09-26) -- agent-facing MCP/CLI
+surface, fulfilling the two capability names `agent-operations` reserved since Phase 7
+(`query_market_intelligence`/`query_competitors`).** Registered directly in `src/mcp/server.ts`/
+`src/cli/video-metadata.ts` against `createMarketIntelligenceCore()`, deliberately **not** through
+a new function in `agent-operations`'s own service layer the way slice C/K/L wrap `analytics`/
+`comparable-content`/`asset-performance`. `PHASE_9_PLAN.md` §5's module-independence rule forbids
+adding `market-intelligence` as a hard dependency of another module's *service* layer; keeping this
+dependency confined to the MCP/CLI *interface* layer (which already imports every domain module's
+own core factory directly, e.g. `analyticsCore`) avoids that without losing anything -- neither tool
+needs slice C/K/L's richer "agent context" reshaping. `agent-operations`'s own `AGENT_CAPABILITIES`
+still gains two entries under a new `market_intelligence` domain, following the same
+"pre-existing tool, registered here for capability-discovery completeness" pattern already used for
+`channel_context.list_channels`/`analytics.query_data_quality`.
+
+**Slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`, 2026-09-26) -- structured, append-only
+market snapshot model, the first slice of Phase 9's extended scope (Part II).** New
+`market_channel_snapshots`/`market_video_snapshots` tables (SCHEMA_MIGRATIONS v23), FK'd to
+`research_channels.id`. **Never upserted by any natural key** -- the central finding this slice's
+own plan documents (§2/§10): unlike `video_metrics_daily`'s per-day upsert (correct for owned-
+channel Analytics API data, which has a real "historical day" concept), `channels.list`/
+`videos.list` return only the *current* cumulative count with no way to ask for a past day's value
+-- every real observation must be its own newly-inserted row, or the exact history Phase 9's own
+irreplaceability priority (spec §38, `PHASE_9_PLAN.md` §10) depends on would be silently
+overwritten. `deleteResearchChannel` (`src/lib/db.ts`) was widened to cascade-delete both new
+tables in the same transaction as `research_evidence`, closing the identical FK-ordering hazard
+RISK-46 already taught this codebase the hard way.
+
+**Derived metrics (delta, velocity) are pure functions computed at READ time** over raw snapshot
+rows (`src/lib/market-intelligence/derived-metrics.ts`, styled after `src/lib/analytics/
+staleness.ts`: zero I/O, `now` always an explicit argument) -- never a second, redundant stored
+representation (spec §8's own "prefer retaining raw observations so formulas can evolve later").
+`computeSnapshotVelocity` reports an explicit `insufficient_history`/`partial_window`/`full_window`
+basis alongside its computed rate, rather than silently extrapolating over a span the real data
+doesn't actually cover -- the same "expose limitations when history is incomplete" discipline
+(spec §27) this slice's own `hiddenSubscriberCount` boolean column applies at the storage layer
+(an explicit fact -- "YouTube hides this" -- kept structurally distinct from "we don't know").
+
+**Deliberately narrower than the plan's own literal 9A text**, and explicitly recorded as such
+(`PHASE_9_SLICE_9A_PLAN.md` §1): `market_video_snapshots` ships with a full schema and CRUD service
+layer (`recordVideoSnapshot`/`listVideoSnapshots`) so 9B has something to write into and it is
+independently testable now, but **no automatic collector writes to it yet** -- real video-
+enumeration (walking a channel's uploads playlist, batching `videos.list`) is 9B's own named scope,
+not silently pulled forward into this slice. `captureChannelSnapshot` (the one live YouTube call
+this slice adds) reuses the identical `getPublicChannelSnapshot` read-gateway call `fetchPublicSnapshot`
+(slice 3) already uses, but is a pure *addition* -- `fetchPublicSnapshot`'s own existing
+`research_evidence` write path is completely untouched, proven by a dedicated test
+(`AC-9A-10`, `services.test.ts`).
+
+**Slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`, 2026-09-27) -- repeatable refresh, real
+video collection, an operator-set quota budget, and a check-on-app-open scheduler.** Fills the gap
+9A's own plan explicitly named: a data model and one manual/on-demand live action, with zero
+automatic trigger. The one architectural decision worth recording permanently:
+
+**A stricter, dedicated mark-then-run concurrency guard, not a reuse of Phase 8's own
+`runAutoCollectionIfStale` pattern.** Direct inspection (before implementation, advisor review)
+found that Phase 8's own auto-collection is actually mark-*after* -- it marks
+`channels.analyticsLastAutoCollectedAt` only once collection finishes, and its own doc comment
+explicitly accepts a rare double-collection race between two concurrent callers as a deliberate
+tradeoff (Analytics quota is ample enough that a rare double-spend is harmless). That tradeoff does
+not transfer here: this feature's daily budget is an operator-set number that can be small, so a
+double-spend is a real correctness problem, not a rare harmless waste. This slice therefore adds its
+own `research_channels.collection_claimed_at` column (nullable timestamp, same v24 migration as
+`last_auto_collected_at`) and claims every eligible channel in ONE atomic
+`UPDATE ... WHERE (stale) AND (unclaimed) ... RETURNING id` at the start of a run -- not
+per-channel -- so two concurrent callers (two open dashboard tabs) can never together claim
+overlapping channels, closing a race a per-channel-only claim would still leave open against a
+run-scoped shared budget. A claim is released the moment its channel's attempt reaches any terminal
+outcome; a claim older than 15 minutes is treated as an abandoned (crashed) attempt and may be
+reclaimed, so a crash never permanently locks a channel out of future collection. This atomicity is
+verified directly against the real libsql driver (`db.test.ts`), not assumed from SQLite's general
+reputation.
+
+Budget accounting is metered per real outbound call, not per assumed channel cost: the collector
+tracks `remaining` across the whole run and, the moment a channel's next call can't be paid for,
+writes exactly one `skipped_quota_limited` row for that channel (with whatever it honestly spent so
+far, even 0) and releases every other still-claimed channel without its own row -- a deliberate
+choice (found necessary by advisor review) to avoid writing one identical audit row per remaining
+stale channel on every single dashboard mount once the budget merely runs short. A channel whose
+most recent run failed within the last 24h is excluded from the next claim entirely, for the
+symmetric reason: without this, a permanently broken (deleted/private) competitor channel would
+spend at least one real unit on every mount, forever.
+
+Video enumeration is deliberately capped to a channel's uploads playlist's first page only (a new
+`listUploadsPlaylistFirstPageVideoIds`, exactly one `playlistItems.list` call, never paginates) --
+an earlier drafted design widened the existing `listUploadsPlaylistVideoIds` with an `maxResults`
+option instead, but advisor review found that would leave the real unit cost unobservable to the
+caller whenever the first page came up short and a second page had to be fetched, silently
+under-counting real spend. Capping by PAGE rather than by count makes the cost exactly and always 1
+unit, deterministically -- consistent with this feature's own "never fabricate a unit-spend number"
+requirement.
+
+**Slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`, 2026-09-27) -- search.list-based
+discovery, minimal by design.** Full detail lives in the plan doc and `docs/SYSTEM_MAP.md` §2.9v;
+the one architectural point worth recording here: `market_discovery_candidates` is a **lifecycle
+table** (rediscovery refreshes `lastSeenAt` -- since Phase 13 also `title`/`reasonDiscovered`, restarting
+their 30-day clock -- never duplicates a row or resets an operator-set `status`), architecturally unlike 9A/9B's append-only snapshot/run tables -- it is closer in shape
+to `research_channels` itself than to `market_channel_snapshots`. Its own run-log
+(`market_discovery_runs`) is a separate table from 9B's `market_intelligence_collection_runs`
+(that one's `research_channel_id` is `NOT NULL` and FK'd to the watchlist, which a discovery run
+-- not about any one watchlisted channel -- cannot satisfy). Originally both fed one shared daily
+budget (owner decision 2); since Phase 13 slice 13.4 `search.list` has its own bucket (100 calls a day,
+`countMarketDiscoverySearchesSince`) and `getMarketIntelligenceUnitsSpentSince` sums collection only.
+
+**Slice 9D (`docs/roadmap/plans/PHASE_9_SLICE_9D_PLAN.md`, 2026-09-27) -- historical intelligence,
+code-complete with no calling code yet (`historical-intelligence.ts`, mirroring 9A's own
+`derived-metrics.ts` at that same stage).** The one architectural point worth recording here: every
+comparison this file makes is **age-normalized by construction**, never a raw lifetime-view
+comparison -- `ChannelVideoBaseline` and the video argument to `assessBreakout` both carry an
+explicit `dayOffset`, and the function refuses the comparison outright when they don't match, rather
+than silently comparing across mismatched ages. This closes a real defect advisor review found
+before merge: an earlier draft computed a channel's baseline and a candidate breakout video from
+raw, un-normalized total view counts, which made every old video look like a "breakout" purely by
+having had more time to accumulate views -- a direct violation of spec §9's "avoid comparing old and
+new videos only by total views" one level up, at the baseline-comparison layer rather than the
+single-video layer the spec text names literally. `computeAgeNormalizedViews` additionally rejects a
+snapshot that is merely the *closest available* candidate for a target day-offset when it falls
+outside a tolerance window (`max(1 day, 25% of dayOffset)`), returning `insufficient_history` rather
+than silently mislabeling, say, a day-30 snapshot as "day 7" data. Real service/API/UI wiring over
+these functions, and live verification against real accumulated multi-day history, are both
+out of scope here (BL-105) -- this slice ships only the pure comparison logic, hand-tested against
+synthetic fixtures derived from the spec, not from the implementation.
+
+**Slice 9E (`docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`, 2026-09-27) -- manual/structural topic and
+trend model, two parts.** Part A (`market_topics`/`market_topic_assignments`) is a plain manual
+tagging layer: a topic is a name an operator declares by hand, assignable to either a watchlisted
+channel or a bare video id, with no AI classification anywhere in this slice (an explicit exemption
+from owner decision 3's AI-connection gating, since nothing here calls an AI provider at all).
+
+Part B (`market_trend_candidates`/`market_trend_evidence`) is where spec §14's "do not allow
+lifecycle labels to exist without supporting observable rules or evidence" becomes a structural,
+not merely documented, constraint: `createTrendCandidate`'s own input schema requires an
+`initialEvidence` object, so there is no code path in this module that can create a trend candidate
+with zero evidence rows. The same discipline extends to status changes -- `updateTrendCandidateStatus`
+requires a non-empty `reason`, which the service layer writes as a `"signal"`-type evidence row in
+the exact same action as the status change (advisor review, before implementation: "every status
+change should require a reason, written as a signal evidence row in the same action"), so a status
+can never move without a corresponding entry in that trend candidate's own evidence history.
+`lastObservedAt` is deliberately only ever moved by an evidence write (including the evidence row a
+status change itself produces), never by a bare status mutation alone -- there is no code path that
+advances `lastObservedAt` without also appending to the evidence trail that justifies it.
+`market_topic_assignments.subjectId` deliberately carries no foreign key (a single column cannot
+conditionally reference two different tables depending on `subjectType`, and a video has no
+canonical single-row table to reference in the first place); `deleteMarketTopic` cascade-deletes its
+own assignments but only detaches (`topicId` set `NULL`, never deletes) any trend candidate tagged
+with the removed topic, since losing a label should never destroy an otherwise-independent trend
+candidate's own evidence history.
+
+**Slice 9I (`docs/roadmap/plans/PHASE_9_SLICE_9I_PLAN.md`, 2026-09-27) -- shared data-quality
+vocabulary (owner spec §27), taken ahead of 9F/9G/9H per advisor review.** Code-complete, no calling
+code yet (`data-quality.ts`, mirroring 9A's `derived-metrics.ts`/9D's `historical-intelligence.ts`
+at that same stage). The one architectural point worth recording here: a new `DataQualityFlag` union
+(`contracts.ts`) collapses several previously-independent, bespoke local shapes (9A's
+`hiddenSubscriberCount` boolean, 9D's `basis` return value, 9B's `"skipped_quota_limited"` status,
+9C's partial-progress-before-failure counts) into one name other code can pattern-match on, rather
+than each module keeping its own ad-hoc vocabulary indefinitely. **A documented spec/API-capability
+discrepancy, not a silent drop (`AGENTS.md` §A):** the union has seven entries, not the spec's
+literal eight -- `deleted_video`/`private_video` are collapsed into one `video_no_longer_public`.
+**Correction (2026-09-27, later the same day; the original claim below was overstated):** this
+slice's own plan doc and an earlier version of this section both said the two were "verified" as
+indistinguishable against the API's documented behavior. Re-checked directly: the official
+`videos.list` docs do not describe per-id behavior for a multi-id request at all (confirmed by
+fetching that page, not assumed), and `playlistItems.list` (the other call 9B's own collector makes)
+has a `status.privacyStatus` field whose behavior for a since-deleted video is likewise undocumented
+there. The premise that a private video is never visible to an unauthenticated/public caller is
+solid (YouTube's own access model), but the stronger claim -- that this codebase's specific call
+pattern genuinely cannot tell "deleted" from "private" -- is **not documented and not live-verified**
+(would need a real API call against a known deleted vs. known private video id, which spends real
+quota and was not authorized for this purpose). The seven-entry union and the `video_no_longer_public`
+collapse stand as this module's own design choice either way (still the more honest option
+absent a confirmed distinguishing signal), but the discrepancy note should say "undocumented,
+unverified," not "verified." `MARKET_INTELLIGENCE_STALE_WINDOW_MS` moved from a private `services.ts`
+constant to `contracts.ts` so this module's own staleness threshold and 9B's real
+collection-staleness check share the exact same value, never two copies that could drift.
+
+**Slice 9G, part A (`docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md`, 2026-09-27) -- agent read
+surface, taken as a plain READ-class extension before the approval-integrity part B (advisor
+review's explicit split).** `getWatchlistEntryContext` -- the single implementation both MCP's
+`query_market_intelligence` and CLI's `agent market-intelligence` already shared -- gained
+`channelSnapshots`/`videoSnapshots`/`topicAssignments` and a derived `dataQualityFlags`, additive to
+its original `{channel, evidence}` shape. This is 9I's own first real caller, exactly as that
+slice's plan anticipated. A new `agent_list_market_records` MCP tool/`agent market-records --kind
+<kind>` CLI command covers topics/trend candidates/discovery candidates through one tool with a
+`kind` discriminator rather than three separate ones (owner spec §28's own "prefer a small number
+of powerful composable MCP tools"), as a thin fan-out over the module's own already-existing
+`listTopics`/`listTrendCandidates`/`listDiscoveryCandidates` -- no new service logic. Both stay
+global and unzoned, explicitly citing slice 4's own precedent rather than leaving the exemption
+implicit (`docs/DEVELOPMENT_PLAYBOOK.md` §6.7 point 6 otherwise requires `assertActiveChannel`
+channel-scoping for every MCP tool by default). One new, narrow `db.ts` read,
+`getLatestMarketIntelligenceCollectionRunForChannel`, fills the one per-channel gap that table
+never had (only the aggregate `getMarketIntelligenceUnitsSpentSince` sum existed) -- used to derive
+`missing_snapshot`/`quota_limited` for that channel's own most recent collection attempt.
+`AGENT_API_VERSION` bumped to `0.12.0` for the new capability; no `ZONED_CAPABILITIES` entry, since
+READ-class tools in this codebase are never zoned.
+
+**Slice 9G, part B (`docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md`, 2026-09-27) -- agent-
+created research requests, this codebase's first agent-facing DRAFT-class capability with a real
+approval gate (owner spec §29).** Two templates existed to choose from, and the choice matters: this
+module's own `content-proposals` is deliberately write-once with no approval workflow at all (its
+own contracts.ts doc comment says so explicitly), while `changesets` already has a full
+`approvalStatus` model whose `approveChange`/`rejectChange` actions are, by direct inspection,
+registered as neither an MCP tool nor a CLI command anywhere -- approval is reachable only through
+the Web UI's own API routes. This slice copies that second shape, not the first: an agent may only
+create a `market_research_requests` row (`status: "pending"`); moving it to `"approved"`/
+`"rejected"` exists ONLY as a Web UI action, enforced not just by omission but mechanically -- a new
+inventory test (`market-research-request-approval-inventory.test.ts`, styled after
+`write-path-inventory.test.ts`) scans every source file under `src/mcp/**`, `src/cli/**`, and
+`src/lib/agent-operations/**` and fails if any of them references the approve/reject actions by
+name, with `src/app/api/**` (where the real routes live) the one deliberate exemption.
+
+Approval is one atomic conditional transition (`UPDATE ... WHERE status='pending' ... RETURNING`,
+the same shape `claimStaleResearchChannelsForCollection` already established in this module) --
+proven against the real libsql driver with a literally-concurrent `Promise.all` pair, not only
+against a fake store (RISK-70's own resolution already showed a fake store proves nothing about
+real atomicity). `monitorDurationDays` (spec §29's own "Monitor for 30 days" example) is stored and
+returned but never read by any code path that decides whether/when to run anything -- the concrete,
+structural reason this cannot become the "unlimited collection jobs" the spec explicitly forbids:
+there is no scheduler anywhere in this application for such a field to feed.
+
+**The one design correction worth recording (advisor review, before implementation):** the first
+draft of this slice ran its `discoverChannels`-equivalent quota/reads preconditions AFTER the
+`pending -> approved` transition. Since the operator-set daily quota budget defaults to `null`
+(never a hardcoded value, an explicit owner decision from Part II's own gating decisions), that
+would have made the FIRST approval on any fresh install fail unconditionally and permanently, with
+the request stuck in `execution_failed` and no path back to `pending`. The corrected design extracts
+`discoverChannels`'s own upfront precondition check into a shared helper
+(`assertDiscoveryPreconditions`) and calls it BEFORE the atomic transition -- a missing/exhausted
+budget now leaves the request genuinely untouched (still `pending`), and the real `discoverChannels`
+call afterward re-runs the same check anyway (cheap, intentional defense-in-depth against a race
+between the two).
+
+**Slice 9H, part A (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md`, 2026-09-27) -- Channels
+intelligence view, the first real caller either `derived-metrics.ts` (9A) or `historical-
+intelligence.ts` (9D) has had since they shipped.** Two new UI-only service actions compose EXISTING
+reads/pure functions rather than extending any existing MCP/CLI-facing contract:
+`getChannelIntelligenceSummary` calls `getWatchlistEntryContext` internally and layers computed
+subscriber velocity, upload cadence (the same `computeSnapshotVelocity` call's `videoCount` field),
+per-video breakout assessment, and an emerging-channel verdict on top; `listTrendCandidatesWithFreshness`/
+`getTrendEvidenceSummary` do the same over `listTrendCandidates`/`getTrendEvidence` (the latter
+renamed from `listTrendEvidence` once this same slice's own PHASE9-INV-02 widening flagged it as
+sharing its db.ts counterpart's exact name -- see the module's own `write-path-inventory.test.ts`).
+
+**The one architectural point worth recording is the breakout baseline's own methodology choice,
+found necessary by advisor review before implementation:** each recent video is compared against a
+**leave-one-out** baseline -- the median of every OTHER recent video's own age-normalized view count,
+never including the video itself. Including a video in its own baseline biases the comparison exactly
+when it matters most: with a small recent-video sample, a single genuine breakout can pull the
+baseline itself upward, partially masking the very signal being measured. The concrete disagreement
+this was pinned against (also this slice's test fixture): four videos with day-7 age-normalized views
+`[10, 20, 30, 65]` -- leave-one-out gives the video at 65 a baseline of 20 (median of the other
+three) and a ratio of 3.25 (a breakout, `>= BREAKOUT_RATIO_THRESHOLD`); include-self gives it a
+baseline of 25 (median of all four) and a ratio of 2.6 (not a breakout). The cost of the more
+defensible method is stated plainly, not hidden: leave-one-out needs `BREAKOUT_MIN_BASELINE_SAMPLE_SIZE`
+(3) OTHER recent videos, i.e. 4 total, before ANY video can get a verdict at all.
+
+`RECENT_VIDEO_WINDOW_DAYS` (180, not a narrower window) is itself a considered choice, not an
+arbitrary round number: this application's only collection trigger is a dashboard page load
+(`collect-if-stale`, gated to at most once per 24h per channel, no background scheduler exists) --
+a video's own day-7 age-normalized point only exists at all if a collection run happened to land
+within `ageNormalizedTolerance(7)` (`max(1, 7*0.25)` = 1.75 days) of its 7-day mark. A monthly-or-
+slower-uploading channel needs a wide `RECENT_VIDEO_WINDOW_DAYS` just to have a realistic chance at
+the 4 qualifying videos leave-one-out requires; widening this window costs nothing, since a video
+lacking a usable point simply reports `insufficient_history` (via `computeAgeNormalizedViews`) and is
+excluded from every other video's baseline sample, never fabricated. The four named constants driving
+all of this (`CHANNEL_VELOCITY_WINDOW_DAYS`, `CHANNEL_BASELINE_DAY_OFFSET`, `RECENT_VIDEO_WINDOW_DAYS`,
+plus 9H's own new `TREND_EVIDENCE_FRESH_WINDOW_DAYS` for Trends) are exported from `services.ts` and
+returned to the client inside `getChannelIntelligenceSummary`'s own `methodology` field, rather than
+hardcoded a second time client-side where they could drift -- shown in the UI next to the figure each
+one produced, since an unstated methodology is exactly the "opaque score" owner spec §11 forbids.
+
+`getChannelIntelligenceSummary` deliberately does NOT return `getWatchlistEntryContext`'s own
+`videoSnapshots` array -- an unbounded, append-only series (tracked as RISK-78, `docs/TECHNICAL_
+DEBT.md`, since this is the first time anything renders it to a human rather than an agent
+making one bounded MCP call) that must not ship over the network in full merely because the DOM
+rendering of it is bounded. `latestSnapshotPerVideo` (one row per distinct video, computed
+server-side) replaces it for the main view; a separate `getChannelVideoSnapshotHistory` action
+(its own new route) serves one video's own full series on demand, filtering server-side before
+returning so the bounded response, not just the bounded render, is the actual fix.
+
+**Slice 9H, part B (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md`, 2026-09-27) -- Market
+Overview, aggregating part A's own per-channel composition across the WHOLE watchlist.** A new
+`getMarketOverview()` action calls `getChannelIntelligenceSummary` once per watchlisted channel and
+folds the results into `breakoutVideos`/`emergingChannels` (filtered to `isBreakout`/`isEmerging`,
+each entry tagged with its own `channelId`), alongside two watchlist-independent reads
+(`listDiscoveryCandidates` filtered to `status: "new"`, and a direct passthrough of
+`listTrendCandidatesWithFreshness`). No existing action's output schema changes -- the same
+"compose, don't extend" precedent part A established.
+
+Two findings from this slice's own pre-implementation advisor review are worth recording structurally,
+since both are the kind of gap that is easy to reintroduce in a future aggregation over this same
+data: (1) **a channel-level `DataQualityFlag` is not automatically a "collection warning"** --
+`hidden_subscriber_count` is a property of the channel (the owner hides it on YouTube), not a
+collection-freshness problem, so `getMarketOverview` narrows the flag set it surfaces here to exactly
+`stale_observation`/`quota_limited`/`missing_snapshot`, never the full seven-value vocabulary. (2)
+**"never observed" produces no flag at all from `assessObservationFreshness`/`assessSnapshotCompleteness`**
+(both explicitly treat a `null` last-observation as outside their own scope) -- naively surfacing only
+non-empty `dataQualityFlags` would show a never-collected channel (the realistic first-render state
+on a fresh watchlist, before any real collection has run) as having zero warnings, a false all-clear
+that is actively worse than showing nothing. `getMarketOverview` adds its own explicit
+`neverObserved: true` case for a channel with zero channel snapshots, and separately reads
+`getLatestMarketIntelligenceCollectionRunForChannel` directly (one extra, already-indexed read per
+channel) to surface a `"failed"` latest run immediately -- not only once `stale_observation` would
+eventually fire 24h later.
+
+A channel removed from the watchlist between this action's own `listWatchlist()` call and the
+per-channel `getChannelIntelligenceSummary` fetch that follows for it (a real race, since the Remove
+button lives on this same Research tab) is caught narrowly by `DomainError` code
+(`RESEARCH_CHANNEL_NOT_AVAILABLE` only) and skipped -- every other error propagates unchanged, never
+the broad/bare-catch pattern RISK-19/21/33 already removed elsewhere in this codebase.
+
+Trend freshness deliberately does NOT reuse 9I's `MARKET_INTELLIGENCE_STALE_WINDOW_MS`/the word
+"stale" -- that constant means "a channel collection run hasn't happened in a day," a daily-cadence
+concept, while a trend's own `lastObservedAt` only moves on a human timescale (evidence added
+manually, or by a future structural detector); worse, `"stale"` already names one of
+`TrendCandidateStatus`'s own five lifecycle values, so a `"growing"` trend showing a `"stale"`
+freshness badge would visibly contradict itself in the same UI. A new, trend-specific
+`TREND_EVIDENCE_FRESH_WINDOW_DAYS` (30, a named starting point, not a claimed-correct number) and
+non-colliding wording ("evidence added recently" / "no recent evidence") were used instead.
+
+Neither `listTrendCandidates` (the `agent_list_market_records` MCP tool's own underlying call, and its
+CLI counterpart's) nor `getWatchlistEntryContext`'s own output schema were touched -- both wrapper
+actions call the existing action and pair its result with newly-computed fields in a SEPARATE return
+shape, confirmed by a dedicated test that the original action's own output is byte-for-byte unchanged.
+Explicitly out of scope for this part, and why: an "Overview" tab (needs this part's own summary as a
+building block first); a "Videos" tab (`market_video_snapshots` has no `title` column -- though
+`getPublicVideoSnapshots` already fetches it from YouTube at zero extra quota cost and simply
+discards it today, a separately-scoped schema change); an "Opportunities" tab (needs 9F's niche
+candidates, which don't exist yet); wiring `detectDisappearedVideoIds` (9I) into any UI (its own doc
+comment warns against a naive two-snapshot diff, real design work belonging with the Videos tab).
+
+**Slice 9H, part C (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md`, 2026-09-27/28) -- Videos
+tab, closing the schema gap part B's own entry named above.** Migration v28 adds
+`market_video_snapshots.title` (nullable -- `NULL` for any snapshot taken before this column
+existed, never backfilled or guessed from a later, possibly-since-changed title of the same video);
+`runCollectionIfStale` (9B) now passes `title` through to `insertMarketVideoSnapshot`, at zero
+additional YouTube quota cost (`getPublicVideoSnapshots` already fetched it). An empty-string title
+(the read gateway's own fallback when YouTube's response omits `snippet.title`) is normalized to
+`null` at capture time, so "not captured" has exactly one representation, never two.
+
+**The one architectural point worth recording is a refactor, not a new mechanism:** the per-video,
+age-normalized, leave-one-out breakout assessment 9H part A built inline inside
+`getChannelIntelligenceSummary` is extracted into a shared helper, `computeRecentVideoBreakouts`
+(`services.ts`, module scope) -- identical logic, now called by both that action (output schema and
+behavior unchanged, pinned by its own pre-existing tests continuing to pass unmodified) and this
+slice's new `getMarketVideosOverview`, which needed the same methodology per video across the WHOLE
+watchlist rather than reimplementing a second, drifting copy of it.
+
+`getMarketVideosOverview` deliberately calls `getWatchlistEntryContext` directly per watchlisted
+channel, not `getChannelIntelligenceSummary` (unlike part B's `getMarketOverview`) -- that action
+deliberately omits the full `videoSnapshots` array (RISK-78), and this slice genuinely needs each
+video's own full snapshot series to compute a per-video view-count velocity (`computeSnapshotVelocity`,
+9A, reused by feeding a video's own `viewCount` series into the same `subscriberCount`/`videoCount`-
+shaped function part A's own `uploadCadence` field already reuses this way). Topic/format resolution
+needed a new bulk read, `listMarketTopicAssignmentsBySubjectType(subjectType)` (`db.ts`) -- the
+existing `listTopicsForSubject` takes one `subjectId` at a time, and calling it once per video across
+a watchlist would have been a real N+1; `getWatchlistEntryContext`'s own `topicAssignments` field is
+channel-subject-only by construction and could not have served this need either way.
+
+Adding `title` to `marketVideoSnapshotSchema` additively widens `getWatchlistEntryContextOutputSchema`
+(MCP `query_market_intelligence`/CLI `agent market-intelligence`'s own contract, since it already
+embeds `videoSnapshots: z.array(marketVideoSnapshotSchema)`) -- a real agent-contract change, but
+**not** an `AGENT_API_VERSION` bump: `src/lib/agent-operations/contracts.ts`'s own doc comment on
+that constant explicitly excludes exactly this shape of change ("a new optional input/output field
+an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
+capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.
+
+## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-5
+
+Owner instruction, Telegram 2026-09-29: an explicit assignment to plan and implement Phase 10
+(`docs/roadmap/FUTURE_PHASES.md` §6). **Detailed design, transition rules, and acceptance
+criteria live in `docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md` and `docs/SYSTEM_MAP.md` §2.9w --
+this section states only the architectural decisions worth recording permanently here.**
+
+**Approval lives on the experiment, not a separate entity.** The first-pass plan document
+(2026-09-20, planning only) sketched a `decisions` table conflating approval
+(`approvedBy`/`approvedAt`) with outcome recording into one row. Re-reading `FUTURE_PHASES.md`
+§6's own "Core entities" list before implementing found this doesn't match the actual
+requirement: `Experiment` itself carries "approval status" as one of its own fields, and
+`Outcome`/`Retrospective` are named as entities distinct from approval, not folded into it. This
+slice follows §6 over the older sketch, `experiments.status` (`proposed → approved → running →
+concluded|abandoned`) being the one place approval lives, transitioned only through one atomic
+`UPDATE ... WHERE status IN (<valid predecessors>) ... RETURNING` function
+(`transitionExperimentStatusIfValid`) -- the same shape Phase 9's
+`approveMarketResearchRequestIfPending` already established for exactly this "two tabs race to
+approve the same row" class of bug.
+
+**Outcome is its own append-only table, gated by status.** `experiment_outcomes` never gets an
+update/delete function (mirrors `market_channel_snapshots`'s append-only shape) -- a correction is
+a new row, never an edit, which is what §6's "an AI agent may never silently rewrite a past
+outcome" requires structurally. Recording one is only accepted for `running`/`concluded`/
+`abandoned` experiments; a `proposed`/`approved` one has not actually run yet, so an "outcome" for
+it would be fabricated, not observed.
+
+**Structural isolation test deliberately differs from Phase 9's own `PHASE9-INV-02` pattern.**
+That test scans whole-file text for forbidden substrings, which relies on Phase 9's table names
+(`research_channels`, `market_channel_snapshots`) being unlikely to appear anywhere else by
+coincidence. This module's table names (`hypotheses`, `experiments`) are plain English words that
+really do collide -- with unrelated prose comments elsewhere in the repo, and with this module's
+own public service-layer method names and JSON response keys (`{ hypotheses }`). `decision-engine-
+inventory.test.ts` instead parses actual `import { X } from "@/lib/db"` specifiers and checks only
+those against the forbidden list, immune to all three collision classes while still catching the
+one real violation this test exists to prevent.
+
+**Built as its own follow-up slice (2026-09-29):** an MCP/CLI agent surface --
+`docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md` -- `agent_list_hypotheses`/
+`agent_get_hypothesis_trail` (READ) and `create_experiment_proposal` (DRAFT, the reserved
+capability name, always `status: "proposed"`, gated like `agent_create_market_research_request`).
+Creating a hypothesis from scratch, transitioning an experiment's status, and recording an outcome
+remain Web-UI-only, mechanically verified (`decision-engine-agent-approval-inventory.test.ts`).
+
+**Evidence auto-linking (slice 3, 2026-09-29) references Phase 8/9 data without ever importing
+either module from `decision-engine/**` itself.** `hypothesis_evidence` (SCHEMA_MIGRATIONS v30,
+append-only) stores a structured, discriminated-union reference (`phase8_metric`/
+`phase9_channel_snapshot`/`phase9_video_snapshot`/`phase9_trend_candidate`) alongside the existing
+free-text `evidenceNotes`, validated -- does the referenced row actually exist -- at creation
+time only, never re-checked at read time. The validation logic itself is an
+`EvidenceReferenceResolver` **port** (`decision-engine/contracts.ts`, a plain interface with no
+implementation): `decision-engine/services.ts`'s `addHypothesisEvidence` takes an
+already-constructed resolver as a parameter, and the one real implementation
+(`createRealEvidenceReferenceResolver`, `src/app/api/decision-engine/evidence-reference-
+resolver.ts`) is built entirely OUTSIDE `decision-engine/`'s own directory, taking
+`analyticsCore`/`marketIntelligenceCore` as constructor arguments (never module-level singletons,
+which is what makes it independently testable against fakes). This is the identical shape
+`PHASE_9_PLAN.md` §5 already established for market-intelligence itself ("no existing route/
+service/component may take a hard dependency on market-intelligence's tables or services") --
+applied here in the reverse direction (decision-engine depending on analytics/market-intelligence,
+not the other way around) via the standard port/adapter split rather than a direct import.
+Mechanically enforced by a new `PHASE10-INV-03` test (`decision-engine-inventory.test.ts`),
+scanning for any `@/lib/analytics`/`@/lib/market-intelligence` import inside
+`decision-engine/**`. A `RESEARCH_CHANNEL_NOT_AVAILABLE` from market-intelligence (a
+`researchChannelId` not on the watchlist) is caught inside the resolver and folded into the same
+`false` ("this reference doesn't exist") outcome, rather than leaking a market-intelligence-
+specific error code out of a decision-engine route -- a real gap found by `advisor()` review and
+covered by the resolver's own dedicated test file (`evidence-reference-resolver.test.ts`), kept
+separate from `services.test.ts` (which only proves delegation to a fake resolver, not that the
+real one decides correctly).
+
+**AI-generated hypothesis drafts (slice 4, 2026-09-29) reuse `ai-connections`'s transport, never
+duplicate it.** `openai-compatible.ts`'s SSRF-validated, timeout/retry-bounded HTTP call
+(`callOnce`) was already security-critical, protocol-transport code with zero content specific to
+localization; it is now wrapped by a shared `performChatCompletion` helper that both the
+pre-existing `generate` (title/description) and the new `generateHypothesis` (statement/rationale)
+build on, an additive widening of `ConnectionProtocolAdapter` rather than a refactor of its public
+shape or a second copy of the transport -- proven zero-behavior-change by every pre-existing
+ai-connections/ai-localization test passing unmodified. `HypothesisGenerationRequest`/
+`HypothesisGenerationOutcome`/`HypothesisDraftProvider` are owned by `decision-engine/contracts.ts`
+(the domain shape) and imported by `ai-connections/contracts.ts`, the identical relationship
+`LocalizationProvider` already has -- `decision-engine/index.ts` imports `createAiConnectionCore()`
+directly, exactly like `ai-localization/index.ts` does, since `ai-connections` is shared
+infrastructure, not a feature-module peer `AGENTS.md` §M would forbid a hard dependency on
+(`PHASE10-INV-03` only forbids `@/lib/analytics`/`@/lib/market-intelligence`, never
+`ai-connections`). **The model never sees or produces an `EvidenceReference`.** It only receives
+plain-text summaries of references the operator already selected and this module already
+validated (`EvidenceReferenceResolver.describe`, a new method on slice 3's own port, implemented
+alongside `resolve` in the same route-layer file) -- avoiding both a fabricated-citation risk and
+a second evidence-fetch path. `saveGeneratedHypothesis` mirrors `createChangeSetFromProposals`'s
+own "the caller resubmits the reviewed values, the server re-validates and persists them" shape
+(`AGENTS.md` §D) rather than a server-held draft referenced by id -- every evidence reference is
+re-validated at save time, never trusted from generation time, since real state (a channel's
+snapshot history, a candidate's lifecycle status) can change in between. AI authorship is recorded
+in a new, separate `hypothesis_generation_provenance` table (SCHEMA_MIGRATIONS v31, append-only) --
+`createdVia` (mcp/cli/web_ui) is transport, and cannot represent "the AI wrote this text, a human
+may have edited it before saving," the same reason `aiLocalizationGenerationProvenance` exists as
+its own table rather than overloading an existing column. `editedBeforeSave`/`evidenceRefCount`
+are computed server-side from the request, never trusted as caller-asserted fields. The draft route
+(`/hypotheses/generate`) persists nothing and is `proxy.ts`-exempt exactly like
+`/ai-localization/generate`; the save route (`/hypotheses/generate/save`) persists a real
+hypothesis and stays behind the ordinary mutation gate. No real, non-mock AI provider call was made
+in this session -- validated only against the mock adapter and an injected `fetchImpl` fake,
+per `AGENTS.md` §K.2's separate gate on a real paid AI API call.
+
+**Execution of an approved, localization-type experiment (slice 5, 2026-09-29) reuses the existing
+Change Set/Batch pipeline unchanged -- no new write path.** Owner-confirmed scope, three explicit
+safety questions answered before this slice started (Telegram): only localization-type experiments
+get real execution (the only type with an existing execution interface); approval alone never
+triggers it (a separate, explicit Execute action is required); execution never bypasses an existing
+gate (Live Writes, identity, dry-run) -- it is one more caller of `createBatchCore().createBatch`,
+never `prepareBatchExecution`/`executeBatch`. `experiments` gained `changeSetId`/`executionBatchId`/
+`executionClaimedAt` (SCHEMA_MIGRATIONS v32) -- **deliberately no FK** on the first two: `change_sets`
+rows are really deleted (`change-drafts/services.ts`'s `discardLocalAndAdoptPeer`, RISK-46's
+divergent-lineage flow), and this connection runs with `foreign_keys=ON`, so an FK would break that
+unrelated delete; validated at the application level instead, the same "no FK for an informal
+reference" pattern RISK-66 already accepts. Execution is a second cross-module dependency in the
+same shape as slice 3's evidence resolver: `ExperimentExecutionResolver` (`contracts.ts`) is a port
+`decision-engine/**` depends on but never implements; the real implementation
+(`experiment-execution-resolver.ts`) lives outside that directory, the only place allowed to import
+both `@/lib/decision-engine` and `@/lib/changesets`/`@/lib/batches` (`PHASE10-INV-03` widened to
+forbid both inside `decision-engine/**`, alongside the pre-existing analytics/market-intelligence
+ban). **The execution design went through two real `advisor()`-caught redesigns, not one.** The
+first draft called the resolver (creating a real Batch) BEFORE any atomic guard -- two concurrent
+Execute calls could both create one, an exact repeat of the RISK-68 anti-pattern this project
+already knows to avoid, not the claim-first pattern it was meant to copy. Redesigned claim-first,
+mirroring Phase 9 slice 9B's `claimStaleResearchChannelsForCollection` exactly: an atomic claim
+(`execution_claimed_at`, exclusive against another FRESH claim but reclaimable once stale --
+`EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS`, the identical 15-minute precedent) taken BEFORE the resolver
+is ever called. The second round found the claim alone wasn't sufficient: `transitionExperimentStatusIfValid`/
+`setExperimentChangeSetIfEligible` never checked it, so an Abandon or a detach could land inside the
+claim window and `finalizeExperimentExecution`'s then-unconditional write would resurrect a terminal
+state back to `"running"`. Both functions now refuse while a fresh claim is held (still permitting
+the action once the claim is stale/expired -- a crash must never permanently lock the experiment out
+of its own lifecycle); `finalizeExperimentExecution` is now guarded by the exact claim timestamp and
+clears the claim in the same write (required so the claim-freshness guard above doesn't then block
+the experiment's own normal `running -> concluded/abandoned` transitions); and finalize was moved
+OUTSIDE the resolver's own try/catch, so a finalize failure never releases a claim whose Batch
+already exists (which would let a second call create a second real Batch for it) -- it self-heals
+only via the same 15-minute expiry, a narrow, documented residual (`docs/TECHNICAL_DEBT.md`
+RISK-82). `dryRun` mirrors the existing Batch-creation route's own fail-closed gate exactly
+(`getLiveWritesEnabled()`, `live: true` in the request honored only when that toggle is already on)
+-- the route is an injectable factory (`createExecuteExperimentHandler`) specifically so this
+wiring itself has a test, not just the service's own boolean-in/boolean-out logic. The response
+(and the UI) surface `dryRun` explicitly, so the operator can tell "dry-run Batch" from "LIVE
+Batch" rather than the outcome being silent.
+
+**Still not built, named explicitly rather than silently deferred:** agent-created hypotheses from
+scratch (`create_hypothesis`, the reserved extension point left after slice 2); recording an
+outcome/retrospective through MCP/CLI; execution of any non-localization experiment type (no
+execution interface exists for one yet); MCP/CLI exposure of Change Set attach/execute (a
+Batch-creating agent action is a materially different risk category than slice 2's read+draft
+surface, needs its own separate assignment); evidence selection during AI generation is not yet
+exposed in the Web UI (fully built and tested at the
+API/service layer -- the "Generate with AI" panel is notes-only for this first UI pass, evidence
+still attaches to a saved hypothesis through the existing, separate evidence form).
+
+## 20. Channel Workspaces (`src/lib/channel-workspaces/`) — Phase 11, in `dev` (`f15a8c3`)
+
+Scope comes from `docs/roadmap/FUTURE_PHASES.md` §11. The plan and acceptance criteria
+(AC-P11-01..14) are in `docs/roadmap/plans/PHASE_11_PLAN.md`. The agent-facing contract is in
+`docs/AGENT_OPERATIONS_INTERFACE.md` §4m.
+
+**What it is.** One operator-set absolute local path per (device, linked channel): that
+channel's production-workspace folder on this machine. This product's responsibility ends at
+the path string. It never enumerates, reads, writes, or validates anything inside the folder.
+The operational agent uses its own native filesystem tools. There is therefore no file-access
+surface on this side to secure. Validation of the path itself happens once, at set time.
+
+**Exception (BL-119, ADR 0019):** `src/lib/research-export/` (a separate module; this one keeps its contract) writes generated files into the fixed `99 Data Exchange/From YTM` subfolder of this path (owner-approved exception, 2026-10-04) when the agent asks for a research export — it re-validates the path, refuses a symlinked `exports`, names every file itself, and deletes its own expired files by ledger (`workspace_export_files`). Nothing else under the path is opened.
+
+**Data flow.**
+- *Operator writes.* Settings → Channels row → `ChannelWorkspaceField` → `PUT /api/channel-workspaces`
+  → `setWorkspace`. That call checks, in order:
+  1. The channel is one of `channel-connections`' connected channels.
+  2. `local-path-validation` passes: the path is absolute, exists, is a directory, and does not
+     overlap app-data in either direction (the RISK-07 reasoning from slice I).
+  3. Only then does it upsert `channel_workspaces`.
+- *Agent reads.* MCP `agent_get_channel_workspace` or CLI `agent channel-workspace` → identity
+  resolution + `assertActiveChannel` → `getWorkspace`. The read is a store lookup that never
+  touches anything at or under the workspace path (no path-validation or directory dependency is
+  injected into it). The only other file it touches is this app's own `bootstrap-config.json`,
+  read for the `deviceId`, and only ever read: with no config yet the answer is
+  `{ configured: false }`. Only the operator write may create it (review round 1).
+  Creating the file is now exclusive: `bootstrap-config`'s `ensureExists` writes a temp file and
+  hard-links it into place, and if another caller wins the race it reads the winner's file
+  instead (review round 2). Before this, two concurrent first calls could produce two different
+  `deviceId`s, which would orphan a just-saved workspace row. On a filesystem without hard-link support it
+  falls back to the previous rename-based creation. Temp-file cleanup is best-effort (review
+  round 3). No agent surface receives
+  `setWorkspace`: the MCP and CLI factories take a `Pick<…, "getWorkspace">`.
+
+**Storage and device-locality.** `channel_workspaces(device_id, channel_id, path, updated_at)`,
+primary key `(device_id, channel_id)`, SCHEMA_MIGRATIONS v33 (additive).
+- §11 requires the value to be "device-local, never synced, keyed on this app's existing
+  `deviceId`". So every read and write filters on the bootstrap `deviceId`. A row that arrives
+  by some path other than this device's own writes (for example, a `data.db` copied between
+  machines) is invisible rather than silently reused.
+- The table is deliberately absent from `SNAPSHOT_TRANSFERRED_TABLES` (the reasoning is in the
+  "never listed" block of `snapshot/contracts.ts`) and from `sync-gateway`.
+- A snapshot-import test proves the receiving device's own rows survive untouched.
+- Note: `cloud_connection` has no device column. It is device-local only through snapshot
+  exclusion, so it is not the precedent for the `deviceId` key. §11's own wording is.
+
+**Security posture: a deliberate reversal from slice I.** `operations-instructions` (§4j) never
+exposes its configured absolute base path to the agent, because that would leak host layout and
+the username. Phase 11's deliverable is exactly that absolute string. The owner requested it
+explicitly in §11. The exposure is bounded:
+- Only to an agent whose `channelId` is the caller's active channel.
+- Only the one string the operator chose.
+- Never any directory contents.
+
+It is recorded here rather than carried silently (`AGENTS.md` §F).
+
+**Module independence (`AGENTS.md` §M).**
+- The set-time check lives in the shared `src/lib/local-path-validation/`, moved verbatim from
+  `operations-instructions`, which re-exports it unchanged.
+- MCP and CLI take `channelWorkspacesCore` directly rather than through `agent-operations`,
+  the same pattern as market-intelligence and decision-engine.
+- The UI field sits in its own error boundary inside each channel row.
+
+**Deliberately not implemented.**
+- The Workflow Registry (dropped by the owner).
+- Any read-time re-validation. It would be meaningless, because nothing here ever opens the path.
+- Cleanup of a row when its channel is disconnected. The row stays, is hidden from the Settings
+  list, and reappears if the channel is reconnected.
+
+## 21. Channel-bound agent isolation — Phase 12, in `dev` (`7a57a48`)
+
+Plan, the inventory of holes it closes, the owner decisions (D0–D5) and the acceptance criteria:
+`docs/roadmap/plans/PHASE_12_PLAN.md`. Interface contract: `docs/AGENT_OPERATIONS_INTERFACE.md`
+§4n.
+
+**Why choke points.** Before this phase, channel scoping rested on one mutable column,
+`users.selected_channel_id`, shared by the Web UI and every agent. Agents could repoint it
+(`write_channel_select`) or sidestep it with a caller-supplied `credentialRef`. Instead of adding a
+check to each of 57 MCP tools and roughly 70 CLI commands, a per-request immutable scope
+(`src/lib/agent-session`, an AsyncLocalStorage leaf; process-wide before ADR 0013) is consulted at the two functions every path already
+funnels through:
+- `db.ts`'s `getSelectedChannelId` / `setSelectedChannelId`: the bound channel, and a no-op
+  write. The no-op is not an error, because `apply` and playlist writes persist the selection
+  *after* a successful YouTube write.
+- `cli-auth`'s `resolveEffectiveCredentialRef`: always the token's identity, and explicit refs
+  rejected.
+
+Every pre-existing `assertActiveChannel` and write-context identity check then enforces the
+binding without modification. The few reads that never called `assertActiveChannel` (`list`,
+`transcript`, `preview`, `channel_sync`'s explicit id) are wrapped once in their core wiring.
+
+**Identity.** A channel token (`src/lib/agent-tokens`) is the only agent identity.
+- It is a SHA-256 hash with the `ytom_ch_` prefix, stored device-locally.
+- It records the Google identity that owned the channel live at issue time; credentials come
+  from there, never from `channels.connected_user_id`.
+- The token is verified once at process entry, which enters the scope, and re-verified on every
+  MCP call so revocation is immediate.
+- BL-091 zones and `AGENT_CONNECTION_ID` are retired (ADR 0011). The tables stay, inert.
+
+**Market data (D1).** Phase 9 data stays global and unaware of channels. `src/lib/market-assignments`
+(table `channel_record_assignments`, v35, part of the snapshot) maps records to channels, and the
+MCP/CLI market handlers narrow results for agents. Its `db.ts` exports avoid the words
+"market"/"research" so PHASE9-INV-02 continues to guarantee that no other module reaches into
+market-intelligence's own tables.
+
+**Surface.** `src/mcp/tool-classification.ts` classifies every MCP tool as `bound` or
+`operator-only`; an inventory test compares it with `server.ts`'s `registerTool` names. The CLI no
+longer has an agent mode: it is the operator's tool and runs only under the "Operator CLI access"
+setting (default off).
+
+**Transport (`docs/decisions/0013-in-app-http-mcp-transport.md`, reverses D0(b)).** The running app
+serves MCP at `POST /api/mcp` (`src/lib/agent-mcp-endpoint`, a thin route over it): stateless
+Streamable HTTP, a fresh `McpServer` per request, the "MCP connection" toggle and the channel token
+read on every request, a loopback `Host`/`Origin` guard, and the whole web server bound to
+`127.0.0.1`. The request runs inside an `AsyncLocalStorage` agent scope (`src/lib/agent-session`);
+because "no scope" means operator mode in the web process, every tool call first asserts the ambient
+scope equals the request's token. `src/proxy.ts` exempts `/api/mcp` from the device-mutation gate
+(every MCP call is a POST); mutating tools keep their own gate.
+
+**Accepted limit (RISK-87).** The agent still runs as the operator's OS user, so the wall is in-app:
+an agent that deliberately finds and opens `data.db` can bypass it. What changed is that the agent's
+own configuration no longer contains the project path. Mitigations: `docs/AGENT_ISOLATION_SETUP.md`.
+
+**OAuth tokens at rest (12.8, owner chose the "env" key variant).** `db.ts`'s OAuth-token
+functions are the only readers and writers of `users.access_token` / `refresh_token`. They route
+through `src/lib/oauth-token-crypto`:
+- With `OAUTH_TOKENS_ENCRYPTION_KEY` configured, values are stored as
+  `enc:v1:<iv>:<tag>:<ciphertext>` (AES-256-GCM, `src/lib/shared-crypto`). Legacy plaintext rows
+  are re-encrypted on first read.
+- Without the key, values are stored as plaintext exactly as before. Sign-in is never blocked.
+- A value that cannot be decrypted reads as "no token", so the user signs in again.
+
+This protects against reading the database file alone. It does not protect against an agent that
+also reads the key from the environment file.
+
+## 22. Architecture audit, 2026-10-01: documented rules that were implicit
+
+This section comes from the independent architecture audit. The fixes are in
+`docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md`. The points below are the audit's
+low-severity divergences, recorded here as the actual rules rather than changed.
+
+- **`expectedChannelId` optionality (A7).**
+  - Required: `playlist_update/delete/add_videos/remove_videos` and the video-details writes.
+  - Optional: `apply` and `playlist_create`. When omitted, it falls back to the stored selected
+    channel (in an agent session, the bound channel).
+  - Every write still passes `write-context.assertWriteChannel`: the live OAuth channel must equal
+    the expected one, so the fallback fails closed rather than writing blindly.
+- **"Analytics day" (A8).** YouTube Analytics reports days in Pacific time; `metricDate` is a
+  Pacific calendar day.
+  - `comparable-age` aligns on Pacific days.
+  - The staleness / daily-collection boundary uses the operator's configured timezone
+    (`analyticsSyncTimezone`).
+  - The data-quality "too recent" cutoff (`ANALYTICS_REPORTING_LAG_DAYS`) is computed in UTC. It
+    can therefore differ from a Pacific-day boundary by one day at the edges. This is acceptable
+    for a "probably not yet reported" hint, but it is not an exact reporting-day computation.
+- **GET routes with a local side effect (A6).**
+  - `GET /api/youtube/channel-info` persists the resolved channel as the session user's selected
+    channel (ADR 0004).
+  - `GET /api/cloud-connection/callback` stores the Google Cloud grant: an OAuth redirect must be
+    a GET.
+  - Both write device-local state only, which is never part of a snapshot. They are therefore not
+    behind the method-based mutation gate. The equivalent MCP/CLI selection actions are
+    operator-only and gated.
+
+## 23. Automatic device sync (`src/lib/device-sync/`) — ADR 0012, in `dev` (`21bb583`)
+
+**Purpose.** Removes the manual export/import from the §13 handoff without changing its
+single-writer, whole-copy semantics. Plan and acceptance criteria:
+`docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md` (AC-AS-01..15).
+
+**Data flow (one tick, every 30 s, from `src/instrumentation.ts`):**
+
+1. Gates:
+   - the toggle (`device_auto_sync_enabled`) and a configured Syncthing folder that already
+     exists. Automatic sync never creates it, so an unplugged or renamed external drive gives
+     `folder_unreachable`, never snapshots written to a local folder no peer sees;
+   - no live operation lock (a dead export's lock is cleared first) and no recovery mode;
+   - an unfinished Batch in this computer's data pauses sync both ways, with a `batch_in_progress`
+     notice. `hasUnfinishedBatch` checks for a `RUNNING` batch or rows
+     `AWAITING_EXECUTION`/`APPLYING`/`UNKNOWN` (`CANCELLED` rows -- ADR 0016 -- are terminal and never count as unfinished). It is judged on transferred data, not on the
+     device-local locks, which some abort paths leak (RISK-90). The same predicate refuses an
+     unfinished copy (`refuseUnresolvedExecution`) and is re-checked inside the lock before every
+     import and export.
+2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
+   folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
+   after 10 minutes.
+3. `hasUnpublishedLocalChanges`: the current content fingerprint is compared with
+   `snapshot_lineage.content_fingerprint`.
+   - The fingerprint is a SHA-256 over every table `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` names. Rows
+     are sorted by all columns, and each row is hashed as its non-NULL `column=value` pairs. A
+     missing table hashes like an empty one. So rowids and physical column order do not matter, and
+     a migration that adds a nullable column or a new transferred table leaves it unchanged.
+   - Export records the fingerprint of the exported file itself, so a write racing the copy stays
+     dirty.
+   - Import records it from the live DB inside the lock.
+   - An unknown fingerprint (a pre-v36 lineage) counts as dirty. No lineage counts as clean only
+     when every transferred table is empty.
+4. `decideSyncAction` (pure):
+   - "Known" is the local head plus its ancestry: recorded `ancestors_json`, `lineage.json`, and
+     parent pointers through every manifest in the folder.
+   - "Newer" means other devices' snapshots that are not known. Of those, only the tips count.
+   - No tips: export if dirty, otherwise idle.
+   - One tip that is a fast-forward, with local clean: import.
+   - A newer schema: `update_app`.
+   - Anything else: divergence.
+5. Actions go through the existing `exportHandoff` / `importHandoff`. `assertStillSafe` re-checks
+   the gates, and the fingerprint for an import, inside the operation lock, right before anything
+   is written. In a divergence, local unpublished changes are still published on their own branch,
+   so the other computer sees the conflict too.
+
+**Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
+- Both actions accept only a CURRENT conflicting peer tip.
+- `keep_mine` exports with `supersede` (parent = the named tip; ancestry = every current peer tip
+  and its history, plus the local one), so every peer fast-forwards.
+- `take_theirs` imports with `acceptDivergentLineage`, using its own backup prefix
+  `pre-take-theirs-`, which is never pruned. If this device had already published its own branch,
+  it then publishes a marker: the adopted state again, with that branch as ancestors. So the peer
+  sees a fast-forward.
+- Resolutions never delete from the shared folder. A deletion propagates asynchronously and looks
+  like "not arrived yet". Review round 2 showed two opposite resolutions made at the same time then
+  left both computers "synced" with swapped data. Markers fail closed instead: both computers ask
+  again.
+- `lineage.json` `supersedes` lists what a resolution replaces: the peer tips for `keep_mine`, the
+  own abandoned branch for a marker. It never widens the fast-forward rule. It only makes the
+  receiving import keep a `pre-superseded-*` backup, which is never pruned, when its head is
+  replaced.
+- **Import atomicity (round 2).** Three things run inside `applySnapshotToDatabase`'s
+  `BEGIN IMMEDIATE`, via hooks:
+  1. "Live content still equals the pre-import backup's", plus the caller's re-checks, before
+     the first DELETE.
+  2. The merged content's fingerprint.
+  3. The lineage pointer, before COMMIT.
+
+  A write that lands between the backup and the merge aborts the import with
+  `snapshot_local_changed_during_import`, and nothing is replaced.
+- A snapshot whose data fails schema migration is remembered in the status and reported as
+  `update_app`, never retried.
+- All actions on one runner are serialized. The runner is a `globalThis` singleton shared by the
+  scheduler and the routes.
+- The decision uses exactly the fast-forward rule `verifySnapshotForImport` enforces. An
+  older-build chain without `lineage.json` is caught up one direct child at a time.
+- `src/lib/device-sync/convergence.test.ts` runs the resolution matrix with one folder per device
+  and delayed propagation:
+  - {keep, take} on A × {keep, take, none} on B;
+  - sequential and simultaneous;
+  - with and without further work;
+  - plus a third device.
+
+  The invariant: identical content and no notices, or someone is asked; never lost without a
+  backup.
+
+**Retention.**
+- This device's own snapshots: the newest 5 plus the head.
+- `pre-auto-import-*` backups: the newest 10.
+- Another device's files are never touched, since Syncthing would propagate the deletion.
+
+**Why a dedicated DB connection.** `importHandoff`'s `BEGIN IMMEDIATE` on the shared
+`rawSqlClient` would absorb any unrelated in-process write issued meanwhile, such as the Live-writes
+lease renewal or a draft cycle. On its own connection, such a write just waits for the busy
+timeout.
+
+**Draft cycle.** `runAllSyncFamiliesOnce` (sync-gateway) is shared by the "Sync now" route and
+the scheduler. It runs every 60 s under the same gate the route gets from `src/proxy.ts`, and it is
+NOT tied to the device-sync toggle (§M). Instrumentation and route bundles may not share module
+state, so these are held per process via `globalThis`:
+- the run-all single-flight guard;
+- the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
+
+**Boot.** `initializeDatabase` takes the migration lock only when a migration is due
+(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock.
+
+**Stuck operation lock recovery (2026-10-01).** A migration/import killed mid-run leaves its
+`app_operation_locks` row; by decision 2b it is never auto-released (only a dead *export*'s is), so
+the next boot used to wait 30 s and then fail, with no UI to fix it. Now: (1) a boot whose holder
+process is provably dead fails at once instead of waiting; (2) `instrumentation.ts` keeps the server
+up when database initialization fails and starts the session work once a later attempt succeeds;
+(3) `db.ts` initialization is a `createRecoverableInitializer` -- after a failure the next call
+re-attempts (at most every 3 s), so clearing the lock needs no restart; (4) `/recovery`
+and `/api/operation-lock` (exempt in `src/proxy.ts`) use `ungatedRecoveryClient`, independent of
+initialization and session; (5) the same `OperationLockControl` is shown in the Merge tab and as a
+dashboard banner for non-export locks; (6) `npm run operation-lock -- status|clear` works with the
+app stopped; `wait-idle` is what `stop.bat`/`stop.sh` run before killing the server (and `start` runs `stop` when port 3000 is busy), so a server is never killed mid-operation. Clearing is always an explicit operator action, a compare-and-delete on the exact lock
+shown; a holder that looks alive needs `force` plus the typed word CLEAR. See RISK-91.
+
+**Not done, by design.**
+- No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released
+  operation lock. The idle shutdown does flush, since nothing is in flight.
+- No concurrent editing.
+
+See RISK-89.
+
+## 24. Data sources and YouTube API policy compliance — Phase 13, branch `feature/phase-13-data-sources`
+
+Plan, decisions and acceptance criteria: `docs/roadmap/plans/PHASE_13_PLAN.md`. Owner decision D1 = (a): competitor
+data from the API is kept at most 30 days, and no metrics are derived from it.
+
+- **Classification, 13.1** (`src/lib/youtube-data-policy/contracts.ts`). Every table is classified once against
+  the [Developer Policies](https://developers.google.com/youtube/terms/developer-policies), and a test fails on an
+  unclassified table. The classes:
+  - `authorized`: our own channels (III.E.4.b/c);
+  - `non_authorized`: other people's channels (III.E.4.d), with its clock column and the condition that selects
+    API-sourced rows (an exact list of the sources collection writes);
+  - `not_api_data`: anything that is not YouTube API data.
+- **Retention, 13.2** (`purgeExpiredApiData`, `runRetentionOnce`). Revised by review round 1:
+  - It runs on a dedicated connection.
+  - Snapshot rows are selected by the exact API sources, not a prefix.
+  - Research evidence written from the API ("Fetch public snapshot") also expires. Other evidence sources are
+    free text typed by the operator and are kept.
+  - For a discovery candidate the operator has decided on, the title and reason are blanked instead of the row
+    being deleted. A re-seen candidate refreshes its title along with its clock.
+  - In the same transaction, a device that was in sync has its sync fingerprint re-baselined by
+    compare-and-set. Every computer applies the same expiry, so it is not a local change to publish.
+  - Owner decisions (msg 1139):
+    - **An import never brings expired rows back.** The import purges inside its own merge transaction, before
+      the lineage fingerprint (`purgeExpiredApiDataWithinTransaction`).
+    - **Backups are scrubbed by the same rule on every run** (`scrubBackupFile` over `backups/migrations/*.db`,
+      with `secure_delete`, then a best-effort VACUUM). Files are not deleted.
+    - **Device sync removes this device's own sync-folder snapshots older than 30 days on every tick**, except
+      the lineage head.
+  - Reads (`listMarket*SnapshotsByChannel`, `listResearchEvidenceByChannel`, discovery candidates in
+    `market-intelligence`) hide or redact expired API rows even before the purge has run. An MCP start runs the purge once. The AI decision engine's evidence descriptions carry no
+    competitor values.
+  - What is deleted: API-sourced rows of `non_authorized` tables older than 30 days, plus the market assignments
+    pointing at deleted discovery candidates. Manual observations are kept. It runs in one transaction.
+  - When: from `src/instrumentation.ts`, a minute after boot and then every 6 h. It is skipped under the operation
+    lock or in recovery mode. The check is repeated inside the purge's own write transaction, so an
+    export/import/migration that started first pauses it.
+  - Backup: a full backup (`backups/migrations/pre-api-retention-*.db`) is taken before the very first purge.
+  - Refresh: re-fetching through the daily collection is what keeps current values (a new row starts a new 30
+    days).
+- **No derived metrics, 13.3.** In `market-intelligence`, velocity, breakout and emerging-channel values built
+  from watchlist snapshots are withheld. The fields stay in the responses, as part of the agent contract, but
+  carry no value: velocity has `basis: "withheld_by_policy"`, breakout lists are empty, and `emergingChannel` gives
+  a reason that cites III.E.4.h. The raw observations, each with its time (III.E.4.f), are still returned. The pure
+  functions in `derived-metrics.ts` and `historical-intelligence.ts` remain for our own channels.
+- **Quota model, 13.4** (`src/lib/youtube-quota`, a pure leaf).
+  - The quota day starts at midnight Pacific time.
+  - `search.list` has its own bucket of 100 calls a day at 1 unit, counted by `countMarketDiscoverySearchesSince`
+    (one discovery-run row equals one call).
+  - The shared unit budget (`getMarketIntelligenceUnitsSpentSince`) counts collection runs only.
+- **Collection sources, 13.5/13.6, as revised by review round 1.**
+  - Ids, titles and publish times come from the uploads playlist's first page: 1 pool unit, up to 50 videos.
+  - The RSS feed (`youtube-read-gateway/feed.ts`, the newest ~15, no quota, with its own toggle and counter) is
+    only the fallback when that call fails, for example when the pool is exhausted.
+  - Statistics come from `videos.batchGetStats`, 1 unit of its own bucket. Its documented response carries only
+    `snippet.publishTime`, no title. `videos.list` (1 pool unit) is the fallback.
+  - A channel normally costs 2 pool units. The worst case, 3, is unchanged, and so is the budget pre-commit.
+  - A test pins every snapshot `source` collection writes to the purge's exact API-source list.
+- **View-counting break, 13.7.** `YOUTUBE_VIEW_COUNTING_CHANGED_ON = "2026-08-27"` (Data API revision history).
+  The channel overview returns `viewCountingChangeInComparison`, and the UI warns that the views delta is not
+  like-for-like.
+- **Wikipedia interest, 13.8.** Wikimedia data is CC0, not YouTube data, so it can be kept and summarized.
+  - `src/lib/wikipedia-gateway` is the only path to the Wikimedia Pageviews API. It has a toggle, the
+    `wikipedia_reads` counter and a descriptive User-Agent, and an inventory test enforces it.
+  - `src/lib/wikipedia-signals` is its own module (§M). It links articles to topics, using a foreign key onto
+    `market_topics` with ON DELETE CASCADE as the existence check, so it never reads market-intelligence tables.
+  - It collects only the missing days, up to yesterday and at most 90 days back, every 6 h, and shows 30-day sums.
+  - Schema v37: `topic_wikipedia_articles` travels with handoff; `wikipedia_pageviews_daily` is a device-local
+    cache.
+- **Music chart, 13.9.** `chart=mostPopular`, `videoCategoryId=10`, by region, at 1 unit. It is current-only: an
+  in-memory cache for 30 minutes, never persisted.
+- **Not exposed to agents yet:** the Wikipedia signals and the Music chart. That depends on the separate
+  agent-recommendations proposal.

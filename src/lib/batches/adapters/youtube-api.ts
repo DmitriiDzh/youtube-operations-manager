@@ -1,14 +1,14 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeClient, getVideoMetadataContext, getVideosMetadataContextBatch } from "@/lib/youtube";
-import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import { createYoutubeClient, getVideoMetadataContext, getVideosMetadataContextBatch } from "@/lib/youtube-read-gateway";
+import type { ResolvedCredentials } from "@/lib/shared-domain";
 
 // Architectural decision #2 (2026-09-17 plan approval): preliminary batched metadata
 // collection and the mandatory fresh per-video pre-write check are two explicitly
 // separate call sites, never substituted for one another, even though both are
-// ultimately implemented via src/lib/youtube.ts's existing videos.list wrappers (reused,
-// not duplicated, per docs/DEVELOPMENT_PLAYBOOK.md §6.4).
+// ultimately implemented via src/lib/youtube-read-gateway's existing videos.list wrappers
+// (reused, not duplicated, per docs/DEVELOPMENT_PLAYBOOK.md §6.4).
 
-function createAuthorizedClient(credentials: ResolvedCredentials) {
+export function createAuthorizedClient(credentials: ResolvedCredentials) {
   const oauth2 = createGoogleOAuthClient();
   oauth2.setCredentials({
     access_token: credentials.accessToken,
@@ -28,7 +28,7 @@ export function createBatchYoutubeApiAdapter() {
      * fetchFreshVideoContext below, which is mandatory for all three.
      */
     async fetchPreliminaryBatchContext(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return getVideosMetadataContextBatch(youtube, args.videoIds);
     },
 
@@ -39,7 +39,7 @@ export function createBatchYoutubeApiAdapter() {
      * preliminary batched pass above -- always this fresh call).
      */
     async fetchFreshVideoContext(args: { credentials: ResolvedCredentials; videoId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const result = await getVideoMetadataContext(youtube, args.videoId);
       if (!result) return null;
 

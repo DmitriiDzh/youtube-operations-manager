@@ -4,9 +4,11 @@ import { authOptions } from "@/lib/auth";
 import { DomainError } from "@/lib/changesets/contracts";
 import { createChangeSetCore } from "@/lib/changesets";
 import { MAX_WORKBOOK_BYTES } from "@/lib/changesets/import";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createChangeSetCore();
+const channelAccess = createChannelAccessCore();
 
 // Multipart framing (boundary markers, field headers) adds a small amount of overhead
 // on top of the raw file bytes -- this margin avoids rejecting a file that is exactly
@@ -35,6 +37,7 @@ export async function POST(
 
   try {
     const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const formData = await request.formData();
     const file = formData.get("file");
     if (!(file instanceof Blob)) {

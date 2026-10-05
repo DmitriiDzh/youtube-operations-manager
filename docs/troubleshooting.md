@@ -1,4 +1,4 @@
-# TubeMaster Troubleshooting
+# YouTube Operations Manager -- Troubleshooting
 
 <- [Back to README](../README.md)
 
@@ -72,7 +72,7 @@ Fix:
 
 ## Write guardrail errors
 
-TubeMaster protects sensitive writes with expected channel checks.
+The app protects sensitive writes with expected channel checks.
 
 ### `WRITE_CHANNEL_REQUIRED`
 
@@ -107,14 +107,22 @@ Fix:
 
 ## Metadata/API errors
 
+### Batch row FAILED: "Video has no defaultLanguage"
+
+Since 2026-10-02 a Batch sets the channel's default language on a video that has none. This error
+now means no baseline is configured: set "Title and description language" in the Languages tab
+(Save channel defaults) and re-run. A different error ("cannot be applied ... collide") means the
+video already has, or is being given, a localization in that same language — fix that video manually.
+
 ### `target_language_unresolvable`
 
-Meaning: app could not infer target language for metadata apply.
+Meaning: the app could not determine the target language for a metadata apply.
 
-Fix the YouTube video metadata state so one of these is true:
-
-- `snippet.defaultLanguage` is set, or
-- exactly one localization locale exists.
+Fix: set the video's default language (`snippet.defaultLanguage`) on YouTube (YouTube Studio →
+video details → Language). This app never sets it itself (`AGENTS.md` §F). Since the 2026-10-01
+architecture audit, "exactly one localization" is **no longer** a workaround: without a default
+language, YouTube rejects localized details anyway. Do not delete localizations to try to satisfy
+this.
 
 ### `validation_failed`
 

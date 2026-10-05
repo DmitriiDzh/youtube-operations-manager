@@ -1,7 +1,15 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/shared-domain";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };
 
 export type LocaleMetadata = {
   title: string;
@@ -15,16 +23,29 @@ export type LocalizationOverviewRow = {
   title: string;
   thumbnailUrl: string | null;
   publishedAt: string;
+  // Additive (2026-10-01): lets a client show the same "Publish" date as the Content tab does --
+  // the real `publishedAt` only once public, else the scheduled `publishAt`.
+  privacyStatus: string;
+  publishAt: string | null;
   defaultLanguage: string | null;
   presentLanguages: string[];
   missingLanguages: string[];
   status: LocalizationVideoStatus;
+  lastSyncedAt: string;
 };
 
 export type LocalizationOverview = {
   channelId: string;
   channelTitle: string;
+  // The union of `trackedLanguages` and every language with at least one real, synced
+  // localization -- this is what determines which columns the Languages tab actually renders.
   languages: string[];
+  // Explicitly tracked by the operator (`proposeTrackedLanguage`/`removeTrackedLanguage`) --
+  // may or may not have any real translation yet. Exposed separately from `languages` so the UI
+  // can tell "this column exists only because it's tracked" from "this column has real data and
+  // removing it from `trackedLanguages` alone won't hide it" (docs/roadmap/plans/
+  // LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5).
+  trackedLanguages: string[];
   totalVideos: number;
   videos: LocalizationOverviewRow[];
 };
@@ -71,6 +92,7 @@ export type StoredVideoRecord = {
   description: string;
   publishedAt: string;
   privacyStatus: string;
+  publishAt: string | null;
   defaultLanguage: string | null;
   defaultAudioLanguage: string | null;
   thumbnails: Record<string, { url: string; width: number | null; height: number | null }>;

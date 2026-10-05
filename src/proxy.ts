@@ -1,0 +1,121 @@
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { rawSqlClient } from "@/lib/db";
+import { assertDeviceAvailableForMutation, assertNoOperationLock } from "@/lib/device-mutation-gate";
+import { OperationLockError } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
+import { recordActivity } from "@/lib/idle-shutdown";
+
+// Next.js 16 renamed `middleware.ts` to `proxy.ts` (functionally identical) --
+// node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md. Proxy
+// defaults to the Node.js runtime in this version (not Edge), which is what makes it possible
+// to query the local libSQL database directly here, the same way any API route already does.
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+// The device-handoff export/import routes manage src/lib/operation-lock themselves (acquiring
+// it is the whole point of calling them) -- gating them here too would make every handoff
+// action deadlock against its own lock. NextAuth's callback route establishes this device's
+// own OAuth session, which decision 6 (docs/decisions/0002-...) explicitly keeps independent
+// of the handoff/recovery-mode gate. (Recovery mode's own real protection against a device
+// re-importing over unresolved state lives inside `importHandoff` itself, not here -- see its
+// doc comment; found by independent review that this exemption alone was not sufficient.)
+// `/api/operation-lock` is the stuck-lock recovery route: it must work exactly while the operation
+// lock (or a failed database initialization) makes this gate refuse everything else.
+// `/api/mcp` (matched exactly, below, so a future `/api/mcp-x` route is NOT exempted) is the in-app agent endpoint (docs/decisions/0013-in-app-http-mcp-transport.md): every MCP
+// call is a POST -- including `initialize`, `tools/list` and pure reads -- so gating the path here
+// would block an agent's reads during recovery mode / an operation lock. The old stdio MCP server never
+// went through this proxy either; locally-mutating and remote-mutating tools keep their own gate
+// (`wrapMcpHandlersWithMutationGate` in src/mcp/server.ts), exactly as before.
+const EXEMPT_PATH_PREFIXES = ["/api/device-handoff", "/api/auth", "/api/operation-lock"];
+
+// These POST routes are read-only/preview with respect to both local persistence and YouTube --
+// per their own doc comments, none of them create a Change/ChangeSet, write a batch ledger row,
+// or call a YouTube write method; they only return a proposal for human review. Classified here
+// to match `docs/DEVELOPMENT_PLAYBOOK.md` §6.7's read/local-mutation/remote-mutation split and
+// kept consistent with the CLI's `READ_ONLY_CLI_COMMANDS` and MCP's un-wrapped read-only tools
+// (`src/cli/video-metadata.ts`, `src/mcp/server.ts`) -- found by independent review that this
+// file previously gated every POST regardless of what it actually did, diverging from both.
+const EXEMPT_READ_ONLY_PATHS = new Set([
+  "/api/video-metadata/preview",
+  "/api/video-metadata/transcript",
+]);
+const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
+  "/localizations/import/preview",
+  "/ai-localization/generate",
+  "/details/preview",
+  // Phase 10 slice 4 -- generates a draft only, persists nothing (mirrors `/ai-localization/
+  // generate` above exactly). The sibling `/hypotheses/generate/save` route DOES persist and is
+  // deliberately NOT exempt -- it goes through the normal mutation gate below, same as the plain
+  // `/hypotheses` create route.
+  "/decision-engine/hypotheses/generate",
+];
+
+// Architecture audit 2026-10-01 (H4): the operator's stop switches must work while the device is in
+// RECOVERY MODE -- otherwise the operator cannot switch agents or Live writes off, revoke an agent's
+// token, or disconnect a channel exactly when something has gone wrong. Each touches only
+// device-local state that never travels in a snapshot. They are still refused while an
+// export/import/migration holds the operation lock (short-lived): an in-process import runs its
+// transaction on the same shared connection, so a write made meanwhile would join it and be silently
+// rolled back if the import failed. Exact method + path only.
+const EXEMPT_STOP_SWITCH_ROUTES = new Set([
+  "POST /api/settings",
+  "DELETE /api/agent-tokens",
+  "POST /api/channel-connections/disconnect",
+]);
+
+function isExemptReadOnlyPath(pathname: string): boolean {
+  if (EXEMPT_READ_ONLY_PATHS.has(pathname)) return true;
+  return EXEMPT_READ_ONLY_PATH_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
+}
+
+export async function proxy(request: NextRequest) {
+  // Every `/api/*` request (this function's own matcher below) counts as real use of this
+  // server process, regardless of method or which specific route -- see idle-shutdown.ts's own
+  // doc comment for why this single choke point is sufficient (no separate heartbeat needed).
+  recordActivity();
+
+  const { pathname } = request.nextUrl;
+
+  if (!pathname.startsWith("/api/")) return NextResponse.next();
+  if (!MUTATING_METHODS.has(request.method)) return NextResponse.next();
+  if (pathname === "/api/mcp" || pathname.startsWith("/api/mcp/")) {
+    return NextResponse.next();
+  }
+  if (EXEMPT_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    return NextResponse.next();
+  }
+  if (isExemptReadOnlyPath(pathname)) {
+    return NextResponse.next();
+  }
+  const isStopSwitch = EXEMPT_STOP_SWITCH_ROUTES.has(`${request.method} ${pathname}`);
+
+  try {
+    if (isStopSwitch) {
+      await assertNoOperationLock(rawSqlClient);
+    } else {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+    }
+  } catch (error) {
+    if (error instanceof OperationLockError) {
+      return NextResponse.json(
+        { error: error.code, message: error.message, details: error.details },
+        { status: 409 }
+      );
+    }
+    if (error instanceof RecoveryModeError) {
+      return NextResponse.json(
+        { error: error.code, message: error.message, details: error.details },
+        { status: 423 }
+      );
+    }
+    const message = error instanceof Error ? error.message : "Device unavailable for mutation.";
+    return NextResponse.json({ error: "device_unavailable", message }, { status: 503 });
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/api/:path*"],
+};

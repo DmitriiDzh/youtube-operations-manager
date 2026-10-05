@@ -10,7 +10,7 @@ Write an ADR **before** (or, for a retrospectively reconstructed one, immediatel
 - changing the database migration strategy (e.g. moving off the current idempotent `CREATE TABLE IF NOT EXISTS` pattern to Drizzle Kit migrations — see `docs/ARCHITECTURE.md` §7.2 for the threshold condition);
 - replacing the database engine;
 - breaking an existing API or MCP tool contract (not just adding a new one);
-- replacing a major subsystem (e.g. the YouTube client layer in `src/lib/youtube.ts`, the `write-context` guardrail);
+- replacing a major subsystem (e.g. the YouTube read gateway in `src/lib/youtube-read-gateway/`, the YouTube write gateway in `src/lib/youtube-write-gateway/`, the `write-context` guardrail);
 - changing the YouTube write-safety architecture (`docs/PROJECT_SPEC.md` §21, §61–65);
 - a significant framework migration (Next.js major version, moving off Drizzle/libSQL, etc.).
 
@@ -56,3 +56,20 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-additive-idempotent-schema-strategy.md) | Keep additive idempotent schema initialization instead of Drizzle Kit migrations | Accepted (retrospective) |
+| [0002](0002-additive-schema-versioning.md) | Layer explicit schema versioning on top of the additive idempotent boot pattern | Accepted |
+| [0003](0003-published-release-snapshots.md) | In-repo `published/<version>/` release snapshots, committed directly on `main` | Accepted |
+| [0004](0004-active-channel-read-scoping.md) | Every channel-scoped read is filtered to the session's active channel | Accepted |
+| [0005](0005-youtube-write-gateway.md) | A single gateway module is the only path any code may use to write to YouTube | Accepted |
+| [0006](0006-automerge-for-draft-layer.md) | Adopt Automerge (CRDT) as the source of truth for the draft/change-set layer | Accepted |
+| [0007](0007-youtube-read-gateway.md) | A single umbrella gateway, with category-specific children, is the only path any code may use to read from a YouTube-family API | Accepted |
+| [0008](0008-cloud-connection.md) | A single, device-persistent Google Cloud OAuth grant, entirely decoupled from per-channel YouTube login | Accepted |
+| [0009](0009-defer-write-pipeline-sync-gateway-migration.md) | Reaffirm ADR 0006's exclusion of the write pipeline from Automerge, with stronger evidence | Accepted |
+| [0010](0010-persistent-channel-connections.md) | Persistent, re-activatable channel connections without re-consenting to Google each switch | Accepted |
+| [0012](0012-automatic-device-sync.md) | Automatic device sync on top of the snapshot handoff (fingerprint, ancestry, human-resolved divergence) | Accepted |
+| [0013](0013-in-app-http-mcp-transport.md) | Serve MCP over HTTP from the app; remove stdio and CLI agent mode | Accepted |
+| [0014](0014-youtube-reporting-api-gateway-child.md) | YouTube Reporting API as a read-gateway child; a reporting job is not a YouTube write | Accepted |
+| [0015](0015-operation-progress-overlay.md) | Shared operation-progress overlay for long writes and syncs; cooperative Cancel | Accepted |
+| [0016](0016-batch-cancel.md) | Cooperative cancel for a running Batch; new terminal ledger status CANCELLED | Accepted |
+| [0019](0019-research-export.md) | Research export: the Manager writes script-ready files into the channel workspace `exports/` folder; 30-day expiry; no derived competitor metrics | Accepted |
+| [0020](0020-send-approved-from-languages.md) | Send approved changes from the Languages tab in one click through the existing live-batch pipeline (no second write path) | Accepted |
+| [0021](0021-agent-collection-requests.md) | Agent-created competitor collection requests, approved by a human (blocking run of the regular collection; no force) | Accepted |

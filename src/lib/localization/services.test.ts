@@ -25,6 +25,7 @@ function makeVideo(overrides: Partial<StoredVideoRecord> = {}): StoredVideoRecor
     description: "Description 1",
     publishedAt: "2026-01-01T00:00:00.000Z",
     privacyStatus: "public",
+    publishAt: null,
     defaultLanguage: "en",
     defaultAudioLanguage: "en",
     thumbnails: { default: { url: "https://example.com/v1.jpg", width: 120, height: 90 } },
@@ -37,12 +38,17 @@ function makeVideo(overrides: Partial<StoredVideoRecord> = {}): StoredVideoRecor
 
 function createFixture(videos: StoredVideoRecord[], channel = makeChannel()) {
   const buildWorkbookCalls: Array<{ channel: StoredChannelRecord; videos: StoredVideoRecord[] }> = [];
+  const trackedLanguagesByChannel = new Map<string, string[]>();
 
   const services = createLocalizationServices({
     channelStore: {
       getChannel: async (channelId) => (channelId === channel.channelId ? channel : null),
       listVideosByChannel: async (channelId) =>
         channelId === channel.channelId ? videos : [],
+      getTargetLanguages: async (channelId) => trackedLanguagesByChannel.get(channelId) ?? [],
+      setTargetLanguages: async (channelId, languages) => {
+        trackedLanguagesByChannel.set(channelId, languages);
+      },
     },
     xlsxBuilder: {
       buildWorkbook: async (args) => {
@@ -52,7 +58,7 @@ function createFixture(videos: StoredVideoRecord[], channel = makeChannel()) {
     },
   });
 
-  return { services, buildWorkbookCalls };
+  return { services, buildWorkbookCalls, trackedLanguagesByChannel };
 }
 
 test("getLocalizationOverview reports missing languages relative to the channel-wide language union", async () => {
@@ -87,6 +93,37 @@ test("getLocalizationOverview reports missing languages relative to the channel-
   assert.equal(v2?.status, "complete");
 });
 
+test("getLocalizationOverview never reports a video's own default language as missing; a real localization for that code still counts as present", async () => {
+  // Hand-derived: columns are the union {de, ja}. v1 is a Japanese original with a German translation -> ja is its original (not missing), de present -> complete.
+  // v2 is an English original with nothing -> both columns missing. v3 is a Japanese original that ALSO has a real ja localization -> ja present.
+  const videos = [
+    makeVideo({ videoId: "v1", defaultLanguage: "ja", existingLocalizations: { de: { title: "DE", description: "d" } } }),
+    makeVideo({ videoId: "v2", defaultLanguage: "en", existingLocalizations: {} }),
+    makeVideo({ videoId: "v3", defaultLanguage: "ja", existingLocalizations: { ja: { title: "JA", description: "j" }, de: { title: "DE", description: "d" } } }),
+  ];
+  const { services } = createFixture(videos);
+  const overview = await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(overview.languages, ["de", "ja"]);
+  const v1 = overview.videos.find((v) => v.videoId === "v1")!;
+  assert.deepEqual([v1.presentLanguages, v1.missingLanguages, v1.status], [["de"], [], "complete"]);
+  const v2 = overview.videos.find((v) => v.videoId === "v2")!;
+  assert.deepEqual([v2.presentLanguages, v2.missingLanguages, v2.status], [[], ["de", "ja"], "missing"]);
+  const v3 = overview.videos.find((v) => v.videoId === "v3")!;
+  assert.deepEqual([v3.presentLanguages, v3.missingLanguages, v3.status], [["de", "ja"], [], "complete"]);
+});
+
+test("getLocalizationOverview matches the default language by exact code (en-US is not en) and a video with no default language is unchanged", async () => {
+  const videos = [
+    makeVideo({ videoId: "v1", defaultLanguage: "en-US", existingLocalizations: { de: { title: "DE", description: "d" } } }),
+    makeVideo({ videoId: "v2", defaultLanguage: null, existingLocalizations: { en: { title: "EN", description: "e" } } }),
+  ];
+  const { services } = createFixture(videos);
+  const overview = await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(overview.languages, ["de", "en"]);
+  assert.deepEqual(overview.videos.find((v) => v.videoId === "v1")!.missingLanguages, ["en"]); // "en-US" original does not excuse "en"
+  assert.deepEqual(overview.videos.find((v) => v.videoId === "v2")!.missingLanguages, ["de"]);
+});
+
 test("getLocalizationOverview treats a video with zero channel-wide languages as missing, not complete", async () => {
   const { services } = createFixture([makeVideo({ existingLocalizations: {} })]);
 
@@ -114,6 +151,97 @@ test("getLocalizationOverview fails with not_found for an unsynchronized channel
       return true;
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// Tracked languages (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5, owner instruction
+// 2026-09-21). Acceptance fixed before implementation: a tracked language appears as a column
+// even with zero real translations (the whole point -- solving the chicken-and-egg gap where a
+// language can't be proposed for translation until it already has one); untracking a language
+// that still has real data must NOT hide it, since `languages` is a union of tracked and real.
+// ---------------------------------------------------------------------------
+
+test("addTrackedLanguage: a language with zero real translations appears in both languages and trackedLanguages", async () => {
+  const { services } = createFixture([makeVideo({ existingLocalizations: {} })]);
+
+  const result = await services.addTrackedLanguage({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+    language: "fr",
+  });
+  assert.deepEqual(result.trackedLanguages, ["fr"]);
+
+  const overview = await services.getLocalizationOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+  assert.deepEqual(overview.languages, ["fr"]);
+  assert.deepEqual(overview.trackedLanguages, ["fr"]);
+  // Zero real translations -- every video is "missing" this tracked language, never silently
+  // marked complete or present just because it's tracked.
+  assert.deepEqual(overview.videos[0]?.missingLanguages, ["fr"]);
+  assert.deepEqual(overview.videos[0]?.presentLanguages, []);
+});
+
+test("addTrackedLanguage: adding an already-tracked language is idempotent, not duplicated", async () => {
+  const { services } = createFixture([makeVideo()]);
+  await services.addTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "fr" });
+  const result = await services.addTrackedLanguage({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+    language: "fr",
+  });
+  assert.deepEqual(result.trackedLanguages, ["fr"]);
+});
+
+test("addTrackedLanguage: rejects a malformed language code", async () => {
+  const { services } = createFixture([makeVideo()]);
+  await assert.rejects(
+    () =>
+      services.addTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "!!!" }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "validation_failed");
+      return true;
+    }
+  );
+});
+
+test("removeTrackedLanguage: untracking a language with zero real translations removes its column entirely", async () => {
+  const { services } = createFixture([makeVideo({ existingLocalizations: {} })]);
+  await services.addTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "fr" });
+
+  const result = await services.removeTrackedLanguage({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+    language: "fr",
+  });
+  assert.deepEqual(result.trackedLanguages, []);
+
+  const overview = await services.getLocalizationOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+  assert.deepEqual(overview.languages, []);
+});
+
+test("removeTrackedLanguage: untracking a language that still has a real translation on a video does NOT hide its column", async () => {
+  const { services } = createFixture([
+    makeVideo({ existingLocalizations: { fr: { title: "FR", description: "FR desc" } } }),
+  ]);
+  await services.addTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "fr" });
+
+  await services.removeTrackedLanguage({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", language: "fr" });
+
+  const overview = await services.getLocalizationOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+  // "fr" is gone from trackedLanguages but stays in the rendered `languages` union because real
+  // data for it still exists -- untracking is a display preference, never a deletion.
+  assert.deepEqual(overview.trackedLanguages, []);
+  assert.deepEqual(overview.languages, ["fr"]);
+  assert.deepEqual(overview.videos[0]?.presentLanguages, ["fr"]);
 });
 
 test("getVideoLocalizationDetail returns sorted remote locales for a known video", async () => {
@@ -204,4 +332,21 @@ test("exportLocalizations rejects video ids that do not belong to the channel", 
       return true;
     }
   );
+});
+
+test("getLocalizationOverview passes privacyStatus and the scheduled publishAt through to each row", async () => {
+  const { services } = createFixture([
+    makeVideo({ videoId: "sched", privacyStatus: "private", publishAt: "2027-02-03T10:00:00.000Z" }),
+    makeVideo({ videoId: "pub" }),
+  ]);
+  const overview = await services.getLocalizationOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+  const sched = overview.videos.find((v) => v.videoId === "sched");
+  assert.equal(sched?.privacyStatus, "private");
+  assert.equal(sched?.publishAt, "2027-02-03T10:00:00.000Z");
+  const pub = overview.videos.find((v) => v.videoId === "pub");
+  assert.equal(pub?.privacyStatus, "public");
+  assert.equal(pub?.publishAt, null);
 });

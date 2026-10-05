@@ -4,7 +4,7 @@ type BackupStoreDeps = {
   healthCheck(): Promise<BackupHealth>;
   write(args: {
     channelId: string;
-    batchId: string;
+    operationId: string;
     videoId: string;
     snapshot: BackupSnapshot;
   }): Promise<{ path: string }>;
@@ -37,10 +37,16 @@ export function createBackupServices(deps: ServiceDependencies) {
    * the rest of the batch is unaffected) -- callers must not treat this as systemic
    * (that classification is checkInfrastructureHealth's job, checked earlier, once).
    * AC-BACKUP-03: never overwrites -- enforced by the store adapter, not here.
+   *
+   * `operationId` (renamed from `batchId` 2026-09-20 when a second caller,
+   * `src/lib/video-details/`, was added) is whatever uniquely scopes this backup's file path so
+   * two unrelated writes to the same video never collide -- a real Batch's id for the Batches
+   * caller, a per-edit id for a single-video write. It was never a Batches-specific concept, just
+   * named after its only caller at the time.
    */
   async function captureBackup(args: {
     channelId: string;
-    batchId: string;
+    operationId: string;
     videoId: string;
     snapshot: BackupSnapshot;
   }): Promise<BackupRecord> {

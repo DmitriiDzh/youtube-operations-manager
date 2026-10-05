@@ -1,14 +1,17 @@
 import {
   DomainError,
   isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
   type CredentialRef,
   type DomainErrorCode,
   type DomainErrorShape,
   type ResolvedCredentials,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 
 export type { CredentialRef, DomainErrorCode, DomainErrorShape, ResolvedCredentials };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };
 
 export type ThumbnailInfo = {
   url: string;
@@ -45,6 +48,10 @@ export type SyncedVideo = {
   existingLocalizationLanguages: string[];
   lastSyncedAt: string;
   etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
+  publishAt: string | null;
 };
 
 export type ChannelForSync = {
@@ -52,6 +59,8 @@ export type ChannelForSync = {
   title: string;
   thumbnailUrl: string | null;
   uploadsPlaylistId: string;
+  /** BL-118: when the channel was created on YouTube (`snippet.publishedAt`); null if the API omitted it. */
+  publishedAt?: string | null;
 };
 
 export type VideoSyncMetadata = {
@@ -65,6 +74,15 @@ export type VideoSyncMetadata = {
   thumbnails: Record<string, ThumbnailInfo>;
   existingLocalizations: Record<string, LocaleMetadata>;
   etag: string | null;
+  // Nullable: the `statistics` part can be absent from a YouTube API response (e.g. comments
+  // disabled omits commentCount) -- never defaulted to 0, which would assert a false fact.
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
+  durationSeconds: number | null;
+  /** `snippet.liveBroadcastContent` from the sync read; absent/null = unknown. */
+  liveBroadcastContent?: string | null;
+  publishAt: string | null;
 };
 
 export type SyncChannelResult = {

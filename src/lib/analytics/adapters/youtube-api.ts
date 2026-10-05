@@ -1,0 +1,76 @@
+import { createGoogleOAuthClient } from "@/lib/auth";
+import {
+  createYoutubeAnalyticsClient,
+  queryChannelAnalyticsReport,
+  queryChannelBreakdownReport,
+  queryVideoAnalyticsReport,
+} from "@/lib/youtube-read-gateway";
+import type { ResolvedCredentials } from "../contracts";
+
+async function createAuthorizedClient(credentials: ResolvedCredentials) {
+  const oauth2 = createGoogleOAuthClient();
+  oauth2.setCredentials({
+    access_token: credentials.accessToken,
+    refresh_token: credentials.refreshToken,
+  });
+
+  return createYoutubeAnalyticsClient(oauth2);
+}
+
+export function createAnalyticsYoutubeApiAdapter() {
+  return {
+    async queryVideoAnalyticsReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      videoId: string;
+      startDate: string;
+      endDate: string;
+      metricNames: readonly string[];
+    }) {
+      const youtubeAnalytics = await createAuthorizedClient(args.credentials);
+      return queryVideoAnalyticsReport(youtubeAnalytics, {
+        channelId: args.channelId,
+        videoId: args.videoId,
+        startDate: args.startDate,
+        endDate: args.endDate,
+        metricNames: args.metricNames,
+      });
+    },
+
+    async queryChannelAnalyticsReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      metricNames: readonly string[];
+    }) {
+      const youtubeAnalytics = await createAuthorizedClient(args.credentials);
+      return queryChannelAnalyticsReport(youtubeAnalytics, {
+        channelId: args.channelId,
+        startDate: args.startDate,
+        endDate: args.endDate,
+        metricNames: args.metricNames,
+      });
+    },
+
+    async queryChannelBreakdownReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      dimensions: string;
+      metricNames: readonly string[];
+      filters?: string;
+    }) {
+      const youtubeAnalytics = await createAuthorizedClient(args.credentials);
+      return queryChannelBreakdownReport(youtubeAnalytics, {
+        channelId: args.channelId,
+        startDate: args.startDate,
+        endDate: args.endDate,
+        dimensions: args.dimensions,
+        metricNames: args.metricNames,
+        filters: args.filters,
+      });
+    },
+  };
+}

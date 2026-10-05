@@ -2,13 +2,101 @@
 
 import { loadEnvConfig } from "@next/env";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import type { DeviceAuthorizationStart } from "@/lib/auth";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
-import { createCliAuthService } from "@/lib/cli-auth/service";
-import type { CredentialRef } from "@/lib/video-metadata/contracts";
+import { createCliAuthService } from "@/lib/cli-auth";
+import type { CredentialRef } from "@/lib/shared-domain";
+import { getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
+import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-mutation-gate";
+import { OperationLockError } from "@/lib/operation-lock";
+import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
+import { createBatchCore, type BatchCore } from "@/lib/batches";
+import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
+import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
+import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
+import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
+import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
+import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
+import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { createChannelWorkspacesCore, type ChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
+import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
+
+// CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
+// docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
+// src/mcp/server.ts, never a parallel implementation (AGENTS.md §D).
+type ChangesetCliCoreSubset = Pick<
+  ChangeSetCore,
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+>;
+type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows">;
+type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
+// CLI parity for the MCP analytics_list/analytics_overview tools (same "machine-readable
+// analytics for operational agents" follow-up, docs/roadmap/BACKLOG.md).
+type AnalyticsCliCoreSubset = Pick<
+  AnalyticsCore,
+  | "listMetrics"
+  | "getChannelOverview"
+  | "getDataQualityReport"
+  | "getComparableAgeComparison"
+  | "listWeeklyReports"
+  | "getWeeklyReport"
+>;
+// CLI parity for the MCP ai_localization_generate/ai_localization_create_change_set tools
+// (BL-075/BL-078, docs/roadmap/BACKLOG.md) -- same two existing service functions the Web UI's
+// own ai-localization routes already call, never a parallel implementation.
+type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
+// Phase 7 (Agent Operations Interface) -- CLI parity for the MCP agent_get_capabilities tool.
+type AgentOperationsCliCoreSubset = Pick<
+  AgentOperationsCore,
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
+  | "getGenerationProvenance"
+  | "createContentProposal"
+  | "getContentProposal"
+  | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
+  | "findComparableVideos"
+  | "listAssetPerformance"
+>;
+type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- CLI parity for the MCP
+// query_market_intelligence/query_competitors tools. Wired directly here, not through
+// AgentOperationsCliCoreSubset above -- see MarketIntelligenceCoreSubset's own doc comment in
+// src/mcp/server.ts for why.
+// Widened in Phase 9 slice 9G, part A for `agent market-records`'s CLI parity with
+// `agent_list_market_records`.
+type MarketIntelligenceCliCoreSubset = Pick<
+  MarketIntelligenceCore,
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
+  // Collection requests (ADR 0021): create + limits only; running/rejecting one is Web-UI-only (fenced by the approval inventory test).
+  | "createCollectionRequest"
+  | "getCollectionLimits"
+>;
+
+// Phase 10 slice 2 -- CLI parity for the agent_list_hypotheses/agent_get_hypothesis_trail/
+// create_experiment_proposal MCP tools. Same "registered directly here" reasoning as
+// MarketIntelligenceCliCoreSubset above -- decision-engine's own service layer already does its
+// own channel-access assertion internally.
+type DecisionEngineCliCoreSubset = Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment">;
 
 loadEnvConfig(process.cwd());
 
@@ -26,7 +114,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization" | "agent" | "asset";
   command:
     | "list"
     | "transcript"
@@ -44,38 +132,116 @@ export type ParsedArgs = {
     | "list-users"
     | "select-user"
     | "logout"
-    | "revoke";
+    | "revoke"
+    | "get"
+    | "import"
+    | "sync"
+    | "video-list"
+    | "overview"
+    | "data-quality"
+    | "comparable-age"
+    | "weekly-reports"
+    | "weekly-report-get"
+    | "generate"
+    | "create-change-set"
+    | "capabilities"
+    | "channel-context"
+    | "video-context"
+    | "channel-analytics"
+    | "video-analytics"
+    | "list-assets"
+    | "get-asset-context"
+    | "register"
+    | "get-generation-provenance"
+    | "create-content-proposal"
+    | "get-content-proposal"
+    | "list-content-proposals"
+    | "register-external-artifact"
+    | "list-proposal-artifacts"
+    | "list-operations-files"
+    | "get-operations-file"
+    | "find-comparable-videos"
+    | "list-asset-performance"
+    | "competitors"
+    | "market-intelligence"
+    | "market-records"
+    | "create-research-request"
+    | "create-collection-request"
+    | "collection-limits"
+    | "list-hypotheses"
+    | "get-hypothesis-trail"
+    | "create-experiment-proposal"
+    | "channel-workspace";
   flags: Record<string, string | boolean>;
 };
 
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"] as const;
+type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
+
+/** Every valid command per explicit namespace, and the metadata (no-namespace) commands: the single list `parseArgs` validates against and the gate below classifies. */
+export const CLI_COMMANDS_BY_NAMESPACE: Record<ExplicitNamespace, readonly string[]> = {
+  auth: ["login", "whoami", "list-channels", "select-channel", "list-users", "select-user", "logout", "revoke"],
+  playlist: ["list", "create", "update", "delete", "add", "remove"],
+  changeset: ["list", "get", "preview", "import"],
+  batch: ["list", "get"],
+  channel: ["sync", "list", "video-list"],
+  analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
+  "ai-localization": ["generate", "create-change-set"],
+  agent: [
+    "capabilities",
+    "channel-context",
+    "video-context",
+    "channel-analytics",
+    "video-analytics",
+    "list-assets",
+    "get-asset-context",
+    "get-generation-provenance",
+    "create-content-proposal",
+    "get-content-proposal",
+    "list-content-proposals",
+    "register-external-artifact",
+    "list-proposal-artifacts",
+    "list-operations-files",
+    "get-operations-file",
+    "find-comparable-videos",
+    "list-asset-performance",
+    "competitors",
+    "market-intelligence",
+    "market-records",
+    "create-research-request",
+    "create-collection-request",
+    "collection-limits",
+    "list-hypotheses",
+    "get-hypothesis-trail",
+    "create-experiment-proposal",
+    "channel-workspace",
+  ],
+  asset: ["register"],
+};
+export const CLI_METADATA_COMMANDS = ["list", "transcript", "preview", "apply"] as const;
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const [namespaceRaw, maybeCommandRaw, ...remaining] = argv;
-  const isAuthNamespace = namespaceRaw === "auth";
-  const isPlaylistNamespace = namespaceRaw === "playlist";
-  const commandRaw =
-    isAuthNamespace || isPlaylistNamespace ? maybeCommandRaw : namespaceRaw;
-  const flagTokens =
-    isAuthNamespace || isPlaylistNamespace
-      ? remaining
-      : [maybeCommandRaw, ...remaining].filter(Boolean);
+  const explicitNamespace = EXPLICIT_NAMESPACES.find((n) => n === namespaceRaw) as
+    | ExplicitNamespace
+    | undefined;
+  const hasExplicitNamespace = explicitNamespace !== undefined;
+  const commandRaw = hasExplicitNamespace ? maybeCommandRaw : namespaceRaw;
+  const flagTokens = hasExplicitNamespace
+    ? remaining
+    : [maybeCommandRaw, ...remaining].filter(Boolean);
 
-  const validMetadataCommands = ["list", "transcript", "preview", "apply"];
-  const validAuthCommands = ["login", "whoami", "list-channels", "select-channel", "list-users", "select-user", "logout", "revoke"];
-  const validPlaylistCommands = ["list", "create", "update", "delete", "add", "remove"];
-  const validCommands = isAuthNamespace
-    ? validAuthCommands
-    : isPlaylistNamespace
-      ? validPlaylistCommands
-      : validMetadataCommands;
+  const validMetadataCommands = CLI_METADATA_COMMANDS;
+  const validCommands = hasExplicitNamespace
+    ? CLI_COMMANDS_BY_NAMESPACE[explicitNamespace]
+    : validMetadataCommands;
 
   if (!commandRaw || !validCommands.includes(commandRaw)) {
     throw new DomainError({
       code: "validation_failed",
-      message: isAuthNamespace
-        ? "Auth command must be one of: login, whoami, list-channels, select-channel, list-users, select-user, logout, revoke"
-        : isPlaylistNamespace
-          ? "Playlist command must be one of: list, create, update, delete, add, remove"
-          : "Command must be one of: list, transcript, preview, apply",
+      message: hasExplicitNamespace
+        ? `${explicitNamespace} command must be one of: ${validCommands.join(", ")}`
+        : "Command must be one of: list, transcript, preview, apply",
     });
   }
 
@@ -103,7 +269,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return {
-    namespace: isAuthNamespace ? "auth" : isPlaylistNamespace ? "playlist" : "metadata",
+    namespace: explicitNamespace ?? "metadata",
     command: commandRaw as ParsedArgs["command"],
     flags,
   };
@@ -127,21 +293,25 @@ function parseVideoIdsFlag(flags: Record<string, string | boolean>) {
 }
 
 export function getCredentialRef(flags: Record<string, string | boolean>): CredentialRef | null {
-  const userId = flags.userId;
-  const accessToken = flags.accessToken;
-
-  if (typeof userId === "string" && userId.length > 0) {
+  // Found by independent review (cycle 3): this function feeds resolveEffectiveCredentialRef,
+  // the shared path for nearly every non-auth command -- a valueless --userId here used to
+  // fall through to `null` exactly like a truly OMITTED --userId, silently resolving to
+  // whatever user is currently active locally instead of erroring on the operator's typo.
+  // optionalStringFlag distinguishes "absent" (null return, fallback is correct) from
+  // "present but not a real string" (throws), which the earlier plain typeof check couldn't.
+  const userId = optionalStringFlag(flags, "userId");
+  if (userId !== undefined) {
     return { userId };
   }
 
-  if (typeof accessToken === "string" && accessToken.length > 0) {
+  const accessToken = optionalStringFlag(flags, "accessToken");
+  if (accessToken !== undefined) {
+    const tokenExpiryFlag = optionalStringFlag(flags, "tokenExpiry");
     return {
       accessToken,
-      refreshToken:
-        typeof flags.refreshToken === "string" ? flags.refreshToken : undefined,
-      scope: typeof flags.scope === "string" ? flags.scope : undefined,
-      tokenExpiry:
-        typeof flags.tokenExpiry === "string" ? Number(flags.tokenExpiry) : undefined,
+      refreshToken: optionalStringFlag(flags, "refreshToken"),
+      scope: optionalStringFlag(flags, "scope"),
+      tokenExpiry: tokenExpiryFlag === undefined ? undefined : Number(tokenExpiryFlag),
     };
   }
 
@@ -166,17 +336,134 @@ export function resolveDryRunFlag(flags: Record<string, string | boolean>): bool
   return true;
 }
 
+async function readWorkbookFileFlag(
+  flags: Record<string, string | boolean>
+): Promise<{ filename: string; buffer: Buffer }> {
+  const filePath = requiredStringFlag(flags, "file");
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(filePath);
+  } catch (error) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: `Could not read --file ${filePath}: ${error instanceof Error ? error.message : "unknown error"}`,
+    });
+  }
+  return { filename: basename(filePath), buffer };
+}
+
+// Shared core for requiredStringFlag/optionalStringFlag below: a flag that IS present must
+// carry a real string value -- a present-but-valueless flag (parseArgs sets it to boolean
+// `true` when no value token follows, e.g. a typo like `--channelId --userId u1`) is always a
+// malformed input, never silently equivalent to "omitted". Whether *absence itself* is an
+// error is the one thing that differs between the two exported functions below.
+function readStringFlag(
+  flags: Record<string, string | boolean>,
+  key: string
+): string | undefined {
+  const value = flags[key];
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.length > 0) return value;
+
+  throw new DomainError({
+    code: "validation_failed",
+    message: `--${key} requires a value`,
+  });
+}
+
 export function requiredStringFlag(
   flags: Record<string, string | boolean>,
   key: string
 ): string {
-  const value = flags[key];
-  if (typeof value === "string" && value.length > 0) return value;
+  const value = readStringFlag(flags, key);
+  if (value !== undefined) return value;
 
   throw new DomainError({
     code: "validation_failed",
     message: `Missing required --${key}`,
   });
+}
+
+export function optionalStringFlag(
+  flags: Record<string, string | boolean>,
+  key: string
+): string | undefined {
+  return readStringFlag(flags, key);
+}
+
+// The device-availability gate (operation lock / recovery mode) classifies every CLI command by its FULLY QUALIFIED
+// `namespace command` pair (BL-009) -- never by a bare command word. A bare word such as "list" or "get" is reused across
+// namespaces, so keying on it would let a future mutating `<namespace> list` silently inherit the read-only treatment of an
+// unrelated namespace's `list`. Anything not listed in either set below is GATED (fail-safe by construction); the metadata
+// commands (`list`, `transcript`, `preview`, `apply` with no namespace) use the namespace key "metadata".
+//
+// Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data (local or a live read) but mutates
+// nothing locally or on YouTube. `auth select-channel`/`auth select-user` persist a local selection and are gated, consistent
+// with the MCP write_channel_select/auth_user_select tools. `channel sync`, `changeset import`, `ai-localization create-change-set`,
+// `agent create-content-proposal`/`register-external-artifact`/`create-research-request`/`create-collection-request`/`create-experiment-proposal` and
+// `asset register` each persist rows and stay gated. No CLI command can set the operations-workspace or a channel-workspace path
+// (Web UI Settings only), and `analytics weekly-reports*` only read: generation is Web-UI-triggered.
+export type CliGateKey = `${string} ${string}`;
+export const cliGateKey = (namespace: string, command: string): CliGateKey => `${namespace} ${command}`;
+
+const READ_ONLY_CLI_COMMANDS: ReadonlySet<string> = new Set([
+  "metadata list",
+  "metadata transcript",
+  "metadata preview",
+  "auth whoami",
+  "auth list-channels",
+  "auth list-users",
+  "playlist list",
+  "changeset list",
+  "changeset get",
+  "changeset preview",
+  "batch list",
+  "batch get",
+  "channel list",
+  "channel video-list",
+  "analytics list",
+  "analytics overview",
+  "analytics data-quality",
+  "analytics comparable-age",
+  "analytics weekly-reports",
+  "analytics weekly-report-get",
+  // ai-localization generate persists nothing (like "preview"); a real-connection call is gated by the service's own check (RISK-30).
+  "ai-localization generate",
+  "agent capabilities",
+  "agent channel-context",
+  "agent video-context",
+  "agent channel-analytics",
+  "agent video-analytics",
+  "agent list-assets",
+  "agent get-asset-context",
+  "agent get-generation-provenance",
+  "agent get-content-proposal",
+  "agent list-content-proposals",
+  "agent list-proposal-artifacts",
+  "agent list-operations-files",
+  "agent get-operations-file",
+  "agent channel-workspace",
+  "agent find-comparable-videos",
+  "agent list-asset-performance",
+  "agent competitors",
+  "agent market-intelligence",
+  "agent market-records",
+  "agent collection-limits",
+  "agent list-hypotheses",
+  "agent get-hypothesis-trail",
+]);
+
+// OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of `/api/auth/**`: decision 6
+// (docs/decisions/0002-...) keeps this device's own OAuth session independent of the handoff/recovery-mode gate. These DO
+// mutate local state (the `users` row), so they are not read-only -- they are exempt for a different reason.
+const AUTH_SESSION_EXEMPT_CLI_COMMANDS: ReadonlySet<string> = new Set(["auth login", "auth logout", "auth revoke"]);
+
+/** How the gate treats one command: exposed so a test can pin the classification of EVERY command and of an unknown one. */
+export function classifyCliCommand(namespace: string, command: string): "read_only" | "auth_session_exempt" | "gated" {
+  const key = cliGateKey(namespace, command);
+  if (READ_ONLY_CLI_COMMANDS.has(key)) return "read_only";
+  if (AUTH_SESSION_EXEMPT_CLI_COMMANDS.has(key)) return "auth_session_exempt";
+  return "gated";
 }
 
 function serializeSuccess(data: unknown) {
@@ -196,6 +483,21 @@ function serializeError(error: unknown) {
         message: error.message,
         details: error.details,
       },
+    });
+  }
+
+  // OperationLockError / RecoveryModeError (src/lib/operation-lock, src/lib/device-handoff)
+  // carry the same stable {code, message, details} shape as DomainError without being an
+  // instance of it (a different module's own error class, on purpose -- AGENTS.md §D, they
+  // are not YouTube-write-safety domain errors). Checked by explicit `instanceof` against
+  // exactly these two known classes -- NOT "any object with a string .code property", which
+  // would also match a raw libsql driver error (e.g. SQLITE_BUSY) or a Node `fs` error (e.g.
+  // ENOENT/EACCES with a real local file path in its message) and echo its internal detail as
+  // if it were a stable, documented error code (found by independent review).
+  if (error instanceof OperationLockError || error instanceof RecoveryModeError) {
+    return JSON.stringify({
+      ok: false,
+      error: { code: error.code, message: error.message, details: error.details },
     });
   }
 
@@ -221,14 +523,41 @@ export async function runCliCommand(args: {
     | "removeVideosFromPlaylist"
   >;
   auth?: CliAuthAdapter;
+  operationsCore?: ChangesetCliCoreSubset & BatchCliCoreSubset;
+  channelSyncCore?: ChannelSyncCliCoreSubset;
+  channelAccessCore?: ChannelAccessCore;
+  analyticsCore?: AnalyticsCliCoreSubset;
+  aiLocalizationCore?: AiLocalizationCliCoreSubset;
+  agentOperationsCore?: AgentOperationsCliCoreSubset;
+  assetCatalogCore?: AssetCatalogCliCoreSubset;
+  marketIntelligenceCore?: MarketIntelligenceCliCoreSubset;
+  decisionEngineCore?: DecisionEngineCliCoreSubset;
+  // Phase 11 -- read-only subset on purpose; `setWorkspace` is operator-only (Web UI).
+  channelWorkspacesCore?: Pick<ChannelWorkspacesCore, "getWorkspace">;
+  // Phase 12 slice 12.4 -- agent-confinement subset of the per-channel market assignments.
+  marketAssignmentCore?: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership">;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
+  // Phase 12 slice 12.5 -- whether operator mode (no token) is allowed at all. Injectable for tests;
+  // defaults to the persisted "Operator CLI access" setting (off unless the operator turned it on).
+  operatorCliEnabled?: () => Promise<boolean>;
 }): Promise<number> {
   const core = args.core ?? {
     ...createVideoMetadataCore(),
     ...createPlaylistManagementCore(),
   };
   const auth = args.auth ?? createCliAuthService();
+  const operationsCore = args.operationsCore ?? { ...createChangeSetCore(), ...createBatchCore() };
+  const channelSyncCore = args.channelSyncCore ?? createChannelSyncCore();
+  const channelAccessCore = args.channelAccessCore ?? createChannelAccessCore();
+  const analyticsCore = args.analyticsCore ?? createAnalyticsCore();
+  const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
+  const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
+  const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
+  const marketIntelligenceCore = args.marketIntelligenceCore ?? createMarketIntelligenceCore();
+  const decisionEngineCore = args.decisionEngineCore ?? createDecisionEngineCore();
+  const channelWorkspacesCore = args.channelWorkspacesCore ?? createChannelWorkspacesCore();
+  const marketAssignmentCore = args.marketAssignmentCore ?? createMarketAssignmentCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -236,6 +565,25 @@ export async function runCliCommand(args: {
 
   try {
     const parsedArgs = parseArgs(args.argv);
+
+    // The CLI is the OPERATOR's tool only (docs/decisions/0013-in-app-http-mcp-transport.md): agents use
+    // the in-app MCP endpoint. Without this switch a shell-capable agent could simply run it from the
+    // project folder, so it runs only while "Operator CLI access" is on (AC-P12-10).
+    if (!(await (args.operatorCliEnabled ?? getOperatorCliEnabled)())) {
+      throw new DomainError({
+        code: "AGENT_TOKEN_INVALID",
+        message:
+          "the CLI is the operator's tool and \"Operator CLI access\" is off (Settings -> AI Agent). AI agents connect through the app's MCP endpoint instead, see Settings -> AI Agent",
+      });
+    }
+
+    // Decision 7 (docs/decisions/0002-additive-schema-versioning.md's companion plan): a
+    // single choke point, mirroring src/proxy.ts's and MCP's, gating every mutating command
+    // (everything except the plainly read-only ones below) behind the local operation lock and
+    // the device-handoff recovery-mode check -- never bypassable by calling the CLI directly.
+    if (classifyCliCommand(parsedArgs.namespace, parsedArgs.command) === "gated") {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+    }
 
     if (parsedArgs.namespace === "auth") {
       if (parsedArgs.command === "login") {
@@ -264,8 +612,7 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "select-channel") {
         const credentialRef = getCredentialRef(parsedArgs.flags) ?? undefined;
-        const channelId =
-          typeof parsedArgs.flags.channelId === "string" ? parsedArgs.flags.channelId : "";
+        const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
         const result = await auth.selectWriteChannel({ channelId, credentialRef });
         writeStdout(serializeSuccess(result));
         return 0;
@@ -291,9 +638,683 @@ export async function runCliCommand(args: {
         return 0;
       }
 
-      const revokeUserId =
-        typeof parsedArgs.flags.userId === "string" ? parsedArgs.flags.userId : undefined;
-      const result = await auth.revoke({ userId: revokeUserId });
+      const result = await auth.revoke({ userId: optionalStringFlag(parsedArgs.flags, "userId") });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // changeset/batch operate on the local database only -- no YouTube credential needed,
+    // so these two namespaces are dispatched before credentialRef resolution below. They
+    // still resolve the local active-user identity (never a YouTube call) purely to check
+    // it against the requested channelId -- see channelAccessCore.assertActiveChannel.
+    if (parsedArgs.namespace === "changeset") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const changesetCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in changesetCredentialRef ? changesetCredentialRef.userId : null,
+        channelId,
+      });
+
+      if (parsedArgs.command === "list") {
+        const result = await operationsCore.listChangeSets({ channelId });
+        // Wrapped as { changeSets: ... } to match the MCP changeset_list tool's shape
+        // (src/mcp/server.ts) and this CLI's own "batch list" sibling below -- found by
+        // independent review to have been left as the bare array, an undocumented
+        // divergence from the MCP shape docs/interfaces.md itself claims is mirrored.
+        writeStdout(serializeSuccess({ changeSets: result }));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get") {
+        const result = await operationsCore.getChangeSet({
+          channelId,
+          changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
+          status: optionalStringFlag(parsedArgs.flags, "status"),
+          language: optionalStringFlag(parsedArgs.flags, "language"),
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const { filename, buffer } = await readWorkbookFileFlag(parsedArgs.flags);
+
+      if (parsedArgs.command === "preview") {
+        const result = await operationsCore.previewImport({ channelId, filename, buffer });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "import" -- persists a new Change Set. Never writes to YouTube; gated above like
+      // playlist_create/apply (mutates the local database).
+      const result = await operationsCore.createChangeSetFromImport({ channelId, filename, buffer });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    if (parsedArgs.namespace === "batch") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const batchCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in batchCredentialRef ? batchCredentialRef.userId : null,
+        channelId,
+      });
+
+      if (parsedArgs.command === "list") {
+        const result = await operationsCore.listBatchesByChannel(channelId);
+        writeStdout(serializeSuccess({ batches: result }));
+        return 0;
+      }
+
+      // "get" -- getBatchWithLedgerRows verifies this batch actually belongs to channelId
+      // before returning anything (AGENTS.md §F), not a bare getBatch(batchId).
+      const batchId = requiredStringFlag(parsedArgs.flags, "batchId");
+      writeStdout(serializeSuccess(await operationsCore.getBatchWithLedgerRows(channelId, batchId)));
+      return 0;
+    }
+
+    // ai-localization, like changeset/batch above, has its own service functions that never
+    // check active-channel scoping internally (the Web UI's own routes do it at the route
+    // boundary instead) -- so this CLI namespace does it explicitly here too, same reasoning.
+    if (parsedArgs.namespace === "ai-localization") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const aiLocalizationCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in aiLocalizationCredentialRef ? aiLocalizationCredentialRef.userId : null,
+        channelId,
+      });
+
+      if (parsedArgs.command === "generate") {
+        const videoIds = requiredStringFlag(parsedArgs.flags, "videoIds")
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const targetLanguages = requiredStringFlag(parsedArgs.flags, "targetLanguages")
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const result = await aiLocalizationCore.generateProposals({
+          channelId,
+          videoIds,
+          targetLanguages,
+          providerName: optionalStringFlag(parsedArgs.flags, "providerName"),
+          connectionId: optionalStringFlag(parsedArgs.flags, "connectionId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "create-change-set" -- persists a new Change Set (source: "ai_localization"). Never
+      // writes to YouTube; gated above like changeset import (mutates the local database).
+      // --proposalsJson/--provenanceJson/--evidenceJson take a JSON-encoded value, the same
+      // shape generateProposals's own response already returns for a caller to echo back (or,
+      // for --evidenceJson, owner spec §13's EvidenceReference[] shape) -- there is no
+      // reasonable flat-flag equivalent for either. --rationale is plain free text (Phase 7
+      // slice F, owner spec §12).
+      const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
+      const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
+      const rationaleFlag = optionalStringFlag(parsedArgs.flags, "rationale");
+      let proposals: unknown;
+      let provenance: unknown;
+      let evidence: unknown;
+      try {
+        proposals = JSON.parse(proposalsJson);
+        provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+        evidence = evidenceJsonFlag ? JSON.parse(evidenceJsonFlag) : undefined;
+      } catch {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "--proposalsJson/--provenanceJson/--evidenceJson must each be valid JSON",
+        });
+      }
+      const result = await aiLocalizationCore.createChangeSetFromGeneration(
+        {
+          channelId,
+          proposals,
+          provenance,
+          evidence,
+          rationale: rationaleFlag,
+        },
+        { createdVia: "cli", agentApiVersion: null }
+      );
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // Phase 7 (Agent Operations Interface). "capabilities" is instance-level information, no
+    // channel/credential resolution needed at all. "channel-context"/"video-context" (slice B)
+    // are channel-scoped reads whose service functions do no active-channel checking themselves
+    // (same convention as ai-localization/changeset/batch above) -- so this CLI namespace
+    // resolves the local active-user identity and checks it against the requested channelId
+    // explicitly, mirroring the ai-localization dispatch block above, not the simpler
+    // "capabilities" case.
+    if (parsedArgs.namespace === "agent") {
+      if (parsedArgs.command === "capabilities") {
+        const result = await agentOperationsCore.getSystemCapabilities({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Slice I, owner spec §3/§30. No channelId/assertActiveChannel -- like "capabilities"
+      // above, this is instance-level (one global, operator-configured workspace path), not
+      // channel-scoped.
+      if (parsedArgs.command === "list-operations-files") {
+        const result = await agentOperationsCore.operationsWorkspaceListFiles({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-operations-file") {
+        const result = await agentOperationsCore.operationsWorkspaceGetFile({
+          path: requiredStringFlag(parsedArgs.flags, "path"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Slice C, owner spec §9. UNLIKE "channel-context"/"video-context" below, these two do NOT
+      // call `channelAccessCore.assertActiveChannel` themselves -- mirroring the MCP
+      // `agentQueryChannelAnalytics`/`agentQueryVideoAnalytics` handlers' own pattern (and the
+      // pre-existing `analytics overview`/`analytics list` commands below), since
+      // `agentOperationsCore.queryChannelAnalytics`/`queryVideoAnalytics` forward `credentialRef`
+      // straight into the REAL `analyticsCore`, which already does that identical check
+      // internally -- a second check here would be redundant against the same fact.
+      if (parsedArgs.command === "channel-analytics") {
+        const analyticsCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const result = await agentOperationsCore.queryChannelAnalytics({
+          credentialRef: analyticsCredentialRef,
+          channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "video-analytics") {
+        const analyticsCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const metricNamesFlag = optionalStringFlag(parsedArgs.flags, "metricNames");
+        const result = await agentOperationsCore.queryVideoAnalytics({
+          credentialRef: analyticsCredentialRef,
+          channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+          startDate: optionalStringFlag(parsedArgs.flags, "startDate"),
+          endDate: optionalStringFlag(parsedArgs.flags, "endDate"),
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+          metricNames: metricNamesFlag
+            ? metricNamesFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+            : undefined,
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- both read the
+      // market-intelligence module's own watchlist/evidence storage directly via
+      // marketIntelligenceCore, not agentOperationsCore (see MarketIntelligenceCliCoreSubset's own
+      // doc comment above). Global data, never channel-scoped -- no channelId/assertActiveChannel
+      // check, like
+      // "list-operations-files"/"get-operations-file" above.
+      if (parsedArgs.command === "competitors") {
+        const result = await marketIntelligenceCore.listWatchlist();
+        // Phase 12 (AC-P12-09): an agent sees only entries assigned to its channel.
+        const channels = await marketAssignmentCore.filterForAgent("research_channel", result.channels, (c) => c.channelId);
+        writeStdout(serializeSuccess({ ...result, channels }));
+        return 0;
+      }
+
+      if (parsedArgs.command === "market-intelligence") {
+        const requestedChannelId = requiredStringFlag(parsedArgs.flags, "channelId");
+        await marketAssignmentCore.assertAvailableToAgent("research_channel", requestedChannelId);
+        const result = await marketIntelligenceCore.getWatchlistEntryContext({ channelId: requestedChannelId });
+        // Nested data too: only topic tags whose topic is assigned to the agent's channel.
+        const topicAssignments = await marketAssignmentCore.filterForAgent("topic", result.topicAssignments, (a) => a.topicId);
+        writeStdout(serializeSuccess({ ...result, topicAssignments }));
+        return 0;
+      }
+
+      // Phase 9 slice 9G, part A -- one command with a --kind flag, mirroring the MCP
+      // agent_list_market_records tool's own "kind discriminator, not three tools" shape.
+      if (parsedArgs.command === "market-records") {
+        const kind = requiredStringFlag(parsedArgs.flags, "kind");
+        // Phase 12 (AC-P12-09): each kind narrowed to what is assigned to the agent's channel.
+        if (kind === "topics") {
+          const result = await marketIntelligenceCore.listTopics();
+          const topics = await marketAssignmentCore.filterForAgent("topic", result.topics, (t) => t.topicId);
+          writeStdout(serializeSuccess({ kind, ...result, topics }));
+          return 0;
+        }
+        if (kind === "trend_candidates") {
+          const result = await marketIntelligenceCore.listTrendCandidates();
+          const trendCandidates = await marketAssignmentCore.filterForAgent("trend_candidate", result.trendCandidates, (t) => t.trendCandidateId);
+          writeStdout(serializeSuccess({ kind, ...result, trendCandidates }));
+          return 0;
+        }
+        if (kind === "discovery_candidates") {
+          const result = await marketIntelligenceCore.listDiscoveryCandidates();
+          const candidates = await marketAssignmentCore.filterForAgent("discovery_candidate", result.candidates, (c) => c.channelId);
+          writeStdout(serializeSuccess({ kind, ...result, candidates }));
+          return 0;
+        }
+        throw new DomainError({
+          code: "validation_failed",
+          message: "--kind must be one of: topics, trend_candidates, discovery_candidates",
+        });
+      }
+
+      // Phase 9 slice 9G, part B (owner spec §29) -- an agent-created DRAFT, never self-approving.
+      // Market data is not channel-scoped itself; in an agent session the created request is
+      // recorded as owned by the agent's channel (Phase 12 slice 12.4).
+      if (parsedArgs.command === "create-research-request") {
+        const monitorDurationDaysFlag = optionalStringFlag(parsedArgs.flags, "monitorDurationDays");
+        const result = await marketIntelligenceCore.createMarketResearchRequest(
+          {
+            query: requiredStringFlag(parsedArgs.flags, "query"),
+            rationale: requiredStringFlag(parsedArgs.flags, "rationale"),
+            monitorDurationDays: monitorDurationDaysFlag ? Number(monitorDurationDaysFlag) : undefined,
+          },
+          // `agentApiVersion: null` for the CLI transport, mirroring `create-content-proposal`'s
+          // own established convention below -- MCP is the one transport this interface's own
+          // version actually mediates (owner spec §22), so it is the only one that stamps a real
+          // value.
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        await marketAssignmentCore.recordAgentOwnership("research_request", result.requestId);
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Collection requests (ADR 0021) -- an agent-created DRAFT, never self-approving; zero YouTube calls. Same confinement as the MCP tool:
+      // an explicit --researchChannelIds list (comma-separated) must be assigned to the agent's channel; the default is every watchlist
+      // channel assigned to it. Running/rejecting a request is Web-UI-only.
+      if (parsedArgs.command === "create-collection-request") {
+        const idsFlag = optionalStringFlag(parsedArgs.flags, "researchChannelIds");
+        let researchChannelIds = idsFlag
+          ? idsFlag
+              .split(",")
+              .map((id) => id.trim())
+              .filter((id) => id.length > 0)
+          : undefined;
+        if (researchChannelIds) {
+          for (const channelId of researchChannelIds) {
+            await marketAssignmentCore.assertAvailableToAgent("research_channel", channelId);
+          }
+        } else {
+          const watchlist = await marketIntelligenceCore.listWatchlist();
+          researchChannelIds = (await marketAssignmentCore.filterForAgent("research_channel", watchlist.channels, (c) => c.channelId)).map(
+            (c) => c.channelId
+          );
+          if (researchChannelIds.length === 0) {
+            writeStdout(serializeSuccess({ created: false, request: null, notNeeded: [], alreadyRequested: [] }));
+            return 0;
+          }
+        }
+        const result = await marketIntelligenceCore.createCollectionRequest(
+          { researchChannelIds, reason: optionalStringFlag(parsedArgs.flags, "reason") },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        if (result.request) await marketAssignmentCore.recordAgentOwnership("collection_request", result.request.requestId);
+        // An existing request this agent does not own is not disclosed: channelId only, no requestId.
+        const visibleIds = new Set(
+          (await marketAssignmentCore.filterForAgent("collection_request", result.alreadyRequested, (a) => a.requestId)).map((a) => a.requestId)
+        );
+        const alreadyRequested = result.alreadyRequested.map((a) => (visibleIds.has(a.requestId) ? a : { channelId: a.channelId }));
+        writeStdout(serializeSuccess({ ...result, alreadyRequested }));
+        return 0;
+      }
+
+      if (parsedArgs.command === "collection-limits") {
+        writeStdout(serializeSuccess(await marketIntelligenceCore.getCollectionLimits()));
+        return 0;
+      }
+
+      // Phase 10 slice 2 -- decision-engine's own service layer does its own channel-access
+      // assertion internally (see DecisionEngineCliCoreSubset's own doc comment above), so this
+      // block only needs to resolve `userId`, not call channelAccessCore itself, unlike the
+      // generic channelId-required fallthrough below.
+      if (parsedArgs.command === "list-hypotheses") {
+        const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const result = await decisionEngineCore.listHypotheses({
+          userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+        });
+        writeStdout(serializeSuccess({ hypotheses: result }));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-hypothesis-trail") {
+        const hypothesisId = requiredStringFlag(parsedArgs.flags, "hypothesisId");
+        const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        // getHypothesisTrail (services.ts) does the one access check and the composition itself,
+        // shared with the MCP tool's own identical handler -- not composed separately here.
+        const result = await decisionEngineCore.getHypothesisTrail(hypothesisId, {
+          userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // The one reserved capability (Phase 10 slice 2).
+      if (parsedArgs.command === "create-experiment-proposal") {
+        const hypothesisId = requiredStringFlag(parsedArgs.flags, "hypothesisId");
+        const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const startConditionsFlag = optionalStringFlag(parsedArgs.flags, "startConditions");
+        const plannedDurationFlag = optionalStringFlag(parsedArgs.flags, "plannedDuration");
+        const sampleCoverageConstraintsFlag = optionalStringFlag(parsedArgs.flags, "sampleCoverageConstraints");
+        const budgetEstimateFlag = optionalStringFlag(parsedArgs.flags, "budgetEstimate");
+        const result = await decisionEngineCore.createExperiment(
+          hypothesisId,
+          {
+            treatment: requiredStringFlag(parsedArgs.flags, "treatment"),
+            controlBaseline: requiredStringFlag(parsedArgs.flags, "controlBaseline"),
+            successCriteria: requiredStringFlag(parsedArgs.flags, "successCriteria"),
+            stoppingCriteria: requiredStringFlag(parsedArgs.flags, "stoppingCriteria"),
+            responsible: requiredStringFlag(parsedArgs.flags, "responsible"),
+            ...(startConditionsFlag ? { startConditions: startConditionsFlag } : {}),
+            ...(plannedDurationFlag ? { plannedDuration: plannedDurationFlag } : {}),
+            ...(sampleCoverageConstraintsFlag ? { sampleCoverageConstraints: sampleCoverageConstraintsFlag } : {}),
+            ...(budgetEstimateFlag ? { budgetEstimate: budgetEstimateFlag } : {}),
+          },
+          {
+            userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+            createdBy: "agent",
+            createdVia: "cli",
+          }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+        channelId,
+      });
+
+      if (parsedArgs.command === "channel-context") {
+        const result = await agentOperationsCore.getChannelContext({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 11 -- same active-channel check as "channel-context" (done just above), then the
+      // stored path string only (channelWorkspacesCore, not agentOperationsCore -- same module-
+      // independence reasoning as marketIntelligenceCore).
+      if (parsedArgs.command === "channel-workspace") {
+        const result = await channelWorkspacesCore.getWorkspace({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-assets") {
+        const result = await agentOperationsCore.listAssets({
+          channelId,
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+          assetType: optionalStringFlag(parsedArgs.flags, "assetType"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-asset-context") {
+        const result = await agentOperationsCore.getAssetContext({
+          channelId,
+          assetId: requiredStringFlag(parsedArgs.flags, "assetId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-generation-provenance") {
+        const result = await agentOperationsCore.getGenerationProvenance({
+          channelId,
+          changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
+        });
+        writeStdout(serializeSuccess({ provenance: result }));
+        return 0;
+      }
+
+      // Phase 7 slice G (owner spec §18). --evidenceJson/--briefJson take a JSON-encoded value
+      // (EvidenceReference[] / ContentProposalBrief respectively) -- same reasoning as
+      // ai-localization create-change-set's own --evidenceJson above: there is no reasonable
+      // flat-flag equivalent for either shape. --referenceVideoIds/--referenceAssetIds take a
+      // comma-separated list of ids, same convention as --metricNames above.
+      if (parsedArgs.command === "create-content-proposal") {
+        const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
+        const briefJsonFlag = optionalStringFlag(parsedArgs.flags, "briefJson");
+        const referenceVideoIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceVideoIds");
+        const referenceAssetIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceAssetIds");
+        let evidence: unknown;
+        let brief: unknown;
+        try {
+          evidence = evidenceJsonFlag ? JSON.parse(evidenceJsonFlag) : undefined;
+          brief = briefJsonFlag ? JSON.parse(briefJsonFlag) : undefined;
+        } catch {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--evidenceJson/--briefJson must each be valid JSON",
+          });
+        }
+
+        const result = await agentOperationsCore.createContentProposal(
+          {
+            channelId,
+            objective: optionalStringFlag(parsedArgs.flags, "objective"),
+            topicConcept: optionalStringFlag(parsedArgs.flags, "topicConcept"),
+            rationale: optionalStringFlag(parsedArgs.flags, "rationale"),
+            evidence,
+            brief,
+            referenceVideoIds: referenceVideoIdsFlag
+              ? referenceVideoIdsFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : undefined,
+            referenceAssetIds: referenceAssetIdsFlag
+              ? referenceAssetIdsFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : undefined,
+          },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-content-proposal") {
+        const result = await agentOperationsCore.getContentProposal({
+          channelId,
+          proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-content-proposals") {
+        const result = await agentOperationsCore.listContentProposals({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice G2 (owner spec §19). --provenanceJson takes a JSON-encoded object, same
+      // convention as "asset register" above. referenceKind is restricted to
+      // url/external_artifact_id by the schema itself -- local_path stays available only via the
+      // operator-facing "asset register" command.
+      if (parsedArgs.command === "register-external-artifact") {
+        const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+        let provenance: unknown;
+        try {
+          provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+        } catch {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--provenanceJson must be valid JSON",
+          });
+        }
+
+        const result = await agentOperationsCore.registerExternalArtifact(
+          {
+            channelId,
+            proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+            assetType: requiredStringFlag(parsedArgs.flags, "assetType"),
+            referenceKind: requiredStringFlag(parsedArgs.flags, "referenceKind"),
+            referenceValue: requiredStringFlag(parsedArgs.flags, "referenceValue"),
+            title: optionalStringFlag(parsedArgs.flags, "title"),
+            description: optionalStringFlag(parsedArgs.flags, "description"),
+            linkedVideoId: optionalStringFlag(parsedArgs.flags, "linkedVideoId"),
+            provenance,
+          },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-proposal-artifacts") {
+        const result = await agentOperationsCore.listProposalArtifacts({
+          channelId,
+          proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice K (owner spec §10). --performanceMetric/--performanceThresholdOperator/
+      // --performanceThresholdValue/--sort=performanceMetric each require a credentialRef, so this
+      // reuses the same `agentCredentialRef` already resolved above for `assertActiveChannel` --
+      // but only forwards it when a performance metric was actually requested, mirroring
+      // `findComparableVideos`'s own "only resolve/use credentials when actually needed" design.
+      if (parsedArgs.command === "find-comparable-videos") {
+        const performanceMetric = optionalStringFlag(parsedArgs.flags, "performanceMetric");
+        const publicationWindowDaysFlag = optionalStringFlag(parsedArgs.flags, "publicationWindowDays");
+        const durationToleranceSecondsFlag = optionalStringFlag(parsedArgs.flags, "durationToleranceSeconds");
+        const performanceThresholdOperator = optionalStringFlag(parsedArgs.flags, "performanceThresholdOperator");
+        const performanceThresholdValueFlag = optionalStringFlag(parsedArgs.flags, "performanceThresholdValue");
+        const limitFlag = optionalStringFlag(parsedArgs.flags, "limit");
+
+        // Never silently drop half of a threshold request (this codebase's own "never silently
+        // shrink/ignore a request" convention, e.g. excludedForMissingData below) -- giving only
+        // one of the pair is always a typo, not "no threshold requested".
+        if ((performanceThresholdOperator === undefined) !== (performanceThresholdValueFlag === undefined)) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--performanceThresholdOperator and --performanceThresholdValue must be given together",
+          });
+        }
+
+        const result = await agentOperationsCore.findComparableVideos({
+          channelId,
+          anchorVideoId: requiredStringFlag(parsedArgs.flags, "anchorVideoId"),
+          credentialRef: performanceMetric ? agentCredentialRef : undefined,
+          publicationWindowDays: publicationWindowDaysFlag === undefined ? undefined : Number(publicationWindowDaysFlag),
+          durationToleranceSeconds: durationToleranceSecondsFlag === undefined ? undefined : Number(durationToleranceSecondsFlag),
+          performanceMetric,
+          performanceThreshold:
+            performanceThresholdOperator !== undefined && performanceThresholdValueFlag !== undefined
+              ? { operator: performanceThresholdOperator, value: Number(performanceThresholdValueFlag) }
+              : undefined,
+          sort: requiredStringFlag(parsedArgs.flags, "sort"),
+          limit: limitFlag === undefined ? undefined : Number(limitFlag),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice L (owner spec §16). --performanceMetric/--performanceDayOffset each require
+      // a credentialRef -- same "only resolve/use credentials when actually needed" pattern as
+      // find-comparable-videos above. --performanceMetric/--performanceDayOffset must be given
+      // together; the domain schema itself already enforces this (no redundant CLI-side check).
+      if (parsedArgs.command === "list-asset-performance") {
+        const performanceMetric = optionalStringFlag(parsedArgs.flags, "performanceMetric");
+        const performanceDayOffsetFlag = optionalStringFlag(parsedArgs.flags, "performanceDayOffset");
+        const limitFlag = optionalStringFlag(parsedArgs.flags, "limit");
+
+        const result = await agentOperationsCore.listAssetPerformance({
+          channelId,
+          assetType: optionalStringFlag(parsedArgs.flags, "assetType"),
+          credentialRef: performanceMetric ? agentCredentialRef : undefined,
+          performanceMetric,
+          performanceDayOffset: performanceDayOffsetFlag === undefined ? undefined : Number(performanceDayOffsetFlag),
+          sort: optionalStringFlag(parsedArgs.flags, "sort"),
+          limit: limitFlag === undefined ? undefined : Number(limitFlag),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "video-context" -- --include takes a comma-separated subset of metadata,localizations
+      // (same convention as --videoIds/--targetLanguages above); omitted means "both sections",
+      // exactly as agentOperationsCore.getVideoContext's own default already handles.
+      const videoId = requiredStringFlag(parsedArgs.flags, "videoId");
+      const includeFlag = optionalStringFlag(parsedArgs.flags, "include");
+      const include = includeFlag
+        ? includeFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+        : undefined;
+      const result = await agentOperationsCore.getVideoContext({
+        channelId,
+        videoId,
+        ...(include ? { include } : {}),
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // Slice D, owner spec §15/§25. "asset register" itself is NOT an agent-operations capability
+    // (owner spec §25 lists only list_assets/get_asset_context as READ for this domain), so it
+    // goes straight to `assetCatalogCore`, not through `agentOperationsCore` -- this is still the
+    // only DIRECT, operator-facing way to populate the catalog, and the only way to register
+    // `local_path`. Slice G2 later adds an INDIRECT, agent-callable way to populate the catalog,
+    // tied to a Content Proposal and restricted to referenceKind url/external_artifact_id (see
+    // "register-external-artifact" below) -- this comment is not stale, just narrower in scope
+    // than "no agent can ever add an asset." Same channel-scoping pattern as `ai-localization`/
+    // `changeset` above: this module's own service functions do no such checking themselves.
+    if (parsedArgs.namespace === "asset") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const assetCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in assetCredentialRef ? assetCredentialRef.userId : null,
+        channelId,
+      });
+
+      // "register" -- persists a new catalog row. Never touches YouTube; gated above like
+      // changeset import (mutates the local database). --provenanceJson takes a JSON-encoded
+      // object, the same shape registerAsset's own response echoes back -- no reasonable
+      // flat-flag equivalent for an arbitrary provenance record.
+      const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      let provenance: unknown;
+      if (provenanceJsonFlag) {
+        try {
+          provenance = JSON.parse(provenanceJsonFlag);
+        } catch {
+          throw new DomainError({ code: "validation_failed", message: "--provenanceJson must be valid JSON" });
+        }
+      }
+      const result = await assetCatalogCore.registerAsset({
+        channelId,
+        assetType: requiredStringFlag(parsedArgs.flags, "assetType"),
+        referenceKind: requiredStringFlag(parsedArgs.flags, "referenceKind"),
+        referenceValue: requiredStringFlag(parsedArgs.flags, "referenceValue"),
+        title: optionalStringFlag(parsedArgs.flags, "title"),
+        description: optionalStringFlag(parsedArgs.flags, "description"),
+        linkedVideoId: optionalStringFlag(parsedArgs.flags, "linkedVideoId"),
+        provenance,
+      });
       writeStdout(serializeSuccess(result));
       return 0;
     }
@@ -302,6 +1323,103 @@ export async function runCliCommand(args: {
     const credentialRef = await auth.resolveEffectiveCredentialRef({
       explicit: explicitCredentialRef ?? undefined,
     });
+
+    if (parsedArgs.namespace === "channel") {
+      if (parsedArgs.command === "sync") {
+        const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
+        const result = await channelSyncCore.syncChannel({
+          credentialRef,
+          ...(channelId ? { channelId } : {}),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list") {
+        const result = await channelSyncCore.listChannels({ credentialRef });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const result = await channelSyncCore.listSyncedVideos({
+        credentialRef,
+        channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    if (parsedArgs.namespace === "analytics") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+
+      if (parsedArgs.command === "overview") {
+        const result = await analyticsCore.getChannelOverview({
+          credentialRef,
+          channelId,
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "data-quality") {
+        const result = await analyticsCore.getDataQualityReport({
+          credentialRef,
+          channelId,
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "comparable-age") {
+        const metricName = optionalStringFlag(parsedArgs.flags, "metricName");
+        const maxDaysFlag = optionalStringFlag(parsedArgs.flags, "maxDays");
+        const result = await analyticsCore.getComparableAgeComparison({
+          credentialRef,
+          channelId,
+          videoIds: parseVideoIdsFlag(parsedArgs.flags),
+          metricName,
+          maxDays: maxDaysFlag !== undefined ? Number(maxDaysFlag) : undefined,
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "weekly-reports") {
+        const result = await analyticsCore.listWeeklyReports({ credentialRef, channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "weekly-report-get") {
+        const result = await analyticsCore.getWeeklyReport({
+          credentialRef,
+          channelId,
+          weekStartDate: requiredStringFlag(parsedArgs.flags, "weekStartDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "list" -- local read of already-collected rows, optional filters (mirrors
+      // analytics_list's own optional filters in src/mcp/server.ts).
+      const metricNamesFlag = optionalStringFlag(parsedArgs.flags, "metricNames");
+      const result = await analyticsCore.listMetrics({
+        credentialRef,
+        channelId,
+        startDate: optionalStringFlag(parsedArgs.flags, "startDate"),
+        endDate: optionalStringFlag(parsedArgs.flags, "endDate"),
+        videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+        metricNames: metricNamesFlag
+          ? metricNamesFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+          : undefined,
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
 
     if (parsedArgs.namespace === "playlist") {
       if (parsedArgs.command === "list") {
@@ -315,29 +1433,17 @@ export async function runCliCommand(args: {
           credentialRef,
           title: requiredStringFlag(parsedArgs.flags, "title"),
           expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
-          description:
-            typeof parsedArgs.flags.description === "string"
-              ? parsedArgs.flags.description
-              : undefined,
-          privacyStatus:
-            typeof parsedArgs.flags.privacyStatus === "string"
-              ? parsedArgs.flags.privacyStatus
-              : undefined,
+          description: optionalStringFlag(parsedArgs.flags, "description"),
+          privacyStatus: optionalStringFlag(parsedArgs.flags, "privacyStatus"),
         });
         writeStdout(serializeSuccess(result));
         return 0;
       }
 
       if (parsedArgs.command === "update") {
-        const title = typeof parsedArgs.flags.title === "string" ? parsedArgs.flags.title : undefined;
-        const description =
-          typeof parsedArgs.flags.description === "string"
-            ? parsedArgs.flags.description
-            : undefined;
-        const privacyStatus =
-          typeof parsedArgs.flags.privacyStatus === "string"
-            ? parsedArgs.flags.privacyStatus
-            : undefined;
+        const title = optionalStringFlag(parsedArgs.flags, "title");
+        const description = optionalStringFlag(parsedArgs.flags, "description");
+        const privacyStatus = optionalStringFlag(parsedArgs.flags, "privacyStatus");
 
         if (title === undefined && description === undefined && privacyStatus === undefined) {
           throw new DomainError({
@@ -372,6 +1478,7 @@ export async function runCliCommand(args: {
         const result = await core.addVideosToPlaylist({
           credentialRef,
           playlistId: requiredStringFlag(parsedArgs.flags, "playlistId"),
+          expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
           videoIds: parseVideoIdsFlag(parsedArgs.flags),
         });
         writeStdout(serializeSuccess(result));
@@ -381,6 +1488,7 @@ export async function runCliCommand(args: {
       const result = await core.removeVideosFromPlaylist({
         credentialRef,
         playlistId: requiredStringFlag(parsedArgs.flags, "playlistId"),
+        expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
         videoIds: parseVideoIdsFlag(parsedArgs.flags),
       });
       writeStdout(serializeSuccess(result));
@@ -388,12 +1496,9 @@ export async function runCliCommand(args: {
     }
 
     if (parsedArgs.command === "list") {
-      const maxResults =
-        typeof parsedArgs.flags.maxResults === "string"
-          ? Number(parsedArgs.flags.maxResults)
-          : undefined;
-      const channelId =
-        typeof parsedArgs.flags.channelId === "string" ? parsedArgs.flags.channelId : undefined;
+      const maxResultsFlag = optionalStringFlag(parsedArgs.flags, "maxResults");
+      const maxResults = maxResultsFlag === undefined ? undefined : Number(maxResultsFlag);
+      const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
 
       const result = await core.listVideos({
         credentialRef,
@@ -449,8 +1554,30 @@ export async function runCliCommand(args: {
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
+/**
+ * The CLI process entrypoint. The agent mode (`--agentToken` / `YTOM_AGENT_TOKEN`) was removed with the
+ * stdio MCP server (docs/decisions/0013-in-app-http-mcp-transport.md): a flag naming a token is a
+ * refusal, never silently ignored, so a stale agent configuration fails loudly instead of running as
+ * the operator. The `YTOM_AGENT_TOKEN` environment variable is not read at all.
+ */
+export async function runCliProcess(argv: string[]): Promise<number> {
+  if (argv.some((arg) => arg === "--agentToken" || arg.startsWith("--agentToken="))) {
+    process.stderr.write(
+      `${serializeError(
+        new DomainError({
+          code: "AGENT_TOKEN_INVALID",
+          message: "--agentToken is no longer supported: the CLI is operator-only. AI agents connect through the app's MCP endpoint (Settings -> AI Agent).",
+        })
+      )}
+`
+    );
+    return 1;
+  }
+  return runCliCommand({ argv });
+}
+
 if (isMainModule) {
-  runCliCommand({ argv: process.argv.slice(2) })
+  runCliProcess(process.argv.slice(2))
     .then((exitCode) => {
       process.exitCode = exitCode;
     })

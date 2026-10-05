@@ -4,7 +4,7 @@ import {
   getChannelForSync,
   getVideosMetadataContextBatch,
   listUploadsPlaylistVideoIds,
-} from "@/lib/youtube";
+} from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {
@@ -20,24 +20,26 @@ function createAuthorizedClient(credentials: ResolvedCredentials) {
 export function createChannelSyncYoutubeApiAdapter() {
   return {
     async getChannelForSync(args: { credentials: ResolvedCredentials; channelId?: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return getChannelForSync(youtube, args.channelId);
     },
 
     async listUploadsPlaylistVideoIds(args: {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
+      onPage?: (found: number) => void;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
-      return listUploadsPlaylistVideoIds(youtube, args.uploadsPlaylistId);
+      const youtube = await createAuthorizedClient(args.credentials);
+      return listUploadsPlaylistVideoIds(youtube, args.uploadsPlaylistId, { onPage: args.onPage });
     },
 
     async getVideosMetadataBatch(args: {
       credentials: ResolvedCredentials;
       videoIds: string[];
+      onProgress?: (done: number, total: number) => void;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
-      return getVideosMetadataContextBatch(youtube, args.videoIds);
+      const youtube = await createAuthorizedClient(args.credentials);
+      return getVideosMetadataContextBatch(youtube, args.videoIds, { onProgress: args.onProgress });
     },
   };
 }

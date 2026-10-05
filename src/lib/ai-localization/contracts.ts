@@ -1,0 +1,174 @@
+import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/shared-domain";
+import type { ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
+import type { CreatedVia, EvidenceReference, EvidenceSourceType } from "@/lib/shared-provenance";
+
+export type { DomainErrorCode, DomainErrorShape, StoredChannelRecord, StoredVideoRecord };
+export { DomainError, isDomainError };
+// Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- the single, canonical
+// definition of this vocabulary, shared with `content-proposals` (Phase 7 slice G); neither
+// module owns the other, so this vocabulary lives in its own dependency-free module.
+export type { CreatedVia, EvidenceReference, EvidenceSourceType };
+
+// ---------------------------------------------------------------------------
+// Phase 6, Slice 1 -- AI LOCALIZATION (vertical feature).
+//
+// Scope (docs/PROJECT_SPEC.md §32 "Future AI Localization Module", extended by the
+// project owner's Phase 6 assignment): generate localization proposals for
+// (videoId, targetLanguage) pairs via a replaceable `LocalizationProvider`, validate
+// the output using the same field-level rules already used by XLSX import
+// (src/lib/changesets/diff.ts), let a human inspect/edit the proposals, and hand the
+// final, edited set to the existing ChangeSet creation path
+// (`src/lib/changesets/services.ts`'s `createChangeSetFromProposals`) with
+// `source: "ai_localization"`.
+//
+// This module never persists a ChangeSet or Change itself, never approves anything,
+// never creates a Batch, and never calls the YouTube API. It is a proposal generator
+// sitting entirely upstream of Phase 4/5's existing, unmodified approval and write
+// pipeline (AGENTS.md §D: one approval system, one batch system).
+//
+// AI-generated text is a draft until it passes through that existing approval
+// workflow (AGENTS.md §G) -- nothing in this module can mark a Change "approved".
+// ---------------------------------------------------------------------------
+
+/** One (video, target-language) pair the caller wants proposals for. */
+export type GenerationTarget = {
+  videoId: string;
+  language: string;
+};
+
+// Moved to the shared leaf `src/lib/ai-generation-contracts` (architecture audit M2); re-exported
+// unchanged so every existing importer keeps working.
+export type {
+  GenerationContext,
+  GenerationTokenUsage,
+  LocalizationGenerationOutcome,
+  LocalizationGenerationRequest,
+  LocalizationProvider,
+} from "@/lib/ai-generation-contracts";
+import type { GenerationContext, GenerationTokenUsage } from "@/lib/ai-generation-contracts";
+
+export type GeneratedFieldOutcome = {
+  videoId: string;
+  language: string;
+  field: "title" | "description";
+  baselineValue: string;
+  proposedValue: string;
+  // Narrower than the full `ChangeType` union on purpose: AI localization only ever
+  // diffs a generated/edited proposal against the current remote value (never proposes
+  // deletion -- see the "never a deletion" note where this is consumed).
+  changeType: "add" | "modify" | "unchanged";
+  validationStatus: ChangeValidationStatus;
+  validationError: string | null;
+};
+
+/** Result of generating proposals for one (video, language) pair. */
+export type GeneratedTargetResult = {
+  videoId: string;
+  language: string;
+  providerError: string | null;
+  fields: GeneratedFieldOutcome[];
+  usage: GenerationTokenUsage | null;
+};
+
+export type GenerationRowError = {
+  videoId: string | null;
+  language: string | null;
+  message: string;
+};
+
+export type GenerationSummary = {
+  targetsRequested: number;
+  targetsGenerated: number;
+  targetsFailed: number;
+  validProposals: number;
+  invalidProposals: number;
+  unchangedProposals: number;
+  /** Only present when the operator cancelled: targets never sent to the provider. */
+  targetsSkipped?: number;
+};
+
+export type GenerationResult = {
+  results: GeneratedTargetResult[];
+  errors: GenerationRowError[];
+  summary: GenerationSummary;
+  /** Only present (true) when the operator cancelled the run; `results` then holds what finished before. */
+  cancelled?: boolean;
+  /**
+   * What was actually used for this call (channel profile version + the merged
+   * context sent to the provider) -- echo this back verbatim in
+   * `createChangeSetFromGeneration`'s `provenance` field to have it durably recorded
+   * against the resulting Change Set (see `GenerationProvenance` below).
+   */
+  generationContext: GenerationProvenance;
+};
+
+/**
+ * A channel's persistent editorial profile (Phase 6, Channel Editorial Profiles).
+ * One profile per channel; `version` increments on every save. Every field is
+ * free-text editorial guidance only -- never a credential/secret (`AGENTS.md` §F) and
+ * never authored by this repository (`AGENTS.md` §B); the project owner or an
+ * authorized operator supplies the content through the API/UI, per channel, at
+ * runtime. Storage is this application's own SQLite database (gitignored runtime
+ * state), never a file committed to this repository.
+ */
+export type EditorialProfile = {
+  channelId: string;
+  version: number;
+  targetAudience: string | null;
+  toneNotes: string | null;
+  terminologyNotes: string | null;
+  titleConstraints: string | null;
+  descriptionConstraints: string | null;
+  updatedAt: string;
+};
+
+/**
+ * What was actually sent to the provider for a given generation call: the channel's
+ * profile version (if any existed) merged with any per-request `editorialBrief`
+ * override, per §3's combination rule (see `mergeEditorialContext` in services.ts and
+ * `docs/acceptance/PHASE_6_ACCEPTANCE.md` AC-PROFILE-05/06 for the exact rule).
+ * `profileVersion: null` means no profile existed for the channel at generation time.
+ * `effectiveContext: null` means neither a profile nor a per-request brief supplied
+ * anything (every field ended up absent).
+ */
+export type GenerationProvenance = {
+  profileVersion: number | null;
+  effectiveContext: GenerationContext | null;
+};
+
+/**
+ * `getGenerationProvenance`'s own return shape -- a STORED provenance record read back after a
+ * Change Set already exists, distinct from `GenerationProvenance` above (which `generateProposals`
+ * also returns mid-preview, before any Change Set exists, so it cannot carry `changeSetId`/
+ * `createdAt`). `createdAt` here is the real moment `createChangeSetFromGeneration` recorded this
+ * row (`DraftProvenance.createdAt`, `src/lib/sync-gateway/change-drafts/contracts.ts`) -- not a
+ * later device's own projection/sync time, verified by reading `createProvenance`'s own
+ * implementation before adding this field.
+ *
+ * `evidence`/`rationale` (Phase 7 slice F, owner spec §12/§13) are recorded once per Change Set,
+ * not per individual proposal within it -- a deliberate, coarser granularity than the owner
+ * spec's own per-draft phrasing (`docs/TECHNICAL_DEBT.md` RISK-55 tracks this as a known,
+ * accepted limitation). `createdVia`/`agentApiVersion` (owner spec §22) are SERVER-STAMPED at the
+ * MCP/CLI/Web-route call site, never taken from caller input -- see `DraftProvenance`'s own doc
+ * comment (`src/lib/sync-gateway/change-drafts/contracts.ts`) for why that distinction matters.
+ */
+export type StoredGenerationProvenance = GenerationProvenance & {
+  changeSetId: string;
+  channelId: string;
+  createdAt: string;
+  evidence: EvidenceReference[] | null;
+  rationale: string | null;
+  createdVia: CreatedVia | null;
+  agentApiVersion: string | null;
+};
+
+/** A proposal the human has inspected and, optionally, edited before it is persisted
+ * as a Change (via the existing ChangeSet creation path). Omitting a field means "no
+ * proposed change for this field" -- the same "blank = no change" rule as XLSX import
+ * (docs/PROJECT_SPEC.md §8), never "clear the existing value". */
+export type ReviewedProposal = {
+  videoId: string;
+  language: string;
+  title?: string;
+  description?: string;
+};

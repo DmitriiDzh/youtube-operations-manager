@@ -64,6 +64,9 @@ function createFixture() {
   const changeSets = new Map<string, StoredChangeSetRecord>();
   const changesByChangeSet = new Map<string, StoredChangeRecord[]>();
   let idCounter = 0;
+  const crdtConflictedChangeIds = new Set<string>();
+  // Simulates a read side (SQL projection) that is missing some stored changes.
+  const hiddenOnRead = new Set<string>();
 
   const channelStore = {
     async getChannel(channelId: string) {
@@ -109,7 +112,7 @@ function createFixture() {
       return changeSets.get(changeSetId) ?? null;
     },
     async listChangesByChangeSet(changeSetId: string) {
-      return changesByChangeSet.get(changeSetId) ?? [];
+      return (changesByChangeSet.get(changeSetId) ?? []).filter((c) => !hiddenOnRead.has(c.id));
     },
     async updateChangeSetStatus(changeSetId: string, status: StoredChangeSetRecord["status"]) {
       const cs = changeSets.get(changeSetId);
@@ -132,9 +135,16 @@ function createFixture() {
     },
   };
 
+  const crdtConflicts = {
+    async listConflictedChangeIds() {
+      return new Set(crdtConflictedChangeIds);
+    },
+  };
+
   const services = createChangeSetServices({
     channelStore,
     changeSetStore,
+    crdtConflicts,
     idGenerator: () => `id-${++idCounter}`,
     logger: { info() {}, error() {} },
   });
@@ -146,6 +156,13 @@ function createFixture() {
     },
     setChannel: (next: StoredChannelRecord) => {
       channel = next;
+    },
+    hideChangesOnRead: (ids: string[]) => {
+      for (const id of ids) hiddenOnRead.add(id);
+    },
+    setCrdtConflictedChangeIds: (ids: string[]) => {
+      crdtConflictedChangeIds.clear();
+      for (const id of ids) crdtConflictedChangeIds.add(id);
     },
   };
 }
@@ -207,6 +224,65 @@ test("approveChange: refuses to approve a conflicting change", async () => {
     () => services.approveChange({ channelId: "UC_TEST", changeSetId, changeId }),
     (error: unknown) => error instanceof DomainError && error.code === "change_not_approvable"
   );
+});
+
+// RISK-47 (docs/TECHNICAL_DEBT.md): a change with an open CRDT-level FieldConflict (a different
+// concept from this module's own conflictStatus, see that risk entry) must also be refused.
+test("approveChange: refuses to approve a change with an open CRDT-level field conflict", async () => {
+  const { services, setCrdtConflictedChangeIds } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Nuevo Titulo", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  const changeId = detail.changes[0]!.id;
+
+  setCrdtConflictedChangeIds([changeId]);
+
+  await assert.rejects(
+    () => services.approveChange({ channelId: "UC_TEST", changeSetId, changeId }),
+    (error: unknown) => error instanceof DomainError && error.code === "crdt_conflict_open"
+  );
+
+  // Must not have been partially approved.
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  assert.equal(after.changes[0]!.approvalStatus, "pending");
+});
+
+test("approveChange: a change is approvable once its CRDT-level conflict is no longer reported as open", async () => {
+  const { services, setCrdtConflictedChangeIds } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Nuevo Titulo", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  const changeId = detail.changes[0]!.id;
+
+  setCrdtConflictedChangeIds(["some-other-change-id"]);
+
+  const result = await services.approveChange({ channelId: "UC_TEST", changeSetId, changeId });
+  assert.equal(result.change.approvalStatus, "approved");
+});
+
+test("approveAllValid: silently excludes a change with an open CRDT-level conflict from the bulk approval, without failing the whole batch", async () => {
+  const { services, setCrdtConflictedChangeIds } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Titulo ES", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  const changeId = detail.changes[0]!.id;
+
+  setCrdtConflictedChangeIds([changeId]);
+
+  const result = await services.approveAllValid({ channelId: "UC_TEST", changeSetId });
+  assert.equal(result.approvedCount, 0);
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  assert.equal(after.changes[0]!.approvalStatus, "pending");
 });
 
 test("re-sync draft preservation: approving a change, then a later re-sync changing the remote value invalidates the approval", async () => {
@@ -281,4 +357,277 @@ test("rejectChange then reject-all: rejecting is always allowed, including for i
     changeId: detail.changes[0]!.id,
   });
   assert.equal(result.change.approvalStatus, "rejected");
+});
+
+// ---------------------------------------------------------------------------
+// proposeLocalizationDeletion (docs/PROJECT_SPEC.md §16/§21). Acceptance fixed before
+// implementation (advisor-reviewed scope, E5a/E5b split): a deletion proposal is a
+// two-Change-per-video, source:"deletion" Change Set spanning every affected video,
+// that goes through the ordinary review/approval/conflict pipeline -- it is NOT an
+// immediate delete. `videoIds` omitted means "every video on the channel with a real
+// localization in this language" (the whole-column/E5b case); provided explicitly it
+// scopes to exactly those videos (BL-036's original single-video behavior). A video
+// whose own defaultLanguage equals the requested language is NEVER included --
+// that language's title/description live on snippet, not a removable localizations
+// entry -- and is reported in skippedDefaultLanguageVideoIds instead, computed
+// independently of existingLocalizations (a video can be missing a localizations
+// entry for its own defaultLanguage entirely and must still be reported skipped,
+// not silently uncounted).
+// ---------------------------------------------------------------------------
+
+test("proposeLocalizationDeletion: creates a two-Change, source:\"deletion\" Change Set from the existing localization (single video, explicit videoIds)", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+    }),
+  ]);
+
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoIds: ["v1"], language: "es" });
+
+  assert.deepEqual(result.affectedVideoIds, ["v1"]);
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, []);
+  assert.ok(result.changeSet);
+  assert.equal(result.changeSet.source, "deletion");
+  assert.equal(result.changeSet.totalChanges, 2);
+
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
+  const byField = new Map(detail.changes.map((c) => [c.field, c]));
+
+  assert.equal(byField.get("title")!.changeType, "delete");
+  assert.equal(byField.get("title")!.baselineValue, "Titulo ES");
+  assert.equal(byField.get("title")!.proposedValue, "");
+  assert.equal(byField.get("description")!.changeType, "delete");
+  assert.equal(byField.get("description")!.baselineValue, "Descripcion ES");
+  assert.equal(byField.get("description")!.proposedValue, "");
+});
+
+test("proposeLocalizationDeletion: never includes a video whose own defaultLanguage equals the requested language, and reports it skipped", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([makeVideo({ defaultLanguage: "en", existingLocalizations: {} })]);
+
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoIds: ["v1"], language: "en" });
+
+  assert.deepEqual(result.affectedVideoIds, []);
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, ["v1"]);
+  assert.equal(result.changeSet, null);
+});
+
+test("proposeLocalizationDeletion: a video whose defaultLanguage matches is skipped even with zero existingLocalizations entries for it (the undercount trap)", async () => {
+  const { services, setVideos } = createFixture();
+  // "en" is v1's defaultLanguage but was never separately written into existingLocalizations --
+  // collectChannelLanguages-style unions would see nothing here; the skip must still be reported.
+  setVideos([makeVideo({ videoId: "v1", defaultLanguage: "en", existingLocalizations: {} })]);
+
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", language: "en" });
+
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, ["v1"]);
+  assert.deepEqual(result.affectedVideoIds, []);
+  assert.equal(result.changeSet, null);
+});
+
+test("proposeLocalizationDeletion: whole-column form (videoIds omitted) spans every video on the channel with a real localization, skipping unrelated ones", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({
+      videoId: "v1",
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES 1", description: "Desc ES 1" } },
+    }),
+    makeVideo({
+      videoId: "v2",
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES 2", description: "Desc ES 2" }, de: { title: "DE", description: "DE desc" } },
+    }),
+    // v3 has no "es" localization at all -- must be silently excluded, not an error.
+    makeVideo({ videoId: "v3", defaultLanguage: "en", existingLocalizations: {} }),
+    // v4's defaultLanguage IS "es" -- must be skipped and reported, never deleted.
+    makeVideo({ videoId: "v4", defaultLanguage: "es", existingLocalizations: {} }),
+  ]);
+
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", language: "es" });
+
+  assert.deepEqual(result.affectedVideoIds.sort(), ["v1", "v2"]);
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, ["v4"]);
+  assert.ok(result.changeSet);
+  assert.equal(result.changeSet.totalChanges, 4); // 2 videos x (title + description)
+
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
+  assert.deepEqual(
+    detail.changes.map((c) => c.videoId).sort(),
+    ["v1", "v1", "v2", "v2"]
+  );
+});
+
+test("proposeLocalizationDeletion + re-sync: a third-party edit made after proposing deletion is detected as a conflict, not silently applied", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+    }),
+  ]);
+
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoIds: ["v1"], language: "es" });
+  assert.ok(result.changeSet);
+
+  // Someone edits the Spanish title directly in YouTube Studio, then the channel re-syncs.
+  setVideos([
+    makeVideo({
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Changed In Studio", description: "Descripcion ES" } },
+    }),
+  ]);
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
+  const titleChange = after.changes.find((c) => c.field === "title")!;
+  assert.equal(titleChange.conflictStatus, "conflict", "a deletion baseline that no longer matches the live remote value must be flagged, never silently applied");
+  assert.equal(after.changeSet.status, "in_review");
+});
+
+// --- auto-revoke of superseded proposals (owner instruction 2026-10-02) ---------------------
+
+function proposed(id: string, videoId: string, language: string, field: "title" | "description", value: string) {
+  return {
+    id,
+    videoId,
+    language,
+    field,
+    baselineValue: "",
+    proposedValue: value,
+    changeType: "add" as const,
+    validationStatus: "valid" as const,
+    validationError: null,
+    conflictStatus: "none" as const,
+  };
+}
+
+test("a new same-source change set revokes only the older PENDING changes it covers; uncovered ones stay pending", async () => {
+  const { services } = createFixture();
+  const old = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [
+      proposed("o1", "v1", "ja", "title", "old title"),
+      proposed("o2", "v1", "ja", "description", "old description"),
+      proposed("o3", "v1", "es", "title", "otro titulo"),
+    ],
+  });
+
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("n1", "v1", "ja", "title", "new title"), proposed("n2", "v1", "ja", "description", "new description")],
+  });
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
+  const byId = new Map(after.changes.map((c) => [c.id, c.approvalStatus]));
+  assert.equal(byId.get("o1"), "rejected");
+  assert.equal(byId.get("o2"), "rejected");
+  assert.equal(byId.get("o3"), "pending");
+});
+
+test("an already APPROVED older change is never revoked by a newer set", async () => {
+  const { services } = createFixture();
+  const old = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("o1", "v1", "ja", "title", "old title")],
+  });
+  await services.approveChange({ channelId: "UC_TEST", changeSetId: old.id, changeId: "o1" });
+
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("n1", "v1", "ja", "title", "new title")],
+  });
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
+  assert.equal(after.changes.find((c) => c.id === "o1")?.approvalStatus, "approved");
+});
+
+test("a different source, or a new deletion set, never revokes anything", async () => {
+  const { services } = createFixture();
+  const old = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("o1", "v1", "ja", "title", "old title")],
+  });
+
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "xlsx_import",
+    changes: [proposed("n1", "v1", "ja", "title", "from xlsx")],
+  });
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "deletion",
+    changes: [{ ...proposed("n2", "v1", "ja", "title", ""), changeType: "delete" as const }],
+  });
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
+  assert.equal(after.changes.find((c) => c.id === "o1")?.approvalStatus, "pending");
+});
+
+test("a Change Set that reads back smaller than what was submitted is never reported as created: change_set_incomplete names what is missing (2026-10-04 incident: 106 sent, 75 visible, no error)", async () => {
+  const { services, hideChangesOnRead } = createFixture();
+  hideChangesOnRead(["n2", "n4"]);
+  await assert.rejects(
+    () =>
+      services.createChangeSetFromProposals({
+        channelId: "UC_TEST",
+        source: "ai_localization",
+        changes: [
+          proposed("n1", "v1", "es", "title", "uno"),
+          proposed("n2", "v1", "es", "description", "dos"),
+          proposed("n3", "v1", "ja", "title", "tres"),
+          proposed("n4", "v1", "ja", "description", "cuatro"),
+        ],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "change_set_incomplete");
+      const details = error.details as { expectedChanges: number; storedChanges: number; missingTotal: number; missing: unknown };
+      assert.equal(details.expectedChanges, 4);
+      assert.equal(details.storedChanges, 2);
+      assert.equal(details.missingTotal, 2);
+      assert.deepEqual(details.missing, [
+        { videoId: "v1", language: "es", field: "description" },
+        { videoId: "v1", language: "ja", field: "description" },
+      ]);
+      return true;
+    }
+  );
+});
+
+test("a complete Change Set still reports success with the true counts", async () => {
+  const { services } = createFixture();
+  const created = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("n1", "v1", "es", "title", "uno"), proposed("n2", "v1", "es", "description", "dos")],
+  });
+  assert.equal(created.totalChanges, 2);
+  assert.equal(created.pendingCount, 2);
+});
+
+test("owner report 2026-10-04: an approved change whose value then became live (sent + synced) stays approved and conflict-free; the set stays approved, not back in review", async () => {
+  const { services, setVideos } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Proposed", description: "", remote_title: "Baseline", remote_description: "" },
+  ]);
+  setVideos([makeVideo({ existingLocalizations: { es: { title: "Baseline", description: "" } } })]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const changeId = (await services.getChangeSet({ channelId: "UC_TEST", changeSetId })).changes[0]!.id;
+  await services.approveChange({ channelId: "UC_TEST", changeSetId, changeId });
+
+  // The write reached YouTube and the local copy now shows the proposed value.
+  setVideos([makeVideo({ existingLocalizations: { es: { title: "Proposed", description: "" } } })]);
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  assert.equal(after.changes[0]!.conflictStatus, "none");
+  assert.equal(after.changes[0]!.approvalStatus, "approved");
+  assert.equal(after.changeSet.status, "approved");
 });

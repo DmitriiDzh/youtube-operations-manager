@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
+import { DomainError } from "@/lib/playlist-management/contracts";
+import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
 
 type PlaylistsRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -20,11 +22,24 @@ export function createPlaylistsGetHandler(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const result = await deps.core.listPlaylists({
-      credentialRef: { userId: session.user.id },
-    });
+    try {
+      const result = await deps.core.listPlaylists({
+        credentialRef: { userId: session.user.id },
+      });
 
-    return NextResponse.json(result.playlists);
+      return NextResponse.json(result.playlists);
+    } catch (error) {
+      if (error instanceof DomainError) {
+        return NextResponse.json(
+          { error: error.code, message: error.message, details: error.details },
+          { status: getVideoMetadataErrorStatus(error.code) }
+        );
+      }
+      return NextResponse.json(
+        { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
+    }
   };
 }
 

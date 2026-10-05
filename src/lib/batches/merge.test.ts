@@ -59,7 +59,11 @@ test("AC-MERGE-01 (= official test §57): adding pt-BR preserves es/de/fr byte-f
   assert.deepEqual(result.localizations["pt-BR"], { title: "Titulo PT", description: "Descricao PT" });
 });
 
-test("AC-MERGE-03: unrelated snippet fields survive a localizations-only change", () => {
+test("AC-MERGE-03: a localizations-only change still sends the full writable snippet (YouTube requires defaultLanguage with localizations), without defaultAudioLanguage", () => {
+  // Live Japan Music batch 2026-10-02: omitting the snippet made videos.update reject 25/41 with
+  // "localized video details without specifying the default language"; echoing the snippet's
+  // defaultAudioLanguage "zxx" had made the previous attempt reject 41/41 -- hence: snippet yes,
+  // defaultAudioLanguage (not in the official settable list) no.
   const fresh: FreshVideoContext = {
     snippet: {
       title: "Main Title",
@@ -67,7 +71,7 @@ test("AC-MERGE-03: unrelated snippet fields survive a localizations-only change"
       defaultLanguage: "en",
       categoryId: "10",
       tags: ["jazz", "cuba"],
-      defaultAudioLanguage: "es",
+      defaultAudioLanguage: "zxx",
     },
     localizations: { es: { title: "Titulo Old", description: "Desc Old" } },
   };
@@ -77,11 +81,14 @@ test("AC-MERGE-03: unrelated snippet fields survive a localizations-only change"
 
   const result = buildSafeLocalizationsPayload(fresh, changes);
 
-  assert.equal(result.snippet.categoryId, "10");
-  assert.deepEqual(result.snippet.tags, ["jazz", "cuba"]);
-  assert.equal(result.snippet.defaultAudioLanguage, "es");
-  assert.equal(result.snippet.title, "Main Title");
-  assert.equal(result.snippet.description, "Main Description");
+  assert.deepEqual(result.snippet, {
+    title: "Main Title",
+    description: "Main Description",
+    defaultLanguage: "en",
+    categoryId: "10",
+    tags: ["jazz", "cuba"],
+  });
+  assert.deepEqual(result.localizations.es, { title: "Titulo New", description: "Desc Old" });
 });
 
 test("RISK-11: documented read-only snippet fields are never echoed back into the write payload, even though the fresh fetch legitimately returns them", () => {
@@ -124,7 +131,8 @@ test("RISK-11: documented read-only snippet fields are never echoed back into th
   assert.equal(result.snippet.description, "New Description");
   assert.equal(result.snippet.categoryId, "10");
   assert.deepEqual(result.snippet.tags, ["jazz", "cuba"]);
-  assert.equal(result.snippet.defaultAudioLanguage, "es");
+  // Not in the official settable list (2026-10-02) -- never sent, even though the fresh fetch has it.
+  assert.equal(Object.prototype.hasOwnProperty.call(result.snippet, "defaultAudioLanguage"), false);
   assert.equal(result.snippet.defaultLanguage, "en");
 });
 
@@ -188,4 +196,132 @@ test("conflict detection reads the primary-locale value from snippet.title, not 
 
   const result = detectPreWriteConflict(changes, fresh);
   assert.equal(result.status, "conflict");
+});
+
+// (independent review, second cycle): if fresh.localizations defensively contains a stale
+// entry keyed by the same code as defaultLanguage, a change targeting the default language
+// must not leave that stale entry in the payload alongside the updated snippet field --
+// buildSafeLocalizationsPayload previously copied it forward verbatim and never touched it.
+// ---------------------------------------------------------------------------
+// Deletion feature (docs/PROJECT_SPEC.md §16, 2026-09-20 update). Acceptance fixed
+// before implementation, per the advisor-reviewed scope for this slice:
+//   - a delete-only change removes the target locale entirely, others survive
+//     byte-for-byte;
+//   - a delete for a locale that is ALSO modified in the same approved set wins,
+//     regardless of which order the two changes appear in the input array (delete
+//     is a terminal outcome, not just "the last write wins");
+//   - a delete targeting the video's own defaultLanguage is refused even at merge
+//     time (defense-in-depth; the primary refusal is at propose time in
+//     src/lib/changesets/services.ts's proposeLocalizationDeletion) -- this must
+//     fail closed (throw), never silently blank snippet.title/description;
+//   - conflict detection (baseline vs fresh) is unaffected by changeType -- an
+//     empty baseline that still matches an empty current value is "none", not a
+//     false-positive conflict.
+// ---------------------------------------------------------------------------
+
+test("a delete-only change removes the target locale entirely; other locales survive byte-for-byte", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: {
+      es: { title: "Titulo ES", description: "Descripcion ES" },
+      de: { title: "Titel DE", description: "Beschreibung DE" },
+    },
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "", changeType: "delete" },
+    { id: "c2", language: "es", field: "description", baselineValue: "Descripcion ES", proposedValue: "", changeType: "delete" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "es"), false);
+  assert.deepEqual(result.localizations.de, { title: "Titel DE", description: "Beschreibung DE" });
+});
+
+test("delete wins over a same-locale modify in the same approved set, regardless of array order (delete first)", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "", changeType: "delete" },
+    { id: "c2", language: "es", field: "description", baselineValue: "Descripcion ES", proposedValue: "", changeType: "delete" },
+    { id: "c3", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "Sneaky Modify", changeType: "modify" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "es"), false);
+});
+
+test("delete wins over a same-locale modify in the same approved set, regardless of array order (modify first)", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+  };
+  const changes: PendingChange[] = [
+    { id: "c3", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "Sneaky Modify", changeType: "modify" },
+    { id: "c1", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "", changeType: "delete" },
+    { id: "c2", language: "es", field: "description", baselineValue: "Descripcion ES", proposedValue: "", changeType: "delete" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "es"), false);
+});
+
+test("buildSafeLocalizationsPayload refuses (throws) a delete change targeting the video's own defaultLanguage, defense-in-depth", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: {},
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "en", field: "title", baselineValue: "Main", proposedValue: "", changeType: "delete" },
+  ];
+
+  assert.throws(() => buildSafeLocalizationsPayload(fresh, changes));
+});
+
+test("a PendingChange with no changeType behaves exactly like an ordinary field write (backward compatibility)", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: { es: { title: "Old", description: "Old Desc" } },
+  };
+  const changes: PendingChange[] = [{ id: "c1", language: "es", field: "title", baselineValue: "Old", proposedValue: "New" }];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.deepEqual(result.localizations.es, { title: "New", description: "Old Desc" });
+});
+
+test("empty-string-baseline edge case: a language never localized (empty baseline) that is still absent from the fresh fetch is not a false-positive conflict", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "x", description: "x", defaultLanguage: "en" },
+    localizations: {},
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "pt-BR", field: "title", baselineValue: "", proposedValue: "Titulo PT", changeType: "add" },
+  ];
+
+  const result = detectPreWriteConflict(changes, fresh);
+  assert.equal(result.status, "none");
+});
+
+test("buildSafeLocalizationsPayload never carries a stale localizations entry for the default language forward", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Old EN Title", description: "Old EN Description", defaultLanguage: "en" },
+    localizations: {
+      en: { title: "Stale EN Title", description: "Stale EN Description" },
+      es: { title: "Titulo ES", description: "Descripcion ES" },
+    },
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "en", field: "title", baselineValue: "Old EN Title", proposedValue: "New EN Title" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(result.snippet.title, "New EN Title");
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "en"), false);
+  assert.deepEqual(result.localizations.es, { title: "Titulo ES", description: "Descripcion ES" });
 });

@@ -1,8 +1,9 @@
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type Change,
   type ChangeSet,
+  type ChangeType,
   type ImportRowError,
   type ImportSummary,
   type StoredChangeRecord,
@@ -10,7 +11,7 @@ import {
   type StoredChannelRecord,
   type StoredVideoRecord,
 } from "./contracts";
-import { computeChangeSetStatus, revalidateChangeAgainstCurrentRemote } from "./diff";
+import { computeChangeSetStatus, currentRemoteValueFor, revalidateChangeAgainstCurrentRemote } from "./diff";
 import { classifyRowForSummary, parseAndValidateWorkbook, summarizeParsedWorkbook } from "./import";
 import {
   changeActionInputSchema,
@@ -19,6 +20,7 @@ import {
   importWorkbookInputSchema,
   listChangeSetsInputSchema,
   parseWithSchema,
+  proposeLocalizationDeletionInputSchema,
 } from "./schemas";
 
 const MAX_PREVIEW_ERRORS_RETURNED = 200;
@@ -28,7 +30,7 @@ type ChangeSetStoreDeps = {
   createChangeSetWithChanges(input: {
     id: string;
     channelId: string;
-    source: "xlsx_import";
+    source: ChangeSet["source"];
     status: ChangeSet["status"];
     importedFilename: string | null;
     schemaVersion: string | null;
@@ -40,7 +42,7 @@ type ChangeSetStoreDeps = {
       field: "title" | "description";
       baselineValue: string;
       proposedValue: string;
-      changeType: "add" | "modify" | "unchanged";
+      changeType: ChangeType;
       validationStatus: "valid" | "invalid";
       validationError: string | null;
       conflictStatus: "none" | "conflict";
@@ -68,20 +70,35 @@ type ServiceDependencies = {
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
   };
   changeSetStore: ChangeSetStoreDeps;
+  /**
+   * The CRDT-level `FieldConflict` concept (`src/lib/change-drafts/`, two devices concurrently
+   * edited the same field, AUTOMERGE_MIGRATION_PLAN.md §6 CD6) is distinct from this module's own
+   * `conflictStatus` (baseline vs. currently-synced-remote-value). `docs/TECHNICAL_DEBT.md`
+   * RISK-47: without this, an operator could approve a change whose value is Automerge's
+   * arbitrary deterministic pick while a real, unresolved conflict on that exact field sits in
+   * the Merge tab. `listConflictedChangeIds` returns every `changeId` this channel currently has
+   * at least one open field conflict for; `approveChange`/`approveAllValid` refuse to approve any
+   * change in that set, exactly like they already refuse one with `conflictStatus: "conflict"`.
+   * `rejectChange`/`rejectAllPending` deliberately do NOT call this -- rejecting a contested
+   * change discards it either way, so there is nothing a CRDT conflict could make incorrect (see
+   * the existing "rejecting is always allowed, including for invalid/conflicting changes" test).
+   *
+   * Deliberately an approval-time gate only, not a read-path check: this does a full document
+   * scan (`Automerge.load` + `scanForConflicts`, `change-drafts/services.ts`'s `listConflicts`)
+   * every call. Fine on `approveChange`'s single-change path; do NOT wire this into `getChangeSet`
+   * or `listChangeSets` for read-time badging -- that would turn one document scan into one per
+   * change set on every page load. If a future need arises to show conflict status on reads, use
+   * `change-drafts`'s own `listConflicts`/SQL projection directly instead of this dependency.
+   */
+  crdtConflicts: {
+    listConflictedChangeIds(channelId: string): Promise<Set<string>>;
+  };
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
     error(payload: { event: string; context?: Record<string, unknown> }): void;
   };
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function toIso(date: Date): string {
   return date.toISOString();
@@ -142,8 +159,7 @@ function buildCurrentRemoteLookup(videos: StoredVideoRecord[]) {
   return (videoId: string, language: string, field: "title" | "description"): string | null => {
     const video = byVideoId.get(videoId);
     if (!video) return null;
-    const locale = video.existingLocalizations[language];
-    return locale ? locale[field] : "";
+    return currentRemoteValueFor(video, language, field);
   };
 }
 
@@ -235,8 +251,315 @@ async function loadRevalidated(
   return { changeSet, changes: finalChanges };
 }
 
+type ChangeToPersist = {
+  id: string;
+  videoId: string;
+  language: string;
+  field: "title" | "description";
+  baselineValue: string;
+  proposedValue: string;
+  changeType: ChangeType;
+  validationStatus: "valid" | "invalid";
+  validationError: string | null;
+  conflictStatus: "none" | "conflict";
+};
+
+/**
+ * Auto-revoke of superseded proposals (owner instruction 2026-10-02: when an agent re-sends
+ * corrected translations, the older version must be withdrawn automatically instead of the
+ * operator hunting for and rejecting it by hand).
+ *
+ * Deliberately narrow, never touching anything a human already decided on: only changes that are
+ * still `pending` in an OLDER, non-rejected change set of the SAME channel and SAME source, and
+ * only those whose (videoId, language, field) is covered by the new set. `approved` changes are
+ * never revoked (an operator explicitly accepted them), and neither side may be a `deletion`
+ * set/change -- removal proposals have their own priority rules (docs/PROJECT_SPEC.md §16).
+ * Best-effort: a failure here is logged and never fails creation of the new change set.
+ */
+async function supersedeOlderPendingChanges(
+  deps: ServiceDependencies,
+  input: { newChangeSetId: string; channelId: string; source: ChangeSet["source"]; changesToPersist: ChangeToPersist[] }
+): Promise<number> {
+  if (input.source === "deletion") return 0;
+  try {
+    const keyOf = (c: { videoId: string; language: string; field: string }) => `${c.videoId} ${c.language} ${c.field}`;
+    const coveredKeys = new Set(input.changesToPersist.filter((c) => c.changeType !== "delete").map(keyOf));
+    if (coveredKeys.size === 0) return 0;
+
+    let revoked = 0;
+    const olderSets = (await deps.changeSetStore.listChangeSetsByChannel(input.channelId)).filter(
+      (cs) => cs.id !== input.newChangeSetId && cs.source === input.source && cs.status !== "rejected"
+    );
+    for (const olderSet of olderSets) {
+      const changes = await deps.changeSetStore.listChangesByChangeSet(olderSet.id);
+      const toRevoke = changes.filter(
+        (c) => c.approvalStatus === "pending" && c.changeType !== "delete" && coveredKeys.has(keyOf(c))
+      );
+      if (toRevoke.length === 0) continue;
+
+      await deps.changeSetStore.bulkUpdateChanges(
+        toRevoke.map((c) => ({
+          id: c.id,
+          patch: { approvalStatus: "rejected" as const, approvedValue: null, conflictStatus: c.conflictStatus },
+        }))
+      );
+      const revokedIds = new Set(toRevoke.map((c) => c.id));
+      const newStatus = computeChangeSetStatus(
+        changes.map((c) => (revokedIds.has(c.id) ? { ...c, approvalStatus: "rejected" as const } : c))
+      );
+      if (newStatus !== olderSet.status) await deps.changeSetStore.updateChangeSetStatus(olderSet.id, newStatus);
+
+      revoked += toRevoke.length;
+      deps.logger.info({
+        event: "changesets.superseded",
+        context: { olderChangeSetId: olderSet.id, newChangeSetId: input.newChangeSetId, revokedCount: toRevoke.length },
+      });
+    }
+    return revoked;
+  } catch (error) {
+    deps.logger.error({
+      event: "changesets.supersede_failed",
+      context: { newChangeSetId: input.newChangeSetId, message: error instanceof Error ? error.message : "unknown" },
+    });
+    return 0;
+  }
+}
+
+/**
+ * Shared persistence tail for every ChangeSet-creating entrypoint (XLSX import,
+ * AI-generated proposals, and any future source): computes the aggregate status,
+ * persists the ChangeSet + its Changes in one call, and reloads the stored result.
+ * One creation path per AGENTS.md §D -- a new `source` must funnel through this
+ * function rather than duplicating `changeSetStore.createChangeSetWithChanges` calls.
+ */
+async function persistChangeSet(
+  deps: ServiceDependencies,
+  input: {
+    channelId: string;
+    source: ChangeSet["source"];
+    importedFilename: string | null;
+    schemaVersion: string | null;
+    exportedAt: string | null;
+    changesToPersist: ChangeToPersist[];
+  }
+): Promise<ChangeSet> {
+  const status = computeChangeSetStatus(
+    input.changesToPersist.map((c) => ({
+      validationStatus: c.validationStatus,
+      conflictStatus: c.conflictStatus,
+      approvalStatus: "pending" as const,
+    }))
+  );
+
+  const changeSetId = deps.idGenerator();
+  await deps.changeSetStore.createChangeSetWithChanges({
+    id: changeSetId,
+    channelId: input.channelId,
+    source: input.source,
+    status,
+    importedFilename: input.importedFilename,
+    schemaVersion: input.schemaVersion,
+    exportedAt: input.exportedAt,
+    changes: input.changesToPersist,
+  });
+
+  await supersedeOlderPendingChanges(deps, {
+    newChangeSetId: changeSetId,
+    channelId: input.channelId,
+    source: input.source,
+    changesToPersist: input.changesToPersist,
+  });
+
+  const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);
+  if (!storedChangeSet) {
+    throw new DomainError({ code: "not_found", message: "Change set disappeared after creation" });
+  }
+  const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
+
+  // Never report success for a Change Set that reads back smaller than what was submitted (2026-10-04: an agent sent 106 changes and was told
+  // «created» while only 75 were visible, with no error). The draft itself is stored; this says so and names what is missing, so the caller
+  // does not blindly resubmit (which would create a second, equally incomplete set).
+  const storedIds = new Set(storedChanges.map((change) => change.id));
+  const missing = input.changesToPersist.filter((change) => !storedIds.has(change.id));
+  if (missing.length > 0) {
+    throw new DomainError({
+      code: "change_set_incomplete",
+      message:
+        `Change Set ${changeSetId} was created but only ${storedChanges.length} of ${input.changesToPersist.length} changes could be read back. ` +
+        "The draft is stored; do not resubmit the same proposals, tell the operator (the server log names the rows the database refused).",
+      details: {
+        changeSetId,
+        expectedChanges: input.changesToPersist.length,
+        storedChanges: storedChanges.length,
+        missing: missing.slice(0, 20).map((change) => ({ videoId: change.videoId, language: change.language, field: change.field })),
+        missingTotal: missing.length,
+      },
+    });
+  }
+
+  return toChangeSetRecord(storedChangeSet, storedChanges.map(toChangeRecord));
+}
+
 export function createChangeSetServices(deps: ServiceDependencies) {
   return {
+    /**
+     * Generic ChangeSet creation from a set of already-classified/validated field
+     * changes, independent of where they came from. Used directly by AI Localization
+     * (Phase 6) so it never reimplements ChangeSet persistence, approval, or status
+     * computation -- it only produces the same `ChangeToPersist` shape XLSX import
+     * produces and hands it to this one shared path.
+     */
+    async createChangeSetFromProposals(input: {
+      channelId: string;
+      source: ChangeSet["source"];
+      changes: ChangeToPersist[];
+    }): Promise<ChangeSet> {
+      try {
+        const channel = await requireChannel(deps, input.channelId);
+        const changeSet = await persistChangeSet(deps, {
+          channelId: channel.channelId,
+          source: input.source,
+          importedFilename: null,
+          schemaVersion: null,
+          exportedAt: null,
+          changesToPersist: input.changes,
+        });
+
+        deps.logger.info({
+          event: "changesets.create_from_proposals.success",
+          context: { channelId: channel.channelId, changeSetId: changeSet.id, source: input.source, changeCount: input.changes.length },
+        });
+
+        return changeSet;
+      } catch (error) {
+        const mapped = mapUnknownError(error, "validation_failed");
+        deps.logger.error({ event: "changesets.create_from_proposals.error", context: { code: mapped.code } });
+        throw mapped;
+      }
+    },
+
+    /**
+     * Proposes removing one language's localization from one or more videos (both title and
+     * description per video), as a single, source:"deletion" Change Set spanning every affected
+     * video -- goes through the exact same review/approval/conflict pipeline as any other change,
+     * per docs/PROJECT_SPEC.md §16's 2026-09-20 update: nothing this app deletes is ever immediate
+     * or bypasses multi-step confirmation, and this proposal step is the first of those steps
+     * (approval is the second; the batches/ write pipeline's own gates, currently held closed by
+     * Gate B, are the last). `docs/PROJECT_SPEC.md` §21 (2026-09-21): this is title/description
+     * only, never any other field.
+     *
+     * `videoIds` omitted means "every video on the channel with a real localization in this
+     * language" -- the whole-column deletion case (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md
+     * §7.2/E5b). Provided explicitly, it scopes the proposal to exactly those videos (the original,
+     * single-video BL-036 behavior is `videoIds: [oneId]`).
+     *
+     * A video whose own `defaultLanguage` equals the requested language is NEVER included in the
+     * proposal, regardless of `videoIds` -- that language's title/description live on `snippet`,
+     * not in the `localizations` map, and `buildSafeLocalizationsPayload` would otherwise route a
+     * "delete" change for it into overwriting the video's real title/description with an empty
+     * string instead of removing a localization. This check exists here (propose time) as the
+     * primary defense; `buildSafeLocalizationsPayload` also refuses the same case as
+     * defense-in-depth in case a delete-type change ever reaches it some other way. Such videos
+     * are reported back in `skippedDefaultLanguageVideoIds`, computed independently of
+     * `existingLocalizations` -- a video can have this language as its default with no
+     * `localizations` entry for it at all, contributing nothing to the union `collectChannelLanguages`
+     * uses, so it must never be silently dropped from the operator-facing skip count.
+     *
+     * Returns `changeSet: null` (not an error) when nothing is actually deletable -- e.g. every
+     * candidate video has this as its defaultLanguage, or none has a real localization in it.
+     */
+    async proposeLocalizationDeletion(
+      input: unknown
+    ): Promise<{ changeSet: ChangeSet | null; affectedVideoIds: string[]; skippedDefaultLanguageVideoIds: string[] }> {
+      const parsedInput = parseWithSchema(proposeLocalizationDeletionInputSchema, input, "localization deletion input");
+
+      try {
+        const channel = await requireChannel(deps, parsedInput.channelId);
+        const allVideos = await deps.channelStore.listVideosByChannel(channel.channelId);
+
+        let candidates: StoredVideoRecord[];
+        if (parsedInput.videoIds) {
+          const byId = new Map(allVideos.map((v) => [v.videoId, v]));
+          candidates = parsedInput.videoIds.map((id) => {
+            const video = byId.get(id);
+            if (!video) {
+              throw new DomainError({
+                code: "not_found",
+                message: "Video not found for this channel",
+                details: { channelId: channel.channelId, videoId: id },
+              });
+            }
+            return video;
+          });
+        } else {
+          candidates = allVideos;
+        }
+
+        const skippedDefaultLanguageVideoIds: string[] = [];
+        const affectedVideoIds: string[] = [];
+        const changesToPersist: ChangeToPersist[] = [];
+
+        for (const video of candidates) {
+          if (video.defaultLanguage && parsedInput.language === video.defaultLanguage) {
+            skippedDefaultLanguageVideoIds.push(video.videoId);
+            continue;
+          }
+          const existingLocale = video.existingLocalizations[parsedInput.language];
+          if (!existingLocale) continue;
+
+          affectedVideoIds.push(video.videoId);
+          for (const field of ["title", "description"] as const) {
+            changesToPersist.push({
+              id: deps.idGenerator(),
+              videoId: video.videoId,
+              language: parsedInput.language,
+              field,
+              baselineValue: currentRemoteValueFor(video, parsedInput.language, field),
+              proposedValue: "",
+              changeType: "delete",
+              validationStatus: "valid",
+              validationError: null,
+              conflictStatus: "none",
+            });
+          }
+        }
+
+        if (affectedVideoIds.length === 0) {
+          deps.logger.info({
+            event: "changesets.propose_localization_deletion.nothing_to_propose",
+            context: { channelId: channel.channelId, language: parsedInput.language, skippedDefaultLanguageVideoIds },
+          });
+          return { changeSet: null, affectedVideoIds, skippedDefaultLanguageVideoIds };
+        }
+
+        const changeSet = await persistChangeSet(deps, {
+          channelId: channel.channelId,
+          source: "deletion",
+          importedFilename: null,
+          schemaVersion: null,
+          exportedAt: null,
+          changesToPersist,
+        });
+
+        deps.logger.info({
+          event: "changesets.propose_localization_deletion.success",
+          context: {
+            channelId: channel.channelId,
+            language: parsedInput.language,
+            changeSetId: changeSet.id,
+            affectedVideoIds,
+            skippedDefaultLanguageVideoIds,
+          },
+        });
+
+        return { changeSet, affectedVideoIds, skippedDefaultLanguageVideoIds };
+      } catch (error) {
+        const mapped = mapUnknownError(error, "validation_failed");
+        deps.logger.error({ event: "changesets.propose_localization_deletion.error", context: { code: mapped.code } });
+        throw mapped;
+      }
+    },
+
     async previewImport(input: unknown): Promise<{ summary: ImportSummary; errors: ImportRowError[]; totalErrors: number }> {
       const parsedInput = parseWithSchema(importWorkbookInputSchema, input, "import preview input");
 
@@ -292,39 +615,22 @@ export function createChangeSetServices(deps: ServiceDependencies) {
             }))
         );
 
-        const status = computeChangeSetStatus(
-          changesToPersist.map((c) => ({
-            validationStatus: c.validationStatus,
-            conflictStatus: c.conflictStatus,
-            approvalStatus: "pending" as const,
-          }))
-        );
-
-        const changeSetId = deps.idGenerator();
-        await deps.changeSetStore.createChangeSetWithChanges({
-          id: changeSetId,
+        const changeSet = await persistChangeSet(deps, {
           channelId: channel.channelId,
           source: "xlsx_import",
-          status,
           importedFilename: parsedInput.filename,
           schemaVersion: parsed.schemaVersion,
           exportedAt: parsed.exportedAt,
-          changes: changesToPersist,
+          changesToPersist,
         });
 
         deps.logger.info({
           event: "changesets.import.success",
-          context: { channelId: channel.channelId, changeSetId, changeCount: changesToPersist.length },
+          context: { channelId: channel.channelId, changeSetId: changeSet.id, changeCount: changesToPersist.length },
         });
 
-        const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);
-        if (!storedChangeSet) {
-          throw new DomainError({ code: "not_found", message: "Change set disappeared after creation" });
-        }
-        const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
-
         return {
-          changeSet: toChangeSetRecord(storedChangeSet, storedChanges.map(toChangeRecord)),
+          changeSet,
           summary,
           errors: parsed.errors.slice(0, MAX_PREVIEW_ERRORS_RETURNED),
           totalErrors: parsed.errors.length,
@@ -413,6 +719,14 @@ export function createChangeSetServices(deps: ServiceDependencies) {
             details: { changeId: target.id, validationStatus: target.validationStatus, conflictStatus: target.conflictStatus },
           });
         }
+        const conflictedChangeIds = await deps.crdtConflicts.listConflictedChangeIds(parsedInput.channelId);
+        if (conflictedChangeIds.has(target.id)) {
+          throw new DomainError({
+            code: "crdt_conflict_open",
+            message: "This change has an unresolved multi-device conflict -- resolve it in the Merge tab before approving",
+            details: { changeId: target.id },
+          });
+        }
 
         const patch = { approvalStatus: "approved" as const, approvedValue: target.proposedValue, conflictStatus: target.conflictStatus };
         await deps.changeSetStore.updateChange(target.id, patch);
@@ -465,8 +779,13 @@ export function createChangeSetServices(deps: ServiceDependencies) {
 
       try {
         const { changeSet, changes } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
+        const conflictedChangeIds = await deps.crdtConflicts.listConflictedChangeIds(parsedInput.channelId);
         const toApprove = changes.filter(
-          (c) => c.approvalStatus === "pending" && c.validationStatus === "valid" && c.conflictStatus === "none"
+          (c) =>
+            c.approvalStatus === "pending" &&
+            c.validationStatus === "valid" &&
+            c.conflictStatus === "none" &&
+            !conflictedChangeIds.has(c.id)
         );
 
         if (toApprove.length > 0) {

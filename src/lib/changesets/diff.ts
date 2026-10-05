@@ -2,7 +2,7 @@ import type {
   Change,
   ChangeConflictStatus,
   ChangeSetStatus,
-  ChangeType,
+  StoredVideoRecord,
 } from "./contracts";
 
 // YouTube Data API v3 `videos.update` / localizations constraints (verified against
@@ -22,10 +22,38 @@ export function isValidLanguageCode(value: string): boolean {
 }
 
 /**
+ * The single canonical read of "what does the locally-synchronized copy of this video
+ * currently say for (language, field)" -- YouTube's `localizations` map never contains an
+ * entry keyed by the video's own `defaultLanguage` (that language's title/description is
+ * `snippet.title`/`description`, i.e. `video.title`/`video.description` on this synced
+ * record); only a non-default language is ever looked up in `existingLocalizations`.
+ * Previously duplicated (and each copy missing this defaultLanguage special-case) across
+ * `changesets/import.ts`, `changesets/services.ts`, and `ai-localization/services.ts` --
+ * a change targeting a video's default language was diffed against an empty string
+ * instead of its real current value in all three (AGENTS.md §D: one implementation).
+ */
+export function currentRemoteValueFor(
+  video: StoredVideoRecord,
+  language: string,
+  field: "title" | "description"
+): string {
+  if (video.defaultLanguage && language === video.defaultLanguage) {
+    return field === "title" ? video.title : video.description;
+  }
+  return video.existingLocalizations[language]?.[field] ?? "";
+}
+
+/**
  * Classifies a proposed field value relative to the *current* synchronized remote
  * value (never the export-time baseline -- that is only used for conflict detection).
+ * Deliberately returns the narrower "add"|"modify"|"unchanged" (not the full `ChangeType`
+ * union, which also has "delete") -- deletion is a distinct, explicit user action
+ * (`proposeLocalizationDeletion`), never something a value diff classifies into.
  */
-export function classifyFieldChange(currentRemoteValue: string, proposedValue: string): ChangeType {
+export function classifyFieldChange(
+  currentRemoteValue: string,
+  proposedValue: string
+): "add" | "modify" | "unchanged" {
   if (currentRemoteValue === proposedValue) return "unchanged";
   if (currentRemoteValue.trim().length === 0) return "add";
   return "modify";
@@ -53,17 +81,22 @@ type ChangeStatusInput = Pick<Change, "validationStatus" | "conflictStatus" | "a
  * docs/PROJECT_SPEC.md §12 ("State transitions must be deterministic and testable").
  * Only "actionable" changes (valid, non-conflicting) drive approved/rejected/
  * partially_approved; invalid/conflicting changes always keep a set "in_review"
- * until resolved, so bulk approval can never silently clear them.
+ * until resolved, so bulk approval can never silently clear them. A change the user
+ * REJECTED is resolved whatever its validity/conflict state (a rejection never writes
+ * anything, owner request 2026-10-04: a set whose every change was rejected stayed
+ * "in_review" because some were conflicted): when every change is rejected the set is
+ * "rejected", and rejected changes never block the other changes' verdict.
  */
 export function computeChangeSetStatus(changeList: ChangeStatusInput[]): ChangeSetStatus {
   if (changeList.length === 0) return "in_review";
+  if (changeList.every((c) => c.approvalStatus === "rejected")) return "rejected";
 
   const actionable = changeList.filter(
     (c) => c.validationStatus === "valid" && c.conflictStatus === "none"
   );
 
   const blocked = changeList.some(
-    (c) => c.validationStatus === "invalid" || c.conflictStatus === "conflict"
+    (c) => c.approvalStatus !== "rejected" && (c.validationStatus === "invalid" || c.conflictStatus === "conflict")
   );
 
   if (actionable.length === 0) {
@@ -97,10 +130,17 @@ export function revalidateChangeAgainstCurrentRemote(
   // `null` = the video (or its language entry) is no longer present in synchronized
   // data at all (e.g. video removed from channel-sync results). Treat conservatively
   // as a conflict rather than silently clearing it.
+  // A value that already equals what the change proposes is not a conflict: it is the change having taken effect (owner report 2026-10-04: after a
+  // set was approved and sent, the next load compared the unchanged baseline with the now-live proposed value, called it a conflict and reset every
+  // approval to pending -- the set fell back to "In progress" and, with pending changes, could never be purged). An approval is only invalidated when
+  // the remote value moved to something ELSE than both the baseline and the proposal.
+  const alreadyInEffect = currentRemoteValue !== null && currentRemoteValue === change.proposedValue;
   const conflictStatus: ChangeConflictStatus =
     currentRemoteValue === null
       ? "conflict"
-      : computeConflictStatus(change.baselineValue, currentRemoteValue);
+      : alreadyInEffect
+        ? "none"
+        : computeConflictStatus(change.baselineValue, currentRemoteValue);
 
   if (conflictStatus === change.conflictStatus) {
     return change;

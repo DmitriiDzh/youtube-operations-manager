@@ -1,8 +1,16 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  createIdGenerator,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/shared-domain";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "./ledger-state";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, createIdGenerator };
 export type { AttemptOutcome, AttemptPhase, LedgerStatus };
 
 // ---------------------------------------------------------------------------
@@ -75,12 +83,15 @@ export type BatchStatus = "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED";
  * for a genuinely new attempt) or a terminal state (FAILED, if approval no longer holds).
  */
 export const ALLOWED_LEDGER_TRANSITIONS: Record<LedgerStatus, LedgerStatus[]> = {
-  PENDING: ["AWAITING_EXECUTION", "CONFLICT", "FAILED", "ABORTED_SYSTEMIC", "DRY_RUN_COMPLETE"],
+  // CANCELLED (ADR 0016): the operator stopped the batch before this row started. Only a row that has
+  // NOT begun an attempt may be cancelled -- never APPLYING (a write is in flight) or UNKNOWN
+  // (a sent write whose outcome still has to be reconciled).
+  PENDING: ["AWAITING_EXECUTION", "CONFLICT", "FAILED", "ABORTED_SYSTEMIC", "DRY_RUN_COMPLETE", "CANCELLED"],
   // FAILED/CONFLICT here cover the mandatory fresh pre-send re-check (executeBatch calls
   // the same safety pipeline again immediately before every attempt cycle, per
   // AC-BATCH-03/§0.F Step 4) discovering a newly-invalidated approval or a newly-diverged
   // remote value between preparation time and actual send time.
-  AWAITING_EXECUTION: ["APPLYING", "FAILED", "CONFLICT", "ABORTED_SYSTEMIC"],
+  AWAITING_EXECUTION: ["APPLYING", "FAILED", "CONFLICT", "ABORTED_SYSTEMIC", "CANCELLED"],
   APPLYING: ["SUCCESS", "FAILED", "CONFLICT", "UNKNOWN"],
   UNKNOWN: ["SUCCESS", "CONFLICT", "FAILED", "AWAITING_EXECUTION"],
   SUCCESS: [],
@@ -88,6 +99,7 @@ export const ALLOWED_LEDGER_TRANSITIONS: Record<LedgerStatus, LedgerStatus[]> = 
   CONFLICT: [],
   ABORTED_SYSTEMIC: [],
   DRY_RUN_COMPLETE: [],
+  CANCELLED: [],
 };
 
 export const TERMINAL_LEDGER_STATUSES: ReadonlySet<LedgerStatus> = new Set([
@@ -96,6 +108,7 @@ export const TERMINAL_LEDGER_STATUSES: ReadonlySet<LedgerStatus> = new Set([
   "CONFLICT",
   "ABORTED_SYSTEMIC",
   "DRY_RUN_COMPLETE",
+  "CANCELLED",
 ]);
 
 export type Batch = {
@@ -108,6 +121,8 @@ export type Batch = {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** BL-117: set when this batch was never executed but split into smaller batches because it needed more quota than was available. */
+  splitInto?: string[] | null;
 };
 
 export type LedgerRow = {
@@ -151,6 +166,8 @@ export type StoredBatchRecord = {
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
+  /** BL-117: ids of the batches this never-executed batch was split into for quota; null otherwise. */
+  splitInto?: string[] | null;
 };
 
 export type StoredLedgerRowRecord = {
@@ -234,6 +251,12 @@ export type ExecutionResult = {
    * of sync with what the ledger itself says. */
   status: LedgerStatus;
   detail?: string;
+  /** Only present for a CONFLICT outcome -- the specific changes whose approval-time
+   * baseline no longer matches the live remote value (AC-CONFLICT-01/AC-LEDGER-04).
+   * Previously dropped by two of the (at the time three, now four) code paths that can
+   * produce a CONFLICT ExecutionResult, even though the audit record for the identical
+   * event always included it (independent review, second cycle). */
+  conflictingChangeIds?: string[];
   /** True only for a reconciliation-confirmed SUCCESS/CONFLICT or crash-recovered result
    * -- distinguishes "this attempt's own response was observed" from "the outcome was
    * established by a later remote read" (AC-AUDIT-05). Absent for FAILED/UNKNOWN/etc. */
@@ -251,6 +274,9 @@ export type BatchExecutionSummary = {
    * row was processed -- the remaining, never-reached rows are reported as
    * ABORTED_SYSTEMIC, not silently missing. */
   haltedSystemically: boolean;
+  /** True if the operator cancelled the batch and at least one row was cancelled because of it. The
+   * rows already written stay written; the cancelled ones are reported as CANCELLED. */
+  cancelled: boolean;
 };
 
 export type RecoveredRow = {
@@ -295,13 +321,20 @@ export type PendingChangeRecord = {
   approvalStatus: "pending" | "approved" | "rejected";
   validationStatus: "valid" | "invalid";
   conflictStatus: "none" | "conflict";
+  /**
+   * Optional for the same reason as `PendingChange.changeType` in `merge.ts` -- added
+   * 2026-09-21 for the deletion feature (docs/PROJECT_SPEC.md §16), absent/undefined
+   * behaves exactly like "add"/"modify"/"unchanged" everywhere it is read.
+   */
+  changeType?: "add" | "modify" | "unchanged" | "delete";
 };
 
 export type PreparedRowOutcome =
-  | { ledgerRowId: string; videoId: string; status: "DRY_RUN_COMPLETE"; payload: PreparedPayload }
-  | { ledgerRowId: string; videoId: string; status: "AWAITING_EXECUTION"; payload: PreparedPayload }
+  | { ledgerRowId: string; videoId: string; status: "DRY_RUN_COMPLETE"; payload: PreparedPayload; appliedDefaultLanguage?: string | null }
+  | { ledgerRowId: string; videoId: string; status: "AWAITING_EXECUTION"; payload: PreparedPayload; appliedDefaultLanguage?: string | null }
   | { ledgerRowId: string; videoId: string; status: "FAILED"; error: string }
-  | { ledgerRowId: string; videoId: string; status: "CONFLICT"; conflictingChangeIds: string[] };
+  | { ledgerRowId: string; videoId: string; status: "CONFLICT"; conflictingChangeIds: string[] }
+  | { ledgerRowId: string; videoId: string; status: "CANCELLED" };
 
 /**
  * Slice 4 addition: `videoId` was missing from this type through Slices 1-3 -- nothing

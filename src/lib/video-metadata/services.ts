@@ -1,8 +1,8 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import { pickWritableSnippetFields } from "@/lib/youtube";
+import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type MetadataLanguageSource,
   type MetadataApplyResult,
   type MetadataDraft,
@@ -86,23 +86,14 @@ type ServiceDependencies = {
 
 export type { ServiceDependencies };
 
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
-
 /**
  * RISK-11 (extended to this legacy single-item write path, 2026-09-18): previously
  * stripped only `.localized`, leaving five other documented read-only `snippet`
  * sub-properties (`publishedAt`, `channelId`, `channelTitle`, `thumbnails`,
  * `liveBroadcastContent`) echoed back unchanged on every real `videos.update` call this
  * function's callers make. Now delegates to the shared, canonical whitelist
- * (`src/lib/youtube.ts`'s `pickWritableSnippetFields`) instead of keeping its own,
- * narrower copy -- the exact same fix already applied to `src/lib/batches/merge.ts`.
+ * (`src/lib/youtube-write-gateway/index.ts`'s `pickWritableSnippetFields`) instead of keeping
+ * its own, narrower copy -- the exact same fix already applied to `src/lib/batches/merge.ts`.
  */
 function removeReadOnlySnippetFields(snippet: Record<string, unknown>) {
   return pickWritableSnippetFields(snippet);
@@ -144,7 +135,7 @@ function resolveTargetLanguage(context: VideoMetadataContext): {
   throw new DomainError({
     code: "target_language_unresolvable",
     message:
-      "Cannot resolve target language. Set snippet.defaultLanguage on the video or leave exactly one localization.",
+      "Cannot resolve target language. Set the video's default language (snippet.defaultLanguage) on YouTube -- this app never sets it itself.",
     details: {
       videoDefaultLanguage: context.snippet.defaultLanguage ?? null,
       localizationLocales,
@@ -158,12 +149,28 @@ function buildMetadataSyncProposal(args: {
   draft: MetadataDraft;
 }): MetadataSyncProposal {
   const resolvedLanguage = resolveTargetLanguage(args.context);
+  // Architecture-audit review (H5): without a `snippet.defaultLanguage`, YouTube rejects localized
+  // details (videos.update `defaultLanguageNotSet`), and this app may not set that field itself
+  // (AGENTS.md §F). So the single-localization fallback can only ever produce a request YouTube
+  // refuses -- fail locally, clearly, before any write, instead.
+  if (resolvedLanguage.languageSource === "existing-localization") {
+    throw new DomainError({
+      code: "target_language_unresolvable",
+      message:
+        "This video has no default language (snippet.defaultLanguage). Set it on YouTube first -- this app never sets it itself.",
+      details: { inferredLanguage: resolvedLanguage.targetLanguage },
+    });
+  }
   const beforeSnippet = removeReadOnlySnippetFields(args.context.snippet);
   const proposedSnippet = removeReadOnlySnippetFields({
     ...beforeSnippet,
     title: args.draft.finalTitle,
     description: args.draft.description,
-    defaultLanguage: resolvedLanguage.targetLanguage,
+    // Architecture audit 2026-10-01 (H5): `snippet.defaultLanguage` is never set as a side effect
+    // (AGENTS.md §F -- the localization pipeline has authority over title/description only). The
+    // video's existing value, if any, is carried through unchanged via `beforeSnippet`; a video
+    // without one stays without one even when the target language came from the
+    // single-localization fallback.
   });
 
   const beforeLocalizations = { ...args.context.localizations };

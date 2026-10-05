@@ -1,7 +1,9 @@
+import type { ProgressReporter } from "@/lib/operation-progress";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
+import type { ChannelAccessService } from "@/lib/channel-access";
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type ChannelForSync,
   type LocaleMetadata,
   type ResolvedCredentials,
@@ -15,6 +17,7 @@ import {
   listChannelsInputSchema,
   listChannelsOutputSchema,
   listSyncedVideosInputSchema,
+  listSyncedVideosPagedOutputSchema,
   listSyncedVideosOutputSchema,
   parseWithSchema,
   syncChannelInputSchema,
@@ -43,6 +46,12 @@ export type StoredVideoRecord = {
   thumbnails: Record<string, ThumbnailInfo>;
   existingLocalizations: Record<string, LocaleMetadata>;
   etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
+  durationSeconds: number | null;
+  liveBroadcastContent?: string | null;
+  publishAt: string | null;
   lastSyncedAt: Date;
 };
 
@@ -61,10 +70,14 @@ type ServiceDependencies = {
     listUploadsPlaylistVideoIds(args: {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
+      /** Optional: running count of uploads found, after each page. */
+      onPage?: (found: number) => void;
     }): Promise<string[]>;
     getVideosMetadataBatch(args: {
       credentials: ResolvedCredentials;
       videoIds: string[];
+      /** Optional: `(ids processed, total)` after each chunk. Still ONE logical call for all ids. */
+      onProgress?: (done: number, total: number) => void;
     }): Promise<VideoSyncMetadata[]>;
   };
   channelStore: {
@@ -73,7 +86,10 @@ type ServiceDependencies = {
       title: string;
       thumbnailUrl: string | null;
       uploadsPlaylistId: string;
-      connectedUserId: string | null;
+      /** `undefined` = leave the stored owner unchanged (never cleared by a sync). */
+      connectedUserId?: string;
+      /** BL-118: the channel's creation time on YouTube; `null`/`undefined` leaves a stored value untouched. */
+      publishedAt?: string | null;
     }): Promise<void>;
     markChannelSynced(channelId: string, syncedAt: Date): Promise<void>;
     listChannels(): Promise<StoredChannelRecord[]>;
@@ -91,6 +107,12 @@ type ServiceDependencies = {
         thumbnails: Record<string, ThumbnailInfo>;
         existingLocalizations: Record<string, LocaleMetadata>;
         etag: string | null;
+        viewCount: number | null;
+        commentCount: number | null;
+        likeCount: number | null;
+        durationSeconds: number | null;
+        liveBroadcastContent?: string | null;
+        publishAt: string | null;
       }>,
       syncedAt: Date
     ): Promise<void>;
@@ -100,16 +122,8 @@ type ServiceDependencies = {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
     error(payload: { event: string; context?: Record<string, unknown> }): void;
   };
+  channelAccess: ChannelAccessService;
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function mapStoredChannel(record: StoredChannelRecord): SyncedChannel {
   return {
@@ -138,6 +152,10 @@ function mapStoredVideo(record: StoredVideoRecord): SyncedVideo {
     existingLocalizationLanguages: Object.keys(record.existingLocalizations).sort(),
     lastSyncedAt: record.lastSyncedAt.toISOString(),
     etag: record.etag,
+    viewCount: record.viewCount,
+    commentCount: record.commentCount,
+    likeCount: record.likeCount,
+    publishAt: record.publishAt,
   };
 }
 
@@ -152,10 +170,12 @@ function getCredentialUserId(credentialRef: unknown): string | null {
 
 export function createChannelSyncServices(deps: ServiceDependencies) {
   return {
-    async syncChannel(input: unknown): Promise<SyncChannelResult> {
+    async syncChannel(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<SyncChannelResult> {
       const parsedInput = parseWithSchema(syncChannelInputSchema, input, "sync channel input");
+      const progress = options.progress;
 
       try {
+        progress?.stage("Resolving the channel on YouTube");
         const credentials = await deps.authResolver.resolve({
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_READ_SCOPE],
@@ -176,23 +196,47 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
 
         const connectedUserId = getCredentialUserId(parsedInput.credentialRef);
 
+        // Only an *implicit* resolution (no explicit channelId -- i.e. "sync my channel",
+        // channels.list({mine:true}) under the hood) is trustworthy evidence of which channel
+        // this session's live OAuth token actually grants. An explicit channelId is a public,
+        // unauthenticated-scope lookup (see getChannelForSync) and must never make some other
+        // channel "active" just because it happened to be re-synced.
+        if (!parsedInput.channelId && connectedUserId) {
+          await deps.channelAccess.activateChannel({
+            userId: connectedUserId,
+            channelId: channel.channelId,
+          });
+        }
+
         await deps.channelStore.upsertChannel({
           channelId: channel.channelId,
           title: channel.title,
           thumbnailUrl: channel.thumbnailUrl,
           uploadsPlaylistId: channel.uploadsPlaylistId,
-          connectedUserId,
+          // Architecture audit 2026-10-01 (H3): only the implicit "my channel" resolution is evidence
+          // of which Google identity OWNS this channel. An explicit-id sync is a public lookup and a
+          // credential without a user id (raw access token) proves nothing -- neither may re-own or
+          // disconnect the channel (that column now also decides agent-token validity, Phase 12).
+          connectedUserId: !parsedInput.channelId && connectedUserId ? connectedUserId : undefined,
+          publishedAt: channel.publishedAt,
         });
 
+        progress?.stage("Listing uploads");
         const videoIds = await deps.youtubeApi.listUploadsPlaylistVideoIds({
           credentials,
           uploadsPlaylistId: channel.uploadsPlaylistId,
+          onPage: progress ? (found) => progress.stage(`Listing uploads \u2014 ${found} found`) : undefined,
         });
 
+        progress?.counts(0, videoIds.length);
+        progress?.stage("Reading video details");
         const videoMetadata = await deps.youtubeApi.getVideosMetadataBatch({
           credentials,
           videoIds,
+          onProgress: progress ? (done, total) => progress.counts(done, total) : undefined,
         });
+
+        progress?.stage("Saving videos locally");
 
         const syncedAt = new Date();
 
@@ -209,11 +253,18 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
             thumbnails: video.thumbnails,
             existingLocalizations: video.existingLocalizations,
             etag: video.etag,
+            viewCount: video.viewCount,
+            commentCount: video.commentCount,
+            likeCount: video.likeCount,
+            durationSeconds: video.durationSeconds,
+            liveBroadcastContent: video.liveBroadcastContent,
+            publishAt: video.publishAt,
           })),
           syncedAt
         );
 
         await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
+        progress?.counts(videoMetadata.length, videoMetadata.length);
 
         const storedChannel = await deps.channelStore.getChannel(channel.channelId);
         if (!storedChannel) {
@@ -248,13 +299,16 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
     },
 
     async listChannels(input: unknown) {
-      parseWithSchema(listChannelsInputSchema, input, "list channels input");
+      const parsedInput = parseWithSchema(listChannelsInputSchema, input, "list channels input");
 
       try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        const activeChannelId = await deps.channelAccess.getActiveChannelId(userId);
         const records = await deps.channelStore.listChannels();
+        const visible = records.filter((record) => record.channelId === activeChannelId);
         return parseWithSchema(
           listChannelsOutputSchema,
-          { channels: records.map(mapStoredChannel) },
+          { channels: visible.map(mapStoredChannel) },
           "list channels output"
         );
       } catch (error) {
@@ -270,7 +324,28 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
       );
 
       try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
         const records = await deps.channelStore.listVideosByChannel(parsedInput.channelId);
+        if (parsedInput.fields || parsedInput.limit !== undefined || parsedInput.offset !== undefined) {
+          const all = records.map(mapStoredVideo);
+          const offset = parsedInput.offset ?? 0;
+          const page = parsedInput.limit === undefined ? all.slice(offset) : all.slice(offset, offset + parsedInput.limit);
+          const wanted = parsedInput.fields ? ["videoId", ...parsedInput.fields.filter((f) => f !== "videoId")] : null;
+          const videos = wanted
+            ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]])))
+            : page;
+          const end = offset + page.length;
+          return parseWithSchema(
+            listSyncedVideosPagedOutputSchema,
+            { channelId: parsedInput.channelId, videos, total: all.length, offset, nextOffset: end < all.length ? end : null },
+            "list synced videos paged output"
+          );
+        }
         return parseWithSchema(
           listSyncedVideosOutputSchema,
           {

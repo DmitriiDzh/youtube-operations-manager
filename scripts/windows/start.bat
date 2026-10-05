@@ -1,0 +1,127 @@
+@echo off
+REM Delayed expansion (needed below for the !VAR! build-marker comparison) is intentionally NOT
+REM enabled yet at this point in the script. cmd.exe's parser strips literal "!" characters as
+REM soon as enabledelayedexpansion is active -- including inside %~dp0 -- and this project's own
+REM folder name starts with "!" (E:\...\!YouTube Operations Manager\...). Enabling it before the
+REM `cd /d` below silently mangles that path, `cd /d` fails, and every relative check that follows
+REM (.env.local, node_modules, .next) then runs against the wrong directory. Keep delayed expansion
+REM off until after the `cd /d`.
+setlocal
+cd /d "%~dp0..\.."
+
+echo === YouTube Operations Manager - Windows launcher ===
+echo.
+
+where node >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] Node.js was not found on PATH.
+  echo Install Node.js 20 LTS or newer from https://nodejs.org and re-run this script.
+  pause
+  exit /b 1
+)
+
+if not exist ".env.local" (
+  echo [ERROR] .env.local not found in "%cd%".
+  echo Copy .env.example to .env.local and fill in your Google OAuth values first ^-^- see docs\getting-started.md.
+  pause
+  exit /b 1
+)
+
+REM Already running? Stop the old instance first (same principle as scripts/macos/start.sh): a second
+REM instance cannot bind the port, and the browser would otherwise open the OLD server -- possibly on
+REM a stale build. stop.bat waits for any running export/import/migration before stopping, and
+REM refuses (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
+REM Note: whatever listens on port 3000 is stopped, exactly as stop.bat has always done.
+set "PORT_BUSY="
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /C:":3000 " ^| findstr LISTENING') do set "PORT_BUSY=1"
+if defined PORT_BUSY (
+  echo Port 3000 is already in use - stopping the running instance first...
+  call "%~dp0stop.bat" /noconfirm
+  if errorlevel 1 (
+    echo [ERROR] The running instance could not be stopped safely - not starting a second one.
+    pause
+    exit /b 1
+  )
+)
+
+if not exist "node_modules" (
+  echo Installing dependencies ^(first run only, this can take a few minutes^)...
+  call npm install
+  if errorlevel 1 goto :fail
+)
+
+REM Rebuild-staleness check. This script no longer touches the network, the remote, or the
+REM working tree in any way (it previously ran `git pull --ff-only` itself before this check --
+REM removed 2026-09-21 at the project owner's explicit request: "за актуальностью гита я буду
+REM следить сам" -- keeping git entirely up to the operator, not this script).
+REM
+REM In an actual git checkout of the repository, compare the currently checked-out commit
+REM against a marker file recording which commit `.next` was actually built from, so a build the
+REM operator did on an earlier commit (e.g. before their own `git pull`) is detected and
+REM rebuilt automatically -- rather than relying on ".next merely exists" as the only signal,
+REM which cannot tell a stale build apart from a current one. A standalone published\<version>\
+REM release copy has no `.git` and no commit to compare against -- `update.bat` remains its one,
+REM explicit, human-triggered rebuild step (docs\RELEASE_LAYOUT.md §1, AGENTS.md §K.4).
+setlocal enabledelayedexpansion
+set "BUILD_MARKER=.next-build-commit.txt"
+set "CURRENT_REV="
+if exist ".git" (
+  where git >nul 2>nul
+  if not errorlevel 1 (
+    for /f "delims=" %%r in ('git rev-parse HEAD 2^>nul') do set "CURRENT_REV=%%r"
+  )
+)
+
+set "NEED_BUILD="
+if not exist ".next" set "NEED_BUILD=1"
+
+if defined CURRENT_REV (
+  set "BUILT_REV="
+  if exist "%BUILD_MARKER%" set /p BUILT_REV=<"%BUILD_MARKER%"
+  if not "%CURRENT_REV%"=="!BUILT_REV!" set "NEED_BUILD=1"
+)
+
+if defined NEED_BUILD (
+  echo Installing dependencies and building the application ^(no build found, or the checked-out commit changed since the last build^)...
+  call npm install
+  if errorlevel 1 goto :fail
+  call npm run build
+  if errorlevel 1 goto :fail
+  if defined CURRENT_REV (
+    > "%BUILD_MARKER%" echo !CURRENT_REV!
+  )
+)
+
+echo Starting YouTube Operations Manager on http://localhost:3000 ...
+REM BL-116: the server runs HIDDEN and detached (output in .launcher.log), so no window has to stay open. It stops by
+REM itself about 10 minutes after the last open browser window; stop.bat stops it right away.
+> ".launcher.log" echo.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run start >> .launcher.log 2>&1' -WorkingDirectory (Get-Location).Path -WindowStyle Hidden"
+
+REM Wait for the server to really answer (up to ~60s) instead of a fixed sleep.
+set "READY="
+for /l %%i in (1,1,60) do (
+  if not defined READY (
+    curl -s -o NUL http://127.0.0.1:3000/ >nul 2>nul && set "READY=1"
+    if not defined READY timeout /t 1 >nul
+  )
+)
+if not defined READY (
+  echo [WARN] The server did not answer on http://127.0.0.1:3000/ within 60 seconds. See .launcher.log for errors.
+  pause
+  exit /b 1
+)
+start http://localhost:3000
+
+echo.
+echo The application is running in the background - you can close this window.
+echo   - It stops by itself about 10 minutes after the last open browser window; stop.bat stops it right away.
+echo   - Log: .launcher.log
+echo   - Your data is stored under %%APPDATA%%\YouTubeOperationsManager\, not in this folder -
+echo     it is not affected by replacing these program files later.
+exit /b 0
+:fail
+echo.
+echo [ERROR] Setup failed - see the output above for details.
+pause
+exit /b 1

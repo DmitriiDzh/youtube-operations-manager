@@ -69,8 +69,10 @@ Additionally:
 
 ### GATE D — Before network or multi-user deployment
 
-- Per-user authorization implemented (closes RISK-02).
-- Channel ownership isolation implemented (closes RISK-02).
+- Per-user authorization implemented (closes RISK-02) — **done, 2026-09-20**, see RISK-02 below;
+  scoped to active-channel, not a full multi-operator authorization model (Gate D's other items
+  below remain unaddressed).
+- Channel ownership isolation implemented (closes RISK-02) — **done, 2026-09-20**.
 - Upload size enforcement hardened to actual bytes received, not just declared headers (closes RISK-01).
 - CSRF protections applied where applicable (none of the current POST routes have them — matches the rest of the app today, but must be addressed before network exposure).
 - Secure credential storage (closes RISK-07).
@@ -107,7 +109,7 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-01 — XLSX upload size enforcement is best-effort, not absolute
 
-- **Affected components:** `src/app/api/channels/[channelId]/localizations/import/route.ts`, `.../import/preview/route.ts`, `src/lib/changesets/import.ts` (`MAX_WORKBOOK_BYTES`).
+- **Affected components:** `src/app/api/channels/[channelId]/localizations/import/route.ts`, `.../import/preview/route.ts`, `src/lib/changesets/import.ts` (`MAX_WORKBOOK_BYTES`, the limit *value*), `src/lib/shared-xlsx/index.ts`'s `loadWorkbookFromBuffer()` (the actual post-parse byte check, extracted 2026-09-26 from `import.ts` into this shared module — same check, same limitation, new location).
 - **Current behavior:** Both import routes reject a request whose `Content-Length` header already exceeds `MAX_WORKBOOK_BYTES` (25MB) + a small margin, before calling `request.formData()`. `parseAndValidateWorkbook()` additionally checks the actual buffered size after parsing. Next.js App Router Route Handlers have no built-in request-body size cap (unlike Server Actions), and `request.formData()` in this runtime has no streaming byte-limit option — a request sent **without** a `Content-Length` header (e.g. chunked transfer) is still fully buffered into memory before either check can reject it.
 - **Actual risk:** An authenticated client (must already hold a valid NextAuth session) could send an oversized or chunked upload to exhaust server memory. Severity is low today: the only way to reach this endpoint is an authenticated session on the operator's own machine.
 - **Existing mitigation:** `Content-Length` pre-check (rejects the common case — every normal browser file upload sends this header) before `request.formData()` is called. **This mitigation only helps when it rejects the request before parsing begins; it does not protect the request that passes the header check.** `parseAndValidateWorkbook()`'s post-parse `MAX_WORKBOOK_BYTES`/`MAX_LOCALIZATION_ROWS` checks run **after** `request.formData()` has already read the entire multipart body into memory — by the time those checks execute, the memory has already been consumed, whether or not they subsequently reject the file. A post-parsing size check bounds *how large a change set can be persisted*, but it does **not** bound *how much memory a single request can force the server to allocate while parsing* — those are two different guarantees, and only the first one currently exists after the point where `Content-Length` is absent, wrong, or the body is delivered as multiple large chunks under the declared limit's margin.
@@ -119,17 +121,16 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ---
 
-## RISK-02 — No per-user channel ownership boundary
+## RISK-02 — No per-user channel ownership boundary — FIXED, 2026-09-20
 
-- **Affected components:** `src/lib/channel-sync/services.ts` (`listChannels`), `src/lib/localization/services.ts`, `src/lib/changesets/services.ts` — every read/write path that takes a `channelId`.
-- **Current behavior:** Any authenticated NextAuth session can list, sync, export, import, and approve/reject change sets for **any** locally synchronized channel, regardless of which Google account originally connected it. `channels.connectedUserId` is recorded for traceability only, explicitly documented as "not an ownership boundary" (`docs/ARCHITECTURE.md` §7.1). This predates Phase 4 — `channel-sync`'s `listChannels()` already has no per-user filter.
-- **Actual risk:** If more than one person is ever authenticated against the same running instance, one operator could read/modify another operator's channel data. Not exploitable today under the documented single-operator model.
-- **Existing mitigation:** The whole application is designed and documented as a **single local operator** tool (`docs/PROJECT_SPEC.md` §37); a `changeSetId` is still scoped to its `channelId` to prevent cross-channel access via a forged path parameter, which is a different (already-covered) concern from per-user ownership.
-- **Required remediation:** Before any multi-operator or hosted deployment: add a `connectedUserId`-based (or role-based) authorization check to every channel-scoped read/write path, decide whether channels can be shared between operators by design or are strictly 1:1, and add tests proving a session cannot access another user's channel.
-- **Acceptance criteria:** An authenticated session for user A receives `403`/`404` (not channel data) when requesting a channel/change-set connected to user B, with a test covering at least `GET /api/channels`, `GET /api/channels/[channelId]/change-sets`, and one write action.
-- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator model), `BLOCKS_NETWORK_DEPLOYMENT`.
-- **Approval required from:** project owner (product decision: is multi-operator ever in scope?).
-- **Status:** OPEN.
+- **Affected components:** `src/lib/channel-sync/services.ts` (`listChannels`), `src/lib/localization/services.ts`, `src/lib/changesets/services.ts`, `src/lib/batches/services.ts`, `src/lib/ai-localization/services.ts` — every read path that takes a `channelId`, across Web API, MCP, and CLI.
+- **Original behavior:** Any authenticated NextAuth session (or MCP/CLI local user) could list, sync, export, import, and approve/reject change sets for **any** locally synchronized channel, regardless of which Google account originally connected it. `channels.connectedUserId` was recorded for traceability only, explicitly documented as "not an ownership boundary" (`docs/ARCHITECTURE.md` §7.1).
+- **Trigger:** the project owner tested against multiple different YouTube channels over time; the Sync tab's channel picker (a documented, spec'd feature) surfaced every one of them, not just the currently signed-in one. The owner made an explicit product decision (2026-09-20, Telegram): filter **any** information a session can see to its currently active channel — resolving this risk's open "is multi-operator ever in scope?" question with "no — scope every read to the active channel instead."
+- **Fix applied:** `docs/decisions/0004-active-channel-read-scoping.md` records the full design. Summary: `users.selectedChannelId` (previously used only by the write-safety guardrail) is now the single active-channel source of truth for reads too, via a new `src/lib/channel-access` service (`assertActiveChannel`, `filterToActiveChannel`). It is kept fresh for free from `GET /api/youtube/channel-info` and `channel-sync`'s implicit ("sync my own channel") path — never from an explicit-`channelId` sync, which is an unauthenticated-scope lookup (see RISK-37 below). The check is applied at every channel-scoped read entry point across Web API routes, MCP tools, and CLI commands: channel/video listing, change-set list/get/approve/reject/approve-all/reject-all, batch list/get/audit/errors/prepare, editorial profile, AI-localization generate/provenance, localization overview/detail/export/import/import-preview. No live YouTube API call was added to any read path (`selectedChannelId` is a local lookup), preserving each domain's "zero live YouTube calls" invariant.
+- **Acceptance criteria met:** regression tests cover both the positive case (active channel's own data is returned) and the negative/boundary cases (a `channelId` that is not the active one is rejected with `CHANNEL_NOT_ACTIVE`; no active channel resolved yet yields an empty list rather than everything) across all three interfaces — `src/lib/channel-access/service.test.ts`, `src/lib/channel-sync/services.test.ts`, `src/mcp/server.test.ts`, `src/cli/video-metadata.test.ts`, `src/cli/video-metadata.recovery-gate.test.ts`.
+- **Gate(s):** was `DEFERRED_WITH_DOCUMENTED_REASON`/`BLOCKS_NETWORK_DEPLOYMENT` — no longer blocking for the read-visibility concern this entry covered. Gate D's other items (upload-size hardening, CSRF, credential storage) are unaffected and remain separately tracked.
+- **Approval:** project owner, 2026-09-20 (Telegram) — see ADR 0004.
+- **Status:** FIXED. **Cross-reference (Pre-Release Cross-Platform Persistence task):** `users.id` was confirmed by inspection to be the Google OAuth `sub` claim (a stable, provider-issued identity — `src/lib/auth.ts`'s `session()` callback, `src/lib/db.ts`'s `upsertUserOAuthOnSignIn`), not a locally-generated artifact — unaffected by this fix, still relevant to how `activateChannel` keys on `userId`.
 
 ---
 
@@ -149,15 +150,19 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-04 — No CLI/MCP interfaces for Change Sets
 
-- **Affected components:** `src/cli/video-metadata.ts`, `src/mcp/server.ts` (neither has `changeset_*`/`localization_*`/`channel_sync` commands or tools yet).
-- **Current behavior:** All Phase 2–4 capabilities (channel sync, localization overview/export, XLSX import, change-set review/approval) exist only through the Web UI and its underlying API routes. `createChannelSyncCore()`, `createLocalizationCore()`, and `createChangeSetCore()` are already interface-agnostic (same pattern as `createVideoMetadataCore()`), so this is additive work, not a redesign.
-- **Actual risk:** The future operations agent (Codex) is meant to operate exclusively through MCP/API (`docs/PROJECT_SPEC.md` §26, this task's development/operations separation). Without `changeset_*` MCP tools, Codex cannot review or approve localization change sets at all — the entire Phase 4 workflow is currently human-Web-UI-only.
-- **Existing mitigation:** None needed yet — Phase 4.5 does not hand off to Codex.
-- **Required remediation:** Register MCP tools mirroring the existing `apply`/`playlist_*` read/propose/apply split (`docs/DEVELOPMENT_PLAYBOOK.md` §6.7): read tools (`changeset_list`, `changeset_get`), propose-adjacent tools (`localization_import_preview`), and — only once Phase 5's write pipeline exists — an apply-class tool with the same guardrails as `apply`. CLI parity is lower priority than MCP for the operations handoff but should follow the same namespace pattern as `metadata`/`auth`/`playlist`.
-- **Acceptance criteria:** MCP tool tests exist proving stable JSON schemas, `DomainError`-shaped errors (never bare prose), and that no tool in the read/propose class can trigger a YouTube write.
+- **Affected components:** `src/cli/video-metadata.ts` (`changeset`/`batch`/`channel` namespaces added 2026-09-20, `ai-localization` namespace added 2026-09-23 — CLI parity for every MCP read/propose/create tool below), `src/mcp/server.ts` (read/propose-only `changeset_*`/`batch_*`/`localization_import_preview` tools added 2026-09-20 Phase 7 slice 1; `channel_sync`/`channel_list`/`channel_video_list` added 2026-09-20 as `BL-008`; `changeset_create_from_import` added 2026-09-20; `ai_localization_generate`/`ai_localization_create_change_set` added 2026-09-23 as `BL-075`/`BL-078`; a restricted/read-only server mode added 2026-09-20; no apply-class Change Set/Batch tool exists yet on either interface).
+- **Current behavior:** Both MCP and CLI now cover every read/propose-only operation RISK-04 originally named, **plus actual Change Set creation**: list/get/preview Change Sets, create one from an XLSX import, list/get Batches, sync/list channels and their synced videos — all reusing the same interface-agnostic `createChangeSetCore()`/`createBatchCore()`/`createChannelSyncCore()` factories the Web UI's own API routes already use, no new persistence or validation logic introduced, no parallel implementation between the two interfaces (`AGENTS.md` §D). `channel_sync`/`changeset_create_from_import` (MCP) and `channel sync`/`changeset import` (CLI) are gated by the same device-availability mutation gate as every other mutating command/tool (both write to the local database, even though neither ever writes to YouTube). The MCP server additionally supports a restricted mode (`MCP_RESTRICTED_MODE=true`) that never registers any YouTube-write-capable or identity-switching tool at all. Approving/executing a Change Set or Batch still requires the Web UI, on either interface.
+- **Actual risk:** The future operations agent (Codex) is meant to operate exclusively through MCP/API (`docs/PROJECT_SPEC.md` §26, this task's development/operations separation). Codex can now sync a channel, inspect Change Sets/Batches/localizations, and actually persist a new Change Set from an XLSX import via MCP, restricted to exactly that surface via restricted mode — the "prepare localization Change Sets" and "operation-specific permissions and read-only access" deliverables from `docs/roadmap/FUTURE_PHASES.md` §3 are both now met for the import path. It still cannot approve or execute anything — the approve→execute half of the pipeline remains human-Web-UI-only, and CLI parity for a human operator was, until now, a separate gap from the MCP surface Codex actually uses.
+- **Existing mitigation:** None needed for the apply-class gap — Gate B (real YouTube writes) isn't satisfied regardless, so an apply-class Change Set/Batch tool would have nothing safe to execute yet even if it existed on either interface. **Correction to an earlier internal characterization:** Change Set *creation* is local-only persistence and was never actually blocked by Gate B — only Change Set/Batch *execution* is. This entry previously conflated the two; it no longer does.
+- **Required remediation:** Only the apply-class Change Set/Batch tool remains, on both MCP and CLI, once Gate B's live-write validation track is satisfied, with the same guardrails as `apply` (`docs/DEVELOPMENT_PLAYBOOK.md` §6.7).
+- **Acceptance criteria:** Met for the full read/propose/create surface on both interfaces (19 MCP tool tests + 8 CLI tests across four tasks, `src/mcp/server.test.ts` + `src/cli/video-metadata.test.ts` + `src/cli/video-metadata.recovery-gate.test.ts`, proving stable JSON shapes, `DomainError`-shaped errors, channel-ownership verification via `requireBatchForChannel`/`requireChannel` rather than a bare id lookup, correct mutation-gate wiring on both interfaces, and restricted-mode tool registration on MCP). Still needed for any future apply-class tool.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
-- **Approval required from:** project owner (scope/timing of Phase 5 vs. a dedicated CLI/MCP-parity phase).
-- **Status:** OPEN — explicitly out of scope for Phase 4.5 per this assignment.
+- **Approval required from:** project owner (scope/timing of the apply-class tool vs. Gate B).
+- **Status:** PARTIALLY RESOLVED (2026-09-20) — every read/propose/create tool now exists on both MCP and CLI, plus MCP restricted mode; only a future apply-class Change Set/Batch tool (gated on Gate B) remains OPEN.
+
+**Progress continued (2026-09-21, BL-047, owner instruction).** "MCP restricted mode" renamed to "MCP connection" and its default inverted: previously an opt-in mode hiding only the 8 write/identity tools (unrestricted -- full tool set -- was the default); now a single connection gate that is OFF by default and, while off, registers ZERO tools at all, including every read/propose/create tool this risk's own remediation added. An MCP client only gets any access -- read-only or otherwise -- once the project owner explicitly enables it in Settings; unlike Gate B's "Live writes," this persists across restarts once turned on (a one-time setup step, per explicit owner instruction). The env-var override (`MCP_RESTRICTED_MODE`) is removed entirely. See `docs/interfaces.md`'s "MCP connection" section for the current contract.
+
+**Progress continued (2026-09-23, BL-075/BL-078, owner instruction: "перевод делать должен агент, а не человек").** This risk's original scope was Change Sets created from an XLSX import; a second, previously undocumented Change-Set-creation path -- AI Localization's `generateProposals`/`createChangeSetFromGeneration` -- had the identical gap (no MCP/CLI tool could reach it; an agent could only create a Change Set via `changeset_create_from_import`, i.e. by uploading XLSX bytes). Closed the same way: `ai_localization_generate`/`ai_localization_create_change_set` (MCP) and `ai-localization generate`/`ai-localization create-change-set` (CLI), calling the identical, already-tested service functions the Web UI's own routes call, with zero new validation/persistence logic. Both AI-authored and XLSX-authored Change Sets now have full MCP/CLI create-parity; the apply-class gap this risk still tracks (approve/execute) remains identical for both sources.
 
 ---
 
@@ -166,7 +171,7 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Affected components:** Web UI (`src/app/dashboard/page.tsx`, `src/components/{channel-sync,localization-manager,change-set-review}.tsx`), NextAuth session flow (`src/lib/auth.ts`).
 - **Current behavior:** Phase 4's acceptance testing ran the full domain-service pipeline (real XLSX export/import, real SQLite) end-to-end via a script, and 226 unit/integration tests pass against mocked adapters — but no session has performed a real Google OAuth sign-in through a browser and clicked through Sync → Export → Import → Approve in the actual UI.
 - **Actual risk:** OAuth cookie handling, browser-side `fetch`/`FormData` behavior, and React state/rendering issues are not detectable by the current test suite; an integration bug could exist purely at the browser/session layer despite all automated checks passing.
-- **Existing mitigation:** `docs/UPSTREAM_BASELINE.md` §6a already validated fail-closed behavior without credentials (CLI, MCP, Web UI boot). The Phase 4 domain-logic pipeline has strong automated coverage, which narrows what a live smoke test would actually be checking (session/browser integration, not business logic).
+- **Existing mitigation:** an early baseline verification pass already validated fail-closed behavior without credentials (CLI, MCP, Web UI boot). The Phase 4 domain-logic pipeline has strong automated coverage, which narrows what a live smoke test would actually be checking (session/browser integration, not business logic).
 - **Required remediation:** Define and execute a reproducible smoke-test procedure (see acceptance criteria) once real Google OAuth credentials are available in a session with browser access.
 - **Acceptance criteria:** A documented run (dated, with pass/fail per step) covering: app launch → OAuth login → channel selection → sync → XLSX export → XLSX import → Change Set creation → diff review → approve/reject → reload → state preserved. No real YouTube write performed during this check.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_PHASE_5_WRITES` (a live write pipeline should not go live without ever having seen the surrounding UI/session flow work end-to-end).
@@ -192,17 +197,25 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
   One regression was found and fixed as a direct consequence of this bump: refreshing `node_modules` to match the lockfile (untouched by this change, but not previously fully materialized on disk) exposed a pre-existing, previously-cache-masked TypeScript error in `src/lib/localization/adapters/xlsx.test.ts` — `typescript@5.9.3` makes `Uint8Array`/`Buffer` generic, and `exceljs`'s own bundled (non-exported, module-scoped) `Buffer` typing stub (`declare interface Buffer extends ArrayBuffer {}`) does not have the newer resizable-`ArrayBuffer` members and is therefore structurally incompatible with the real Node `Buffer`. `src/lib/changesets/import.ts` already carried the identical `as any` + `eslint-disable-next-line @typescript-eslint/no-explicit-any` workaround for the exact same issue; the test file was given the matching treatment for consistency. This is a compile-time-only type assertion — the runtime value passed to `workbook.xlsx.load()` is unchanged, no test assertion, expected value, or test case was touched. `typescript`/`@types/node` versions themselves were not changed.
 
+### Update 2026-10-03 — Next.js critical advisory closed
+
+`npm audit` found a new critical advisory in `next` 16.2.0-16.3.5 (GHSA-vcvr-r3jv-pc5j, remote code execution in `next/og`
+`ImageResponse`; this repo does not use `next/og`, so it was not reachable through our code). Fixed by the non-major bump to
+`next` **16.3.8** (owner approved, 2026-10-03). After it: 0 critical; production dependencies 13 (2 low / 6 moderate / 5 high),
+all dependencies 25 (2 low / 11 moderate / 12 high) — the remaining highs are the transitive/dev-tool ones triaged below.
+Verified: `npm test`, lint, build, and a production-server smoke test (`/`, `/api/presence`, `/dashboard` answer 200 on 16.3.8).
+
 ### Remaining 20 findings (0 critical / 7 high / 11 moderate / 2 low), triaged 2026-09-18
 
   | Package(s) | Severity | Direct/transitive | Prod/dev exposure | Vulnerable functionality actually used? | Patched version | Breaking upgrade required? | Relevance |
   |---|---|---|---|---|---|---|---|
-  | `hono`, `@hono/node-server` | high, moderate | transitive via `@modelcontextprotocol/sdk` (prod dep) | Present in `node_modules`, but `src/mcp/server.ts` constructs only `StdioServerTransport` (verified: no `hono`/`express`/HTTP-transport import anywhere in `src/`) | **No** — the HTTP-transport code path these packages implement is never instantiated by this repo | non-major (`npm audit fix` without `--force`) | No | Dormant unless a future MCP HTTP transport is added (Slice 5/CLI-MCP work, `RISK-04`) or a real YouTube adapter (Slice 4) somehow pulls in an HTTP-based MCP transport — re-check at that point |
-  | `express-rate-limit`, `ip-address` | moderate, high | transitive via `@modelcontextprotocol/sdk` → unused HTTP transport | Same as above — HTTP transport never started | **No** | non-major | No | Same as above |
-  | `fast-uri` | high | transitive via `@modelcontextprotocol/sdk`'s `ajv` (JSON Schema validation) | `ajv` validates MCP tool input schemas, which **is** exercised over the stdio transport already in use | Likely yes, indirectly — `fast-uri` is `ajv-formats`' URI-format validator; only reachable if an MCP tool schema uses a `format: "uri"` string field with attacker-controlled input | non-major | No | Worth closing before Slice 5 (CLI/MCP interfaces) if any future MCP tool schema validates URIs from untrusted input; not currently blocking |
+  | `hono`, `@hono/node-server` | high, moderate | transitive via `@modelcontextprotocol/sdk` (prod dep) | Present in `node_modules`. **Re-triaged 2026-10-01 (ADR 0013):** `src/lib/agent-mcp-endpoint` now uses the SDK's web-standard Streamable HTTP transport (`webStandardStreamableHttp`, built on Web `Request`/`Response`); the SDK's own Node/`hono`/`express` adapters are not imported anywhere in `src/` (the `node:http` wrapper `StreamableHTTPServerTransport` is not used) | **No** — the hono/express adapter code path these packages implement is not instantiated by this repo (the endpoint is loopback-only and does not use them) | non-major (`npm audit fix` without `--force`) | No | Dormant unless the hono/express-based SDK adapters are imported — re-check if the endpoint ever stops using the web-standard transport |
+  | `express-rate-limit`, `ip-address` | moderate, high | transitive via `@modelcontextprotocol/sdk` → unused HTTP transport | Same as above — the SDK's express adapter is not used | **No** | non-major | No | Same as above |
+  | `fast-uri` | high | transitive via `@modelcontextprotocol/sdk`'s `ajv` (JSON Schema validation) | `ajv` validates MCP tool input schemas, which **is** exercised over the in-app HTTP endpoint | Likely yes, indirectly — `fast-uri` is `ajv-formats`' URI-format validator; only reachable if an MCP tool schema uses a `format: "uri"` string field with attacker-controlled input | non-major | No | Worth closing before Slice 5 (CLI/MCP interfaces) if any future MCP tool schema validates URIs from untrusted input; not currently blocking |
   | `qs` (via `@modelcontextprotocol/sdk`'s `express`/`body-parser`) | moderate | transitive, unused HTTP transport | Same as `hono` above | **No** | non-major | No | No |
   | `qs` (via `googleapis`) | moderate | transitive, **prod dep actively used** (all YouTube/Google API calls) | `googleapis` is exercised on every read of channel/video data and every existing write (playlists, single-item metadata) | Yes — `qs` serializes query strings for outgoing Google API requests; the DoS vectors are about parsing attacker-controlled query strings, which does not describe our own outgoing-request construction, but the dependency is genuinely in the production request path | non-major | No | Should be closed opportunistically (low effort, `npm audit fix` scope) — not itself a blocker, but do not defer indefinitely given active prod usage |
   | `ws` | high | transitive via `@libsql/client` → `@libsql/hrana-client` (prod dep) | `src/lib/db.ts` constructs the client with a `file:` URL (local SQLite) — the Hrana/WebSocket transport this pulls in is for **remote** libsql/Turso connections and is not exercised by the current local-file deployment | **No**, under the current local-only configuration | non-major | No | **Re-check immediately if the project ever moves to a remote libsql/Turso URL** — that would activate this exact code path; until then, dormant |
-  | `uuid` (via `exceljs`) | moderate | transitive, prod dep (`exceljs` is used for XLSX export/import) | `exceljs` only calls into `uuid` from one narrow feature — extended conditional-formatting rule XML generation (`lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`) — not used by this project's `xlsx.ts`/`import.ts`, which do not emit conditional formatting | Practically no, given current usage, but the dependency is bundled and would activate if conditional-formatting export were ever added | Would require `exceljs@3.4.0` (**major downgrade** per `npm audit`'s own heuristic — not a real forward fix) | Yes (downgrade) | Not actionable without breaking `exceljs`; monitor for a real forward-fixed `exceljs`/`uuid` release instead |
+  | `uuid` (via `exceljs`) | moderate | transitive, prod dep (`exceljs` is used for XLSX export/import, imported from `src/lib/shared-xlsx/index.ts` since 2026-09-26 — previously imported directly by `xlsx.ts`/`import.ts`, no behavior change) | `exceljs` only calls into `uuid` from one narrow feature — extended conditional-formatting rule XML generation (`lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`) — not used anywhere in this project's XLSX code, which does not emit conditional formatting | Practically no, given current usage, but the dependency is bundled and would activate if conditional-formatting export were ever added | Would require `exceljs@3.4.0` (**major downgrade** per `npm audit`'s own heuristic — not a real forward fix) | Yes (downgrade) | Not actionable without breaking `exceljs`; monitor for a real forward-fixed `exceljs`/`uuid` release instead |
   | `exceljs` (flagged only because of its `uuid` dependency) | moderate | direct | Same as above | Same as above | major downgrade only | Yes | Same as above — do not apply the suggested downgrade |
   | `esbuild`, `@esbuild-kit/core-utils`, `@esbuild-kit/esm-loader`, `drizzle-kit` | moderate | `drizzle-kit` direct (devDependency only — no `package.json` script wires it in; run manually by a developer, never part of `next build`/`next start`/`npm test`) | Dev-machine only; the underlying `esbuild` CVEs are about `esbuild`'s own local dev server accepting cross-origin requests, which `@esbuild-kit/esm-loader` does not start (it only uses `esbuild` as an in-process transform for loading `drizzle.config.ts`) | No practical exposure under how this repo actually invokes `drizzle-kit` | Would require `drizzle-kit@0.18.1` (**major downgrade**) | Yes (downgrade) | Not actionable without breaking `drizzle-kit`; low real risk given it's a manually-run local dev tool with no exposed server in this repo's usage pattern |
   | `js-yaml`, `@humanfs/node` | high, moderate | transitive via `eslint`/`@eslint/eslintrc` (devDependency) | Dev-only — `eslint` runs against local trusted config/source files, never untrusted input | No | non-major | No | No |
@@ -222,6 +235,13 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-07 — OAuth tokens stored in plaintext
 
+- **Update 2026-09-30 (Phase 12 slice 12.8): PARTIALLY MITIGATED.** With
+  `OAUTH_TOKENS_ENCRYPTION_KEY` configured, access and refresh tokens are AES-256-GCM encrypted at
+  rest (`src/lib/oauth-token-crypto`), and legacy plaintext rows are re-encrypted on first read.
+  Without the key, behavior is unchanged (plaintext). The key lives in the environment file, not
+  in an OS keychain; the owner chose the "env" variant (Telegram, msg 1060), so the remaining gap
+  is "database file + env file both read". Pre-migration database backups (`backups/migrations/`)
+  taken before this change still contain plaintext tokens.
 - **Affected components:** `src/lib/db.ts` (`users.accessToken`, `users.refreshToken`), `data/playlist-manager.db`.
 - **Current behavior:** Access/refresh tokens are stored as plain SQLite text columns, no field-level encryption. `data/` is entirely `.gitignore`d (confirmed: `data/*.db`, `data/auth-context.json`, `data/oauth/`, `data/tokens/`, `credentials/`), and tokens are never logged or sent to an AI provider (`AGENTS.md` rule, verified: no `console.log`/logger call in `src/lib/auth.ts` or `db.ts` includes token fields).
 - **Actual risk:** Anyone with filesystem read access to the operator's machine (or a backup of `data/playlist-manager.db`) can read live OAuth tokens in plaintext.
@@ -230,7 +250,11 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Acceptance criteria:** Reading `data/playlist-manager.db` directly (e.g. `sqlite3` CLI) no longer yields a usable access/refresh token without an additional secret not stored in the same file.
 - **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator local model), `BLOCKS_NETWORK_DEPLOYMENT`.
 - **Approval required from:** project owner.
-- **Status:** OPEN — accepted tradeoff for now, not silently forgotten.
+- **Status:** OPEN — accepted tradeoff for now, not silently forgotten. **Cross-reference
+  (Pre-Release Cross-Platform Persistence task):** device-handoff snapshots (`src/lib/snapshot/`)
+  never carry `users` rows at all, in either direction — this task does not close this risk, but
+  ensures it is never propagated forward via a snapshot; see
+  `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md` AC-CONN-02.
 
 ---
 
@@ -244,14 +268,37 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Acceptance criteria:** N/A until triggered.
 - **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON`.
 - **Approval required from:** project owner, at the point the trigger condition is hit.
-- **Status:** OPEN, monitored — not currently actionable.
+- **Status:** OPEN, monitored — not currently actionable. **Progress (Pre-Release Cross-Platform Persistence task):** `docs/decisions/0002-additive-schema-versioning.md` adds an explicit `schema_meta.schema_version` label and an ordered migration list on top of this same additive pattern — this closes the "no way to know what shape an existing database is in" half of the original concern, but does **not** close this risk's core trigger: the pattern still cannot express a genuinely non-additive change. The trigger condition and required remediation (a new ADR proposing Drizzle Kit) are unchanged.
 
 ---
 
 ## RISK-09 — Phase 5 write-safety infrastructure does not exist yet
 
+- **Update 2026-10-01 (architecture audit H1 and its review).** Rule: **Live writes are honored
+  only while a web-server session is alive.**
+  - `getLiveWritesEnabled` is true only when the toggle is on AND the web server's session lease
+    (`live_writes_session_lease_at`) is fresh.
+  - The web server renews the lease every 30 s (`src/instrumentation.ts`) and resets the toggle
+    at start and on graceful end.
+  - The lease TTL is 3 min.
+  - Previously the toggle was reset on every process's database initialization. That let every
+    MCP/CLI process switch the operator's toggle off mid-session and could strand a Batch in
+    APPLYING.
+  - **Residual:** after an ungraceful stop on any platform (a crash, Windows `stop.bat`'s
+    `taskkill /F`, a closed console window), the toggle is still honored for at most the lease
+    TTL.
+    - A lapse is persisted as OFF, so it never silently comes back on after a later renewal
+      (e.g. after the laptop wakes). Re-enabling is always an explicit operator action.
+    - A lease dated more than 60 s in the future does not count as fresh (a clock that ran
+      ahead).
+  - A lease renewal made during an in-process snapshot import joins the import's transaction.
+    If the import fails, that renewal rolls back. If that leaves the lease stale, Live writes
+    lapses to a persisted OFF and the operator re-enables it. This fails closed.
+  - Only the web boot hook and the settings route may renew the lease; this is inventory-tested.
+  - Older progress notes below that say "reset on every process boot" describe the previous
+    mechanism.
 - **Affected components:** none yet — this documents an absence, not a defect in existing code. Relevant future modules: a `write-context`-reusing localization-write path, plus new `backup/`, `audit/`, `batches/` domain modules (per `docs/PROJECT_SPEC.md` §47).
-- **Current behavior:** Phase 4 ends at `Change.approvalStatus === "approved"` — a purely local database state. None of the following exist for **bulk localization writes** specifically: immutable pre-write backups, a fresh remote conflict check (RISK-03), a durable audit log, a per-item execution ledger, resumable/idempotent batch processing, or post-write remote verification. (Note: single-item `video-metadata/services.ts` `applyMetadata` already has identity check + diff + dry-run — see `docs/UPSTREAM_ANALYSIS.md` §3.2 — but not backup/audit/ledger either, and it is not the bulk-localization path.)
+- **Current behavior:** Phase 4 ends at `Change.approvalStatus === "approved"` — a purely local database state. None of the following exist for **bulk localization writes** specifically: immutable pre-write backups, a fresh remote conflict check (RISK-03), a durable audit log, a per-item execution ledger, resumable/idempotent batch processing, or post-write remote verification. (Note: single-item `video-metadata/services.ts` `applyMetadata` already has identity check + diff + dry-run, but not backup/audit/ledger either, and it is not the bulk-localization path.)
 - **Actual risk:** Without this infrastructure, enabling real bulk localization writes would have no recovery information preserved before a destructive change, no tamper-evident record of what was changed and by whom, and no safe way to resume an interrupted batch without risking duplicate or inconsistent writes.
 - **Backup is not rollback — these are two separate guarantees and must not be conflated:**
   - A **backup** is a captured snapshot of a video's remote metadata *before* a write, stored durably (per `docs/PROJECT_SPEC.md` §19: `metadata_before.json`/`batch_manifest.json` under `data/backups/<channelId>/<timestamp>/`). Its job is to **preserve recovery information** — it answers "what did this look like before we touched it?"
@@ -280,6 +327,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 **Do not read any of this Slice 5 progress as narrowing RISK-09's own `OPEN` status or Gate B's requirements** — Gate B is not being closed by this note; see "Remaining Gate B blockers" in the Slice 5 completion report for the current, non-exhaustive list (live validation for AC-MERGE-01/05/GUARD-01/CONFLICT-01/RESUME-01/E2E-01 in particular, per §4's automated-vs-live methodology, plus AC-CONCURRENCY-03's full two-batch-orchestration race scenario and AC-E2E-01's single assembled 23-step walkthrough, neither of which was built this session).
 
+**New gap found (2026-09-26, independent test-suite audit) — `AC-AUDIT-03` (`docs/acceptance/PHASE_5_ACCEPTANCE.md`) appears entirely unimplemented, not merely untested.** This acceptance scenario, part of the same originally-approved Phase 5 contract as AC-AUDIT-01/02/04/05 above, requires: *"`actorType: 'HUMAN'` (per §25's actor-type list) is recorded for every audit record in that batch, with the session's identifiable `actorId` where available."* Confirmed by direct inspection: `AuditEvent` (`src/lib/audit/contracts.ts`) has no `actorType`/`actorId` field at all, and no caller anywhere in the repository references either name. Unlike the AC-CONCURRENCY-01/AC-QUOTA-01/AC-RESUME-01 gaps Slice 4 found and flagged (all since closed, see above), this one was not previously disclosed anywhere — it does not appear in this risk's own progress notes, and no `docs/TECHNICAL_DEBT.md` entry or acceptance-doc amendment ever recorded it as an accepted, explicitly-deferred gap the way this file's own conventions require (`AGENTS.md` §A: "identify and report the discrepancy — do not silently rewrite requirements to match an incomplete implementation"). **Required remediation:** add `actorType`/`actorId` to `AuditEvent` and populate them at every call site that records an audit event (`PREPARATION`/`ATTEMPT`/`RESULT`/`CONFLICT`/`VERIFICATION`/`DRY_RUN`/`RECONCILIATION`) — per DEC-OQ-5, Phase 5 currently exposes only the Web UI/API, so every batch today is `HUMAN`-actor-triggered; the field should still be designed to accommodate a future `AGENT`/`SYSTEM` actor type per §25's full list, not hardcoded to `HUMAN` in a way that would need a second migration later. **Acceptance criteria:** a real (not mocked-away) test asserting every audit record for a Web-UI/API-triggered batch carries `actorType: "HUMAN"` and a non-null, session-derived `actorId`; a FAIL case proving the field is never silently hardcoded or omitted. **Gate(s):** `BLOCKS_PHASE_5_WRITES` (this is one of the eight non-negotiable Gate B mechanisms' own sub-requirements — item 6, "durable audit log," per `docs/acceptance/PHASE_5_ACCEPTANCE.md`'s own §25/Decision C mapping table, which explicitly lists AC-AUDIT-03 alongside AC-AUDIT-01/02/04/05 as satisfying that mechanism). **Approval required from:** project owner (Gate B sign-off) — or, if the owner instead decides this gap is acceptable to defer past Gate B for a stated reason, that decision must be recorded here explicitly, not inferred from this entry's mere existence. **Status:** OPEN, newly disclosed — not previously tracked.
+
 **Progress continued (2026-09-18, Phase 5 completion task, after the independent-review report):**
 - **AC-CONCURRENCY-03 — now implemented and tested.** `concurrency-execution.integration.test.ts` adds a deterministic real-SQLite test: two distinct batches (`batchA`, `batchB`) both target the same video; `batchA`'s write is held genuinely in flight via a controllable gate while `batchB`'s full `executeBatch` call runs concurrently. `batchB`'s attempt is rejected (not raced) with a clear `video_locked` reason, while `batchA` completes normally with exactly one write. **Building this test surfaced two real, previously-undetected bugs, both fixed:** (1) `executeBatch`'s inline `PENDING`-row preparation (added for AC-RESUME-01) had no `try`/`catch` around `prepareLedgerRow` — a cross-batch lock conflict threw an uncaught `DomainError`, crashing the entire `executeBatch` call instead of reporting one clean `FAILED` row; (2) both that call site and `prepareBatchExecution`'s own pre-existing per-row `catch` block only pushed an in-memory `FAILED` outcome without ever calling `transitionLedgerStatus` — the database row silently stayed `PENDING` forever, so a resumed batch would retry a lock-conflicted video indefinitely rather than terminally failing it. Both are fixed in `src/lib/batches/services.ts` (the catch blocks now persist the `FAILED` transition, tolerating the rare case where the row already left `PENDING` via a concurrent path).
 - **AC-E2E-01 — now implemented as one integrated automated scenario.** `e2e.acceptance.test.ts` walks: two videos each adding a new `pt-BR` locale while `es`/`de` survive (official test §57's own scenario) → dry-run batch → `DRY_RUN_COMPLETE` with a correct diff, zero writes → a second live batch (mocked executor) → `SUCCESS` for both, complete per-video audit sequence, non-empty backup, empty error report → re-running the same already-succeeded batch id issues zero additional `attemptWrite` calls (official test §53 step 23). This complements, and does not replace, the many individual component-level AC tests elsewhere in this directory.
@@ -288,6 +337,10 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **RISK-12 (new, then closed same day) — the pre-existing, live, MCP-reachable single-item write path defaulted to a REAL write when `dryRun` was omitted.** Escalated for project-owner decision per this task's own "if owner approval is necessary for a material change, stop that part and request it" instruction; the project owner approved the fix later the same day as a deliberate breaking behavioral change — see RISK-12's own entry (now marked CLOSED) for the applied fix, including a second unsafe-default site found in the CLI while re-verifying this path.
 - **RISK-13 (new, then resolved same day) — AC-QUOTA-01's literal text and RISK-03/AC-MERGE-02's mandatory unbatched pre-write fetch were in tension.** A narrow acceptance-contract correction was proposed here and approved by the project owner later the same day — see RISK-13's own entry (now marked RESOLVED) for the applied split (AC-QUOTA-01a/b).
 - **Video-lock leak found by a second, independent review round and fixed.** The two `catch` blocks added above (`prepareBatchExecution`'s per-row loop, `executeBatch`'s inline `PENDING` handling) persisted the `FAILED` transition but never released the video lock -- if `acquireVideoLock` (the first step of `prepareLedgerRow`) succeeded and a LATER step (e.g. `audit.record`) then threw, this batch would keep holding the video's lock indefinitely under a now-terminal `FAILED` row, unreleasable until an explicit `recoverBatch` pass. Both catch blocks now also call `releaseVideoLock` unconditionally (a safe no-op if the lock was never acquired, since `releaseVideoExecutionLock` only deletes a lock actually held by the calling batch). Regression test added in `prepare-batch.test.ts` (simulates `audit.record` throwing for one video, asserts the lock is released).
+
+**Progress continued (2026-09-21, owner instruction -- the "live writes" toggle, Settings tab).** The barrier is now **owner-gated, not unconditional** -- `assertLiveWritesAuthorized()` re-reads a persisted setting at call time instead of always throwing, and `src/lib/batches/adapters/write-executor.ts`'s `createLiveWriteExecutorIfEnabled` is the only place a real `WriteExecutor` is ever constructed, itself gated on the identical setting (two independent reads, neither layer trusting the other). The setting defaults to `false` on every process boot regardless of what was last saved (`src/lib/db.ts`'s `initializeDatabase`), and a batch can only be created `dryRun: false` while it's on. **This does NOT close Gate B or this risk.** Nothing about the live-validation requirement above (a real test channel, real OAuth, the acceptance contract's own scenarios) has been satisfied -- a toggle existing is not evidence any of that ran. See `docs/ROADMAP_STATUS.md` BL-045 for the full implementation detail (kept out of this already-long entry per `AGENTS.md` §H's conciseness rule).
+
+**Progress continued (2026-09-21, BL-046, single write gateway).** The same `assertLiveWritesAuthorized` check above is now the single, shared Gate B implementation for every YouTube write path, not only Batches -- the single-item `apply` MCP/API tool and every `playlist_*` MCP tool/API route previously had the identity guardrail but no live-write barrier at all (a real gap, found while investigating why MCP exposed write tools by default). They now call the same check, immediately before their own call into the new `src/lib/youtube-write-gateway/` module, which is mechanically the only place any mutating YouTube API call can happen (`gateway-inventory.test.ts`). Batches' own two-layer barrier is unchanged. This still does NOT close Gate B or this risk -- see `docs/decisions/0005-youtube-write-gateway.md` for full detail.
 
 **RISK-11 — read-only snippet field echo-back — RESOLVED, 2026-09-18, for BOTH write paths.** Originally flagged during Slice 4 for `src/lib/batches/` only: the official YouTube Data API v3 docs never state what happens when a client resends an unchanged *read-only* `snippet` value (`publishedAt`, `channelId`, `channelTitle`, `thumbnails`, `liveBroadcastContent`, verified against `developers.google.com/youtube/v3/docs/videos`'s full per-property mutability table), and both write paths' snippet-sanitizing functions previously stripped only `.localized`. **Resolution:** `WRITABLE_SNIPPET_FIELDS`/`pickWritableSnippetFields` (the explicit whitelist of the six documented-writable fields) moved to `src/lib/youtube.ts` as the single canonical source; `src/lib/batches/merge.ts` re-exports it instead of keeping its own copy, and `src/lib/video-metadata/services.ts`'s `removeReadOnlySnippetFields` (used by `applyMetadata`/`/api/video-metadata/apply` and the MCP `apply` tool) now delegates to the same function. Both write paths now build every outgoing `snippet` from the same whitelist; no read-only field can reach `videos.update` through either path regardless of what a real `videos.list` response contains. Regression tests: `merge.test.ts`'s and `write-executor.youtube.test.ts`'s existing RISK-11 tests (batches path, unchanged), plus a new test in `video-metadata/services.test.ts` ("RISK-11 (legacy single-item path...)") proving the same for the legacy path's real request body. **Gate(s):** none — closed by design change for both paths. **Status:** RESOLVED.
 
@@ -335,14 +388,526 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
+## RISK-14 — AI Connections endpoint validation does not pin the outbound socket to the validated address (narrow DNS-rebinding TOCTOU)
+
+- **Affected components:** `src/lib/ai-connections/endpoint-security.ts`'s `validateEndpointUrl`; `src/lib/ai-connections/adapters/openai-compatible.ts`'s `callOnce` (calls validation immediately before `fetchImpl`).
+- **Current behavior:** Before every real outbound call, the connection's Base URL hostname is resolved and every resolved address is checked against private/loopback/link-local/reserved/metadata ranges (blocking unless the connection's `localInferenceMode` is explicitly on). The subsequent `fetch()` call, however, performs its own, independent DNS resolution — it is not pinned to the exact address `validateEndpointUrl` just checked.
+- **Actual risk:** An adversarial or misconfigured DNS server could in principle return a public address for the validation lookup and a private/internal address for the immediately-following `fetch()`'s own lookup (classic DNS rebinding), reaching an internal host despite validation passing. This requires the operator to have configured a connection pointing at a hostname under an adversary's DNS control in the first place — not a remotely-triggerable attack against a passive user.
+- **Existing mitigation:** Validation still blocks the overwhelmingly common cases (IP literals, already-known-private hostnames, cloud metadata address) outright; the residual gap requires an actively hostile DNS answer timed to this specific narrow window. Single-operator, locally-trusted deployment model (no untrusted party can configure a connection on the operator's behalf). **Update, 2026-09-19 (independent adversarial security review):** a related but distinct bypass — an already-validated public HTTPS endpoint issuing an HTTP redirect to a private/internal/metadata address, which the underlying `fetch` (undici) would otherwise follow automatically, requiring no DNS timing at all — was found and fixed the same day by adding `redirect: "manual"` to the outbound request (`adapters/openai-compatible.ts`), so a redirect now surfaces as an ordinary non-2xx `providerError` instead of being followed. This closes the *redirect* variant of the bypass; the narrower DNS-rebinding TOCTOU described above (no redirect involved, just a second DNS answer) remains open and is what this entry continues to track. A DNS-lookup timeout (10s, `raceDnsLookupAgainstTimeout`) was also added the same day so a hanging resolver can no longer block the pipeline indefinitely.
+- **Required remediation (if ever needed):** Resolve the hostname once, then issue the HTTP request directly against the validated IP (e.g. via a custom `fetch` dispatcher/agent that pins the connection, with the original hostname preserved only for the `Host`/SNI), so validation and the actual request target are provably the same address.
+- **Acceptance criteria:** A test demonstrating that a DNS answer which changes between the validation lookup and the request lookup cannot reach a blocked address.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator local model), `BLOCKS_NETWORK_DEPLOYMENT`.
+- **Approval required from:** project owner, only if/when this application is ever deployed somewhere an untrusted party could influence which connections get configured.
+- **Status:** OPEN (narrowed) — the redirect-based bypass is CLOSED; the pure-DNS-rebinding variant remains an accepted tradeoff for the current deployment model, documented per `docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md` AC-CONN-09's own stated limitation, not silently carried forward. **Update, 2026-09-26 (independent test-suite audit):** a third, unrelated bypass in the same file was found and fixed the same day — `isBlockedIpv6` recognized the `::ffff:`-mapped IPv4 prefix but not the NAT64 well-known prefix (`64:ff9b::/96`, RFC 6052), so a Base URL embedding a blocked address (e.g. the cloud-metadata address) via NAT64 synthesis fell through to "not blocked" entirely, with no DNS-timing or redirect trickery required — reachable via a plain literal URL such as `https://[64:ff9b::169.254.169.254]/`. Fixed by adding a `64:ff9b::` branch that unwraps the embedded IPv4 the same way the existing `::ffff:` branch does (`src/lib/ai-connections/endpoint-security.ts`'s new `unwrapEmbeddedIpv4` helper, shared by both prefixes); the same fix also corrected an unrelated false positive where a literal `::ffff:`-mapped URL was incorrectly blocked because the WHATWG URL parser normalizes it to hex-group form (`::ffff:808:808`), which the old unwrap logic couldn't parse. Covered by 5 new tests in `src/lib/ai-connections/endpoint-security.test.ts`. This closes the NAT64 variant; it does not touch the DNS-rebinding variant this entry continues to track.
+
+---
+
+## RISK-15 — AI Connections credential encryption key has no rotation/backup procedure
+
+- **Affected components:** `src/lib/ai-connections/crypto.ts` (`AI_CONNECTIONS_ENCRYPTION_KEY`); `ai_connection_credentials` table.
+- **Current behavior:** A single, operator-supplied environment variable is the only key. There is no key-rotation procedure (re-encrypting existing rows under a new key) and no documented backup/recovery guidance — if the key is lost, every stored credential becomes permanently undecryptable (the connections themselves survive; only their credentials are lost, and can be re-entered).
+- **Actual risk:** Operator inconvenience (re-entering API keys after losing the encryption key), not a security exposure — losing the key makes data *more* protected, not less.
+- **Existing mitigation:** This mirrors the existing, already-accepted pattern for other secrets in this repository (`GOOGLE_CLIENT_SECRET` etc. — also single env-var, no rotation tooling). Encryption here is a strict improvement over RISK-07's current plaintext OAuth-token storage, and could later serve as the template for closing RISK-07 the same way, if the project owner chooses.
+- **Required remediation (if ever needed):** A documented key-rotation script (decrypt-all-then-re-encrypt-under-new-key) if this becomes operationally painful.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON`.
+- **Approval required from:** project owner, only if rotation tooling is ever requested.
+- **Status:** OPEN — low severity, documented rather than silently absent.
+
+---
+
+## RISK-16 — Restricted recovery mode has no in-app resolution path
+
+- **Affected components:** `src/lib/device-handoff/services.ts` (`isDeviceInRecoveryMode`, `assertDeviceAvailableForMutation`); `src/proxy.ts`; `src/cli/video-metadata.ts`'s `runCliCommand`; `src/mcp/server.ts`'s `createMcpToolHandlers`.
+- **Current behavior:** Importing a device-handoff snapshot whose `batch_ledger_rows` contain an `APPLYING`/`UNKNOWN` execution row (an uncertain YouTube write outcome) leaves the receiving device in restricted recovery mode: every locally-mutating or remote-mutating route/command/tool is refused. The gate lifts only when those specific rows are resolved to a terminal state through Phase 5's own, existing, unmodified reconciliation mechanism (RISK-09 §0.F) — this task's own explicit, project-owner-approved constraint (never build a new recovery algorithm, never let acknowledgement alone lift the gate). But **no CLI/MCP/Web trigger for that reconciliation mechanism exists yet** (RISK-04 — Batches has no CLI/MCP interface at all, and the Web UI's Batches tab is dry-run-only, `docs/SYSTEM_MAP.md` §2.10). A device that enters recovery mode via import therefore has no in-app action available to leave it.
+- **Actual risk:** Operator inconvenience (a device stuck in read-only mode) rather than a safety defect — the alternative (letting acknowledgement lift the gate, or building a new ad hoc resolution path) was explicitly rejected as *less* safe during this task's design review. In the current build, real YouTube writes remain off by default every session (RISK-09's two-layer barrier — as of 2026-09-21, owner-gated by a Settings-tab toggle rather than unconditional, but still fully in place and re-checked independently at two layers) — so a real `APPLYING`/`UNKNOWN` row is only reachable at all if the project owner has deliberately turned that toggle on and actually run a live batch; this risk is forward-looking for once Gate B is eventually passed and live batches run routinely.
+- **Existing mitigation:** The full audit trail and durable attempt/intent records survive import unmodified (`docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md` AC-HANDOFF-07), so a human operator can always manually inspect and, if truly necessary, resolve the underlying rows directly against the database with full information available — this is a workflow gap, not a data-loss or safety gap.
+- **Required remediation:** Once RISK-04 is addressed (CLI/MCP/Web tooling for `recoverBatch`/`resolveUnknownLedgerRow`), a device in recovery mode gains an actual in-app path out. Do not build a device-handoff-specific shortcut around RISK-09's existing reconciliation requirements to close this sooner.
+- **Acceptance criteria:** N/A until RISK-04 is addressed for Batches generally.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (no real `APPLYING`/`UNKNOWN` row is reachable today, RISK-09's barrier unchanged), `BLOCKS_OPERATIONS_RELEASE` (once Gate B/live writes are ever enabled, this becomes load-bearing).
+- **Approval required from:** project owner, when RISK-04 is scheduled.
+- **Status:** OPEN — documented as part of the Pre-Release Cross-Platform Persistence task rather than left implicit.
+
+---
+
+## RISK-17 — Cross-platform behavior validated on Windows only
+
+- **Affected components:** `src/lib/platform-paths/` (macOS branch of `resolveAppPaths`), the entire Pre-Release Cross-Platform Persistence feature set (`src/lib/snapshot/`, `src/lib/device-handoff/`, `src/lib/schema-versioning/`, `src/lib/operation-lock/`, `src/lib/db-backup/`).
+- **Current behavior:** macOS path-resolution logic is unit-tested via dependency injection (`platform: "darwin"`, a fake `homedir`) — `src/lib/platform-paths/services.test.ts`. No macOS machine was available in the environment this feature was implemented in, so no part of this feature (path resolution, snapshot export/import, schema migration, the local operation lock, `src/proxy.ts`) has actually been run on real macOS.
+- **Actual risk:** A macOS-specific behavior this task did not anticipate (file-locking semantics, case-sensitivity of the filesystem, a `VACUUM INTO`/libSQL native-binding difference from the Windows build this was developed against) could surface only on first real macOS use.
+- **Existing mitigation:** The Windows-specific issues that *were* found during development (a `VACUUM INTO`-then-`ATTACH` "database is locked" race, and an `EBUSY` race on a staging-directory rename — both real, reproduced, and fixed, see the `feature/cross-platform-persistence` branch history) suggest the underlying `@libsql/client` native binding has real, platform-specific timing quirks around file handle release; a macOS-equivalent quirk cannot be ruled out without actually running there.
+- **Required remediation:** A real macOS run of the acceptance scenarios in `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md`, before this is treated as macOS-ready for an actual operator.
+- **Acceptance criteria:** A dated, documented run (mirroring RISK-05's own format) on real macOS hardware covering at minimum: first-run app-data directory creation, a full export→import round trip, and one schema-migration boot.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` (for a release that will actually be used on macOS).
+- **Approval required from:** whoever performs the run must have access to real macOS hardware.
+- **Status:** OPEN — explicitly and honestly not closed by this task; see the final task report for the exact same caveat stated to the project owner. **Update, 2026-09-26 (roadmap accuracy check):** this entry's own title is now stale/inverted relative to what actually happened afterward — see `docs/ROADMAP_STATUS.md`'s "Pre-Release — First Local Test Build" row: a real production build/launcher run was actually executed on real macOS hardware (server start, DB creation/schema/restart persistence, `BL-048`'s own real macOS verification), while the Windows launcher scripts were written and reasoned about but **never executed on real Windows hardware** — the reverse of this entry's title. The underlying gap this entry tracks (a real, dated acceptance-scenario run on the *other* platform) is unchanged; only which platform is unvalidated has flipped. Not rewritten in full here (that needs its own pass over this entry's acceptance criteria) — flagged so a future reader doesn't act on the stale direction.
+
+---
+
+## RISK-18 — Device-handoff import: unvalidated `snapshotId` path traversal — FIXED, 2026-09-19
+
+- **Affected components:** `src/app/api/device-handoff/import/route.ts` (`POST`, line ~43: `path.join(snapshotsDir, snapshotId)`).
+- **Current behavior:** The route only checks that the client-supplied `snapshotId` is a non-empty string, then joins it directly into a filesystem path with no traversal/format validation. Every real snapshot id is an internally-generated `randomUUID()` (`src/lib/snapshot/services.ts`) — nothing in the chain (`resolveSnapshotsDir`, `verifySnapshotForImport`, `importHandoff`) checks the incoming id's shape.
+- **Actual risk:** An authenticated session (this route requires `getServerSession`) supplying `snapshotId: "../../../../some/other/dir"` resolves outside the intended snapshots directory. If a `manifest.json`+`data.db` pair happens to exist there and passes checksum/lineage checks, `applySnapshotToDatabase` merges that arbitrary directory's data into the live production database. Confirmed directly by reading the route in this session (not only by the reporting review) — this is a real path-traversal defect (CWE-22), not a hypothetical.
+- **Required remediation:** Validate `snapshotId` against the exact shape `randomUUID()` produces (or otherwise resolve it only against a known-good enumeration from `resolveSnapshotsDir`'s own listing) before it ever reaches `path.join`.
+- **Acceptance criteria:** A test asserting a `snapshotId` containing `../`, an absolute path, or any non-UUID shape is rejected before any filesystem access.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT`.
+- **Approval required from:** project owner, to schedule the fix as its own task (out of scope for the task that discovered it).
+- **Fix applied:** `isValidSnapshotId` (`src/app/api/device-handoff/shared.ts`) rejects any `snapshotId` not matching `randomUUID()`'s exact shape before the route ever reaches `path.join`; the import route now calls it. Tests: `src/app/api/device-handoff/shared.test.ts` (traversal string, absolute path, a UUID embedded inside a longer traversal string, non-string, empty string — all rejected; a real UUID accepted).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19 ("Начни с 1. Отработай найденные риски").
+
+## RISK-19 — `readSchemaVersion` fails open on any read error, not only "table missing" — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/schema-versioning/services.ts` (`readSchemaVersion`, `assertSupportedSchemaVersion`).
+- **Current behavior:** `readSchemaVersion`'s `catch` returns `null` unconditionally, on any error from the `schema_meta` read — not narrowed to "table doesn't exist" the way sibling modules in the same feature (operation-lock's `isMissingTableError`, snapshot's lineage-store) explicitly do, after an earlier bare-catch pattern was found and fixed there specifically for failing open.
+- **Actual risk:** A transient error (`SQLITE_BUSY`, disk I/O error, a corrupt row) is treated identically to a legitimate legacy/unversioned database, letting `assertSupportedSchemaVersion` — which exists specifically to reject a DB stamped with a newer, unsupported schema version — pass through and let migrations proceed against a DB that may actually be at an unsupported version.
+- **Required remediation:** Narrow the catch to the same missing-table check already used by `isMissingTableError` elsewhere in this feature; rethrow anything else.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** narrowed the catch to a new single shared `isMissingTableError` (moved to `src/lib/db-backup/services.ts` — previously duplicated verbatim in operation-lock and lineage-store; both now import it instead of keeping their own copy, `AGENTS.md` §D). Any other error now propagates. Test: `schema-versioning/services.test.ts` (closes the client mid-read, asserts the resulting `CLIENT_CLOSED` error propagates rather than becoming `null`).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-20 — Boot-time schema migration never acquires the operation lock — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/operation-lock/contracts.ts` (`OperationType` includes `"migration"`); `src/lib/db.ts` (`initializeDatabase`/`initializeDatabaseSchema`/`runSchemaMigrations`).
+- **Current behavior:** The operation lock's own doc comment describes covering "export/import/migration," and export/import correctly call `withOperationLock`. Boot-time schema migration never references the operation-lock module at all (confirmed by grep).
+- **Actual risk:** A CLI process and the web app (or two app instances) starting concurrently against the same on-disk DB file, or a device-handoff export/import racing against an app instance still running its boot-time migration, has no lock-based serialization protecting that window.
+- **Required remediation:** Acquire the operation lock (type `"migration"`) around `runSchemaMigrations`, consistent with export/import's existing pattern.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** `initializeDatabase` now acquires the `"migration"` operation lock (via `acquireOperationLock`) before `initializeDatabaseSchema` and releases it in a `finally`. One narrow, documented exception: `app_operation_locks` itself is created BY this migration path (`SCHEMA_MIGRATIONS` version 2) -- on a database still below that version, the lock table doesn't exist yet, so acquisition is attempted but an `isMissingTableError` is swallowed and migration proceeds unlocked for that one bootstrap-to-v2 step only (a low-risk, one-time, idempotent `CREATE TABLE`); every later boot, once the lock table exists, is properly serialized. Test: `db.migration-lock.test.ts` asserts the lock is never left held once boot completes (the acquire/release wiring itself couldn't be directly exercised mid-migration without risking re-running migrations outside their real boot path, since `initializeDatabase` runs once at module load).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-21 — Operation-lock acquisition misattributes lock ownership when the lock table is missing — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/operation-lock/services.ts` (`acquireOperationLock`).
+- **Current behavior:** When the lock `INSERT` fails, the catch path calls `getOperationLock`; if that (correctly) returns `null` because the `app_operation_locks` table doesn't exist yet (unmigrated schema, guarded by its own `isMissingTableError`), the code concludes "row disappeared between the failed INSERT and this read" and throws an `OperationLockError` whose `heldBy` is fabricated from the *calling* process's own not-yet-inserted lock object — misreporting the current process as the lock holder.
+- **Actual risk:** A genuine "table missing / not migrated" condition is masked as ordinary lock contention, making it much harder to diagnose from the CLI/MCP/API error surface. Reported as independently flagged by two separate finder passes within the same review.
+- **Required remediation:** Distinguish "table missing" from "row genuinely disappeared" before constructing the error, and surface the former as its own diagnostic.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** `acquireOperationLock`'s catch now checks `isMissingTableError` first and rethrows the real error immediately, before falling through to the "row disappeared" contention-fallback logic. Test: `operation-lock/services.test.ts` (a fresh temp DB with no `app_operation_locks` table at all — asserts the rejection is the raw missing-table error, not an `OperationLockError`).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-22 — `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry, unlike the sibling snapshot-publish path — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/atomic-json-file/services.ts` (`writeJsonFileAtomic`); consumers `src/lib/cli-auth/adapters/active-auth-storage.ts` (auth-context.json) and bootstrap-config's save path.
+- **Current behavior:** This module's own doc comment cites the Windows EBUSY/EPERM retry-with-backoff fix already applied in `src/lib/snapshot/adapters/filesystem.ts`'s `publishSnapshot` as the pattern it consolidates, but `writeJsonFileAtomic`'s own `rename(tmpPath, targetPath)` has no such retry.
+- **Actual risk:** On Windows — the primary platform for the just-shipped first local test build (`docs/FIRST_LOCAL_TEST_BUILD.md`) — a transiently-held file handle (antivirus, indexer, a just-closed handle) can make a bare `rename()` fail even with nothing genuinely holding a competing lock, throwing unhandled on every login (`auth-context.json`) or bootstrap-config save.
+- **Required remediation:** Apply the same retry-with-backoff already used by `filesystem.ts`'s `publishSnapshot`, in the one shared `writeJsonFileAtomic` implementation rather than a second copy.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` — directly relevant to Windows reliability given the current Windows-first test build priority.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** extracted `renameWithRetry` to a new shared `src/lib/rename-retry.ts` (10 attempts, 50ms×attempt backoff, retry only EBUSY/EPERM) -- both `writeJsonFileAtomic` and `filesystem.ts`'s `publishSnapshot` now use this single implementation instead of `publishSnapshot` having its own copy and `writeJsonFileAtomic` having none (`AGENTS.md` §D). Tests: `rename-retry.test.ts` (retries on EBUSY/EPERM then succeeds; rethrows an unrelated error immediately, no retry; gives up and rethrows after exhausting attempts; a real file rename with no injected error, exercising the actual default `rename` with no fake).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-23 — `createActiveAuthStorage`'s single string parameter silently changed meaning (breaking change with no type signal) — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/cli-auth/adapters/active-auth-storage.ts` (`createActiveAuthStorage`).
+- **Current behavior:** On `main`, the parameter is a base directory (`createActiveAuthStorage(baseDir = process.cwd())`, internally joined with `data/auth-context.json`). On this branch, the same parameter position now means "the full context file path" (`createActiveAuthStorage(contextPath = getProductionAppPaths().authContextPath)`), with no type-level signal that the meaning changed.
+- **Actual risk:** A caller written against the old convention that still passes a directory would get a file written literally named after that directory, and reads would silently return `null`, making "no active user" indistinguishable from "context file genuinely absent." Currently only two in-repo call sites exist and both use the default, so this is latent rather than actively triggered.
+- **Required remediation:** Rename the parameter/add a type distinguishing "directory" from "full path," or provide a migration note for any external caller.
+- **Gate(s):** none blocking yet (latent).
+- **Approval required from:** none required to leave open; project owner if a rename is scheduled.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, latent (no known active trigger).
+
+## RISK-24 — App-data directory no longer locked to `0700` on every boot for Web-UI-only installs — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/db.ts` (unconditional `mkdirSync(appPaths.appDataDir, { recursive: true })` at module load).
+- **Current behavior:** On `main`, `ensureDataDir` (`cli-auth/adapters/active-auth-storage.ts`) did `mkdir` + `chmod(dataDir, 0o700)` on the directory holding the DB file. On this branch, that `chmod` only happens as a side effect of `writeJsonFileAtomic` (used for `auth-context.json`/`bootstrap-config.json`), reached only via CLI-auth flows — confirmed via grep that no file under `src/app/` (the Web/NextAuth login path) references cli-auth at all.
+- **Actual risk:** `db.ts`'s unguarded `mkdirSync` now runs first on every boot, including pure-Web-UI-only installs. RISK-07's accepted plaintext-OAuth-token-storage tradeoff assumed directory-level (`0700`) protection; a Web-UI-only operator's app-data directory (holding that same plaintext-token DB) never gets locked down for the life of the installation.
+- **Required remediation:** Apply the same `chmod(appDataDir, 0o700)` unconditionally in `db.ts`'s own directory-creation path, not only as an incidental side effect of an unrelated CLI-only write helper.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT` — directly weakens RISK-07's stated mitigation.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** `chmodSync(appPaths.appDataDir, 0o700)` added unconditionally right after `mkdirSync` in `src/lib/db.ts`, independent of any CLI-auth code path. Test: `src/lib/db.dir-permissions.test.ts` (POSIX only — Windows has no equivalent permission-bits concept; skipped there, not silently claimed).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-25 — Legacy database migration is one-shot and unretryable; a mid-copy failure permanently and silently orphans the operator's original data — FIXED, 2026-09-20
+
+- **Affected components:** `src/lib/db.ts` (`migrateLegacyDatabaseIfNeeded`, `dbAlreadyExistedAtModuleLoad`).
+- **Current behavior:** `dbAlreadyExistedAtModuleLoad` is computed once, before `createClient()` — which itself creates a stub file at the new app-data path as a side effect. If `copyLegacyDatabaseInto` throws mid-copy (legacy file locked by a still-running old process, a corrupt page, an exotic-filesystem `ATTACH` failure), that boot fails loudly, but the stub file at the new path already exists.
+- **Actual risk:** On the *next* boot, `dbAlreadyExistedAtModuleLoad` is true, so the migration returns `{ migrated: false }` immediately and silently — the app boots normally with an empty/partial DB, and the operator's original data is permanently orphaned in the legacy file with no further error or hint. This directly contradicts `AGENTS.md` §F/§3's "never silently initialize an empty database in place of an existing database."
+- **Required remediation:** Detect a stub/partial DB at the new path left behind by a failed migration (vs. a genuinely-already-migrated one) and retry, or at minimum surface a persistent, unmissable warning rather than booting silently.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix — this is high severity given it can cause perceived data loss for a real operator upgrading from a pre-cross-platform-persistence install.
+- **Fix applied:** `copyLegacyDatabaseInto` now runs inside one `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` transaction (a partial failure now rolls back every table, not just the one that failed) and is idempotent (a retry-safe `CREATE TABLE` that catches "already exists" + `DELETE FROM` before the `INSERT`, deliberately **not** `DROP TABLE [IF EXISTS]` — empirically found, in-session, that a `DROP TABLE` statement permanently breaks this exact `@libsql/client` build's ability to see any `ATTACH`ed database's schema for the rest of that connection's life, session-wide, not just inside the transaction; this was caught before shipping by testing the fix's own regression tests against a standalone repro, not by the review). `migrateLegacyDatabaseIfNeeded`'s retry gate now checks a persisted marker (`legacy-migration-status.json`, `"in_progress"` vs `"completed"`, written via the already-shared `writeJsonFileAtomic`) instead of relying solely on `dbAlreadyExistedAtModuleLoad` — a boot that finds `"in_progress"` (not `"completed"`) knows this is its own prior interrupted attempt to resume, distinguishable from a destination that already had genuine unrelated data before the marker mechanism ever ran (which still correctly refuses to touch it, preserving the original safety property). Tests: `db.test.ts` — idempotent retry (calling `copyLegacyDatabaseInto` twice never duplicates rows or fails) and transactional rollback (a fake client injecting a failure on the second table's `INSERT` — via a thin wrapper delegating every other call to the real connection, not a mock of the transaction logic itself — confirms neither table survives, not even the one that succeeded before the failure). **Residual limitation, found in review series cycle 3:** the marker's own durability depends on `writeJsonFileAtomic`'s `fsync`, which is a plain POSIX `fsync(2)` — on macOS specifically this does not flush the drive controller's own write cache the way `fcntl(F_FULLFSYNC)` does (no Node built-in binding exists for it), so a genuine power-loss event (not merely a process crash, which this fix does fully cover) on macOS could still lose the marker write. This narrows the original bug's window from "any interruption at all, on any platform" to "an actual power/OS-crash mid-write, on macOS specifically" — not to zero. Documented here and in the code comment rather than silently left as an unstated assumption; not remediated further (would require a native addon, disproportionate for a single-operator local desktop app).
+- **Status:** FIXED — review series cycle 1, 2026-09-20.
+
+## RISK-26 — `WRITABLE_SNIPPET_FIELDS` whitelist completeness against the live YouTube API is unverified — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/youtube-write-gateway/index.ts` (`WRITABLE_SNIPPET_FIELDS`), `src/lib/video-metadata/services.ts` (`removeReadOnlySnippetFields` — see RISK-11, which this risk is the inverse of).
+- **Current behavior:** RISK-11 closed by moving from a blacklist (delete only `.localized`) to an explicit whitelist of 6 fields. This is safe only if that list is a complete, currently-accurate enumeration of every snippet field YouTube's `videos.update` actually treats as writable — the new test suite only asserts the 6 listed fields survive, not that the list is exhaustive against the live API.
+- **Actual risk:** Per this file's own documented semantics, a `videos.update` PUT overwrites all mutable snippet properties — omitting a writable field deletes it, it does not preserve it. Any snippet field YouTube currently allows writing that is missing from the whitelist would be silently cleared on every real `videos.update` call — exactly the kind of silent metadata loss `AGENTS.md` §G's write-safety rules exist to prevent. **Not currently reachable**: RISK-09's live-write barrier means no real `videos.update` call can happen yet.
+- **Required remediation:** Cross-check `WRITABLE_SNIPPET_FIELDS` against `developers.google.com/youtube/v3/docs/videos`'s current per-property mutability table before Gate B (live writes) is ever passed; add this as an explicit Gate B pre-check.
+- **Gate(s):** `BLOCKS_PHASE_5_WRITES` (specifically before Gate B, not before continued mocked development).
+- **Approval required from:** project owner, as part of the Gate B live-validation planning.
+- **Disposition (2026-09-19 "отработай найденные риски" task):** not a code fix — its own required remediation is external research (the live YouTube API docs) plus a Gate B process checklist item, not a source change. Deliberately left for that planning step rather than forced into this round.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line; not currently exploitable given RISK-09's barrier.
+
+## RISK-27 — `importHandoff`'s pre-import backup file is never cleaned up on a failed import — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/device-handoff/services.ts` (`importHandoff`, its `finally` block).
+- **Current behavior:** The pre-import backup of the live DB (`copyDatabaseConsistently`) is taken before `migrateStagedCopy` verifies the staged copy's schema version. The `finally` block only removes `workingCopyPath` and its WAL/SHM sidecars — never the just-created backup file.
+- **Actual risk:** Importing a snapshot from a newer, incompatible build throws `SchemaVersionError` after the backup is already written to `migrationBackupsDir`. Every retry of an incompatible import leaks one full extra DB-copy file with no bound — a disk-usage/cleanup gap, not a data-loss risk (the backup itself is harmless, just never removed).
+- **Required remediation:** Remove the pre-import backup in the `finally` block too when the import did not proceed past the point that would need it, or document that these backups require periodic manual cleanup.
+- **Gate(s):** none blocking (disk hygiene only).
+- **Approval required from:** none required to leave open; project owner if a fix is scheduled.
+- **Fix applied:** a `liveDbMutated` flag, set only right after `applySnapshotToDatabase` actually succeeds; the `finally` block now also deletes `backupPath` when that flag is still `false` (the live DB was never touched, so the backup protects nothing). Tests: extended the existing "refuses a snapshot from a newer, unsupported schema version" test to assert `migrationBackupsDir` is empty afterward, and the existing successful-import test to assert its backup *does* survive (proving the fix is conditional, not "always delete").
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+---
+
+## RISK-28 — Resuming a RUNNING batch skips the write-channel identity guardrail — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/batches/services.ts` (`executeBatch`; `prepareBatchExecution`, which calls `deps.writeContext.assertWriteChannel`).
+- **Current behavior:** `executeBatch` only calls `prepareBatchExecution` — the only call site of `assertWriteChannel` in this path — when `initialBatch.status === "PENDING"`. Resuming a batch already `RUNNING` (after a crash/restart, or a new process picking it up later) skips straight to `authResolver.resolve` and `processRow`, none of which re-check channel identity.
+- **Actual risk:** If the local OAuth session is reauthenticated to a different YouTube channel while a batch sits `RUNNING`/pending-resume, writes on resume proceed against the wrong channel instead of failing closed — a direct violation of `AGENTS.md` §G's channel-identity requirement. **Not currently exploitable**: RISK-09's live-write barrier means no real write can happen through any path yet.
+- **Required remediation:** Re-run (or otherwise re-check) `assertWriteChannel` on every resume, not only on initial `PENDING → RUNNING` transition.
+- **Acceptance criteria:** A test resuming a `RUNNING` batch under a *different* active auth channel than the batch's `expectedChannelId`, asserting it fails closed.
+- **Gate(s):** `BLOCKS_PHASE_5_WRITES` (before Gate B), `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix — the single most safety-relevant of this round's findings, given it is exactly the write-safety property `AGENTS.md` §G names first.
+- **Fix applied:** `executeBatch` now re-runs `assertWriteChannel` itself, against the exact credentials it resolves for the whole call, unconditionally — regardless of whether the batch was `PENDING` (already checked once more inside `prepareBatchExecution`, kept for its own direct callers) or already `RUNNING`. A guardrail failure marks the batch `ABORTED` and logs `identity_guardrail`, identical to `prepareBatchExecution`'s own handling. Test: `execute-batch.test.ts` ("resuming a RUNNING batch still enforces the write-channel guardrail") — `claimBatchExecution` flips a batch straight to `RUNNING` without ever calling the guardrail (simulating a prior process's crash-then-resume), then `executeBatch` is called with a mismatched `expectedChannelId`; asserts the guardrail actually ran, the batch was aborted, and no ledger row was touched. Re-ran `src/lib/batches/write-path-inventory.test.ts` (3/3 pass) to confirm this change does not touch the Phase 5 live-write barrier.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19; still not currently exploitable given RISK-09's barrier, fixed proactively regardless.
+
+## RISK-29 — Cross-device snapshot merge is positional, not column-name-aware, for tables with an `ALTER TABLE`-added column — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/snapshot/services.ts` (`applySnapshotToDatabase`'s `DELETE FROM "t"; INSERT INTO "t" SELECT * FROM staged."t"` for `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`); `src/lib/db.ts` (`batch_ledger_rows`' baseline `CREATE TABLE` declares `active_attempt_id` before `created_at`/`updated_at`, but a pre-existing DB got the same column via a later `ALTER TABLE ... ADD COLUMN`, which SQLite always appends at the physical end of the row).
+- **Current behavior:** The merge is purely positional (`SELECT *`), not by column name.
+- **Actual risk:** Two devices whose `batch_ledger_rows` table has a genuinely different physical column order (one built fresh from the current baseline, one upgraded via the `ALTER TABLE` path) exchanging a device-handoff or `published/` release snapshot get their columns positionally swapped on import — e.g. a value meant for `created_at` landing in `active_attempt_id` — silently corrupting the exact ledger table the crash-recovery safety mechanism (`scanForUnresolvedExecutionState`/`RecoveryModeError`) depends on.
+- **Required remediation:** Merge by explicit column name list (`INSERT INTO "t" (col1, col2, ...) SELECT col1, col2, ... FROM staged."t"`), not `SELECT *`, for every table in `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`.
+- **Acceptance criteria:** A test simulating two DBs with the same table but different physical column orders (one via `ALTER TABLE`), asserting the merge preserves values by name.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** a new `getColumnNames` helper reads `PRAGMA table_info` from the *live* table (physical storage order) and builds an explicit column list used on both sides of the `INSERT` for every table in `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`, replacing `SELECT *`. Test: `snapshot/services.test.ts` ("merges by column name, not physical position") manually reorders `channels`' physical columns on the source side and asserts values still land correctly on import. Empirically confirmed against the *unfixed* code first: the old positional merge doesn't even silently corrupt data in this exact scenario, it crashes outright with a `NOT NULL constraint failed` — an even more visible failure mode, but proof the test genuinely exercises the bug.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-30 — AI Localization's `generate` route is exempt from the device-availability/recovery-mode gate but can trigger a real, billable outbound AI call — FIXED, 2026-09-19
+
+- **Affected components:** `src/proxy.ts` (`EXEMPT_READ_ONLY_PATH_SUFFIXES` includes `/ai-localization/generate`, on the stated rationale of "no local persistence writes, never calls YouTube"); `src/lib/ai-localization/services.ts` (`generateProposals` → `resolveConnectionProvider` → `openai_compatible` adapter's real outbound `POST`).
+- **Current behavior:** `assertDeviceAvailableForMutation` (the operation-lock + recovery-mode check) is invoked only from `proxy.ts`, `mcp/server.ts`, and `cli/video-metadata.ts` — never from `resolveConnectionProvider`/`generateProposals` itself.
+- **Actual risk:** The route's own exemption rationale ("never calls YouTube") is accurate but incomplete — it can still call a real external AI provider. During a device-handoff export/import (lock held) or post-crash recovery-mode window, a client can still trigger real external AI provider calls through this exempted endpoint, defeating the gate's intended "freeze external interactions" guarantee, and doing so during exactly the window when the local DB state is least trustworthy to record the result against.
+- **Required remediation:** Either narrow the exemption to only the mock provider (no `connectionId`), or apply the device-availability gate to this route specifically when a real connection is used.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Fix applied:** `proxy.ts`'s routing-level exemption is unchanged (it is body-blind and correctly stays exempt for the mock-provider case) -- the gate now lives one layer deeper, inside `generateProposals` itself (`src/lib/ai-localization/services.ts`), called only on the real-connection path (`connectionId` set) via a new optional `assertDeviceAvailable` dependency, wired in `index.ts` to `assertDeviceAvailableForMutation(rawSqlClient)`. The mock-provider path is untouched and still never calls it. Tests: `services.test.ts` (a real-connection generation checks device availability before resolving the provider; fails closed and never resolves the provider if the device isn't available; the mock-provider path never calls the check at all) plus the pre-existing `AC-CONN-17`/write-path-inventory suites re-run clean.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+## RISK-31 — `transitionLedgerRowStatus`'s discarded boolean result can let a batch's reported outcome silently drift from the ledger's actual persisted status — FIXED, 2026-09-19
+
+- **Affected components:** `src/lib/batches/services.ts` (two call sites cited: the backup-health-check abort path, and the systemic-halt branch of `processRow`).
+- **Current behavior:** The raw store method's guarded `UPDATE` (matching on expected `from` status) can be a no-op if another concurrent worker already changed that row's status first — plausible given this file's own concurrency-limited worker pool (`batch.concurrency`, up to 5).
+- **Actual risk / scope correction:** Re-reading both cited sites in-session found the two are not equivalent. The `processRow` site (in `executeBatch`'s systemic-halt branch) genuinely discards the boolean and unconditionally records `ABORTED_SYSTEMIC` into the returned execution summary regardless of whether the transition actually persisted — this is the real drift the risk describes, and is what was fixed. The backup-health-check abort site never populates any execution summary at all in that branch — it always `markBatchTerminal`s the batch and `throw`s a `DomainError` immediately afterward regardless of each row's individual transition outcome, so there is no "reported outcome" for it to drift from; left as a much lower-severity, purely-cosmetic gap (a row could stay `PENDING` while its batch is `ABORTED`) rather than fixed in this round.
+- **Required remediation:** Use the checked `transitionLedgerStatus` wrapper at both sites, or otherwise handle a `false` result explicitly.
+- **Fix applied:** The `processRow` site now checks the transition's boolean result; on `false`, it re-fetches the row's actual current persisted state and reports that instead of unconditionally claiming `ABORTED_SYSTEMIC`. (Not switched to the generic `transitionLedgerStatus` wrapper, since that wrapper's `from` set — `allowedFromStatuses(to)`, every status any table permits transitioning into `ABORTED_SYSTEMIC` from — is broader than the precise, single-status `from: [row.status]` this call site intentionally uses; swapping it in would have widened, not tightened, the guard.) Test: `execute-batch.test.ts`'s existing `AC-ISOLATION-02` coverage continues to pass unchanged; no new race-simulating test added — reproducing the exact concurrent-status-change race deterministically would need injecting a mid-call store mutation the current fake store doesn't support, and is out of proportion to a fix that only changes what happens on the (rare) no-op path.
+- **Gate(s):** none blocking (the fixed path); the backup-health-check site's low-severity cosmetic gap remains, no gate.
+- **Approval required from:** none required to leave the remaining minor gap open.
+- **Status:** FIXED (the real drift) — project-owner-assigned task, 2026-09-19; a lower-severity, non-drift gap at the other cited site remains open and undocumented as its own entry (see above).
+
+## RISK-32 — `proxy.ts`/CLI/MCP each independently classify "mutating" operations, with no shared registry, and have already diverged twice — OPEN, 2026-09-19
+
+- **Affected components:** `src/proxy.ts` (HTTP method + path prefix/suffix sets), `src/cli/video-metadata.ts` (command-name sets), `src/mcp/server.ts` (manually wrapping ~11 named handler properties one at a time) — each maintaining its own independent list of what must be gated by `assertDeviceAvailableForMutation`.
+- **Current behavior:** In-code comments in two of the three files already document that this exact divergence has caused real bugs, found and fixed twice by independent review.
+- **Actual risk:** A future new mutating MCP tool, CLI command, or API route added to only one interface (e.g. an MCP handler left out of the manual wrap list) silently bypasses the device-availability/recovery-mode gate on that interface while the other two correctly enforce it — the same class of bug already found twice, still structurally possible a third time.
+- **Required remediation:** A single shared registry/manifest of mutating operations that all three interfaces consult, rather than three independently-maintained classification lists.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the refactor (touches all three interface layers, `AGENTS.md` §D "one guardrail" pattern).
+- **Disposition (2026-09-19 "отработай найденные риски" task):** deliberately not attempted as a quick fix in this round — this is a cross-cutting refactor of the guardrail itself across all three interfaces, ADR-shaped, and a botched consolidation could silently disable the very gate it's trying to unify. Proposed as its own separately-scoped task for the project owner to schedule, not bundled here.
+- **Status:** OPEN — found by a second independent review pass; the underlying divergence risk (not any specific instance of it) is new to this log, though its recurrence was already known well enough to be commented on in-code.
+
+## RISK-33 — Minor latent/consistency gaps found alongside the above — PARTIALLY FIXED, 2026-09-19
+
+Bundled as one entry — each individually low severity, none currently exploitable, none warranting its own full entry:
+
+- `src/lib/snapshot/services.ts`: **the FK-enforcement assumption behind this bullet was wrong, and the gap was not dormant.** The original text claimed `PRAGMA foreign_keys` is "never actually enabled anywhere in this codebase, so a dormant FK-enforcement gap would only matter if foreign keys are ever turned on." Empirically, this `@libsql/client` build defaults `PRAGMA foreign_keys=ON` for every new connection regardless of any explicit pragma call (confirmed directly: a fresh `createClient` reports `foreign_keys: 1`) — unlike stock `better-sqlite3`, which defaults it OFF and is presumably what the original assumption was modeled on. Enforcement was live in production the whole time. **Root-caused a real user-reported crash (2026-09-20):** `SQLITE_CONSTRAINT: FOREIGN KEY constraint failed` when importing a device-handoff snapshot. Two independent manifestations of the same wrong assumption, both fixed: (1) `applySnapshotToDatabase` (`src/lib/snapshot/services.ts`) does `DELETE FROM "<table>"` then `INSERT ... SELECT` per table, one table at a time — `DELETE FROM "channels"` fails immediately the moment the *receiving* device already has any local `videos`/`change_sets`/`batches`/etc. row still referencing an existing channel (i.e. on essentially every real-world import into a device that has previously synced data); (2) `scrubDatabaseCopy` (`src/lib/snapshot/adapters/scrub.ts`) does `DROP TABLE users` on the export-side copy, which performs an implicit delete of every `users` row first — this fails as soon as the exporting device has at least one `rules` row (`rules.user_id NOT NULL REFERENCES users(id)`), which is the normal case for any device that has ever used the rules/playlist-matching feature. **FIXED** — both functions now bracket their SQL with `PRAGMA foreign_keys = OFF` before opening any transaction (the pragma is a no-op once a transaction is already open, so it must be set before `BEGIN`/before the first statement) and restore `PRAGMA foreign_keys = ON` in a `finally`, since both operate on the caller's shared, long-lived connection and must never leave enforcement silently disabled for any later, unrelated statement on it. This is a deliberate, narrow bypass of enforcement for these two specific same-connection bulk-replace operations, not a global disable — `rules.user_id` pointing at a `users.id` that doesn't exist locally (because `users` is deliberately never transferred in a snapshot, per this file's own allowlist comment) is an accepted, permanent consequence of the design, not a new gap being introduced; regression tests added in `src/lib/snapshot/services.test.ts` cover both the receiving-device-already-has-data case and the orphaned-`rules.user_id` case, and assert enforcement is restored to `ON` afterward. **Update, 2026-09-22:** `rules` was removed from `SNAPSHOT_TRANSFERRED_TABLES` entirely (its feature surface was already gone; the table was only still traveling in snapshots for no reason, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §5/M0) — the orphaned-`rules.user_id` scenario this bullet documents can no longer occur (its dedicated regression test was removed along with it), though the general FK-enforcement fix (`PRAGMA foreign_keys = OFF`/`ON` bracketing) remains necessary and unchanged for every other transferred table.
+- `src/lib/device-handoff/services.ts` (~lines 48, 191): raw SQL inserts bypass the shared `src/lib/audit/services.ts` event-log abstraction used elsewhere, so device-handoff's own audit trail is written through a different path than the rest of the application's. **Still OPEN** — not part of this round's fixes.
+- `src/lib/db.ts` (~line 676, and its two sibling `ALTER TABLE` migrations for `users`): the bare `try/catch` swallowed all errors unconditionally, not narrowed to "column already exists" — the same failing-open pattern as RISK-19, in a different function. **FIXED** — all three sites now check a local `isDuplicateColumnError` (message-matches `/duplicate column name/i`, empirically confirmed against this codebase's actual `@libsql/client` version) and rethrow anything else. Kept local to `db.ts` rather than added to the shared `isMissingTableError` module — it is a different error class (a `CREATE`/`ALTER` conflict, not a missing table) with exactly one caller site's worth of use, so a shared abstraction would be premature (`AGENTS.md` §D's "avoid parallel implementations" concern doesn't apply to genuinely different error classes). No dedicated test added — `initializeDatabaseSchema` already runs this exact idempotent-migration path on every test-runner boot via `src/lib/db.ts`'s own module-load side effects, so the "column already exists" branch is implicitly exercised by the rest of the suite on every run; a non-duplicate-column failure would now surface as a boot failure across the whole suite instead of being swallowed.
+
+- **Gate(s):** none blocking (latent/consistency only) for the audit-path-bypass item still open; the FK item was reclassified from "dormant, non-blocking" to "was live, fixed" per above — it is not being reopened as a gated item since the fix is already in.
+- **Approval required from:** none required to leave the audit-path-bypass item open; project owner if it is scheduled.
+- **Status:** PARTIALLY FIXED — the `db.ts` bare-catch item fixed 2026-09-19; the FK-enforcement item fixed 2026-09-20 (see above, including correcting this entry's own wrong "dormant" assumption); the audit-path-bypass item remains OPEN.
+
+## RISK-34 — The two "recovery-gate" test suites never actually test recovery mode — OPEN, 2026-09-19
+
+- **Affected components:** `src/cli/video-metadata.recovery-gate.test.ts`, `src/mcp/server.recovery-gate.test.ts`.
+- **Current behavior:** `assertDeviceAvailableForMutation` checks the operation lock first and only falls through to `assertNotInRecoveryMode` when no lock is held. Both test files, despite their name, exclusively acquire/release the lock and assert on `operation_lock_held` — zero references to `RecoveryModeError` or an unresolved `APPLYING`/`UNKNOWN` ledger row in either file.
+- **Actual risk:** A regression that broke recovery-mode enforcement specifically at the CLI/MCP choke points (an early return, a swallowed exception, a wrong import) would pass both suites while the actual production safety property (`AGENTS.md` §G: a device in recovery mode must refuse mutations) silently fails at these two interfaces — false confidence from a misleadingly-named test file.
+- **Required remediation:** Add an actual recovery-mode scenario (an unresolved `APPLYING`/`UNKNOWN` ledger row, no lock held) to both suites, asserting `RecoveryModeError` at the CLI/MCP choke points specifically.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the test addition.
+- **Fix applied:** both files gained a new test seeding a real `channels`/`batches`/`batch_ledger_rows` (status `UNKNOWN`) row with no operation lock held, asserting the mutating command/tool is rejected with `device_in_recovery_mode` specifically (not `operation_lock_held`), and that the read-only command/tool remains unaffected.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
+
+---
+
+## RISK-35 — `classifyYoutubeWriteError` cannot distinguish "genuine network ambiguity" from "a local bug in this same adapter" — OPEN, 2026-09-19 (review series, cycle 1)
+
+- **Affected components:** `src/lib/batches/adapters/write-executor.youtube.ts` (`performYoutubeWrite`/`classifyYoutubeWriteError`, the `status === undefined` branch).
+- **Current behavior:** Any thrown error lacking `response.status` (timeout, connection reset -- but also a plain local `TypeError` from this same file's own code, e.g. `pickWritableSnippetFields` choking on a malformed payload) is classified `UNKNOWN`, deliberately per `DEC-OQ-6` ("we don't know if YouTube received the write").
+- **Actual risk:** `UNKNOWN` ledger rows put the entire device into restricted recovery mode via `assertDeviceAvailableForMutation`. A genuine local bug that never reached the network gets the same device-wide lockdown as a real network-ambiguous write, even though a retry could never have "fixed" the local bug's outcome the way it can for a real ambiguous network condition.
+- **Disposition:** deliberately not fixed this cycle -- distinguishing the two classes of error reliably (without misclassifying a real network failure as "local" and unsafely FAILED-and-retrying it) is a genuine design question, not a mechanical fix, and this exact function's own architecture (`DEC-OQ-6`) was a considered decision. **Not currently exploitable**: RISK-09's live-write barrier means this code path is unreachable in production (confirmed by `write-path-inventory.test.ts`).
+- **Gate(s):** `BLOCKS_PHASE_5_WRITES` (before Gate B).
+- **Approval required from:** project owner, as part of Gate B planning (alongside RISK-26, which this is adjacent to).
+- **Status:** OPEN — needs a deliberate design decision, not a mechanical fix.
+
+## RISK-36 — Minor findings from independent review series, cycle 1 (not fixed, individually low severity) — OPEN, 2026-09-19
+
+Bundled as one entry -- each confirmed, each individually low severity or purely non-functional (performance/duplication), none currently exploitable or blocking:
+
+- `src/lib/db.ts` (~line 28-35): `mkdirSync`/`chmodSync` at module load have no try/catch (unlike the "best effort" pattern `atomic-json-file` uses for the identical chmod) -- would crash every process on boot if the app-data directory exists with different ownership.
+- `src/lib/batches/services.ts`: `executeBatch` never persists `selectedChannelId` via the channel-selection store after a write, unlike `video-metadata/services.ts` and `playlist-management/services.ts` -- currently latent since the real `WriteExecutor` is never wired in (RISK-09's barrier).
+- `src/lib/batches/services.ts` (`executeBatch`, ~line 1386): reports a batch `COMPLETED` even when a row is stuck `UNKNOWN` with its video lock still held -- narrowed on review: `resolveUnknownLedgerRow` is the designed recovery path, so the row isn't permanently stuck, but the `COMPLETED` label is still misleading while an `UNKNOWN` row remains unresolved.
+- `src/app/api/device-handoff/shared.ts` vs `src/app/api/video-metadata/error-status.ts`: two independently-maintained error-code-to-HTTP-status tables with different fallback defaults (500 vs 422) -- not a bug (different domains, different code sets), just a minor inconsistency if anyone ever assumes a shared fallback convention.
+- `src/lib/changesets/services.ts` (`createChangeSetFromProposals`, ~line 307): skips the `parseWithSchema` validation every sibling entry point in this file runs -- a defense-in-depth gap, no live exploit today (its one caller, `ai-localization`, already validates upstream).
+- Sequential (non-concurrent) loops ignoring the batch's own configured `concurrency` limit: `batches/services.ts`'s `prepareBatchExecution` (~line 645) and `ai-localization/services.ts`'s `generateProposals` (~line 305) -- performance only, no correctness impact.
+- `write-executor.youtube.ts` (~line 198): reconstructs the YouTube client on every retry attempt instead of reusing one -- performance only.
+- Copy-pasted fetch/error-handling boilerplate across four React components (`ai-connections-manager.tsx`, `batch-manager.tsx`, `device-handoff-panel.tsx`, and -- since `ai-localization-panel.tsx` was absorbed into `languages-manager.tsx` on 2026-09-20, `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md` -- that file's "Generate with AI" section) -- cleanup/duplication only, no behavioral difference found between the copies.
+
+- **Gate(s):** none blocking.
+- **Approval required from:** none required to leave open; project owner if any is scheduled.
+- **Status:** OPEN — found by review series cycle 1, not fixed this round (out of proportion to their severity relative to this round's other findings).
+
+## RISK-37 — Minor findings from independent review series, cycle 2 (not fixed) — OPEN, 2026-09-20
+
+Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressions cycle 1 introduced (both fixed the same day -- see the `ai-localization/generate` route's now-explicit `OperationLockError`/`RecoveryModeError` handling, and `finalizeConflict`'s now-populated `conflictingChangeIds`, folded into RISK-30's and the CONFLICT-drift fix's own history rather than given new numbers). The remaining findings, bundled here, were deliberately left unfixed:
+
+- `src/lib/db.ts`'s `readLegacyMigrationMarker` hand-rolls a "safe JSON read, null on missing/malformed" pattern that already exists independently in `bootstrap-config/services.ts` and `snapshot/adapters/filesystem.ts` (AGENTS.md §D: one implementation per pattern) -- a third copy that could drift from a future fix to either of the other two. Not consolidated this round to avoid touching more of this write-safety-adjacent file than the actual RISK-25 fix required.
+- Four `{status: "CONFLICT", conflictingChangeIds}` construction sites in `src/lib/batches/services.ts` (lines ~500, ~555, ~955, ~1365, ~873) are assembled ad hoc instead of through one shared helper -- exactly why the 4th site was able to silently omit the field in cycle 1's own fix, and structurally possible again for a future 5th site. Two of the four return a different type (`PreparedRowOutcome` vs `ExecutionResult`), so a single unifying helper isn't a trivial extraction; deliberately not attempted this round in this specific write-safety-critical file.
+- `src/lib/ai-localization/services.ts`'s `mapUnknownError` now passes through `OperationLockError`/`RecoveryModeError` (RISK-30's fix); `src/lib/video-metadata/services.ts` keeps an independently-maintained same-purpose function without this, with no comment documenting that the two need to stay in sync for this specific reason. Video-metadata's own write paths do not currently call `assertDeviceAvailable` at all, so this is not currently a live gap -- only a documentation gap that could let a future change reintroduce the exact bug cycle 2 just found.
+- `src/lib/db.ts`'s `copyLegacyDatabaseInto` runs one `DELETE FROM` per table even on a first-time (non-retry) migration, where the table was just freshly created and is guaranteed empty -- a harmless no-op statement on the common path, avoidable but not worth branching the idempotency logic to skip it.
+
+- **Gate(s):** none blocking.
+- **Approval required from:** none required to leave open; project owner if any is scheduled.
+- **Status:** OPEN — found by review series cycle 2, not fixed this round.
+
+## RISK-38 — Duplicated `OperationLockError`/`RecoveryModeError` -> HTTP-status mapping across 5 call sites — OPEN, 2026-09-20
+
+- **Affected components:** `src/proxy.ts`, `src/app/api/device-handoff/shared.ts`, `src/mcp/server.ts`, `src/cli/video-metadata.ts`, and now `src/app/api/channels/[channelId]/ai-localization/generate/route.ts` (cycle 2's fix) -- 5 independently-maintained call sites, each with its own `instanceof OperationLockError`/`instanceof RecoveryModeError` check and its own hard-coded 409/423 (or equivalent per-transport) mapping.
+- **Actual risk:** A future change to how these two error classes should surface (e.g. adding a `retryAfter` field, or changing a status code) requires editing all 5 sites; missing one silently reintroduces the exact "discards the stable code/details" class of regression review series cycle 2 itself found and fixed.
+- **Disposition:** not a clear-cut `AGENTS.md` §D violation -- this repository already has a documented, deliberate per-transport error-mapping convention (JSON HTTP response / MCP content block / CLI stderr line are genuinely different shapes), so a single shared formatter isn't a trivial extraction the way `isMissingTableError` or `renameWithRetry` were. Flagged for awareness, not fixed this round.
+- **Gate(s):** none blocking.
+- **Approval required from:** none required to leave open; project owner if a shared cross-transport mapping (e.g. a single `{code, status}` lookup table each transport's own formatter consults) is ever scheduled.
+- **Status:** OPEN — found by review series cycle 3, not fixed this round.
+
+## RISK-39 — `syncChannel`'s explicit-`channelId` path has no ownership check (write side) — OPEN, 2026-09-20
+
+- **Update 2026-10-01 (architecture audit H3).** The impact was larger than "quota plus a harmless
+  row". Every sync overwrote `channels.connected_user_id`, and a raw-access-token credential set it
+  to NULL. Since ADR 0010 and Phase 12, that column decides channel reactivation and whether a
+  channel's agent token is valid. So an operator re-sync of another channel silently re-owned or
+  disconnected it.
+  - **Fixed:** only the implicit "my channel" sync sets the owner, and no sync ever clears it
+    (`channel-sync/services.ts`, `db.ts` `upsertChannel`).
+  - **Still open:** the original quota and local-row concern below.
+- **Affected components:** `src/lib/youtube-read-gateway/data-api.ts` (`getChannelForSync`), `src/lib/channel-sync/adapters/youtube-api.ts`, `src/lib/channel-sync/services.ts` (`syncChannel`), `src/app/api/channels/sync/route.ts`, `src/components/channel-sync.tsx` ("Re-sync this channel" picker action).
+- **Current behavior:** When `syncChannel` is called with an explicit `channelId` (the Sync tab's "re-sync a previously-known channel" action, or a direct API/MCP/CLI call), `getChannelForSync` performs a public, unauthenticated-scope `youtube.channels.list({ id: [channelId] })` lookup — **not** cross-checked against the caller's OAuth-authenticated ("mine") channel at all. The result is upserted into the local `channels`/`videos` tables regardless of whether it has anything to do with the calling session's actual Google account.
+- **Actual risk:** A caller can cause the local database to sync (fetch + persist) metadata for **any** public YouTube channel ID, not just their own, consuming their own YouTube API quota to do so. Found alongside the RISK-02 fix (2026-09-20) — discovered, not introduced, by that work: RISK-02's read-scoping fix (`docs/decisions/0004-active-channel-read-scoping.md`) means the result of such a sync is no longer *visible* afterward (it never becomes the active channel), which narrows the practical impact to "wasted quota + a harmless local row," but the write itself is still unauthenticated-scope.
+- **Existing mitigation:** RISK-02's fix means a foreign channel's data, once synced this way, is never shown back to the caller (it's not their active channel) — the local database gains a row, but nothing in the UI/API/MCP/CLI surfaces it as "yours." No write to YouTube itself is possible via this path (`channel-sync` never writes to YouTube, `docs/ARCHITECTURE.md` §4.3).
+- **Required remediation:** Decide whether an explicit-`channelId` sync should be restricted to channel IDs already known to be reachable by the caller's OAuth token (e.g. requiring it to match `channels.list({mine:true})`'s result, which would make the explicit-`channelId` parameter redundant for this use case), or removed entirely in favor of always resolving "mine" — the parameter's original purpose is unclear and may predate the current single-active-channel model.
+- **Gate(s):** none blocking (impact narrowed by RISK-02's fix to local-storage/quota waste, no data exposure).
+- **Approval required from:** project owner (product decision: is re-syncing an explicitly-named, non-active channel ever a legitimate use case?).
+- **Status:** OPEN — flagged for a future decision, not fixed as part of the RISK-02 change (different concern: write-path input validation, not read-side visibility).
+
+---
+
+## RISK-40 — `src/lib/video-details/` is the first Web-UI-reachable path to a real, non-dry-run YouTube write, with two remaining, deliberately-scoped gaps — OPEN, 2026-09-20
+
+- **Affected components:** `src/lib/video-details/*`, `src/app/api/channels/[channelId]/videos/[videoId]/details/{,preview,apply}/route.ts`, `src/components/{content-manager,video-details-panel}.tsx`.
+- **Context:** Owner-authorized (Telegram, 2026-09-20) Studio-parity "Details" edit module, built to AGENTS.md §G's minimum safety model (identity check, validation, backup, diff, approval, dry-run, audit, verification) — see `docs/SYSTEM_MAP.md` §2.9d and `docs/ROADMAP_STATUS.md` for the full design record. This entry tracks what is genuinely still open, not a restatement of what's implemented.
+- **Gap 1 — no Web UI — CLOSED, 2026-09-20 (BL-031).** Content tab rows now expand into `video-details-panel.tsx`: basic fields visible by default, the rest behind "Show more," a "Preview changes" dry-run diff, and a "Save to YouTube" button gated on an exact-patch match against the last preview (edit anything afterward and it re-disables until re-previewed) plus an `expectedEtag` sent with `apply` so a video that changed on YouTube mid-session fails closed (`video_details_conflict`) rather than silently applying a stale diff. Live-verified in the browser (preview + the enable/disable gating around it); the owner has not yet clicked "Save to YouTube" themselves.
+- **Gap 2 — no CLI/MCP parity.** Same class of gap as RISK-04 for Change Sets/Batches — the module's service layer is interface-agnostic by construction, but no CLI namespace or MCP tool calls it yet.
+- **Gap 3 — `paidProductPlacementDetails.hasPaidProductPlacement` is not implemented.** Per live research against the official YouTube Data API v3 reference (2026-09-20), this field's write-support is genuinely ambiguous in Google's own documentation (present in the schema, absent from the explicit "settable properties" list both `videos.insert` and `videos.update` publish for every other writable field). Do not add it to `VideoDetailsPatch` without first testing empirically against a real video whether YouTube actually accepts it — assuming it works from the schema's existence alone would be exactly the kind of untested claim AGENTS.md §L warns against.
+- **Not a gap, noted for the next reader:** batch-mode ("запись батчем", per the owner's own requirement) was addressed by designing `applyFieldsUpdate` as a pure, composable per-video function (no UI-specific or Batch-ledger state) — a future caller can already invoke it once per video in a loop. What's NOT built is wiring it into `src/lib/batches/`'s own ledger/audit/recovery machinery for a multi-video "Details" batch with resume/crash-recovery guarantees equivalent to the localization Batch pipeline — that is real, additional scope, not implied by the current module.
+- **Gate(s):** none blocking Gate B/C directly (this module's own write barrier is real, not disabled — unlike the legacy Batches `WriteExecutor`, `applyFieldsUpdate` performs an actual `videos.update` when called with a valid patch; there is no server-side "always dry-run" override here). The project owner should treat "apply" as live from the moment any UI or automation calls it.
+- **Approval required from:** project owner, per-gap as listed above (CLI/MCP parity and the `paidProductPlacementDetails` empirical test are each their own, separately assignable slice).
+- **Status:** OPEN — the module, its API, and its Content-tab UI are all in place and live-verified (Gap 1 closed); CLI/MCP parity and `paidProductPlacementDetails` remain the honest remainder.
+
+---
+
+## RISK-41 — `src/lib/backup/`'s snapshot files will need an eventual retention/purge mechanism, not yet designed — OPEN, 2026-09-20 (pre-emptively recorded, no code exists yet)
+
+- **Affected components:** `src/lib/backup/adapters/filesystem-store.ts` (today), and whatever real localization-deletion feature is eventually built under `docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md` §7.2/E5 (not yet implemented).
+- **Context:** unusual entry — recorded ahead of any code existing, per the project owner's explicit instruction (Telegram, 2026-09-20) while discussing E5's deletion-recovery design: "Удаление бэкапов — удалять нужно, но пока можешь записать в технический долг, вернёмся к этому потом." Every other entry in this register describes a risk in code that already exists; this one is a planned, accepted future gap, written down now specifically so it is not silently forgotten once E5 ships.
+- **Current behavior (as of today, unrelated to E5):** `src/lib/backup/`'s filesystem store never deletes a snapshot file once written (`wx`-flag write, immutable by design, per its own doc comment) — this is intentional and correct for Batches' existing use (an audit/recovery record that should outlive the operation it describes) and remains correct for `video-details`' use of the same module.
+- **The gap this entry tracks:** once E5 (real, explicit localization deletion with a 30-day-visible restore window, `docs/PROJECT_SPEC.md` §16) is actually built, its own pre-delete backup snapshots will accumulate indefinitely under the current "never delete a backup" behavior — harmless at first, but a real, unbounded local-disk-growth concern over the lifetime of an actively-used channel with recurring deletions. The owner has confirmed the *eventual* correct behavior is to actually purge old backups on some schedule, distinct from `docs/PROJECT_SPEC.md` §16's UI-facing "30 days to restore" window (per that section's own text, the retention window governs what the operator is *offered* as restorable, and does not by itself require deleting the underlying file — the purge mechanism is a separate, later decision about disk hygiene, not about restore-ability).
+- **Required remediation (not designed yet, deliberately):** a policy for when a backup file becomes eligible for real deletion (e.g. N days past the restore window, only for deletion-kind snapshots specifically, never for `video_fields`/other operational backups whose retention purpose is different), and a mechanism to run it (a manual admin action vs. some background job — this app has no background job runner today, so introducing one is itself a design question, not a given).
+- **Gate(s):** none blocking — this is unbuilt, forward-looking scope, not a live risk in shipped code.
+- **Approval required from:** project owner, when E5 is actually assigned and this becomes a real design question rather than a placeholder.
+- **Status:** OPEN — explicitly deferred by the owner's own instruction; revisit once E5 (or any deletion feature reusing `src/lib/backup/`) is actually being implemented, not before.
+
+---
+
+## RISK-42 — React components in this repository have no unit/component test coverage — OPEN, 2026-09-21 (independent review series)
+
+- **Affected components:** every file under `src/components/` (confirmed: zero `*.test.tsx`/component test files exist anywhere in the repository as of this entry) — flagged concretely this time against `src/components/languages-manager.tsx` by two independent `/code-review high` passes during the Languages-tab E1-E4b redesign's own independent-review cycle (`docs/roadmap/BACKLOG.md` BL-037), one of which explicitly cited `AGENTS.md` §L's "acceptance tests... for changes touching approval integrity" against a stale-generation-state bug this same cycle found and fixed (a UI bug that could have attached AI-generated proposals to the wrong `videoId`/language before a human ever reviewed them).
+- **Current behavior:** every domain module under `src/lib/**` has spec-driven `node:test` coverage per `AGENTS.md` §L; every React component is instead verified by live `claude-in-chrome` browser sessions against a real synced channel, checked at the point each feature ships and not automated to re-run afterward. This is a deliberate, consistently-applied convention across this codebase, not an oversight specific to any one file — it already applies to `src/components/video-details-panel.tsx`, which drives a real, non-dry-run YouTube write (RISK-40) and is at least as safety-adjacent as anything in `languages-manager.tsx`.
+- **Actual risk:** a regression in component-level state logic (which video/language a generated proposal is scoped to, whether a stale async response can land in the wrong place, selection-state invariants) has no automated net and can only be caught by a human noticing it in the browser, or by another independent-review pass reading the code -- exactly how both bugs this entry cites were actually found. `AGENTS.md` §L's testing standard is written at the level of "changes touching approval integrity," and this class of bug is adjacent to that (the malformed draft still has to pass a human approval step before anything could reach `src/lib/batches/`, which has its own independent, already-tested conflict/approval-integrity guarantees unaffected by a UI-layer mislabeling bug) — a real gap, but one layer removed from the write-safety-critical backend pipeline the existing test suite already covers thoroughly.
+- **Existing mitigation:** the backend domains this UI calls into (`changesets`, `ai-localization`, `batches`) are fully spec-tested independently of any UI bug, so a UI-layer mistake produces a wrong *draft* that still requires a human `approve` action, never a bypass of conflict detection, defaultLanguage guards, or the write barrier itself.
+- **Required remediation (if ever undertaken):** either (a) extend the *pure-logic* pieces of complex components (state-transition helpers like this file's `resetGenerationSession`/scope-switching logic, `compareRows`/sort helpers) so they can be exported and unit-tested with `node:test` without a DOM/React-testing-library dependency this project does not currently have, or (b) adopt a component-testing library project-wide (a bigger, separate decision — new dev dependency, new test-running pattern) and apply it consistently rather than to one file in isolation.
+- **Gate(s):** none blocking today (browser verification remains the accepted method); would become relevant to `BLOCKS_OPERATIONS_RELEASE`-class gates only if the project owner decides UI regressions have become a recurring operational problem.
+- **Approval required from:** project owner -- this is a testing-strategy/tooling decision (a new dependency and a new project-wide pattern), not a per-file fix, and should not be solved piecemeal for just one component.
+- **Status:** OPEN — documented per the same "explicitly defer, never silently drop" standard this file's other entries use, rather than adding an inconsistent one-off test file for a single component while leaving the rest of `src/components/` exactly as before.
+
+---
+
+## RISK-43 — Abandoning an AI-generation session does not cancel the underlying provider request — OPEN, 2026-09-21 (independent review, round 3)
+
+- **Affected components:** `src/components/languages-manager.tsx`'s `handleGenerate`; `POST /api/channels/[channelId]/ai-localization/generate`; `src/lib/ai-localization/services.ts`; `src/lib/ai-connections/adapters/openai-compatible.ts` (which already has its own, unrelated `AbortController` usage for its own outbound timeout, per that file's line ~93 -- not reused here).
+- **Current behavior:** closing the generate panel, switching between row- and bulk-scoped generation, or the selection emptying all invalidate the in-flight request's result client-side (`generationRequestIdRef` in `languages-manager.tsx`) -- a stale response is correctly never applied to the review UI. The underlying `fetch` to this app's own `/ai-localization/generate` route is never aborted, and that route's own call into `resolveLocalizationProvider`/the connection adapter has no cancellation signal threaded through it either. **This round's real regression -- where abandoning a session could re-enable "Generate proposals" and let a second real request fire concurrently with the first -- is fixed** (`generating` is now cleared only by the specific request that set it, never by session-switching); what remains open is narrower: a *single*, already-started real request that the operator has abandoned still runs to completion server-side and is still billed/consumes quota, with no UI indication that it happened in the background.
+- **Actual risk:** wasted cost/quota on an abandoned real (non-mock) connection's request -- not a duplicate-billing or data-integrity risk (that class is now closed), and bounded to at most the one request the operator actually clicked "Generate proposals" for.
+- **Existing mitigation:** the mock provider (the default, zero-network path) is entirely unaffected; a real connection's own per-call cost cap and bounded timeout (`docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md`) already bound the worst case of one abandoned request, they just don't cancel it early.
+- **Required remediation (if ever undertaken):** thread an `AbortController`/`AbortSignal` from `languages-manager.tsx`'s fetch through the API route (listening to the incoming `NextRequest`'s own abort) and into whichever `LocalizationProvider`/connection-adapter call is in flight, so an abandoned session's request is actually cancelled server-side, not just ignored client-side.
+- **Gate(s):** none blocking -- cost/quota-hygiene improvement, not a correctness or safety defect.
+- **Approval required from:** project owner, only if real-provider cost from abandoned sessions becomes an actual operational concern (the mock provider, this feature's only wired-up path today, has zero cost regardless).
+- **Status:** OPEN — documented rather than silently left as an unstated limitation; not fixed in this round to avoid a cross-module (UI + API route + provider adapter) change in what should stay a scoped bug-fix cycle.
+
+---
+
+## RISK-44 — `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error — OPEN, 2026-09-21 (independent review, round 5)
+
+- **Affected components:** `src/components/languages-manager.tsx`'s single `error`/`setError` state, shared by every action in the tab (`fetchOverview`, `handleExport`, `handlePreviewImport`, `handleCreateChangeSetFromXlsx`, `handleGenerate`, `handleCreateChangeSetFromAi`).
+- **Current behavior:** exactly one error message is ever shown at a time, at the top of the tab. Any handler that calls `setError(...)` replaces whatever was there before, regardless of whether it is still relevant to what the operator is currently looking at.
+- **Actual risk:** an abandoned `handleGenerate()` request's failure (deliberately surfaced unconditionally, even for a superseded session, per RISK-43/round-3's fix -- a real provider failure must reach the operator) can arrive and overwrite a more recent, unrelated error from a completely different action (e.g. an XLSX import validation failure) the operator still needs to see and act on. This is a pre-existing property of the whole component's error-handling design, not something introduced by any single round's fix -- every handler in this file has always shared the one banner.
+- **Existing mitigation:** none beyond the banner being visually obvious (red, top of tab) and each new action clearing it first (`setError(null)`) before starting, so a *stuck* stale message cannot linger indefinitely; the risk is specifically a race between two genuinely concurrent operations, not a stuck-forever state.
+- **Required remediation (if ever undertaken):** replace the single `error` state with a small toast/notification queue (each message independently dismissible, scoped to the action that produced it) -- a real UI pattern change affecting every handler in this file, not a one-line fix, and worth doing consistently rather than only for the generation path that happened to surface it.
+- **Gate(s):** none blocking -- a UX rough edge under a genuine two-concurrent-actions race, not a correctness or safety defect (the underlying operations -- Change Set creation, XLSX import -- remain independently correct regardless of which error message is currently visible).
+- **Approval required from:** project owner -- adopting a toast/notification pattern is a UI-design decision affecting the whole tab, not a scoped bug fix.
+- **Status:** OPEN — documented per this file's "explicitly defer, never silently drop" standard rather than solved piecemeal for just the generation path.
+
+---
+
+## RISK-45 — `languages-manager.tsx`'s bulk-generation review list: reselecting a deselected video intentionally resurfaces its proposal (decision record) — RESOLVED, 2026-09-21 (independent review, rounds 6-7)
+
+- **Context:** not an open risk -- a decision record, kept here so it isn't silently re-litigated by a future review round or contributor. During the independent-review cycle over the Languages tab E1-E4b redesign (`docs/roadmap/BACKLOG.md` BL-037), round 6 changed deselecting a video in an open bulk AI-generation session to permanently delete its proposal from `targets` (not just hide it), specifically to stop a reselected video from silently showing its old, unreviewed content. Round 7 found this created two real regressions: (1) an accidental double-click (uncheck, immediately recheck) is indistinguishable from a deliberate removal, so it destroyed operator edits -- and, for a real AI connection, already-billed generation work -- with no way to recover it short of regenerating; (2) an unrelated later selection change could prune the very entries the round-5 "results discarded" notice was about, making that notice silently disappear.
+- **Decision:** reverted round 6's pruning the same day. Deselecting a video only hides its proposal from the current view (via `visibleTargets`/`visibleRowErrors`); the underlying `targets`/`rowErrors` state is left untouched, so reselecting the same video in the same session shows its existing proposal again rather than requiring a fresh generate.
+- **Why this is safe despite "resurrecting" old content:** a resurfaced proposal is still just a local, editable Change Set draft -- it goes through exactly the same review -> approve -> conflict-revalidation -> Gate-B-blocked-write pipeline as a freshly-generated one before anything real could happen (`docs/PROJECT_SPEC.md` §16/§30, `src/lib/batches/`). The selection checkbox is a filter over what's currently displayed, not an approval or deletion action; nothing about reselecting a video bypasses or weakens the actual approval gate.
+- **Gate(s):** none -- this is closed, not blocking anything.
+- **Approval required from:** none further -- recorded so a future contributor (human or agent) who notices "deselecting doesn't destroy the proposal" and is tempted to "fix" it again reads this first.
+- **Status:** RESOLVED, 2026-09-21.
+
+---
+
+## RISK-46 — A channel whose Automerge document diverged across two devices has no in-app resolution path — PARTIALLY FIXED, 2026-09-22
+
+- **Context:** `AUTOMERGE_MIGRATION_PLAN.md` §6 CD2/CD5's own documented operational constraint: two Automerge documents must share real history to merge correctly. `src/lib/change-drafts/services.ts`'s `mergeIncoming` detects this case (`genesisChangeHash` comparison) and fails closed with `divergent_document_lineage` instead of silently corrupting local state. This condition arises if two devices ever independently run `migrateFromSql`, or otherwise independently bootstrap, the same channel's draft document before ever syncing with each other once.
+- **Fix (owner: "Займись этими рисками") -- remediation option (b) only, NOT (a):** built the in-app resolution path -- an explicit, human-triggered "discard my local copy, adopt this peer's version instead" action, never automatic, mirroring `src/lib/snapshot/`'s own "divergent lineage blocked explicitly, never auto-resolved by createdAt" pattern. **Option (a) (a first-device-setup procedure that makes independent bootstrap structurally impossible) is NOT built** -- this fix cleans up after the condition occurs, it does not prevent the condition from occurring. Both remain valid, complementary remediations; only (b) was assigned.
+  - `change-drafts/services.ts` gained `discardLocalAndAdoptPeer({channelId, incomingBytes})`: backs up the current local document (if any) via a new, dedicated `discardedBackupStore` (`adapters/discarded-backup-store.ts`, a small immutable timestamped-file store -- deliberately NOT `src/lib/backup/`, since that module's `BackupSnapshot` is shaped around one video's fields with a mandatory `videoId`, a poor fit for a whole-channel document with none), then unconditionally replaces the local document with the incoming bytes (`Automerge.load`, no merge attempt -- this is destructive by design, per `docs/PROJECT_SPEC.md` §16's "no deletion is permanent and immediate" principle applied to this action).
+  - `change-drafts-sync/services.ts` gained `adoptDivergentPeer({channelId, peerDeviceId})`: re-reads the peer's CURRENT file from the sync folder at resolution time (never trusts bytes cached from an earlier cycle, since the file or the whole sync root may no longer be reachable by the time the operator acts), applying the same `checkRootAvailable` guard `runSyncCycle` uses. Mutually exclusive with `runSyncCycle` (each waits for the other's in-flight call before starting, rather than coalescing with it) so a background sync cycle and a manual adopt can never race on the same local files.
+  - New route `POST /api/channels/[channelId]/change-drafts/adopt-peer`; UI: a "Discard my local copy, adopt this device's version" button appears specifically for `peersSkipped` entries with `reason === "divergent_document_lineage"` on the active channel, behind `ConfirmDialog` (`confirmVariant: "danger"`), reporting the backup path afterward.
+  - **Real bug found live** (not in unit tests -- a genuine gap in the design as first built): `saveDocument`'s own SQL projection only ever upserts the CURRENT document's rows; it never removes a row for a change set/change that existed ONLY in the just-discarded document. Without a fix, a discarded change set stayed forever visible via `listChangeSets`/`getChangeSet` yet threw `not_found` the instant anything (approve/reject) tried to act on it, since the real Automerge document no longer had it. Fixed by adding `deleteStoredChangeSet`/`deleteStoredChange` to `db.ts` and `deleteChangeSet`/`deleteChange` to `SqlProjectionAdapter`; `discardLocalAndAdoptPeer` now diffs the discarded document's key set against the adopted one and deletes exactly the rows that disappeared, isolated in its own try/catch (a transient DB error here must never fail the discard itself, same reasoning as `saveDocument`'s existing projection isolation).
+- **Tests:** 2 new adapter tests (`discarded-backup-store.test.ts`: writes exact bytes, never overwrites, sanitizes the channelId), 3 new `change-drafts/services.test.ts` tests (backs up and replaces for a genuinely divergent pair; no backup when there was no local document to lose; the SQL-orphan-row cleanup itself), 5 new `change-drafts-sync/services.test.ts` tests (re-reads current peer bytes, errors clearly when the peer file is gone, checks root availability, rejects rather than coalesces two different concurrent adopts, and the mutual-exclusion ordering with `runSyncCycle`).
+- **Assumption, not re-verified at runtime:** `adoptDivergentPeer`'s mutual exclusion with `runSyncCycle` depends on `change-drafts-sync/index.ts`'s memoized production core being the SAME instance across all three of its route callers -- reasoned through (standard Node.js-runtime module caching, same as the pre-existing `device-handoff/shared.ts` singleton), not confirmed via a dedicated cross-route runtime check. See that file's own updated comment. Would silently stop holding if this app were ever deployed to a topology that isolates each API route into its own module scope (it is not, today).
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` -- option (a) remains open; revisit as `BLOCKS_OPERATIONS_RELEASE` once real multi-device usage is expected, at which point a structural bootstrap-order guard (a) becomes the more valuable of the two remaining pieces.
+- **Approval required from:** project owner, on whether/when to also build option (a).
+- **Status:** PARTIALLY FIXED, 2026-09-22 (resolution path built; prevention not). **Update, 2026-09-26 (independent test-suite audit):** a real FK-ordering bug in the resolution path itself was found and fixed the same day -- the projection-cleanup loop deleted a discarded change set's row BEFORE deleting its own still-existing child change rows. `changes.change_set_id` is a NOT NULL, un-cascaded FK to `change_sets(id)` under this app's real `foreign_keys=ON` connection, so that order threw a live constraint error on `deleteChangeSet`, silently swallowed by `deleteRowSafely` (by design, so one row's failure never blocks the rest), leaving the change-set row permanently orphaned instead of removed -- reproducing, one level up, the exact phantom-row bug this whole cleanup exists to fix. Every existing test used `fakeProjection()`, an in-memory Map with no FK enforcement, so none could have caught this. Fixed by reordering the loops (`change-drafts/services.ts`: delete `changes` before `changeSets`) and adding a regression test against the REAL `createSqlProjectionAdapter()` (`change-drafts/services.test.ts`), verified to fail against the old order before the fix and pass after.
+
+---
+
+## RISK-47 — Approving a Change does not check whether a CRDT field conflict is currently open on it — FIXED, 2026-09-21
+
+- **Context:** `src/lib/change-drafts/`'s CRDT-level `FieldConflict` (two devices concurrently edited the same field, surfaced in the Merge tab, CD6) is a different concept from `changesets`'s own pre-existing `conflictStatus` (baseline vs. currently-synced-remote-value, checked at approval time, `docs/ARCHITECTURE.md` §6.7). Once merged, Automerge deterministically picks one of the conflicting values as the SQL-projected "current" one (`change_sets`/`changes`) -- `change-set-review.tsx` and the approve/reject pipeline see only that single value, with no signal that it was actually contested.
+- **Actual risk (now closed):** An operator could approve a change whose `proposedValue` is Automerge's arbitrary pick, while a real, unresolved CRDT conflict on that exact field is sitting in the Merge tab.
+- **Fix (owner: "Займись этими рисками"):** chose to block approval (the option of the two originally listed that reuses the exact pattern this pipeline already has for its own `conflictStatus`, rather than a larger UI redesign). `changesets/services.ts`'s `ServiceDependencies` gained a `crdtConflicts.listConflictedChangeIds(channelId)` dependency, wired in `changesets/index.ts` via `createChangeDraftsCoreForProduction().listConflicts()`. `approveChange` now throws a new shared `crdt_conflict_open` `DomainError` (409) if the target change has any open field conflict -- surfaced through the existing generic error-banner pattern in `change-set-review.tsx` with no UI changes needed, since the message text is self-explanatory ("...resolve it in the Merge tab before approving"). `approveAllValid` silently excludes such a change from the bulk approval, the same way it already excludes an invalid/conflicting one, rather than failing the whole batch. `rejectChange`/`rejectAllPending` are deliberately NOT gated -- rejecting a contested change discards it either way, so an open CRDT conflict can never make a rejection incorrect (the pre-existing test "rejecting is always allowed, including for invalid/conflicting changes" already encodes this).
+- **Tests:** 4 new (`changesets/services.test.ts`): single approve refused with `crdt_conflict_open` and no partial mutation; approvable once the conflict is no longer reported; bulk approve excludes the conflicted change without failing the batch; two other test files constructing `createChangeSetServices` directly updated with a no-op fake for the new dependency.
+- **Status:** FIXED, 2026-09-21.
+
+---
+
+## RISK-48 — Cloud connection encryption key has no rotation/backup procedure — OPEN, 2026-09-22
+
+- **Affected components:** `src/lib/cloud-connection/crypto.ts` (`CLOUD_CONNECTION_ENCRYPTION_KEY`); `cloud_connection` table.
+- **Current behavior:** Same shape as RISK-15 (`AI_CONNECTIONS_ENCRYPTION_KEY`), a separate single operator-supplied environment variable with no rotation or backup procedure -- if lost, the stored Cloud OAuth grant becomes permanently undecryptable (the operator simply reconnects via Settings; no data beyond the grant itself is affected).
+- **Actual risk:** Operator inconvenience (reconnecting after losing the encryption key), not a security exposure -- losing the key makes the stored grant more protected, not less.
+- **Existing mitigation:** Deliberately a SEPARATE key from `AI_CONNECTIONS_ENCRYPTION_KEY` (`docs/decisions/0008-cloud-connection.md`, `AGENTS.md` §M feature-module independence) rather than reusing it, even though the tradeoff itself (no rotation tooling) is identical to RISK-15's. Chosen over RISK-07's plaintext-storage pattern because this is still a real Google Cloud grant (`monitoring.read`, narrowed 2026-09-22 from the originally-requested full `cloud-platform` once the Cloud Quotas API that justified the broader scope turned out to be unnecessary -- `docs/ARCHITECTURE.md` §16.2) rather than a YouTube-scoped token -- so plaintext was not an acceptable default here the way it was for the `users` table's channel-login tokens.
+- **Required remediation (if ever needed):** A documented key-rotation script (decrypt-then-re-encrypt under a new key), same shape as RISK-15's.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON`.
+- **Approval required from:** project owner, only if rotation tooling is ever requested.
+- **Status:** OPEN — low severity, documented rather than silently absent.
+
+---
+
+## RISK-49 — Channel-connections list/disconnect have no per-caller channel-ownership check — OPEN, 2026-09-23 (independent review, round 2)
+
+- **Affected components:** `GET /api/channel-connections`, `POST /api/channel-connections/disconnect` (`src/app/api/channel-connections/*`), `src/lib/channel-connections/services.ts` (`listConnectedChannels`, `disconnectChannel`).
+- **Current behavior:** Both routes require only *some* valid authenticated session (`getServerSession`) -- neither checks that the channel being listed/disconnected belongs to, or was ever used by, the caller's own currently-active identity. `listConnectedChannels` returns every locally-connected channel's title/email to any authenticated caller; `disconnectChannel` accepts any `channelId` and revokes/clears that connection regardless of which channel the caller is actually signed in as.
+- **This is almost certainly the correct behavior for what the feature is actually for** (`docs/decisions/0010-persistent-channel-connections.md`): the whole point of the Settings "Channels" section is to let the operator see and manage connections *other than* their current one, from a single local-operator app. It is not being proposed as a bug to fix by adding `assertActiveChannel` here, which would defeat the feature.
+- **Actual risk:** This is a real, larger blast radius than the precedent `docs/decisions/0004-active-channel-read-scoping.md` (RISK-02) established for every other channel-scoped surface in this app -- RISK-02's fix (and RISK-39's tracked write-side exception to it) were built specifically so a caller's reach is bounded by their own active channel. Any caller with a valid session -- including one obtained via an unrelated vulnerability elsewhere in this local-operator app (e.g. a hypothetical XSS reading the session cookie) -- can enumerate every connected channel's Google account email and revoke *every* stored channel's Google grant in one sweep, not just the one channel that session happens to be "in." In the accepted single-local-operator threat model (`docs/PROJECT_SPEC.md` §37) this is a narrow, low-likelihood exposure, but it is a real widening of what a compromised session can reach, and per `AGENTS.md` §F a new channel-scoping gap must never be carried forward silently -- this entry is that required, explicit record, mirroring RISK-39's own format for exactly this kind of "known, accepted, on-purpose exception."
+- **Existing mitigation:** Never exposes a token in either route's response (`ConnectedChannel`'s public shape omits it entirely); this is a local-operator, single-machine app with no per-user ownership boundary anywhere else either (RISK-02's own accepted baseline before its fix, and the general model `docs/PROJECT_SPEC.md` §37 describes).
+- **Required remediation:** None proposed -- restricting this to "only the caller's own active channel" would remove the feature's actual purpose. If this app ever moves beyond a single local operator (tracked generally as a `BLOCKS_NETWORK_DEPLOYMENT`-class concern elsewhere, e.g. RISK-02's own original framing), this surface would need its own explicit multi-operator design at that time, not a narrow patch now.
+- **Gate(s):** none blocking -- consistent with the already-accepted single-operator model this whole app is built for.
+- **Approval required from:** project owner, only if the deployment model ever changes from single local operator.
+- **Status:** OPEN — deliberate, accepted scope of the feature as designed; documented per `AGENTS.md` §F rather than left unrecorded.
+
+## RISK-50 — Top-content-by-views ranking is implemented twice (client-side and server-side) — OPEN, 2026-09-23 (advisor review), updated 2026-09-26
+
+- **Affected components:** `src/components/use-top-videos.ts` (client-side; extracted 2026-09-26,
+  Slice C5 of the Analytics deep-parity plan (commit `232543b`), from `channel-overview-panel.tsx`'s
+  own original inline `fetchTopContent` -- computed from `GET .../analytics` + `GET .../videos`
+  responses) and `src/lib/analytics/weekly-report.ts`'s `computeWeeklyReportContent` (server-side,
+  powers the weekly report snapshot's own `topContent` field, Phase 8 follow-up slice 4). Still
+  exactly two independent implementations of the same aggregation, not three -- the extraction
+  moved the client-side one out of a single component into a shared hook, it did not add a new,
+  differently-shaped implementation.
+- **Current behavior:** Both independently group `video_metrics_daily` `views` rows by `videoId`,
+  sum them over a date range, sort descending, and take the top N -- the same core aggregation,
+  written twice in two different languages/layers (a React hook vs. a pure function in
+  `src/lib/analytics/`), not sharing one implementation.
+- **2026-09-26 update -- a second client-side CONSUMER appeared, not a third IMPLEMENTATION:** the
+  Analytics deep-parity plan's Content tab ("Top videos" card, `content-analytics-panel.tsx`) needed
+  the identical ranking and was pointed at the newly-extracted `use-top-videos.ts` hook rather than
+  writing a third copy -- this is the correct outcome under `AGENTS.md` §D, and is why the
+  extraction happened at all. It is a narrower fix than this entry's own original "Required
+  remediation" below asked for (one function in `src/lib/analytics/` shared by *both* the client
+  and server sides) -- the client-side duplication (2 call sites now, not 1) is resolved, but the
+  original client-vs-server duplication this entry is actually about remains exactly as open as
+  before.
+- **Why not fixed now:** the client-side version aggregates client-fetched JSON already shaped for
+  display needs (thumbnails, a caller-supplied top-N cap); the server-side version aggregates raw DB
+  rows for a JSON snapshot. Unifying them would mean either moving the client-side callers'
+  aggregation to the server (a larger refactor of two already-shipped, independently-reviewed
+  features, out of scope per `AGENTS.md` §C) or exporting the pure ranking step in a shape both
+  layers can share without forcing an unrelated API/UI change on either existing caller. Recorded
+  here per `AGENTS.md` §M's "shared logic should have one owner" principle, rather than fixed
+  incidentally as part of an unrelated slice.
+- **Required remediation:** if a third, genuinely independent implementation is ever about to be
+  written (client or server), extract the pure summing/sorting step into one shared function in
+  `src/lib/analytics/` and have both existing implementations (`use-top-videos.ts` itself -- its two
+  consumers only ever call the hook, they never do the summing/sorting themselves -- and
+  `weekly-report.ts`) adopt it, rather than adding another copy.
+- **Gate(s):** none blocking -- a duplicated small pure computation, not a correctness or safety issue.
+- **Approval required from:** none -- routine cleanup, whenever it's next touched.
+- **Status:** OPEN — tracked, not yet consolidated.
+
+## RISK-51 — CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) — OPEN, 2026-09-23 (independent review), owner wants to revisit
+
+- **Affected components:** `src/cli/video-metadata.ts`'s `ai-localization generate` command (BL-078); the sibling MCP tool `ai_localization_generate` (`src/mcp/server.ts`).
+- **Current behavior:** the MCP tool's `inputSchema` is `generateProposalsInputSchema` directly (`src/lib/ai-localization/schemas.ts`), which includes the optional `editorialBrief` object (targetAudience/toneNotes/terminologyNotes/titleConstraints/descriptionConstraints) as a per-call override on top of the channel's persisted Editorial Profile. The CLI command builds its own call from individual flags (`--channelId`, `--videoIds`, `--targetLanguages`, `--providerName`, `--connectionId`) and has no flag for `editorialBrief` at all -- a CLI caller can only rely on the channel's already-saved profile, never override it per-call the way an MCP caller can.
+- **Why not fixed in BL-078:** deliberately scoped out to keep that slice a purely additive, minimal-risk wrapper (owner's own words when assigning it: the two-tool slice described in that backlog row) -- `editorialBrief` is a nested object with no natural flat-flag shape, and every other JSON-shaped CLI input in this codebase (`--proposalsJson`/`--provenanceJson`, added in this same slice) uses a JSON-string-flag convention that could be extended here too (e.g. `--editorialBriefJson`), but doing so wasn't part of the approved scope.
+- **Actual risk:** low -- purely a feature-parity gap, not a safety or correctness issue. A CLI-driven agent that needs a per-call editorial override currently has no way to supply one (it would need to go through the MCP tool instead, or rely on the channel's persisted profile).
+- **Required remediation:** add an `--editorialBriefJson <json>` flag to `ai-localization generate`, parsed the same way `--proposalsJson`/`--provenanceJson` already are (`JSON.parse` in a try/catch → `validation_failed` on malformed input), then pass it through as `editorialBrief` to `generateProposals` unchanged (`generationContextSchema` already validates its shape inside the service call).
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required (routine CLI parity addition), but the project owner explicitly asked to revisit this personally (Telegram, 2026-09-23: "Запиши вопрос про флаг в технический долг и я вернусь к нему позже") rather than have it picked up automatically.
+- **Status:** OPEN — owner will decide when to return to it.
+
+## RISK-52 — `creative_assets`/`content_proposals` do not travel with a device snapshot/handoff — PARTIALLY RESOLVED, 2026-09-24 (market-intelligence portion resolved 2026-09-27)
+
+- **Affected components:** `src/lib/asset-catalog/` (the `creative_assets` table); `src/lib/content-proposals/` (the `content_proposals` table, Phase 7 slice G, and the `content_proposal_artifacts` link table, slice G2, same accepted limitation); `src/lib/snapshot/contracts.ts`'s `SNAPSHOT_TRANSFERRED_TABLES` allowlist (fail-safe by construction -- a new table is excluded by default unless deliberately added).
+- **Resolved, 2026-09-27 (found and fixed during 9H part A planning, advisor review):** all 12 Phase 9 market-intelligence tables (`research_channels`, `research_evidence`, `market_channel_snapshots`, `market_video_snapshots`, `market_intelligence_collection_runs`, `market_discovery_candidates`, `market_discovery_runs`, `market_topics`, `market_topic_assignments`, `market_trend_candidates`, `market_trend_evidence`, `market_research_requests`) are now in `SNAPSHOT_TRANSFERRED_TABLES`, per the owner's own explicit decision (`docs/roadmap/plans/PHASE_9_PLAN.md` §12 point 5, Telegram 2026-09-26, verbatim "Да, я бы объединял"). This decision had been recorded as RESOLVED in that plan document since 2026-09-26 but the actual code change was never made across any Phase 9 slice from 9A onward -- every new table silently inherited the old omit-by-default behavior this list's own fail-safe design was meant to prevent, until this fix. Proven against the real `applySnapshotToDatabase` mechanism (`src/lib/snapshot/services.test.ts`), not merely that the constant contains the right strings. `src/lib/market-intelligence/write-path-inventory.test.ts`'s own `PHASE9-INV-02` needed a narrow, single-file exemption for `snapshot/contracts.ts`'s literal table-name strings (documented there) -- this is cross-cutting infrastructure that must know every domain's raw table names, categorically different from another domain reaching into market-intelligence's business logic.
+- **Still open: `creative_assets`/`content_proposals`.** Current behavior unchanged for these two -- an asset registered via `asset register` (CLI), a Content Proposal created via `agent create-content-proposal`/its MCP tool, or an external-artifact link created via `agent register-external-artifact`/its MCP tool (slice G2), stays in this device's local database only; switching devices starts empty for these two catalogs.
+- **Why not fixed now (for the remaining two):** the same accepted reasoning `video_metrics_daily` already has (`docs/ARCHITECTURE.md` §14.7) -- adding cross-device propagation (either the occasional whole-copy snapshot mechanism, or continuous `sync-gateway` CRDT sync) is its own scoped decision, not something to bundle into the same slice that introduces the table in the first place. Unlike market-intelligence's watchlist/observation data, no equivalent explicit owner decision to transfer these two has been recorded yet.
+- **Actual risk (remaining two):** low today (both catalogs are new and typically small), but grows as they're used across a genuinely multi-device setup.
+- **Required remediation (remaining two):** once real multi-device usage is expected, decide explicitly between (a) adding them to `SNAPSHOT_TRANSFERRED_TABLES` (simple, occasional whole-copy semantics, consistent with `batches`/`audit_events`/now market-intelligence) or (b) migrating to `sync-gateway` (continuous, concurrent-edit-safe, consistent with `change_sets`/`changes`) -- not both.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required for the remaining two; a product-scope decision for whoever picks it up.
+- **Status:** PARTIALLY RESOLVED — market-intelligence closed 2026-09-27; `creative_assets`/`content_proposals` remain OPEN, tracked, not yet decided.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
 |---|---|---|---|
 | RISK-01 | XLSX upload size enforcement is best-effort | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
-| RISK-02 | No per-user channel ownership | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
+| RISK-02 | No per-user channel ownership → every read now scoped to the active channel | none (fixed) | FIXED, 2026-09-20 |
 | RISK-03 | Conflict detection bounded by last sync | BLOCKS_PHASE_5_WRITES, BLOCKS_OPERATIONS_RELEASE | OPEN |
-| RISK-04 | No CLI/MCP Change Set interfaces | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-04 | No CLI/MCP Change Set interfaces | BLOCKS_OPERATIONS_RELEASE | PARTIALLY RESOLVED (full read/propose/create surface on both MCP and CLI shipped 2026-09-20; only a future apply-class tool remains OPEN) |
 | RISK-05 | No real browser/OAuth verification | BLOCKS_OPERATIONS_RELEASE, BLOCKS_PHASE_5_WRITES | OPEN |
 | RISK-06 | Dependency security advisories (0 critical; 20 triaged, 2 prod-path) | BLOCKS_OPERATIONS_RELEASE, BLOCKS_NETWORK_DEPLOYMENT | next/next-auth portion CLOSED; remainder OPEN, triaged |
 | RISK-07 | Plaintext OAuth tokens | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
@@ -352,5 +917,836 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 | RISK-11 | Read-only snippet field echo-back | none (resolved by whitelist design) | RESOLVED (both write paths) |
 | RISK-12 | Legacy `applyMetadata`/CLI/MCP `dryRun` default | none (was BLOCKS_OPERATIONS_RELEASE) | CLOSED |
 | RISK-13 | AC-QUOTA-01 wording clarification | none | RESOLVED |
+| RISK-14 | AI Connections endpoint validation TOCTOU (DNS rebinding) | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
+| RISK-15 | AI Connections encryption key has no rotation/backup procedure | DEFERRED | OPEN |
+| RISK-16 | Restricted recovery mode has no in-app resolution path (needs RISK-04) | DEFERRED, BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-17 | Cross-platform persistence validated on Windows only, not macOS | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-18 | Device-handoff import: unvalidated `snapshotId` path traversal | none (fixed) | FIXED |
+| RISK-19 | `readSchemaVersion` fails open on any read error | none (fixed) | FIXED |
+| RISK-20 | Boot-time schema migration never acquires the operation lock | none (fixed) | FIXED |
+| RISK-21 | Operation-lock misattributes ownership when the lock table is missing | none (fixed) | FIXED |
+| RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | none (fixed) | FIXED |
+| RISK-23 | `createActiveAuthStorage` parameter meaning changed with no type signal | none blocking yet (latent) | OPEN |
+| RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | none (fixed) | FIXED |
+| RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | none (fixed) | FIXED |
+| RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
+| RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none (fixed) | FIXED |
+| RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | none (fixed) | FIXED |
+| RISK-29 | Cross-device snapshot merge is positional, breaks on ALTER-added columns | none (fixed) | FIXED |
+| RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | none (fixed) | FIXED |
+| RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | none (fixed) | FIXED |
+| RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-33 | Minor latent/consistency gaps (FK enforcement — was live, not dormant, root-caused a real import crash; audit-path bypass; bare catch) | none blocking | PARTIALLY FIXED |
+| RISK-34 | "recovery-gate" test suites never actually test recovery mode | none (fixed) | FIXED |
+| RISK-35 | write-executor UNKNOWN-classifies a local bug the same as network ambiguity | BLOCKS_PHASE_5_WRITES | OPEN, needs design decision |
+| RISK-36 | Minor cycle-1 findings (unguarded mkdirSync, latent gaps, perf, duplication) | none blocking | OPEN |
+| RISK-37 | Minor cycle-2 findings (marker-read duplication, CONFLICT-helper consolidation, mapUnknownError divergence, wasted DELETE) | none blocking | OPEN |
+| RISK-38 | Duplicated OperationLockError/RecoveryModeError -> HTTP-status mapping (5 sites) | none blocking | OPEN |
+| RISK-39 | `syncChannel`'s explicit-channelId path has no OAuth-ownership check (write side) | none blocking | OPEN |
+| RISK-40 | `video-details` module + Content-tab UI done; no CLI/MCP parity, `paidProductPlacementDetails` unimplemented (API ambiguous) | none blocking | OPEN |
+| RISK-41 | `src/lib/backup/` needs an eventual retention/purge policy once a real deletion feature (E5) uses it -- pre-emptively recorded, no code yet | none blocking | OPEN |
+| RISK-42 | No unit/component test coverage for any `src/components/**` React component (project-wide convention, not one file) | none blocking today | OPEN |
+| RISK-43 | Abandoning an AI-generation session doesn't cancel the underlying (possibly real, billed) provider request | none blocking | OPEN |
+| RISK-44 | `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error | none blocking | OPEN |
+| RISK-45 | Reselecting a deselected video in bulk AI-generation intentionally resurfaces its proposal (decision record, not a risk) | none | RESOLVED, 2026-09-21 |
+| RISK-46 | Divergent-lineage resolution path built (option b); structural prevention (option a) still open | DEFERRED_WITH_DOCUMENTED_REASON now; BLOCKS_OPERATIONS_RELEASE once multi-device use is real | PARTIALLY FIXED, 2026-09-22 |
+| RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | none (fixed) | FIXED, 2026-09-21 |
+| RISK-48 | Cloud connection encryption key has no rotation/backup procedure | DEFERRED | OPEN |
+| RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
+| RISK-50 | Top-content-by-views ranking duplicated (shared client-side hook, 2 consumers, vs. server-side weekly report) | none blocking | OPEN |
+| RISK-51 | CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) | none blocking | OPEN, owner will revisit |
+| RISK-52 | `creative_assets`/`content_proposals`/`content_proposal_artifacts` do not travel with a device snapshot/handoff (all 12 Phase 9 market-intelligence tables fixed 2026-09-27) | none blocking | PARTIALLY RESOLVED |
+| RISK-53 | `agent-operations/schemas.ts` hardcoded its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES`/domain enums instead of importing them from `contracts.ts` -- caused a real capability-discovery bug when slice G added a new data domain | none (fixed) | RESOLVED, 2026-09-24 |
+| RISK-54 | `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version -- owner spec §22's full traceability requirement is only partially met | none blocking | RESOLVED, 2026-09-24 |
+| RISK-55 | Evidence/rationale (Phase 7 slice F) are recorded once per Change Set, not per individual proposal, and confidence/warnings/expected-objective/source-context-revision (owner spec §12/§13) aren't recorded at all | none blocking | OPEN |
+| RISK-56 | `createChangeSetFromGeneration` (Phase 7 slice F) persists the Change Set, then separately writes its now-unconditional provenance row -- not one atomic operation | none blocking | OPEN |
+| RISK-57 | Owner spec §22's "operation type" is now structurally implied by which table a record lives on (slice G added a second); "originating task"/owner spec §21's task-envelope model remain unstarted | none blocking | OPEN |
+| RISK-58 | `registerExternalArtifact`'s `referenceKind: "url"` accepted any non-empty string, not just an actual URL (label-only enforcement); `external_artifact_id` remains intentionally opaque | none blocking | `url` half RESOLVED, 2026-09-24; `external_artifact_id` half OPEN by design |
+| RISK-59 | MCP `tools/list` rendering of a ZodEffects (`.refine()`-based) `inputSchema` had not been verified end-to-end | none blocking | RESOLVED, 2026-09-25 |
+| RISK-60 | `write_channel_select`/`auth_user_select` mutate global, not per-connection, active-channel state -- a race once multiple agent connections (BL-091) operate concurrently | none blocking yet | OPEN |
+| RISK-61 | `market-intelligence`'s `getWatchlistEntry`/`listEvidence` throw `RESEARCH_CHANNEL_NOT_AVAILABLE` with different `details` key names (`channelId` vs `researchChannelId`) for the same condition -- the two still-used Web API routes forward this verbatim | none blocking, cosmetic | OPEN |
+| RISK-62 | `market-intelligence/services.ts` hand-duplicates its "look up researchChannelId, throw RESEARCH_CHANNEL_NOT_AVAILABLE if missing" guard across ~15 call sites, and 3 write functions each re-fetch a whole channel's snapshot history just to `.find()` the row just inserted, instead of a shared guard helper / `.insert(...).returning()` | none blocking, efficiency/duplication only | OPEN |
+| RISK-63 | The project owner's real local app-data database was advanced to schema v26 (Phase 9 slices 9A-9E; further than the v24 first found, per a same-day re-verification), while `dev`/`main` remain at v22 -- a `dev`/`main` build on this machine will now refuse to start against that real database until Phase 9 Part II is merged. All Phase 9 tables confirmed empty (schema drift only, no real data written) | BLOCKS local `dev`/`main` runtime on this machine until merge | OPEN, owner informed |
+| RISK-64 | `runCollectionIfStale` reconstructs a fresh OAuth2/YouTube client (and re-checks the "reads enabled" toggle) independently on each of its 3 `youtubeApi` calls per channel, instead of once per channel/run | none blocking, efficiency only | OPEN |
+| RISK-65 | Slice 9A's manual `captureChannelSnapshot` never marks `last_auto_collected_at`, so slice 9B's automatic trigger can immediately re-fetch (spending real units) a channel just manually refreshed | none blocking, wasted-quota only | OPEN |
+| RISK-66 | `deleteResearchChannel` cascade-deletes `market_intelligence_collection_runs` (required by its own `NOT NULL` FK) -- removing then re-adding a channel the same UTC day silently drops that channel's already-recorded spend from the shared daily ledger sum | none blocking, narrow/bounded (≤3 units per incident, requires a specific same-day remove-then-reuse) | OPEN |
+| RISK-67 | `runCollectionIfStale`'s per-channel snapshot inserts, its own collection-run audit row, and `markResearchChannelAutoCollected` are 3+ separate non-transactional writes -- a throw partway through can leave orphaned snapshot rows and forces a real quota re-spend on retry, not a free one | none blocking, no data-integrity risk (append-only tables tolerate an orphan row; worst case is wasted quota) | OPEN |
+| RISK-68 | `discoverChannels` has no atomic claim/lock guarding its own budget check (unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`) -- two concurrent Discover clicks can each pass the same check and together overspend (since Phase 13 slice 13.4: the 100-calls-a-day `search.list` bucket by one call; the collection budget is no longer involved) | none blocking, narrow (requires two near-simultaneous manual UI actions, not an automatic/background path) | OPEN |
+| RISK-69 | `promoteDiscoveryCandidate`'s not-yet-promoted check and its `research_channels` insert are not wrapped in a transaction -- a double-click/double-tab race surfaces a raw constraint error as a generic 500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED` | none blocking, cosmetic (no incorrect end state; the first request's promotion still succeeds) | OPEN |
+| RISK-70 | `createTrendCandidate`/`updateTrendCandidateStatus`'s writes were not wrapped in a transaction -- fixed via `insertTrendCandidateWithInitialEvidence`/`updateTrendCandidateStatusWithEvidence` (real `database.transaction()`, rollback proven against real libsql) | none, fixed | RESOLVED |
+| RISK-71 | `createTopic`'s normalized-duplicate check has a TOCTOU race under real concurrency -- two near-simultaneous requests for near-identical names (e.g. "Jazz"/"jazz") can both pass the check and both insert | none blocking, narrow (requires two genuinely concurrent requests for near-identical names) | OPEN |
+| RISK-72 | `discoverChannels` can mislabel a partially-successful run as `"failed"` if its own success-path audit-row insert throws after real candidates were already persisted | none blocking, audit-trail accuracy only (no data loss) | OPEN |
+| RISK-73 | The topics/trend-candidates UI panels refetch the whole list after every mutation instead of reusing the response already returned | none blocking, efficiency only | OPEN |
+| RISK-74 | `getProductionAppPaths()`'s test-runner singleton path was keyed only by PID with no cleanup -- a reused PID could silently inherit a previous process's leftover test database (36,947 stale dirs confirmed accumulated); real mechanism, confirmed and fixed, though never proven to be the specific cause of the one failure that prompted the investigation (inferred, not demonstrated) | none blocking, fixed | RESOLVED |
+| RISK-75 | A `market_research_requests` row can be left stuck in `"approved"` forever if the process is interrupted between the atomic approve transition and the later execution-outcome write -- no code path can re-approve or reject a non-`pending` row | none yet, revisit before any Gate B sign-off relying on this pipeline running unsupervised | OPEN |
+| RISK-76 | The research-request reject modal hand-rolls `ConfirmDialog`'s shell instead of extending the shared component | none, UI polish only | OPEN |
+| RISK-77 | `market-trends-panel.tsx`/`market-topics-panel.tsx` each implement an identical stale-fetch-response guard independently instead of a shared hook | none, DRY/maintainability only | OPEN |
+| RISK-78 | `listMarketChannelSnapshotsByChannel`/`listMarketVideoSnapshotsByChannel` have no pagination/limit -- an append-only series returned in full, about to get its first UI (non-agent) caller in 9H | none yet, revisit if payload size becomes a practical problem | OPEN |
+| RISK-79 | 9H part A code review: no tiebreaker for same-second "latest snapshot", no structural guard against a future RISK-52 repeat, O(n^2) leave-one-out recompute | none, narrow/hardening/efficiency only | OPEN |
+| RISK-80 | `detectDisappearedVideoIds` (9I) still has no caller anywhere in this codebase after 9H part C, its named natural home (`docs/ARCHITECTURE.md` §18) -- its own doc comment warns a naive two-snapshot diff would false-positive against 9B's ≤50-item first-page cap | none blocking, explicitly deferred | OPEN |
+| RISK-81 | `assignTopic` checks watchlist membership for a `"channel"` subject but has no existence check at all for a `"video"` subject -- any syntactically-valid videoId is accepted, intentional per the function's own doc comment (`market_video_snapshots` has no canonical single row per video to check against), flagged by independent review for the owner's own re-confirmation, not as an accidental gap | none blocking, by design -- revisit only if the owner wants this tightened | OPEN |
+| RISK-82 | `executeExperiment`'s claim-first design (Phase 10 slice 5) has a narrow crash window: if the process dies between the real Batch being created and `finalizeExperimentExecution` committing, the claim self-heals via its 15-minute expiry and a later Execute can proceed again, but the FIRST (crashed-mid-flight) Batch is never linked to any experiment -- an orphaned-but-harmless (still Gate-B-respecting) Batch, visible only from the Batches tab, not from the experiment itself | none blocking, narrow (requires a crash in a specific sub-second window) and low-severity (no data/write-safety consequence, just an unlinked, still-dry-run-or-gated Batch record) | OPEN |
+| RISK-83 | `generateHypothesisDraft` (Phase 10 slice 4) calls both `resolver.resolve()` and `resolver.describe()` per evidence reference (each independently re-fetching the same underlying Phase 8/9 row) instead of one fetch feeding both, and runs the per-reference loop sequentially rather than concurrently | none blocking, efficiency only -- doubles read-gateway/DB load per reference and adds latency proportional to reference count, no correctness impact | OPEN |
+| RISK-84 | The "group approved changes by videoId, one ledger row per video" logic (Phase 10 slice 5) is duplicated between `experiment-execution-resolver.ts` (server-side) and `batch-manager.tsx` (client-side) instead of one shared pure grouping helper | none blocking, DRY/maintainability only -- a future change to the grouping rule applied to one copy and not the other could let the manual Batches UI preview diverge from what an experiment actually executes | OPEN |
+| RISK-85 | The "insert then re-fetch to build the return value, throw if missing" pattern is copy-pasted 5x in `decision-engine/services.ts` (`createHypothesis`, `createExperiment`, `createExperimentOutcome`, `addHypothesisEvidence`, `saveGeneratedHypothesis`), each with its own inline not-found `DomainError` instead of a shared `fetchOrThrow`-style helper | none blocking, cosmetic/DRY only | OPEN |
+
+## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
+
+- **Affected components:** `src/lib/agent-operations/schemas.ts`'s `permissionClassSchema`, the `domain` enum inside `agentCapabilityDescriptorSchema`, and the `dataDomains`/`plannedFutureCapabilities` fields inside `systemCapabilitiesOutputSchema`.
+- **Prior behavior:** all four hardcoded their own copies of literals already defined as real, importable `as const` arrays in `contracts.ts` (`PERMISSION_CLASSES`, `PLANNED_FUTURE_CAPABILITIES`) or as plain TS unions with no exported array at all (`AgentCapabilityDomain`, `AgentDataDomain`).
+- **What actually forced the fix:** while implementing Phase 7 slice G, adding `content_proposal_metadata` to `AgentDataDomain` broke every real (non-fixture) call to `getSystemCapabilities` -- the hardcoded `dataDomains` enum in `schemas.ts` had already drifted out of sync with the type, rejecting the new value at the output-schema-validation step. This is exactly the "could silently drift" risk this entry originally flagged, now realized as a genuine functional bug, not merely a latent one.
+- **Fix:** `AgentCapabilityDomain` and `AgentDataDomain` converted to const-array-derived types in `contracts.ts` (`AGENT_CAPABILITY_DOMAINS`, `AGENT_DATA_DOMAINS`), matching the existing `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` pattern. `schemas.ts` now derives all four `z.enum(...)` calls from these arrays instead of hardcoding a second copy. `services.ts`'s own separate, previously-duplicated local `AGENT_DATA_DOMAINS` runtime list was also removed in favor of importing the one from `contracts.ts`.
+- **Verification:** `npm test` (all agent-operations/MCP/CLI tests, including new Phase 7 slice G coverage), `tsc`/`lint`/`build` clean.
+- **Status:** RESOLVED — 2026-09-24.
+
+## RISK-54 — `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version — RESOLVED, 2026-09-24
+
+- **Affected components:** `src/lib/ai-localization/services.ts`'s `createChangeSetFromGeneration`/`getGenerationProvenance`; `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`); the new `agent_get_generation_provenance` MCP tool/`agent get-generation-provenance` CLI command (`docs/AGENT_OPERATIONS_INTERFACE.md` §4d).
+- **Prior behavior:** the recorded `profileVersion`/`effectiveContext` on a Change Set's provenance were supplied BY THE CALLER creating the Change Set (an agent echoes back its own prior `generateProposals` response) -- nothing server-side recorded WHO/WHAT created it (MCP vs. CLI vs. Web UI's own "Generate with AI"), nor which product/Agent API version was running at the time.
+- **Fix (Phase 7 slice F, docs/AGENT_OPERATIONS_INTERFACE.md §4e):** `DraftProvenance`/`ai_localization_generation_provenance` (SCHEMA_MIGRATIONS v16) gained an additive `createdVia: "mcp" | "cli" | "web_ui" | null` column, SERVER-STAMPED by `createChangeSetFromGeneration`'s new, REQUIRED `callOrigin` parameter at each of its three call sites (`src/mcp/server.ts`'s `aiLocalizationCreateChangeSet` stamps `"mcp"` + `AGENT_API_VERSION`; `src/cli/video-metadata.ts`'s `ai-localization create-change-set` stamps `"cli"`; the Web route stamps `"web_ui"`) -- never taken from the validated request body, so it is an attestation, not a claim. No default value for this parameter, so `tsc` enforces every call site states its own identity. **A provenance row is now always created** (previously only when the caller echoed `provenance`) -- an `advisor` review during this same slice caught that the initial implementation still left a Change Set created with none of `provenance`/`evidence`/`rationale` with no row at all, which would have reproduced this exact risk's own described gap for that case.
+- **Verification:** `src/lib/ai-localization/profiles.test.ts` (a caller-stamped `web_ui` identity round-trips; an mcp-origin `callOrigin` stamps its own identity; an MCP-origin Change Set with nothing else to echo still gets its identity recorded), `src/mcp/server.test.ts`/`src/cli/video-metadata.test.ts` (each transport's own call site stamps its own identity). `callOrigin` itself has no default -- every one of these tests passes it explicitly.
+- **Status:** RESOLVED — 2026-09-24.
+
+## RISK-55 — Owner spec §12/§13's per-proposal evidence model is only partially implemented (Phase 7 slice F) — OPEN, 2026-09-24
+
+- **Affected components:** `src/lib/ai-localization/contracts.ts`'s `StoredGenerationProvenance`/`EvidenceReference`/`GeneratedFieldOutcome`/`ReviewedProposal`; `createChangeSetFromGenerationInputSchema`'s `evidence`/`rationale` fields (`src/lib/ai-localization/schemas.ts`).
+- **Current behavior — two distinct gaps:**
+  1. **Granularity:** owner spec §12/§13 describes evidence/rationale as belonging to an individual generated proposal (one video+language+field). This implementation records them once per Change Set (which can carry many proposals across many videos/languages) -- a deliberate, coarser granularity chosen during slice F's design to reuse the existing per-Change-Set `DraftProvenance` row rather than introduce a new per-Change table.
+  2. **Missing fields:** owner spec §12/§13 also describe `confidence` (explicitly never to be treated as a factual probability), `warnings`, an `expected objective`, and a `source-context revision/ID` as part of a proposal's own record. None of these exist anywhere in `ReviewedProposal`/`GenerationResult`/`GeneratedFieldOutcome` today -- slice F's research fork deliberately deferred them rather than widen the proposal shape in the same pass as provenance/evidence.
+- **Why not fixed now:** a genuinely per-proposal evidence model would need its own new table/CRDT shape (evidence rows keyed by Change, not by Change Set); the four missing fields would need their own schema widening of `ReviewedProposal`/`GenerationResult` (a different shape than `DraftProvenance`). Both are materially larger changes than slice F's own scope of "add evidence/rationale/identity to the existing provenance record."
+- **Actual risk:** low -- evidence/rationale/confidence/warnings would all remain agent-supplied, non-authoritative context even once added (never independently verified by this server); today's gap only means a reader cannot see per-proposal confidence/warnings/objective, and cannot tell which specific proposal within a multi-proposal Change Set a given evidence item was meant to support.
+- **Required remediation:** if per-proposal evidence granularity is later required, introduce a new table (e.g. `change_evidence`, keyed by `change_id`) rather than retrofitting the existing per-Change-Set `ai_localization_generation_provenance` row. Separately, if confidence/warnings/expected-objective/source-context-revision are required, widen `ReviewedProposal`/`GenerationResult` with their own new, optional fields.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required to file; a future fix is its own separately-assigned task.
+- **Status:** OPEN — tracked, not yet fixed.
+
+## RISK-56 — `createChangeSetFromGeneration`'s Change Set persistence and provenance write are not one atomic operation (Phase 7 slices F/G2) — OPEN, 2026-09-24
+
+- **Affected components:** `src/lib/ai-localization/services.ts`'s `createChangeSetFromGeneration` -- calls `deps.changeSetServices.createChangeSetFromProposals` (persists the Change Set and its Changes) and then, as a separate, later step, `deps.provenanceStore.create` (persists the provenance row). `src/lib/content-proposals/services.ts`'s `registerExternalArtifact` (Phase 7 slice G2) has the identical shape -- `deps.registerAsset` (persists the asset row) then, as a separate, later step, `deps.insertArtifactLink` (persists the link row).
+- **Current behavior:** if the provenance write throws after the Change Set has already been persisted, the caller receives an error for a Change Set that nonetheless exists in the database. A naive retry by the caller (in particular an autonomous agent over MCP) would then create a second, duplicate Change Set from the same proposals, since nothing rolled back the first one. This risk already existed before Phase 7 slice F, on the narrower path where a caller chose to echo `provenance` -- slice F widens its surface area, since a provenance write now happens on every call, not only when a caller opted in. The same failure mode applies to `registerExternalArtifact`: if the link insert throws after the asset row was already created, a retry creates a second, orphaned-or-duplicate asset row.
+- **Why not fixed now:** wrapping both writes in one transaction would mean either changing `changeSetServices.createChangeSetFromProposals`'s own transaction boundary (a pre-existing, independently-tested function outside this slice's scope) or building a new compensating-rollback path -- both larger than this slice's own scope of "add evidence/rationale/identity to provenance."
+- **Actual risk:** low in practice -- a provenance write failing here (both operations write to the same local SQLite database via already-tested, narrow write paths) would be unusual; the exposure is proportional to how often MCP/CLI callers actually retry on error without checking whether the Change Set already exists.
+- **Required remediation:** either wrap both writes in a single transaction, or have the caller check for an already-existing Change Set (e.g. by a caller-supplied idempotency key) before retrying.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required to file; a future fix is its own separately-assigned task.
+- **Status:** OPEN — tracked, not yet fixed.
+
+## RISK-57 — Owner spec §22's "operation type"/"originating task" traceability elements — PARTIALLY ADDRESSED, tracked, 2026-09-24
+
+- **Affected components:** `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`), `StoredGenerationProvenance` (`src/lib/ai-localization/contracts.ts`), `ContentProposal`/`ProposalArtifactLink` (`src/lib/content-proposals/contracts.ts`), `docs/AGENT_OPERATIONS_INTERFACE.md` §4d/§4f.
+- **Current behavior:** owner spec §22 asks for several traceability elements on every agent-created object, including "operation type" and "originating task." Slice F (RISK-54) added `createdVia`/`agentApiVersion` to `ai_localization_generation_provenance`; slice G added the identical pair to `content_proposals`, a second, distinct record type; slice G2 added it to `content_proposal_artifacts`, a third. No literal `operationType` field exists on any of the three tables.
+- **Why this is only PARTIAL, not a gap needing an immediate fix:** with three now-distinct tables (`ai_localization_generation_provenance` for Change Set creation, `content_proposals` for proposal creation, `content_proposal_artifacts` for external-artifact registration), WHICH table a `createdVia`/`agentApiVersion` pair lives on already distinguishes the operation that produced it -- a reader does not need a separate `operationType` field to know a `content_proposal_artifacts` row came from `register_external_artifact`, not from `create_content_proposal` or `createChangeSetFromGeneration`. A literal field would be redundant with the schema itself for as long as each operation kind keeps its own table. "Originating task" is a different, still entirely open gap: no capability in this interface records a `taskId`, and owner spec §21's own "Agent task model" (a structured task envelope with `taskId`/scope/permissions/status) has not been scheduled in any slice so far.
+- **Actual risk:** low today for "operation type" (structurally implied); low-but-growing for "originating task" once multiple agent actions need to be correlated back to one higher-level unit of work (e.g. an agent that generates a proposal, then registers an artifact against it, then requests a Change Set -- three separate calls with no shared identifier linking them).
+- **Required remediation:** if a future operation kind ever shares a table with an existing one (rather than getting its own), add an explicit `operationType` field at that point. Separately, and independently, owner spec §21's task-envelope model remains unimplemented -- revisit if/when the interface needs to correlate multiple agent-initiated operations back to one task.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required to file; a future fix (either half) is its own separately-assigned task.
+- **Status:** OPEN (operation-type structurally addressed; originating-task/§21 task model not started) — tracked.
+
+## RISK-58 — `external_artifact_id` is intentionally opaque and unvalidated; `referenceValue` under `referenceKind: "url"` was label-only until fixed (Phase 7 slice G2) — RESOLVED for the `url` half, OPEN for the `external_artifact_id` half, 2026-09-24
+
+- **Affected components:** `src/lib/content-proposals/schemas.ts`'s `registerExternalArtifactInputSchema`.
+- **Current behavior (before the fix):** the schema restricted `referenceKind` to `"url"`/`"external_artifact_id"` (owner spec §17), but did not check that a `"url"`-labeled `referenceValue` was actually a URL -- any non-empty string was accepted, including an absolute filesystem path or a `file://` URI. Found by an independent review round: `{ referenceKind: "url", referenceValue: "/Users/x/secret" }` and `{ referenceKind: "url", referenceValue: "file:///etc/passwd" }` both validated successfully. This meant the restriction's own stated rationale (an agent must not be able to self-authorize filesystem access by registering `local_path`) was enforced only against the caller-supplied LABEL, not the actual value -- an agent could achieve the same practical outcome by mislabeling a filesystem path as `"url"`.
+- **Why this was not a live exploit at the time it was found:** every consumer of `referenceValue`/`CreativeAsset.referenceValue` in this codebase (MCP tool descriptions, CLI, `db.ts`, `asset-catalog/services.ts`, `content-proposals/services.ts`, `agent-operations/services.ts`) treats it as opaque metadata only -- nothing anywhere fetches, opens, or path-resolves it. The gap was latent: it would only become a real vulnerability the moment a future feature (an artifact preview fetcher, a "resolve URL" capability, anything trusting `referenceKind === "url"` to mean "safe to treat as a network URL") were added without re-deriving this constraint from scratch.
+- **Fix applied (first pass):** `registerExternalArtifactInputSchema` gained a `.superRefine` that, when `referenceKind === "url"`, required `new URL(referenceValue)` to parse successfully with protocol `http:`/`https:` -- otherwise `validation_failed`.
+- **Fix tightened (second pass, same slice, next independent review round):** the first pass validated Node's own lenient, WHATWG-normalized parse of the value while the RAW string is what actually gets persisted. A schemeless-authority string such as `"https:/etc/passwd"` or `"https:C:\Users\x\secret"` parses, under Node's `URL` parser, to a synthesized host (`"etc"`/`"c"`) and so passed -- even though it has no real authority component and a different parser (verified against Python's `urllib.parse`) disagrees with Node about what it means. This never reopened actual filesystem access (no accepted value's Node-parsed form ever resolves to a `file:`/non-http(s) scheme), but it did not match the fix's own claim that the `"url"` label is made to "actually mean an http(s) URL." Tightened to also require the raw string itself to match `scheme://authority...` shape (`/^https?:\/\/[^/]/i`) and to contain no control characters, raw whitespace, or backslashes, before the `new URL(...)`/protocol check -- verified against 23 accept/reject cases (both prior review rounds' probes) with zero regressions.
+- **Remaining, deliberately NOT fixed:** `referenceKind: "external_artifact_id"` remains intentionally opaque -- an arbitrary external-system identifier with no structural validation beyond "non-empty string," since this application never resolves it and has no fixed format to validate against (unlike a URL, which has a well-defined shape). Any future capability that DOES resolve an `external_artifact_id` against a specific external system must add its own validation at that point; do not assume today's schema guarantees anything about its content. Also out of this risk's stated scope (not defects in the fix, inherent to any "http(s)-only" rule): SSRF-style loopback/private/decimal-encoded-IP URLs (`http://127.0.0.1/...`, `http://2130706433/...`) and embedded credentials (`https://user:pass@host/...`) are still accepted -- neither is what RISK-58 set out to prevent.
+- **Actual risk today:** none reachable (no consumer resolves either field). This entry exists so a future consumer does not assume more structural guarantee than the schema actually provides for `external_artifact_id`, and so the `url` fix's own reasoning is on record.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required; the `url` fix is a same-slice correction, not a new capability.
+- **Status:** `url` half RESOLVED, 2026-09-24 (Phase 7 slice G2's own follow-up, this same branch). `external_artifact_id` half intentionally left OPEN/opaque by design -- revisit only if a future capability starts resolving it.
+
+## RISK-59 — MCP `tools/list`'s rendering of a ZodEffects (`.refine()`-based) `inputSchema` has not been verified end-to-end (Phase 7 slices G2/K/L) — RESOLVED, 2026-09-25 (slice J)
+
+- **Affected components:** `src/mcp/server.ts`'s `agent_register_external_artifact` (`registerExternalArtifactInputSchema`, a ZodEffects via `.superRefine`, registered as-is -- not a relaxed base-object variant, unlike `agent_find_comparable_videos`/`agent_list_asset_performance`).
+- **What was confirmed working before this investigation:** the runtime call path -- `McpServer.validateToolInput` calls `safeParseAsync` directly against a ZodEffects instance without error, and `agent_register_external_artifact`'s own MCP tests exercise real schema rejection (e.g. `referenceKind: "local_path"`) successfully.
+- **What this investigation confirmed (slice J, empirical, not just reading SDK source):** built a real `createMcpServer({ connectionEnabled: true })` instance in this environment and called the SDK's OWN `tools/list`-rendering code path directly (`normalizeObjectSchema(tool.inputSchema)` + `toJsonSchemaCompat(...)`, the exact functions `@modelcontextprotocol/sdk`'s own `ListToolsRequestSchema` handler calls) against `agent_register_external_artifact`'s real, registered, full `.superRefine`-based schema. The result is a complete, correct, non-degenerate JSON Schema: every property (`channelId`, `assetType` with its full 11-value enum, `referenceValue`, `title`, `description`, `linkedVideoId`, `provenance`, `proposalId`, `referenceKind` with its restricted 2-value enum) and the correct `required` array render exactly as expected. The cross-field `.superRefine` constraint (the "url must actually be an http(s) URL when referenceKind is url" rule) is, as expected, not represented in the JSON Schema output -- JSON Schema has no native way to express a cross-field conditional like this -- but this was never in question; the concern was whether the schema rendering was degenerate/empty, and it is not. Also spot-checked `agent_find_comparable_videos`'s already-relaxed `findComparableVideosSdkInputSchema` the same way -- also renders a complete, correct JSON Schema (enums, bounds, `credentialRef`'s union type all present).
+- **Conclusion:** no fix needed. `agent_register_external_artifact` may keep registering its own full, refined schema as-is -- there is no `tools/list` rendering defect to match K/L's relaxed-schema pattern for. The relaxed-schema pattern K/L use exists for a DIFFERENT reason entirely (letting the SDK's own pre-handler `validateToolInput` call accept a value the handler will resolve server-side, e.g. `credentialRef`), not because a ZodEffects renders badly in `tools/list` -- these are two independent concerns that happened to involve the same schema shape, and conflating them was the source of this risk entry's own uncertainty.
+- **Actual risk today:** none. A real MCP client (Codex) sees a complete, accurate parameter description for every tool in this interface, including `agent_register_external_artifact`.
+- **Gate(s):** none. Resolved before slice J's own review cycle began, per this risk entry's own stated intent.
+- **Approval required from:** none.
+- **Status:** RESOLVED, 2026-09-25.
+
+## RISK-60 — `write_channel_select`/`auth_user_select` mutate global, not per-connection, state — a race once multiple agent connections operate concurrently (BL-091) — OPEN, 2026-09-25
+
+- **Affected components:** `src/mcp/server.ts`'s `write_channel_select`/`auth_user_select` MCP tools; `getActiveChannelId(userId)` (defined in `src/lib/channel-access/services.ts`, called from `src/lib/channel-sync/services.ts` via `deps.channelAccess`); `src/lib/write-context/`.
+- **Found during:** BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) slice 2 design, while working out which mutating MCP tools needed agent-zone enforcement.
+- **Current behavior:** the "active channel"/active-identity state these two tools switch is keyed by OAuth user, not by which MCP client (Codex, Claude, or any future connection) is calling. In this app's actual deployment model (single local operator, one real Google identity, `AGENTS.md` §F's accepted "no per-user ownership boundary" tradeoff), two simultaneously-connected agent processes therefore share one mutable "active channel."
+- **Actual risk:** if Codex is mid-task on channel A and a concurrently-connected Claude connection calls `write_channel_select` to switch to channel B, Codex's next call can silently resolve against the wrong channel — a real correctness hazard once BL-091 makes multiple simultaneous agent connections an intended, supported scenario (today, with a single de facto agent, this is latent and unobserved).
+- **Why not fixed as part of BL-091 slice 2:** the plan's design pass proposed making these two tools operator-only (excluded from every agent connection's callable surface), but the project owner's actual confirmation (Telegram, 2026-09-25: "1. Согласен", "2. Оставим локально") only addressed the two explicitly numbered scope questions in `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §9 — not this specific proposal. Changing `write_channel_select`/`auth_user_select`'s availability without that explicit confirmation would have been an unauthorized scope expansion (`AGENTS.md` §C).
+- **Required remediation (not yet scheduled):** either (a) make active-channel/active-identity state per-connection rather than a single global row, or (b) restrict `write_channel_select`/`auth_user_select` to an operator-only surface (never callable by a zoned agent connection). Needs an explicit owner decision — this entry exists so that decision is not lost, not to imply either option is already chosen.
+- **Gate(s):** none yet assigned; relevant once genuinely concurrent multi-agent operation is in real use.
+- **Approval required from:** project owner, before either remediation option is implemented.
+- **Status:** OPEN, tracked.
+
+## RISK-61 — `market-intelligence`'s `getWatchlistEntry`/`listEvidence` disagree on their `RESEARCH_CHANNEL_NOT_AVAILABLE` `details` key — OPEN, 2026-09-26
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `getWatchlistEntry` (`details: { channelId }`) and `listEvidence` (`details: { researchChannelId }`); `src/app/api/market-intelligence/channels/[channelId]/route.ts` and `.../[channelId]/evidence/route.ts`, both of which forward `error.details` verbatim into their JSON response.
+- **Found during:** independent review (round 3) of Phase 9 slice 4 (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- that slice's own `getWatchlistEntryContext` was written specifically to close this exact inconsistency for the new MCP/CLI surface (a single existence check, one `details` shape), which highlighted that the two original functions it replaced calling separately (still used directly by the Web API routes above) still disagree with each other.
+- **Actual risk:** cosmetic only -- a Web UI/API consumer hitting the channel route vs. the evidence route for the same unwatched channel sees two different `details` key names for the identical logical error. No safety, data-integrity, or security consequence; `error.code` (`RESEARCH_CHANNEL_NOT_AVAILABLE`) is stable either way.
+- **Why not fixed as part of slice 4:** `getWatchlistEntry`/`listEvidence` are already-shipped, already-merged Phase 9 slice-1 functions powering the Web UI's own Research tab and its API routes -- changing their `details` shape is a behavior change to already-reviewed, unrelated code, out of slice 4's own stated scope (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md` §5/§6).
+- **Required remediation (not yet scheduled):** pick one `details` key (`channelId`, matching `getWatchlistEntryContext`'s own choice) and use it in both functions -- a small, independent follow-up, not gated on anything else.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- a single-file, backward-compatible-in-substance fix.
+- **Status:** OPEN, tracked.
+
+## RISK-62 — `market-intelligence/services.ts` duplicates its watchlist-existence guard and re-fetches full history on every write — OPEN, 2026-09-26
+
+- **Affected components:** `src/lib/market-intelligence/services.ts` -- the "call `getResearchChannelById`, throw `RESEARCH_CHANNEL_NOT_AVAILABLE` if missing" guard, hand-repeated at every function that takes a `researchChannelId` (roughly 15 call sites after Phase 9 slice 9A's own 5 additions); separately, `recordEvidence`, `fetchPublicSnapshot`, `recordChannelSnapshot`, `recordVideoSnapshot`, and `captureChannelSnapshot` each insert one row then call the matching `listXByChannel` (no id filter, no limit) just to `.find()` the row just inserted.
+- **Found during:** independent review of Phase 9 slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`), which added 5 more copies of both patterns rather than introducing a shared helper.
+- **Actual risk:** low today (a single local operator, append-only tables expected to stay small) -- but grows as tracked history accumulates: every write becomes an O(n) full-history read+scan instead of an O(1) `.insert(...).returning()`, and the guard's ~15 hand-copies mean a future semantic change (e.g. an archived/soft-deleted watchlist state) requires correctly touching all of them by hand, with no test forcing a missed one to fail loudly.
+- **Why not fixed as part of slice 9A:** slice 9A's own 5 new functions were written to match this module's ALREADY-SHIPPED, already-reviewed convention exactly (`addToWatchlist`/`recordEvidence`/`fetchPublicSnapshot` already used the identical guard-duplication and insert-then-refetch shapes before this slice) -- fixing only the 5 new call sites would create inconsistency within the same file for no visible reason, and fixing all ~15 (new and pre-existing) would be an unscoped refactor of already-shipped code, not something to bundle into a slice whose own stated purpose is a new data model (`PHASE_9_SLICE_9A_PLAN.md` §1).
+- **Required remediation (not yet scheduled):** (a) extract a shared `assertResearchChannelExists(researchChannelId)` helper used by every function in this file; (b) switch every insert to Drizzle's `.insert(...).returning()` (confirmed already supported by this project's libsql driver) instead of insert-then-full-list-refetch.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal refactor with no behavior change.
+- **Status:** OPEN, tracked.
+
+## RISK-63 — the real local app-data database is now schema v27, ahead of `dev`/`main`'s v22 — OPEN, 2026-09-27
+
+- **Correction (2026-09-27, later the same day, during 9H part A's own follow-up work):** the real database has drifted YET FURTHER since the v24→v26 correction below -- confirmed read-only via `sqlite3` immediately after a routine `npm test`/`npm run build` validation cycle for an unrelated fix, it is now stamped **v27**, not v26. All 12 Phase 9 tables (including the new `market_research_requests`) were verified to hold **zero rows** -- pure schema drift again, no real data created or lost, and a fresh automatic pre-migration backup exists (`backups/migrations/pre-migration-1790485488388-9994if.db`). The likely cause is the same class of gap as before: some validation step in this session (very possibly the background `/code-review` subagent's own re-run of `npm run build`, which this session does not fully control) ran without the `NODE_TEST_CONTEXT=1` guard. This does not change any of this entry's own remediation options below -- it only means the real database has moved one version further while a decision was pending, and the owner should be aware the gap between "accept it" and "restore a backup" keeps growing the longer this stays undecided.
+
+- **Affected components:** `~/Library/Application Support/YouTubeOperationsManager/playlist-manager.db` (this machine's actual production database, `src/lib/platform-paths`, `resolveAppPaths`) -- **not** `<repo>/data/playlist-manager.db`, which is a legacy path only used as a one-time migration source and was never the real one.
+- **Found during:** Phase 9 slice 9B implementation. This session's own live-verification scripts (a throwaway `tsx` script importing `@/lib/db`, run outside `NODE_TEST_CONTEXT`) triggered this codebase's real, production `databaseInitialization` side effect, applying SCHEMA_MIGRATIONS up through v24 to the operator's actual local database -- not a disposable copy. Direct inspection found the identical thing already happened one migration earlier, during slice 9A's own live verification (v22 → v23); `docs/SYSTEM_MAP.md` §2.9v's own 9A/9B live-verification notes originally (incorrectly) described this as touching `data/playlist-manager.db`, corrected in the same commit that added this entry.
+- **Correction (2026-09-27, later the same day, re-verified read-only via `sqlite3 -readonly` directly against the real file):** the real database has drifted further since this entry was first opened -- it is now stamped **v26**, not v24, and already contains the (empty) v25/v26 tables (`market_discovery_candidates`, `market_discovery_runs`, `market_topics`, `market_topic_assignments`, `market_trend_candidates`, `market_trend_evidence`). All Phase 9 tables were verified to hold **zero rows** -- this remains pure schema drift, never real data written or corrupted. The most likely cause is one of this session's own `npm run build` invocations during 9C/9E-part-A validation (in the portion of this session before context compaction) running without the `NODE_TEST_CONTEXT=1` guard this entry's own remediation note calls for -- `next build`'s page-data collection evaluates every route module at the top level, including `createMarketIntelligenceCore()` → `@/lib/db`, which runs real schema migrations against whatever database `getProductionAppPaths()` resolves to when the guard is absent. Every `npm run build` run directly by this session going forward is prefixed with `NODE_TEST_CONTEXT=1`; `npm test` was never at risk here, since `node --test` sets this variable itself in every child process (confirmed via `src/lib/platform-paths/runtime.ts`'s own doc comment).
+- **Actual risk:** `assertSupportedSchemaVersion` (AC-SCHEMA-04) refuses to start against a database stamped with a version NEWER than the running code's own `SCHEMA_CURRENT_VERSION`. `dev`/`main` are both still at v22 (the Phase 9 Part I baseline) -- checking out either branch and running the app on this machine will now throw `SchemaVersionError` and refuse to start, until Phase 9 Part II (slices 9A-9I) is actually merged and `dev`/`main` themselves reach v26 or later.
+- **Correction (2026-09-28, 9H part C) -- the claim below that this feature branch was "unaffected" no longer holds and is retracted.** 9H part C added migration v28 (`market_video_snapshots.title`), so this branch's own `SCHEMA_CURRENT_VERSION` is now **28**, one version AHEAD of the real local database (re-verified read-only immediately before this correction: still stamped **27**, unchanged by this slice's own guarded `npm run build` runs). This means the direction of the gap has flipped for this specific branch: it is no longer "this branch matches, only dev/main lag behind" -- running this branch's own app for real (an unguarded launch, not a `NODE_TEST_CONTEXT=1` test/build) would now apply migration v28 to the real database, auto-upgrading it from v27 to v28 (with the same automatic pre-migration backup every migration already takes). That is a normal, additive, expected upgrade path -- not itself a new problem -- but it does mean the "real database is at v27" fact stated elsewhere in this entry is about to become stale the moment anyone actually launches this branch for real, and the owner's still-pending remediation choice below should be made with that in mind.
+- **Mitigation available, not applied unilaterally:** every migration this codebase runs takes an automatic pre-migration backup (`backups/migrations/pre-migration-<timestamp>-<id>.db`). A backup stamped exactly v22 exists (taken immediately before slice 9A's own migration) and could restore full `dev`/`main` compatibility -- but restoring it would also discard any real app usage between that backup's timestamp and now, which only the project owner can judge acceptable. Not restored as part of this entry; the owner was informed via Telegram the same day this was found, and again once this correction (v24 → v26) was found.
+- **Why not "fixed" by bumping `dev`/`main`'s own `SCHEMA_CURRENT_VERSION` instead:** that would require merging Phase 9 Part II's schema (and ideally its code) into `dev`/`main` now, which directly contradicts the owner's own explicit instruction for this phase ("делаем всю фазу до конца в этой ветке" -- build the whole phase on one branch first, merge once, with explicit approval) and this project's standing `dev`-merge-only-complete-features rule.
+- **Required remediation (owner's call):** either (a) accept `dev`/`main` being unrunnable on this specific machine until Phase 9 Part II merges (the fastest path, if this machine isn't needed to run `dev`/`main` in the meantime), or (b) restore the real database from the pre-v23 backup now, accepting the loss of any real usage since 2026-09-26 23:51, or (c) some other owner-directed approach. **Any future slice 9F-9I schema change must land as v27 or later, never edit v26 in place** -- the real database is already stamped 26, and a schema-mutating migration a database has already recorded as applied is silently skipped, not re-run.
+- **Correction (2026-09-27, later the same day) -- one exception to the rule immediately above, already taken, deliberately, before this correction was written:** commit `2c3662f` (a code-review fix) edited v26's own migration source in place -- replacing an inline `UNIQUE(topic_id, subject_type, subject_id)` table constraint on `market_topic_assignments` with a separately-named `CREATE UNIQUE INDEX market_topic_assignments_unique_idx`, to match the Drizzle schema's own declared index name. This was judged safe at the time because `dev`/`main` had never run v26 yet (still at v22), so no already-released database could be affected -- but it does mean this machine's own already-migrated real database (still stamped v26 from before that commit) now permanently diverges from any fresh database created after it: the real DB keeps SQLite's auto-generated name for that constraint (**correction, 2026-09-27, verified via `sqlite3 -readonly ... "PRAGMA index_list('market_topic_assignments')"`: it is `sqlite_autoindex_market_topic_assignments_2`, not `_1` as an earlier version of this entry claimed** -- `_1` is the primary key's own autoindex on `id`, origin `pk`; `_2` is the actual 3-column `UNIQUE(topic_id, subject_type, subject_id)` constraint's index, origin `u`, confirmed via `PRAGMA index_info` on both), while every fresh v26 database (future `dev`/`main`, new installs, test runs) gets the correctly-named index. Both enforce the identical constraint correctly -- this is a naming-only divergence, not a functional one -- but any future maintenance code that assumes the named index exists on THIS SPECIFIC machine's real database would be wrong. Restoring the pre-v23 backup (option (b) above) would also resolve this divergence as a side effect, since a migration re-applied from v22 would run the corrected source. **The "v27 and later" rule stated above is unaffected and remains the operative rule from this point forward** -- this is a record of the one already-taken, already-justified exception, not a reopening of the rule itself.
+- **Gate(s):** BLOCKS local `dev`/`main` runtime on this machine until Phase 9 Part II merges (or the owner chooses remediation option (b)/(c) above).
+- **Approval required from:** project owner -- which remediation option to take, if any, before Phase 9 Part II's own merge.
+- **Status:** OPEN, owner informed via Telegram 2026-09-27 (and again on the v24 → v26 correction, same day).
+
+## RISK-64 — `runCollectionIfStale` reconstructs a YouTube client on every call instead of once per channel/run — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/adapters/youtube-api.ts`'s `getPublicChannelSnapshot`/`listUploadsPlaylistFirstPageVideoIds`/`getPublicVideoSnapshots` -- each independently calls `createAuthorizedClient(args.credentials)`, which builds a fresh `googleapis` OAuth2 client and a fresh wrapped `youtube_v3.Youtube` client (via the read gateway's own `createYoutubeClient`, which also re-checks the "Data API reads enabled" toggle) on every single call.
+- **Found during:** independent code review of Phase 9 slice 9B.
+- **Actual risk:** pure overhead, no correctness impact -- for a channel with an uploads playlist and videos, this is 3 redundant client constructions + 3 redundant DB toggle reads per channel instead of 1, multiplying by however many channels a single `runCollectionIfStale` run processes. Never a network round trip by itself (client construction is local object setup), so the real-world cost is small, but it scales with watchlist size for no benefit.
+- **Why not fixed as part of 9B:** fixing this means changing the adapter's own per-call `{credentials, ...}` contract to instead expose (or accept) an already-constructed client shared across a whole channel's or run's calls -- a shape change to `MarketIntelligenceServices`' `youtubeApi` dependency, not a one-line fix, and out of proportion for a post-review bug-fix pass whose other findings are all real correctness bugs.
+- **Required remediation (not yet scheduled):** widen the adapter to construct one client per `credentials` value and reuse it across a channel's (or a whole run's, since `credentials` is already resolved once per run) 3 calls.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal efficiency refactor with no behavior change.
+- **Status:** OPEN, tracked.
+
+## RISK-65 — manual `captureChannelSnapshot` doesn't mark a channel as auto-collected, so 9B's automatic trigger can immediately re-fetch it — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `captureChannelSnapshot` (Phase 9 slice 9A, already shipped) and `runCollectionIfStale` (slice 9B) -- the two ways a channel's `research_channels.last_auto_collected_at` staleness is observed/set are not consistent with each other.
+- **Found during:** independent code review of Phase 9 slice 9B.
+- **Actual risk:** an operator who manually captures a channel snapshot via the Research tab, then loads (or already has open) a dashboard that fires `collect-if-stale` shortly after, sees that same channel immediately re-claimed and re-fetched automatically -- spending 1-3 more real YouTube API units re-collecting data just manually captured seconds earlier, working against the whole point of an operator-set daily budget.
+- **Why not fixed as part of 9B:** `captureChannelSnapshot` never enumerates or captures VIDEO snapshots (it is channel-snapshot-only, by 9A's own explicit design) -- marking it as "auto-collected" would make the automatic trigger skip that channel's VIDEO collection for a full 24h based on a manual action that never touched video data at all, which is arguably a worse bug than the wasted-quota one being described here. `captureChannelSnapshot` is also already-shipped, already-reviewed Phase 9 slice 9A code; changing its behavior as a side effect of a 9B bug-fix pass would be an unscoped change to unrelated, already-accepted code (`AGENTS.md` §C), not something to bolt on without its own proper design pass.
+- **Required remediation (not yet scheduled):** needs an actual design decision, not a quick fix -- e.g. a distinct "channel-level freshness" timestamp separate from "full (channel+video) freshness," or accepting the redundant re-fetch as a rare, low-cost annoyance. Needs owner input on which tradeoff they prefer once reached.
+- **Gate(s):** none.
+- **Approval required from:** project owner, on which remediation direction to take.
+- **Status:** OPEN, tracked.
+
+## RISK-66 — `deleteResearchChannel` cascade-deletes `market_intelligence_collection_runs`, silently dropping that channel's spend from the shared daily ledger — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/db.ts`'s `deleteResearchChannel` (cascade includes `marketIntelligenceCollectionRuns`, required by that table's own `NOT NULL` FK to `researchChannels.id` -- this connection runs with `foreign_keys=ON`, so the delete would otherwise fail outright while any run row still references the channel); `getMarketIntelligenceUnitsSpentSince` (Phase 9 slice 9B/9C's shared quota-ledger read).
+- **Found during:** independent code review of Phase 9 slices 9A-9C.
+- **Actual risk:** if an operator removes a channel from the watchlist and re-adds it (or simply lets another channel's own budget check run) within the SAME UTC calendar day, that channel's already-recorded `units_spent` rows are gone from the ledger `deleteResearchChannel` just cascaded away -- `getMarketIntelligenceUnitsSpentSince`'s sum for today is now lower than what was actually spent against YouTube's real quota, letting a later collection/discovery call spend more than the operator's configured daily budget. Bounded in magnitude (at most the deleted channel's own spend that day, typically ≤3 units for a single collection run -- `market_discovery_runs` is unaffected, since it carries no FK to `research_channels` at all) and requires a specific, deliberate same-day remove-then-reuse sequence, not an everyday occurrence.
+- **Why not fixed immediately:** a correct fix means the ledger surviving a channel's own deletion, which requires either dropping the FK constraint (SQLite cannot drop a `REFERENCES` clause via `ALTER TABLE` -- needs a full recreate-table migration, and this table's schema has already been applied to the real local database at v24, `docs/TECHNICAL_DEBT.md` RISK-63) or a `SET NULL`-style column change with its own migration. Both are real schema-migration work, not a one-line fix, and the practical impact is narrow/bounded as described above -- not proportionate to rush ahead of the rest of Phase 9 Part II's own already-in-progress work.
+- **Required remediation (not yet scheduled):** a v27+ migration recreating `market_intelligence_collection_runs` with `research_channel_id` as a plain, unvalidated text column (mirroring `market_discovery_candidates.subject_id`'s already-accepted "no FK for an informal reference" pattern), then removing it from `deleteResearchChannel`'s cascade list -- the ledger becomes a permanent record independent of whether the channel is still tracked.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) once scheduled -- a schema/behavior fix with no observable change for the normal (non-same-day-reuse) case.
+- **Status:** OPEN, tracked.
+
+## RISK-67 — `runCollectionIfStale`'s per-channel writes are not transactional — a partial failure can leave orphan snapshot rows and forces a real quota re-spend on retry — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `runCollectionIfStale` -- `insertMarketChannelSnapshot`/`insertMarketVideoSnapshot`, its own `market_intelligence_collection_runs` audit row, and `markResearchChannelAutoCollected` are 3+ separate `db.ts` writes with no shared transaction wrapping them.
+- **Found during:** independent code review of Phase 9 slices 9A-9C.
+- **Actual risk:** if a channel's snapshot (and possibly some video snapshots) insert successfully -- real API calls already paid for -- and a later write in the SAME attempt then throws (e.g. a transient local DB error), the channel is recorded `failed` and retried on the next run, re-spending real quota a second time to re-fetch data that, in part, was already correctly captured; the orphaned snapshot row(s) from the failed attempt also remain (harmless for these append-only tables, but not deduplicated against the eventual successful retry's own new rows).
+- **Why not fixed immediately:** the residual risk here is strictly a wasted-quota/duplicate-observation concern, not a data-integrity one, so it was deprioritized behind other Phase 9 work -- **not** because a fix is architecturally hard. **Correction (2026-09-27, RISK-70's own resolution disproved the original reasoning here):** this entry originally said a fix "needs... a real refactor of `ServiceDependencies`' individual-function shape into something transaction-aware." That is wrong -- `deleteResearchChannel` (`src/lib/db.ts`) already uses `database.transaction(async (tx) => {...})` today, building queries directly against `tx` (`tx.insert()`/`tx.update()`/`tx.delete()`) rather than delegating to another exported `database: AppDb`-typed function (a transaction's own `tx` object is not assignable to that parameter type, confirmed by `tsc`). RISK-70 applied exactly this existing pattern with no `ServiceDependencies` refactor at all -- two new atomic `db.ts` functions (`insertMarketTrendCandidateWithInitialEvidence`/`updateMarketTrendCandidateStatusWithEvidence`), each a single transaction, each exposed as one dependency. The same shape would close this entry.
+- **Required remediation (not yet scheduled):** add one atomic `db.ts` function wrapping `runCollectionIfStale`'s per-channel write sequence in a single `database.transaction()`, mirroring RISK-70's own resolution -- no dependency-shape refactor required, contrary to this entry's own original claim.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-68 — `discoverChannels` has no atomic claim/lock against a concurrent overspend — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `discoverChannels` (Phase 9 slice 9C) -- unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`, there is no server-side single-flight guard around this action's own `remaining >= 100` budget check.
+- **Found during:** independent code review of Phase 9 slice 9C.
+- **Actual risk:** two concurrent `discoverChannels` calls (e.g. two open browser tabs) can each read the same `spentToday`, both pass the budget check, and both spend a real 100 units -- together overspending the operator's configured daily budget by up to 100 units. *(Phase 13 slice 13.4 update: `search.list` now has its own bucket of 100 calls a day at 1 unit, and discovery no longer draws on that budget. The same race now over-calls that bucket by one search, so the risk is smaller.)* Narrower than 9B's own equivalent concern: discovery is always an explicit, one-at-a-time manual UI click (never an automatic/background trigger the way collection is), so the realistic likelihood of two truly simultaneous attempts is low.
+- **Why not fixed immediately:** a proper fix needs a claim/lock mechanism shaped like 9B's own channel-claim, but keyed on "a discovery run is in progress" rather than a specific channel id -- a real addition, not proportionate to add speculatively without a concrete report of it happening in practice.
+- **Required remediation (not yet scheduled):** a single-row "discovery in progress" claim (mirroring `research_channels.collection_claimed_at`'s own shape) checked/set atomically before the `search.list` call.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-69 — `promoteDiscoveryCandidate`'s race surfaces a generic 500 instead of a clean domain error — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `promoteDiscoveryCandidate` -- the `status !== "promoted"` check and the subsequent `insertResearchChannel` are two separate, non-transactional steps.
+- **Found during:** independent code review of Phase 9 slice 9C.
+- **Actual risk:** a double-click or two-tab race on the same candidate's "Promote" action can let both requests pass the not-yet-promoted check; the second's `insertResearchChannel` then hits a raw primary-key constraint violation, which the API route's generic catch-all turns into an unhelpful `internal_error`/500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED`. Purely cosmetic -- no incorrect end state results (the first request's promotion still succeeds correctly; the candidate is not double-promoted or corrupted).
+- **Why not fixed immediately:** a full fix needs the same kind of atomic claim/transaction wrapping as RISK-68; not proportionate to add speculatively for a rare double-click race with no actual incorrect outcome.
+- **Required remediation (not yet scheduled):** catch the specific constraint-violation shape in `promoteDiscoveryCandidate` and re-map it to `DISCOVERY_CANDIDATE_ALREADY_PROMOTED`, or add a claim/lock.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-71 — `createTopic`'s normalized-duplicate check has a TOCTOU race under real concurrency — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `createTopic` (Phase 9 slice 9E, part A) -- the normalized (trim/collapse-whitespace/lowercase) duplicate check reads the full topic list, then inserts; the only DB-level backstop is a raw `UNIQUE(name)` constraint on the un-normalized string.
+- **Found during:** independent `/code-review high` of Phase 9 slices 9D-9E (`5c4b479..HEAD`).
+- **Actual risk:** two concurrent `createTopic` calls for `"Jazz"` and `"jazz"` can both read the topic list before either insert lands, neither sees a normalized duplicate, and both inserts succeed under the raw `UNIQUE(name)` constraint (the strings differ) -- producing two topics the normalization logic exists specifically to prevent. Requires two genuinely concurrent requests for near-identical names within the same short window; the same class of narrow, low-probability race already accepted for RISK-68/69.
+- **Why not fixed immediately:** a real fix needs either a normalized (trimmed/collapsed/lowercased) computed-column `UNIQUE` index -- SQLite supports this via a generated column or an expression index, a genuine schema change (new migration) -- or wrapping the check+insert in a transaction with `SERIALIZABLE`-equivalent isolation, neither proportionate to add speculatively without a concrete report of it happening in practice.
+- **Required remediation (not yet scheduled):** a case/whitespace-normalized expression `UNIQUE INDEX` on `market_topics(name)` in a future migration (v27+, never editing v26 in place per RISK-63's own rule), or a claim/lock mechanism if that proves impractical in SQLite.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-72 — `discoverChannels` can mislabel a partially-successful run as `"failed"` — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `discoverChannels` (Phase 9 slice 9C, `756f1c4`'s own fix) -- the success-path `insertMarketDiscoveryRun` call sits inside the same `try` block as the search/dedup/insert work it is meant to record the outcome of.
+- **Found during:** independent `/code-review high` of Phase 9 slices 9D-9E (`5c4b479..HEAD`), which covered this pre-existing 9C code as part of the reviewed diff range.
+- **Actual risk:** if `insertMarketDiscoveryRun` itself throws on the success path -- after real candidate rows were already correctly inserted into `market_discovery_candidates` -- the `catch` block re-records the run as `"failed"` (with the throw's own error message) and re-throws. An operator reviewing `market_discovery_runs` then sees a `"failed"` run for a discovery that actually succeeded and left new candidate rows behind -- an audit-trail inaccuracy, not a data-loss issue (the candidates themselves are correct and visible via `listDiscoveryCandidates`).
+- **Why not fixed immediately:** a real fix needs the `try`/`catch` restructured to distinguish "the real work failed" from "the real work succeeded but its own audit-row write then failed," not a one-line reorder -- moving the insert outside the `try` naively would resurrect the exact bug `756f1c4` fixed (a throw losing the entire audit record). **Correction (2026-09-27):** this entry originally cited RISK-67/70's own (since-corrected) "needs a refactor" reasoning -- RISK-70's actual resolution shows the real fix is small: one atomic `db.ts` function (`database.transaction()`, building queries directly against `tx`, mirroring `deleteResearchChannel`'s and RISK-70's own resolved pattern), not a `ServiceDependencies` refactor.
+- **Required remediation (not yet scheduled):** one atomic `db.ts` function wrapping the search/dedup/insert work AND the success-path audit-row write in a single transaction, mirroring RISK-70's own resolution -- no dependency-shape refactor required.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-73 — the topics/trend-candidates UI panels refetch the whole list after every mutation instead of reusing the response — OPEN, 2026-09-27
+
+- **Affected components:** `src/components/market-topics-panel.tsx` (`handleCreateTopic`/`handleAssign`) and `src/components/market-trends-panel.tsx` (`handleCreate`/`handleUpdateStatus`/`handleAddEvidence`) -- each POST/PATCH response already contains the exact row just created/updated, but every handler discards it and issues a full `GET` refetch of the entire collection instead.
+- **Found during:** independent `/code-review high` of Phase 9 slices 9D-9E (`5c4b479..HEAD`) -- corroborated by 3 separate finder angles (reuse, efficiency, simplification) as the same pattern repeated across both panels.
+- **Actual risk:** none to correctness -- purely an extra round trip per write, on an already-low-traffic operator-facing tab. No user-visible symptom beyond a marginally slower UI refresh.
+- **Why not fixed immediately:** a real fix touches state-update logic in both panels for a pure efficiency gain with no correctness benefit; not proportionate to do as a drive-by alongside this slice's own scope (`AGENTS.md`: "don't add... refactor... beyond what the task requires").
+- **Required remediation (not yet scheduled):** merge each mutation's own response into local state (`setTopics`/`setTrendCandidates` etc.) instead of refetching, in both panels, the next time either is touched for an unrelated reason.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-70 — `createTrendCandidate`'s candidate insert and its required initial-evidence write were not transactional — RESOLVED, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `createTrendCandidate` (Phase 9 slice 9E, part B) -- `insertMarketTrendCandidate` and `insertMarketTrendEvidence` were 2 separate, non-transactional `db.ts` writes. The identical shape also affected `updateTrendCandidateStatus`'s status-change-plus-evidence write (found in the same review pass, tracked here rather than as a separate entry since the fix is the same).
+- **Found during:** own implementation review of Phase 9 slice 9E, part B, then confirmed by independent `/code-review high` of Phase 9 slices 9D-9E.
+- **Actual risk:** if the candidate row insert succeeded but the following evidence insert then threw (e.g. a transient local DB error), the trend candidate briefly existed with zero evidence rows -- the exact invariant this slice's own schema-level `initialEvidence` requirement exists to prevent (spec §14). The status-change sibling had a worse failure mode: reordering the two writes to avoid one direction of dishonesty (a false "status changed" evidence row) just as easily produced the other (a real status change with no evidence trail) -- there was no safe ORDER of two independent writes, only an atomic one.
+- **Why this was fixed here, contradicting RISK-67's own "needs a ServiceDependencies refactor" reasoning:** advisor review found that reasoning was wrong -- `deleteResearchChannel` (`src/lib/db.ts`) already uses `database.transaction(async (tx) => {...})` today, calling `tx.insert()`/`tx.update()`/`tx.delete()` directly (never delegating to another exported `database: AppDb`-typed function, since a transaction's own `tx` object is not assignable to that type -- confirmed by `tsc`). No refactor was actually needed, only following that existing pattern.
+- **Remediation applied:** two new atomic `db.ts` functions, each a single `database.transaction()`: `insertTrendCandidateWithInitialEvidence` and `updateTrendCandidateStatusWithEvidence`. Both are proven to actually roll back against the real libsql driver (`db.test.ts`, a forced PRIMARY KEY collision on the transaction's second statement, asserting the first statement's effect is also gone afterward) -- not merely assumed from `database.transaction`'s own documented behavior.
+- **Gate(s):** none.
+- **Status:** RESOLVED, 2026-09-27.
+
+## RISK-74 — `getProductionAppPaths()`'s test-runner singleton path was keyed only by PID, with no cleanup — RESOLVED, 2026-09-27
+
+- **Affected components:** `src/lib/platform-paths/runtime.ts`'s `getProductionAppPaths()` -- under the test runner, resolves to `<tmpdir>/youtube-ops-manager-test-singleton-<process.pid>`, cached for the life of the process, never wiped.
+- **Found during:** investigating a CLI test failure (`AGENT_ZONE_VIOLATION` where `validation_failed` was expected) that had been dismissed as "pre-existing flakiness" without evidence -- advisor review flagged that dismissal as unverified and named a concrete, checkable cause.
+- **Actual risk:** the OS reuses PIDs. This repository's own test/build invocations across a single long session left **36,947 stale singleton directories** in the system temp dir at the time this was checked (`ls "$TMPDIR" | grep -c youtube-ops-manager-test-singleton`) -- this part is directly confirmed, not inferred. A new process that happens to reuse a PID an earlier, unrelated process once held would silently inherit that earlier process's leftover database at the exact same path -- including real rows (e.g. an enabled agent-connection, an operation-lock row) that could make an entirely different test file fail with a confusing, seemingly-unrelated error. **Honesty note (advisor review):** this mechanism is real and confirmed to exist, and is a plausible explanation for the specific `AGENT_ZONE_VIOLATION` failure that prompted this investigation -- but that specific failure was never actually reproduced under a controlled repro (e.g. by deliberately seeding a stale directory with an enabled agent-connection row and confirming the exact same test then fails the exact same way). The cause of that ONE historical failure is therefore **inferred, not demonstrated** -- what is demonstrated is that the underlying mechanism is real, was actively causing this exact class of cross-run pollution, and is now fixed regardless of whether it was the specific cause of that one observed failure.
+- **Fix applied:** `getProductionAppPaths()` now calls `fs.rmSync(testHomedir, { recursive: true, force: true })` before resolving paths, on every first call within a process, so a reused PID can never inherit a previous process's state -- "this PID's test database" now actually means "a pristine database," unconditionally. Safe because this branch runs only under the test runner and the directory holds nothing but this kind of disposable, single-run temp state.
+- **Test:** `src/lib/platform-paths/runtime.test.ts` -- seeds a stale marker file at the exact computed path before the module's first real call in a fresh process (relying on `node --test`'s own per-file process isolation), then asserts the file is gone afterward.
+- **Not itself a data-integrity risk** for any real user -- this only ever affected the test/build-time singleton path, never the real production app-data directory (a completely different, unconditional branch in the same function).
+- **Gate(s):** none.
+- **Status:** RESOLVED, 2026-09-27. The 36,947 pre-existing stale directories from before this fix were manually cleaned up as part of the same investigation; the fix itself prevents future accumulation from ever causing a repeat.
+
+## RISK-75 — a `market_research_requests` row can become permanently stuck in `"approved"` with no recovery path — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `approveMarketResearchRequest`; `src/lib/db.ts`'s `approveMarketResearchRequestIfPending`/`recordMarketResearchRequestExecutionOutcome`/`rejectMarketResearchRequestIfPending`.
+- **Found during:** advisor review of slice 9G part B, immediately after the fix that added `recordMarketResearchRequestExecutionOutcome`'s own `WHERE status='approved'` guard (commit 6229626, not related to RISK-70, which is a different fix on a different table).
+- **Actual risk:** `approveMarketResearchRequest` performs the `pending` → `approved` transition (`approveMarketResearchRequestIfPending`) and then, in a later step, runs discovery and calls `recordMarketResearchRequestExecutionOutcome` to move the row to its final `executed`/`execution_failed` state. These two steps are not one atomic unit — they are two separate statements with a real discovery/network call in between. If the process crashes, throws an unhandled error, or is otherwise interrupted after the first step but before the second one lands, the row is left sitting in `"approved"` forever. There is no code path back out of it: `approveMarketResearchRequestIfPending` and `rejectMarketResearchRequestIfPending` both require `status='pending'` (by design, to stop a request from being executed twice or executed after rejection), so a request stuck in `"approved"` can be **neither re-approved nor rejected** — it is simply invisible to both remaining operator actions, with no UI or CLI/MCP surface that can move it anywhere else. **This is reachable by entirely ordinary use, not just a rare crash** — closing the Web UI tab, a killed CLI process, or a machine sleeping mid-approval all land in the exact same stuck state.
+- **Why not fixed immediately:** closing this properly needs a genuine recovery/reconciliation mechanism — either an operator-facing "reset to pending" action, an automatic reconciliation pass that detects an `approved` row with no matching execution outcome and requeues or fails it, or wrapping the discovery call itself inside the same transaction as the state transition (not obviously possible today, since `discoverChannels` performs real network I/O, which should not happen inside an open database transaction). Each of these is its own scoped design decision, not a one-line guard, and none was part of 9G part B's approved acceptance criteria.
+- **Required remediation:** design and implement one of the above recovery paths before this pipeline is relied upon in production; at minimum, add an operator-visible way to see a request stuck in `"approved"` (e.g. "approved more than N minutes ago with no execution outcome") so a human can notice the condition even before an automated recovery path exists. **Candidate design (added 2026-09-27, from a combined `/code-review high` pass over 9I/9G-a/9G-b):** this codebase already solves the identical "approve, then later do a retryable side effect" problem more safely elsewhere -- the Change Set/Batches pipeline's `approvalStatus` is a stable, re-enterable state re-checked at write time (`claimStaleResearchChannelsForCollection` in this same file uses the analogous claim-expiry/reclaim shape), so a failed apply can simply retry from the same `"approved"` row instead of needing a bespoke reconciliation mechanism. The root-cause fix this suggests: keep `"approved"` genuinely re-enterable and split today's single `approveMarketResearchRequest` action into (a) the `pending`→`approved` transition, unchanged, and (b) a separate, idempotent "execute discovery for this approved request" action that can be safely re-invoked from `"approved"` without a state-machine dead end -- eliminating this risk by construction rather than adding recovery tooling on top of the current shape.
+- **Gate(s):** none yet — no write-safety gate currently depends on this pipeline being self-healing, but this should be revisited before Gate B sign-off for any slice that starts relying on `market_research_requests` executing reliably without operator supervision.
+- **Merge-request note (added 2026-09-27):** this is a real, ordinary-use dead end, not a rare edge case — it must be raised as an explicit decision item when this branch is presented for `dev` merge (per AGENTS.md §K.1's "полностью протестированную и полностью рабочую фичу" bar), not left as a silent debt-register row the owner has to go looking for.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-76 — the research-request reject modal hand-rolls `ConfirmDialog`'s shell instead of extending it — OPEN, 2026-09-27
+
+- **Affected components:** `src/components/market-research-requests-panel.tsx`'s reject flow (the approve flow just above it in the same file correctly uses the shared `ConfirmDialog`). **Widened 2026-09-29 (Phase 10 slice 5, `advisor()` review):** `decisions-manager.tsx`'s Execute confirmation modal has the identical shape (needs an extra field -- the live/dry-run toggle -- that `ConfirmDialog` doesn't accept) and hand-rolls the same overlay/card/Cancel-Confirm chrome for the same reason. Second real occurrence of this exact pattern, strengthening the case for the remediation below rather than treating either as a one-off.
+- **Found during:** combined `/code-review high` pass over 9I/9G-a/9G-b.
+- **Actual risk:** `ConfirmDialog` is this app's one shared, styled confirmation-dialog component, specifically so every contextual popup renders and behaves consistently. The reject flow needed one extra field (a required reason textbox) that `ConfirmDialog` doesn't currently accept, so its entire modal chrome (overlay, card, Cancel/Confirm buttons) was duplicated by hand instead. Any future accessibility/focus-trap/Escape-to-cancel fix applied to `ConfirmDialog` will not automatically reach this hand-rolled copy -- now true of two call sites, not one.
+- **Why not fixed immediately:** the correct fix is adding an optional body-content slot to `ConfirmDialog` itself (a shared-component change touching every existing call site's contract), not a one-off patch to this one panel -- out of scope for this fix round.
+- **Required remediation:** extend `ConfirmDialog` with an optional slot/prop for extra body content (e.g. a reason input), then rebuild the reject flow on top of it.
+- **Gate(s):** none -- UI polish only, and this UI is still browser-unverified per RISK-05.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-77 — duplicated stale-response-fetch-guard pattern across market-intelligence panels — OPEN, 2026-09-27
+
+- **Affected components:** `src/components/market-trends-panel.tsx`'s `fetchEvidence`, `src/components/market-topics-panel.tsx`'s `fetchAssignments`, and (found by independent code review during 9H part A, widening this entry's own count from 2 to 4) `src/components/market-research-panel.tsx`'s `fetchIntelligenceSummary`/`handleToggleVideoHistory`.
+- **Found during:** combined `/code-review high` pass over 9I/9G-a/9G-b; widened by the same kind of pass over 9H part A.
+- **Actual risk:** all four functions implement the identical shape of guard (a ref tracking the most-recently-requested id, checked before applying the response, to discard a stale response from an earlier selection) independently, byte-for-byte in structure. This codebase already has a shared-hooks convention for cross-panel fetch logic (e.g. `use-top-videos.ts`, `use-connected-channels.ts`) that this pattern should have used instead. Copying it a third and fourth time instead of extracting the hook means any future fix to the race-guard logic (e.g. `AbortController` cancellation, or the same-id-reselection edge case 9H part A's own copy was found to still miss) must now be applied in four places, not one.
+- **Why not fixed immediately:** pure DRY/maintainability concern, no observed or reachable correctness bug -- deprioritized behind the real bugs found in the same review pass.
+- **Required remediation:** extract a shared `useLatestRequestGuard`/`fetchForSelected`-shaped hook alongside this codebase's other shared UI hooks, and migrate both panels onto it.
+- **Gate(s):** none.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-78 — `listMarketChannelSnapshotsByChannel`/`listMarketVideoSnapshotsByChannel` have no pagination or limit — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/db.ts`'s `listMarketChannelSnapshotsByChannel`/
+  `listMarketVideoSnapshotsByChannel` (both plain `SELECT ... WHERE researchChannelId = ? ORDER BY
+  observedAt ASC`, no `LIMIT`), and `src/lib/market-intelligence/services.ts`'s
+  `getWatchlistEntryContext` (9G-a), which returns both arrays in full to its caller.
+- **Found during:** planning `docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md` (9H part A),
+  advisor review.
+- **Actual risk:** `market_channel_snapshots`/`market_video_snapshots` are append-only series (9A) —
+  every past 9B collection run adds rows, never replaces them, so both queries' result size grows
+  without bound over a channel's lifetime on the watchlist. Harmless while `getWatchlistEntryContext`
+  had exactly one caller (a single bounded MCP/CLI request an agent makes deliberately, 9G-a) — it
+  becomes a real, growing per-request cost the moment anything renders it repeatedly for a human
+  (9H's own Channels UI, planned to be this function's first UI caller).
+- **Why not fixed as part of 9H part A:** that part bounds what it actually RENDERS (latest snapshot
+  per video, one video's own series at a time) without touching this read's own contract or adding
+  real pagination at the query level -- a query-level fix changes `getWatchlistEntryContext`'s own
+  output shape, which is an existing MCP/CLI agent contract (9G-a) that a UI-scoped slice should not
+  alter as a side effect (`AGENTS.md` §A).
+- **Required remediation (not yet scheduled):** add a real `LIMIT`/cursor to both `db.ts` functions
+  (e.g. "most recent N" plus an explicit "load more"/date-range parameter), then decide, as its own
+  scoped decision, whether `getWatchlistEntryContext`'s existing agent contract also needs the same
+  bound (likely yes, for the identical reason) -- an `AGENT_API_VERSION`-bumping change, not a silent
+  one.
+- **Gate(s):** none yet -- revisit if watchlist channels accumulate enough real collection history for
+  a single request's payload size to become a practical (not just theoretical) problem.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-79 — three lower-severity findings from 9H part A's own independent code review, not fixed in that pass — OPEN, 2026-09-27
+
+- **`observedAt` has no tiebreaker for "which snapshot is latest."** `getChannelIntelligenceSummary`'s `latestSnapshotPerVideo`/leave-one-out baseline assume the last row `listMarketVideoSnapshotsByChannel`'s `ORDER BY observed_at ASC` returns is genuinely the latest -- but `observed_at` is stored with whole-second precision, and `derived-metrics.ts` already documents hitting a same-second collision once (its own round-2 fix). Two snapshots of the same video landing in the same wall-clock second can sort in either order, silently using a stale value with no error or data-quality flag. **Required remediation:** an explicit secondary sort key (an autoincrement rowid or insertion-order column) for these two queries.
+- **No structural guard against the next new table repeating RISK-52.** `SNAPSHOT_TRANSFERRED_TABLES`'s own doc comment claims fail-safe-by-construction design, but that safety depended entirely on a reviewer remembering to add each new table -- exactly what failed across every Phase 9 slice from 9A through 9G before RISK-52's fix. **Required remediation:** a test asserting every `sqliteTable(...)` in `db.ts` is either on `SNAPSHOT_TRANSFERRED_TABLES` or on an explicit, named exclusion list (mirroring `PHASE9-INV-02`'s own derive-don't-hand-maintain approach).
+- **`getChannelIntelligenceSummary`'s leave-one-out baseline is recomputed per video, from scratch.** `computeChannelVideoBaseline` filters and sorts its input array on every call, once per recent video (O(n² log n) instead of one sort plus O(1)/O(log n) leave-one-out lookups) -- a real, growing cost only for a channel with many videos inside the 180-day `RECENT_VIDEO_WINDOW_DAYS` window (a near-daily uploader), not a correctness issue.
+- **Why not fixed in the same pass:** none of the three is a correctness bug reachable with today's real data volumes (the first is a narrow timing race, the second and third are pure hardening/efficiency); fixing all three would have meant reopening the same files a fourth time in one review cycle instead of shipping the real bugs' fixes.
+- **Gate(s):** none.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-80 — `detectDisappearedVideoIds` (9I) still has no caller after 9H part C — OPEN, 2026-09-27/28
+
+- **Affected components:** `src/lib/market-intelligence/data-quality.ts`'s `detectDisappearedVideoIds` (9I, shipped code-complete with no caller); `docs/ARCHITECTURE.md` §18 names the Videos tab (9H part C) as its natural home.
+- **Found during:** 9H part C's own scope decision (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md` §1) -- owner spec §30's own Videos field list (title/channel/publication date/public views/recent velocity/relative performance/topic-format) does not itself ask for a "disappeared video" signal, and the function's own doc comment already warns that a naive two-snapshot diff is unsafe: 9B's collector enumerates only a channel's ≤50-newest-uploads first page (`listUploadsPlaylistFirstPageVideoIds`), so a video simply falling off that page boundary (a newer upload pushed it off, nothing happened to the video itself) would be falsely flagged as "disappeared" by a bare before/after id-set diff.
+- **Actual risk:** none today -- the function is pure, tested, and uncalled; nothing in production reaches it. The risk is purely that this remains a known, named gap (no automatic "this competitor's video vanished" signal anywhere in the UI/agent surface) until a future slice picks it up.
+- **Required remediation (not yet scheduled), two safe designs, either avoids the false-positive:** (a) a real, additional per-id `videos.list` re-check for any id present in a previous enumeration but absent from the current one -- correct, but spends real, non-refundable quota and needs its own owner authorization before implementation; or (b) restrict the "disappeared" comparison to ids that are still at-or-newer than the current first page's own oldest id (a video old enough to have already legitimately rolled off the page is simply excluded from the comparison, not flagged) -- no extra quota, but real design/test work of its own (getting the "oldest id on the current page" boundary right, and deciding what a channel with fewer than the enumerated videos should report).
+- **Gate(s):** none.
+- **Approval required from:** project owner, on which of the two designs to pursue (and, for design (a), on spending the extra quota) once this is actually assigned.
+- **Status:** OPEN, tracked.
+
+## RISK-81 — `assignTopic` has no existence check for a `"video"` subject, unlike `"channel"` — OPEN, 2026-09-29
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `assignTopic`.
+- **Found during:** independent code review of the whole Phase 9 Part II branch, right before its merge request.
+- **Actual risk:** a `"channel"` subject is verified against the watchlist (`RESEARCH_CHANNEL_NOT_AVAILABLE` if not present) before an assignment is accepted; a `"video"` subject is accepted for any syntactically-valid video id with no check that a snapshot for it was ever actually captured. A caller assigning a topic to a fabricated/never-collected video id would have that assignment stored and later counted by `niche-discovery.ts`'s `groupCandidatesByTopic` toward a niche's minimum group size, degrading grouping accuracy. **This is intentional, not an oversight** -- the function's own doc comment states the reason: `market_video_snapshots` is an append-only series with no canonical single row per video to check existence against, the same reasoning already accepted for this table's own missing FK on `subjectId`. Flagged here only for the project owner's own re-confirmation that this asymmetry is acceptable, not as a bug to silently fix.
+- **Why not "fixed":** adding a video-existence check would be a real behavior change to a documented, deliberate design choice made during this same phase, not something to alter as a side effect of an unrelated review pass.
+- **Required remediation (not yet scheduled, owner's call):** either accept this permanently (document it more prominently, e.g. in `docs/ARCHITECTURE.md`'s own topics section), or design a real check (what "exists" even means for an append-only, no-canonical-row table is itself a design question, not a one-line fix).
+- **Gate(s):** none.
+- **Approval required from:** project owner, whether to accept this asymmetry as-is or ask for a follow-up design.
+- **Status:** OPEN, tracked.
+
+## RISK-82 — `executeExperiment`'s claim-first execution has a narrow crash window between Batch creation and finalize — OPEN, 2026-09-29
+
+- **Affected components:** `src/lib/decision-engine/services.ts`'s `executeExperiment` (Phase 10 slice 5).
+- **Found during:** design, resolved via two rounds of `advisor()` review before this residual was accepted as the remaining, narrower risk (the original draft had a real double-execution race, closed by the claim-first redesign this entry describes the residual of).
+- **Actual risk:** `executeExperiment` atomically claims the experiment (`execution_claimed_at`), calls the resolver to create a real Batch, then calls `finalizeExperimentExecution` (sets `status: "running"`/`executionBatchId`, clears the claim) -- deliberately OUTSIDE the try/catch that releases the claim on a resolver failure, so a `finalizeExperimentExecution` failure never silently releases a claim whose Batch already exists (that would let a second call create a second real Batch, the exact bug this design closes). The one gap this leaves: if the process crashes between the Batch being created and `finalizeExperimentExecution` actually committing, the claim is left held with no `executionBatchId` recorded anywhere on the experiment. After 15 minutes (`EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS`, the same precedent as Phase 9 slice 9B's own collection claim), the claim is treated as expired and a fresh Execute can proceed -- creating a SECOND real Batch, while the first (crashed-mid-flight) Batch is never linked to the experiment at all. Bounded and low-severity: the orphaned Batch is real and inspectable from the Batches tab like any other, still fully subject to its own dry-run/Live Writes/identity gates (no write-safety bypass), and the failure window is a specific sub-second gap between two sequential `await`s, not a broad race.
+- **Why not fixed now:** closing this fully needs either a two-phase commit spanning `decision-engine`'s own tables and the Batch it creates (a real cross-module transaction this codebase has no existing primitive for), or recording the Batch id as part of the SAME atomic write that creates the claim (impossible -- the Batch doesn't exist yet when the claim is taken, by design, since claiming must happen before the real work). Neither is a one-line fix, and the actual risk is a crash landing in a specific narrow window, not a routine occurrence.
+- **Required remediation (not yet scheduled):** at minimum, a way for an operator to notice an orphaned Batch with no experiment reference (e.g. surfaced in the Batches tab, or a periodic consistency check) -- not designed yet.
+- **Gate(s):** none.
+- **Approval required from:** project owner, whether this residual is acceptable as documented, or whether a mitigation should be scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-83 — `generateHypothesisDraft` fetches each evidence reference twice, sequentially — OPEN, 2026-09-29
+
+- **Affected components:** `src/lib/decision-engine/services.ts`'s `generateHypothesisDraft` (Phase 10 slice 4).
+- **Found during:** the one comprehensive independent review of the whole phase, right before its merge-into-`dev` request.
+- **Actual risk:** for each evidence reference passed into hypothesis-draft generation, this function calls `resolver.resolve(reference, ctx)` (existence-check) and then `resolver.describe(reference, ctx)` (human-readable summary for the prompt) -- both independently re-fetch the same underlying Phase 8/analytics or Phase 9/market-intelligence row instead of one fetch feeding both. The per-reference loop also runs fully sequentially (`await` inside a `for`), so latency scales linearly with reference count rather than in parallel. Pure efficiency: no incorrect output, no data-integrity consequence -- just doubled read load and avoidable latency, worse the more evidence an operator selects for one generation call.
+- **Why not fixed now:** the evidence-reference-resolver port (`decision-engine/contracts.ts`'s `EvidenceReferenceResolver`, real implementation in `src/app/api/decision-engine/evidence-reference-resolver.ts`) was deliberately designed with `resolve`/`describe` as two separate methods, and changing that shape (e.g. a combined `resolveAndDescribe`) touches the same interface slice 3's own creation-time validation (`addHypothesisEvidence`) also depends on -- a contained-looking change that is not actually contained without re-checking every caller of that interface, out of proportion for a review-fix pass whose other findings are the real correctness bugs.
+- **Required remediation (not yet scheduled):** either widen `EvidenceReferenceResolver` with a combined fetch-once method used only by generation (leaving `resolve`/`describe` as-is for the creation-time validation path that only ever needs one or the other), or run the per-reference loop concurrently (`Promise.all`) as a smaller, lower-risk partial fix if the double-fetch itself is judged acceptable.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal efficiency improvement with no behavior change.
+- **Status:** OPEN, tracked.
+
+## RISK-84 — the per-video change grouping used by experiment execution is duplicated, not shared, with the Batches UI's own copy — OPEN, 2026-09-29
+
+- **Affected components:** `src/app/api/decision-engine/experiment-execution-resolver.ts`'s `createDryRunBatch` (server-side, Phase 10 slice 5) and `src/components/batch-manager.tsx` (client-side, pre-existing).
+- **Found during:** the one comprehensive independent review of the whole phase, right before its merge-into-`dev` request.
+- **Actual risk:** both independently implement "group this channel's eligible approved changes by `videoId`, one ledger-row selection per video" with structurally identical logic, one in a server-side resolver building a real `createBatch` call, the other shaping what an operator sees/picks in the Batches tab's own UI. Not the same code path (one is client-side JSON-shaping for display/selection, the other calls the real batch-creation service directly), so this is a genuine second copy, not shared logic accidentally flagged twice. If the grouping rule ever changes (e.g. a per-video change-count cap, a different grouping key), a fix applied to the operator-facing Batches UI has no reason to also reach Decision Engine's automated experiment execution, or vice versa -- what an operator previews manually could silently diverge from what the system actually executes for an experiment.
+- **Why not fixed now:** extracting a shared pure grouping helper is straightforward in isolation, but placing it correctly (a shared, framework-agnostic module both a React client component and a server-only API route file can import) needs its own small design decision this review-fix pass did not scope time for, and the two current implementations are correct and tested independently today -- not an active bug, a drift risk.
+- **Required remediation (not yet scheduled):** extract a small, pure `groupChangesByVideo`-style helper (input: changes with `videoId`/`id`; output: `{videoId, changeIds}[]`) into a shared, non-React, non-server-only location both call sites can import, and have both call it instead of their own copy.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal deduplication with no intended behavior change.
+- **Status:** OPEN, tracked.
+
+## RISK-85 — "insert then re-fetch, throw if missing" is copy-pasted 5x across `decision-engine/services.ts` — OPEN, 2026-09-29
+
+- **Affected components:** `src/lib/decision-engine/services.ts`'s `createHypothesis`, `createExperiment`, `createExperimentOutcome`, `addHypothesisEvidence`, and `saveGeneratedHypothesis` -- each independently inserts a row, re-fetches it by id, and throws its own inline not-found `DomainError` if the re-fetch somehow comes back empty.
+- **Found during:** the one comprehensive independent review of the whole phase, right before its merge-into-`dev` request.
+- **Actual risk:** none today -- the re-fetch-after-insert pattern is itself a correct, established convention in this codebase (an insert followed by a read of the row exactly as persisted, rather than trusting the insert's own input echoed back). The risk is purely maintainability: the "not found immediately after creation" error shape (code/message wording) is typed out independently 5 times, so a future change to that shape (a shared error code, added logging, a different message) has to be found and edited in all 5 places, and it is easy to update some call sites and silently leave others diverging.
+- **Why not fixed now:** a shared `fetchOrThrow`-style helper is a small, mechanical extraction, but each of the 5 call sites has its own specific entity name/id-field/error-code in its message and `details` payload -- doing this cleanly (not just DRY-for-its-own-sake, matching `AGENTS.md`'s own "don't add abstraction beyond what's needed" instinct) means designing a helper generic enough to serve all 5 without losing their per-entity error specificity, which is real but small design work this review-fix pass did not scope time for.
+- **Required remediation (not yet scheduled):** a small generic `fetchOrThrow(fetchFn, { code, message, details })`-shaped helper (or similar), adopted by all 5 call sites, parameterized per-entity for the error shape each already produces today (no change to any error's actual code/message/details, purely an internal refactor).
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal deduplication with no intended behavior change.
+- **Status:** OPEN, tracked.
+
+## RISK-86 — `npm run build` migrates the developer's real app-data database — OPEN, 2026-09-30
+
+- **Affected components:** `src/lib/db.ts` (boot-time `initializeDatabaseSchema` on the
+  singleton client) and `src/lib/platform-paths/runtime.ts`.
+- **Found during:** Phase 11. A validation `npm run build` on `feature/phase-11-channel-workspaces`
+  migrated the owner's real `~/Library/Application Support/YouTubeOperationsManager/playlist-manager.db`
+  from v32 to v33 (2026-09-30 15:29; the pre-migration backup was taken automatically).
+- **Actual risk:** `next build` imports `db.ts` while collecting page data. Only the test runner
+  is redirected to a temp app-data directory (`NODE_TEST_CONTEXT`); a build is not. Building any
+  branch with a newer schema therefore migrates the real database. `dev`/`main` servers then
+  refuse to start ("newer than supported") until that branch merges. A separate git worktree
+  does not help, because it shares the same app-data directory. The owner chose to keep the v33
+  database (Telegram, 2026-09-30, "Оставь как есть"): Phase 11's migration is additive, with one
+  empty table.
+- **Why not fixed now:** out of Phase 11's scope. The fix touches app-data resolution for every
+  entry point.
+- **Required remediation (not yet scheduled):** either skip database initialization during
+  `next build` (for example, gate on `NEXT_PHASE === "phase-production-build"`), or add an
+  explicit app-data override for developer builds. Until then, build a schema-changing branch
+  only with `HOME` pointed at a scratch directory.
+- **Gate(s):** none.
+- **Approval required from:** project owner, for scheduling.
+- **Status:** OPEN, tracked.
+
+## RISK-87 — The channel wall between agents is in-app only (same OS user) — OPEN, accepted, 2026-09-30
+
+- **Affected components:** Phase 12 channel-bound agent sessions (`src/lib/agent-session`,
+  `src/lib/agent-tokens`, MCP/CLI).
+- **Found during:** Phase 12 design. The owner chose it knowingly: decision D0(b), Telegram
+  msg 1051, *"мне нужно иметь возможность быстро сменять каналы... не могу заводить 10 учеток"*.
+- **Actual risk:** the agent runs as the operator's OS user. So an agent with its own filesystem
+  tools can find and read another channel's data from the database file directly, read another
+  channel's workspace folder, or read another agent's client configuration, including its plaintext
+  channel token. **Updated 2026-10-01 (ADR 0013):** MCP is now served by the running app over
+  loopback HTTP and the CLI agent mode is gone, so no agent configuration contains the project path or
+  needs to open the database; the same-OS-user read remains possible, only no longer pointed at.
+  - Within the product's interface the wall is complete (AC-P12-01..10).
+  - The risk is a deliberate bypass, or a careless agent wandering the disk.
+- **Mitigations in place:**
+  - the documented per-agent sandbox / working-directory setup (`docs/AGENT_ISOLATION_SETUP.md`);
+  - OAuth tokens encrypted at rest when `OAUTH_TOKENS_ENCRYPTION_KEY` is set (PHASE_12_PLAN.md
+    12.8), so reading the database file alone yields no usable Google credential. The key itself
+    is in the environment file, which a determined same-user agent could also read.
+- **Required remediation (only if the threat model changes):** one OS user or sandbox per agent, on
+  top of the in-app HTTP endpoint that is now in place (PHASE_12_PLAN.md D0(a), second half).
+- **Gate(s):** none.
+- **Approval required from:** project owner, to change the threat model.
+- **Status:** OPEN, accepted by the owner.
+
+## RISK-88 — `db.ts` is a single persistence module for every feature; one migration failure blocks all — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/lib/db.ts`: about 6,700 lines, 50+ tables, one linear
+  `SCHEMA_MIGRATIONS` chain, and a boot-time `databaseInitialization` that every client awaits.
+- **Found during:** the independent architecture audit, 2026-10-01 (modularity, finding 6).
+- **Actual risk (`AGENTS.md` §M in practice):**
+  - Any failing migration makes the database client reject for every feature: sign-in, settings,
+    translations, and the proxy mutation gate (503).
+  - Every feature's schema and queries live in one file.
+  - This follows ADR 0001/0002 (one database, additive linear migrations). It is a design limit,
+    not an implementer's mistake.
+- **Related, low:** `cli-auth/services.ts` and `snapshot/services.ts` import `db.ts` at runtime
+  from a services layer (DEVELOPMENT_PLAYBOOK §6.2 layering). Also, small duplications remain:
+  `requireChannel` ×3, `formatCount` ×2, and a local date formatter ×2. Fold these when the code
+  is touched.
+- **Why not fixed now:** a per-feature split of `db.ts` (`src/lib/db/<feature>.ts` sharing one
+  client and one migration list) is a large mechanical refactor with no bug behind it. It would
+  also not remove the linear-migration coupling itself. Out of scope of the audit fixes, by plan.
+- **Trigger to revisit:** a migration failure in the field, or a feature that must be deployable
+  or disableable independently.
+- **Status:** OPEN, accepted.
+
+## RISK-89 — Automatic device sync: residual limits — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/lib/device-sync/`, `src/instrumentation.ts` (ADR 0012).
+- **Residual risks:**
+  - **Changes made just before a manual stop.** Changes from the last ~minute before a manual stop
+    (`stop.sh` / SIGTERM) are not published until this device's server runs again. There is
+    deliberately no export in signal handlers: a killed export leaves an operation lock that is
+    never auto-released. The idle shutdown does flush.
+  - **Only the web server syncs.** MCP/CLI writes made while the server is down are detected by the
+    fingerprint and published at the next server start.
+  - **Stale operation locks.** Automatic exports take the lock about once a minute. A process killed
+    mid-export by SIGTERM or `taskkill /F` used to leave a lock no one cleared. Two fixes from the
+    cross-system audit (2026-10-01):
+    - a lock held by a provably dead EXPORT process is cleared automatically
+      (`releaseStaleExportLock`, at each tick and at boot when a migration is due);
+    - a process start no longer takes the lock at all unless a migration is due, so MCP/CLI start
+      normally during an export.
+
+    A dead IMPORT or MIGRATION holder keeps the never-auto-release policy and still blocks mutations.
+    There is still no UI to clear it (`forceClearOperationLock` has no caller). That is
+    pre-existing, and rare since an import takes about a second.
+  - **Two tips from more than two devices** are reported as one divergence at a time.
+  - **Accepted fail-closed re-prompts (review round 2).** In the cases below, the computers ask a
+    human again instead of converging on their own:
+    - one computer resolves while the other keeps working before it sees the resolution;
+    - two computers resolve at the same time, even when they agree.
+
+    Nothing is overwritten, and every replaced state has a never-pruned backup
+    (`pre-take-theirs-*`, `pre-superseded-*`). Automatic convergence here would need
+    content-identity tracking, which proved unsafe under concurrent opposite resolutions.
+    Revisit if re-prompts are reported in practice. The resolution matrix is
+    `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
+    prompt.
+  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table read as a
+    local change once. The fingerprint ignores added nullable columns and newly transferred empty
+    tables (review round 4). If both computers are upgraded in between, this ends in one conflict
+    prompt. It fails closed, and nothing is lost.
+  - **Merge-transaction length grows with the Research history.** An import holds the write lock
+    for two full fingerprint scans. It measured 8 ms for three scans on the owner's DB on
+    2026-10-01. Other writers wait up to their 5 s `busy_timeout`. Revisit if the transferred
+    tables reach hundreds of thousands of rows.
+- **Why accepted:** each of these fails toward "ask a human" or "publish later", never toward
+  overwriting data (AC-AS-01/07).
+- **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
+- **Status:** OPEN, accepted.
+
+## RISK-91 — Stuck-lock recovery route is unauthenticated (local, same-origin) — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/app/api/operation-lock/route.ts`, `src/app/recovery/page.tsx`, `src/cli/operation-lock.ts`.
+- **What:** the recovery route must work when database initialization (and so any session lookup) is
+  failing, so it has no session check. Protection: same-origin required for `POST`; it only touches
+  the single operation-lock row; a lock whose holder process is alive needs `force` + typed `CLEAR`.
+- **Residual risk:** any local process/user able to reach the server's port can clear a lock. Force-
+  clearing a genuinely running import/migration could corrupt it. Consistent with the already-accepted
+  "no per-user ownership boundary" tradeoff (RISK-87).
+- **Re-evaluate when:** the server is ever reachable from another machine, or per-user auth is added.
+- **Status:** OPEN, accepted.
+
+## RISK-90 — Batch lifecycle leaves unfinished Batches that the UI cannot finish — OPEN, 2026-10-01
+
+- **Affected components:** `src/lib/batches/services.ts`, `src/components/batch-manager.tsx`.
+- **What happens:**
+  - A systemic failure (e.g. 403 `quotaExceeded`) marks the remaining rows `ABORTED_SYSTEMIC`
+    without releasing their per-video locks.
+  - The identity-guardrail abort in `executeBatch` marks only the batch `ABORTED`. Its prepared rows
+    stay `AWAITING_EXECUTION` and keep their locks.
+  - "Run dry-run preview" on a LIVE batch calls Prepare, which leaves the batch `RUNNING` with
+    `AWAITING_EXECUTION` rows. The UI shows Execute only for `PENDING` batches.
+  - `recoverBatch` would clean up, but nothing in the app calls it.
+  - A live write with an ambiguous outcome leaves a row `UNKNOWN`. That is recovery mode
+    (RISK-16), and `resolveUnknownLedgerRow` is not reachable from the app either.
+- **Found during:** reviews of automatic device sync (BL-111), 2026-10-01. All of this predates
+  that feature.
+- **Actual risk:**
+  - Leaked locks block a new Batch on the same video.
+  - An unfinished Batch also pauses automatic device sync in both directions. The pause is
+    deliberate and fail-closed, with a notice; manual Merge-tab handoff still works.
+  - That pause has no in-app way out until the Batch can be finished.
+- **Why not fixed now:** this is a change to the Phase 5 write pipeline, which is safety-critical
+  (`AGENTS.md` §L). It needs its own task and acceptance criteria.
+- **Status:** OPEN.
+
+## RISK-92 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — MOSTLY RESOLVED on branch `feature/phase-13-data-sources`, 2026-10-01
+
+- **Affected components:** `src/lib/market-intelligence/` (Phase 9). Tables `market_channel_snapshots`,
+  `market_video_snapshots`, `research_evidence`, `market_discovery_candidates`. Derived metrics:
+  `derived-metrics.ts`, `historical-intelligence.ts`, trend and spike detection.
+- **Found during:** the sources research (owner, msg 1121), 2026-10-01. The wording was checked against the source:
+  [Developer Policies](https://developers.google.com/youtube/terms/developer-policies).
+- **What the policies say:**
+  - III.E.4.d: Non-Authorized Data (obtained without the user's credentials, i.e. other people's channels) may be
+    kept "not longer than 30 calendar days".
+  - III.E.4.b: long-term storage of statistics is allowed only for Authorized Data, i.e. our own channels.
+  - III.E.4.h: API Data may not be used to "create new or derived data or metrics".
+- **Actual risk:** a policy violation can lead to the Google project being restricted. Live YouTube writes and
+  analytics depend on that project too.
+- **Plan:** Phase 13, slices 13.1–13.3 (`docs/roadmap/plans/PHASE_13_PLAN.md`). The strictness level is the owner's
+  decision D1.
+- **Gate:** none formally. It should be resolved before the operational release (§2a).
+- **Resolved by Phase 13 (D1 = a):**
+  - 13.1 classification;
+  - 13.2 30-day purge, with a backup first;
+  - 13.3 derived metrics withheld.
+- **Residual:** III.E.4.c also caps our own channels' non-statistics metadata (titles/descriptions in `videos`,
+  `changes.baseline_value`) at 30 days unless refreshed.
+  - It is refreshed by channel sync, but sync is operator-triggered, not scheduled.
+  - A channel nobody syncs for 30 days keeps stale metadata.
+  - Trigger to revisit: add a scheduled own-channel refresh, or a staleness notice.
+- **Owner decisions (msg 1139, 2026-10-01) on the judgment calls from review round 1:**
+  - **Channel ids of decided discovery candidates are kept** after 30 days, as the key of the operator's own
+    decision. Their title and reason are blanked.
+  - **Backups follow the 30-day rule too.** Every run of the retention job scrubs `backups/migrations/*.db` the same
+    way as the live database (`scrubBackupFile`): files are not deleted, they also hold the operator's own data,
+    and VACUUM runs after the scrub.
+    - Consequence: the one-time `pre-api-retention-*` backup gets the same scrub. It therefore no longer protects
+      against a purge that deletes the wrong rows. The classification tests carry that protection instead.
+  - **Expired rows never circulate back through sync.** An import drops them inside its own merge transaction,
+    before it records the fingerprint (`purgeExpiredApiDataWithinTransaction`).
+    - Sync-folder snapshots. Each auto-sync tick removes this device's own snapshots created more than 30 days
+      ago (`pruneOwnSnapshots` with `olderThan`).
+    - Remaining copies:
+      - **The lineage head**, which is kept even when it is older than 30 days. A quiet device's head is replaced
+        only at its next export. It is only ever read by an import, which drops the expired rows. It is
+        deliberately not republished after each purge, because that would bring back false cross-device
+        conflicts.
+      - **Manual handoff exports** (`appDataPaths.snapshotsDir`, used when no sync folder is set). These are
+        operator-made transfer files and are not pruned.
+      - **A device that has stopped ticking keeps its own snapshots.** This covers a device that is switched
+        off, has sync disabled, has its folder unreachable, or is busy (recovery mode or an unfinished Batch).
+        Its last up to 5 own snapshots stay in the shared folder until it ticks again. Pruning another device's
+        snapshots is never allowed, because Syncthing would propagate the deletion.
+    - Trigger to revisit: if either copy must also be bound by the 30 days.
+- **Further residuals:**
+  - Review rounds 5–6 found that reads were not filtered. Now reads hide expired API rows even before the purge
+    runs:
+    - snapshots and evidence in `db.ts`;
+    - discovery candidates in `market-intelligence` (an undecided one is hidden, a decided one is redacted).
+
+    Backups are scrubbed with `secure_delete`, so a failed VACUUM leaves no remnants.
+    This covers an MCP/CLI process without the web server, and an MCP start also runs the purge.
+  - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list
+    (`MUSIC_CHART_REGIONS`, enforced by the service) and a 30-minute cache: at most 14 units per 30 minutes.
+  - **A snapshot holds data up to about 60 days old.** A snapshot created on day c contains rows observed as
+    early as day c−30, and it stays in the sync folder until c+30. It is only read by an import, which drops
+    whatever has expired.
+    - Trigger to revisit: if the owner wants the shared folder itself bound to 30 days. That would mean
+      re-exporting after each purge, with the false-conflict risk described above.
+- **Status:** MOSTLY RESOLVED (residual above).
+
+## RISK-93 — The in-app HTTP MCP endpoint is not verified on macOS — OPEN, 2026-10-01
+
+- **Affected components:** `POST /api/mcp` (`src/lib/agent-mcp-endpoint`, ADR 0013), the `-H 127.0.0.1`
+  binding in `package.json`'s `dev`/`start` scripts, `scripts/macos/start.sh` / `stop.sh`.
+- **Found during:** BL-113. Every check (tests, build, live end-to-end against a real `next start`) ran on
+  Windows only. The owner asked for this to be tracked (2026-10-01): *"запиши в тех долг что нам надо
+  протестить это на мак"*.
+- **Actual risk:** the code itself is platform-independent (Node + Web APIs), so a defect is not expected,
+  but it is unproven. Concretely unverified on macOS:
+  - `start.sh` polls `http://localhost:3000/` with `curl` and opens the browser on `localhost`, while the
+    server now listens on IPv4 `127.0.0.1` only; `localhost` often resolves to `::1` first, so the readiness
+    poll or the browser could fail instead of falling back;
+  - a real agent client (Codex, Claude Code) connecting to `http://127.0.0.1:<port>/api/mcp`;
+  - the loopback `Host`/`Origin` guard against the Host values macOS clients actually send.
+- **Partly verified on macOS (2026-10-03, agent, isolated app-data, port 3100, current `dev` build):** with
+  `next start -H 127.0.0.1` `curl http://localhost:3100/` returns 200 although `localhost` resolves to `::1`
+  first and `[::1]` refuses (curl falls back to IPv4), so the launcher's readiness poll works; `POST /api/mcp`
+  answers 403 `MCP_CONNECTION_DISABLED`. **Still unverified:** the `Host`/`Origin` guard (the disabled check answers
+  first, so a wrong `Host` also got 403 for that reason), a real agent client, and the browser opened on
+  `localhost`.
+- **To close:** on a Mac, run `scripts/macos/start.sh` (page opens, readiness detected), then
+  `curl -i -X POST http://127.0.0.1:3000/api/mcp` (expect 403 `MCP_CONNECTION_DISABLED` or 401), then connect
+  a real agent with a channel token. If the poll fails, change `localhost` to `127.0.0.1` in both launchers.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` (`AGENTS.md` §K.3: a release's platform behavior is checked, not
+  inferred from a passing `dev` suite).
+- **Approval required from:** none to verify; the project owner for a release.
+- **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
+
+## RISK-94 — Long server-side write runs: hard-kill and launcher `stop` — OPEN (gate part closed for Batches and Fix all), 2026-10-03
+
+- **Affected components:** `src/proxy.ts` (`assertDeviceAvailableForMutation` runs once per mutating
+  request), `POST .../batches/[id]/execute` (one request, many writes),
+  `src/lib/language-fix-all` (checks the gate before every video itself), ADR 0015.
+- **Found during:** moving "Fix all" to the server (the author's self-review). The browser loop used to send one
+  gated request per video; a single server request no longer gets that per-video gate for free.
+- **Actual risk:** an export / import / migration (or a device that becomes unavailable) that starts while a
+  long `execute` is running does not stop its remaining writes. "Fix all" is closed by its own per-video
+  check; Batches `execute` was already like this before this work and is unchanged. A hard kill of the
+  server (not SIGINT/SIGTERM) also abandons a running `after()` job; the backup and audit rows already
+  written stay consistent, the unfinished videos are simply not written.
+- **Closed for Batches (2026-10-03, ADR 0016):** `executeBatch` and its preparation loop now call the same
+  gate before every not-yet-started row.
+- **Still to close:** make the launchers' `stop` wait for an active registry operation / running batch (as it
+  already waits for an export/import), and treat a hard kill of the server (see above).
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` for live Batches use together with handoff import.
+- **Approval required from:** none to implement; the project owner prioritises it.
+- **Status:** OPEN, tracked.
+
+## RISK-95 — Reach (impressions/CTR) import is not verified against real Google files — OPEN, 2026-10-03
+
+- **Affected components:** `src/lib/reach-reports/` (`reach-csv.ts`, `reach-format.ts`), `src/lib/cloud-quotas`
+  (`reporting`), BL-114, ADR 0014.
+- **Found during:** BL-114 status/quota follow-up. The Reporting job was created by a probe script on
+  2026-10-01 ~21:05:54 UTC; the app has never downloaded a real file.
+- **Expected arrival of the first file:** by **2026-10-03 ~21:06 UTC (2026-10-04 ~00:06 at UTC+3)**, i.e. job
+  creation + 48 h (the card shows "overdue" after that). Google also backfills 30 days before creation.
+- **Actual risk:** the parser, the date format (`YYYYMMDD` vs `YYYY-MM-DD`) and the **CTR scale** (ratio assumed,
+  not percent) are written from Google's documentation, not from real data; a wrong CTR scale would show
+  silently wrong numbers. Also unverified: that Cloud Monitoring exposes a daily limit for
+  `youtubereporting.googleapis.com` (the Settings bar is hidden when it does not). The real DB has not yet run
+  schema v40 / the Reach tables.
+- **To close:** after the first file arrives, back up the real DB, run the app on current `dev`, press "Sync
+  now", compare an imported day against YouTube Studio, fix `reach-csv.ts`/`reach-format.ts` if needed, check the
+  Settings quota bar, then mark BL-114's real-data check done and update this entry.
+- **Gate(s):** none blocking (impressions/CTR is read-only display; the numbers must not be trusted until verified).
+- **Approval required from:** none to implement; the owner prioritises it.
+- **Status:** OPEN, tracked.
+
+- **Update 2026-10-03 ~19:30 UTC (agent, read-only look at the owner's database):** Google delivered the first files EARLIER than the
+  expected ~21:06 UTC (it back-filled 30 days at once) and the app imported them: 62 files (31 per channel, 2026-09-01 .. 2026-10-01),
+  909 + 732 rows, every sync attempt `ok`. So the parser and the date format work on real data, and CTR arrives as a FRACTION in
+  [0, 1] (average 0.053; the largest rows 0.056, 0.065, 0.025 for 2k-3k impressions), which matches the ratio the code assumes. **Still
+  open:** a spot comparison with YouTube Studio (e.g. video `7FOvukxZ3iM`, 2026-09-01: 2,211 impressions, CTR 5.65%) and the
+  Cloud-Monitoring daily-limit question for the Reporting API.
+
+## RISK-96 — Quota guard estimates and attribution are not verified against a real batch — OPEN, 2026-10-03
+
+- **Affected components:** `src/lib/quota-guard/` (52 units per written video, 100-unit margin, 2-minute Monitoring lag),
+  `src/lib/youtube-quota/costs.ts`, the `AsyncLocalStorage` work contexts, ADR 0017.
+- **Actual risk:** the per-video cost is derived from reading the call sequence and Google's published table, not measured on a
+  real batch; a retry-heavy run could cost more than estimated (the margin is 100 units). Attribution of calls to a batch run in
+  a real server build (contexts set inside `executeBatch` / `recoverBatch` / Fix all `run`) is unit-tested, not observed live.
+  The history shows Data API figures only for calls made after this build was first run.
+- **To close:** after the first real live batch, compare the history entry (units) with Google's own usage figure and the
+  estimate; adjust `UNITS_PER_WRITTEN_VIDEO` / the margin if they differ; confirm the entry carries the batch label.
+- **Gate(s):** none blocking (the guard only ever makes a run refuse earlier; it cannot cause a write).
+- **Approval required from:** none to implement; the owner decides on tolerance.
+- **Status:** OPEN, tracked.
+
+## RISK-97 — Analytics history catch-up and local channel totals are not verified against the real API — OPEN, 2026-10-03
+
+- **Affected components:** `src/lib/analytics/` (`runHistoryCatchUp`, per-video `perVideoQueryRange`, channel-level collection, `getChannelOverview`
+  `preferLocal`), the auto-collect route's `after()` job, ADR 0018.
+- **Actual risk:** everything is unit-tested with fakes; none of it has run against the real YouTube Analytics API or the owner's data. Open
+  questions only a real run answers: how long the catch-up takes for ~50 videos per channel, whether a very long date range in ONE per-video
+  query is accepted (the plan assumes it is, as the existing manual collection accepted any range), whether the channel-level query for a
+  long range behaves, and whether the local channel totals agree with a live read for the same days.
+- **To close:** after the merge and a restart (with a backup), let the automatic catch-up run, then compare `analytics_data_quality` from the
+  channel start (no genuine uncovered dates), a pre-2026-09-14 video's day-0 row, and one local-vs-live channel overview; then mark BL-118's
+  agent retest done.
+- **Gate(s):** none blocking (read-only data collection; a failure leaves the previous state and is planned again).
+- **Approval required from:** none to verify; the owner decides when to run it.
+- **Status:** OPEN, tracked.
+
+## RISK-98 — Research export files and agent-side figures sit outside the Manager's retention control — OPEN, 2026-10-04
+
+- **Affected components:** `src/lib/research-export/` (expiry sweep), ADR 0019, Phase 13 D1 / RISK-92.
+- **Actual risk:** (1) the Manager deletes the export files IT wrote 30 days after the oldest other-channel observation inside, but any copy the
+  agent or operator makes elsewhere, and any figure derived from those files, is outside that control; (2) the sweep runs only while the app
+  runs (a file can outlive its expiry by the downtime); (3) the agent's own planned medians/percentiles of competitor statistics are derived
+  metrics from API data (YouTube policy III.E.4.h) even though the Manager computes none; (4) the export is only verified with fakes and an
+  isolated database, not yet against a real watchlist and workspace folder.
+- **Policy text checked 2026-10-04** (developers.google.com/youtube/terms/developer-policies, via a page fetch, not legal advice): III.E.4.h(ii) "must not … access or use [API Data] to create new or derived data or metrics"; III.E.2.a "Do not aggregate [API Data] except … channels … under the same content owner". Medians/percentiles/ratios over other channels' statistics, computed by the Manager OR by an agent, fall under both as written, so the Manager builds none; raw export is III.E.4.d (≤30 days). Nothing on this page addresses AI/ML use or passing data to an AI service (III.E.3.b only restricts showing Authorized Data to anyone but the user/approved agents).
+- **Owner position (2026-10-04, Telegram):** the tool enforces retention for what IT stores (files it writes, expiry sweep) and gives the agent what it asks for; it tells the agent the files must be deleted per YouTube policy (`retentionNote`, tool description), but monitoring copies or the agent's own use is outside the tool's scope. Points (1)-(2) and the agent-side part of (3) are therefore accepted as outside the tool; the policy wording check for passing API data to an external AI model remains open.
+- **To close:** owner decision on (3) (policy reading); one real export on the owner's machine (rows equal `query_market_intelligence`), then a
+  sweep after a shortened expiry in a scratch workspace.
+- **Gate(s):** none blocking the merge; (3) is a policy question for the owner.
+- **Approval required from:** the project owner for (3).
+- **Status:** OPEN, tracked.
+
+## RISK-99 — A stray draft record made the SQL read-projection stop halfway, so Change Sets showed only part of their changes — FIXED and merged to `dev`, 2026-10-04 (live: server restarted, stray `c-fake-peer-change` removed, 4 duplicate supplement sets rejected)
+
+- **What happened:** an agent submitted 53 Spanish proposals (106 changes) through `ai_localization_create_change_set` and saw 75, then 80, with no error. The Automerge draft document (source of truth) held all 106; `projectToSql` stopped at the first row the database refused — a stray test record «c-fake-peer-change» (change set `cs-fake-peer`, from an earlier device-sync lineage test) that exists in the Tropico Jazz document — and silently left every later row unprojected. Which rows came after depended on map order, hence the «random» loss.
+- **Fix:** each row is projected on its own (a refused row is logged with its id and the rest continue); `persistChangeSet` now refuses to report success when the Change Set reads back smaller than submitted (`change_set_incomplete`, names the missing `(videoId, language, field)`), so the agent gets the real counts or an explicit error. The two affected Change Sets heal on the next save of that channel's document (the whole document is re-projected on every save).
+- **Resolved 2026-10-04:** the stray `c-fake-peer-change` record was removed from that channel's draft document (copy kept outside the repo); the log shows no refused rows.
+- **Gate(s):** none. **Status:** fixed, merged to `dev`, live.
+
+## RISK-100 — Draft documents keep their full edit history, so deleting records does not shrink the file — OPEN (future), 2026-10-04
+
+- **What:** an Automerge document stores every past change. When BL-125 deletes settled drafts, the records disappear from reads and from SQL, but the `.automerge` file keeps the history and does not shrink.
+- **Why it matters later:** only file size and load time; no correctness issue. Compacting means rebuilding the document from its current snapshot, which changes its genesis and therefore needs a coordinated re-baseline across synced devices (the discard/adopt-peer logic in `automerge-core` already keys on the genesis hash).
+- **Trigger to act:** a channel draft file above ~5 MB, or a noticeable load delay. Owner decision 2026-10-04: record it, do it later as its own task.
+- **Gate(s):** none. **Status:** open, deferred.
+
+## RISK-101 — Retention can delete a change set that an experiment still points at — OPEN, 2026-10-04
+
+- **What:** `experiments.changeSetId` is a plain TEXT reference (no FK, by design, see ARCHITECTURE decision-engine slice 5). The BL-125 sweep deletes settled change sets without looking at experiments, so an experiment attached to a purged set keeps a dangling id.
+- **Effect:** starting such an experiment fails closed with the normal "change set not found" error; nothing is written to YouTube and nothing else breaks.
+- **Possible fix:** have the planner keep a set while an experiment in a non-final state references it. Not done in slice 1 (no experiment facts in the retention module yet); decide with the owner whether it matters in practice.
+- **Gate(s):** none. **Status:** open.
+
+## RISK-102 — Single-item `video-metadata` apply can still reset `defaultAudioLanguage` — OPEN, 2026-10-04
+
+Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet field is reset by `videos.update`; Tropico batch of 2026-10-04 turned 53 videos to `en-US`). The single-item apply path (`src/lib/video-metadata/services.ts`, `removeReadOnlySnippetFields`) still sends a snippet without it and has the same exposure. `src/lib/video-details/adapters/youtube-api.ts` has the same exposure: the audio field is sent only when the patch contains it, so editing just a title/description resets it. Not changed in this slice (separate write surfaces, no owner decision yet); apply the same baseline rule there before relying on it for videos whose audio language matters.
+
+## RISK-103 — Deep competitor collection: monthly re-backfill, a larger concurrency overshoot, and unrecorded spend on a crash — OPEN, 2026-10-04
+
+- **What:** (1) Videos collected deeper than page 1 are not refreshed daily, so under the 30-day API retention (III.E.4.d) their snapshots age out; the stored count then drops below the cap and the channel quietly walks the playlist again about monthly (a few units; the completion state is unchanged). (2) `runCollectionIfStale`'s known two-concurrent-callers overshoot used to be capped at 2 x 3 units; one channel may now use most of the remaining budget, so it is about 2 x the remaining budget. (3) The ledger row is written when a channel's work ends, so a crash in the middle of a backfill can leave up to about 2 units per fetched page unrecorded in `market_intelligence_collection_runs`.
+- **Effect:** (1) bounded extra spend, always inside the daily budget; (2)/(3) the daily budget can be overshot once, by a bounded amount, on a same-machine low-frequency trigger.
+- **Possible fix:** (1) refresh a rolling slice of deeper pages, or accept; (2)/(3) write the ledger row per page.
+- **Gate(s):** none. **Status:** open.
+
+## RISK-104 — Collection requests: estimate is an upper bound, create-time race, and no forced run — OPEN, 2026-10-04
+
+- **What:** (1) The per-channel estimate (ADR 0021) is a local upper bound; a channel with fewer videos than the cap, or a backfill with a stale cursor, costs less, and a no-cursor re-walk is estimated from the cap rather than measured; the incremental worst case (5) assumes at most two pages are read. (2) "One open request per channel" is checked and then inserted without a transaction, so two simultaneous creates can both succeed; the second one then runs as `skipped_not_stale` (no double spend). (3) A forced run (ignoring the 24 h window) is deliberately NOT supported (owner decision 2026-10-04); recurring requests are deferred.
+- **Effect:** none on quota safety; the owner may see a duplicate pending request or an over-estimate.
+- **Possible fix:** (2) a partial unique index or one transaction; (3) its own ADR if the owner asks for it.
+- **Gate(s):** none. **Status:** open.

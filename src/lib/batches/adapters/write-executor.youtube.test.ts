@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getLiveWritesEnabled, setLiveWritesEnabled } from "@/lib/db";
 import {
   classifyYoutubeWriteError,
   createYoutubeWriteExecutor,
@@ -39,7 +40,6 @@ const preparedPayload: PreparedPayload = {
     categoryId: "10",
     tags: ["jazz", "cuba"],
     defaultLanguage: "es",
-    defaultAudioLanguage: "es",
   },
   localizations: {
     es: { title: "New Title", description: "New Description" },
@@ -64,6 +64,19 @@ test("classifyYoutubeWriteError: documented 400 badRequest reasons are permanent
     const result = classifyYoutubeWriteError(googleApiError(400, reason));
     assert.equal(result.outcome, "FAILED");
     assert.equal((result as { classification: string }).classification, "permanent");
+    assert.equal((result as { systemic?: boolean }).systemic, undefined);
+  }
+});
+
+// (independent review, second cycle): Google's documented guidance treats a 403 rate-limit
+// reason the same as 429 -- transient, not a permanent authorization/quota problem. Previously
+// fell through into the generic 400/401/403/404 "permanent" bucket, so a legitimate throttling
+// condition killed otherwise-valid writes outright instead of being retried.
+test("classifyYoutubeWriteError: 403 rateLimitExceeded/userRateLimitExceeded is transient, not permanent", () => {
+  for (const reason of ["rateLimitExceeded", "userRateLimitExceeded"]) {
+    const result = classifyYoutubeWriteError(googleApiError(403, reason));
+    assert.equal(result.outcome, "FAILED");
+    assert.equal((result as { classification: string }).classification, "transient");
     assert.equal((result as { systemic?: boolean }).systemic, undefined);
   }
 });
@@ -162,6 +175,21 @@ test("performYoutubeWrite: RISK-11 defense-in-depth -- read-only snippet fields 
   assert.equal(sent.requestBody.snippet.title, preparedPayload.snippet.title);
 });
 
+test("performYoutubeWrite: the channel baseline's defaultAudioLanguage in the payload reaches YouTube (a snippet field left out is reset by videos.update)", async () => {
+  const calls: unknown[] = [];
+  const client: MinimalYoutubeWriteClient = {
+    videos: {
+      update: (async (params: unknown) => {
+        calls.push(params);
+        return { data: {} };
+      }) as MinimalYoutubeWriteClient["videos"]["update"],
+    },
+  };
+  await performYoutubeWrite(client, { ...preparedPayload, snippet: { ...preparedPayload.snippet, defaultAudioLanguage: "en" } });
+  const sent = calls[0] as { requestBody: { snippet: Record<string, unknown> } };
+  assert.equal(sent.requestBody.snippet.defaultAudioLanguage, "en");
+});
+
 test("performYoutubeWrite: a thrown googleapis error is classified, not propagated raw", async () => {
   const client: MinimalYoutubeWriteClient = {
     videos: {
@@ -206,5 +234,26 @@ test("attemptWrite: the barrier fires regardless of payload content (not gated b
       () => executor.attemptWrite(payload),
       (error: unknown) => error instanceof DomainError && error.code === "live_writes_disabled"
     );
+  }
+});
+
+test("attemptWrite: with the persisted live-writes setting on, the barrier lets the call through to the client (Layer 2 mirror of the off case)", async () => {
+  const alreadyEnabled = await getLiveWritesEnabled();
+  assert.equal(alreadyEnabled, false, "sanity check -- every process boot forces this off; a prior test left it on");
+
+  await setLiveWritesEnabled(true);
+  try {
+    let clientConstructed = false;
+    const executor = createYoutubeWriteExecutor({
+      async getClient(): Promise<MinimalYoutubeWriteClient> {
+        clientConstructed = true;
+        return { videos: { update: (async () => ({ data: {} })) as unknown as MinimalYoutubeWriteClient["videos"]["update"] } };
+      },
+    });
+
+    await executor.attemptWrite(preparedPayload);
+    assert.equal(clientConstructed, true, "the barrier must let the call through once the setting is on");
+  } finally {
+    await setLiveWritesEnabled(false);
   }
 });

@@ -1,0 +1,938 @@
+import { google } from "googleapis";
+import type { youtube_v3 } from "googleapis";
+import { createGoogleOAuthClient } from "../auth";
+import {
+  getDataApiReadsEnabled,
+  getUserOAuthTokens,
+  recordGatewayCallOutcome,
+  saveUserOAuthTokens,
+} from "../db";
+import { DomainError } from "../video-metadata/contracts";
+import { wrapYoutubeClientForQuotaClassification } from "./error-classification";
+
+/**
+ * "Data API v3 reads enabled" toggle (owner instruction, 2026-09-22, Telegram -- see
+ * `src/lib/db.ts`'s `getDataApiReadsEnabled` for the full rationale and default/persistence
+ * model, deliberately the opposite of Gate B's write-side toggle).
+ *
+ * **Deliberately couples to write paths too, unlike the write gateway's own per-caller
+ * `assertLiveWritesAuthorized` pattern.** This check lives inside `createYoutubeClient` itself
+ * (below) -- the one shared constructor every Data API v3 caller in the repo uses, read or
+ * write -- so disabling reads also blocks Batches' write-client construction and
+ * `write-context`'s pre-write identity check. This is intentional, not an oversight: a write
+ * path here always depends on a read first (a mandatory fresh pre-write fetch, or resolving
+ * "which channel am I" before comparing it against the expected one) -- if reads are disabled,
+ * that dependency cannot be satisfied safely, and failing the write closed is this codebase's
+ * existing fail-closed philosophy applied consistently, not a new behavior. Live Writes remains
+ * the sole *authorization* for whether a write is allowed at all; this is an orthogonal
+ * precondition, not a replacement for it.
+ */
+export async function assertDataApiReadsAuthorized(): Promise<void> {
+  if (await getDataApiReadsEnabled()) {
+    await recordGatewayCallOutcome("data_api_reads", "allowed");
+    return;
+  }
+
+  await recordGatewayCallOutcome("data_api_reads", "blocked");
+  throw new DomainError({
+    code: "data_api_reads_disabled",
+    message:
+      "YouTube Data API v3 reads are disabled -- the Settings tab's \"Data API reads\" toggle is off. " +
+      "This also blocks write paths, which require a read to verify channel identity and fetch fresh state first.",
+  });
+}
+
+/**
+ * The single choke point every Data API v3 call in the repo passes through to get a client --
+ * every `adapters/youtube-api.ts`, plus `getAuthenticatedYoutube`/`getAuthenticatedYoutubeFromTokens`
+ * below, call this rather than constructing a `youtube_v3.Youtube` any other way. `async`
+ * specifically so `assertDataApiReadsAuthorized` lives here, checked exactly once, mechanically,
+ * for every caller -- see that function's own doc comment for why this also covers write-adjacent
+ * callers, unlike the write gateway's per-caller design.
+ */
+export async function createYoutubeClient(
+  auth: youtube_v3.Options["auth"]
+): Promise<youtube_v3.Youtube> {
+  await assertDataApiReadsAuthorized();
+  return wrapYoutubeClientForQuotaClassification(google.youtube({ version: "v3", auth }), "data");
+}
+
+export async function getAuthenticatedYoutube(userId: string) {
+  const user = await getUserOAuthTokens(userId);
+
+  if (!user?.accessToken) throw new Error("User not authenticated");
+
+  const oauth2 = createGoogleOAuthClient();
+  oauth2.setCredentials({
+    access_token: user.accessToken,
+    refresh_token: user.refreshToken,
+  });
+
+  oauth2.on("tokens", async (tokens) => {
+    await saveUserOAuthTokens(userId, {
+      accessToken: tokens.access_token ?? user.accessToken,
+      refreshToken: tokens.refresh_token ?? user.refreshToken,
+      tokenExpiry: tokens.expiry_date
+        ? Math.floor(tokens.expiry_date / 1000)
+        : user.tokenExpiry,
+    });
+  });
+
+  return createYoutubeClient(oauth2);
+}
+
+export async function getAuthenticatedYoutubeFromTokens(credentials: {
+  accessToken: string;
+  refreshToken?: string;
+}) {
+  const oauth2 = createGoogleOAuthClient();
+  oauth2.setCredentials({
+    access_token: credentials.accessToken,
+    refresh_token: credentials.refreshToken,
+  });
+  return createYoutubeClient(oauth2);
+}
+
+export async function getMyChannelId(youtube: youtube_v3.Youtube) {
+  const res = await youtube.channels.list({
+    part: ["id"],
+    mine: true,
+  });
+  return res.data.items?.[0]?.id;
+}
+
+export async function listVideosByChannel(args: {
+  youtube: youtube_v3.Youtube;
+  channelId: string;
+  maxResults?: number;
+}) {
+  const uploadsPlaylistRes = await args.youtube.channels.list({
+    part: ["contentDetails"],
+    id: [args.channelId],
+  });
+
+  const uploadsPlaylistId =
+    uploadsPlaylistRes.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+
+  if (!uploadsPlaylistId) {
+    return [] as {
+      videoId: string;
+      title: string;
+      description: string;
+      publishedAt: string;
+    }[];
+  }
+
+  const seen = new Set<string>();
+  const videos: {
+    videoId: string;
+    title: string;
+    description: string;
+    publishedAt: string;
+  }[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await args.youtube.playlistItems.list({
+      part: ["snippet"],
+      playlistId: uploadsPlaylistId,
+      maxResults: 50,
+      pageToken,
+    });
+
+    for (const item of res.data.items ?? []) {
+      const videoId = item.snippet?.resourceId?.videoId;
+      if (!videoId || seen.has(videoId)) continue;
+
+      seen.add(videoId);
+      videos.push({
+        videoId,
+        title: item.snippet?.title ?? "",
+        description: item.snippet?.description ?? "",
+        publishedAt: item.snippet?.publishedAt ?? "",
+      });
+
+      if (args.maxResults && videos.length >= args.maxResults) {
+        return videos;
+      }
+    }
+
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return videos;
+}
+
+export type ChannelForSync = {
+  channelId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  uploadsPlaylistId: string;
+  /** BL-118: when the channel was created on YouTube (`snippet.publishedAt`); null if the API omitted it. */
+  publishedAt: string | null;
+};
+
+export async function getChannelForSync(
+  youtube: youtube_v3.Youtube,
+  channelId?: string
+): Promise<ChannelForSync | null> {
+  const res = await youtube.channels.list(
+    channelId
+      ? { part: ["snippet", "contentDetails"], id: [channelId] }
+      : { part: ["snippet", "contentDetails"], mine: true }
+  );
+
+  const channel = res.data.items?.[0];
+  const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
+  if (!channel?.id || !uploadsPlaylistId) return null;
+
+  return {
+    channelId: channel.id,
+    title: channel.snippet?.title ?? "",
+    thumbnailUrl:
+      channel.snippet?.thumbnails?.medium?.url ??
+      channel.snippet?.thumbnails?.default?.url ??
+      null,
+    uploadsPlaylistId,
+    publishedAt: channel.snippet?.publishedAt ?? null,
+  };
+}
+
+export type PublicChannelSnapshot = {
+  channelId: string;
+  title: string;
+  /** `null` both when the API omits the field AND when `hiddenSubscriberCount` is true -- the
+   * latter case would otherwise return a fabricated "0" (YouTube reports a real subscriber count
+   * of exactly zero identically to a hidden one at the raw API level), which this codebase's
+   * "never fabricate a stat" discipline (see `parseStatCount`'s own callers) forbids treating as
+   * a genuine observation (Phase 9 slice 3, `docs/roadmap/plans/PHASE_9_PLAN.md` §7). Use the
+   * `hiddenSubscriberCount` field below to tell "hidden, a known fact" apart from "absent/
+   * unparseable, an unknown gap" -- both collapse to `null` here, but only the former is `true`. */
+  subscriberCount: number | null;
+  /** YouTube's own real flag (`statistics.hiddenSubscriberCount`), exposed alongside the
+   * (necessarily ambiguous) `null` above -- added for Phase 9 slice 9A
+   * (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) after independent review found a caller
+   * re-guessing this from `subscriberCount === null` would also misclassify a genuinely
+   * absent/unparseable count as "hidden." */
+  hiddenSubscriberCount: boolean;
+  viewCount: number | null;
+  videoCount: number | null;
+  /** The channel's own uploads playlist id, for enumerating its videos (`listUploadsPlaylistVideoIds`)
+   * -- `null` when the channel genuinely has none (rare) or the field is absent. Added for Phase 9
+   * slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`): requesting it in this SAME
+   * `channels.list` call (an additive `contentDetails` part, still 1 unit) avoids a second
+   * per-channel call for information `getChannelForSync` already knows how to read. */
+  uploadsPlaylistId: string | null;
+};
+
+/**
+ * Phase 9 slice 3 -- a public, explicit-id snapshot of an ARBITRARY channel (not necessarily
+ * owned by the operator), for the market-research watchlist's "fetch public snapshot" action.
+ * Deliberately a separate function from `getChannelForSync` (which is named/scoped for "my own
+ * channel, or a channel about to be treated as mine") -- this one requests exactly the public
+ * fields a competitor snapshot needs. Widened in Phase 9 slice 9B to also request/return
+ * `uploadsPlaylistId` -- this module's own earlier doc comment claimed "never enumerates a
+ * non-owned channel's videos," which slice 9B is exactly the exception to (see
+ * `docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md` §5 for why this is one call, not a new one).
+ */
+export async function getPublicChannelSnapshot(
+  youtube: youtube_v3.Youtube,
+  channelId: string
+): Promise<PublicChannelSnapshot | null> {
+  const res = await youtube.channels.list({
+    part: ["snippet", "statistics", "contentDetails"],
+    id: [channelId],
+  });
+
+  const channel = res.data.items?.[0];
+  if (!channel?.id) return null;
+
+  const hiddenSubscriberCount = channel.statistics?.hiddenSubscriberCount === true;
+
+  return {
+    channelId: channel.id,
+    title: channel.snippet?.title ?? "",
+    subscriberCount: hiddenSubscriberCount ? null : parseStatCount(channel.statistics?.subscriberCount),
+    hiddenSubscriberCount,
+    viewCount: parseStatCount(channel.statistics?.viewCount),
+    videoCount: parseStatCount(channel.statistics?.videoCount),
+    uploadsPlaylistId: channel.contentDetails?.relatedPlaylists?.uploads ?? null,
+  };
+}
+
+export async function listUploadsPlaylistVideoIds(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string,
+  /** Optional progress hook (ADR 0015): called with the running count of unique ids after each page. */
+  options: { onPage?: (found: number) => void } = {}
+): Promise<string[]> {
+  const seen = new Set<string>();
+  const videoIds: string[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await youtube.playlistItems.list({
+      part: ["contentDetails"],
+      playlistId: uploadsPlaylistId,
+      maxResults: 50,
+      pageToken,
+    });
+
+    for (const item of res.data.items ?? []) {
+      const videoId = item.contentDetails?.videoId;
+      if (!videoId || seen.has(videoId)) continue;
+      seen.add(videoId);
+      videoIds.push(videoId);
+    }
+
+    options.onPage?.(videoIds.length);
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return videoIds;
+}
+
+
+export type UploadsPlaylistPage = {
+  items: { videoId: string; title: string; publishedAt: string | null }[];
+  /** `null` when this is the last page. */
+  nextPageToken: string | null;
+};
+
+/**
+ * Phase 13 (review round 1): ONE page of the uploads playlist WITH each item's title and publish
+ * time -- `playlistItems.list` costs 1 unit whatever parts are requested, and `videos.batchGetStats`
+ * (which supplies the statistics) returns no title. Up to 50 uploads, newest first. Operator request
+ * 2026-10-04: `pageToken` (omitted = the first page) lets the caller page deeper; every call is still
+ * exactly 1 unit and returns at most 50 items, so the caller's flat per-page charge stays exact.
+ */
+export async function listUploadsPlaylistPage(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string,
+  pageToken?: string
+): Promise<UploadsPlaylistPage> {
+  const res = await youtube.playlistItems.list({
+    part: ["snippet", "contentDetails"],
+    playlistId: uploadsPlaylistId,
+    maxResults: 50,
+    ...(pageToken ? { pageToken } : {}),
+  });
+  const seen = new Set<string>();
+  const items: UploadsPlaylistPage["items"] = [];
+  for (const item of res.data.items ?? []) {
+    const videoId = item.contentDetails?.videoId;
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    items.push({
+      videoId,
+      title: item.snippet?.title ?? "",
+      publishedAt: item.contentDetails?.videoPublishedAt ?? null,
+    });
+  }
+  return { items, nextPageToken: res.data.nextPageToken ?? null };
+}
+
+/** The uploads playlist's first page (up to 50 newest uploads) -- `listUploadsPlaylistPage` without a token. */
+export async function listUploadsPlaylistFirstPage(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string
+): Promise<{ videoId: string; title: string; publishedAt: string | null }[]> {
+  return (await listUploadsPlaylistPage(youtube, uploadsPlaylistId)).items;
+}
+
+export type PublicVideoSnapshot = {
+  videoId: string;
+  title: string;
+  /** `null` when the API omits it -- never fabricated. */
+  publishedAt: string | null;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  /** Raw video length; `null`/absent when the fetch did not return it (never 0). Operator request 2026-10-04. */
+  durationSeconds?: number | null;
+  /** YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming"); only the `videos.list` path returns it. */
+  liveBroadcastContent?: string | null;
+};
+
+/**
+ * Phase 9 slice 9B -- a lean, public-only batch video-stats fetch, mirroring
+ * `getPublicChannelSnapshot`'s own "public, explicit-id, nothing extra" precedent rather than
+ * reusing the sync-oriented `getVideosMetadataContextBatch` (which also fetches
+ * `localizations`/`contentDetails`/`status` this feature never uses, and is named/scoped for the
+ * operator's own already-synced videos). Includes `snippet` (not just `statistics`) so
+ * `publishedAt` is populated -- needed by a future slice's age-normalized comparison.
+ *
+ * A requested id absent from the response (YouTube silently omits a deleted/private video from
+ * `videos.list`, with no distinguishing signal) is simply absent from the returned array -- never
+ * fabricated, never assumed to specifically mean "deleted." The caller diffs requested-vs-returned
+ * counts itself if it needs to record that gap.
+ */
+export async function getPublicVideoSnapshots(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<PublicVideoSnapshot[]> {
+  if (videoIds.length === 0) return [];
+
+  const results: PublicVideoSnapshot[] = [];
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.videos.list({ part: ["snippet", "statistics", "contentDetails"], id: batch });
+    for (const item of res.data.items ?? []) {
+      if (!item.id) continue;
+      results.push({
+        videoId: item.id,
+        title: item.snippet?.title ?? "",
+        publishedAt: item.snippet?.publishedAt ?? null,
+        durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
+        liveBroadcastContent: item.snippet?.liveBroadcastContent ?? null,
+        viewCount: parseStatCount(item.statistics?.viewCount),
+        likeCount: parseStatCount(item.statistics?.likeCount),
+        commentCount: parseStatCount(item.statistics?.commentCount),
+      });
+    }
+  }
+  return results;
+}
+
+export type PublicChannelSearchResult = {
+  channelId: string;
+  title: string;
+  /** `null` when the API omits it -- never fabricated. */
+  description: string | null;
+};
+
+/**
+ * Phase 9 slice 9C -- `search.list` (channel-type only), exactly ONE call, never paginates
+ * (mirrors `listUploadsPlaylistFirstPage`'s own precedent: capping by page keeps the real
+ * cost exactly and always 1 call, deterministically, never silently doubling for a query whose
+ * first page alone doesn't satisfy the caller). Since 2026-06-01 that call is 1 of the method's own
+ * 100-calls-per-day bucket (Phase 13 slice 13.4; it used to cost 100 units of the shared pool), so
+ * every call is a scarce daily resource. A result missing
+ * its own channel id (a malformed/unexpected API response) is simply omitted, never fabricated.
+ */
+export async function searchPublicChannels(
+  youtube: youtube_v3.Youtube,
+  query: string,
+  maxResults = 25
+): Promise<PublicChannelSearchResult[]> {
+  const res = await youtube.search.list({
+    part: ["snippet"],
+    q: query,
+    type: ["channel"],
+    maxResults,
+  });
+
+  const results: PublicChannelSearchResult[] = [];
+  for (const item of res.data.items ?? []) {
+    const channelId = item.id?.channelId;
+    if (!channelId) continue;
+    results.push({
+      channelId,
+      title: item.snippet?.title ?? "",
+      description: item.snippet?.description ?? null,
+    });
+  }
+  return results;
+}
+
+const YOUTUBE_VIDEOS_LIST_BATCH_SIZE = 50;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+export type ThumbnailInfo = {
+  url: string;
+  width: number | null;
+  height: number | null;
+};
+
+export type VideoSyncMetadata = {
+  videoId: string;
+  title: string;
+  description: string;
+  publishedAt: string;
+  privacyStatus: string;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  thumbnails: Record<string, ThumbnailInfo>;
+  existingLocalizations: Record<string, LocaleMetadata>;
+  etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
+  durationSeconds: number | null;
+  /** `snippet.liveBroadcastContent` as returned by the sync read ("none" | "live" | "upcoming"); `null` when absent. */
+  liveBroadcastContent: string | null;
+  publishAt: string | null;
+};
+
+function parseStatCount(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Phase 7 slice K (owner spec §10 -- "similar duration" comparable-content filter). YouTube's
+// `contentDetails.duration` is an ISO-8601 duration string (e.g. "PT10M30S", "P1DT2H"). Years/
+// months are approximated as 365/30 days respectively -- YouTube videos never plausibly report
+// those units at meaningful scale, so the approximation error is immaterial in practice, but it
+// IS an approximation, not exact calendar arithmetic (documented here so a future reader doesn't
+// assume otherwise).
+const ISO8601_DURATION_RE = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+
+/**
+ * Never fabricates a fact (owner spec §9): an unparseable or absent duration is `null`. A
+ * genuinely all-zero duration (`"P0D"`, `"PT0S"`) is ALSO `null`, not a literal `0` -- YouTube
+ * uses this as a placeholder for an in-progress live broadcast/premiere whose final length isn't
+ * known yet, never as a real fact about a processed video's actual length.
+ */
+export function parseIso8601DurationToSeconds(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = ISO8601_DURATION_RE.exec(value);
+  if (!match) return null;
+
+  const [, years, months, days, hours, minutes, seconds] = match;
+  if (!years && !months && !days && !hours && !minutes && !seconds) {
+    return null; // e.g. a bare "P" or "PT" with no actual components -- not a real duration
+  }
+
+  const totalSeconds =
+    Number(years ?? 0) * 365 * 24 * 3600 +
+    Number(months ?? 0) * 30 * 24 * 3600 +
+    Number(days ?? 0) * 24 * 3600 +
+    Number(hours ?? 0) * 3600 +
+    Number(minutes ?? 0) * 60 +
+    Number(seconds ?? 0);
+
+  return totalSeconds > 0 ? Math.round(totalSeconds) : null;
+}
+
+function toThumbnailMap(
+  thumbnails: youtube_v3.Schema$ThumbnailDetails | null | undefined
+): Record<string, ThumbnailInfo> {
+  const map: Record<string, ThumbnailInfo> = {};
+  for (const [size, value] of Object.entries(thumbnails ?? {})) {
+    if (!value?.url) continue;
+    map[size] = {
+      url: value.url,
+      width: value.width ?? null,
+      height: value.height ?? null,
+    };
+  }
+  return map;
+}
+
+export async function getVideosMetadataContextBatch(
+  youtube: youtube_v3.Youtube,
+  videoIds: string[],
+  /** Optional progress hook (ADR 0015): `(ids processed so far, total ids)` after each chunk. */
+  options: { onProgress?: (done: number, total: number) => void } = {}
+): Promise<VideoSyncMetadata[]> {
+  const results: VideoSyncMetadata[] = [];
+  let processed = 0;
+
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    if (batch.length === 0) continue;
+
+    const res = await youtube.videos.list({
+      part: ["snippet", "status", "localizations", "statistics", "contentDetails"],
+      id: batch,
+      maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
+    });
+
+    for (const item of res.data.items ?? []) {
+      if (!item.id || !item.snippet) continue;
+
+      results.push({
+        videoId: item.id,
+        title: item.snippet.title ?? "",
+        description: item.snippet.description ?? "",
+        publishedAt: item.snippet.publishedAt ?? "",
+        privacyStatus: item.status?.privacyStatus ?? "private",
+        defaultLanguage: item.snippet.defaultLanguage ?? null,
+        defaultAudioLanguage: item.snippet.defaultAudioLanguage ?? null,
+        thumbnails: toThumbnailMap(item.snippet.thumbnails),
+        existingLocalizations: toLocaleMetadataMap(item.localizations),
+        etag: item.etag ?? null,
+        // The API returns these as decimal strings and omits a field entirely when it isn't
+        // available (e.g. comments/likes disabled/hidden) -- never defaulted to 0, which would
+        // assert a false "zero views" fact (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S1).
+        viewCount: parseStatCount(item.statistics?.viewCount),
+        commentCount: parseStatCount(item.statistics?.commentCount),
+        likeCount: parseStatCount(item.statistics?.likeCount),
+        // Phase 7 slice K (owner spec §10). Same "never fabricate" discipline as the stats above.
+        durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
+        // Operator request 2026-10-04: already in the `snippet` part this read requests, no extra cost.
+        liveBroadcastContent: item.snippet.liveBroadcastContent ?? null,
+        // Owner instruction, 2026-09-26: YouTube's own scheduled-publish time for a still-private
+        // video (distinct from `snippet.publishedAt` above, which reflects when a PUBLIC video
+        // actually went live). Already present in this same response -- `part: ["status", ...]`
+        // was already requested for `privacyStatus`, no new API part needed. `null` once the
+        // video is public (YouTube itself clears this field) or if it was never scheduled.
+        publishAt: item.status?.publishAt ?? null,
+      });
+    }
+
+    processed += batch.length;
+    options.onProgress?.(processed, videoIds.length);
+  }
+
+  return results;
+}
+
+export async function getVideoById(
+  youtube: youtube_v3.Youtube,
+  videoId: string
+) {
+  const res = await youtube.videos.list({
+    part: ["snippet"],
+    id: [videoId],
+  });
+
+  const video = res.data.items?.[0];
+  if (!video?.id || !video.snippet) return null;
+
+  return {
+    videoId: video.id,
+    title: video.snippet.title ?? "",
+    description: video.snippet.description ?? "",
+    publishedAt: video.snippet.publishedAt ?? "",
+  };
+}
+
+export async function getVideoSnippet(
+  youtube: youtube_v3.Youtube,
+  videoId: string
+) {
+  const res = await youtube.videos.list({
+    part: ["snippet"],
+    id: [videoId],
+  });
+
+  const snippet = res.data.items?.[0]?.snippet;
+  if (!snippet) return null;
+
+  return snippet;
+}
+
+type LocaleMetadata = {
+  title: string;
+  description: string;
+};
+
+function toLocaleMetadataMap(
+  localizations: youtube_v3.Schema$VideoLocalization[] | Record<string, youtube_v3.Schema$VideoLocalization> | null | undefined
+) {
+  const input = localizations ?? {};
+  const entries = Array.isArray(input) ? [] : Object.entries(input);
+
+  const normalized: Record<string, LocaleMetadata> = {};
+  for (const [locale, value] of entries) {
+    normalized[locale] = {
+      title: value?.title ?? "",
+      description: value?.description ?? "",
+    };
+  }
+
+  return normalized;
+}
+
+export async function getVideoMetadataContext(
+  youtube: youtube_v3.Youtube,
+  videoId: string
+) {
+  const res = await youtube.videos.list({
+    part: ["snippet", "localizations"],
+    id: [videoId],
+  });
+
+  const item = res.data.items?.[0];
+  const snippet = item?.snippet;
+  if (!snippet) return null;
+
+  return {
+    snippet,
+    localizations: toLocaleMetadataMap(item.localizations),
+  };
+}
+
+export type VideoDetailsContext = {
+  etag: string | null;
+  snippet: youtube_v3.Schema$VideoSnippet;
+  status: youtube_v3.Schema$VideoStatus;
+  recordingDate: string | null;
+};
+
+/** Fetches exactly the three parts `src/lib/video-details/` can write -- never `localizations`,
+ * so this module structurally cannot read (or, via a merge bug, write) a locale it has no
+ * business touching (AGENTS.md §F). */
+export async function getVideoDetailsContext(
+  youtube: youtube_v3.Youtube,
+  videoId: string
+): Promise<VideoDetailsContext | null> {
+  const res = await youtube.videos.list({
+    part: ["snippet", "status", "recordingDetails"],
+    id: [videoId],
+  });
+
+  const item = res.data.items?.[0];
+  if (!item?.snippet || !item.status) return null;
+
+  return {
+    etag: item.etag ?? null,
+    snippet: item.snippet,
+    status: item.status,
+    recordingDate: item.recordingDetails?.recordingDate ?? null,
+  };
+}
+
+export type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
+
+export type PlaylistMetadata = {
+  id: string;
+  title: string;
+  description: string;
+  privacyStatus: PlaylistPrivacyStatus;
+};
+
+type PlaylistMetadataWithChannel = PlaylistMetadata & {
+  channelId: string;
+};
+
+/** Reused by `src/lib/youtube-write-gateway/` so the read side (this file) and the write
+ * side (the gateway) never carry two independently-drifting copies of the same mapping. */
+export function normalizePlaylistPrivacyStatus(value: string | null | undefined): PlaylistPrivacyStatus {
+  if (value === "public" || value === "unlisted") {
+    return value;
+  }
+
+  return "private";
+}
+
+export function mapPlaylistMetadata(
+  playlist: youtube_v3.Schema$Playlist,
+  fallback?: {
+    title?: string;
+    description?: string;
+    privacyStatus?: PlaylistPrivacyStatus;
+  }
+): PlaylistMetadata | null {
+  if (!playlist.id) return null;
+
+  return {
+    id: playlist.id,
+    title: playlist.snippet?.title ?? fallback?.title ?? "Untitled",
+    description: playlist.snippet?.description ?? fallback?.description ?? "",
+    privacyStatus: normalizePlaylistPrivacyStatus(
+      playlist.status?.privacyStatus ?? fallback?.privacyStatus
+    ),
+  };
+}
+
+export async function listPlaylistsForAuthenticated(youtube: youtube_v3.Youtube) {
+  const channelId = await getMyChannelId(youtube);
+  if (!channelId) return [] as PlaylistMetadata[];
+
+  const playlists: PlaylistMetadata[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await youtube.playlists.list({
+      part: ["snippet", "status"],
+      channelId,
+      maxResults: 50,
+      pageToken,
+    });
+
+    for (const item of res.data.items ?? []) {
+      const mapped = mapPlaylistMetadata(item);
+      if (!mapped) continue;
+      playlists.push(mapped);
+    }
+
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return playlists;
+}
+
+export async function getPlaylistForUpdate(
+  youtube: youtube_v3.Youtube,
+  playlistId: string
+): Promise<PlaylistMetadataWithChannel | null> {
+  const response = await youtube.playlists.list({
+    part: ["id", "snippet", "status"],
+    id: [playlistId],
+    maxResults: 1,
+  });
+
+  const playlist = response.data.items?.[0];
+  const mapped = playlist ? mapPlaylistMetadata(playlist) : null;
+  const channelId = playlist?.snippet?.channelId;
+
+  if (!mapped || !channelId) {
+    return null;
+  }
+
+  return {
+    ...mapped,
+    channelId,
+  };
+}
+
+export async function listPlaylistItemIdsByVideo(
+  youtube: youtube_v3.Youtube,
+  playlistId: string
+) {
+  const idsByVideo = new Map<string, string[]>();
+  let pageToken: string | undefined;
+
+  do {
+    const res = await youtube.playlistItems.list({
+      part: ["snippet"],
+      playlistId,
+      maxResults: 50,
+      pageToken,
+    });
+
+    for (const item of res.data.items ?? []) {
+      const videoId = item.snippet?.resourceId?.videoId;
+      if (!videoId || !item.id) continue;
+
+      const current = idsByVideo.get(videoId) ?? [];
+      current.push(item.id);
+      idsByVideo.set(videoId, current);
+    }
+
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return idsByVideo;
+}
+
+export type SupportedLanguage = { code: string; name: string };
+
+/**
+ * The real, official set of `hl` values YouTube's `i18nLanguages.list` endpoint returns,
+ * mapped to their English display names -- used to suggest which language codes an operator
+ * can add as a Languages-tab column (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2,
+ * follow-up assignment 2026-09-21). This is a suggestion source, not a hard allowlist: it is
+ * YouTube's own supported *interface* language list, which is a documented, narrower set than
+ * every `localizations` key `videos.update` will actually accept (e.g. regional variants like
+ * "en-US" seen on real synced data are not guaranteed to appear here) -- callers must still
+ * accept any code `isValidLanguageCode` (src/lib/changesets/diff.ts) allows, not only these.
+ */
+export async function listSupportedLanguages(youtube: youtube_v3.Youtube): Promise<SupportedLanguage[]> {
+  const res = await youtube.i18nLanguages.list({ part: ["snippet"], hl: "en" });
+
+  return (res.data.items ?? [])
+    .map((item) => ({
+      code: item.id ?? "",
+      name: item.snippet?.name ?? item.id ?? "",
+    }))
+    .filter((lang) => lang.code.length > 0)
+    .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+/**
+ * Phase 13 slice 13.6 -- `videos.batchGetStats` (YouTube Data API revision history, 2026-06-03): 1
+ * unit of its OWN quota bucket (10,000 per day), so watchlist video statistics stop spending the
+ * shared 10k pool. Not yet in the installed `googleapis` client, so it is a raw authorized request
+ * made with the SAME client's own auth (still created by `createYoutubeClient`, so the Data API
+ * reads toggle applies). The response shape is parsed defensively; the maximum ids per call is not
+ * documented, so it is called with at most 50 (the `videos.list` limit). A caller treats any error
+ * as "unavailable" and falls back to `getPublicVideoSnapshots` (`videos.list`).
+ */
+export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<PublicVideoSnapshot[]> {
+  if (videoIds.length === 0) return [];
+  const auth = (youtube as unknown as { context?: { _options?: { auth?: { request?: unknown } } } }).context?._options?.auth;
+  if (!auth || typeof auth.request !== "function") {
+    throw new DomainError({ code: "validation_failed", message: "videos.batchGetStats needs an authorized client" });
+  }
+  const request = auth.request as (opts: { url: string; params: Record<string, string> }) => Promise<{ data: unknown }>;
+  const results: PublicVideoSnapshot[] = [];
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await request.call(auth, {
+      url: "https://www.googleapis.com/youtube/v3/videos:batchGetStats",
+      params: { id: batch.join(","), part: "id,snippet,statistics,contentDetails" },
+    });
+    const items = (res.data as { items?: unknown[] } | null)?.items ?? [];
+    for (const raw of items) {
+      // Documented response (videos/batchGetStats reference): `snippet` carries ONLY `publishTime` --
+      // no title. Statistics counts are numbers or numeric strings.
+      const item = raw as {
+        id?: string;
+        snippet?: { publishTime?: string };
+        statistics?: { viewCount?: string | number; likeCount?: string | number; commentCount?: string | number };
+        // Documented (videos/batchGetStats reference, read 2026-10-04): `contentDetails` returns `duration` (ISO 8601) and `durationMillis`;
+        // `snippet` has no `liveBroadcastContent` here.
+        contentDetails?: { duration?: string; durationMillis?: string | number };
+      };
+      if (!item.id) continue;
+      const stat = (v: string | number | undefined) => (v === undefined ? null : parseStatCount(String(v)));
+      results.push({
+        videoId: item.id,
+        title: "",
+        publishedAt: item.snippet?.publishTime ?? null,
+        viewCount: stat(item.statistics?.viewCount),
+        likeCount: stat(item.statistics?.likeCount),
+        commentCount: stat(item.statistics?.commentCount),
+        durationSeconds: parseBatchDuration(item.contentDetails),
+      });
+    }
+  }
+  return results;
+}
+
+/** ISO 8601 `duration` first, else `durationMillis`; `null` when neither is usable (zero length counts as unknown, like the own-video parser). */
+function parseBatchDuration(contentDetails: { duration?: string; durationMillis?: string | number } | undefined): number | null {
+  const fromIso = parseIso8601DurationToSeconds(contentDetails?.duration);
+  if (fromIso !== null) return fromIso;
+  const millis = contentDetails?.durationMillis === undefined ? NaN : Number(contentDetails.durationMillis);
+  return Number.isFinite(millis) && millis > 0 ? Math.round(millis / 1000) : null;
+}
+
+export type MusicChartEntry = {
+  rank: number;
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  viewCount: number | null;
+  publishedAt: string | null;
+};
+
+/**
+ * Phase 13 slice 13.9 -- YouTube's Trending Music chart for one region (`videos.list`,
+ * `chart=mostPopular`, `videoCategoryId=10`): 1 unit. Since July 2025 YouTube keeps only the Music,
+ * Movies and Gaming charts. Current-only data: callers show it as of now and never persist it.
+ */
+export async function getMostPopularMusicVideos(
+  youtube: youtube_v3.Youtube,
+  regionCode: string,
+  maxResults = 25
+): Promise<MusicChartEntry[]> {
+  const res = await youtube.videos.list({
+    part: ["snippet", "statistics"],
+    chart: "mostPopular",
+    videoCategoryId: "10",
+    regionCode,
+    maxResults,
+  });
+  return (res.data.items ?? []).flatMap((item, index) =>
+    item.id
+      ? [
+          {
+            rank: index + 1,
+            videoId: item.id,
+            title: item.snippet?.title ?? "",
+            channelId: item.snippet?.channelId ?? null,
+            channelTitle: item.snippet?.channelTitle ?? null,
+            viewCount: parseStatCount(item.statistics?.viewCount),
+            publishedAt: item.snippet?.publishedAt ?? null,
+          },
+        ]
+      : []
+  );
+}

@@ -1,9 +1,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
-import { runCliCommand } from "./video-metadata";
+import type { ChangeSetCore } from "@/lib/changesets";
+import type { ChangeSet } from "@/lib/changesets/contracts";
+import type { BatchCore } from "@/lib/batches";
+import type { Batch } from "@/lib/batches/contracts";
+import type { ChannelSyncCore } from "@/lib/channel-sync";
+import type { ChannelAccessCore } from "@/lib/channel-access";
+import type { AnalyticsCore } from "@/lib/analytics";
+import type { AiLocalizationCore } from "@/lib/ai-localization";
+import type { AssetCatalogCore } from "@/lib/asset-catalog";
+import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
+import type { DecisionEngineCore } from "@/lib/decision-engine";
+import type { VideoContextSection } from "@/lib/agent-operations";
+import { rawSqlClient } from "@/lib/db";
+import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
+import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
+import { listAssetPerformanceInputSchema } from "@/lib/agent-operations/schemas";
+import { runCliCommand, runCliProcess, getCredentialRef, parseArgs } from "./video-metadata";
+
+// Default depth (50 videos, no date), nothing collected yet: first collection = 1 channels.list + 1 page = 2 units, worst case 3.
+const STUB_COLLECTION_PROGRESS = {
+  maxVideosPerChannel: 50,
+  maxVideosPerChannelOverride: null,
+  publishedAfter: null,
+  publishedAfterOverride: null,
+  videosStored: 0,
+  complete: false,
+  completeReason: null,
+  estimatedFirstCollectionUnits: 2,
+  estimatedFirstCollectionWorstCaseUnits: 3,
+};
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-10): without an agent token the CLI runs only
+// in operator mode, which the persisted "Operator CLI access" setting gates (off by default). These
+// tests exercise operator-mode behavior, so they state that mode explicitly via the injectable seam.
+const OPERATOR_MODE = async () => true;
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -355,6 +392,7 @@ test("CLI list command calls core listVideos and returns structured JSON", async
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["list", "--userId", "user-1", "--maxResults", "5"],
     core,
     auth: makeAuthStub(),
@@ -385,6 +423,7 @@ test("CLI list forwards explicit channelId when provided", async () => {
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "list",
       "--channelId",
@@ -404,6 +443,31 @@ test("CLI list forwards explicit channelId when provided", async () => {
   });
 });
 
+// Found by independent review (cycle 2): a valueless --channelId used to fall through the
+// old inline coercion to "omitted", silently listing videos for the default/active channel
+// instead of erroring on the operator's malformed flag.
+test("CLI list rejects a --channelId flag with no value instead of silently listing the default channel", async () => {
+  const stderr: string[] = [];
+  const core = makeCoreStub();
+  let called = false;
+  core.listVideos = async () => {
+    called = true;
+    return { videos: [] };
+  };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["list", "--channelId", "--maxResults", "5"],
+    core,
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /channelId/);
+});
+
 test("CLI metadata commands fallback to active auth context when --userId is omitted", async () => {
   let capturedInput: unknown;
   const core = makeCoreStub();
@@ -415,6 +479,7 @@ test("CLI metadata commands fallback to active auth context when --userId is omi
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["list"],
     core,
     auth: makeAuthStub(),
@@ -428,11 +493,99 @@ test("CLI metadata commands fallback to active auth context when --userId is omi
   assert.equal(envelope.ok, true);
 });
 
+// Found by independent review (cycle 3): getCredentialRef feeds resolveEffectiveCredentialRef,
+// the shared path for nearly every non-auth command -- a valueless --userId used to be
+// indistinguishable from a truly OMITTED --userId, silently falling back to the active local
+// user instead of erroring on the operator's typo. Unlike an omitted --userId (the test
+// above), a PRESENT-but-valueless one must fail closed, not fall back.
+test("CLI rejects a --userId flag with no value instead of silently falling back to the active user", async () => {
+  const stderr: string[] = [];
+  const core = makeCoreStub();
+  let called = false;
+  core.listVideos = async () => {
+    called = true;
+    return { videos: [] };
+  };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["list", "--userId", "--maxResults", "5"],
+    core,
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /userId/);
+});
+
+// Found by independent review (cycle 4): the accessToken/refreshToken/scope/tokenExpiry
+// branch of getCredentialRef had zero test coverage of any kind (not even a positive-path
+// test), unlike the sibling userId branch -- a regression here (e.g. re-inlining a bare
+// typeof check) would pass CI silently. These four tests close that gap directly against
+// getCredentialRef, which is simpler and more precise than routing through a full CLI command.
+test("getCredentialRef builds a full accessToken-based CredentialRef from string flags", () => {
+  const result = getCredentialRef({
+    accessToken: "tok123",
+    refreshToken: "refresh123",
+    scope: "scope123",
+    tokenExpiry: "1700000000",
+  });
+
+  assert.deepEqual(result, {
+    accessToken: "tok123",
+    refreshToken: "refresh123",
+    scope: "scope123",
+    tokenExpiry: 1700000000,
+  });
+});
+
+test("getCredentialRef rejects a valueless --accessToken instead of falling through to null", () => {
+  assert.throws(() => getCredentialRef({ accessToken: true }), /accessToken requires a value/);
+});
+
+test("getCredentialRef rejects a valueless --tokenExpiry even when --accessToken is valid", () => {
+  assert.throws(
+    () => getCredentialRef({ accessToken: "tok123", tokenExpiry: true }),
+    /tokenExpiry requires a value/
+  );
+});
+
+test("getCredentialRef fails closed on a valueless --userId even when a valid --accessToken is also present", () => {
+  // Pins the fail-closed ordering itself: --userId is checked first and, if malformed, must
+  // throw rather than silently falling back to the also-present --accessToken -- the opposite
+  // of the old behavior (silently ignore the broken --userId, authenticate via the token).
+  assert.throws(
+    () => getCredentialRef({ userId: true, accessToken: "tok123" }),
+    /userId requires a value/
+  );
+});
+
+test("CLI auth select-channel requires --channelId (missing entirely, not just a valueless flag)", async () => {
+  const stderr: string[] = [];
+  let called = false;
+  const auth = { ...makeAuthStub(), selectWriteChannel: async () => { called = true; return {}; } };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["auth", "select-channel"],
+    core: makeCoreStub(),
+    auth,
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /Missing required --channelId/);
+});
+
 test("CLI returns validation error and non-zero exit for missing required flags", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["transcript", "--userId", "user-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -467,6 +620,7 @@ test("CLI transcript keeps stable envelope and propagates diagnostic unchanged",
   });
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["transcript", "--videoId", "v1"],
     core,
     auth: makeAuthStub(),
@@ -524,6 +678,7 @@ test("CLI apply dry-run forwards dryRun=true and returns proposal", async () => 
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--userId",
@@ -569,6 +724,7 @@ test("RISK-12 (2026-09-18): CLI apply omits dryRun from the request entirely whe
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["apply", "--videoId", "v1", "--finalTitle", "Draft", "--description", "Draft desc", "--expectedChannelId", "UC_ACTIVE"],
     core,
     auth: makeAuthStub(),
@@ -590,6 +746,7 @@ test("CLI apply keeps payload parity between dryRun and apply", async () => {
   const applyStdout: string[] = [];
 
   const dryRunExit = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -610,6 +767,7 @@ test("CLI apply keeps payload parity between dryRun and apply", async () => {
   // RISK-12 (2026-09-18): a live write now requires an explicit `--dryRun false` --
   // omitting the flag entirely means dry-run, not live (see resolveDryRunFlag).
   const applyExit = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -660,6 +818,7 @@ test("CLI auth command login calls device flow with --device and stable envelope
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login", "--device"],
     core: makeCoreStub(),
     auth,
@@ -691,6 +850,7 @@ test("CLI auth login default uses loopback flow and returns stable success envel
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login"],
     core: makeCoreStub(),
     auth,
@@ -718,6 +878,7 @@ test("CLI auth supports whoami/list-users/logout/revoke with stable envelopes", 
     ["auth", "revoke"],
   ]) {
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv,
       core: makeCoreStub(),
       auth,
@@ -732,10 +893,33 @@ test("CLI auth supports whoami/list-users/logout/revoke with stable envelopes", 
   }
 });
 
+// Found by independent review (cycle 2): `revoke.userId` used to fall through the old
+// inline coercion, so a valueless --userId (e.g. a typo dropping its value) was silently
+// treated as "omitted" -- auth.revoke() then falls back to the currently active user and
+// revokes THEIR token instead of failing closed on the malformed flag.
+test("CLI auth revoke rejects a --userId flag with no value instead of silently revoking the active user", async () => {
+  const stderr: string[] = [];
+  let called = false;
+  const auth = { ...makeAuthStub(), revoke: async () => { called = true; return {}; } };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["auth", "revoke", "--userId", "--foo"],
+    core: makeCoreStub(),
+    auth,
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /userId/);
+});
+
 test("CLI auth list-channels returns minimal-safe known channel list", async () => {
   const stdout: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "list-channels"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -753,6 +937,7 @@ test("CLI auth select-channel persists expected channel and returns mismatch gui
   const stdout: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-channel", "--channelId", "UC1111111111111111111111"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -772,6 +957,7 @@ test("CLI auth select-user switches local fallback identity only", async () => {
   const stdout: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-user", "--userId", "u2"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -790,6 +976,7 @@ test("CLI auth select-user rejects missing --userId", async () => {
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-user"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -815,6 +1002,7 @@ test("CLI auth select-user surfaces AUTH_USER_NOT_FOUND with stable envelope", a
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-user", "--userId", "missing-user"],
     core: makeCoreStub(),
     auth,
@@ -835,6 +1023,7 @@ test("CLI auth rejects unknown auth subcommand", async () => {
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "invalid-command"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -859,6 +1048,7 @@ test("CLI auth login surfaces AUTH_CALLBACK_INVALID in error envelope", async ()
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login"],
     core: makeCoreStub(),
     auth,
@@ -883,6 +1073,7 @@ test("CLI auth returns AUTH_REFRESH_TOKEN_MISSING as stable JSON error envelope"
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "whoami"],
     core: makeCoreStub(),
     auth,
@@ -916,6 +1107,7 @@ test("CLI auth login --device emits pending verification details to stderr befor
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login", "--device"],
     core: makeCoreStub(),
     auth,
@@ -1005,6 +1197,7 @@ test("CLI transcript/preview/apply fallback to active auth context when --userId
     ],
   ]) {
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv,
       core,
       auth,
@@ -1049,6 +1242,7 @@ test("CLI apply surfaces target-language resolution error as typed envelope", as
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -1087,6 +1281,7 @@ test("CLI apply returns guardrail mismatch details with non-zero exit", async ()
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -1127,6 +1322,7 @@ test("CLI apply returns unresolved guardrail details with non-zero exit", async 
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -1185,6 +1381,7 @@ test("CLI playlist list/create commands use shared core and stable JSON envelope
   };
 
   const listExitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "list", "--userId", "user-1"],
     core,
     auth: makeAuthStub(),
@@ -1192,6 +1389,7 @@ test("CLI playlist list/create commands use shared core and stable JSON envelope
   });
 
   const createExitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "create",
@@ -1254,6 +1452,7 @@ test("CLI playlist update validates and forwards patch payload", async () => {
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1302,6 +1501,7 @@ test("CLI playlist delete forwards expectedChannelId and returns stable envelope
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "delete",
@@ -1348,6 +1548,7 @@ test("CLI playlist create fails closed on guardrail mismatch with stable error d
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "create",
@@ -1387,6 +1588,7 @@ test("CLI playlist update fails closed on guardrail mismatch with stable error d
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1428,6 +1630,7 @@ test("CLI playlist update fails closed on invalid ownership with structured erro
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1469,6 +1672,7 @@ test("CLI playlist delete fails closed on unresolved channel with stable error d
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "delete",
@@ -1496,14 +1700,16 @@ test("CLI playlist add/remove commands return stable partial-result envelopes", 
   const stdout: string[] = [];
 
   const addExitCode = await runCliCommand({
-    argv: ["playlist", "add", "--playlistId", "p1", "--videoIds", "v1,v2"],
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["playlist", "add", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE", "--videoIds", "v1,v2"],
     core,
     auth: makeAuthStub(),
     writeStdout: (line) => stdout.push(line),
   });
 
   const removeExitCode = await runCliCommand({
-    argv: ["playlist", "remove", "--playlistId", "p1", "--videoIds", "v1,v2"],
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["playlist", "remove", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE", "--videoIds", "v1,v2"],
     core,
     auth: makeAuthStub(),
     writeStdout: (line) => stdout.push(line),
@@ -1540,7 +1746,8 @@ test("CLI playlist commands fail with non-zero exit on missing required flags", 
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
-    argv: ["playlist", "add", "--playlistId", "p1"],
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["playlist", "add", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
     writeStderr: (line) => stderr.push(line),
@@ -1553,10 +1760,32 @@ test("CLI playlist commands fail with non-zero exit on missing required flags", 
   assert.match(envelope.error.message, /Missing required --videoIds/);
 });
 
+// Independent test-suite audit (2026-09-26): playlist add/remove now require --expectedChannelId,
+// mirroring create/update/delete's own identity check -- this locks in that CLI users get a
+// clear, actionable error rather than a silent unguarded write if they omit it.
+test("CLI playlist add/remove commands fail with non-zero exit when --expectedChannelId is omitted", async () => {
+  const stderr: string[] = [];
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["playlist", "add", "--playlistId", "p1", "--videoIds", "v1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /Missing required --expectedChannelId/);
+});
+
 test("CLI playlist update fails with actionable validation error for empty patch", async () => {
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1577,10 +1806,47 @@ test("CLI playlist update fails with actionable validation error for empty patch
   assert.match(envelope.error.message, /At least one mutable field is required/);
 });
 
+// Found by independent review (cycle 2): a valueless --title used to fall through the old
+// inline coercion to undefined, which then fell through the "at least one mutable field"
+// check because --description was also present -- silently sending a real playlist-update
+// write with the title left unchanged instead of erroring on the operator's malformed flag.
+test("CLI playlist update rejects a --title flag with no value instead of silently dropping the title change", async () => {
+  const stderr: string[] = [];
+  const core = makeCoreStub();
+  let called = false;
+  core.updatePlaylist = async () => {
+    called = true;
+    return { playlist: { id: "p1", title: "x", description: "x", privacyStatus: "private" as const } };
+  };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "playlist",
+      "update",
+      "--title",
+      "--playlistId",
+      "p1",
+      "--expectedChannelId",
+      "UC_ACTIVE",
+      "--description",
+      "new description",
+    ],
+    core,
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /title/);
+});
+
 test("CLI playlist fails with typed auth error when no credential source is available", async () => {
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "list"],
     core: makeCoreStub(),
     auth: {
@@ -1600,4 +1866,4451 @@ test("CLI playlist fails with typed auth error when no credential source is avai
   assert.equal(envelope.ok, false);
   assert.equal(envelope.error.code, "AUTH_USER_NOT_FOUND");
   assert.match(envelope.error.message, /Active auth user does not exist/);
+});
+
+// CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
+// docs/TECHNICAL_DEBT.md RISK-04) -- same core factories via new optional
+// operationsCore/channelSyncCore params, mirroring src/mcp/server.ts's design exactly.
+
+function makeChangeSetRecord(): ChangeSet {
+  return {
+    id: "cs-1",
+    channelId: "UC_1",
+    source: "xlsx_import",
+    status: "in_review",
+    importedFilename: "export.xlsx",
+    schemaVersion: "1",
+    exportedAt: "2026-09-01T00:00:00.000Z",
+    hasInvalid: false,
+    hasConflicts: false,
+    totalChanges: 1,
+    pendingCount: 1,
+    approvedCount: 0,
+    rejectedCount: 0,
+    conflictCount: 0,
+    invalidCount: 0,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+  };
+}
+
+function makeBatchRecord(): Batch {
+  return {
+    id: "batch-1",
+    channelId: "UC_1",
+    status: "PENDING",
+    concurrency: 1,
+    dryRun: true,
+    runId: null,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+  };
+}
+
+function makeOperationsCoreStub(): Pick<
+  ChangeSetCore,
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+> &
+  Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows"> {
+  return {
+    listChangeSets: async () => [makeChangeSetRecord()],
+    getChangeSet: async () => ({
+      changeSet: makeChangeSetRecord(),
+      changes: [],
+      pagination: { page: 1, pageSize: 50, total: 0 },
+    }),
+    previewImport: async () => ({
+      summary: { videosFound: 1, localizationRows: 1, validChanges: 1, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+      errors: [],
+      totalErrors: 0,
+    }),
+    createChangeSetFromImport: async () => ({
+      changeSet: makeChangeSetRecord(),
+      summary: { videosFound: 1, localizationRows: 1, validChanges: 1, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+      errors: [],
+      totalErrors: 0,
+    }),
+    listBatchesByChannel: async () => [],
+    getBatchWithLedgerRows: async () => ({ batch: makeBatchRecord(), ledgerRows: [] }),
+  };
+}
+
+// Permissive by default -- these existing tests exercise pre-existing behaviors unrelated to
+// the active-channel read-scoping check itself (RISK-02, docs/decisions/0004). A dedicated
+// CHANNEL_NOT_ACTIVE test below uses a restrictive stub instead.
+function makeChannelAccessCoreStub(): Pick<
+  ChannelAccessCore,
+  "assertActiveChannel" | "getActiveChannelId" | "filterToActiveChannel" | "activateChannel"
+> {
+  return {
+    assertActiveChannel: async (args: { channelId: string }) => args.channelId,
+    getActiveChannelId: async () => "UC_1",
+    filterToActiveChannel: (items) => [...items],
+    activateChannel: async () => undefined,
+  };
+}
+
+function makeChannelSyncCoreStub(): Pick<
+  ChannelSyncCore,
+  "syncChannel" | "listChannels" | "listSyncedVideos"
+> {
+  const channel = {
+    channelId: "UC_1",
+    title: "Channel 1",
+    thumbnailUrl: null,
+    uploadsPlaylistId: "UU_1",
+    connectedUserId: "u1",
+    connectedAt: "2026-09-01T00:00:00.000Z",
+    lastSyncedAt: "2026-09-01T00:00:00.000Z",
+  };
+  return {
+    syncChannel: async () => ({ channel, videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z" }),
+    listChannels: async () => ({ channels: [channel] }),
+    listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
+  };
+}
+
+test("CLI changeset list forwards channelId and returns structured JSON", async () => {
+  const stdout: string[] = [];
+  const operationsCore = makeOperationsCoreStub();
+  let captured: unknown;
+  operationsCore.listChangeSets = async (input: unknown) => {
+    captured = input;
+    return [makeChangeSetRecord()];
+  };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["changeset", "list", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore,
+    channelAccessCore: makeChannelAccessCoreStub(),
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.changeSets[0].id, "cs-1");
+});
+
+test("CLI changeset get forwards optional filters", async () => {
+  const stdout: string[] = [];
+  const operationsCore = makeOperationsCoreStub();
+  let captured: unknown;
+  operationsCore.getChangeSet = async (input: unknown) => {
+    captured = input;
+    return { changeSet: makeChangeSetRecord(), changes: [], pagination: { page: 1, pageSize: 50, total: 0 } };
+  };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["changeset", "get", "--channelId", "UC_1", "--changeSetId", "cs-1", "--language", "es"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore,
+    channelAccessCore: makeChannelAccessCoreStub(),
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    changeSetId: "cs-1",
+    status: undefined,
+    language: "es",
+    videoId: undefined,
+  });
+});
+
+test("CLI changeset preview and changeset import read --file from disk and forward its bytes; preview never persists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cli-changeset-test-"));
+  const filePath = join(dir, "export.xlsx");
+  const content = "title,description\nHello,World\n";
+  await writeFile(filePath, content, "utf8");
+
+  try {
+    const operationsCore = makeOperationsCoreStub();
+    const capturedPreview: { buffer?: Buffer; filename?: string } = {};
+    operationsCore.previewImport = async (input: unknown) => {
+      const typed = input as { buffer: Buffer; filename: string };
+      capturedPreview.buffer = typed.buffer;
+      capturedPreview.filename = typed.filename;
+      return {
+        summary: { videosFound: 0, localizationRows: 0, validChanges: 0, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+        errors: [],
+        totalErrors: 0,
+      };
+    };
+    let createCalled = false;
+    operationsCore.createChangeSetFromImport = async () => {
+      createCalled = true;
+      return { changeSet: makeChangeSetRecord(), summary: { videosFound: 0, localizationRows: 0, validChanges: 0, unchangedValues: 0, invalidRows: 0, conflicts: 0 }, errors: [], totalErrors: 0 };
+    };
+
+    const previewStdout: string[] = [];
+    const previewExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["changeset", "preview", "--channelId", "UC_1", "--file", filePath],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      operationsCore,
+      channelAccessCore: makeChannelAccessCoreStub(),
+      writeStdout: (line) => previewStdout.push(line),
+    });
+
+    assert.equal(previewExit, 0);
+    assert.equal(capturedPreview.buffer?.toString("utf8"), content);
+    assert.equal(capturedPreview.filename, "export.xlsx");
+    assert.equal(createCalled, false);
+
+    const importStdout: string[] = [];
+    const importExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["changeset", "import", "--channelId", "UC_1", "--file", filePath],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      operationsCore,
+      channelAccessCore: makeChannelAccessCoreStub(),
+      writeStdout: (line) => importStdout.push(line),
+    });
+
+    assert.equal(importExit, 0);
+    assert.equal(createCalled, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI changeset import fails cleanly when --file does not exist", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["changeset", "import", "--channelId", "UC_1", "--file", "/no/such/file.xlsx"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore: makeOperationsCoreStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /--file/);
+});
+
+test("CLI batch get reads through the ownership-checked getBatchWithLedgerRows (channel + batch), not a bare batchId lookup", async () => {
+  const operationsCore = makeOperationsCoreStub();
+  const seenArgs: unknown[] = [];
+  operationsCore.getBatchWithLedgerRows = async (channelId: string, batchId: string) => {
+    seenArgs.push([channelId, batchId]);
+    return { batch: makeBatchRecord(), ledgerRows: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["batch", "get", "--channelId", "UC_1", "--batchId", "batch-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore,
+    channelAccessCore: makeChannelAccessCoreStub(),
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(seenArgs, [["UC_1", "batch-1"]]);
+});
+
+// Owner's requirement (2026-09-20, docs/decisions/0004): a channelId that is not this
+// session's active channel must be rejected, for the CLI just like Web/MCP.
+test("CLI changeset list rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["changeset", "list", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore: makeOperationsCoreStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "The requested channel is not this session's currently active channel.",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI channel sync forwards resolved credentialRef and optional channelId", async () => {
+  const channelSyncCore = makeChannelSyncCoreStub();
+  let captured: unknown;
+  channelSyncCore.syncChannel = async (input: unknown) => {
+    captured = input;
+    return {
+      channel: {
+        channelId: "UC_1",
+        title: "Channel 1",
+        thumbnailUrl: null,
+        uploadsPlaylistId: "UU_1",
+        connectedUserId: "u1",
+        connectedAt: "2026-09-01T00:00:00.000Z",
+        lastSyncedAt: "2026-09-01T00:00:00.000Z",
+      },
+      videoCount: 1,
+      syncedAt: "2026-09-01T00:00:00.000Z",
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["channel", "sync", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1" });
+});
+
+// Found by independent review: a valueless --channelId (e.g. a typo like
+// `--channelId --userId u1`, where parseArgs reads the next token as its own flag rather
+// than a value) used to be silently coerced to "channelId omitted" instead of raising an
+// error -- syncing whatever channel resolves as default instead of failing closed on the
+// operator's mistake.
+test("CLI channel sync rejects a --channelId flag with no value instead of silently treating it as omitted", async () => {
+  const channelSyncCore = makeChannelSyncCoreStub();
+  let called = false;
+  channelSyncCore.syncChannel = async () => {
+    called = true;
+    return { channel: null as never, videoCount: 0, syncedAt: "" };
+  };
+
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["channel", "sync", "--channelId", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore,
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /channelId/);
+});
+
+test("CLI channel video-list requires channelId", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["channel", "video-list"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore: makeChannelSyncCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /channelId/);
+});
+
+// CLI parity for MCP's analytics_list/analytics_overview (docs/roadmap/BACKLOG.md,
+// "machine-readable analytics for operational agents to consume").
+
+function makeAnalyticsCliCoreStub(): Pick<
+  AnalyticsCore,
+  | "listMetrics"
+  | "getChannelOverview"
+  | "getDataQualityReport"
+  | "getComparableAgeComparison"
+  | "listWeeklyReports"
+  | "getWeeklyReport"
+> {
+  return {
+    listMetrics: async () => ({
+      channelId: "UC_1",
+      rows: [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 }],
+    }),
+    getChannelOverview: async () => ({
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      previousStartDate: "2026-07-29",
+      previousEndDate: "2026-08-25",
+      daily: [],
+      currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
+      previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
+    }),
+    getDataQualityReport: async () => ({
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      coveredDates: ["2026-09-01"],
+      uncoveredDates: ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+      tooRecentDates: [],
+      videosWithSkips: [],
+    }),
+    getComparableAgeComparison: async () => ({
+      channelId: "UC_1",
+      metricName: "views",
+      maxDays: 30,
+      videos: [],
+    }),
+    listWeeklyReports: async () => ({ channelId: "UC_1", reports: [] }),
+    getWeeklyReport: async () => ({ channelId: "UC_1", report: null }),
+  };
+}
+
+test("CLI analytics list forwards resolved credentialRef and optional filters", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.listMetrics = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", rows: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "analytics",
+      "list",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--startDate",
+      "2026-09-01",
+      "--endDate",
+      "2026-09-20",
+      "--videoId",
+      "v1",
+      "--metricNames",
+      "views,likes",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-20",
+    videoId: "v1",
+    metricNames: ["views", "likes"],
+  });
+});
+
+test("CLI analytics list requires channelId", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "list"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /channelId/);
+});
+
+test("CLI analytics overview forwards resolved credentialRef and requires startDate/endDate", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getChannelOverview = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      previousStartDate: "2026-07-29",
+      previousEndDate: "2026-08-25",
+      daily: [],
+      currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
+      previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "analytics",
+      "overview",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--startDate",
+      "2026-08-26",
+      "--endDate",
+      "2026-09-22",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+  });
+});
+
+test("CLI analytics overview requires startDate and endDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "overview", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /startDate/);
+});
+
+test("CLI analytics list/overview are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const stdout: string[] = [];
+    const listExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["analytics", "list", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(listExit, 0);
+
+    const overviewExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: [
+        "analytics",
+        "overview",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--startDate",
+        "2026-08-26",
+        "--endDate",
+        "2026-09-22",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(overviewExit, 0);
+
+    const dataQualityExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: [
+        "analytics",
+        "data-quality",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--startDate",
+        "2026-09-01",
+        "--endDate",
+        "2026-09-05",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(dataQualityExit, 0);
+
+    const comparableAgeExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["analytics", "comparable-age", "--channelId", "UC_1", "--userId", "u1", "--videoIds", "v1,v2"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(comparableAgeExit, 0);
+
+    const weeklyReportsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["analytics", "weekly-reports", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(weeklyReportsExit, 0);
+
+    const weeklyReportGetExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["analytics", "weekly-report-get", "--channelId", "UC_1", "--userId", "u1", "--weekStartDate", "2026-09-14"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(weeklyReportGetExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI analytics data-quality forwards resolved credentialRef and requires startDate/endDate", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getDataQualityReport = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      coveredDates: [],
+      uncoveredDates: [],
+      tooRecentDates: [],
+      videosWithSkips: [],
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "analytics",
+      "data-quality",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--startDate",
+      "2026-09-01",
+      "--endDate",
+      "2026-09-05",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+});
+
+test("CLI analytics data-quality requires startDate and endDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "data-quality", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /startDate/);
+});
+
+test("CLI analytics comparable-age forwards resolved credentialRef, parsed --videoIds, and optional --metricName/--maxDays", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getComparableAgeComparison = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", metricName: "likes", maxDays: 14, videos: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "analytics",
+      "comparable-age",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--videoIds",
+      "v1, v2 ,v3",
+      "--metricName",
+      "likes",
+      "--maxDays",
+      "14",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    videoIds: ["v1", "v2", "v3"],
+    metricName: "likes",
+    maxDays: 14,
+  });
+});
+
+test("CLI analytics comparable-age requires --videoIds", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "comparable-age", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /videoIds/);
+});
+
+test("CLI analytics weekly-reports forwards resolved credentialRef and channelId", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.listWeeklyReports = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", reports: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "weekly-reports", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1" });
+});
+
+test("CLI analytics weekly-report-get forwards resolved credentialRef and --weekStartDate", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getWeeklyReport = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", report: null };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "weekly-report-get", "--channelId", "UC_1", "--userId", "u1", "--weekStartDate", "2026-09-14"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1", weekStartDate: "2026-09-14" });
+});
+
+test("CLI analytics weekly-report-get requires --weekStartDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["analytics", "weekly-report-get", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /weekStartDate/);
+});
+
+function makeAiLocalizationCliCoreStub(): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
+  return {
+    generateProposals: async () => ({
+      results: [
+        {
+          videoId: "v1",
+          language: "es",
+          providerError: null,
+          fields: [
+            {
+              videoId: "v1",
+              language: "es",
+              field: "title" as const,
+              baselineValue: "Old title",
+              proposedValue: "Nuevo titulo",
+              changeType: "modify" as const,
+              validationStatus: "valid" as const,
+              validationError: null,
+            },
+          ],
+          usage: null,
+        },
+      ],
+      errors: [],
+      summary: {
+        targetsRequested: 1,
+        targetsGenerated: 1,
+        targetsFailed: 0,
+        validProposals: 1,
+        invalidProposals: 0,
+        unchangedProposals: 0,
+      },
+      generationContext: { profileVersion: null, effectiveContext: null },
+    }),
+    createChangeSetFromGeneration: async () => ({ ...makeChangeSetRecord(), source: "ai_localization" as const }),
+  };
+}
+
+test("CLI ai-localization generate forwards channelId, parsed --videoIds/--targetLanguages, and optional provider flags", async () => {
+  const aiLocalizationCore = makeAiLocalizationCliCoreStub();
+  let captured: unknown;
+  aiLocalizationCore.generateProposals = async (input: unknown) => {
+    captured = input;
+    return {
+      results: [],
+      errors: [],
+      summary: { targetsRequested: 0, targetsGenerated: 0, targetsFailed: 0, validProposals: 0, invalidProposals: 0, unchangedProposals: 0 },
+      generationContext: { profileVersion: null, effectiveContext: null },
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "ai-localization",
+      "generate",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--videoIds",
+      "v1, v2",
+      "--targetLanguages",
+      "es, fr",
+      "--connectionId",
+      "conn-1",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    videoIds: ["v1", "v2"],
+    targetLanguages: ["es", "fr"],
+    providerName: undefined,
+    connectionId: "conn-1",
+  });
+});
+
+test("CLI ai-localization generate rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["ai-localization", "generate", "--channelId", "UC_1", "--videoIds", "v1", "--targetLanguages", "es"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI ai-localization create-change-set parses --proposalsJson/--provenanceJson and persists via createChangeSetFromGeneration", async () => {
+  const aiLocalizationCore = makeAiLocalizationCliCoreStub();
+  let captured: unknown;
+  let capturedCallOrigin: unknown;
+  aiLocalizationCore.createChangeSetFromGeneration = async (input: unknown, callOrigin: unknown) => {
+    captured = input;
+    capturedCallOrigin = callOrigin;
+    return { ...makeChangeSetRecord(), source: "ai_localization" as const };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "ai-localization",
+      "create-change-set",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalsJson",
+      JSON.stringify([{ videoId: "v1", language: "es", title: "Nuevo titulo" }]),
+      "--provenanceJson",
+      JSON.stringify({ profileVersion: 2, effectiveContext: null }),
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    proposals: [{ videoId: "v1", language: "es", title: "Nuevo titulo" }],
+    provenance: { profileVersion: 2, effectiveContext: null },
+    evidence: undefined,
+    rationale: undefined,
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.source, "ai_localization");
+  // Phase 7 slice F (owner spec §22): the CLI transport must SERVER-STAMP its own identity, with
+  // no agentApiVersion (that field only ever applies to the MCP transport).
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+});
+
+// Phase 7 slice F (owner spec §12/§13).
+test("CLI ai-localization create-change-set parses --evidenceJson/--rationale and forwards them unchanged", async () => {
+  const aiLocalizationCore = makeAiLocalizationCliCoreStub();
+  let captured: unknown;
+  aiLocalizationCore.createChangeSetFromGeneration = async (input: unknown) => {
+    captured = input;
+    return { ...makeChangeSetRecord(), source: "ai_localization" as const };
+  };
+
+  const evidence = [
+    {
+      url: "https://example.com/report",
+      retrievedAt: "2026-09-24T00:00:00.000Z",
+      description: "Comparable-video title-length analysis",
+      claimSupported: "Shorter titles perform better",
+      sourceType: "external_research",
+    },
+  ];
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "ai-localization",
+      "create-change-set",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalsJson",
+      JSON.stringify([{ videoId: "v1", language: "es", title: "Nuevo titulo" }]),
+      "--evidenceJson",
+      JSON.stringify(evidence),
+      "--rationale",
+      "Shorter titles tested better.",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore,
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual((captured as { evidence: unknown }).evidence, evidence);
+  assert.equal((captured as { rationale: unknown }).rationale, "Shorter titles tested better.");
+});
+
+test("CLI ai-localization create-change-set rejects malformed --proposalsJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["ai-localization", "create-change-set", "--channelId", "UC_1", "--proposalsJson", "{not valid json"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI ai-localization generate is never blocked by the operation lock (read-only); create-change-set is blocked", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const generateExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["ai-localization", "generate", "--channelId", "UC_1", "--userId", "u1", "--videoIds", "v1", "--targetLanguages", "es"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+      writeStdout: () => {},
+    });
+    assert.equal(generateExit, 0);
+
+    const stderr: string[] = [];
+    const createExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: [
+        "ai-localization",
+        "create-change-set",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--proposalsJson",
+        JSON.stringify([{ videoId: "v1", language: "es", title: "Nuevo titulo" }]),
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+      writeStderr: (line) => stderr.push(line),
+    });
+    assert.equal(createExit, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent capabilities returns version/capabilities with no auth/channel resolution required", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => ({
+      productVersion: "9.9.9",
+      agentApiVersion: "0.1.0",
+      capabilities: [{ id: "system.get_capabilities", domain: "system" as const, permission: "READ" as const, description: "..." }],
+      dataDomains: [],
+      actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
+      grantedPermissions: ["READ", "DRAFT"] as const,
+      // "create_experiment_proposal" moved to a real capability (Phase 10 slice 2); this fixture
+      // just needs a value matching the current PlannedFutureCapability type, not this specific one.
+      plannedFutureCapabilities: ["create_hypothesis"] as const,
+      schemaVersions: { app: 14 },
+    }),
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "capabilities"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.agentApiVersion, "0.1.0");
+  assert.deepEqual(envelope.data.grantedPermissions, ["READ", "DRAFT"]);
+});
+
+test("CLI agent capabilities is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => ({
+        productVersion: "9.9.9",
+        agentApiVersion: "0.1.0",
+        capabilities: [],
+        dataDomains: [],
+        actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
+        grantedPermissions: ["READ", "DRAFT"] as const,
+        plannedFutureCapabilities: [] as const,
+        schemaVersions: { app: 14 },
+      }),
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "capabilities"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent channel-context forwards channelId after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async (input: unknown) => {
+      captured = input;
+      return {
+        channelId: "UC_1",
+        title: "Channel 1",
+        lastSyncedAt: "2026-09-20T12:00:00.000Z",
+        syncedVideoCount: 2,
+        editorialProfile: null,
+        trackedLanguages: ["es"],
+      };
+    },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "channel-context", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.title, "Channel 1");
+});
+
+test("CLI agent channel-context rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "channel-context", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("must not be called"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent video-context rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "video-context", "--channelId", "UC_1", "--videoId", "v1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("must not be called"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent video-context forwards channelId/videoId and parses --include into an array", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async (input: unknown) => {
+      captured = input;
+      return {
+        videoId: "v1",
+        channelId: "UC_1",
+        includedSections: ["metadata"] as VideoContextSection[],
+        metadata: {
+          videoId: "v1",
+          channelId: "UC_1",
+          title: "T",
+          description: "D",
+          publishedAt: "2026-09-01T00:00:00Z",
+          privacyStatus: "public",
+          defaultLanguage: null,
+          defaultAudioLanguage: null,
+          lastSyncedAt: "2026-09-20T00:00:00.000Z",
+        },
+      };
+    },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1", "--include", "metadata"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.includedSections, ["metadata"]);
+});
+
+test("CLI agent video-context omits `include` entirely when --include is not passed (default: both sections)", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async (input: unknown) => {
+      captured = input;
+      return { videoId: "v1", channelId: "UC_1", includedSections: ["metadata", "localizations"] as VideoContextSection[] };
+    },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1" });
+});
+
+test("CLI agent channel-context/video-context are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => ({
+        channelId: "UC_1",
+        title: "Channel 1",
+        lastSyncedAt: null,
+        syncedVideoCount: 0,
+        editorialProfile: null,
+        trackedLanguages: [],
+      }),
+      getVideoContext: async () => ({ videoId: "v1", channelId: "UC_1", includedSections: ["metadata", "localizations"] as VideoContextSection[] }),
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const channelContextExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "channel-context", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(channelContextExit, 0);
+
+    const videoContextExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(videoContextExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent channel-analytics forwards resolved credentialRef, channelId, startDate/endDate to queryChannelAnalytics", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async (input: unknown) => {
+      captured = input;
+      return {
+        channelId: "UC_1",
+        period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+        filters: {},
+        metricDefinitions: [],
+        freshness: { source: "live_youtube_analytics_api" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+        daily: [],
+        currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        viewCountingChangeInComparison: false,
+      };
+    },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "channel-analytics", "--channelId", "UC_1", "--userId", "u1", "--startDate", "2026-09-01", "--endDate", "2026-09-07"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.freshness.source, "live_youtube_analytics_api");
+});
+
+test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "channel-analytics", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("must not be called"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent video-analytics forwards resolved credentialRef, channelId, and optional filters (parsing --metricNames into an array) to queryVideoAnalytics", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async (input: unknown) => {
+      captured = input;
+      return {
+        channelId: "UC_1",
+        period: { startDate: null, endDate: null },
+        filters: { videoId: "v1", metricNames: ["views", "likes"] },
+        metricDefinitions: [],
+        freshness: { source: "local_collected_data" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+        rows: [],
+      };
+    },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "video-analytics", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1", "--metricNames", "views, likes"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: undefined,
+    endDate: undefined,
+    videoId: "v1",
+    metricNames: ["views", "likes"],
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.freshness.source, "local_collected_data");
+});
+
+test("CLI agent channel-analytics/video-analytics are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => ({
+        channelId: "UC_1",
+        period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+        filters: {},
+        metricDefinitions: [],
+        freshness: { source: "live_youtube_analytics_api" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+        daily: [],
+        currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        viewCountingChangeInComparison: false,
+      }),
+      queryVideoAnalytics: async () => ({
+        channelId: "UC_1",
+        period: { startDate: null, endDate: null },
+        filters: { videoId: null, metricNames: null },
+        metricDefinitions: [],
+        freshness: { source: "local_collected_data" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+        rows: [],
+      }),
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const channelAnalyticsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "channel-analytics", "--channelId", "UC_1", "--userId", "u1", "--startDate", "2026-09-01", "--endDate", "2026-09-07"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(channelAnalyticsExit, 0);
+
+    const videoAnalyticsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "video-analytics", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(videoAnalyticsExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- CLI parity for the MCP
+// query_competitors/query_market_intelligence tools. Wired via marketIntelligenceCore, not
+// agentOperationsCore -- no channelId/active-channel check applies (global data). Both commands
+// call the market-intelligence module's own single getWatchlistEntryContext (independent review,
+// 2026-09-26: MCP and CLI previously each re-orchestrated getWatchlistEntry+listEvidence
+// separately).
+function makeMarketIntelligenceCliCoreStub(): Pick<
+  MarketIntelligenceCore,
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
+  | "createCollectionRequest"
+  | "getCollectionLimits"
+> {
+  return {
+    listWatchlist: async () => ({ channels: [] }),
+    createCollectionRequest: async () => {
+      throw new Error("not used");
+    },
+    getCollectionLimits: async () => {
+      throw new Error("not used");
+    },
+    getWatchlistEntryContext: async () => {
+      throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel" });
+    },
+    listTopics: async () => ({ topics: [] }),
+    listTrendCandidates: async () => ({ trendCandidates: [] }),
+    listDiscoveryCandidates: async () => ({ candidates: [] }),
+    createMarketResearchRequest: async () => {
+      throw new Error("not used");
+    },
+  };
+}
+
+test("CLI agent competitors returns the watchlist with no channelId/auth resolution required", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.listWatchlist = async () => ({
+    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor", addedAt: "2026-09-26T00:00:00.000Z" }],
+  });
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "competitors"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.channels.length, 1);
+  assert.equal(envelope.data.channels[0].channelId, "UC_1");
+});
+
+test("CLI agent market-intelligence requires --channelId and returns the channel plus its evidence history", async () => {
+  let capturedInput: unknown;
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
+    capturedInput = input;
+    const { channelId } = input as { channelId: string };
+    return {
+      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      evidence: [],
+      channelSnapshots: [],
+      videoSnapshots: [],
+      topicAssignments: [],
+      dataQualityFlags: [],
+      neverObserved: false,
+      uniqueVideoCount: 0,
+      latestVideoSnapshotAt: null,
+      collectionProgress: STUB_COLLECTION_PROGRESS,
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "market-intelligence", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedInput, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.channel.channelId, "UC_1");
+  assert.deepEqual(envelope.data.evidence, []);
+});
+
+test("CLI agent market-intelligence rejects a missing --channelId as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "market-intelligence"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+// AC-9G-09 (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md §6) -- CLI parity for agent_list_market_records.
+test("CLI agent market-records --kind topics returns the same JSON envelope shape the MCP tool returns", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.listTopics = async () => ({
+    topics: [{ topicId: "topic-1", name: "Night Jazz Bar", addedAt: "2026-09-27T00:00:00.000Z" }],
+  });
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "market-records", "--kind", "topics"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.kind, "topics");
+  assert.equal(envelope.data.topics.length, 1);
+  assert.equal(envelope.data.topics[0].topicId, "topic-1");
+});
+
+test("CLI agent market-records rejects an unknown --kind value as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "market-records", "--kind", "not_a_real_kind"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B -- agent create-research-request
+// (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §8/AC-9G-B-11b).
+// ---------------------------------------------------------------------------
+
+test("CLI agent create-research-request server-stamps createdVia:\"cli\"/agentApiVersion:null and forwards the parsed flags", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createMarketResearchRequest = async (input, callOrigin) => {
+    capturedInput = input;
+    capturedCallOrigin = callOrigin;
+    return {
+      requestId: "req-1",
+      query: "night jazz bar",
+      rationale: "worth watching",
+      monitorDurationDays: 30,
+      status: "pending",
+      createdVia: "cli",
+      agentApiVersion: null,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      resolvedAt: null,
+      resolvedReason: null,
+      candidatesFound: null,
+      candidatesNew: null,
+      executionError: null,
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "create-research-request",
+      "--query",
+      "night jazz bar",
+      "--rationale",
+      "worth watching",
+      "--monitorDurationDays",
+      "30",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.status, "pending");
+  assert.deepEqual(capturedInput, { query: "night jazz bar", rationale: "worth watching", monitorDurationDays: 30 });
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+});
+
+test("CLI agent create-research-request rejects a missing --query as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-research-request", "--rationale", "worth watching"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent create-research-request is rejected while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+    marketIntelligenceCore.createMarketResearchRequest = async () => {
+      throw new Error("must not be called");
+    };
+
+    const stderr: string[] = [];
+    const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "create-research-request", "--query", "night jazz", "--rationale", "worth watching"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    assert.equal(exitCode, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent competitors/market-intelligence/market-records are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+    marketIntelligenceCore.getWatchlistEntryContext = async () => ({
+      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      evidence: [],
+      channelSnapshots: [],
+      videoSnapshots: [],
+      topicAssignments: [],
+      dataQualityFlags: [],
+      neverObserved: false,
+      uniqueVideoCount: 0,
+      latestVideoSnapshotAt: null,
+      collectionProgress: STUB_COLLECTION_PROGRESS,
+    });
+
+    const competitorsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "competitors"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+    });
+    assert.equal(competitorsExit, 0);
+
+    const marketIntelligenceExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "market-intelligence", "--channelId", "UC_1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+    });
+    assert.equal(marketIntelligenceExit, 0);
+
+    const marketRecordsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "market-records", "--kind", "topics"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+    });
+    assert.equal(marketRecordsExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md)
+function makeDecisionEngineCliCoreStub(): Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment"> {
+  return {
+    listHypotheses: async () => [],
+    getHypothesisTrail: async () => {
+      throw new DomainError({ code: "HYPOTHESIS_NOT_FOUND", message: "Hypothesis not found" });
+    },
+    createExperiment: async () => {
+      throw new Error("not used");
+    },
+  };
+}
+
+const fakeExperimentForCli = {
+  experimentId: "exp-1",
+  hypothesisId: "hyp-1",
+  treatment: "10-char titles",
+  controlBaseline: "current titles",
+  successCriteria: "CTR +5%",
+  stoppingCriteria: "14 days",
+  startConditions: null,
+  plannedDuration: null,
+  sampleCoverageConstraints: null,
+  budgetEstimate: null,
+  responsible: "owner",
+  status: "proposed" as const,
+  approvedBy: null,
+  approvedAt: null,
+  changeSetId: null,
+  executionBatchId: null,
+  createdVia: "cli",
+  createdAt: "2026-09-29T00:00:00.000Z",
+};
+
+test("CLI agent list-hypotheses/get-hypothesis-trail are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const decisionEngineCore = makeDecisionEngineCliCoreStub();
+    decisionEngineCore.getHypothesisTrail = async () => ({
+      hypothesis: {
+        hypothesisId: "hyp-1",
+        channelId: null,
+        statement: "s",
+        evidenceNotes: "e",
+        createdBy: "u1",
+        createdVia: "web_ui",
+        createdAt: "2026-09-29T00:00:00.000Z",
+      },
+      experiments: [],
+      evidence: [],
+    });
+
+    const listExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "list-hypotheses"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      decisionEngineCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExit, 0);
+
+    const trailExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "get-hypothesis-trail", "--hypothesisId", "hyp-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      decisionEngineCore,
+      writeStdout: () => {},
+    });
+    assert.equal(trailExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent create-experiment-proposal server-stamps createdBy:\"agent\"/createdVia:\"cli\" and forwards the parsed flags", async () => {
+  let capturedArgs: unknown;
+  const decisionEngineCore = makeDecisionEngineCliCoreStub();
+  decisionEngineCore.createExperiment = async (hypothesisId, input, ctx) => {
+    capturedArgs = { hypothesisId, input, ctx };
+    return fakeExperimentForCli;
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "create-experiment-proposal",
+      "--hypothesisId",
+      "hyp-1",
+      "--treatment",
+      "10-char titles",
+      "--controlBaseline",
+      "current titles",
+      "--successCriteria",
+      "CTR +5%",
+      "--stoppingCriteria",
+      "14 days",
+      "--responsible",
+      "owner",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    decisionEngineCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedArgs, {
+    hypothesisId: "hyp-1",
+    input: {
+      treatment: "10-char titles",
+      controlBaseline: "current titles",
+      successCriteria: "CTR +5%",
+      stoppingCriteria: "14 days",
+      responsible: "owner",
+    },
+    ctx: { userId: "active-user", createdBy: "agent", createdVia: "cli" },
+  });
+});
+
+test("CLI agent create-experiment-proposal rejects a missing --hypothesisId as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "create-experiment-proposal",
+      "--treatment",
+      "t",
+      "--controlBaseline",
+      "c",
+      "--successCriteria",
+      "s",
+      "--stoppingCriteria",
+      "st",
+      "--responsible",
+      "r",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    decisionEngineCore: makeDecisionEngineCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent create-experiment-proposal is rejected while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const decisionEngineCore = makeDecisionEngineCliCoreStub();
+    decisionEngineCore.createExperiment = async () => {
+      throw new Error("must not be called");
+    };
+
+    const stderr: string[] = [];
+    const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: [
+        "agent",
+        "create-experiment-proposal",
+        "--hypothesisId",
+        "hyp-1",
+        "--treatment",
+        "t",
+        "--controlBaseline",
+        "c",
+        "--successCriteria",
+        "s",
+        "--stoppingCriteria",
+        "st",
+        "--responsible",
+        "r",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      decisionEngineCore,
+      writeStdout: () => {},
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    assert.equal(exitCode, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent list-assets forwards channelId/videoId/assetType after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async (input: unknown) => {
+      captured = input;
+      return { assets: [] };
+    },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-assets", "--channelId", "UC_1", "--userId", "u1", "--assetType", "thumbnail"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: undefined, assetType: "thumbnail" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.assets, []);
+});
+
+test("CLI agent list-assets rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-assets", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("must not be called"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent get-asset-context forwards channelId/assetId after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async (input: unknown) => {
+      captured = input;
+      return {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail" as const,
+        referenceKind: "url" as const,
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "get-asset-context", "--channelId", "UC_1", "--userId", "u1", "--assetId", "asset-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", assetId: "asset-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.assetId, "asset-1");
+});
+
+function makeAssetCatalogCliCoreStub(): Pick<AssetCatalogCore, "registerAsset"> {
+  return {
+    registerAsset: async () => { throw new Error("registerAsset not stubbed"); },
+  };
+}
+
+test("CLI asset register forwards channelId + fields, and parses --provenanceJson", async () => {
+  let captured: unknown;
+  const assetCatalogCore: Pick<AssetCatalogCore, "registerAsset"> = {
+    registerAsset: async (input: unknown) => {
+      captured = input;
+      return {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail",
+        referenceKind: "local_path",
+        referenceValue: "/tmp/cover.png",
+        title: "Cover v1",
+        description: null,
+        linkedVideoId: null,
+        provenance: { tool: "midjourney" },
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "asset",
+      "register",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "local_path",
+      "--referenceValue",
+      "/tmp/cover.png",
+      "--title",
+      "Cover v1",
+      "--provenanceJson",
+      JSON.stringify({ tool: "midjourney" }),
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    assetCatalogCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    assetType: "thumbnail",
+    referenceKind: "local_path",
+    referenceValue: "/tmp/cover.png",
+    title: "Cover v1",
+    description: undefined,
+    linkedVideoId: undefined,
+    provenance: { tool: "midjourney" },
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.assetId, "asset-1");
+});
+
+test("CLI asset register rejects malformed --provenanceJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "asset",
+      "register",
+      "--channelId",
+      "UC_1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+      "--provenanceJson",
+      "{not valid json",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    assetCatalogCore: makeAssetCatalogCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI asset register rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["asset", "register", "--channelId", "UC_1", "--assetType", "thumbnail", "--referenceKind", "url", "--referenceValue", "https://example.com/a.png"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    assetCatalogCore: {
+      registerAsset: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent list-assets/get-asset-context are never blocked by the operation lock (read-only); asset register is blocked", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => ({ assets: [] }),
+      getAssetContext: async () => ({
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail" as const,
+        referenceKind: "url" as const,
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      }),
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const listExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "list-assets", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExit, 0);
+
+    const getExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "get-asset-context", "--channelId", "UC_1", "--userId", "u1", "--assetId", "asset-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(getExit, 0);
+
+    const stderr: string[] = [];
+    const registerExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: [
+        "asset",
+        "register",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--assetType",
+        "thumbnail",
+        "--referenceKind",
+        "url",
+        "--referenceValue",
+        "https://example.com/a.png",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      assetCatalogCore: makeAssetCatalogCliCoreStub(),
+      writeStderr: (line) => stderr.push(line),
+    });
+    assert.equal(registerExit, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent get-generation-provenance forwards channelId/changeSetId after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async (input: unknown) => {
+      captured = input;
+      return {
+        profileVersion: 2,
+        effectiveContext: null,
+        changeSetId: "cs-1",
+        channelId: "UC_1",
+        createdAt: "2026-09-24T00:00:00.000Z",
+        evidence: null,
+        rationale: null,
+        createdVia: null,
+        agentApiVersion: null,
+      };
+    },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", changeSetId: "cs-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.provenance.changeSetId, "cs-1");
+});
+
+test("CLI agent get-generation-provenance reports { provenance: null } when the underlying core has none, not an error", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => null,
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-none"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.provenance, null);
+});
+
+test("CLI agent get-generation-provenance rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--changeSetId", "cs-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("must not be called"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent get-generation-provenance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => null,
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent create-content-proposal forwards channelId/objective/evidenceJson/briefJson/referenceVideoIds after checking active channel, stamping cli identity", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async (input: unknown, callOrigin: unknown) => {
+      capturedInput = input;
+      capturedCallOrigin = callOrigin;
+      return {
+        proposalId: "proposal-1",
+        channelId: "UC_1",
+        objective: "Grow subscribers",
+        topicConcept: null,
+        rationale: null,
+        evidence: [{ url: "https://example.com", retrievedAt: "2026-09-24T00:00:00.000Z", description: "d", claimSupported: "c", sourceType: "external_research" as const }],
+        brief: { proposedTitleDirection: "Punchy" },
+        referenceVideoIds: ["v1"],
+        referenceAssetIds: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "cli" as const,
+        agentApiVersion: null,
+      };
+    },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "create-content-proposal",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--objective",
+      "Grow subscribers",
+      "--evidenceJson",
+      JSON.stringify([{ url: "https://example.com", retrievedAt: "2026-09-24T00:00:00.000Z", description: "d", claimSupported: "c", sourceType: "external_research" }]),
+      "--briefJson",
+      JSON.stringify({ proposedTitleDirection: "Punchy" }),
+      "--referenceVideoIds",
+      "v1",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedInput, {
+    channelId: "UC_1",
+    objective: "Grow subscribers",
+    topicConcept: undefined,
+    rationale: undefined,
+    evidence: [{ url: "https://example.com", retrievedAt: "2026-09-24T00:00:00.000Z", description: "d", claimSupported: "c", sourceType: "external_research" }],
+    brief: { proposedTitleDirection: "Punchy" },
+    referenceVideoIds: ["v1"],
+    referenceAssetIds: undefined,
+  });
+  // Phase 7 slice G (owner spec §22): the CLI transport must SERVER-STAMP its own identity, with
+  // no agentApiVersion (that field only ever applies to the MCP transport).
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.proposalId, "proposal-1");
+});
+
+test("CLI agent create-content-proposal rejects malformed --evidenceJson/--briefJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-content-proposal", "--channelId", "UC_1", "--userId", "u1", "--evidenceJson", "{not valid json"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("must not be called"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent create-content-proposal rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-content-proposal", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("must not be called"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent create-content-proposal is rejected while the operation lock is held; get-content-proposal/list-content-proposals are not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("must not be called"); },
+      getContentProposal: async () => ({
+        proposalId: "proposal-1",
+        channelId: "UC_1",
+        objective: null,
+        topicConcept: null,
+        rationale: null,
+        evidence: null,
+        brief: null,
+        referenceVideoIds: null,
+        referenceAssetIds: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "web_ui" as const,
+        agentApiVersion: null,
+      }),
+      listContentProposals: async () => ({ proposals: [] }),
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const createExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "create-content-proposal", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+      writeStderr: () => {},
+    });
+    assert.equal(createExitCode, 1);
+
+    const getExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "get-content-proposal", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(getExitCode, 0);
+
+    const listExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "list-content-proposals", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent get-content-proposal forwards channelId/proposalId after checking active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async (input: unknown) => {
+      captured = input;
+      return {
+        proposalId: "proposal-1",
+        channelId: "UC_1",
+        objective: "Grow",
+        topicConcept: null,
+        rationale: null,
+        evidence: null,
+        brief: null,
+        referenceVideoIds: null,
+        referenceAssetIds: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "web_ui" as const,
+        agentApiVersion: null,
+      };
+    },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "get-content-proposal", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", proposalId: "proposal-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.objective, "Grow");
+});
+
+test("CLI agent list-content-proposals forwards channelId after checking active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async (input: unknown) => {
+      captured = input;
+      return { proposals: [] };
+    },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-content-proposals", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.proposals, []);
+});
+
+test("CLI agent register-external-artifact forwards channelId/proposalId/assetType/referenceKind/referenceValue/provenanceJson after checking active channel, stamping cli identity", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async (input: unknown, callOrigin: unknown) => {
+      capturedInput = input;
+      capturedCallOrigin = callOrigin;
+      return {
+        linkId: "link-1",
+        proposalId: "proposal-1",
+        channelId: "UC_1",
+        asset: {
+          assetId: "asset-1",
+          channelId: "UC_1",
+          assetType: "thumbnail" as const,
+          referenceKind: "url" as const,
+          referenceValue: "https://example.com/a.png",
+          title: null,
+          description: null,
+          linkedVideoId: null,
+          provenance: { generator: "midjourney" },
+          createdAt: "2026-09-24T00:00:00.000Z",
+        },
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "cli" as const,
+        agentApiVersion: null,
+      };
+    },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+      "--provenanceJson",
+      JSON.stringify({ generator: "midjourney" }),
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedInput, {
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+    title: undefined,
+    description: undefined,
+    linkedVideoId: undefined,
+    provenance: { generator: "midjourney" },
+  });
+  // Phase 7 slice G2 (owner spec §22): the CLI transport must SERVER-STAMP its own identity, with
+  // no agentApiVersion (that field only ever applies to the MCP transport).
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.linkId, "link-1");
+});
+
+test("CLI agent register-external-artifact rejects malformed --provenanceJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+      "--provenanceJson",
+      "{not valid json",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+// Owner spec §17: proves the CLI dispatch forwards --referenceKind as a raw, unmodified string
+// into the real registerExternalArtifactInputSchema (not coerced, whitelisted, or silently
+// dropped by the CLI's own flag-parsing) and that a DomainError thrown by the core surfaces as
+// exit code 1 with the real error code -- using the actual schema here, not a hand-rolled stub
+// check, so a future change to the schema's own local_path exclusion would break this test too.
+test("CLI agent register-external-artifact rejects referenceKind local_path (real schema validation) as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "local_path",
+      "--referenceValue",
+      "/tmp/x.png",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async (input: unknown) => {
+        // Real schema, not a hand-rolled string check -- mirrors what the real
+        // contentProposalCore.registerExternalArtifact does before ever reaching a write.
+        parseWithSchema(registerExternalArtifactInputSchema, input, "register external artifact input");
+        throw new Error("must not be called -- schema should have thrown first");
+      },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent register-external-artifact rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent list-proposal-artifacts forwards channelId/proposalId after checking active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async (input: unknown) => {
+      captured = input;
+      return { artifacts: [] };
+    },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-proposal-artifacts", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", proposalId: "proposal-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.artifacts, []);
+});
+
+test("CLI agent register-external-artifact is rejected while the operation lock is held; list-proposal-artifacts is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => ({ artifacts: [] }),
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const registerExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: [
+        "agent",
+        "register-external-artifact",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--proposalId",
+        "proposal-1",
+        "--assetType",
+        "thumbnail",
+        "--referenceKind",
+        "url",
+        "--referenceValue",
+        "https://example.com/a.png",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+      writeStderr: () => {},
+    });
+    assert.equal(registerExitCode, 1);
+
+    const listExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "list-proposal-artifacts", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent list-operations-files returns the result with no auth/channel resolution required", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async (input: unknown) => {
+      assert.deepEqual(input, {});
+      return { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false };
+    },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-operations-files"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data, { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false });
+});
+
+test("CLI agent list-operations-files forwards { configured: false } unchanged when no workspace path is set", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => ({ configured: false as const }),
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-operations-files"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data, { configured: false });
+});
+
+test("CLI agent get-operations-file forwards --path and returns the result, no auth/channel resolution required", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async (input: unknown) => {
+      assert.deepEqual(input, { path: "AGENTS.md" });
+      return { configured: true, path: "AGENTS.md", content: "# hi", truncated: false };
+    },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "get-operations-file", "--path", "AGENTS.md"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data, { configured: true, path: "AGENTS.md", content: "# hi", truncated: false });
+});
+
+test("CLI agent list-operations-files/get-operations-file are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => ({ configured: false as const }),
+      operationsWorkspaceGetFile: async () => ({ configured: false as const }),
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const listExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "list-operations-files"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExitCode, 0);
+
+    const getExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "get-operations-file", "--path", "AGENTS.md"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(getExitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent find-comparable-videos forwards channelId/anchorVideoId/sort after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async (input: unknown) => {
+      captured = input;
+      return {
+        anchorVideoId: "v1",
+        anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+        performanceAlignment: null,
+        candidates: [],
+        excludedForMissingData: { duration: 0, performance: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      };
+    },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    credentialRef: undefined,
+    publicationWindowDays: undefined,
+    durationToleranceSeconds: undefined,
+    performanceMetric: undefined,
+    performanceThreshold: undefined,
+    sort: "publicationProximity",
+    limit: undefined,
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.candidates, []);
+});
+
+test("CLI agent find-comparable-videos converts numeric flags (publicationWindowDays/durationToleranceSeconds/performanceThresholdValue/limit) to real numbers, and forwards credentialRef only when performanceMetric is requested", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async (input: unknown) => {
+      captured = input;
+      return {
+        anchorVideoId: "v1",
+        anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+        performanceAlignment: null,
+        candidates: [],
+        excludedForMissingData: { duration: 0, performance: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      };
+    },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent", "find-comparable-videos",
+      "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "performanceMetric",
+      "--publicationWindowDays", "30", "--durationToleranceSeconds", "60",
+      "--performanceMetric", "views", "--performanceThresholdOperator", ">=", "--performanceThresholdValue", "500",
+      "--limit", "5",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    credentialRef: { userId: "u1" },
+    publicationWindowDays: 30,
+    durationToleranceSeconds: 60,
+    performanceMetric: "views",
+    performanceThreshold: { operator: ">=", value: 500 },
+    sort: "performanceMetric",
+    limit: 5,
+  });
+});
+
+test("CLI agent find-comparable-videos rejects --performanceThresholdOperator given without --performanceThresholdValue (never a silently ignored threshold)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity", "--performanceThresholdOperator", ">="],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("must not be called"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent find-comparable-videos rejects --performanceThresholdValue given without --performanceThresholdOperator (the reverse direction of the same XOR check)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity", "--performanceThresholdValue", "500"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("must not be called"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent find-comparable-videos rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("must not be called"); },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent find-comparable-videos propagates a real domain error thrown by the underlying service (e.g. DATA_NOT_SYNCED for an unknown anchor)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "nonexistent", "--sort", "publicationProximity"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => {
+        throw new DomainError({
+          code: "DATA_NOT_SYNCED",
+          message: "anchorVideoId does not belong to the requested channel",
+          details: { channelId: "UC_1", anchorVideoId: "nonexistent" },
+        });
+      },
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "DATA_NOT_SYNCED");
+});
+
+test("CLI agent find-comparable-videos is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => ({
+        anchorVideoId: "v1",
+        anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+        performanceAlignment: null,
+        candidates: [],
+        excludedForMissingData: { duration: 0, performance: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      }),
+      listAssetPerformance: async () => { throw new Error("not used"); },
+    };
+
+    const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent list-asset-performance forwards channelId/assetType after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async (input: unknown) => {
+      captured = input;
+      return {
+        assets: [],
+        performanceAlignment: null,
+        excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1", "--assetType", "thumbnail"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    assetType: "thumbnail",
+    credentialRef: undefined,
+    performanceMetric: undefined,
+    performanceDayOffset: undefined,
+    sort: undefined,
+    limit: undefined,
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.assets, []);
+});
+
+test("CLI agent list-asset-performance converts performanceDayOffset/limit to real numbers and forwards credentialRef only when performanceMetric is requested", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async (input: unknown) => {
+      captured = input;
+      return {
+        assets: [],
+        performanceAlignment: { metricName: "views", dayOffset: 5 },
+        excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: [
+      "agent", "list-asset-performance",
+      "--channelId", "UC_1", "--userId", "u1",
+      "--performanceMetric", "views", "--performanceDayOffset", "5",
+      "--sort", "performanceMetric", "--limit", "10",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    assetType: undefined,
+    credentialRef: { userId: "u1" },
+    performanceMetric: "views",
+    performanceDayOffset: 5,
+    sort: "performanceMetric",
+    limit: 10,
+  });
+});
+
+test("CLI agent list-asset-performance rejects performanceMetric given without performanceDayOffset (real schema validation)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1", "--performanceMetric", "views"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async (input: unknown) => {
+        // Real schema, not a hand-rolled string check -- mirrors register-external-artifact's
+        // own "real schema validation" test convention above.
+        parseWithSchema(listAssetPerformanceInputSchema, input, "list asset performance input");
+        throw new Error("must not be called -- schema should have thrown first");
+      },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent list-asset-performance rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-asset-performance", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent list-asset-performance propagates a real domain error thrown by the underlying service", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => {
+        throw new DomainError({ code: "validation_failed", message: "forced failure for test" });
+      },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent list-asset-performance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
+      listAssetPerformance: async () => ({
+        assets: [],
+        performanceAlignment: null,
+        excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      }),
+    };
+
+    const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
+      argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-07/08/10) -- agent channel-workspace.
+test("CLI agent channel-workspace returns the stored path for the active channel, forwarding only channelId", async () => {
+  let captured: unknown;
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "channel-workspace", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    channelWorkspacesCore: {
+      getWorkspace: async (input: unknown) => {
+        captured = input;
+        return { configured: true, path: "/Users/op/channels/one" };
+      },
+    },
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  assert.deepEqual(JSON.parse(stdout[0] ?? "{}").data, { configured: true, path: "/Users/op/channels/one" });
+});
+
+test("CLI agent channel-workspace rejects a non-active channel before the core is ever reached", async () => {
+  const stderr: string[] = [];
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "channel-workspace", "--channelId", "UC_OTHER"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async () => {
+        throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not active" });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    channelWorkspacesCore: {
+      getWorkspace: async () => {
+        throw new Error("must not be called");
+      },
+    },
+    writeStdout: (line) => stdout.push(line),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(JSON.parse(stdout[0] ?? stderr[0] ?? "{}").error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI: the real command table contains exactly one workspace command, the read-only agent channel-workspace", () => {
+  // Enumerates the ACTUAL command table (via parseArgs' own "must be one of" validation message
+  // for each namespace) rather than guessing setter names (review round 1, finding 6). The type-
+  // level guard is runCliCommand's `channelWorkspacesCore: Pick<..., "getWorkspace">`; this test
+  // catches a future workspace command under any name.
+  const namespaces = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"];
+  const workspaceCommands: string[] = [];
+  for (const namespace of namespaces) {
+    let message = "";
+    try {
+      parseArgs([namespace, "__not_a_command__"]);
+    } catch (error) {
+      assert.ok(error instanceof DomainError && error.code === "validation_failed");
+      message = error.message;
+    }
+    const commands = message.split("must be one of: ")[1]?.split(", ") ?? [];
+    assert.ok(commands.length > 0, `expected a command list for namespace ${namespace}`);
+    for (const command of commands) {
+      if (/workspace/i.test(command)) workspaceCommands.push(`${namespace} ${command}`);
+    }
+  }
+  assert.deepEqual(workspaceCommands, ["agent channel-workspace"]);
+});
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-04/05/08/10).
+async function runForError(args: Parameters<typeof runCliCommand>[0]): Promise<{ exitCode: number; code: string | undefined }> {
+  const stderr: string[] = [];
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({ ...args, writeStdout: (l) => stdout.push(l), writeStderr: (l) => stderr.push(l) });
+  const envelope = JSON.parse(stderr[0] ?? stdout[0] ?? "{}");
+  return { exitCode, code: envelope.error?.code };
+}
+
+test("AC-P12-10: with Operator CLI access off, every command is refused before running", async () => {
+  for (const argv of [["auth", "whoami"], ["agent", "capabilities"], ["list", "--channelId", "UC_1"]]) {
+    const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.code, "AGENT_TOKEN_INVALID");
+  }
+});
+
+// docs/decisions/0013-in-app-http-mcp-transport.md (AC-HM-12): the CLI has no agent mode any more.
+test("AC-HM-12: --agentToken (any form) is refused before any command runs; the env var is not read", async () => {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const originalEnv = process.env.YTOM_AGENT_TOKEN;
+  const stderr: string[] = [];
+  process.stderr.write = ((chunk: string) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", "ytom_ch_x"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken=ytom_ch_x"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", ""]), 1);
+  } finally {
+    process.stderr.write = originalWrite;
+    if (originalEnv === undefined) delete process.env.YTOM_AGENT_TOKEN;
+    else process.env.YTOM_AGENT_TOKEN = originalEnv;
+  }
+  assert.equal(stderr.length, 4);
+  for (const line of stderr) {
+    const error = JSON.parse(line).error;
+    assert.equal(error.code, "AGENT_TOKEN_INVALID");
+    assert.match(error.message, /no longer supported/);
+  }
+});
+
+test("AC-HM-12: YTOM_AGENT_TOKEN in the environment does not turn the CLI into an agent session", async () => {
+  const original = process.env.YTOM_AGENT_TOKEN;
+  process.env.YTOM_AGENT_TOKEN = "ytom_ch_whatever";
+  try {
+    // With Operator CLI access off the command is refused as an OPERATOR command -- the token is not
+    // consulted (a valid-looking token would otherwise have bound the process to a channel).
+    const result = await runForError({ argv: ["agent", "capabilities"], core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false });
+    assert.equal(result.code, "AGENT_TOKEN_INVALID");
+  } finally {
+    if (original === undefined) delete process.env.YTOM_AGENT_TOKEN;
+    else process.env.YTOM_AGENT_TOKEN = original;
+  }
+});
+
+test("AC-P12-10: the refusal message points the operator at the setting and agents at the MCP endpoint", async () => {
+  const stderr: string[] = [];
+  await runCliCommand({ argv: ["list", "--channelId", "UC_1"], core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false, writeStderr: (l) => stderr.push(l), writeStdout: () => {} });
+  const message = JSON.parse(stderr[0]).error.message as string;
+  assert.match(message, /Operator CLI access/);
+  assert.match(message, /MCP endpoint/);
+});
+
+// ---------------------------------------------------------------------------
+// Collection requests (docs/decisions/0021-agent-collection-requests.md) -- CLI parity: agent create-collection-request, agent collection-limits.
+// ---------------------------------------------------------------------------
+
+function makeCollectionAssignmentStub(assigned: string[], owned: Array<[string, string]>) {
+  return {
+    async filterForAgent<T>(kind: string, items: T[], idOf: (item: T) => string) {
+      return kind === "research_channel" ? items.filter((item) => assigned.includes(idOf(item))) : items;
+    },
+    async assertAvailableToAgent(kind: string, id: string) {
+      if (kind === "research_channel" && !assigned.includes(id)) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "no" });
+    },
+    async recordAgentOwnership(kind: string, id: string) {
+      owned.push([kind, id]);
+    },
+  };
+}
+
+test("CLI agent create-collection-request stamps createdVia:\"cli\"/agentApiVersion:null, splits --researchChannelIds on commas and records ownership", async () => {
+  let captured: { input: unknown; callOrigin: unknown } | null = null;
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createCollectionRequest = async (input, callOrigin) => {
+    captured = { input, callOrigin };
+    return { created: true, request: { requestId: "cr-1" }, notNeeded: [], alreadyRequested: [] } as never;
+  };
+  const owned: Array<[string, string]> = [];
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request", "--researchChannelIds", "UCaaaaaaaaaaaaaaaaaaaaaa, UCbbbbbbbbbbbbbbbbbbbbbb", "--reason", "weekly"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"], owned),
+    writeStdout: (line) => stdout.push(line),
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    input: { researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"], reason: "weekly" },
+    callOrigin: { createdVia: "cli", agentApiVersion: null },
+  });
+  assert.deepEqual(owned, [["collection_request", "cr-1"]]);
+  assert.equal(JSON.parse(stdout[0] ?? "{}").data.created, true);
+});
+
+test("CLI agent create-collection-request refuses a channel not assigned to the agent and, with no flag, defaults to the assigned watchlist channels", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  const seen: unknown[] = [];
+  marketIntelligenceCore.createCollectionRequest = async (input) => {
+    seen.push(input);
+    return { created: false, request: null, notNeeded: [], alreadyRequested: [] } as never;
+  };
+  marketIntelligenceCore.listWatchlist = async () => ({ channels: [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa" }, { channelId: "UCbbbbbbbbbbbbbbbbbbbbbb" }] }) as never;
+  const stderr: string[] = [];
+  const refused = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request", "--researchChannelIds", "UCbbbbbbbbbbbbbbbbbbbbbb"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa"], []),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+  assert.equal(refused, 1);
+  assert.equal(JSON.parse(stderr[0] ?? "{}").error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  assert.deepEqual(seen, []);
+
+  await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa"], []),
+    writeStdout: () => {},
+  });
+  assert.deepEqual(seen, [{ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa"], reason: undefined }]);
+});
+
+test("CLI agent collection-limits prints the core's limits", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.getCollectionLimits = async () => ({ dailyBudgetUnits: 1000 }) as never;
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "collection-limits"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(stdout[0] ?? "{}"), { ok: true, data: { dailyBudgetUnits: 1000 } });
+});
+
+test("CLI agent create-collection-request: alreadyRequested hides the requestId of a request the agent does not own", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createCollectionRequest = async () =>
+    ({ created: false, request: null, notNeeded: [], alreadyRequested: [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", requestId: "cr-other" }] }) as never;
+  const stdout: string[] = [];
+  const assignment = makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa"], []);
+  const base = assignment.filterForAgent;
+  assignment.filterForAgent = async (kind: string, items: never[], idOf: never) => (kind === "collection_request" ? [] : base(kind, items, idOf));
+  await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request", "--researchChannelIds", "UCaaaaaaaaaaaaaaaaaaaaaa"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: assignment as never,
+    writeStdout: (line) => stdout.push(line),
+  });
+  assert.deepEqual(JSON.parse(stdout[0] ?? "{}").data.alreadyRequested, [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa" }]);
 });

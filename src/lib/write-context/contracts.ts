@@ -1,4 +1,4 @@
-import type { CredentialRef, DomainErrorCode, ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { CredentialRef, DomainErrorCode, ResolvedCredentials } from "@/lib/shared-domain";
 
 export type WriteChannelSource = "explicit" | "stored" | "missing";
 

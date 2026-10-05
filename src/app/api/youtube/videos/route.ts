@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getAuthenticatedYoutube } from "@/lib/youtube";
+import { getAuthenticatedYoutube } from "@/lib/youtube-read-gateway";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 
 const videoMetadataCore = createVideoMetadataCore();

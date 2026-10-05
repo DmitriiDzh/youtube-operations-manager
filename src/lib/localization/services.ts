@@ -1,6 +1,6 @@
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type LocalizationExportResult,
   type LocalizationOverview,
   type LocalizationOverviewRow,
@@ -12,15 +12,22 @@ import {
   exportLocalizationsInputSchema,
   localizationOverviewInputSchema,
   localizationOverviewOutputSchema,
+  manageTrackedLanguageInputSchema,
   parseWithSchema,
   videoLocalizationDetailInputSchema,
   videoLocalizationDetailOutputSchema,
 } from "./schemas";
+// Hard allowlist for this one entry point only (owner instruction, 2026-09-21) -- every other
+// language-code-accepting entrypoint in this app (XLSX import, AI localization) still uses the
+// looser `isValidLanguageCode` BCP-47-ish regex from `@/lib/changesets/diff`, unchanged.
+import { isSupportedYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
 
 type ServiceDependencies = {
   channelStore: {
     getChannel(channelId: string): Promise<StoredChannelRecord | null>;
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
+    getTargetLanguages(channelId: string): Promise<string[]>;
+    setTargetLanguages(channelId: string, languages: string[]): Promise<void>;
   };
   xlsxBuilder: {
     buildWorkbook(args: {
@@ -30,29 +37,25 @@ type ServiceDependencies = {
   };
 };
 
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
-
 function computeOverviewRow(video: StoredVideoRecord, languages: string[]): LocalizationOverviewRow {
   const present = new Set(Object.keys(video.existingLocalizations));
   const presentLanguages = languages.filter((lang) => present.has(lang)).sort();
-  const missingLanguages = languages.filter((lang) => !present.has(lang)).sort();
+  // The video's own (default) language is its ORIGINAL: YouTube takes no localization for it, so it is never "missing". If a real localization for that
+  // code does exist it still counts as present above. Matching is by exact code (a default of `en-US` is not `en`).
+  const missingLanguages = languages.filter((lang) => !present.has(lang) && lang !== video.defaultLanguage).sort();
 
   return {
     videoId: video.videoId,
     title: video.title,
     thumbnailUrl: video.thumbnails.default?.url ?? Object.values(video.thumbnails)[0]?.url ?? null,
     publishedAt: video.publishedAt,
+    privacyStatus: video.privacyStatus,
+    publishAt: video.publishAt,
     defaultLanguage: video.defaultLanguage,
     presentLanguages,
     missingLanguages,
     status: missingLanguages.length === 0 && languages.length > 0 ? "complete" : "missing",
+    lastSyncedAt: video.lastSyncedAt.toISOString(),
   };
 }
 
@@ -66,10 +69,7 @@ function collectChannelLanguages(videos: StoredVideoRecord[]): string[] {
   return [...languages].sort();
 }
 
-async function requireChannelAndVideos(
-  deps: ServiceDependencies,
-  channelId: string
-): Promise<{ channel: StoredChannelRecord; videos: StoredVideoRecord[] }> {
+async function requireChannel(deps: ServiceDependencies, channelId: string): Promise<StoredChannelRecord> {
   const channel = await deps.channelStore.getChannel(channelId);
   if (!channel) {
     throw new DomainError({
@@ -78,6 +78,14 @@ async function requireChannelAndVideos(
       details: { channelId },
     });
   }
+  return channel;
+}
+
+async function requireChannelAndVideos(
+  deps: ServiceDependencies,
+  channelId: string
+): Promise<{ channel: StoredChannelRecord; videos: StoredVideoRecord[] }> {
+  const channel = await requireChannel(deps, channelId);
 
   const videos = await deps.channelStore.listVideosByChannel(channelId);
   return { channel, videos };
@@ -94,7 +102,9 @@ export function createLocalizationServices(deps: ServiceDependencies) {
 
       try {
         const { channel, videos } = await requireChannelAndVideos(deps, parsedInput.channelId);
-        const languages = collectChannelLanguages(videos);
+        const trackedLanguages = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const realLanguages = collectChannelLanguages(videos);
+        const languages = [...new Set([...trackedLanguages, ...realLanguages])].sort();
 
         const output = parseWithSchema(
           localizationOverviewOutputSchema,
@@ -102,6 +112,7 @@ export function createLocalizationServices(deps: ServiceDependencies) {
             channelId: channel.channelId,
             channelTitle: channel.title,
             languages,
+            trackedLanguages,
             totalVideos: videos.length,
             videos: videos.map((video) => computeOverviewRow(video, languages)),
           },
@@ -111,6 +122,57 @@ export function createLocalizationServices(deps: ServiceDependencies) {
         return output;
       } catch (error) {
         throw mapUnknownError(error, "not_found");
+      }
+    },
+
+    /** Adds a language to the channel's tracked list, so it appears as a Languages-tab column
+     * even before any video has a real translation in it -- solves the "you can't propose a
+     * translation into a language that doesn't already show up as a column" chicken-and-egg gap
+     * (owner instruction, 2026-09-21, docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5).
+     * Purely a local display preference -- never touches YouTube, never creates a Change/
+     * ChangeSet. */
+    async addTrackedLanguage(input: unknown): Promise<{ trackedLanguages: string[] }> {
+      const parsedInput = parseWithSchema(manageTrackedLanguageInputSchema, input, "add tracked language input");
+      try {
+        const channel = await requireChannel(deps, parsedInput.channelId);
+        // Hard allowlist (owner instruction, 2026-09-21: "Пользователь не может добавить язык,
+        // которого не будет в этом списке") -- replaces the older, looser isValidLanguageCode
+        // regex check for this one entry point. A language already real on the channel (like
+        // this channel's own "en-US", absent from this list -- see the file's own doc comment)
+        // still shows up via the trackedLanguages ∪ real-data union regardless of this gate; only
+        // a brand-new, not-yet-used code typed here is affected.
+        if (!isSupportedYoutubeLanguageCode(parsedInput.language)) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: `"${parsedInput.language}" is not in YouTube's supported language list`,
+            details: { language: parsedInput.language },
+          });
+        }
+        const current = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const next = current.includes(parsedInput.language) ? current : [...current, parsedInput.language].sort();
+        await deps.channelStore.setTargetLanguages(channel.channelId, next);
+        return { trackedLanguages: next };
+      } catch (error) {
+        throw mapUnknownError(error, "validation_failed");
+      }
+    },
+
+    /** Removes a language from the tracked list. **Not a deletion of any real translation** --
+     * if the language still has a real localization on at least one video, `languages` (the
+     * union computed above) still includes it and the column does not disappear; this only
+     * matters for a language that was tracked but never actually translated. Real deletion is a
+     * separate, safety-critical capability (see `docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md`
+     * §7.2/E5's still-open Question 2) deliberately not built as part of this slice. */
+    async removeTrackedLanguage(input: unknown): Promise<{ trackedLanguages: string[] }> {
+      const parsedInput = parseWithSchema(manageTrackedLanguageInputSchema, input, "remove tracked language input");
+      try {
+        const channel = await requireChannel(deps, parsedInput.channelId);
+        const current = await deps.channelStore.getTargetLanguages(channel.channelId);
+        const next = current.filter((l) => l !== parsedInput.language);
+        await deps.channelStore.setTargetLanguages(channel.channelId, next);
+        return { trackedLanguages: next };
+      } catch (error) {
+        throw mapUnknownError(error, "validation_failed");
       }
     },
 

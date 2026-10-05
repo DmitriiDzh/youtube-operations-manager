@@ -1,58 +1,23 @@
 # PROJECT_SPEC.md
-# YouTube Operations Manager — Independent Repository Based on TubeMaster
+# YouTube Operations Manager
 
 ## 0. Purpose of this document
 
-This document is the implementation specification for evolving an **independent private repository initialized from the open-source TubeMaster codebase** into a private/internal **YouTube Operations Manager** for managing multiple YouTube channels.
+This document is the implementation specification for the **YouTube Operations Manager**, a private/internal tool for managing multiple YouTube channels.
 
-Primary upstream repository:
-
-- TubeMaster: https://github.com/Gentleman-Programming/tubemaster
-
-Reference repositories:
+Reference repositories (for ideas only, not architecture to copy wholesale):
 
 - YouTube Video Metadata Translator: https://github.com/jordicor/YouTube-Video-Metadata-Translator
 - youtube-metadata-agent: https://github.com/FairchildHeavyIndustries/youtube-metadata-agent
 
-The goal is **not** to rewrite TubeMaster from scratch.
-
 The goal is to:
 
-1. understand the existing architecture;
-2. get the upstream project running unchanged;
-3. preserve working authentication, YouTube integration, Web UI, CLI, MCP, and API contracts where possible;
-4. extend the project incrementally;
-5. add localization, XLSX import/export, backup/diff/approval, and later analytics/publishing/AI workflows;
-6. keep the system suitable for both a human operator and future AI agents.
+1. preserve working authentication, YouTube integration, Web UI, CLI, MCP, and API contracts where practical;
+2. extend the project incrementally;
+3. add localization, XLSX import/export, backup/diff/approval, and later analytics/publishing/AI workflows;
+4. keep the system suitable for both a human operator and future AI agents.
 
 This is an internal operations tool, not a public SaaS product.
-
-## Repository Independence
-
-This project is **not a GitHub fork** and must not be treated as permanently coupled to the TubeMaster repository.
-
-The repository model is:
-
-```text
-origin   → independent private YouTube Operations Manager repository
-upstream → optional reference remote pointing to the original TubeMaster repository
-```
-
-The `upstream` remote exists only for explicit manual operations such as:
-
-```text
-git fetch upstream
-git log main..upstream/<branch>
-git diff main..upstream/<branch>
-```
-
-No automatic merge, rebase, synchronization, or dependency on upstream is required.
-
-Future upstream changes may be reviewed selectively and adopted manually when useful.
-
-The independent repository may diverge substantially from TubeMaster over time.
-
-Code inherited from TubeMaster must retain all copyright, license, and attribution notices required by its MIT license. New project code may use the repository's chosen internal licensing policy, provided inherited MIT-licensed code remains compliant.
 
 ---
 
@@ -106,48 +71,13 @@ Verify
 
 ---
 
-# 2. Why TubeMaster Is the Starting Point
+# 3. No Parallel Implementations Rule
 
-TubeMaster already provides several foundational capabilities that should be preserved unless there is a documented technical reason to replace them:
-
-- Google / YouTube authentication;
-- Web UI;
-- CLI;
-- MCP server;
-- API route handlers;
-- video operations;
-- metadata operations;
-- playlist operations;
-- dry-run style metadata preview/apply workflows;
-- channel identity guardrails.
-
-The upstream project explicitly supports multiple operational interfaces:
-
-```text
-Web UI
-CLI
-MCP
-API
-```
-
-This is strategically important because the final system should serve both:
-
-- a human working in a browser;
-- autonomous or semi-autonomous AI agents.
-
-Do not remove MCP merely because the first milestone does not use it extensively.
-
-Do not replace working YouTube OAuth with a custom implementation unless the existing implementation is proven inadequate.
-
----
-
-# 3. Upstream Preservation Rule
-
-Before changing any subsystem, determine whether TubeMaster already solves the problem.
+Before changing any subsystem, determine whether an existing one already solves the problem.
 
 Default rule:
 
-> Preserve working upstream behavior and extend it.
+> Prefer extending existing working behavior over rewriting it.
 
 Do not:
 
@@ -156,10 +86,7 @@ Do not:
 - rebuild working playlist operations;
 - create a second YouTube client abstraction in parallel;
 - create duplicated metadata logic;
-- replace the frontend framework just because another framework is preferred;
-- migrate the entire project to Python merely to match another reference project.
-
-TubeMaster is currently a JavaScript/TypeScript-oriented project. Its existing architecture should be treated as the default foundation for the initial independent repository.
+- replace the frontend framework just because another framework is preferred.
 
 Large architectural migrations require a written decision document explaining:
 
@@ -172,36 +99,6 @@ Large architectural migrations require a written decision document explaining:
 ---
 
 # 4. Reference Repositories and What to Learn From Them
-
-## 4.1 TubeMaster
-
-Repository:
-
-https://github.com/Gentleman-Programming/tubemaster
-
-Use it as the initial upstream codebase and architectural starting point.
-
-Preserve and extend:
-
-- OAuth/session handling;
-- channel context;
-- YouTube client logic;
-- Web UI;
-- CLI;
-- MCP server;
-- API handlers;
-- metadata preview/apply model;
-- playlist functionality;
-- existing tests;
-- existing public/internal contracts where practical.
-
-Important existing safety concept:
-
-metadata write operations can validate the expected channel identity before applying changes.
-
-This pattern should be expanded to every destructive or write operation.
-
----
 
 ## 4.2 YouTube Video Metadata Translator
 
@@ -226,7 +123,7 @@ Useful concepts to study:
 
 Do not blindly copy code.
 
-Understand the behavior and reimplement it within TubeMaster's architecture.
+Understand the behavior and reimplement it within this project's own architecture.
 
 ---
 
@@ -323,100 +220,11 @@ Development must be incremental.
 
 Do not attempt to implement all future features in one pass.
 
-## Phase 0 — Analyze Upstream
-
-Before modifying code:
-
-1. inspect the TubeMaster-derived code already present in the independent repository;
-2. read README and docs;
-3. inspect package structure;
-4. inspect authentication implementation;
-5. inspect YouTube service/client implementation;
-6. inspect database/storage model;
-7. inspect Web UI;
-8. inspect CLI;
-9. inspect MCP implementation;
-10. inspect metadata preview/apply workflow;
-11. inspect tests;
-12. run lint/tests;
-13. run the application locally.
-
-Produce:
-
-```text
-docs/UPSTREAM_ANALYSIS.md
-```
-
-It must document:
-
-- architecture;
-- important modules;
-- authentication flow;
-- data storage;
-- write safety mechanisms;
-- MCP contracts;
-- current limitations relevant to localization;
-- extension points;
-- risks.
-
-Do not begin a major refactor until this document exists.
-
----
-
-## Phase 1 — Independent Baseline
-
-Goal:
-
-Create a stable independent project baseline that still preserves the working TubeMaster-derived functionality before product-specific extensions begin.
-
-Requirements:
-
-- project installs successfully;
-- application runs;
-- tests pass;
-- lint/type checks pass;
-- OAuth flow works;
-- Web UI works;
-- CLI works;
-- MCP starts successfully;
-- existing metadata functions work;
-- existing playlist functions work.
-
-Add:
-
-```text
-docs/UPSTREAM_BASELINE.md
-```
-
-Document:
-
-- upstream commit/tag used;
-- date the independent repository baseline was created;
-- modifications made;
-- how future upstream changes may be reviewed and selectively adopted.
-
-Create a Git tag or commit marking the untouched/near-untouched baseline.
-
-Suggested tag:
-
-```text
-upstream-baseline
-```
-
-Recommended Git remote model:
-
-```text
-origin   → independent private repository
-upstream → original TubeMaster repository (optional reference only)
-```
-
-Do not configure automatic synchronization from `upstream`.
+Phase 0 (initial architecture analysis) and Phase 1 (independent baseline verification) are complete — see `docs/ROADMAP_STATUS.md` for the record of what was done and when.
 
 ---
 
 # 8. Channel and Account Model
-
-Verify how upstream models authentication and channel context.
 
 The extended application must support multiple connected YouTube accounts/channels.
 
@@ -436,7 +244,7 @@ The active channel must always be clearly visible in the UI.
 
 Every write operation must verify that the currently authorized YouTube identity has access to the intended channel.
 
-Where TubeMaster already uses `expectedChannelId`, preserve and generalize this behavior.
+The `expectedChannelId` channel-identity guardrail must be preserved and generalized across every write operation.
 
 Never allow a background or bulk operation to silently switch channel context.
 
@@ -632,6 +440,10 @@ Set default language:
 
 Changing default language is a YouTube write operation and must follow the same approval/audit rules.
 
+**Owner exception (2026-10-02, project owner via Telegram: "Разрешаю чтобы дефолтный язык подставлялся в батчи, при загрузке файлов на перевод").** In a Batch, a video that has *no* `defaultLanguage` on YouTube receives the channel's baseline (`channels.expected_default_language`, Languages tab) as `snippet.defaultLanguage` in the same `videos.update` as its localizations. Constraints: only when the video has none (an existing value is never overridden); no baseline configured → blocked as before; a change for, or an existing remote localization under, the baseline language itself → FAILED (would overwrite/drop snippet text); backup keeps the original (missing) value; the applied value is recorded in the DRY_RUN/ATTEMPT audit detail and verified in the post-write read-back (unconfirmed → FAILED). Scope: Batches only — the Change Set mechanism's own field authority (title/description) is unchanged.
+
+**Amendment (2026-10-04, project owner via Telegram: "Подставляем дефолтные значения... надо не читать с каждого отдельного видео, а брать 1 источник правды").** `videos.update` replaces the whole `snippet`, so a field left out is reset by YouTube (live: a Tropico batch sent no `defaultAudioLanguage` and all 53 videos became `en-US`). In a Batch the channel baseline (`channels.expected_default_language` / `expected_default_audio_language`) is therefore the single source of the two language fields: `snippet.defaultAudioLanguage` is always sent with the baseline audio language when one is set (the video's own value is never echoed; none set → omitted, as before), and a video whose own `defaultLanguage` differs from the baseline fails closed ("fix it in Language defaults first") instead of being silently re-labelled. The requested vs. observed audio language is recorded in the VERIFICATION audit detail; a mismatch does not fail the row (the field is outside YouTube's documented settable list, so this stays experimental until a live write confirms it).
+
 ---
 
 # 15. XLSX Export
@@ -747,6 +559,25 @@ blank cell = NO CHANGE
 ```
 
 Deletion must be an explicit operation.
+
+**Updated 2026-09-20 (explicit project-owner decision, reversing this section's original
+no-deletion-feature-at-all default once any deletion feature is actually built):** this
+application may build a real, explicit deletion capability (e.g. removing a video's localization
+from YouTube), but only under a permanent, application-wide constraint that applies to **every**
+deletion feature this application ever builds, not only the one that prompted this update:
+
+- No deletion may ever be permanent or immediate, no matter how many confirmation steps precede
+  it. A deletion action always requires **multiple, explicit confirmation steps** before it
+  executes.
+- Even after confirmation and execution, the deleted value must remain **locally recoverable for
+  a configurable retention window** (default 30 days) so the operator can restore it without harm.
+- "Restore" means re-applying the previously-deleted value as a new write, through the exact same
+  safety model as any other write (identity check, dry-run capability, audit, verification) — it
+  is never a bare, unaudited local undo.
+- The retention window governs what the operator is *offered* as restorable; it does not by
+  itself require deleting the underlying local backup once the window closes (see
+  `docs/TECHNICAL_DEBT.md` for the current status of backup retention/cleanup, tracked
+  separately as its own decision).
 
 ---
 
@@ -931,6 +762,19 @@ buildSafeVideoUpdatePayload(remoteVideo, approvedChanges)
 
 These functions need extensive tests.
 
+**Field scope, permanent constraint (added 2026-09-21, explicit project-owner decision).** The
+Change Set / localization mechanism (XLSX import, AI generation, tracked-language management, and
+any localization-deletion capability built on it) has authority over exactly two fields:
+`title` and `description`, per language. It must never read, write, or delete any other field —
+not the video's own `defaultLanguage`/`defaultAudioLanguage`, not tags, category, privacy,
+scheduling, or any other `snippet`/`status`/`recordingDetails` field (those belong to
+`src/lib/video-details/`, a structurally separate module, per AGENTS.md §F), and not captions/
+subtitles (a distinct YouTube API resource this application does not integrate with at all).
+Extending this mechanism to cover any additional field is a separate product decision requiring
+the project owner's own explicit authorization each time — never something a coding agent infers
+is safe merely because the underlying YouTube API technically allows it, and never done by quietly
+widening an existing type (e.g. `ChangeField`) without first updating this section to say so.
+
 ---
 
 # 22. Idempotent Batch Execution
@@ -1064,7 +908,7 @@ applied by system
 
 # 26. Agent / MCP Safety
 
-TubeMaster's MCP layer is strategically important.
+The MCP layer is strategically important.
 
 Do not grant AI agents unrestricted direct write behavior.
 
@@ -1133,7 +977,7 @@ ABORT WRITE
 
 Do not merely show a warning.
 
-Generalize TubeMaster's existing `expectedChannelId` guardrail rather than removing it.
+Generalize the `expectedChannelId` guardrail rather than removing it.
 
 ---
 
@@ -1203,7 +1047,7 @@ Never silently overwrite newer remote changes.
 
 # 31. Dashboard Evolution
 
-Keep existing TubeMaster-derived dashboard behavior functional.
+Keep existing dashboard behavior functional.
 
 Add an operational overview over time.
 
@@ -1378,9 +1222,7 @@ Verify every feature against current official API documentation before implement
 
 # 36. Data Storage
 
-First inspect TubeMaster's existing storage strategy.
-
-Extend it rather than immediately replacing it.
+Extend the existing persistence model rather than replacing it without a concrete need.
 
 The system ultimately needs durable representation for at least:
 
@@ -1395,8 +1237,6 @@ Batches
 AuditEvents
 Backups
 ```
-
-If TubeMaster's existing persistence model is insufficient, propose the minimum necessary migration.
 
 Do not introduce enterprise infrastructure without a concrete need.
 
@@ -1541,8 +1381,6 @@ Do not freeze the UI until the entire operation completes.
 
 Testing is mandatory.
 
-Preserve upstream tests.
-
 Add tests for all new safety-critical logic.
 
 ## Unit tests
@@ -1616,8 +1454,6 @@ Maintain:
 ```text
 README.md
 PROJECT specification
-docs/UPSTREAM_ANALYSIS.md
-docs/UPSTREAM_BASELINE.md
 docs/ARCHITECTURE.md
 CHANGELOG.md
 ```
@@ -1651,7 +1487,7 @@ docs/decisions/002-batch-execution-model.md
 
 Use this for decisions such as:
 
-- replacing an upstream subsystem;
+- replacing a core subsystem;
 - database migration;
 - changing authentication;
 - changing MCP contracts;
@@ -1661,9 +1497,7 @@ Do not create ADRs for trivial implementation details.
 
 ---
 
-# 46. Optional Upstream Compatibility
-
-Keep selective adoption of future TubeMaster changes possible where practical, but do not optimize the project around permanent upstream compatibility.
+# 46. Avoid Unnecessary Churn
 
 Guidelines:
 
@@ -1672,15 +1506,13 @@ Guidelines:
 - avoid mass renames without reason;
 - do not restructure the whole repository merely for preference;
 - preserve existing interface contracts unless change is necessary;
-- document intentional incompatibilities.
+- document intentional breaking changes.
 
-Before making a broad refactor, consider whether preserving reasonable diff readability against upstream still has value. Do not block a justified project-specific refactor merely to preserve mergeability.
+Do not block a justified project-specific refactor merely to minimize diff size.
 
 ---
 
 # 47. Suggested New Domain Modules
-
-Exact file paths depend on upstream architecture.
 
 Conceptually introduce modules such as:
 
@@ -1710,9 +1542,7 @@ backup/
   service
 ```
 
-Do not force these exact paths if they conflict with established TubeMaster conventions.
-
-Follow upstream style.
+Do not force these exact paths if they conflict with this project's own established module conventions (see `docs/DEVELOPMENT_PLAYBOOK.md`).
 
 ---
 
@@ -2002,13 +1832,9 @@ Read the entire repository and this specification before large changes.
 
 Do not implement the entire roadmap in one pass.
 
-## Rule 3
-
-First run the TubeMaster-derived baseline successfully inside the independent repository.
-
 ## Rule 4
 
-Preserve working upstream functionality.
+Preserve working functionality unless there is a documented reason to change it.
 
 ## Rule 5
 
@@ -2087,44 +1913,7 @@ Keep the repository easy for future Codex/Claude agents to understand.
 
 # 60. Initial Agent Assignment
 
-When starting work, do **not** ask the coding agent to build the full localization system immediately.
-
-Use the following first assignment:
-
-```text
-Read docs/PROJECT_SPEC.md completely.
-
-Inspect the current independent repository initialized from TubeMaster and do not implement new product
-features yet.
-
-Your first task is Phase 0 and Phase 1 only:
-
-1. Understand the existing architecture.
-2. Run the project locally.
-3. Run the existing tests, linting and type checks.
-4. Identify the authentication, YouTube API, Web UI, CLI, MCP, metadata and playlist modules.
-5. Create docs/UPSTREAM_ANALYSIS.md.
-6. Create docs/UPSTREAM_BASELINE.md.
-7. Document the exact upstream commit used.
-8. Identify the least invasive extension points for:
-   - full video synchronization,
-   - localization management,
-   - XLSX import/export,
-   - change sets,
-   - backups,
-   - audit logs.
-9. Do not replace existing working subsystems.
-10. Do not start a large refactor.
-11. Fix only issues required to get the upstream baseline working.
-12. At the end, provide:
-    - commands used,
-    - test results,
-    - current architecture summary,
-    - proposed Phase 2 implementation plan,
-    - risks and open technical decisions.
-
-Do not begin Phase 2 until Phase 0/1 are working and documented.
-```
+Complete — Phase 0/1 architecture analysis and baseline verification; see `docs/ROADMAP_STATUS.md`.
 
 ---
 
@@ -2306,7 +2095,7 @@ Do not accelerate toward autonomous publishing until the core metadata/localizat
 
 When uncertain:
 
-1. inspect upstream implementation;
+1. inspect this repository's own existing conventions and patterns;
 2. inspect official YouTube documentation;
 3. preserve data;
 4. choose the less destructive behavior;

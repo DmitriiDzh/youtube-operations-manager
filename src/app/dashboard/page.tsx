@@ -1,66 +1,270 @@
 "use client";
 
-import { useSession, signOut, signIn } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import { redirect } from "next/navigation";
-import { useEffect, useState, useCallback } from "react";
-import { RuleForm } from "@/components/rule-form";
-import { RuleList } from "@/components/rule-list";
-import { RunButton } from "@/components/run-button";
-import { ManualMode } from "@/components/manual-mode";
-import { ChannelSync } from "@/components/channel-sync";
-import { LocalizationManager } from "@/components/localization-manager";
+import { useEffect, useState, useCallback, useRef } from "react";
+import type { ComponentType, SVGProps } from "react";
+import { AnalyticsTab } from "@/components/analytics-tab";
+import { HomeDashboardPanel } from "@/components/home-dashboard-panel";
+import { ContentManager } from "@/components/content-manager";
+import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
+import { AiConnectionsManager } from "@/components/ai-connections-manager";
+import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
+import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
+import { MarketIntelligenceCollectionDepthSettings } from "@/components/market-intelligence-collection-depth-settings";
+import { QuotaReserveSettings } from "@/components/quota-reserve-settings";
+import { RetentionSettings } from "@/components/retention-settings";
+import { LiveWritesSettings } from "@/components/live-writes-settings";
+import { McpConnectionSettings } from "@/components/mcp-connection-settings";
+import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
+import { OperatorCliSettings } from "@/components/operator-cli-settings";
+import { MarketOverviewPanel } from "@/components/market-overview-panel";
+import { MarketResearchPanel } from "@/components/market-research-panel";
+import { MarketVideosPanel } from "@/components/market-videos-panel";
+import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
+import { MarketTopicsPanel } from "@/components/market-topics-panel";
+import { MusicChartPanel } from "@/components/music-chart-panel";
+import { MarketTrendsPanel } from "@/components/market-trends-panel";
+import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
+import { MarketCollectionRequestsPanel } from "@/components/market-collection-requests-panel";
+import { DecisionsManager } from "@/components/decisions-manager";
+import { ReadGatewaySettings } from "@/components/read-gateway-settings";
+import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
+import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
+import { SyncFolderSettings } from "@/components/sync-folder-settings";
+import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
+import { AppVersionInfo } from "@/components/app-version-info";
+import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
+import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
+import { ConnectionHealthDialog } from "@/components/connection-health-dialog";
+import { useConnectionHealth } from "@/components/use-connection-health";
+import { AppShell } from "@/components/app-shell";
+import { InfoTooltip } from "@/components/info-tooltip";
+import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
+import { OperationLockControl } from "@/components/operation-lock-control";
+import {
+  AnalyticsIcon,
+  BatchesIcon,
+  ContentIcon,
+  DecisionsIcon,
+  DeviceIcon,
+  HomeIcon,
+  LocalizationsIcon,
+  ResearchIcon,
+  SettingsIcon,
+} from "@/components/icons";
 
-type ChannelInfo = {
+export type ChannelInfo = {
   id: string;
   title: string;
   thumbnail?: string;
   videoCount?: string;
+  subscriberCount?: string;
 };
 
-type Rule = {
-  id: number;
-  name: string;
-  matchField: string;
-  matchType: string;
-  matchValue: string;
-  playlistTitle: string;
-  enabled: boolean;
-};
+// Tab is derived from NAV_ITEMS (not declared independently) so the two can never drift apart --
+// adding a nav entry adds the tab, and vice versa, with no separate list for the compiler to miss.
+const NAV_ITEMS = [
+  { value: "home", label: "Home", icon: HomeIcon },
+  { value: "content", label: "Content", icon: ContentIcon },
+  { value: "analytics", label: "Analytics", icon: AnalyticsIcon },
+  { value: "languages", label: "Languages", icon: LocalizationsIcon },
+  { value: "batches", label: "Batches", icon: BatchesIcon },
+  // Phase 9 slice 2 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global, not channel-scoped (see
+  // MarketResearchPanel's own doc comment), so it doesn't need `channel` the way Content/
+  // Analytics/Languages/Batches do.
+  { value: "research", label: "Research", icon: ResearchIcon },
+  // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- global, not channel-scoped
+  // as a tab, though an individual hypothesis may itself be channel-scoped (see DecisionsManager).
+  { value: "decisions", label: "Decisions", icon: DecisionsIcon },
+  { value: "settings", label: "Settings", icon: SettingsIcon },
+  // Renamed from "Device" (2026-09-21, AUTOMERGE_MIGRATION_PLAN.md §6 CD6, owner instruction):
+  // this tab is now also where every detected draft-sync conflict is tracked and presented for a
+  // human decision, not only device handoff export/import.
+  { value: "merge", label: "Merge", icon: DeviceIcon },
+] as const satisfies {
+  value: string;
+  label: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+}[];
 
-type Tab = "manual" | "rules" | "sync" | "localizations" | "batches";
+// Polling intervals for CD5's background sync (AUTOMERGE_MIGRATION_PLAN.md §6, AC-CRDT-07/08).
+// Deliberately two different endpoints/intervals, not one (advisor review): the conflict-count
+// badge needs to feel current (AC-CRDT-08, "accurate at all times a value is displayed") without
+// paying for a real write cycle on every poll, while the actual push/merge sync cycle
+// (POST .../sync, a real write to this device's local files) runs less often -- both independent
+// of which tab is open, so a conflict introduced by another device is detected even if the
+// operator never opens the Merge tab (AC-CRDT-07). The server-side single-flight guard
+// (change-drafts-sync/services.ts) makes running the write cycle safe even with multiple tabs
+// open, but polling it as rarely as correctness allows is still the cheaper default.
+const CONFLICT_SUMMARY_POLL_MS = 20_000;
+const SYNC_CYCLE_POLL_MS = 60_000;
+
+type Tab = (typeof NAV_ITEMS)[number]["value"];
+
+// Settings sub-tabs (owner instruction, 2026-09-23: "давай в настройках сделаем 4 категории
+// закладок"). "AI Agent" deliberately groups two technically unrelated mechanisms -- the MCP
+// connection toggle (how an external AI agent like Codex/Claude connects TO this app) and AI
+// provider connections (how this app connects OUT to an AI provider for AI Localization) -- per
+// the owner's own explicit choice after this distinction was raised and confirmed understood.
+const SETTINGS_SUB_TABS = [
+  { value: "general", label: "General" },
+  { value: "api", label: "API" },
+  { value: "channels", label: "Channels" },
+  { value: "ai-agent", label: "AI Agent" },
+  { value: "sync", label: "Sync" },
+  { value: "about", label: "About" },
+] as const;
+type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
-  const [rules, setRules] = useState<Rule[]>([]);
-  const [tab, setTab] = useState<Tab>("manual");
+  const [tab, setTab] = useState<Tab>("home");
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("general");
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
-
-  const fetchRules = useCallback(async () => {
-    const res = await fetch("/api/rules");
-    const data = await res.json();
-    setRules(data);
-  }, []);
+  // BL-115: the channel request failed (typically a stale Google sign-in) -- say so, don't spin on "Loading..." forever.
+  const [channelUnavailable, setChannelUnavailable] = useState(false);
+  const connectionHealth = useConnectionHealth(Boolean(session));
+  const refetchConnectionHealth = connectionHealth.refetch;
+  const [conflictCount, setConflictCount] = useState(0);
 
   const fetchChannel = useCallback(async () => {
-    const res = await fetch("/api/youtube/channel-info");
-    const data = await res.json();
-    setChannel(data.channel);
-  }, []);
+    try {
+      const res = await fetch("/api/youtube/channel-info");
+      if (!res.ok) {
+        setChannelUnavailable(true);
+        // Re-check the stored grants for real now (bypassing the short cache): the popup names which account to sign in with.
+        void refetchConnectionHealth({ force: true });
+        return;
+      }
+      const data = await res.json();
+      setChannelUnavailable(false);
+      setChannel(data.channel);
+    } catch {
+      // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
+      // right after activating a different stored channel connection, docs/decisions/0010), since
+      // that no longer reloads the page the way the old signIn("google")-only flow always did.
+      // This effect re-runs the moment `session` settles on its new value, so it self-heals.
+    }
+  }, [refetchConnectionHealth]);
 
   useEffect(() => {
     if (session) {
       queueMicrotask(() => {
-        void fetchRules();
         void fetchChannel();
       });
     }
-  }, [session, fetchRules, fetchChannel]);
+  }, [session, fetchChannel]);
 
-  async function handleSwitchChannel() {
-    await signOut({ redirect: false });
-    await signIn("google");
-  }
+  // Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): "при входе в дашборд"
+  // (on entering the dashboard) -- a mount-once check, not a repeating interval like the Merge
+  // tab's polls above (this is a once-a-day rule, not a continuous one). The server itself
+  // decides whether anything actually runs (`runAutoCollectionIfStale`'s own staleness check) --
+  // this effect only ever fires the request once per dashboard session, regardless of how many
+  // times `channel` updates (e.g. after a re-sync), via the ref guard.
+  const autoCollectTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!channel?.id || autoCollectTriggeredRef.current) return;
+    autoCollectTriggeredRef.current = true;
+    const channelId = channel.id;
+    // Phase 8 follow-up, slice 4 (weekly reports) -- chained via .finally() AFTER auto-collect
+    // resolves (success or failure), never fired in parallel, so a Monday dashboard load's weekly
+    // snapshot sees whatever that same load's own auto-collect just refreshed (advisor review,
+    // 2026-09-23; src/lib/analytics/weekly-report.ts's own doc comment has the full trigger design).
+    fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/auto-collect`, { method: "POST" })
+      .catch(() => {
+        // Non-fatal -- the staleness check means the next dashboard load simply tries again.
+      })
+      .finally(() => {
+        fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/weekly-reports/generate-if-due`, {
+          method: "POST",
+        })
+          .catch(() => {
+            // Non-fatal -- the due-week check means the next dashboard load simply tries again.
+          })
+          .finally(() => {
+            // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §7) -- third
+            // fire-and-forget call, chained after the two Phase-8 ones above (never in parallel,
+            // same rationale). Channel-agnostic (market intelligence's own watchlist is global,
+            // not scoped to `channel.id`) -- the server's own budget/staleness checks decide
+            // whether anything actually runs.
+            fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).catch(() => {
+              // Non-fatal -- the staleness/budget check means the next dashboard load simply tries again.
+            });
+          });
+      });
+  }, [channel]);
+
+  // BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md) -- the Reporting API's Reach report
+  // (impressions/CTR). Its own independent fire-and-forget call, deliberately NOT chained to the Analytics
+  // calls above (AGENTS.md §M: one module failing or being switched off must not affect another). The server
+  // decides whether anything runs: `onlyIfDue` makes it a no-op within 6 hours of the last check.
+  const reachSyncTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!channel?.id || reachSyncTriggeredRef.current) return;
+    reachSyncTriggeredRef.current = true;
+    fetch(`/api/channels/${encodeURIComponent(channel.id)}/reach/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ onlyIfDue: true }),
+    }).catch(() => {
+      // Non-fatal -- the next dashboard load simply tries again.
+    });
+  }, [channel]);
+
+  const refreshConflictSummary = useCallback(async () => {
+    try {
+      const res = await fetch("/api/change-drafts/conflicts-summary");
+      if (!res.ok) return;
+      const data = (await res.json()) as { totalConflicts: number };
+      setConflictCount(data.totalConflicts);
+    } catch {
+      // Non-fatal -- the badge just stays at its last known value until the next poll succeeds.
+    }
+  }, []);
+
+  // Depend on the stable user id, not the `session` object itself (advisor review): NextAuth
+  // refetches the session on window focus by default, handing back a new object identity each
+  // time even when nothing meaningful changed -- depending on `session` directly would tear down
+  // and recreate both intervals (firing an immediate extra sync cycle) every time the operator
+  // merely switches back to this browser tab, silently defeating the 60s pacing chosen below.
+  const userId = session?.user?.id;
+
+  // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
+  // sidebar badge (AC-CRDT-08) stays current even while the operator is on an unrelated tab.
+  useEffect(() => {
+    if (!userId) return;
+    void refreshConflictSummary();
+    const id = setInterval(() => void refreshConflictSummary(), CONFLICT_SUMMARY_POLL_MS);
+    return () => clearInterval(id);
+  }, [userId, refreshConflictSummary]);
+
+  // The actual background push+merge sync cycle (a real write to this device's local files) --
+  // runs on its own, longer interval, independent of the Merge tab (AC-CRDT-07: a conflict
+  // introduced by this background loop must be detected without requiring the operator to open
+  // that tab). Safe against overlapping browser tabs/polls via the server-side single-flight
+  // guard (change-drafts-sync/services.ts), not by anything client-side.
+  useEffect(() => {
+    if (!userId) return;
+    async function runSyncCycle() {
+      try {
+        await fetch("/api/change-drafts/sync", { method: "POST" });
+      } catch {
+        // Non-fatal -- the next scheduled cycle (or an explicit "Sync now" in the Merge tab)
+        // will simply try again.
+      } finally {
+        void refreshConflictSummary();
+      }
+    }
+    void runSyncCycle();
+    const id = setInterval(() => void runSyncCycle(), SYNC_CYCLE_POLL_MS);
+    return () => clearInterval(id);
+  }, [userId, refreshConflictSummary]);
+
+  const navItemsWithBadges = NAV_ITEMS.map((item) =>
+    item.value === "merge" ? { ...item, badge: conflictCount } : item
+  );
 
   if (status === "loading") {
     return (
@@ -74,170 +278,286 @@ export default function Dashboard() {
     redirect("/");
   }
 
-  async function handleDelete(id: number) {
-    await fetch(`/api/rules?id=${id}`, { method: "DELETE" });
-    fetchRules();
-  }
-
   return (
-    <div className="mx-auto max-w-3xl px-4 py-12">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">YouTube Playlist Manager</h1>
-          <p className="text-sm text-zinc-400">
-            Welcome, {session.user?.name}
-          </p>
-        </div>
-        <button
-          onClick={() => signOut()}
-          className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-400 transition-colors hover:border-zinc-500 hover:text-zinc-200"
-        >
-          Sign Out
-        </button>
-      </div>
-
-      <div className="mb-6 flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3">
-        <div className="flex items-center gap-3">
-          {channel?.thumbnail && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={channel.thumbnail}
-              alt={channel.title}
-              className="h-10 w-10 rounded-full"
-            />
-          )}
-          <div>
-            <p className="text-xs text-zinc-500">Active YouTube channel</p>
-            <p className="font-medium">
-              {channel?.title ?? "Loading..."}
-              {channel?.videoCount && (
-                <span className="ml-2 text-xs text-zinc-500">
-                  {channel.videoCount} videos
-                </span>
-              )}
+    <AppShell
+      navItems={navItemsWithBadges}
+      activeTab={tab}
+      onTabChange={setTab}
+      channel={channel}
+      channelUnavailable={channelUnavailable}
+      onSignOut={() => signOut()}
+    >
+      <ConnectionHealthDialog health={connectionHealth.health} />
+      {/* Visible on every tab, only while a migration/import holds (or left behind) the device lock. */}
+      <OperationLockControl quiet />
+      {tab === "home" && (
+        // `key` forces a clean remount whenever the active channel changes (owner instruction,
+        // 2026-09-23: switching channel -- via the topbar dropdown or Settings -- must signal
+        // every tab to refresh to the new one). None of these manager components take a
+        // `channelId` prop; each resolves "the active channel" itself, once, on its own mount
+        // (server-side, via the session's `selectedChannelId`) -- remounting is what makes that
+        // mount-time resolution re-run, without changing any of the five components themselves.
+        <FeatureErrorBoundary label="Home">
+          <div key={channel?.id ?? "no-channel"} className="space-y-6">
+            <p className="max-w-3xl text-sm text-zinc-400">
+              Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slices S4/S6b). Comments
+              and Recent-subscribers feeds are still open questions (public-API feasibility
+              unconfirmed) — everything else Studio&apos;s own Home shows from already-available
+              data is below.
             </p>
+            <FeatureErrorBoundary label="Home — Dashboard">
+              <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => setTab("content")} />
+            </FeatureErrorBoundary>
+            <div className="max-w-3xl">
+              <FeatureErrorBoundary label="Home — Editorial profile">
+                <EditorialProfilePanel />
+              </FeatureErrorBoundary>
+            </div>
           </div>
-        </div>
-        <button
-          onClick={handleSwitchChannel}
-          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
-        >
-          Switch Channel
-        </button>
-      </div>
-
-      <div className="mb-6 flex gap-1 rounded-lg bg-zinc-900 p-1">
-        <button
-          onClick={() => setTab("manual")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "manual"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Manual
-        </button>
-        <button
-          onClick={() => setTab("rules")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "rules"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Rules
-        </button>
-        <button
-          onClick={() => setTab("sync")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "sync"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Sync
-        </button>
-        <button
-          onClick={() => setTab("localizations")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "localizations"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Localizations
-        </button>
-        <button
-          onClick={() => setTab("batches")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "batches"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Batches
-        </button>
-      </div>
-
-      {tab === "manual" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Select videos and add them to a playlist directly.
-          </p>
-          <ManualMode />
-        </div>
+        </FeatureErrorBoundary>
       )}
 
-      {tab === "rules" && (
-        <div className="space-y-8">
-          <RuleForm onCreated={fetchRules} />
-
-          <div>
-            <h2 className="mb-4 text-lg font-semibold">Your Rules</h2>
-            <RuleList rules={rules} onDelete={handleDelete} />
-          </div>
-
-          <div>
-            <h2 className="mb-4 text-lg font-semibold">Execute</h2>
-            <p className="mb-3 text-sm text-zinc-400">
-              Run your rules against your recent videos.
+      {tab === "content" && (
+        <FeatureErrorBoundary label="Content">
+          <div key={channel?.id ?? "no-channel"}>
+            <p className="mb-4 text-sm text-zinc-400">
+              Your synchronized videos, Studio-style. Read-only: no metadata is written to
+              YouTube from this tab.
             </p>
-            <RunButton />
+            <ContentManager />
           </div>
-        </div>
+        </FeatureErrorBoundary>
       )}
 
-      {tab === "sync" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Synchronize a channel&rsquo;s videos locally and review existing localization
-            languages. Read-only: no metadata is written to YouTube.
-          </p>
-          <ChannelSync />
-        </div>
+      {tab === "analytics" && (
+        <FeatureErrorBoundary label="Analytics">
+          <div key={channel?.id ?? "no-channel"}>
+            <p className="mb-4 text-sm text-zinc-400">
+              Overview numbers come from the data this app collects and stores (daily automatic
+              collection or &ldquo;Collect now&rdquo;); &ldquo;Refresh live&rdquo; reads them from
+              YouTube directly. Percentages are computed facts (period-over-period deltas from real
+              numbers, same as Studio&apos;s own cards) &mdash; AI-generated recommendations remain
+              Phase 10&apos;s own, separate scope.
+            </p>
+            <AnalyticsTab subscriberCount={channel?.subscriberCount} />
+          </div>
+        </FeatureErrorBoundary>
       )}
 
-      {tab === "localizations" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Review existing localizations per video, export to XLSX, and import edited
-            workbooks to build local change sets for review and approval. No metadata is
-            written to YouTube anywhere in this tab &mdash; approval is a local decision only.
-          </p>
-          <LocalizationManager />
-        </div>
+      {tab === "languages" && (
+        <FeatureErrorBoundary label="Languages">
+          <div key={channel?.id ?? "no-channel"}>
+            <p className="mb-4 text-sm text-zinc-400">
+              Generating with AI is the primary way to add a language &mdash; review and edit
+              the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
+              workbook remains available as a secondary, bulk action. No metadata is written to
+              YouTube anywhere in this tab &mdash; approval here is a local decision only, and
+              &ldquo;Approved&rdquo; never means a real YouTube write happened.
+            </p>
+            <LanguagesManager />
+          </div>
+        </FeatureErrorBoundary>
       )}
 
       {tab === "batches" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Select approved changes into a Batch and preview it in dry-run mode. Real
-            YouTube writes are disabled by a server-side safety barrier &mdash; this tab
-            never performs a live write.
-          </p>
-          <BatchManager />
-        </div>
+        <FeatureErrorBoundary label="Batches">
+          <div>
+            <p className="mb-4 text-sm text-zinc-400">
+              Select approved changes into a Batch and preview it in dry-run mode. A real,
+              non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
+              in Settings &mdash; off by default every session.
+            </p>
+            <BatchManager channelId={channel?.id ?? null} channelTitle={channel?.title ?? null} />
+          </div>
+        </FeatureErrorBoundary>
       )}
-    </div>
+
+      {tab === "research" && (
+        <FeatureErrorBoundary label="Research">
+          <div className="space-y-6">
+            <p className="text-sm text-zinc-400">
+              A watchlist of channels for competitive/market context &mdash; discovery only ever
+              runs on your own explicit request below, never automatically, and this is never a
+              source of private analytics for a channel you don&rsquo;t own.
+            </p>
+            <FeatureErrorBoundary label="Research — Overview">
+              <MarketOverviewPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Watchlist">
+              <MarketResearchPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Videos">
+              <MarketVideosPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Discovery">
+              <MarketDiscoveryPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Topics">
+              <MarketTopicsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Trends">
+              <MarketTrendsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Music chart">
+              <MusicChartPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Requests">
+              <MarketResearchRequestsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Collection requests">
+              <MarketCollectionRequestsPanel />
+            </FeatureErrorBoundary>
+          </div>
+        </FeatureErrorBoundary>
+      )}
+
+      {tab === "decisions" && (
+        <FeatureErrorBoundary label="Decisions">
+          <div className="space-y-6">
+            <p className="text-sm text-zinc-400">
+              Hypotheses, experiments, and their recorded outcomes &mdash; manual record-keeping
+              only. No AI-generated hypotheses and no automatic execution of an approved
+              experiment yet (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md).
+            </p>
+            <DecisionsManager channel={channel ?? null} />
+          </div>
+        </FeatureErrorBoundary>
+      )}
+
+      {/* Unlike every other top-level tab (still conditionally mounted -- see AGENTS.md-documented
+          convention that most tabs refetch for free on their own mount/unmount), Settings itself
+          stays mounted from dashboard load onward and is only CSS-hidden when inactive (owner
+          follow-up: "можно какой-то кэш подгружать еще на этапе загрузки приложения?"). Every
+          card below starts its own fetch as soon as the dashboard loads, not only once Settings
+          is first opened -- so by the time an operator actually clicks Settings, most cards
+          already have data. Deliberate cost tradeoff, stated plainly: `CloudConnectionSettings`'s
+          quota numbers are a real, uncached Google Cloud Monitoring API call (`docs/SYSTEM_MAP.md`
+          §2.9l) -- this now fires once per dashboard session regardless of whether Settings is
+          ever opened, not only when it is. Every other card here reads local SQLite, negligible
+          either way. */}
+      <div className={tab === "settings" ? "max-w-3xl" : "hidden"}>
+        <div className="mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
+          {SETTINGS_SUB_TABS.map((t) => (
+            <button
+              key={t.value}
+              onClick={() => setSettingsSubTab(t.value)}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                settingsSubTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Every sub-tab's content stays mounted (hidden via CSS, not unmounted) once first
+            shown -- found live (owner: "почему при переключении подкатегорий наполнение
+            вкладки видно не сразу?"): each card below does its own fetch-on-mount, so
+            conditionally unmounting on every switch forced a fresh loading flicker (or a blank
+            `if (!draft) return null` render) every single time, even for a sub-tab already
+            visited this session. Hidden-not-unmounted keeps each card's already-fetched state,
+            so only the FIRST visit to a sub-tab shows a loading moment. */}
+        {/* General: settings that are not about an API connection (owner instruction, 2026-10-04: the API
+            sub-tab was collecting too much unrelated content). */}
+        <div className={settingsSubTab === "general" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — Retention">
+            <RetentionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Analytics collection">
+            <AnalyticsCollectionSettings />
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — Live writes">
+            <LiveWritesSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Data reads">
+            <ReadGatewaySettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Google Cloud">
+            <CloudConnectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Quota reserve">
+            <QuotaReserveSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Market intelligence collection">
+            <MarketIntelligenceCollectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Competitor collection depth">
+            <MarketIntelligenceCollectionDepthSettings />
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — Channels">
+            <ChannelConnectionsSettings />
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — MCP connection">
+            <McpConnectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Operator CLI">
+            <OperatorCliSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Operations workspace">
+            <OperationsWorkspaceSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — AI providers">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                AI provider connections
+                <InfoTooltip>
+                  Configure AI provider connections for AI Localization. No specific vendor is
+                  built into this app &mdash; every connection is a Base URL, model id, and
+                  optional credential you supply. Credentials are encrypted at rest and never
+                  shown again once saved. Testing a connection is an explicit action and may
+                  incur cost for a real (non-mock) connection. Unrelated to the MCP connection
+                  above (that&rsquo;s an external agent connecting TO this app; this is this app
+                  connecting OUT to an AI provider) &mdash; grouped here for convenience.
+                </InfoTooltip>
+              </h3>
+              <AiConnectionsManager />
+            </div>
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "sync" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — Sync">
+            <SyncFolderSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Automatic device sync">
+            <DeviceAutoSyncSettings />
+          </FeatureErrorBoundary>
+        </div>
+
+        <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — About">
+            <AppVersionInfo />
+          </FeatureErrorBoundary>
+        </div>
+      </div>
+
+      {tab === "merge" && (
+        <FeatureErrorBoundary label="Merge">
+          <div className="max-w-3xl">
+            <p className="mb-4 text-sm text-zinc-400">
+              Handoff data (Batches history, audit, Research, Decisions) now syncs automatically while
+              the app runs (Settings &rarr; Sync; the bell in the header shows its state and asks you
+              if both computers changed data). The manual export/import below remains as a fallback.
+              Change drafts (Change Sets/AI proposals) are different: they now sync continuously in
+              the background between devices sharing the same Syncthing folder, and any conflicting
+              concurrent edit is listed here for you to review &mdash; nothing is ever silently
+              resolved by picking one side. Syncthing only ever carries files &mdash; it is never
+              treated as a database, and no OAuth token or AI connection credential ever leaves
+              this device.
+            </p>
+            <DeviceHandoffPanel channelId={channel?.id ?? null} />
+          </div>
+        </FeatureErrorBoundary>
+      )}
+    </AppShell>
   );
 }

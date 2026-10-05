@@ -23,7 +23,9 @@ export type LedgerStatus =
   | "CONFLICT"
   | "UNKNOWN"
   | "ABORTED_SYSTEMIC"
-  | "DRY_RUN_COMPLETE";
+  | "DRY_RUN_COMPLETE"
+  // Operator cancelled the batch before this row started (ADR 0016). Terminal.
+  | "CANCELLED";
 
 export type AttemptPhase = "INTENDED" | "RESULT_RECORDED";
 export type AttemptOutcome = "SUCCESS" | "FAILED" | "UNKNOWN";
@@ -39,6 +41,7 @@ export const ALL_LEDGER_STATUSES: readonly LedgerStatus[] = [
   "UNKNOWN",
   "ABORTED_SYSTEMIC",
   "DRY_RUN_COMPLETE",
+  "CANCELLED",
 ];
 
 export const ALL_ATTEMPT_PHASES: readonly AttemptPhase[] = ["INTENDED", "RESULT_RECORDED"];

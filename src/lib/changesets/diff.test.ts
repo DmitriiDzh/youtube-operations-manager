@@ -1,13 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Change } from "./contracts";
+import type { Change, StoredVideoRecord } from "./contracts";
 import {
   classifyFieldChange,
   computeChangeSetStatus,
   computeConflictStatus,
+  currentRemoteValueFor,
   isValidLanguageCode,
   revalidateChangeAgainstCurrentRemote,
 } from "./diff";
+
+function makeVideo(overrides: Partial<StoredVideoRecord> = {}): StoredVideoRecord {
+  return {
+    videoId: "v1",
+    channelId: "UC_TEST",
+    title: "EN Title",
+    description: "EN Description",
+    publishedAt: "2026-01-01T00:00:00.000Z",
+    privacyStatus: "public",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+    thumbnails: {},
+    existingLocalizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+    etag: "etag-v1",
+    lastSyncedAt: new Date("2026-01-02T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 function makeChange(overrides: Partial<Change> = {}): Change {
   return {
@@ -57,6 +76,25 @@ test("isValidLanguageCode accepts simple and region-tagged codes, rejects garbag
   assert.equal(isValidLanguageCode(""), false);
   assert.equal(isValidLanguageCode("   "), false);
   assert.equal(isValidLanguageCode("!!"), false);
+});
+
+test("computeChangeSetStatus (owner request 2026-10-04): every change rejected is rejected even when some are conflicted or invalid", () => {
+  const changes = [
+    makeChange({ approvalStatus: "rejected" }),
+    makeChange({ id: "c2", approvalStatus: "rejected", conflictStatus: "conflict" }),
+    makeChange({ id: "c3", approvalStatus: "rejected", validationStatus: "invalid" }),
+  ];
+  assert.equal(computeChangeSetStatus(changes), "rejected");
+});
+
+test("computeChangeSetStatus: a pending conflicted change still keeps the set in_review even if the others are rejected", () => {
+  const changes = [makeChange({ approvalStatus: "rejected" }), makeChange({ id: "c2", approvalStatus: "pending", conflictStatus: "conflict" })];
+  assert.equal(computeChangeSetStatus(changes), "in_review");
+});
+
+test("computeChangeSetStatus: a rejected conflicted change does not block an otherwise fully approved set", () => {
+  const changes = [makeChange({ approvalStatus: "approved" }), makeChange({ id: "c2", approvalStatus: "rejected", conflictStatus: "conflict" })];
+  assert.equal(computeChangeSetStatus(changes), "approved");
 });
 
 test("computeChangeSetStatus: empty change list is in_review", () => {
@@ -132,4 +170,68 @@ test("revalidateChangeAgainstCurrentRemote: does not disturb an already-rejected
   const result = revalidateChangeAgainstCurrentRemote(rejected, "Changed In Studio");
   assert.equal(result.conflictStatus, "conflict");
   assert.equal(result.approvalStatus, "rejected");
+});
+
+// (independent review, second cycle): previously duplicated (and each copy missing this
+// defaultLanguage special-case) across changesets/import.ts, changesets/services.ts, and
+// ai-localization/services.ts -- a change targeting a video's default language was diffed
+// against an empty string instead of its real current value in all three.
+test("currentRemoteValueFor reads snippet title/description for the video's own defaultLanguage, not existingLocalizations", () => {
+  const video = makeVideo();
+  assert.equal(currentRemoteValueFor(video, "en", "title"), "EN Title");
+  assert.equal(currentRemoteValueFor(video, "en", "description"), "EN Description");
+});
+
+test("currentRemoteValueFor reads existingLocalizations for a non-default language", () => {
+  const video = makeVideo();
+  assert.equal(currentRemoteValueFor(video, "es", "title"), "Titulo ES");
+});
+
+test("currentRemoteValueFor returns empty string for a non-default language with no existing localization", () => {
+  const video = makeVideo();
+  assert.equal(currentRemoteValueFor(video, "de", "title"), "");
+});
+
+test("currentRemoteValueFor falls back to existingLocalizations when defaultLanguage is null", () => {
+  const video = makeVideo({ defaultLanguage: null, existingLocalizations: { en: { title: "Not the primary", description: "" } } });
+  assert.equal(currentRemoteValueFor(video, "en", "title"), "Not the primary");
+});
+
+test("revalidateChangeAgainstCurrentRemote (owner report 2026-10-04): a remote value equal to the PROPOSED value is the change having taken effect -- no conflict, the approval stays", () => {
+  const approved = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "approved", approvedValue: "New", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(approved, "New");
+  assert.equal(result.conflictStatus, "none");
+  assert.equal(result.approvalStatus, "approved");
+  assert.equal(result.approvedValue, "New");
+});
+
+test("revalidateChangeAgainstCurrentRemote: a remote value that is neither the baseline nor the proposal is still a conflict and still invalidates the approval", () => {
+  const approved = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "approved", approvedValue: "New", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(approved, "Edited in Studio");
+  assert.equal(result.conflictStatus, "conflict");
+  assert.equal(result.approvalStatus, "pending");
+  assert.equal(result.approvedValue, null);
+});
+
+test("revalidateChangeAgainstCurrentRemote: a previously conflicted change whose remote now equals the proposal clears to none", () => {
+  const conflicted = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "pending", conflictStatus: "conflict" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(conflicted, "New").conflictStatus, "none");
+});
+
+test("revalidateChangeAgainstCurrentRemote: edge cases of the 'already in effect' rule -- null stays a conflict, pending/rejected keep their status, baseline = proposed = remote is no conflict, a delete (proposed empty) already applied is in effect", () => {
+  const equalButGone = makeChange({ baselineValue: "Old", proposedValue: "", approvalStatus: "approved", approvedValue: "", conflictStatus: "none" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(equalButGone, null).conflictStatus, "conflict", "a video gone from synced data is still a conflict");
+
+  const pending = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "pending", conflictStatus: "conflict" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(pending, "New").approvalStatus, "pending");
+  const rejected = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "rejected", conflictStatus: "none" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(rejected, "New").approvalStatus, "rejected");
+
+  const same = makeChange({ baselineValue: "Same", proposedValue: "Same", approvalStatus: "pending", conflictStatus: "none" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(same, "Same").conflictStatus, "none");
+
+  const applied = makeChange({ baselineValue: "Old", proposedValue: "", changeType: "delete", approvalStatus: "approved", approvedValue: "", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(applied, "");
+  assert.equal(result.conflictStatus, "none");
+  assert.equal(result.approvalStatus, "approved");
 });
