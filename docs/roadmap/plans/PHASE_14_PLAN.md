@@ -207,6 +207,27 @@ runs through the app's own CLI with keys entered in Settings — no `.env` step 
 5. S3 `ListObjects`/`GetObject` throughput from the local machine for 100–500 MB video outputs.
 6. Whether an S3 key can be limited to one volume (docs say keys are per user).
 
+### 5.1 Slice 0 results (live, 2026-10-05, owner's account, ≈ $0.25 total)
+
+Confirmed live: credentials save/Test (Restricted-scope question still open — the key's scope was not inspected);
+catalog (GPU prices per cloud, datacenters with network-volume tiers); network volume create (50 GB, EU-RO-1) and
+S3 put/get/list/delete with byte-identical round trip; pod template; GPU session start (container up ≈ 70–90 s,
+ComfyUI ready ≈ 100 s on RTX 4090 with `runpod/comfyui:1.4.0-comfyuiv0.35.0-cuda12.8`); ComfyUI behind the token
+proxy (401 without the token); idle auto-stop by the watcher (5 min); model pull on a CPU pod (FLUX.1 schnell fp8,
+17.2 GB, ≈ 80 s, pod self-terminated, cache cleaned, volume lock released); a txt2img job end to end (≈ 70 s incl.
+the first model load, double SHA-256 verified, remote copy deleted, asset registered with provenance).
+
+API/image shapes that differed from the docs-based assumptions, each fixed with tests: datacenter catalog at
+`/catalog/datacenters`; GPU catalog fields (`name`, `memory`, `secure`, `price.<cloud>`); network-volume create
+field `dataCenter`; pod create field `dataCenterIds: [...]`; S3 secret mis-entry (the id pasted twice) now refused at
+save; `runpod/comfyui`'s own `/start.sh` entrypoint runs ComfyUI unprotected on 8188 and ignores args, so the
+template overrides `entrypoint` and `pod-start.sh` finds ComfyUI in `/opt/comfyui-baked`; `status: RUNNING` is
+reported while the image still downloads -- only `runtime` (uptime, ports) means the container is up.
+
+Still unverified: `/history` output keys for audio/video save nodes; the RunPod proxy's ~100 s request limit on
+long requests; Restricted-key scope; S3 throughput for 100–500 MB outputs; account balance (v2 has none; the legacy
+GraphQL `myself { clientBalance }` answers today).
+
 ## 6. Not in scope
 
 Serverless compute (later adapter), concurrent sessions / multiple pods, any YouTube upload of generated media
