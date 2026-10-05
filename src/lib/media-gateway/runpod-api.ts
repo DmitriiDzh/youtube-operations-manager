@@ -134,7 +134,8 @@ export function toNetworkVolume(raw: unknown): RunpodNetworkVolume {
   return {
     id: asString(r.id) ?? "",
     name: asString(r.name) ?? "",
-    dataCenterId: asString(r.dataCenterId) ?? "",
+    // `dataCenterId` or -- as the create body names it -- `dataCenter` (a string or `{ id }`); confirmed per field in slice 0.
+    dataCenterId: asString(r.dataCenterId) ?? asString(r.dataCenter) ?? asString(asRecord(r.dataCenter).id) ?? "",
     sizeGb: asNumber(r.size) ?? 0,
     usedSizeGb: asNumber(r.usedSize),
     createdAt: asString(r.createdAt),
@@ -286,7 +287,8 @@ export function createRunpodApiClient(args: {
     },
 
     async createNetworkVolume(input: { name: string; dataCenterId: string; sizeGb: number }): Promise<RunpodNetworkVolume> {
-      const { body } = await request("POST", "/network-volumes", { name: input.name, dataCenterId: input.dataCenterId, size: input.sizeGb });
+      // The create body names the datacenter `dataCenter` (slice 0, 2026-10-05: `dataCenterId` is a 422 "additional property").
+      const { body } = await request("POST", "/network-volumes", { name: input.name, dataCenter: input.dataCenterId, size: input.sizeGb });
       return toNetworkVolume(body);
     },
 

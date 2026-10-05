@@ -155,13 +155,17 @@ test("slice 0: the datacenter catalog lives at /catalog/datacenters and carries 
   ]);
 });
 
-test("createNetworkVolume posts name/dataCenterId/size; the response maps size -> sizeGb", async () => {
+// Slice 0 (2026-10-05): the live API rejects `dataCenterId` in the create body with a 422 ("missing property 'dataCenter'",
+// "additional properties 'dataCenterId' not allowed") -- the field is `dataCenter`. The earlier expectation was an assumption.
+test("createNetworkVolume posts name/dataCenter/size (the live API's field names); the response maps size -> sizeGb and accepts dataCenterId or dataCenter", async () => {
   const { fetchImpl, calls } = fakeFetch(() => ({ status: 201, body: { id: "vol1", name: "models", dataCenterId: "EU-RO-1", size: 150, usedSize: 0, createdAt: "2026-10-05T00:00:00Z" } }));
   const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
   const volume = await client.createNetworkVolume({ name: "models", dataCenterId: "EU-RO-1", sizeGb: 150 });
   assert.equal(calls[0].init.method, "POST");
   assert.equal(new URL(calls[0].url).pathname, "/v2/network-volumes");
-  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { name: "models", dataCenterId: "EU-RO-1", size: 150 });
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { name: "models", dataCenter: "EU-RO-1", size: 150 });
+  const named = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 201, body: { id: "vol2", name: "m", dataCenter: "EUR-IS-1", size: 50 } })).fetchImpl });
+  assert.equal((await named.createNetworkVolume({ name: "m", dataCenterId: "EUR-IS-1", sizeGb: 50 })).dataCenterId, "EUR-IS-1");
   assert.equal(volume.sizeGb, 150);
   assert.equal(volume.dataCenterId, "EU-RO-1");
 });
