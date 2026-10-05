@@ -320,21 +320,47 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     } catch (error) {
       log(`[media] remote delete of ${output.remoteKey} failed: ${error instanceof Error ? error.message : String(error)}; the janitor retries`);
     }
-    const asset = await deps.registerAsset({
-      channelId: job.channelId,
-      assetType: assetTypeFor(output.kind),
-      referenceKind: "local_path",
-      referenceValue: localPath,
-      title: fileName,
-      provenance: { ...provenance, comfyNodeId: output.nodeId, outputKind: output.kind, sha256: pulled.sha256, bytes: pulled.bytes },
-    });
-    return { ...output, localPath, bytes: pulled.bytes, sha256: pulled.sha256, remoteDeleted, assetId: asset.assetId, note: null };
+    // The file is now the only copy (pulled, remote deleted): a catalog failure must not make it look "not pulled".
+    try {
+      const asset = await deps.registerAsset({
+        channelId: job.channelId,
+        assetType: assetTypeFor(output.kind),
+        referenceKind: "local_path",
+        referenceValue: localPath,
+        title: fileName,
+        provenance: { ...provenance, comfyNodeId: output.nodeId, outputKind: output.kind, sha256: pulled.sha256, bytes: pulled.bytes },
+      });
+      return { ...output, localPath, bytes: pulled.bytes, sha256: pulled.sha256, remoteDeleted, assetId: asset.assetId, note: null };
+    } catch (error) {
+      return {
+        ...output,
+        localPath,
+        bytes: pulled.bytes,
+        sha256: pulled.sha256,
+        remoteDeleted,
+        assetId: null,
+        note: `pulled, but asset registration failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
+
+  /** Jobs this process is polling right now (so a resume never starts a second loop for the same job). */
+  const inFlight = new Set<string>();
 
   /** The poll/transfer loop for one submitted job (background in production, inline in tests). */
   async function processJob(jobId: string): Promise<void> {
+    if (inFlight.has(jobId)) return;
+    inFlight.add(jobId);
+    try {
+      await processJobInner(jobId);
+    } finally {
+      inFlight.delete(jobId);
+    }
+  }
+
+  async function processJobInner(jobId: string): Promise<void> {
     const job = await deps.store.jobs.get(jobId);
-    if (!job || job.status !== "submitted" || !job.promptId) return;
+    if (!job || (job.status !== "submitted" && job.status !== "generating") || !job.promptId) return;
     const session = await deps.sessions.getRunningSession(job.sessionId);
     if (!session) {
       await failJob(job, "the session is no longer running");
@@ -563,13 +589,33 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const row = await requireJob(jobId);
       const cancelled = await deps.store.jobs.transition(jobId, ["queued", "submitted", "generating"], { status: "cancelled", finishedAt: deps.clock.now(), error: null });
       if (!cancelled) throw new DomainError({ code: "media_job_invalid_state", message: `Job is ${row.status}; only a queued or generating job can be cancelled`, details: { jobId, status: row.status } });
-      try {
-        const comfy = await deps.sessions.comfyClientForSession(row.sessionId);
-        await comfy.interrupt();
-      } catch {
-        // the session may be gone already; the job is cancelled either way
+      if (row.promptId) {
+        try {
+          // /interrupt aborts whatever ComfyUI is executing -- only this job's prompt may be interrupted; a queued one is removed from the queue.
+          const comfy = await deps.sessions.comfyClientForSession(row.sessionId);
+          const queue = await comfy.getQueue();
+          if (queue.runningPromptIds.includes(row.promptId)) await comfy.interrupt();
+          else if (queue.pendingPromptIds.includes(row.promptId)) await comfy.deleteQueued([row.promptId]);
+        } catch {
+          // the session may be gone already; the job is cancelled either way
+        }
       }
       return toPublicJob(cancelled);
+    },
+
+    /**
+     * Picks up submitted/generating jobs nobody in this process is polling (created by the operator CLI,
+     * or left by a restart whose session survived) -- as long as their session is still running.
+     */
+    async resumeInFlightJobs(): Promise<{ resumed: string[] }> {
+      const resumed: string[] = [];
+      for (const row of await deps.store.jobs.listNonTerminal()) {
+        if (row.status === "queued" || row.status === "transferring" || inFlight.has(row.id) || !row.promptId) continue;
+        if (!(await deps.sessions.getRunningSession(row.sessionId))) continue;
+        resumed.push(row.id);
+        deps.schedule(() => processJob(row.id));
+      }
+      return { resumed };
     },
 
     /** Boot: a job left non-terminal by a dead process fails as interrupted (its pod is gone by then too). */

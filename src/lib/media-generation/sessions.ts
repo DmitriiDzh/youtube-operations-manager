@@ -339,11 +339,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       }
       const now = deps.clock.now();
       const spent = await spentTodayUsd(now);
-      if (spent >= settings.maxUsdPerDay) {
+      // AC-P14-17: the daily total drives the cap -- the session's own upper bound must fit what is left today.
+      if (spent >= settings.maxUsdPerDay || round2(spent + row.estimateUsd) > settings.maxUsdPerDay) {
         throw new DomainError({
           code: "media_daily_cap_reached",
-          message: `Today's media spend cap ($${settings.maxUsdPerDay}) is used up ($${spent} spent). The request stays pending.`,
-          details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent },
+          message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Settings → Media, or wait for tomorrow. The request stays pending.`,
+          details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, estimateUsd: row.estimateUsd },
         });
       }
       const open = await deps.store.getOpen();
@@ -386,17 +387,58 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
         throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
       }
-      const comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
-      const starting = await deps.store.transition(sessionId, ["approved"], {
-        status: "starting",
-        podId: pod.id,
-        comfyUiProxyUrl,
-        startedAt,
-        costPerHr: pod.costPerHr ?? approved.costPerHr,
-      });
+      // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
+      // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
+      const abortStart = async (lastDetail: string): Promise<never> => {
+        onStage("Terminating the pod");
+        let terminated: { confirmed: boolean; lastStatus: string | null };
+        try {
+          terminated = await terminateAndConfirm(client, pod.id);
+        } catch (error) {
+          terminated = { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})` };
+        }
+        // An operator Stop (or the watcher/boot sweep) may have taken the row meanwhile: never overwrite its outcome.
+        const latest = await requireRow(sessionId);
+        if (latest.status === "approved" || latest.status === "starting") {
+          if (terminated.confirmed) {
+            await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` });
+          } else {
+            await deps.store.transition(sessionId, ["approved", "starting"], {
+              status: "stopping",
+              podId: pod.id,
+              stopReason: `start failed: ${lastDetail}`,
+              error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
+            });
+          }
+        }
+        throw new DomainError({
+          code: "media_session_start_failed",
+          message: `The session could not start: ${lastDetail}.`,
+          details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: (await requireRow(sessionId)).status },
+        });
+      };
+
+      let comfyUiProxyUrl: string;
+      let starting: StoredSessionRow | null;
+      try {
+        comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
+        starting = await deps.store.transition(sessionId, ["approved"], {
+          status: "starting",
+          podId: pod.id,
+          comfyUiProxyUrl,
+          startedAt,
+          costPerHr: pod.costPerHr ?? approved.costPerHr,
+        });
+      } catch (error) {
+        return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (!starting) {
         // Swept or stopped meanwhile: never leave the pod behind.
-        await terminateAndConfirm(client, pod.id);
+        try {
+          await terminateAndConfirm(client, pod.id);
+        } catch {
+          // the row is no longer ours; the owner of the new state (boot sweep / stop) confirms termination
+        }
         throw invalidState(sessionId, "approved", (await requireRow(sessionId)).status);
       }
 
@@ -405,44 +447,44 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const comfy = deps.createComfyClient({ baseUrl: comfyUiProxyUrl, token });
       let phase: "pod" | "comfy" = "pod";
       let lastDetail = "";
-      for (;;) {
-        if (phase === "pod") {
-          const current = await client.getPod(pod.id);
-          if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
-            lastDetail = `pod ${current?.status ?? "gone"}`;
+      try {
+        for (;;) {
+          if (phase === "pod") {
+            const current = await client.getPod(pod.id);
+            if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
+              lastDetail = `pod ${current?.status ?? "gone"}`;
+              break;
+            }
+            if (current.status === "RUNNING") {
+              phase = "comfy";
+              onStage("Waiting for ComfyUI to answer");
+            }
+          } else {
+            try {
+              await comfy.getSystemStats();
+              const ready = deps.clock.now();
+              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, error: null });
+              if (!running) {
+                lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
+                break;
+              }
+              return toPublicSession(running, ready);
+            } catch (error) {
+              if (error instanceof DomainError && error.code !== "comfyui_unavailable") throw error;
+              lastDetail = error instanceof Error ? error.message : String(error);
+            }
+          }
+          if (deps.clock.now().getTime() >= deadline) {
+            lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
             break;
           }
-          if (current.status === "RUNNING") {
-            phase = "comfy";
-            onStage("Waiting for ComfyUI to answer");
-          }
-        } else {
-          try {
-            await comfy.getSystemStats();
-            const ready = deps.clock.now();
-            const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, error: null });
-            if (!running) {
-              await terminateAndConfirm(client, pod.id);
-              throw invalidState(sessionId, "starting", (await requireRow(sessionId)).status);
-            }
-            return toPublicSession(running, ready);
-          } catch (error) {
-            if (error instanceof DomainError && error.code !== "comfyui_unavailable") throw error;
-            lastDetail = error instanceof Error ? error.message : String(error);
-          }
+          await deps.sleep(pollMs);
         }
-        if (deps.clock.now().getTime() >= deadline) {
-          lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
-          break;
-        }
-        await deps.sleep(pollMs);
+      } catch (error) {
+        // A gateway/API failure mid-poll (RunPod 5xx, the toggle switched off, ...): the pod still exists.
+        return abortStart(`${error instanceof Error ? error.message : String(error)}`);
       }
-      onStage("Terminating the pod");
-      const result = await terminateAndConfirm(client, pod.id);
-      const failed = await finish(starting, ["starting", "stopping"], "failed", {
-        error: result.confirmed ? `start failed: ${lastDetail}` : `start failed: ${lastDetail}; pod still ${result.lastStatus} after terminate`,
-      });
-      throw new DomainError({ code: "media_session_start_failed", message: `The session could not start: ${lastDetail}.`, details: { sessionId, podId: pod.id, podTerminated: result.confirmed, status: failed?.status ?? null } });
+      return abortStart(lastDetail);
     },
 
     /** Web-only (fenced): running|starting|stopping -> terminate -> done. */
@@ -498,9 +540,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const minutes = open.startedAt ? (now.getTime() - open.startedAt.getTime()) / 60_000 : 0;
       const idleMinutes = (now.getTime() - (open.lastActivityAt ?? open.readyAt ?? open.startedAt ?? now).getTime()) / 60_000;
       const usd = liveUsd(open, now) ?? 0;
+      const spentToday = await spentTodayUsd(now);
       let reason: string | null = null;
       if (minutes >= open.maxMinutes) reason = `max minutes reached (${open.maxMinutes})`;
       else if (open.maxUsd !== null && usd >= open.maxUsd) reason = `max USD reached ($${open.maxUsd})`;
+      else if (spentToday >= settings.maxUsdPerDay) reason = `daily cap reached ($${settings.maxUsdPerDay})`;
       else if (idleMinutes >= settings.idleMinutes) reason = `idle for ${Math.floor(idleMinutes)} min (limit ${settings.idleMinutes})`;
       if (!reason) return { action: "none", sessionId: open.id, reason: null };
       const stopped = await stopRow(open, reason);

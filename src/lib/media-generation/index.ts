@@ -21,8 +21,11 @@ import { createMediaSessionServices } from "./sessions";
  * foundation (credentials, settings, catalog, pods/S3 passthrough), the slice-2 sessions and the
  * slice-3 templates/jobs/exchange.
  */
-export function createMediaGenerationCore() {
+export function createMediaGenerationCore(options: { jobScheduling?: "background" | "detached" } = {}) {
   const now = () => new Date();
+  // "detached" (the operator CLI): a submitted job is NOT polled in this short-lived process -- the web
+  // server's watch loop picks it up (`resumeInFlightJobs`), so the CLI exits at once and Ctrl-C orphans nothing.
+  const jobScheduling = options.jobScheduling ?? "background";
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   const base = createMediaGenerationServices({
     store: createMediaGenerationStore(),
@@ -92,7 +95,10 @@ export function createMediaGenerationCore() {
     generateId: () => randomUUID(),
     clock: { now },
     sleep,
-    schedule: (run) => void run().catch((error) => console.warn(`[media] job processing failed: ${error instanceof Error ? error.message : String(error)}`)),
+    schedule:
+      jobScheduling === "detached"
+        ? () => undefined
+        : (run) => void run().catch((error) => console.warn(`[media] job processing failed: ${error instanceof Error ? error.message : String(error)}`)),
     log: (line) => console.warn(line),
   });
   return { ...base, ...sessions, ...jobs, ...models };

@@ -199,6 +199,12 @@ async function startServerSession() {
     } catch {
       // same as above
     }
+    try {
+      // Jobs submitted by the operator CLI (detached) are polled here.
+      await media.resumeInFlightJobs();
+    } catch {
+      // same as above
+    }
     let intervalMs = 60_000;
     try {
       intervalMs = Math.max(MEDIA_WATCH_MIN_MS, (await media.getSettings()).watchIntervalSeconds * 1000);

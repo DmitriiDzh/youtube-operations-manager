@@ -391,12 +391,14 @@ test("a job with no result before the generation timeout fails; cancelJob interr
   assert.equal(r.status, "failed");
   assert.match(r.error ?? "", /no result after/);
 
-  const f = fixture({ comfy: fakeComfy([null]) });
+  // Review round 1: /interrupt is sent only when THIS job's prompt is the one ComfyUI is executing.
+  const comfyRunningOurs = fakeComfyWithQueue({ running: ["prompt-1"], pending: [] });
+  const f = fixture({ comfy: comfyRunningOurs });
   const t2 = await importDefault(f.services);
   const j2 = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
   const cancelled = await f.services.cancelJob({ jobId: j2.jobId });
   assert.equal(cancelled.status, "cancelled");
-  assert.equal(f.comfy.interrupts(), 1);
+  assert.equal(comfyRunningOurs.interrupts(), 1);
   await f.runScheduled();
   assert.equal((await f.services.getJob({ jobId: j2.jobId })).status, "cancelled");
   await assert.rejects(f.services.cancelJob({ jobId: j2.jobId }), (e: unknown) => isDomainError(e) && e.code === "media_job_invalid_state");
@@ -445,4 +447,118 @@ test("AC-P14-14: the janitor lists only exchange/, skips exchange/in/ and unknow
   assert.deepEqual(real.deleted, ["exchange/job-9/partial.png"]);
   assert.equal(objects.has("exchange/job-9/partial.png"), false);
   assert.ok(objects.has("exchange/in/ref.png") && objects.has("exchange/unknown-job/x.png") && objects.has("exchange/job-1/leftover.png"));
+});
+
+// -- review round 1 (2026-10-05) ------------------------------------------------------------------
+
+function fakeComfyWithQueue(opts: { running: string[]; pending: string[] }) {
+  const base = fakeComfy([null]);
+  const deleted: string[][] = [];
+  const client = base.client as unknown as Record<string, unknown>;
+  client.getQueue = async () => ({ running: opts.running.length, pending: opts.pending.length, runningPromptIds: opts.running, pendingPromptIds: opts.pending });
+  client.deleteQueued = async (ids: string[]) => {
+    deleted.push(ids);
+  };
+  return { ...base, deleted };
+}
+
+test("review: cancelling a QUEUED job removes it from ComfyUI's queue and never interrupts the job that is running", async () => {
+  const comfy = fakeComfyWithQueue({ running: ["other-prompt"], pending: ["prompt-1"] });
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.services.cancelJob({ jobId: job.jobId });
+  assert.equal(comfy.interrupts(), 0);
+  assert.deepEqual(comfy.deleted, [["prompt-1"]]);
+
+  const running = fakeComfyWithQueue({ running: ["prompt-1"], pending: [] });
+  const g = fixture({ comfy: running });
+  const t2 = await importDefault(g.services);
+  const job2 = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await g.services.cancelJob({ jobId: job2.jobId });
+  assert.equal(running.interrupts(), 1);
+  assert.deepEqual(running.deleted, []);
+});
+
+test("review: a failed asset registration after the pull keeps the file's localPath (the only copy) and the job done with a note", async () => {
+  const f = fixture();
+  (f as unknown as { registered: unknown[] }).registered.length = 0;
+  const original = f.services;
+  void original;
+  const failing = fixtureWithFailingRegister();
+  const t = await importDefault(failing.services);
+  const job = await failing.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await failing.runScheduled();
+  const done = await failing.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.ok(done.outputs[0].localPath);
+  assert.equal(done.outputs[0].remoteDeleted, true);
+  assert.equal(done.outputs[0].assetId, null);
+  assert.match(done.outputs[0].note ?? "", /asset registration failed/);
+  assert.deepEqual(done.assetIds, []);
+});
+
+function fixtureWithFailingRegister() {
+  const f = fixture();
+  // Rebuild the services with a registerAsset that throws, reusing the same fakes through a fresh instance.
+  const mem = memoryStore();
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9])]]));
+  let now = new Date("2026-10-05T12:00:00Z");
+  let ids = 0;
+  const scheduled: Array<() => Promise<void>> = [];
+  const services = createMediaJobServices({
+    store: mem.store,
+    sessions: {
+      getRunningSession: async (sessionId) => ({ sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69 }),
+      comfyClientForSession: async () => comfy.client,
+      touchActivity: async () => {},
+    },
+    s3: async () => s3.client,
+    resolveOutputRoot: async () => "/ws/99 Data Exchange/From YTM",
+    fs: {
+      mkdirp: async () => {},
+      sha256File: async (p) => {
+        const bytes = s3.files.get(p);
+        return bytes ? sha256(bytes) : "missing";
+      },
+      fileSize: async () => null,
+    },
+    registerAsset: async () => {
+      throw new Error("creative_assets insert failed");
+    },
+    generateId: () => {
+      ids++;
+      return ids === 1 ? "tpl-1" : ids === 2 ? "job-1" : `id-${ids}`;
+    },
+    clock: { now: () => now },
+    sleep: async (ms) => {
+      now = new Date(now.getTime() + ms);
+    },
+    schedule: (run) => {
+      scheduled.push(run);
+    },
+    timeouts: { pollMs: 1_000, maxGenerationMs: 10_000 },
+  });
+  void f;
+  return {
+    services,
+    runScheduled: async () => {
+      while (scheduled.length) await scheduled.shift()!();
+    },
+  };
+}
+
+test("review: resumeInFlightJobs polls a submitted job nobody in this process tracks (CLI-created or post-restart) and never double-starts one", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "operator" });
+  // The CLI's detached scheduler never ran processJob: drop the scheduled run as if it were another process.
+  const dropped = (f as unknown as { runScheduled: () => Promise<void> });
+  void dropped;
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [job.jobId] });
+  await f.runScheduled(); // runs the original schedule AND the resumed one; the in-flight guard makes the second a no-op
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+  assert.equal(f.comfy.submits.length, 1);
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [] });
 });

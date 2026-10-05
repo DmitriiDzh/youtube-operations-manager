@@ -148,3 +148,65 @@ test("cancelPull terminates a running pull and refuses a finished one", async ()
   assert.equal(cancelled.error, "cancelled by operator");
   await assert.rejects(f.services.cancelPull({ pullId: pull.pullId }), (e: unknown) => isDomainError(e) && e.code === "media_job_invalid_state");
 });
+
+// -- review round 1 (2026-10-05) ------------------------------------------------------------------
+
+test("review: a nested repo file lands under models/<folder>/<repo path> (hf download keeps the path), so that is the key waited for", async () => {
+  const f = fixture();
+  const pull = await f.services.startPull({ repoId: "Comfy-Org/Wan_2.2", file: "split_files/vae/wan2.2_vae.safetensors", folder: "vae" });
+  assert.equal(pull.expectedKey, "models/vae/split_files/vae/wan2.2_vae.safetensors");
+  f.objects.set("models/vae/split_files/vae/wan2.2_vae.safetensors", 10);
+  assert.equal((await f.services.pollPulls())[0].status, "done");
+});
+
+test("review: a pull is never recorded done while its pod could not be terminated -- it stays running and the next poll retries", async () => {
+  const g = fixtureWithFlakyTerminate();
+  await g.services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  g.objects.set("models/vae/c.bin", 5);
+  const [first] = await g.services.pollPulls();
+  assert.equal(first.status, "running");
+  assert.match(first.error ?? "", /could not be terminated/);
+  assert.equal(await g.services.hasActivePull(), true);
+  const [second] = await g.services.pollPulls();
+  assert.equal(second.status, "done");
+  assert.equal(await g.services.hasActivePull(), false);
+});
+
+function fixtureWithFlakyTerminate() {
+  const objects = new Map<string, number>();
+  let json: string | null = null;
+  let terminateFailures = 1;
+  const client = {
+    async createPod() {
+      return { id: "cpupod1", status: "RUNNING", costPerHr: 0.08 };
+    },
+    async getPod(id: string) {
+      return { id, status: "RUNNING" };
+    },
+    async terminatePod() {
+      if (terminateFailures-- > 0) throw new Error("RunPod API returned HTTP 502");
+      return { terminated: true, alreadyGone: false };
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = {
+    async listAllObjects() {
+      return [];
+    },
+    async headObject(key: string) {
+      const size = objects.get(key);
+      return size === undefined ? null : { size, etag: null, lastModified: null };
+    },
+    async deleteObject() {},
+  } as unknown as RunpodS3Client;
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    base: {
+      getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }),
+      resolveRunpodClient: async () => client,
+      s3: async () => s3,
+    },
+    generateId: () => "id",
+    clock: { now: () => new Date("2026-10-05T12:00:00Z") },
+  });
+  return { services, objects };
+}

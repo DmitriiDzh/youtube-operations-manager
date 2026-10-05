@@ -176,7 +176,8 @@ export async function runMediaCli(args: {
       await (args.assertDeviceAvailable ?? (() => assertDeviceAvailableForMutation(rawSqlClient)))();
     }
 
-    const core = args.core ?? createMediaGenerationCore();
+    // Detached job scheduling: a job created here is polled by the running web server, not by this process.
+    const core = args.core ?? createMediaGenerationCore({ jobScheduling: "detached" });
     const readFileText = args.readFileText ?? ((p: string) => readFile(p, "utf8"));
     let data: unknown;
     switch (parsed.command) {

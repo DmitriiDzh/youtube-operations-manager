@@ -93,17 +93,31 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     await deps.store.setPullsJson(JSON.stringify([...running, ...finished]));
   }
 
+  async function savePull(next: ModelPull): Promise<void> {
+    const pulls = await readPulls();
+    await writePulls(pulls.map((p) => (p.pullId === next.pullId ? next : p)));
+  }
+
+  /**
+   * A pull reaches a terminal status only once its pod is confirmed terminated; while termination
+   * fails the pull stays `running` (with the error recorded) so the next poll retries it and
+   * `hasActivePull` keeps telling the truth about the volume.
+   */
   async function finishPull(pull: ModelPull, status: ModelPull["status"], extra: { bytes?: number | null; error?: string | null }): Promise<ModelPull> {
     const client = await deps.base.resolveRunpodClient();
-    let error = extra.error ?? null;
     try {
       await client.terminatePod(pull.podId);
     } catch (cause) {
-      error = `${error ? `${error}; ` : ""}pod ${pull.podId} could not be terminated: ${cause instanceof Error ? cause.message : String(cause)}`;
+      const stillRunning: ModelPull = {
+        ...pull,
+        bytes: extra.bytes ?? pull.bytes,
+        error: `pod ${pull.podId} could not be terminated (${cause instanceof Error ? cause.message : String(cause)}); retrying`,
+      };
+      await savePull(stillRunning);
+      return stillRunning;
     }
-    const finished: ModelPull = { ...pull, status, finishedAt: deps.clock.now().toISOString(), bytes: extra.bytes ?? null, error };
-    const pulls = await readPulls();
-    await writePulls(pulls.map((p) => (p.pullId === pull.pullId ? finished : p)));
+    const finished: ModelPull = { ...pull, status, finishedAt: deps.clock.now().toISOString(), bytes: extra.bytes ?? null, error: extra.error ?? null };
+    await savePull(finished);
     return finished;
   }
 
@@ -152,7 +166,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
       }
       const client = await deps.base.resolveRunpodClient();
-      const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${modelFileName(parsed.file)}`;
+      // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.
+      const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${parsed.file}`;
       const pod = await client.createPod({
         name: `ytm-models-pull-${deps.generateId().slice(0, 8)}`,
         image: "python:3.12-slim",

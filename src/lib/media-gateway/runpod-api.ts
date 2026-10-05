@@ -135,12 +135,27 @@ export function toNetworkVolume(raw: unknown): RunpodNetworkVolume {
   };
 }
 
+const SENSITIVE_ENV_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASS\b/i;
+
+/** Pod env values that look like secrets (the per-session COMFY_TOKEN above all) never leave the gateway: callers see `[redacted]`. */
+export function redactPodEnv(env: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    out[name] = SENSITIVE_ENV_NAME.test(name) ? "[redacted]" : value;
+  }
+  return out;
+}
+
 export function toPod(raw: unknown): RunpodPod {
   const r = asRecord(raw);
   const gpu = asRecord(r.gpu);
   const runtime = asRecord(r.runtime);
   const mounts = asRecord(r.mounts);
   const env = asRecord(r.env);
+  // `raw` keeps every field this app does not model EXCEPT the env block (it carries the proxy token).
+  const { env: _rawEnv, ...rawWithoutEnv } = r;
+  void _rawEnv;
   return {
     id: asString(r.id) ?? "",
     name: asString(r.name) ?? "",
@@ -161,10 +176,10 @@ export function toPod(raw: unknown): RunpodPod {
           };
         })
       : null,
-    env: Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === "string")),
+    env: redactPodEnv(env),
     createdAt: asString(r.createdAt),
     startedAt: asString(r.startedAt),
-    raw: r,
+    raw: rawWithoutEnv,
   };
 }
 

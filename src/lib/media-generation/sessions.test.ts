@@ -464,3 +464,85 @@ test("AC-P14-18: approve is refused while a model pull is writing to the volume;
   assert.equal(mem.rows.get(requested.sessionId)?.status, "pending");
   assert.ok(!runpod.calls.includes("createPod"));
 });
+
+// -- review round 1 (2026-10-05) ------------------------------------------------------------------
+
+test("review: approve is refused when the session's own estimate does not fit today's remaining cap (AC-P14-17: daily totals drive the cap)", async () => {
+  const f = fixture({ settings: { maxUsdPerDay: 1 } });
+  // 0.6 $/h × 120 min = $1.20 > $1 cap, nothing spent yet.
+  const requested = await f.services.requestSession({ ...operatorRequest, maxMinutes: 120 });
+  assert.equal(requested.fitsToday, false);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_daily_cap_reached");
+  assert.equal(f.mem.rows.get(requested.sessionId)?.status, "pending");
+  assert.ok(!f.runpod.calls.includes("createPod"));
+});
+
+test("review: the watcher terminates a running session once the day's total spend reaches the daily cap", async () => {
+  // Cap $0.42; the request's estimate (0.6 $/h × 40 min = $0.40) fits, but the pod's real price is 0.69 $/h.
+  const f = fixture({ settings: { maxUsdPerDay: 0.42, idleMinutes: 1000 } });
+  const running = await startRunning(f, { maxMinutes: 40 });
+  f.advance(35 * 60_000); // 0.69 $/h × 35 min ≈ $0.40 < $0.42
+  assert.equal((await f.services.watchTick()).action, "none");
+  f.advance(3 * 60_000); // ≈ $0.44 ≥ $0.42, still under maxMinutes (40)
+  const tick = await f.services.watchTick();
+  assert.equal(tick.action, "stopped");
+  assert.match(tick.reason ?? "", /daily cap/);
+  assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
+});
+
+test("review: a RunPod error while polling the new pod never leaves it behind -- terminated and the session failed", async () => {
+  const runpod = fakeRunpod();
+  const original = runpod.client.getPod.bind(runpod.client);
+  let polls = 0;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    polls++;
+    if (polls === 1) {
+      const { DomainError } = await import("./contracts");
+      throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 502" });
+    }
+    return original(id);
+  };
+  const f = fixture({ runpod });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.podId, "pod1");
+  assert.ok(runpod.calls.includes("terminate:pod1"));
+  assert.equal(runpod.pods.has("pod1"), false);
+});
+
+test("review: when termination cannot be confirmed after a failed start, the session stays `stopping` with the pod recorded, and the watcher retries", async () => {
+  const runpod = fakeRunpod({ terminateSticks: true });
+  const comfy = fakeComfy({ never: true });
+  const f = fixture({ runpod, comfy });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod1");
+  assert.equal((await f.services.getLimits()).openSession?.status, "stopping");
+  f.runpod.pods.delete("pod1");
+  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "done");
+});
+
+test("review: an operator Stop during the start wait is not overwritten by the start loop's own failure path", async () => {
+  const runpod = fakeRunpod({ runningAfterPolls: 3 });
+  const f = fixture({ runpod });
+  const requested = await f.services.requestSession(operatorRequest);
+  const original = runpod.client.getPod.bind(runpod.client);
+  let stopped = false;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    if (!stopped) {
+      stopped = true;
+      await f.services.stopSession({ sessionId: requested.sessionId, reason: "stopped by operator" }); // the Web Stop button, mid-start
+    }
+    return original(id);
+  };
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "done");
+  assert.equal(row.stopReason, "stopped by operator");
+  assert.equal(runpod.pods.has("pod1"), false);
+});

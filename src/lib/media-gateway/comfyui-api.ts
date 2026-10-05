@@ -151,17 +151,26 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
       return parseHistoryEntry(promptId, body);
     },
 
-    async getQueue(): Promise<{ running: number; pending: number }> {
+    /** Queue entries are `[number, prompt_id, prompt, extra, outputs]` tuples; the ids are what a cancel needs. */
+    async getQueue(): Promise<{ running: number; pending: number; runningPromptIds: string[]; pendingPromptIds: string[] }> {
       const { body } = await request("GET", "/queue");
       const record = asRecord(body);
-      return {
-        running: Array.isArray(record.queue_running) ? record.queue_running.length : 0,
-        pending: Array.isArray(record.queue_pending) ? record.queue_pending.length : 0,
-      };
+      const ids = (entries: unknown): string[] =>
+        Array.isArray(entries) ? entries.map((e) => (Array.isArray(e) && typeof e[1] === "string" ? e[1] : null)).filter((id): id is string => id !== null) : [];
+      const runningPromptIds = ids(record.queue_running);
+      const pendingPromptIds = ids(record.queue_pending);
+      return { running: runningPromptIds.length, pending: pendingPromptIds.length, runningPromptIds, pendingPromptIds };
     },
 
+    /** Interrupts whatever ComfyUI is executing RIGHT NOW -- only correct for a job known to be the running one. */
     async interrupt(): Promise<void> {
       await request("POST", "/interrupt");
+    },
+
+    /** Removes not-yet-started prompts from the queue (`POST /queue {delete: [...]}`); the running one is untouched. */
+    async deleteQueued(promptIds: string[]): Promise<void> {
+      if (promptIds.length === 0) return;
+      await request("POST", "/queue", { json: { delete: promptIds } });
     },
 
     async uploadImage(input: { filename: string; bytes: Uint8Array; subfolder?: string; overwrite?: boolean }): Promise<{ name: string; subfolder: string }> {

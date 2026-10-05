@@ -108,3 +108,16 @@ test("viewUrl encodes filename/subfolder/type", () => {
   const client = createComfyUiClient({ baseUrl: "https://x", token: null, authorize: noAuth });
   assert.equal(client.viewUrl({ filename: "a b.png", subfolder: "job1", type: "output" }), "https://x/view?filename=a+b.png&subfolder=job1&type=output");
 });
+
+test("review: getQueue exposes the running and pending prompt ids; deleteQueued posts {delete:[...]} and skips an empty list", async () => {
+  const { fetchImpl, calls } = fakeFetch((call) =>
+    call.init.method === "POST" ? { status: 200, body: {} } : { status: 200, body: { queue_running: [[0, "p-run", {}, {}, []]], queue_pending: [[1, "p-wait", {}, {}, []]] } }
+  );
+  const client = createComfyUiClient({ baseUrl: "https://x", token: null, fetchImpl, authorize: noAuth });
+  assert.deepEqual(await client.getQueue(), { running: 1, pending: 1, runningPromptIds: ["p-run"], pendingPromptIds: ["p-wait"] });
+  await client.deleteQueued([]);
+  assert.equal(calls.length, 1);
+  await client.deleteQueued(["p-wait"]);
+  assert.equal(calls[1].url, "https://x/queue");
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), { delete: ["p-wait"] });
+});

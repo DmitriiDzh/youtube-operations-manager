@@ -191,3 +191,13 @@ test("extractList accepts a bare array or any known wrapper key; toPod tolerates
   assert.equal(pod.ports, null);
   assert.deepEqual(pod.networkVolumeIds, []);
 });
+
+test("review: a pod's env is redacted (the per-session COMFY_TOKEN never leaves the gateway) and raw carries no env block", async () => {
+  const { fetchImpl } = fakeFetch(() => ({ status: 200, body: { id: "p1", status: "RUNNING", env: { COMFY_TOKEN: "tok-secret", HF_TOKEN: "hf_x", JUPYTER_PASSWORD: "p", PUBLIC_KEY: "ssh-ed25519 AAA", MODE: "fast" } } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  const pod = await client.getPod("p1");
+  assert.ok(pod);
+  assert.deepEqual(pod.env, { COMFY_TOKEN: "[redacted]", HF_TOKEN: "[redacted]", JUPYTER_PASSWORD: "[redacted]", PUBLIC_KEY: "[redacted]", MODE: "fast" });
+  assert.ok(!JSON.stringify(pod).includes("tok-secret"));
+  assert.equal("env" in pod.raw, false);
+});
