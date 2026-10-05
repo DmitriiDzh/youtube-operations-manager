@@ -228,6 +228,37 @@ Still unverified: `/history` output keys for audio/video save nodes; the RunPod 
 long requests; Restricted-key scope; S3 throughput for 100–500 MB outputs; account balance (v2 has none; the legacy
 GraphQL `myself { clientBalance }` answers today).
 
+### 5.2 Slice 6 — Production section, concurrent sessions, balance (owner, Telegram 2026-10-05, msgs 1549/1551)
+
+Owner decisions: (1) Settings keeps only the RunPod connection (tab renamed "RunPod": keys + Test); (2) a new
+sidebar section **Production** right after Content; (3) its tabs ordered by frequency of use, work on the left, setup
+on the right: **Sessions → Jobs → Models → Workflow templates → Setup** (Compute, Volume, Limits, gateway toggle);
+(4) the agent path is the existing seven MCP tools (unchanged contract, plus the fields below); (5) **concurrent
+sessions** — supersedes D2/D3's "one open session per device": a configurable `maxConcurrentSessions` (Setup,
+1–4, default 2) bounds the sessions holding a pod (`approved|starting|running|stopping`); pending requests are not
+bounded by it; sessions are shown in a table with live statuses and per-row Approve / Reject / Stop — no blocking
+pop-up: approve validates synchronously, then the start runs in the background and the row's status tells the rest;
+(6) the account **balance** on Production, from RunPod's legacy GraphQL `myself { clientBalance, currentSpendPerHr,
+spendLimit }` (v2 has no balance endpoint), labelled legacy; if it fails, the panel shows v2 `/billing` spend instead.
+
+Design: `UNIQUE(open_slot)` is dropped (schema v58, non-unique index kept); the approve transition
+`pending → approved` is one statement guarded by `(SELECT count(*) of active sessions) < max`, so two approves can
+never exceed the limit. Daily cap at approve: `spentToday + Σ over other active sessions of max(0, estimate − live)
++ this estimate ≤ cap`; the watcher stops every active session once the day's total reaches the cap. The volume lock
+becomes shared/exclusive: sessions hold it **shared** (any number), a model pull and an operator pod hold it
+**exclusive** — AC-P14-18 is unchanged (no pull while any session is active, and no session start while a pull runs).
+Every place that assumed one open session (watcher, boot sweep, shutdown stop, idle `hasOpenPod`, limits, gateway /
+credentials / volume-change guards) iterates over all active sessions. Agent API 3.4.0 (MINOR): `agent_get_media_limits`
+adds `openSessions[]` (this channel's) and `maxConcurrentSessions`; `openSession` stays (first of them) for
+compatibility; `agent_request_media_session` no longer conflicts with another open session.
+
+Acceptance: AC-P14-22 two sessions can be active at once up to the limit, the next approve is refused
+(`media_session_conflict`) without creating a pod, even when two approves race; AC-P14-23 a model pull is refused
+while any session is active and a session approve is refused while a pull runs; AC-P14-24 approve returns at once
+(status `approved`), the start continues in the background and failures land on the row; AC-P14-25 the balance read
+never sends the key anywhere but RunPod and degrades to v2 spend when GraphQL fails; AC-P14-26 Settings shows only
+the RunPod connection; Production shows the five tabs in the stated order.
+
 ## 6. Not in scope
 
 Serverless compute (later adapter), concurrent sessions / multiple pods, any YouTube upload of generated media
