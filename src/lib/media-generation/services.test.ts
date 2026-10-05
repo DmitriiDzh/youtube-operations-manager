@@ -611,3 +611,16 @@ test("review 19: an operator createPod with no usable credentials never leaves a
   await assert.rejects(services.createPod({ name: "ytm-media", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } }), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
   assert.equal(store.current(), null);
 });
+
+test("review 20: re-saving the SAME GPU repairs a missing price (the remedy requestSession's error names), instead of being skipped as unchanged", async () => {
+  const runpod = fakeRunpod();
+  const { services, mem } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ gpuTypeId: "NVIDIA GeForce RTX 4090" });
+  // The stored price is lost (a salvage, a catalog without a price at the time).
+  const stored = JSON.parse((await mem.store.getSettingsJson()) ?? "{}") as Record<string, unknown>;
+  await mem.store.setSettingsJson(JSON.stringify({ ...stored, gpuOnDemandPricePerHr: null }));
+  assert.equal((await services.getSettings()).gpuOnDemandPricePerHr, null);
+  const repaired = await services.updateSettings({ gpuTypeId: "NVIDIA GeForce RTX 4090" }); // the Compute card's Save with the same GPU
+  assert.equal(repaired.gpuOnDemandPricePerHr, 0.69);
+});

@@ -262,9 +262,15 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
    * confirm. The outcome is persisted on the row (`stoppingOutcome`) so a retry -- the watcher, the boot
    * sweep -- finishes with the status the stop was started for, not a default `done`.
    */
-  async function stopRow(row: StoredSessionRow, reason: string, outcome: StoppingOutcome = "done"): Promise<StoredSessionRow> {
-    const stopping = await deps.store.transition(row.id, ["starting", "running", "stopping"], { status: "stopping", stopReason: reason, stoppingOutcome: outcome });
+  async function stopRow(row: StoredSessionRow, requestedReason: string, requestedOutcome: StoppingOutcome = "done"): Promise<StoredSessionRow> {
+    // A row ALREADY `stopping` keeps its own reason and outcome (an operator's deliberate `done` stop is never relabelled
+    // `interrupted` by a watcher tick that raced it, review round 20); only starting/running take the caller's.
+    const stopping =
+      (await deps.store.transition(row.id, ["starting", "running"], { status: "stopping", stopReason: requestedReason, stoppingOutcome: requestedOutcome })) ??
+      (await deps.store.transition(row.id, ["stopping"], { status: "stopping" }));
     if (!stopping) throw invalidState(row.id, "starting|running|stopping", row.status);
+    const reason = stopping.stopReason ?? requestedReason;
+    const outcome = stopping.stoppingOutcome ?? requestedOutcome;
     const terminal = { stopReason: reason, error: outcome === "done" ? null : reason };
     if (!stopping.podId) {
       const finished = await finish(stopping, ["stopping"], outcome, terminal);
@@ -371,7 +377,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       let unconfirmed: string | null = null;
       try {
         const client = await deps.base.resolveRunpodClient();
-        const result = await terminateAndConfirm(client, podId);
+        const result = await terminateAndConfirm(client, podId, async (at, alreadyGone) => {
+          // Our DELETE went through: a retry that finds the pod gone bills to THIS moment (review round 20) -- the pod ran
+          // from the crash until now, and that is real RunPod spend the daily cap must see.
+          if (!alreadyGone) await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], { status: "stopping", terminateSentAt: at });
+        });
         if (!result.confirmed) unconfirmed = `pod still ${result.lastStatus} after terminate`;
         alreadyGone = result.alreadyGone;
       } catch (cause) {
@@ -525,10 +535,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, estimateUsd: row.estimateUsd },
         });
       }
-      const open = await deps.store.getOpen();
-      if (open && open.id !== sessionId) {
-        throw new DomainError({ code: "media_session_conflict", message: "Another session is already open on this device.", details: { openSessionId: open.id } });
-      }
+      // (No "another session is open" check here: this row is `pending`, i.e. it holds the device's unique open slot --
+      // `media_sessions_open_slot_idx` is the guarantee, review round 20.)
       // The request's estimate, cap check and record describe the GPU/datacenter saved when it was made; the pod is built
       // from the CURRENT settings. If they diverged, the approval would bill something the record never describes
       // (review round 11): refuse, the requester asks again against the new settings.
@@ -610,7 +618,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         onStage("Terminating the pod");
         let terminated: { confirmed: boolean; lastStatus: string | null };
         try {
-          terminated = await terminateAndConfirm(client, pod.id);
+          terminated = await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
+            if (!alreadyGone) await deps.store.transition(sessionId, ["approved", "starting"], { status: (await requireRow(sessionId)).status as "approved" | "starting", podId: pod.id, startedAt, terminateSentAt: at });
+          });
         } catch (error) {
           terminated = { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})` };
         }

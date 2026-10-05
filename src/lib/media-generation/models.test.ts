@@ -659,3 +659,30 @@ test("review 18: a flaky S3 does not hide a dead pull pod or the 6 h cap -- each
   assert.deepEqual(calls, ["terminate:cpupod1"]);
   assert.equal(store.current(), null);
 });
+
+test("review 20: an unusable S3 pair does not skip the dead-pod check and the cap, and an unusable RunPod client does not skip the file check", async () => {
+  const base = (over: { s3?: () => Promise<RunpodS3Client>; client?: () => Promise<RunpodApiClient> }) => {
+    let json: string | null = JSON.stringify([{ pullId: "p1", podId: "cpupod1", repoId: "a/b", file: "c.bin", expectedKey: "models/vae/c.bin", status: "running", startedAt: "2026-10-05T12:00:00.000Z", finishedAt: null, bytes: null, error: null }]);
+    const calls: string[] = [];
+    const client = { async getPod(id: string) { return { id, status: calls.includes(`terminate:${id}`) ? "TERMINATED" : "EXITED" }; }, async terminatePod(id: string) { calls.push(`terminate:${id}`); return { terminated: true, alreadyGone: false }; }, async listPods() { return []; } } as unknown as RunpodApiClient;
+    const s3 = { async listAllObjects() { return []; }, async headObject() { return { size: 7, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
+    const { lock, store } = testLock();
+    void store.tryAcquire("pull:p1", new Date(0));
+    const services = createMediaModelServices({
+      store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
+      base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: over.client ?? (async () => client), s3: over.s3 ?? (async () => s3) },
+      generateId: () => "x",
+      clock: { now: () => new Date("2026-10-05T12:05:00Z") },
+      volumeLock: lock,
+    });
+    return { services, calls };
+  };
+  const noS3 = base({ s3: async () => { throw new Error("no S3 key pair"); } });
+  const [a] = await noS3.services.pollPulls();
+  assert.equal(a.status, "failed", "the dead pod was noticed without S3");
+  assert.deepEqual(noS3.calls, ["terminate:cpupod1"]);
+  const noRunpod = base({ client: async () => { throw new Error("no credentials"); } });
+  const [b] = await noRunpod.services.pollPulls();
+  assert.equal(b.status, "running", "done needs the terminate, which needs RunPod -- the pull stays running with the error recorded");
+  assert.match(b.error ?? "", /could not be terminated/);
+});

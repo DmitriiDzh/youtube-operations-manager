@@ -309,6 +309,9 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const changed = (key: "gpuTypeId" | "datacenterId" | "networkVolumeId" | "templateId" | "cloudType") => update[key] !== undefined && update[key] !== current[key];
       const revalidate = new Set<"gpuTypeId" | "datacenterId" | "networkVolumeId" | "templateId">();
       if (changed("gpuTypeId") && next.gpuTypeId) revalidate.add("gpuTypeId");
+      // "Save the GPU again" must be able to repair a missing price (review round 20): an unchanged GPU whose stored price
+      // is unknown is re-priced too.
+      if (update.gpuTypeId !== undefined && next.gpuTypeId && next.gpuOnDemandPricePerHr === null) revalidate.add("gpuTypeId");
       if (changed("datacenterId") && next.datacenterId) revalidate.add("datacenterId");
       if (changed("networkVolumeId") && next.networkVolumeId) revalidate.add("networkVolumeId");
       if (changed("templateId") && next.templateId) revalidate.add("templateId");

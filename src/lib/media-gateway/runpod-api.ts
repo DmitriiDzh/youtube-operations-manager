@@ -201,10 +201,19 @@ export function createRunpodApiClient(args: {
         }),
     });
     const parsed = response.body;
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
       throw new DomainError({
         code: "media_credentials_invalid",
-        message: `RunPod rejected the API key (HTTP ${response.status}).`,
+        message: `RunPod rejected the API key (HTTP 401).`,
+        details: { method, path, status: response.status, detail: asString(asRecord(parsed).detail) },
+      });
+    }
+    if (response.status === 403) {
+      // Not a bad key (review round 20): the key lacks permission for THIS resource or operation (a pod or volume of another
+      // account, a restricted key), so "re-enter the credentials" would be the wrong advice.
+      throw new DomainError({
+        code: "runpod_forbidden",
+        message: `RunPod refused ${method} ${path} (HTTP 403): the key has no permission for this resource or operation (another account's pod/volume, or a restricted key)${asString(asRecord(parsed).detail) ? ` -- ${asString(asRecord(parsed).detail)}` : ""}.`,
         details: { method, path, status: response.status, detail: asString(asRecord(parsed).detail) },
       });
     }

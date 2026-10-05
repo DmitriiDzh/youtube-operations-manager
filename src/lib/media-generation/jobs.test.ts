@@ -474,7 +474,8 @@ test("AC-P14-14: the janitor lists only exchange/, skips exchange/in/ and unknow
   assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
   // The pulled output was already deleted by the job; the leftover (no ledger row, done job) is kept; a dry run deletes nothing.
   const dry = await f.services.cleanupExchange({ dryRun: true });
-  assert.deepEqual(dry.deleted, []);
+  assert.deepEqual(dry.deleted, [], "a dry run never reports something as deleted (review round 20)");
+  assert.equal(dry.dryRun, true);
   assert.ok(dry.kept.some((k) => k.key === "exchange/in/ref.png" && k.reason === "reference input"));
   assert.ok(dry.kept.some((k) => k.key === "exchange/unknown-job/x.png" && k.reason === "unknown job"));
   assert.ok(dry.kept.some((k) => k.key === "exchange/job-1/leftover.png" && k.reason === "done job, not in the ledger"));

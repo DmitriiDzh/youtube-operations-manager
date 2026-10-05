@@ -84,6 +84,7 @@ const DOMAIN_ERROR_STATUS = {
   media_credentials_invalid: 422,
   media_settings_invalid: 422,
   runpod_api_unavailable: 502,
+  runpod_forbidden: 403,
   runpod_s3_unavailable: 502,
   comfyui_unavailable: 502,
   comfyui_rejected: 422,

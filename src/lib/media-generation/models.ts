@@ -352,8 +352,10 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     const pulls = await readPulls();
     const running = pulls.filter((p) => p.status === "running");
     if (running.length === 0) return pulls;
-    const s3 = await deps.base.s3();
-    const client = await deps.base.resolveRunpodClient();
+    // Each dependency is resolved on its own (review round 20): an unusable S3 pair must not skip the dead-pod check and
+    // the cap, and an unreachable RunPod must not skip the file check.
+    const s3 = await deps.base.s3().then((c) => c, () => null);
+    const client = await deps.base.resolveRunpodClient().then((c) => c, () => null);
     const now = deps.clock.now().getTime();
     for (const pull of running) {
       if (!pull.podId) {
@@ -362,6 +364,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         if (now - Date.parse(pull.startedAt) <= RESERVATION_GRACE_MS) continue;
         let orphan: { id: string } | undefined;
         try {
+          if (!client) throw new Error("RunPod credentials are not usable");
           orphan = await findLivePodByName(client, pullPodNameFor(pull.pullId));
         } catch (lookupError) {
           // Unknown is not "none": the reservation (and the lock) stay until RunPod can be asked (review round 9).
@@ -380,6 +383,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       // must not hide a finished file; a check that cannot be made is "unknown", not "fine".
       let head: { size: number } | null | undefined;
       try {
+        if (!s3) throw new Error("the S3 key pair is not usable");
         head = await s3.headObject(pull.expectedKey);
       } catch (error) {
         head = undefined;
@@ -391,7 +395,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       }
       let pod: { status: string } | null | undefined;
       try {
-        pod = await client.getPod(pull.podId);
+        pod = client ? await client.getPod(pull.podId) : undefined;
       } catch {
         pod = undefined;
       }

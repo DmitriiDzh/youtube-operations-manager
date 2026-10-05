@@ -576,12 +576,12 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
     setBusy(true);
     setError(null);
     try {
-      const report = await requestJson<{ scanned: number; deleted: string[]; kept: Array<{ key: string; reason: string }> }>("/api/media-generation/exchange/janitor", {
+      const report = await requestJson<{ dryRun: boolean; scanned: number; deleted: string[]; wouldDelete: string[]; kept: Array<{ key: string; reason: string }> }>("/api/media-generation/exchange/janitor", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ dryRun }),
       });
-      setJanitorReport(`${dryRun ? "Would delete" : "Deleted"} ${report.deleted.length} of ${report.scanned} object(s); kept ${report.kept.length}.`);
+      setJanitorReport(`${dryRun ? `Would delete ${report.wouldDelete.length}` : `Deleted ${report.deleted.length}`} of ${report.scanned} object(s); kept ${report.kept.length}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Janitor failed");
     } finally {

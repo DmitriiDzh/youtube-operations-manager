@@ -121,6 +121,7 @@ export type DomainErrorCode =
   | "media_credentials_invalid"
   | "media_settings_invalid"
   | "runpod_api_unavailable"
+  | "runpod_forbidden"
   | "runpod_s3_unavailable"
   | "comfyui_unavailable"
   | "comfyui_rejected"

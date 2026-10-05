@@ -37,9 +37,11 @@ test("every call carries the bearer key, the v2 base URL, and passes the gateway
   assert.deepEqual(authorized, ["runpod_api"]);
 });
 
-test("a 401/403 from RunPod is media_credentials_invalid; another failure is runpod_api_unavailable with the status", async () => {
+test("a 401 from RunPod is media_credentials_invalid; a 403 is runpod_forbidden (the key is fine, the resource is not ours -- review round 20); another failure is runpod_api_unavailable with the status", async () => {
   const unauthorized = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401, body: { title: "Unauthorized", status: 401, detail: "bad key" } })).fetchImpl });
   await assert.rejects(unauthorized.verifyKey(), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
+  const foreign = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 403, body: { detail: "not your pod" } })).fetchImpl });
+  await assert.rejects(foreign.terminatePod("someone-elses"), (e: unknown) => isDomainError(e) && e.code === "runpod_forbidden" && /not your pod/.test(e.message));
 
   const broken = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 500, body: { detail: "boom" } })).fetchImpl });
   await assert.rejects(broken.listPods(), (e: unknown) => isDomainError(e) && e.code === "runpod_api_unavailable" && (e.details as { status?: number }).status === 500);

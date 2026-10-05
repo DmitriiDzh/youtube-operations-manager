@@ -942,11 +942,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
      * received, the only copy -- for the operator (`scripts/media/s3.sh rm`). Keys of unknown jobs
      * (another device's) are left alone.
      */
-    async cleanupExchange(options: { dryRun?: boolean } = {}): Promise<{ scanned: number; deleted: string[]; kept: Array<{ key: string; reason: string }> }> {
+    async cleanupExchange(options: { dryRun?: boolean } = {}): Promise<{ dryRun: boolean; scanned: number; deleted: string[]; wouldDelete: string[]; kept: Array<{ key: string; reason: string }> }> {
       const dryRun = options.dryRun ?? true;
       const s3 = await deps.s3();
       const objects = await s3.listAllObjects(EXCHANGE_PREFIX);
+      // `deleted` lists only what was REALLY deleted; a dry run reports its candidates as `wouldDelete` (review round 20).
       const deleted: string[] = [];
+      const wouldDelete: string[] = [];
       const kept: Array<{ key: string; reason: string }> = [];
       const jobCache = new Map<string, StoredJobRow | null>();
       for (const object of objects) {
@@ -978,13 +980,15 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           kept.push({ key, reason: `${job.status} job, not in the ledger` });
           continue;
         }
-        if (!dryRun) {
-          await s3.deleteObject(key);
-          await deps.store.ledger.markRemoteDeleted(key, deps.clock.now());
+        if (dryRun) {
+          wouldDelete.push(key);
+          continue;
         }
+        await s3.deleteObject(key);
+        await deps.store.ledger.markRemoteDeleted(key, deps.clock.now());
         deleted.push(key);
       }
-      return { scanned: objects.length, deleted, kept };
+      return { dryRun, scanned: objects.length, deleted, wouldDelete, kept };
     },
   };
 }

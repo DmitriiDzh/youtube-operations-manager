@@ -12,5 +12,5 @@ else
   data="$(media_data janitor)"
   verb="would delete"
 fi
-json_get "\`scanned \${data.scanned}; $verb \${data.deleted.length}:\n\` + data.deleted.map(k => \`  - \${k}\`).join(\"\n\") + \`\nkept \${data.kept.length}:\n\` + data.kept.map(k => \`  ~ \${k.key} (\${k.reason})\`).join(\"\n\")" <<<"$data"
-result_line "scanned=$(json_get 'data.scanned' <<<"$data") deleted=$(json_get 'data.deleted.length' <<<"$data") kept=$(json_get 'data.kept.length' <<<"$data")"
+json_get "\`scanned \${data.scanned}; $verb \${(data.dryRun ? data.wouldDelete : data.deleted).length}:\n\` + (data.dryRun ? data.wouldDelete : data.deleted).map(k => \`  - \${k}\`).join(\"\n\") + \`\nkept \${data.kept.length}:\n\` + data.kept.map(k => \`  ~ \${k.key} (\${k.reason})\`).join(\"\n\")" <<<"$data"
+result_line "scanned=$(json_get 'data.scanned' <<<"$data") $verb=$(json_get '(data.dryRun ? data.wouldDelete : data.deleted).length' <<<"$data") kept=$(json_get 'data.kept.length' <<<"$data")"

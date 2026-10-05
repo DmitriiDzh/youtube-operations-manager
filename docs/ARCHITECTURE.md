@@ -2616,6 +2616,17 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   holder check that cannot even resolve credentials counts as inactive (the lock ages out instead of
   blocking the very credentials needed). `updateSettings` derives one `revalidate` set from what changed
   (never by rewriting the caller's update); `finalCost` is `liveSeconds`/`liveUsd` frozen at `stoppedAt`.
+- **Every terminate records its DELETE; a stopping row keeps its reason (review round 20).** The boot sweep's
+  and the aborted start's terminates persist `terminateSentAt` like the watcher's, so a retry that finds the
+  pod gone bills the crash-to-reboot hours to our DELETE. `stopRow` takes the caller's reason/outcome only
+  from `starting`/`running`; a row already `stopping` keeps its own (a watcher tick racing an operator Stop
+  never relabels the deliberate `done` as `interrupted`). Re-saving the same GPU re-prices it when its stored
+  price is unknown (the remedy `requestSession`'s error names). The pull poll resolves S3 and RunPod on
+  their own (an unusable pair never skips the dead-pod check or the cap). RunPod's 403 is
+  `runpod_forbidden` (no permission for THIS resource: another account's pod, a restricted key), 401 alone
+  is `media_credentials_invalid`. The janitor's `deleted` lists only what was really deleted; a dry run
+  reports `wouldDelete`. The dead "another session is open" check in approve is gone (the unique open-slot
+  index is the guarantee); `job-run.sh` refuses a `--param` without `=`.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

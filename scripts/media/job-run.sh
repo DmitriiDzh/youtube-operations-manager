@@ -31,6 +31,7 @@ node -e '
   for (const tagged of pairs) {
     const mode = tagged.slice(0, tagged.indexOf(":")), pair = tagged.slice(tagged.indexOf(":") + 1);
     const i = pair.indexOf("=");
+    if (i <= 0) { console.error(`bad --param "${pair}": expected name=value`); process.exit(2); }
     const name = pair.slice(0, i), raw = pair.slice(i + 1);
     params[name] = mode === "string" ? raw : raw === "true" ? true : raw === "false" ? false : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
   }

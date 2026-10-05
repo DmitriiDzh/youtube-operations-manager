@@ -118,7 +118,9 @@ function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; t
     },
     async terminatePod(id: string) {
       calls.push(`terminate:${id}`);
-      if (opts.terminateSticks) return { terminated: true as const, alreadyGone: false };
+      // `terminateSticks`: the DELETE is accepted but the container lingers; a DELETE for a pod that is already gone is a
+      // 404 (alreadyGone) in both modes, as RunPod answers.
+      if (opts.terminateSticks) return { terminated: true as const, alreadyGone: !pods.has(id) };
       const existed = pods.delete(id);
       return { terminated: true as const, alreadyGone: !existed };
     },
@@ -1259,4 +1261,42 @@ test("review 19: a pod created after the row was ended by another party, whose t
   assert.ok((row.usdCharged ?? 0) > 0);
   assert.match(row.error ?? "", /was terminated \(\d+ s billed\)/);
   assert.equal(f.runpod.pods.has("pod1"), false);
+});
+
+// -- review round 20 (2026-10-05) -----------------------------------------------------------------
+
+test("review 20: the boot sweep's DELETE is recorded (terminateSentAt), so a retry that finds the pod gone bills the crash-to-reboot hours to our DELETE, not to the last pre-crash sighting", async () => {
+  const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
+  const running = await startRunning(f);
+  f.advance(60_000);
+  await f.services.watchTick(); // last sighting before the crash: +65 s
+  f.advance(4 * 60 * 60_000); // the process was dead for four hours; the pod ran the whole time
+  const rebootDelete = f.getNow();
+  await f.services.bootSweep(); // DELETE goes through, confirm does not (the container lingers)
+  const stopping = f.mem.rows.get(running.sessionId)!;
+  assert.equal(stopping.status, "stopping");
+  assert.equal(stopping.terminateSentAt?.getTime(), rebootDelete.getTime());
+  f.runpod.pods.delete("pod1"); // gone by the next tick (our DELETE did it)
+  f.advance(60_000);
+  assert.equal((await f.services.watchTick()).action, "stopped");
+  const done = f.mem.rows.get(running.sessionId)!;
+  assert.equal(done.status, "interrupted");
+  assert.equal(done.secondsUsed, 5 + 60 + 4 * 3600, "billed to the reboot DELETE, four hours included");
+});
+
+test("review 20: a watcher stop that races an operator Stop never relabels the operator's deliberate `done` as `interrupted`", async () => {
+  const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
+  const running = await startRunning(f);
+  // The operator's Stop lands first (its terminate is not confirmed -> `stopping`, done/'stopped by operator').
+  await assert.rejects(f.services.stopSession({ sessionId: running.sessionId, reason: "stopped by operator" }).then(() => { throw new Error("expected stopping"); }), () => true).catch(() => undefined);
+  const first = f.mem.rows.get(running.sessionId)!;
+  assert.equal(first.status, "stopping");
+  assert.equal(first.stoppingOutcome, "done");
+  // The watcher, which had read the row as running a moment earlier, now finds the pod gone and runs ITS stop.
+  f.runpod.pods.delete("pod1");
+  await f.services.watchTick();
+  const done = f.mem.rows.get(running.sessionId)!;
+  assert.equal(done.status, "done");
+  assert.equal(done.stopReason, "stopped by operator");
+  assert.equal(done.error, null);
 });
