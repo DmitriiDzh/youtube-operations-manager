@@ -443,7 +443,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "media_generation",
     permission: "DRAFT",
     description:
-      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Settings -> Media; the agent can neither approve, start nor stop it. At most one open session per device (media_session_conflict otherwise). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
+      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Production -> Sessions; the agent can neither approve, start nor stop it. Several sessions may be open at once; at most maxConcurrentSessions hold a pod at the same time (bounded at approve). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
   },
   {
     id: "media_generation.get_media_session",
@@ -459,7 +459,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "media_generation",
     permission: "READ",
     description:
-      "The owner's media limits in USD (maxUsdPerDay, spentTodayUsd, remainingTodayUsd), defaultMaxMinutes, idleMinutes, whether Settings -> Media is complete (ready/missing), this channel's open session and deviceHasOpenSession. Local read only. Implemented as the `agent_get_media_limits` MCP tool. Requires channelId to be the caller's currently-active channel.",
+      "The owner's media limits in USD (maxUsdPerDay, spentTodayUsd, remainingTodayUsd), defaultMaxMinutes, idleMinutes, whether the setup is complete (ready/missing), this channel's open sessions (openSessions; openSession = the first), maxConcurrentSessions, activeSessionCount and deviceHasOpenSession. Local read only. Implemented as the `agent_get_media_limits` MCP tool. Requires channelId to be the caller's currently-active channel.",
   },
   {
     id: "media_generation.create_media_job",

@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
-import { MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
+import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -752,9 +752,10 @@ export type MediaSessionStatusValue = MediaSessionStatus;
  * watched (idle / minutes / USD caps) and always TERMINATED (never stopped). Transitions are atomic
  * `UPDATE ... WHERE status IN (...) RETURNING`, like `market_collection_requests`.
  *
- * `open_slot` is 1 while the session is non-terminal and NULL once terminal; the UNIQUE index on it
- * is what makes "at most one non-terminal session per device" (AC-P14-05) a database fact rather than
- * a check that two concurrent requests could both pass. The ComfyUI proxy token is stored encrypted
+ * `open_slot` is 1 while the session is non-terminal and NULL once terminal. Until schema v58 a UNIQUE
+ * index on it made "one open session per device" a database fact; slice 6 (owner, 2026-10-05) allows
+ * concurrent sessions, so the index is plain and the bound is `approveMediaSessionGuarded`'s single
+ * guarded UPDATE (active count < `maxConcurrentSessions`). The ComfyUI proxy token is stored encrypted
  * under the same per-device key as `media_credentials` and never returned by any read.
  *
  * **Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES`** -- a pod is owned by the server process
@@ -812,7 +813,7 @@ export const mediaSessions = sqliteTable(
      */
     terminateSentAt: integer("terminate_sent_at", { mode: "timestamp" }),
   },
-  (table) => [uniqueIndex("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
+  (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
 
 /**
@@ -3116,6 +3117,15 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 58,
+    description:
+      "media_sessions_open_slot_idx becomes a plain index -- concurrent generation sessions (Phase 14 slice 6, owner 2026-10-05); the concurrency bound moves to the guarded approve UPDATE; rows untouched",
+    apply: async (client) => {
+      await client.execute("DROP INDEX IF EXISTS media_sessions_open_slot_idx");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_sessions_open_slot_idx ON media_sessions(open_slot)");
     },
   },
 ];
@@ -7299,20 +7309,31 @@ function parseMediaVolumeLockValue(value: string): { owner: string; since: Date 
   return { owner: value, since: new Date(0) };
 }
 
-export async function tryAcquireMediaVolumeLock(owner: string, at: Date, database: AppDb = db): Promise<{ acquired: boolean; holder: { owner: string; since: Date } }> {
+export async function tryAcquireMediaVolumeLock(
+  owner: string,
+  at: Date,
+  database: AppDb = db
+): Promise<{ acquired: boolean; holder: { owner: string; since: Date } | null; activeSessions: number }> {
   // The holder may release between a no-op insert and the read-back; a null read-back then means "nobody holds it",
   // never "we do" -- insert again (review round 10). `acquired` is true only with OUR row in the table.
+  // Slice 6: the row is the EXCLUSIVE hold (a pull, an operator pod); generation sessions hold the volume SHARED by
+  // being active rows, so the insert itself is guarded by "no active session" -- the mirror of the approve UPDATE's
+  // "no lock row" guard (`approveMediaSessionGuarded`), one statement each.
   const value = JSON.stringify({ owner, since: at.getTime() });
   for (let attempt = 0; attempt < 5; attempt++) {
-    await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value }).onConflictDoNothing();
+    await database.run(
+      sql`INSERT INTO app_settings (key, value) SELECT ${MEDIA_VOLUME_LOCK_KEY}, ${value} WHERE NOT EXISTS (SELECT 1 FROM media_sessions WHERE status IN ${[...MEDIA_SESSION_ACTIVE_STATUSES]}) ON CONFLICT(key) DO NOTHING`
+    );
     const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
     if (stored !== null) {
       const holder = parseMediaVolumeLockValue(stored);
       // Ours only if it is OUR row (owner and acquire time): a row the same owner inserted earlier is "already held".
-      return { acquired: holder.owner === owner && holder.since.getTime() === at.getTime(), holder };
+      return { acquired: holder.owner === owner && holder.since.getTime() === at.getTime(), holder, activeSessions: 0 };
     }
+    const activeSessions = await countActiveMediaSessions(database);
+    if (activeSessions > 0) return { acquired: false, holder: null, activeSessions };
   }
-  return { acquired: false, holder: { owner: "unknown (the lock row kept vanishing between insert and read)", since: at } };
+  return { acquired: false, holder: { owner: "unknown (the lock row kept vanishing between insert and read)", since: at }, activeSessions: 0 };
 }
 
 /** Deletes the row only when `owner` holds it (never another owner's lock). */
@@ -7380,23 +7401,13 @@ export type StoredMediaSession = typeof mediaSessions.$inferSelect;
 export type NewStoredMediaSession = typeof mediaSessions.$inferInsert;
 
 
-function isOpenSlotConflict(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /UNIQUE constraint failed.*media_sessions\.open_slot/i.test(message) || /SQLITE_CONSTRAINT.*open_slot/i.test(message);
-}
-
-/** `null` = another non-terminal session already holds the device's single open slot (AC-P14-05). */
-export async function insertMediaSession(row: NewStoredMediaSession, database: AppDb = db): Promise<StoredMediaSession | null> {
-  try {
-    const [inserted] = await database
-      .insert(mediaSessions)
-      .values({ ...row, openSlot: 1 })
-      .returning();
-    return inserted ?? null;
-  } catch (error) {
-    if (isOpenSlotConflict(error)) return null;
-    throw error;
-  }
+/** Slice 6: never a conflict any more -- concurrent sessions are bounded at approve, not at request. */
+export async function insertMediaSession(row: NewStoredMediaSession, database: AppDb = db): Promise<StoredMediaSession> {
+  const [inserted] = await database
+    .insert(mediaSessions)
+    .values({ ...row, openSlot: 1 })
+    .returning();
+  return inserted;
 }
 
 export async function getMediaSessionById(id: string, database: AppDb = db): Promise<StoredMediaSession | null> {
@@ -7404,9 +7415,42 @@ export async function getMediaSessionById(id: string, database: AppDb = db): Pro
   return row ?? null;
 }
 
-export async function getOpenMediaSession(database: AppDb = db): Promise<StoredMediaSession | null> {
-  const [row] = await database.select().from(mediaSessions).where(eq(mediaSessions.openSlot, 1));
-  return row ?? null;
+/** Every non-terminal session (pending included), oldest first. */
+export async function listOpenMediaSessions(database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database.select().from(mediaSessions).where(eq(mediaSessions.openSlot, 1)).orderBy(asc(mediaSessions.createdAt), asc(mediaSessions.id));
+}
+
+/**
+ * Slice 6 (PHASE_14_PLAN.md §5.2, AC-P14-22/23): `pending -> approved` as ONE statement guarded by
+ * (a) fewer than `maxActive` sessions holding a pod and (b) no exclusive volume-lock row (a model pull or an
+ * operator pod writing the volume). SQLite serializes writers, so two approves -- or an approve and a pull's
+ * lock insert (`tryAcquireMediaVolumeLock`, guarded the other way round) -- can never both pass. `null` = one of
+ * the guards (or the row's status) refused; the caller re-reads to say which.
+ */
+export async function approveMediaSessionGuarded(
+  id: string,
+  set: Partial<Omit<NewStoredMediaSession, "id" | "openSlot" | "status">>,
+  maxActive: number,
+  database: AppDb = db
+): Promise<StoredMediaSession | null> {
+  const rows = await database
+    .update(mediaSessions)
+    .set({ ...set, status: "approved", openSlot: 1 })
+    .where(
+      and(
+        eq(mediaSessions.id, id),
+        eq(mediaSessions.status, "pending"),
+        sql`(SELECT count(*) FROM media_sessions WHERE status IN ${[...MEDIA_SESSION_ACTIVE_STATUSES]}) < ${maxActive}`,
+        sql`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ${MEDIA_VOLUME_LOCK_KEY})`
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function countActiveMediaSessions(database: AppDb = db): Promise<number> {
+  const [row] = await database.select({ n: sql<number>`count(*)` }).from(mediaSessions).where(inArray(mediaSessions.status, [...MEDIA_SESSION_ACTIVE_STATUSES]));
+  return Number(row?.n ?? 0);
 }
 
 /** Newest first; `channelId` filters IN the query (never a post-filter of a capped page -- review round 6). */

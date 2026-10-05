@@ -59,3 +59,34 @@ test("acquire returns 'acquired' for the call that took the lock and 'already-he
   assert.equal(await lock.acquire("session:s1"), "already-held");
   assert.equal(store.current(), "session:s1");
 });
+
+// Slice 6 (PHASE_14_PLAN.md §5.2, AC-P14-23): sessions hold the volume SHARED by being active; the lock row is the
+// EXCLUSIVE hold. An exclusive acquire while any session is active is refused naming the sessions, and writes nothing.
+test("AC-P14-23: an exclusive acquire is refused while sessions are active, naming them; it succeeds once none is", async () => {
+  let active = 2;
+  const store = createMemoryVolumeLockStore({ activeSessions: () => active });
+  const lock = createVolumeLock({ store, isHolderActive: async () => true });
+  await assert.rejects(
+    lock.acquire("pull:p1"),
+    (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /2 generation sessions are using the network volume/.test(e.message) && (e.details as { activeSessions: number }).activeSessions === 2
+  );
+  assert.equal(store.current(), null);
+  active = 0;
+  assert.equal(await lock.acquire("pull:p1"), "acquired");
+});
+
+test("activeHolder: a live holder is returned; a crash-stale one is released and reported as none", async () => {
+  let nowMs = Date.parse("2026-10-05T12:00:00Z");
+  const store = createMemoryVolumeLockStore();
+  const live = new Set<string>(["pull:live"]);
+  const lock = createVolumeLock({ store, isHolderActive: async (h) => live.has(h), clock: { now: () => new Date(nowMs) } });
+  assert.equal(await lock.activeHolder(), null);
+  await lock.acquire("pull:live");
+  assert.equal((await lock.activeHolder())?.owner, "pull:live");
+  live.delete("pull:live"); // the pull's process died
+  nowMs += 1_000;
+  assert.equal((await lock.activeHolder())?.owner, "pull:live", "a fresh lock is never stolen");
+  nowMs += VOLUME_LOCK_STALE_AFTER_MS;
+  assert.equal(await lock.activeHolder(), null);
+  assert.equal(store.current(), null);
+});

@@ -49,6 +49,11 @@ export type MediaSettings = {
   idleMinutes: number;
   /** How often the watcher checks a running session (owner decision D2: operator-set). */
   watchIntervalSeconds: number;
+  /**
+   * Slice 6 (owner, Telegram 2026-10-05, msgs 1549/1551/1553): how many sessions may hold a pod at once
+   * (`approved|starting|running|stopping`), each its own pod on the shared volume. Pending requests are not bounded.
+   */
+  maxConcurrentSessions: number;
   /** The chosen GPU's on-demand $/h as the catalog reported it when the GPU was saved -- the
    * local price a session estimate uses with zero RunPod calls (AC-P14-03). */
   gpuOnDemandPricePerHr: number | null;
@@ -64,8 +69,15 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   defaultMaxMinutes: 60,
   idleMinutes: 10,
   watchIntervalSeconds: 60,
+  maxConcurrentSessions: 3,
   gpuOnDemandPricePerHr: null,
 });
+
+/** Bounds of `maxConcurrentSessions` (slice 6): at least one, at most four pods at a time. */
+export const MAX_CONCURRENT_SESSIONS_RANGE = Object.freeze({ min: 1, max: 4 });
+
+/** A session holding (or about to hold) a pod: the statuses `maxConcurrentSessions` counts. */
+export const MEDIA_SESSION_ACTIVE_STATUSES = ["approved", "starting", "running", "stopping"] as const;
 
 /** Network-volume price used for the Settings estimate only (docs.runpod.io/storage/network-volumes, 2026-10-05). */
 export const NETWORK_VOLUME_USD_PER_GB_MONTH = 0.07;
@@ -125,8 +137,13 @@ export type MediaSessionLimits = {
   defaultMaxMinutes: number;
   idleMinutes: number;
   watchIntervalSeconds: number;
-  /** The device's single non-terminal session, if any. */
+  /** Every non-terminal session on this device (pending included), oldest first (slice 6). */
+  openSessions: MediaSession[];
+  /** The first of `openSessions` -- kept for Agent API < 3.4 callers. */
   openSession: MediaSession | null;
+  maxConcurrentSessions: number;
+  /** Sessions currently holding a pod (`approved|starting|running|stopping`). */
+  activeSessionCount: number;
   ready: boolean;
   missing: string[];
 };

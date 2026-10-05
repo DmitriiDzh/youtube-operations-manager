@@ -265,7 +265,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     const parsed = parseWithSchema(startModelPullInputSchema, input, "model pull");
     const settings = await deps.base.getSettings();
     if (!settings.datacenterId || !settings.networkVolumeId) {
-      throw new DomainError({ code: "media_generation_not_configured", message: "Set the datacenter and the network volume in Settings → Media before pulling models." });
+      throw new DomainError({ code: "media_generation_not_configured", message: "Set the datacenter and the network volume in Production → Setup before pulling models." });
     }
     if (await hasActivePull()) {
       throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
@@ -279,7 +279,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     if (existing && existing.size > 0) {
       throw new DomainError({
         code: "validation_failed",
-        message: `${expectedKey} already exists on the volume (${existing.size} bytes); delete it first (Settings → Media → Models, or \`media model-rm\`) to pull it again.`,
+        message: `${expectedKey} already exists on the volume (${existing.size} bytes); delete it first (Production → Models, or \`media model-rm\`) to pull it again.`,
         details: { key: expectedKey, bytes: existing.size },
       });
     }

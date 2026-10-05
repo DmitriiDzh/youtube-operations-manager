@@ -1,7 +1,8 @@
 import {
+  approveMediaSessionGuarded,
   getMediaSessionById,
-  getOpenMediaSession,
   insertMediaSession,
+  listOpenMediaSessions,
   listMediaSessions,
   listMediaSessionsBillableSince,
   markMediaSessionSeenAlive,
@@ -50,15 +51,17 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
 export function createMediaSessionStore(): MediaSessionStore {
   return {
     async insert(row) {
-      const inserted = await insertMediaSession(row);
-      return inserted ? fromDb(inserted) : null;
+      return fromDb(await insertMediaSession(row));
     },
     async get(id) {
       const row = await getMediaSessionById(id);
       return row ? fromDb(row) : null;
     },
-    async getOpen() {
-      const row = await getOpenMediaSession();
+    async listOpen() {
+      return (await listOpenMediaSessions()).map(fromDb);
+    },
+    async approve(id, set, maxActive) {
+      const row = await approveMediaSessionGuarded(id, set, maxActive);
       return row ? fromDb(row) : null;
     },
     async list(limit, channelId) {

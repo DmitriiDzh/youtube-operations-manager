@@ -48,7 +48,8 @@ function buildCore(jobScheduling: JobScheduling) {
   const now = () => new Date();
   // The detached CLI must be able to exit while a confirm poll's timer is pending.
   const sleep = (ms: number) => sharedSleep(ms, { unref: jobScheduling === "detached" });
-  // The one "volume busy" lock (review round 9, `volume-lock.ts`): sessions and pulls both take it; its staleness
+  // The one "volume busy" lock (review round 9, `volume-lock.ts`; shared/exclusive since slice 6): pulls and operator
+  // pods take it exclusively, sessions hold it by being active rows; its staleness
   // check asks the holder's own module whether that holder is still active (late-bound: both are built below).
   let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   let modelsRef: ReturnType<typeof createMediaModelServices> | null = null;
@@ -85,7 +86,10 @@ function buildCore(jobScheduling: JobScheduling) {
     clock: { now },
     activeVolumeHolder: async () => {
       const holder = await volumeLock.holder();
-      return holder && (await isHolderActive(holder.owner)) ? holder.owner : null;
+      if (holder && (await isHolderActive(holder.owner))) return holder.owner;
+      // Slice 6: sessions hold the volume by being active, with no lock row of their own.
+      const [first] = (await sessionsRef?.activeSessionIds()) ?? [];
+      return first ? `session:${first}` : null;
     },
     volumeLock,
     log: (line) => console.warn(line),

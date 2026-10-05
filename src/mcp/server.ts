@@ -1245,7 +1245,7 @@ export function createMcpToolHandlers(
 
     // -- Phase 14 slice 5: remote media generation (PHASE_14_PLAN.md §2.7) ---------------------------------------------------------
     // Every tool asserts the caller's channelId is the active/bound channel first; a session/job of another channel is reported as
-    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Settings → Media).
+    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Production → Sessions).
 
     async agentListMediaTemplates(input: unknown): Promise<ToolResponse> {
       const parsedInput = agentListMediaTemplatesInputSchema.safeParse(input);
@@ -1300,9 +1300,10 @@ export function createMcpToolHandlers(
         const credentialRef = await resolveCredentialRef(undefined);
         await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
         const limits = await mediaGenerationCore.getLimits();
-        // The open session is disclosed only when it belongs to this channel; its existence still counts (one per device).
-        const openSession = limits.openSession && limits.openSession.channelId === parsedInput.data.channelId ? limits.openSession : null;
-        return toolSuccessResult({ ...limits, openSession, deviceHasOpenSession: limits.openSession !== null });
+        // Agent API 3.4.0 (slice 6, concurrent sessions): only THIS channel's open sessions are disclosed; another channel's
+        // count only in the device-wide numbers (activeSessionCount against maxConcurrentSessions, deviceHasOpenSession).
+        const openSessions = limits.openSessions.filter((s) => s.channelId === parsedInput.data.channelId);
+        return toolSuccessResult({ ...limits, openSessions, openSession: openSessions[0] ?? null, deviceHasOpenSession: limits.openSessions.length > 0 });
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -2979,13 +2980,13 @@ export function createMcpServer(
   );
 
   // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7): remote media generation on RunPod/ComfyUI. The agent requests a
-  // SESSION (one GPU pod with caps), a human approves it in Settings → Media, then the agent submits JOBS freely until the session is
+  // SESSION (one GPU pod with caps), a human approves it in Production → Sessions, then the agent submits JOBS freely until the session is
   // stopped (idle / minutes / USD cap / human). No tool here can approve, start or stop a session.
   registerTool(
     "agent_list_media_templates",
     {
       description:
-        "Phase 14: the ComfyUI workflow templates the operator imported (Settings -> Media), each with its declared parameters -- the only values a job may set: { name, type: string|text|number|integer|boolean|enum, required, default, min, max, enum, description } -- plus outputNodeIds (the Save nodes whose files become the job's outputs) and version. Templates are technical graphs; the prompt text and every creative choice are YOUR job parameters. Local read only. Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: the ComfyUI workflow templates the operator imported (Production -> Workflow templates), each with its declared parameters -- the only values a job may set: { name, type: string|text|number|integer|boolean|enum, required, default, min, max, enum, description } -- plus outputNodeIds (the Save nodes whose files become the job's outputs) and version. Templates are technical graphs; the prompt text and every creative choice are YOUR job parameters. Local read only. Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentListMediaTemplatesInputSchema,
     },
     (args) => handlers.agentListMediaTemplates(args)
@@ -2995,7 +2996,7 @@ export function createMcpServer(
     "agent_request_media_session",
     {
       description:
-        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Settings -> Media; you can neither approve, start nor stop it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. At most ONE session (pending/approved/starting/running/stopping) exists per device: media_session_conflict means another is open (possibly another channel's -- see agent_get_media_limits.deviceHasOpenSession). Errors: media_generation_not_configured (the operator has not finished Settings -> Media), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Production -> Sessions; you can neither approve, start nor stop it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Production -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentRequestMediaSessionInputSchema,
     },
     (args) => handlers.agentRequestMediaSession(args)
@@ -3015,7 +3016,7 @@ export function createMcpServer(
     "agent_get_media_limits",
     {
       description:
-        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> Media), openSession (this channel's open session, if any) and deviceHasOpenSession (true when ANY channel's session is open -- a new request would be refused). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> RunPod / Production -> Setup), openSessions (this channel's non-terminal sessions, oldest first), openSession (the first of them, kept for compatibility), maxConcurrentSessions (how many sessions may hold a pod at once on this device), activeSessionCount (how many do now, any channel) and deviceHasOpenSession (true when ANY channel has a non-terminal session; informational -- it no longer blocks a request). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentGetMediaLimitsInputSchema,
     },
     (args) => handlers.agentGetMediaLimits(args)

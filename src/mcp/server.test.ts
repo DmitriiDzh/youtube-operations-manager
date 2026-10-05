@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.3.0"); // 3.2.0 (collection requests, ADR 0021) + MINOR: the seven media_generation capabilities (Phase 14 slice 5)
+  assert.equal(payload.agentApiVersion, "3.4.0"); // 3.2.0 (collection requests, ADR 0021) + MINOR: the seven media_generation capabilities (Phase 14 slice 5); 3.4.0 MINOR: agent_get_media_limits adds openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -5963,7 +5963,7 @@ function makeMediaHandlers(options: { channelOfSession?: string; channelOfJob?: 
       calls.push({ method: "listSessions", input: { limit, channelId } });
       return [session, { ...session, sessionId: "ms-other", channelId: "UC_other" }].filter((s) => !channelId || s.channelId === channelId);
     },
-    getLimits: async () => ({ maxUsdPerDay: 10, spentTodayUsd: 1, remainingTodayUsd: 9, defaultMaxMinutes: 60, idleMinutes: 10, watchIntervalSeconds: 60, openSession: { ...session, channelId: "UC_other" }, ready: true, missing: [] }),
+    getLimits: async () => ({ maxUsdPerDay: 10, spentTodayUsd: 1, remainingTodayUsd: 9, defaultMaxMinutes: 60, idleMinutes: 10, watchIntervalSeconds: 60, openSessions: [{ ...session, channelId: "UC_other" }, { ...session, sessionId: "ms-mine", channelId: "UC_1" }], openSession: { ...session, channelId: "UC_other" }, maxConcurrentSessions: 3, activeSessionCount: 2, ready: true, missing: [] }),
     listWorkflowTemplates: async () => [{ templateId: "t1", name: "txt2img" }],
     createJob: async (input: unknown) => {
       calls.push({ method: "createJob", input });
@@ -6050,11 +6050,16 @@ test("MCP agent_get_media_session / agent_get_media_job: another channel's sessi
   assert.deepEqual(mine.calls.at(-1), { method: "listJobs", input: { channelId: "UC_1", sessionId: "ms-1" } });
 });
 
-test("MCP agent_get_media_limits hides another channel's open session but reports deviceHasOpenSession", async () => {
+// Agent API 3.4.0 (slice 6, PHASE_14_PLAN.md §5.2): several sessions may be open; only the caller's channel's are disclosed.
+test("MCP agent_get_media_limits discloses only this channel's open sessions; other channels count only in the device-wide numbers", async () => {
   const { handlers } = makeMediaHandlers();
   const limits = parseToolJson(await handlers.agentGetMediaLimits({ channelId: "UC_1" }));
-  assert.equal(limits.openSession, null);
+  assert.deepEqual((limits.openSessions as Array<{ sessionId: string }>).map((s) => s.sessionId), ["ms-mine"]);
+  assert.equal((limits.openSession as { sessionId: string }).sessionId, "ms-mine");
+  assert.ok(!JSON.stringify(limits).includes("UC_other"), "another channel's session is never disclosed");
   assert.equal(limits.deviceHasOpenSession, true);
+  assert.equal(limits.maxConcurrentSessions, 3);
+  assert.equal(limits.activeSessionCount, 2);
   assert.equal(limits.remainingTodayUsd, 9);
 });
 

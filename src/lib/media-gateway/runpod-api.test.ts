@@ -287,3 +287,46 @@ test("slice 0: toPod reads container uptime from runtime -- null while RUNNING w
   assert.equal(up.containerUptimeSec, 26);
   assert.equal(up.ports?.[0].private, 8189);
 });
+
+// -- slice 6: account balance (AC-P14-25; PHASE_14_PLAN.md §5.2) --------------------------------------
+// Expected shapes from the live slice-0/slice-6 probes (2026-10-05): GraphQL `myself { clientBalance currentSpendPerHr
+// spendLimit }`; v2 `/billing/pods` and `/billing/networkvolumes` with `metadata.totals.totalAmount`.
+
+test("AC-P14-25: the balance comes from RunPod's GraphQL API with the same bearer key, sent nowhere but api.runpod.io", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { data: { myself: { clientBalance: 12.72, currentSpendPerHr: 0.005, spendLimit: 80 } } } }));
+  const client = createRunpodApiClient({ apiKey: "rpa_secret", fetchImpl, authorize: noAuth });
+  assert.deepEqual(await client.getAccountBalance(), { source: "graphql", balanceUsd: 12.72, spendPerHrUsd: 0.005, spendLimitUsd: 80 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.runpod.io/graphql");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer rpa_secret");
+  assert.ok(!String(calls[0].init.body).includes("rpa_secret"), "the key travels only in the header");
+  assert.match(String(calls[0].init.body), /clientBalance/);
+});
+
+test("AC-P14-25: when GraphQL fails (HTTP error or GraphQL errors), the panel degrades to the v2 billing spend, saying why", async () => {
+  for (const graphqlAnswer of [{ status: 500, body: { message: "down" } }, { status: 200, body: { errors: [{ message: "Field 'myself' is not authorized" }] } }]) {
+    const { fetchImpl, calls } = fakeFetch((call) => {
+      if (call.url.endsWith("/graphql")) return graphqlAnswer;
+      if (call.url.includes("/billing/pods")) return { status: 200, body: { metadata: { query: { startTime: "2026-09-05T00:00:00Z", endTime: "2026-10-06T00:00:00Z" }, totals: { totalAmount: 0.25 } }, records: [] } };
+      if (call.url.includes("/billing/networkvolumes")) return { status: 200, body: { metadata: { totals: { totalAmount: 3.5 } }, records: [] } };
+      return { status: 404 };
+    });
+    const client = createRunpodApiClient({ apiKey: "k", fetchImpl, authorize: noAuth });
+    const balance = await client.getAccountBalance();
+    assert.equal(balance.source, "billing");
+    if (balance.source !== "billing") continue;
+    assert.equal(balance.balanceUsd, null);
+    assert.equal(balance.podsUsd, 0.25);
+    assert.equal(balance.networkVolumesUsd, 3.5);
+    assert.equal(balance.spentUsd, 3.75);
+    assert.equal(balance.from, "2026-09-05T00:00:00Z");
+    assert.ok(balance.balanceError.length > 0);
+    assert.ok(calls.every((c) => c.url.startsWith("https://api.runpod.io/")));
+  }
+});
+
+test("AC-P14-25: a rejected key is not degraded -- it is media_credentials_invalid like every other call", async () => {
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401 })).fetchImpl });
+  await assert.rejects(client.getAccountBalance(), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
+});

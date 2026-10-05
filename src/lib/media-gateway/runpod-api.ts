@@ -12,6 +12,19 @@ import { asNumber, asRecord, asString } from "./json";
 // ---------------------------------------------------------------------------
 
 export const RUNPOD_API_BASE_URL = "https://api.runpod.io/v2";
+/**
+ * RunPod's legacy GraphQL API -- the ONLY place the account balance is exposed (REST v2 has no balance endpoint;
+ * confirmed live in slice 0, 2026-10-05). Same Bearer key, same host; used for that one read only (slice 6).
+ */
+export const RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql";
+
+/**
+ * The account balance (slice 6, AC-P14-25). `graphql`: the live balance from the legacy API. `billing`: GraphQL failed,
+ * so the v2 billing history's spend over its default window (pods + network volumes) stands in -- no balance figure.
+ */
+export type RunpodAccountBalance =
+  | { source: "graphql"; balanceUsd: number; spendPerHrUsd: number | null; spendLimitUsd: number | null }
+  | { source: "billing"; balanceUsd: null; spentUsd: number; podsUsd: number; networkVolumesUsd: number; from: string | null; to: string | null; balanceError: string };
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export type RunpodGpuType = {
@@ -202,8 +215,10 @@ export function createRunpodApiClient(args: {
   fetchImpl?: Fetch;
   authorize?: Authorize;
   baseUrl?: string;
+  graphqlUrl?: string;
 }) {
   const fetchImpl = args.fetchImpl ?? fetch;
+  const graphqlUrl = args.graphqlUrl ?? RUNPOD_GRAPHQL_URL;
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = (args.baseUrl ?? RUNPOD_API_BASE_URL).replace(/\/$/, "");
 
@@ -250,7 +265,54 @@ export function createRunpodApiClient(args: {
     return { status: response.status, body: parsed };
   }
 
+  /** The one legacy-GraphQL read (balance). Errors arrive as HTTP 200 + `errors[]` too; both become DomainErrors. */
+  async function graphql(query: string): Promise<Record<string, unknown>> {
+    await authorize("runpod_api");
+    const response = await jsonRequest({
+      fetchImpl,
+      url: graphqlUrl,
+      method: "POST",
+      headers: { authorization: `Bearer ${args.apiKey}`, accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ query }),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      unavailable: (stage, detail, status) =>
+        new DomainError({ code: "runpod_api_unavailable", message: `RunPod GraphQL ${stage === "request" ? "request failed" : "response could not be read"}: ${detail}`, details: { path: "graphql", ...(status !== undefined ? { status } : {}) } }),
+    });
+    if (response.status === 401) throw new DomainError({ code: "media_credentials_invalid", message: "RunPod rejected the API key (HTTP 401).", details: { path: "graphql", status: 401 } });
+    const body = asRecord(response.body);
+    const errors = Array.isArray(body.errors) ? body.errors.map((e) => asString(asRecord(e).message) ?? "error").join("; ") : null;
+    if (!response.ok || errors) {
+      throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod GraphQL returned ${response.ok ? "errors" : `HTTP ${response.status}`}${errors ? `: ${errors}` : ""}.`, details: { path: "graphql", status: response.status } });
+    }
+    return asRecord(body.data);
+  }
+
   return {
+    /**
+     * Slice 6 (AC-P14-25): the account balance from the legacy GraphQL API; when that fails for any reason (a key without
+     * GraphQL scope, the legacy API retired, a timeout), the v2 billing history's spend instead, tagged `billing`. A bad
+     * key (401) is not degraded: it is the same answer every other call would give.
+     */
+    async getAccountBalance(): Promise<RunpodAccountBalance> {
+      let balanceError: string;
+      try {
+        const myself = asRecord((await graphql("query { myself { clientBalance currentSpendPerHr spendLimit } }")).myself);
+        const balanceUsd = asNumber(myself.clientBalance);
+        if (balanceUsd === null) throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod GraphQL answered without myself.clientBalance." });
+        return { source: "graphql", balanceUsd, spendPerHrUsd: asNumber(myself.currentSpendPerHr), spendLimitUsd: asNumber(myself.spendLimit) };
+      } catch (error) {
+        if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
+        if (error instanceof DomainError && error.code === "media_gateway_disabled") throw error;
+        balanceError = error instanceof Error ? error.message : String(error);
+      }
+      const [pods, volumes] = await Promise.all([request("GET", "/billing/pods?bucketSize=day"), request("GET", "/billing/networkvolumes?bucketSize=day")]);
+      const total = (body: unknown) => asNumber(asRecord(asRecord(asRecord(body).metadata).totals).totalAmount) ?? 0;
+      const query = asRecord(asRecord(asRecord(pods.body).metadata).query);
+      const podsUsd = total(pods.body);
+      const networkVolumesUsd = total(volumes.body);
+      return { source: "billing", balanceUsd: null, spentUsd: podsUsd + networkVolumesUsd, podsUsd, networkVolumesUsd, from: asString(query.startTime), to: asString(query.endTime), balanceError };
+    },
+
     /** One authenticated read with no side effect: 200 = the key works. */
     async verifyKey(): Promise<{ ok: true }> {
       // A read in the scope the app actually needs (pods), so a Restricted key for pods + storage -- what the Settings help

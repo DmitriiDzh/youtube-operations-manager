@@ -1,5 +1,5 @@
 import { decryptSecret, encryptSecret, type EncryptedPayload } from "@/lib/shared-crypto";
-import type { CreatePodInput, RunpodApiClient, RunpodDataCenter, RunpodGpuType, RunpodNetworkVolume, RunpodPod, RunpodS3Client, RunpodS3Config } from "@/lib/media-gateway";
+import type { CreatePodInput, RunpodAccountBalance, RunpodApiClient, RunpodDataCenter, RunpodGpuType, RunpodNetworkVolume, RunpodPod, RunpodS3Client, RunpodS3Config } from "@/lib/media-gateway";
 import { comfyUiProxyBaseUrl } from "@/lib/media-gateway";
 import {
   COMFY_PROXY_PORT,
@@ -154,7 +154,7 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       throw new DomainError({
         code: "media_generation_not_configured",
         message: !row
-          ? "No RunPod credentials are configured on this device (Settings → Media → Credentials)."
+          ? "No RunPod credentials are configured on this device (Settings → RunPod)."
           : "The stored RunPod credentials cannot be read on this device: the key file is missing. Enter the credentials again.",
       });
     }
@@ -403,6 +403,11 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     async listGpuTypes(): Promise<RunpodGpuType[]> {
       const settings = await readSettings();
       return (await runpodClient()).listGpuTypes({ cloud: settings.cloudType });
+    },
+
+    /** Slice 6 (AC-P14-25): the account balance (legacy GraphQL), or the v2 billing spend when that read fails. */
+    async getAccountBalance(): Promise<RunpodAccountBalance> {
+      return (await runpodClient()).getAccountBalance();
     },
 
     async listDataCenters(): Promise<RunpodDataCenter[]> {

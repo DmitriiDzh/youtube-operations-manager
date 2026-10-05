@@ -83,7 +83,7 @@ export const HELP = [
   "  status                                  credentials status, settings, readiness (never a secret)",
   "  credentials-test                        one RunPod read (+ one S3 listing when configured)",
   "  credentials-clear                       remove the stored credentials (and this device's key file only when it is unreadable -- the reset for a corrupt key file)",
-  "  settings                                the stored Settings → Media values",
+  "  settings                                the stored Production → Setup values",
   "  gpus | cpus | datacenters | volumes | templates | pods",
   "  sessions                                recent generation sessions + limits (approve/stop are Web-only)",
   "  workflow-templates | workflow-template-import --file <template.json>   {name, workflow, parameters}",

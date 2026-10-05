@@ -8,7 +8,7 @@ import test from "node:test";
 // `market-research-request-approval-inventory.test.ts`: none of these symbols may appear in the
 // agent-facing MCP server, the operator CLI, or the agent-operations module.
 
-const FENCED_SYMBOLS = ["approveAndStartSession", "stopSession", "rejectSession", "stopForShutdown", "bootSweep", "watchTick"];
+const FENCED_SYMBOLS = ["approveSession", "approveAndStartSession", "stopSession", "rejectSession", "stopForShutdown", "bootSweep", "watchTick"];
 const FENCED_DIRS = [path.join("src", "mcp"), path.join("src", "cli"), path.join("src", "lib", "agent-operations")];
 
 async function listFiles(dir: string): Promise<string[]> {

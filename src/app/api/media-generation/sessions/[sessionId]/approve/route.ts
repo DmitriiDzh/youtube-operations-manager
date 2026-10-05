@@ -1,33 +1,19 @@
 import { NextResponse } from "next/server";
-import { getOperationRegistry, isOperationAlreadyRunning, runTrackedOperation, type OperationRegistry } from "@/lib/operation-progress";
 import { defaultMediaRouteDeps, mediaParamsHandler, type MediaRouteDeps } from "../../../shared";
-
-export const MEDIA_SESSION_START_OPERATION_KIND = "media_session_start";
 
 // Web-UI ONLY -- the one way a generation session is approved and its pod started (no MCP tool or CLI
 // command reaches the underlying action; fenced by session-approval-inventory.test.ts). The caller's
-// session user is recorded as the approver and the request BLOCKS behind the shared progress pop-up
-// until ComfyUI answers (or the start fails and the pod is terminated).
-export function createSessionApproveHandler(deps: MediaRouteDeps = defaultMediaRouteDeps(), registry: OperationRegistry = getOperationRegistry()) {
+// session user is recorded as the approver.
+//
+// Slice 6 (owner, 2026-10-05: no blocking pop-up, several sessions at once -- AC-P14-24): the preconditions and
+// the `pending -> approved` step run in this request, which answers at once with the `approved` session; the pod
+// start continues in the background and its progress and outcome are read from the session row (Production →
+// Sessions polls it). A failure of the start lands on the row (`failed`/`stopping` + error), never only in a log.
+export function createSessionApproveHandler(deps: MediaRouteDeps = defaultMediaRouteDeps(), log: (line: string) => void = (line) => console.warn(line)) {
   return mediaParamsHandler<{ sessionId: string }>(deps, async ({ core, params, userId }) => {
-    try {
-      const current = await core.getSession({ sessionId: params.sessionId });
-      const result = await runTrackedOperation({
-        registry,
-        kind: MEDIA_SESSION_START_OPERATION_KIND,
-        channelId: current.channelId,
-        title: "Starting a generation session",
-        cancellable: false,
-        work: (progress) => core.approveAndStartSession({ sessionId: params.sessionId, approvedByUserId: userId, onStage: (text) => progress.stage(text) }),
-        messageFor: (s) => `Pod ${s.podId} is running (${s.costPerHr ?? "?"} $/h)`,
-      });
-      return NextResponse.json({ session: result });
-    } catch (error) {
-      if (isOperationAlreadyRunning(error)) {
-        return NextResponse.json({ error: "operation_already_running", message: error.message, details: { operationId: error.operationId } }, { status: 409 });
-      }
-      throw error;
-    }
+    const { session, started } = await core.approveSession({ sessionId: params.sessionId, approvedByUserId: userId });
+    void started.catch((error: unknown) => log(`[media] session ${params.sessionId} start failed: ${error instanceof Error ? error.message : String(error)}`));
+    return NextResponse.json({ session }, { status: 202 });
   });
 }
 

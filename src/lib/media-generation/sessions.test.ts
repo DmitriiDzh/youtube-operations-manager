@@ -6,9 +6,12 @@ import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./con
 import { createMediaSessionServices, type MediaSessionStore, type StoredSessionRow } from "./sessions";
 import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
 
-/** A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). */
-function testLock(opts: { heldBy?: string } = {}) {
-  const store = createMemoryVolumeLockStore();
+/**
+ * A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). Slice 6:
+ * `activeSessions` is the database's "no active session" guard on an exclusive insert.
+ */
+function testLock(opts: { heldBy?: string; activeSessions?: () => number } = {}) {
+  const store = createMemoryVolumeLockStore({ activeSessions: opts.activeSessions });
   if (opts.heldBy) void store.tryAcquire(opts.heldBy, new Date(0)); // an old, active holder
   return { lock: createVolumeLock({ store, isHolderActive: async () => true }), store };
 }
@@ -33,12 +36,13 @@ const READY_SETTINGS: MediaSettings = {
 
 const TERMINAL = new Set(["done", "failed", "rejected", "interrupted"]);
 
-function memorySessionStore() {
+const ACTIVE = new Set(["approved", "starting", "running", "stopping"]);
+
+/** `lockHeld` stands in for the approve UPDATE's "no exclusive volume-lock row" guard (slice 6). */
+function memorySessionStore(opts: { lockHeld?: () => boolean } = {}) {
   const rows = new Map<string, StoredSessionRow>();
   const store: MediaSessionStore = {
     async insert(row) {
-      const open = [...rows.values()].find((r) => !TERMINAL.has(r.status));
-      if (open) return null; // the UNIQUE(open_slot) index
       const stored = { ...row, createdAt: row.createdAt ?? new Date() };
       rows.set(row.id, stored);
       return stored;
@@ -46,8 +50,17 @@ function memorySessionStore() {
     async get(id) {
       return rows.get(id) ?? null;
     },
-    async getOpen() {
-      return [...rows.values()].find((r) => !TERMINAL.has(r.status)) ?? null;
+    async listOpen() {
+      return [...rows.values()].filter((r) => !TERMINAL.has(r.status));
+    },
+    async approve(id, set, maxActive) {
+      const row = rows.get(id);
+      if (!row || row.status !== "pending") return null;
+      if ([...rows.values()].filter((r) => ACTIVE.has(r.status)).length >= maxActive) return null;
+      if (opts.lockHeld?.()) return null;
+      const next = { ...row, ...set, status: "approved" as const };
+      rows.set(id, next);
+      return next;
     },
     async list(limit, channelId) {
       return [...rows.values()].filter((r) => !channelId || r.channelId === channelId).slice(-limit).reverse();
@@ -162,11 +175,14 @@ function fixture(opts: {
   const settings = { ...READY_SETTINGS, ...opts.settings };
   const runpod = opts.runpod ?? fakeRunpod();
   const comfy = opts.comfy ?? fakeComfy();
-  const mem = memorySessionStore();
+  // The two stores see each other the way the two guarded SQL statements do (slice 6).
+  let lockStore: ReturnType<typeof createMemoryVolumeLockStore> | null = null;
+  const mem = memorySessionStore({ lockHeld: () => lockStore?.current() != null });
   let now = opts.now ?? new Date("2026-10-05T10:00:00Z");
   const missing = opts.ready === false ? ["network volume"] : [];
   let idCounter = 0;
-  const lock = testLock();
+  const lock = testLock({ activeSessions: () => [...mem.rows.values()].filter((r) => ACTIVE.has(r.status)).length });
+  lockStore = lock.store;
   const services = createMediaSessionServices({
     store: mem.store,
     base: {
@@ -188,7 +204,25 @@ function fixture(opts: {
     timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
     volumeLock: lock.lock,
   });
-  return { services, mem, runpod, comfy, lock: lock.store, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
+  /** AC-P14-18 observed directly: can a model pull take the volume right now? (It takes and gives back a probe lock.) */
+  const pullCanTakeVolume = async (): Promise<boolean> => {
+    try {
+      await lock.lock.acquire("pull:probe");
+    } catch {
+      return false;
+    }
+    await lock.lock.release("pull:probe");
+    return true;
+  };
+  return { services, mem, runpod, comfy, lock: lock.store, volumeLock: lock.lock, pullCanTakeVolume, settings, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
+}
+
+/**
+ * Slice 6: `watchTick` returns one result per open session (concurrent sessions, owner 2026-10-05). The tests written
+ * for a single session read that one result; with no open session there is none ("none", as before).
+ */
+async function tick1(services: { watchTick(): Promise<Array<{ action: string; sessionId: string | null; reason: string | null }>> }) {
+  return (await services.watchTick())[0] ?? { action: "none", sessionId: null, reason: null };
 }
 
 const operatorRequest = { channelId: "UC1", requestedBy: "operator" as const };
@@ -222,15 +256,113 @@ test("a request is refused when the feature is not ready or the GPU price is unk
 
 // -- AC-P14-05 -------------------------------------------------------------------------------------
 
-test("AC-P14-05: a second request while one is pending/running is rejected with media_session_conflict and creates no row", async () => {
-  const { services, mem } = fixture();
-  await services.requestSession(operatorRequest);
-  await assert.rejects(services.requestSession(operatorRequest), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
-  assert.equal(mem.rows.size, 1);
-  const first = [...mem.rows.keys()][0];
-  await services.approveAndStartSession({ sessionId: first, approvedByUserId: "u1" });
-  await assert.rejects(services.requestSession(operatorRequest), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
-  assert.equal(mem.rows.size, 1);
+// AC-P14-05 ("one non-terminal session per device") was superseded by the owner on 2026-10-05 (Telegram msgs 1549/1551/
+// 1553, PHASE_14_PLAN.md §5.2): agents may request several sessions at once; the bound moved to approve
+// (`maxConcurrentSessions`, AC-P14-22). The old test asserted the request-time conflict the requirement no longer has.
+test("AC-P14-22: several requests may be pending at once; approves pass up to maxConcurrentSessions, the next is media_session_conflict with no pod", async () => {
+  const f = fixture({ settings: { maxConcurrentSessions: 2, maxUsdPerDay: 100 } });
+  const a = await f.services.requestSession(operatorRequest);
+  const b = await f.services.requestSession({ ...operatorRequest, channelId: "UC2" });
+  const c = await f.services.requestSession(operatorRequest);
+  assert.equal(f.mem.rows.size, 3);
+  assert.equal((await f.services.approveAndStartSession({ sessionId: a.sessionId })).status, "running");
+  assert.equal((await f.services.approveAndStartSession({ sessionId: b.sessionId })).status, "running");
+  const podsBefore = f.runpod.calls.filter((c) => c === "createPod").length;
+  await assert.rejects(
+    f.services.approveAndStartSession({ sessionId: c.sessionId }),
+    (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /2 of 2 concurrent sessions/.test(e.message)
+  );
+  assert.equal(f.mem.rows.get(c.sessionId)!.status, "pending");
+  assert.equal(f.runpod.calls.filter((c) => c === "createPod").length, podsBefore, "no pod for the refused approve");
+  const limits = await f.services.getLimits();
+  assert.equal(limits.maxConcurrentSessions, 2);
+  assert.equal(limits.activeSessionCount, 2);
+  assert.deepEqual(limits.openSessions.map((s) => s.sessionId), [a.sessionId, b.sessionId, c.sessionId]);
+  assert.equal(limits.openSession?.sessionId, a.sessionId);
+  // A finished session frees its place.
+  await f.services.stopSession({ sessionId: a.sessionId });
+  assert.equal((await f.services.approveAndStartSession({ sessionId: c.sessionId })).status, "running");
+});
+
+test("AC-P14-22: two approves racing for the last place -- exactly one wins, the other is refused and creates no pod", async () => {
+  const f = fixture({ settings: { maxConcurrentSessions: 1, maxUsdPerDay: 100 } });
+  const a = await f.services.requestSession(operatorRequest);
+  const b = await f.services.requestSession(operatorRequest);
+  const [ra, rb] = await Promise.allSettled([f.services.approveSession({ sessionId: a.sessionId }), f.services.approveSession({ sessionId: b.sessionId })]);
+  const won = [ra, rb].filter((r) => r.status === "fulfilled");
+  assert.equal(won.length, 1);
+  const lost = [ra, rb].find((r) => r.status === "rejected") as PromiseRejectedResult;
+  assert.ok(isDomainError(lost.reason) && lost.reason.code === "media_session_conflict");
+  await (won[0] as PromiseFulfilledResult<{ started: Promise<unknown> }>).value.started;
+  assert.equal(f.runpod.calls.filter((c) => c === "createPod").length, 1);
+});
+
+test("AC-P14-24: approveSession returns at once with status approved; the start continues in the background and its failure lands on the row", async () => {
+  const ok = fixture({ runpod: fakeRunpod({ runningAfterPolls: 3 }) });
+  const requested = await ok.services.requestSession(operatorRequest);
+  const { session, started } = await ok.services.approveSession({ sessionId: requested.sessionId, approvedByUserId: "u1" });
+  assert.equal(session.status, "approved");
+  assert.equal((await started).status, "running");
+  assert.equal(ok.mem.rows.get(requested.sessionId)!.status, "running");
+
+  const failing = fixture({ runpod: fakeRunpod({ createFails: true }) });
+  const r2 = await failing.services.requestSession(operatorRequest);
+  const approved = await failing.services.approveSession({ sessionId: r2.sessionId });
+  assert.equal(approved.session.status, "approved");
+  await assert.rejects(approved.started, (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = failing.mem.rows.get(r2.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /pod creation failed/);
+});
+
+test("§5.2 daily cap with concurrent sessions: spent + what the other active sessions may still spend + this estimate must fit", async () => {
+  // 0.6 $/h × 60 min = $0.60 estimate each, cap $1.50, a few seconds of live spend (rounds to $0.00):
+  //   first:  0 spent + 0 reserved    + 0.60 = 0.60 ≤ 1.50 -> approved
+  //   second: 0 spent + 0.60 reserved + 0.60 = 1.20 ≤ 1.50 -> approved
+  //   third:  0 spent + 1.20 reserved + 0.60 = 1.80 > 1.50 -> media_daily_cap_reached
+  const f = fixture({ settings: { maxConcurrentSessions: 4, maxUsdPerDay: 1.5 } });
+  const a = await f.services.requestSession(operatorRequest);
+  const b = await f.services.requestSession(operatorRequest);
+  const c = await f.services.requestSession(operatorRequest);
+  await f.services.approveAndStartSession({ sessionId: a.sessionId });
+  await f.services.approveAndStartSession({ sessionId: b.sessionId });
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: c.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_daily_cap_reached" && /reserved by the other active sessions/.test(e.message));
+  assert.equal(f.mem.rows.get(c.sessionId)!.status, "pending");
+});
+
+test("AC-P14-23: a model pull cannot take the volume while any session is active, and can once none is", async () => {
+  const f = fixture({ settings: { maxConcurrentSessions: 2, maxUsdPerDay: 100 } });
+  const a = await startRunning(f);
+  const b = await startRunning(f);
+  assert.equal(await f.pullCanTakeVolume(), false);
+  await f.services.stopSession({ sessionId: a.sessionId });
+  assert.equal(await f.pullCanTakeVolume(), false, "one session still active");
+  await f.services.stopSession({ sessionId: b.sessionId });
+  assert.equal(await f.pullCanTakeVolume(), true);
+});
+
+test("slice 6: the watcher, boot sweep and shutdown act on EVERY open session", async () => {
+  const f = fixture({ settings: { maxConcurrentSessions: 3, maxUsdPerDay: 100, idleMinutes: 10 } });
+  const a = await startRunning(f, { maxMinutes: 600 });
+  const b = await startRunning(f, { maxMinutes: 600 });
+  const pending = await f.services.requestSession(operatorRequest);
+  f.advance(11 * 60_000);
+  const ticks = await f.services.watchTick();
+  assert.deepEqual(ticks.map((t) => [t.sessionId, t.action]), [[a.sessionId, "stopped"], [b.sessionId, "stopped"], [pending.sessionId, "none"]]);
+  assert.equal(await f.services.hasOpenPod(), false);
+
+  const g = fixture({ settings: { maxConcurrentSessions: 3, maxUsdPerDay: 100 } });
+  const c = await startRunning(g);
+  const d = await startRunning(g);
+  assert.equal(await g.services.hasOpenPod(), true);
+  assert.deepEqual((await g.services.stopForShutdown()).stopped.sort(), [c.sessionId, d.sessionId].sort());
+
+  const h = fixture({ settings: { maxConcurrentSessions: 3, maxUsdPerDay: 100 } });
+  const e1 = await startRunning(h);
+  const e2 = await startRunning(h);
+  assert.deepEqual((await h.services.bootSweep()).swept, [e1.sessionId, e2.sessionId]);
+  assert.equal(h.mem.rows.get(e1.sessionId)!.status, "interrupted");
+  assert.equal(h.mem.rows.get(e2.sessionId)!.status, "interrupted");
 });
 
 // -- AC-P14-04 / start -----------------------------------------------------------------------------
@@ -326,12 +458,12 @@ test("AC-P14-06: the watcher terminates on idle ≥ idleMinutes; activity restar
   const f = fixture({ settings: { idleMinutes: 10 } });
   const running = await startRunning(f, { maxMinutes: 600 });
   f.advance(9 * 60_000);
-  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal((await tick1(f.services)).action, "none");
   await f.services.touchActivity(running.sessionId);
   f.advance(9 * 60_000);
-  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal((await tick1(f.services)).action, "none");
   f.advance(2 * 60_000);
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "stopped");
   assert.match(tick.reason ?? "", /idle/);
   const row = f.mem.rows.get(running.sessionId)!;
@@ -343,9 +475,9 @@ test("AC-P14-06: the watcher terminates at maxMinutes and at maxUsd", async () =
   const byMinutes = fixture({ settings: { idleMinutes: 1000 } });
   const a = await startRunning(byMinutes, { maxMinutes: 30 });
   byMinutes.advance(29 * 60_000);
-  assert.equal((await byMinutes.services.watchTick()).action, "none");
+  assert.equal((await tick1(byMinutes.services)).action, "none");
   byMinutes.advance(2 * 60_000);
-  const tickA = await byMinutes.services.watchTick();
+  const tickA = await tick1(byMinutes.services);
   assert.equal(tickA.action, "stopped");
   assert.match(tickA.reason ?? "", /max minutes/);
   assert.equal(byMinutes.mem.rows.get(a.sessionId)!.status, "done");
@@ -354,9 +486,9 @@ test("AC-P14-06: the watcher terminates at maxMinutes and at maxUsd", async () =
   const b = await startRunning(byUsd, { maxMinutes: 600, maxUsd: 0.5 });
   // 0.69 $/h: $0.5 is reached after ~43.5 min.
   byUsd.advance(40 * 60_000);
-  assert.equal((await byUsd.services.watchTick()).action, "none");
+  assert.equal((await tick1(byUsd.services)).action, "none");
   byUsd.advance(5 * 60_000);
-  const tickB = await byUsd.services.watchTick();
+  const tickB = await tick1(byUsd.services);
   assert.equal(tickB.action, "stopped");
   assert.match(tickB.reason ?? "", /max USD/);
   assert.equal(byUsd.mem.rows.get(b.sessionId)!.status, "done");
@@ -383,7 +515,7 @@ test("AC-P14-07: a pod found EXITED is terminated and the session marked interru
   const exited = fixture();
   const a = await startRunning(exited);
   exited.runpod.setStatus("pod1", "EXITED");
-  const tickA = await exited.services.watchTick();
+  const tickA = await tick1(exited.services);
   assert.equal(tickA.action, "interrupted");
   assert.equal(exited.mem.rows.get(a.sessionId)!.status, "interrupted");
   assert.ok(exited.runpod.calls.includes("terminate:pod1"));
@@ -392,7 +524,7 @@ test("AC-P14-07: a pod found EXITED is terminated and the session marked interru
   const gone = fixture();
   const b = await startRunning(gone);
   gone.runpod.pods.delete("pod1");
-  const tickB = await gone.services.watchTick();
+  const tickB = await tick1(gone.services);
   assert.equal(tickB.action, "interrupted");
   assert.equal(gone.mem.rows.get(b.sessionId)!.status, "interrupted");
 });
@@ -402,13 +534,13 @@ test("AC-P14-07: when the API cannot confirm termination the session stays stopp
   const f = fixture({ runpod, settings: { idleMinutes: 1 } });
   const running = await startRunning(f, { maxMinutes: 600 });
   f.advance(2 * 60_000);
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "retried_stop");
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "stopping");
   assert.equal((await f.services.getLimits()).openSession?.status, "stopping");
   // Later the pod really goes away.
   f.runpod.pods.delete("pod1");
-  const retry = await f.services.watchTick();
+  const retry = await tick1(f.services);
   assert.equal(retry.action, "stopped");
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
 });
@@ -434,14 +566,15 @@ test("AC-P14-08: the boot sweep terminates a pod left by a dead process and mark
 test("AC-P14-09: shutdown terminates the running pod first (bounded) and never throws", async () => {
   const f = fixture();
   const running = await startRunning(f);
-  assert.deepEqual(await f.services.stopForShutdown(), { stopped: running.sessionId });
+  // Slice 6: `stopped` lists every session whose termination was confirmed (several may run at once).
+  assert.deepEqual(await f.services.stopForShutdown(), { stopped: [running.sessionId] });
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
   assert.equal(f.mem.rows.get(running.sessionId)!.stopReason, "application shutdown");
-  assert.deepEqual(await f.services.stopForShutdown(), { stopped: null });
+  assert.deepEqual(await f.services.stopForShutdown(), { stopped: [] });
 
   const sticky = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
   const s = await startRunning(sticky);
-  assert.deepEqual(await sticky.services.stopForShutdown(), { stopped: null });
+  assert.deepEqual(await sticky.services.stopForShutdown(), { stopped: [] });
   assert.equal(sticky.mem.rows.get(s.sessionId)!.status, "stopping");
 });
 
@@ -503,9 +636,9 @@ test("review: the watcher terminates a running session once the day's total spen
   const f = fixture({ settings: { maxUsdPerDay: 0.42, idleMinutes: 1000 } });
   const running = await startRunning(f, { maxMinutes: 40 });
   f.advance(35 * 60_000); // 0.69 $/h × 35 min ≈ $0.40 < $0.42
-  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal((await tick1(f.services)).action, "none");
   f.advance(3 * 60_000); // ≈ $0.44 ≥ $0.42, still under maxMinutes (40)
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "stopped");
   assert.match(tick.reason ?? "", /daily cap/);
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
@@ -546,7 +679,7 @@ test("review: when termination cannot be confirmed after a failed start, the ses
   assert.equal(row.podId, "pod1");
   assert.equal((await f.services.getLimits()).openSession?.status, "stopping");
   f.runpod.pods.delete("pod1");
-  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal((await tick1(f.services)).action, "stopped");
   // Review round 6: AC-P14-07 says a start that fails ends the session `failed` -- the earlier expectation of `done`
   // here described the defect (a retried stop defaulting to `done`), not the requirement.
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "failed");
@@ -587,7 +720,7 @@ test("review 2: the boot sweep never frees the slot while the pod's termination 
   assert.equal(row.podId, "pod1");
   assert.equal((await f.services.getLimits()).openSession?.sessionId, running.sessionId);
   f.runpod.pods.delete("pod1");
-  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal((await tick1(f.services)).action, "stopped");
   // Review round 6: AC-P14-08 says a session reconciled by the boot sweep is `interrupted`; the earlier `done` here
   // was the defect (the retry lost the sweep's outcome), not the requirement.
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "interrupted");
@@ -707,12 +840,12 @@ test("review 6: a session left `starting` by an approve request that died is rec
   f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "starting", podId: "pod1", approvedAt: f.getNow(), startedAt: f.getNow(), costPerHr: 0.69 });
   // Inside the start budget (60 s) + stop budget (20 s) + grace (300 s, review round 9) the approve may still be running: hands off.
   f.advance(370_000);
-  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal((await tick1(f.services)).action, "none");
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "starting");
   assert.ok(f.runpod.pods.has("pod1"));
   // Past it, the pod can only be an orphan.
   f.advance(20_000);
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "stopped");
   assert.match(tick.reason ?? "", /start abandoned/);
   const row = f.mem.rows.get(requested.sessionId)!;
@@ -742,11 +875,11 @@ test("review 6: an `approved` row without podId is never moved to `stopping` whi
   assert.equal(await f.services.hasOpenPod(), true, "the slot stays taken while a pod may bill");
   // A watcher tick with RunPod still down (and the row already abandoned by age): still deferred, nothing finished.
   f.advance(10 * 60_000);
-  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal((await tick1(f.services)).action, "none");
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "approved");
   // RunPod is back: the pod is found by name, terminated, the cost recorded.
   (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = listPods;
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "stopped");
   row = f.mem.rows.get(requested.sessionId)!;
   assert.equal(row.status, "failed");
@@ -762,7 +895,7 @@ test("review 6: a stop retried from `stopping` finishes with the outcome it was 
   await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }));
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "stopping");
   f.runpod.pods.delete("pod1");
-  await f.services.watchTick();
+  await tick1(f.services);
   const aborted = f.mem.rows.get(requested.sessionId)!;
   assert.equal(aborted.status, "failed");
   assert.match(aborted.stopReason ?? "", /start failed/);
@@ -772,7 +905,7 @@ test("review 6: a stop retried from `stopping` finishes with the outcome it was 
   const g = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
   const running = await startRunning(g, { maxMinutes: 600, maxUsd: 0.05 });
   g.advance(10 * 60_000); // 600 s × 0.69 / 3600 = 0.115 ≥ 0.05
-  assert.equal((await g.services.watchTick()).action, "retried_stop");
+  assert.equal((await tick1(g.services)).action, "retried_stop");
   assert.equal(g.mem.rows.get(running.sessionId)!.status, "stopping");
   g.runpod.pods.delete("pod1");
   await g.services.bootSweep();
@@ -785,10 +918,10 @@ test("review 6: a pod found EXITED whose termination cannot be confirmed keeps t
   const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
   const running = await startRunning(f);
   f.runpod.setStatus("pod1", "EXITED");
-  assert.equal((await f.services.watchTick()).action, "retried_stop");
+  assert.equal((await tick1(f.services)).action, "retried_stop");
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "stopping");
   f.runpod.pods.delete("pod1");
-  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal((await tick1(f.services)).action, "stopped");
   assert.equal(f.mem.rows.get(running.sessionId)!.status, "interrupted");
 });
 
@@ -814,7 +947,7 @@ test("review 7: a pod found ALREADY gone at the boot sweep is billed until the a
   const started = f.mem.rows.get(running.sessionId)!.startedAt!.getTime();
   assert.equal(f.getNow().getTime(), started + 5_000);
   f.advance(5 * 60_000);
-  assert.equal((await f.services.watchTick()).action, "none"); // the watcher sees the pod alive at T0+5s+5min
+  assert.equal((await tick1(f.services)).action, "none"); // the watcher sees the pod alive at T0+5s+5min
   assert.equal(f.mem.rows.get(running.sessionId)!.lastSeenAliveAt?.getTime(), started + 305_000);
   // The process dies; the operator kills the pod by hand a minute later; the server comes back 6 hours on.
   f.runpod.pods.delete("pod1");
@@ -839,16 +972,16 @@ test("review 7: the watcher's 'pod disappeared' closes the window at the previou
   const f = fixture();
   const running = await startRunning(f);
   f.advance(60_000);
-  await f.services.watchTick(); // seen alive at startedAt + 5 s (start poll) + 60 s
+  await tick1(f.services); // seen alive at startedAt + 5 s (start poll) + 60 s
   f.runpod.pods.delete("pod1");
   f.advance(30 * 60_000);
-  assert.equal((await f.services.watchTick()).action, "interrupted");
+  assert.equal((await tick1(f.services)).action, "interrupted");
   assert.equal(f.mem.rows.get(running.sessionId)!.secondsUsed, 65);
 
   const g = fixture();
   const stopped = await startRunning(g);
   g.advance(120_000);
-  await g.services.watchTick();
+  await tick1(g.services);
   g.runpod.pods.delete("pod1");
   g.advance(10 * 60_000);
   const s = await g.services.stopSession({ sessionId: stopped.sessionId, reason: "stopped by operator" });
@@ -858,37 +991,39 @@ test("review 7: the watcher's 'pod disappeared' closes the window at the previou
 
 // -- review round 8 (2026-10-05) ------------------------------------------------------------------
 
-test("review 8/9 (AC-P14-18 as a constraint): the session holds the volume lock from its `approved` write until it is terminal, on every exit path", async () => {
+// Slice 6: a session holds the volume by being active (shared), no longer by a lock row of its own; the assertions now
+// observe the requirement itself (AC-P14-18: can a model pull take the volume?) instead of the row's owner.
+test("review 8/9 (AC-P14-18 as a constraint): the session holds the volume from its `approved` write until it is terminal, on every exit path", async () => {
   // Running session: held; after the watcher stops it: released.
   const f = fixture();
   const running = await startRunning(f);
-  assert.equal(f.lock.current(), `session:${running.sessionId}`);
+  assert.equal(await f.pullCanTakeVolume(), false);
   await f.services.stopSession({ sessionId: running.sessionId });
-  assert.equal(f.lock.current(), null);
+  assert.equal(await f.pullCanTakeVolume(), true);
 
   // A failed start (pod creation refused) releases it; a start whose pod lingers keeps it until the retry confirms.
   const g = fixture({ runpod: fakeRunpod({ createFails: true }) });
   const r1 = await g.services.requestSession(operatorRequest);
   await assert.rejects(g.services.approveAndStartSession({ sessionId: r1.sessionId }));
-  assert.equal(g.lock.current(), null);
+  assert.equal(await g.pullCanTakeVolume(), true);
   const h = fixture({ runpod: fakeRunpod({ terminateSticks: true }), comfy: fakeComfy({ never: true }) });
   const r2 = await h.services.requestSession(operatorRequest);
   await assert.rejects(h.services.approveAndStartSession({ sessionId: r2.sessionId }));
   assert.equal(h.mem.rows.get(r2.sessionId)!.status, "stopping");
-  assert.equal(h.lock.current(), `session:${r2.sessionId}`, "the pod may still write the volume");
+  assert.equal(await h.pullCanTakeVolume(), false, "the pod may still write the volume");
   h.runpod.pods.delete("pod1");
-  await h.services.watchTick();
-  assert.equal(h.lock.current(), null);
+  await tick1(h.services);
+  assert.equal(await h.pullCanTakeVolume(), true);
 
   // The boot sweep's terminal write releases it too; a rejected pending request never held it.
   const i = fixture();
   const swept = await startRunning(i);
   await i.services.bootSweep();
   assert.equal(i.mem.rows.get(swept.sessionId)!.status, "interrupted");
-  assert.equal(i.lock.current(), null);
+  assert.equal(await i.pullCanTakeVolume(), true);
   const pending = await i.services.requestSession(operatorRequest);
   await i.services.rejectSession({ sessionId: pending.sessionId, reason: "no" });
-  assert.equal(i.lock.current(), null);
+  assert.equal(await i.pullCanTakeVolume(), true);
 });
 
 test("review 9: when createPod fails AND RunPod cannot be asked whether the pod exists, the session stays `approved` (slot and volume lock kept) and the watcher's later name search settles it -- never a freed slot on a guess", async () => {
@@ -910,18 +1045,18 @@ test("review 9: when createPod fails AND RunPod cannot be asked whether the pod 
   assert.equal(row.status, "approved");
   assert.equal(row.podId, null);
   assert.match(row.error ?? "", /could not be asked whether the pod exists/);
-  assert.equal(f.lock.current(), `session:${requested.sessionId}`);
+  assert.equal(await f.pullCanTakeVolume(), false);
   assert.equal((await f.services.getLimits()).openSession?.sessionId, requested.sessionId, "the slot is NOT freed");
   // Later, RunPod answers: the watcher's abandoned-start path finds the pod by name and terminates it.
   listPodsDown = false;
   f.advance(10 * 60_000);
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "stopped");
   row = f.mem.rows.get(requested.sessionId)!;
   assert.equal(row.status, "failed");
   assert.equal(row.podId, "pod9");
   assert.equal(f.runpod.pods.has("pod9"), false);
-  assert.equal(f.lock.current(), null);
+  assert.equal(await f.pullCanTakeVolume(), true);
 });
 
 // -- review round 11 (2026-10-05) -----------------------------------------------------------------
@@ -1062,16 +1197,17 @@ test("review 15: a concurrent second approve of the same session that loses the 
   const f = fixture({ runpod: fakeRunpod({ runningAfterPolls: 3 }) });
   const requested = await f.services.requestSession(operatorRequest);
   // Make the first approve's `approved` write slow enough for a second approve to get past the preconditions.
-  const originalTransition = f.mem.store.transition.bind(f.mem.store);
+  // Slice 6: the `approved` write is the store's guarded `approve`.
+  const originalApprove = f.mem.store.approve.bind(f.mem.store);
   let firstApprovedWrite: Promise<unknown> | null = null;
   let release: () => void = () => undefined;
   const gate = new Promise<void>((r) => (release = r));
-  (f.mem.store as { transition: typeof originalTransition }).transition = async (id, from, set) => {
-    if (set.status === "approved" && firstApprovedWrite === null) {
+  (f.mem.store as { approve: typeof originalApprove }).approve = async (id, set, max) => {
+    if (firstApprovedWrite === null) {
       firstApprovedWrite = gate;
       await gate;
     }
-    return originalTransition(id, from, set);
+    return originalApprove(id, set, max);
   };
   const first = f.services.approveAndStartSession({ sessionId: requested.sessionId });
   await new Promise((r) => setTimeout(r, 0));
@@ -1082,7 +1218,7 @@ test("review 15: a concurrent second approve of the same session that loses the 
   const winner = a.status === "fulfilled" ? a : b;
   assert.equal(winner.status, "fulfilled");
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "running");
-  assert.equal(f.lock.current(), `session:${requested.sessionId}`, "the running session still holds the volume");
+  assert.equal(await f.pullCanTakeVolume(), false, "the running session still holds the volume");
 });
 
 test("review 15: Stop on an `approved` row is refused while its approve request may still be inside createPod (no error on the row, not yet abandoned by age)", async () => {
@@ -1144,7 +1280,7 @@ test("review 17: one transient RunPod failure during the readiness wait is toler
   assert.equal(row.status, "stopping");
   assert.equal(row.podId, "pod1");
   (flaky.client as unknown as { getPod: (id: string) => Promise<unknown> }).getPod = async () => null;
-  assert.equal((await g.services.watchTick()).action, "stopped");
+  assert.equal((await tick1(g.services)).action, "stopped");
   assert.equal(g.mem.rows.get(requested.sessionId)!.status, "failed");
 });
 
@@ -1171,7 +1307,7 @@ test("review 18: a pod the watcher cannot GET is terminated through DELETE-then-
   const original = f.runpod.client.getPod.bind(f.runpod.client);
   let lies = 1;
   (f.runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => (lies-- > 0 ? null : original(id));
-  const tick = await f.services.watchTick();
+  const tick = await tick1(f.services);
   assert.equal(tick.action, "interrupted");
   assert.ok(f.runpod.calls.includes("terminate:pod1"), "DELETE was sent");
   assert.equal(f.runpod.pods.has("pod1"), false, "the live pod was really terminated, not left billing");
@@ -1205,7 +1341,7 @@ test("review 18: an abandoned `approved` row with an adopted orphan pod is `stop
   assert.equal(row.podId, "pod7");
   assert.ok(row.startedAt && Number.isFinite(row.startedAt.getTime()), "a bad createdAt fell back to a real timestamp");
   f.runpod.pods.delete("pod7");
-  await f.services.watchTick();
+  await tick1(f.services);
   const done = f.mem.rows.get(requested.sessionId)!;
   assert.equal(done.status, "failed");
   assert.ok(Number.isFinite(done.usdCharged ?? NaN) && Number.isFinite(done.secondsUsed ?? NaN), "never NaN");
@@ -1217,7 +1353,7 @@ test("review 19: a stop whose DELETE went through but whose confirm failed is bi
   const f = fixture();
   const running = await startRunning(f);
   f.advance(60_000);
-  await f.services.watchTick(); // seen alive at +65 s
+  await tick1(f.services); // seen alive at +65 s
   f.advance(10 * 60_000); // the stop is pressed 10 min later
   // DELETE succeeds, the confirm GET throws once (RunPod 502).
   const originalGet = f.runpod.client.getPod.bind(f.runpod.client);
@@ -1235,7 +1371,7 @@ test("review 19: a stop whose DELETE went through but whose confirm failed is bi
   assert.equal(stopping.status, "stopping");
   assert.equal(stopping.terminateSentAt?.getTime(), deleteAt.getTime());
   f.advance(2 * 60_000); // the watcher retries two minutes later; the pod is gone (our DELETE did it)
-  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal((await tick1(f.services)).action, "stopped");
   const done = f.mem.rows.get(running.sessionId)!;
   assert.equal(done.status, "done");
   assert.equal(done.stoppedAt?.getTime(), deleteAt.getTime(), "billed to our DELETE");
@@ -1271,7 +1407,7 @@ test("review 20: the boot sweep's DELETE is recorded (terminateSentAt), so a ret
   const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
   const running = await startRunning(f);
   f.advance(60_000);
-  await f.services.watchTick(); // last sighting before the crash: +65 s
+  await tick1(f.services); // last sighting before the crash: +65 s
   f.advance(4 * 60 * 60_000); // the process was dead for four hours; the pod ran the whole time
   const rebootDelete = f.getNow();
   await f.services.bootSweep(); // DELETE goes through, confirm does not (the container lingers)
@@ -1280,7 +1416,7 @@ test("review 20: the boot sweep's DELETE is recorded (terminateSentAt), so a ret
   assert.equal(stopping.terminateSentAt?.getTime(), rebootDelete.getTime());
   f.runpod.pods.delete("pod1"); // gone by the next tick (our DELETE did it)
   f.advance(60_000);
-  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal((await tick1(f.services)).action, "stopped");
   const done = f.mem.rows.get(running.sessionId)!;
   assert.equal(done.status, "interrupted");
   assert.equal(done.secondsUsed, 5 + 60 + 4 * 3600, "billed to the reboot DELETE, four hours included");
@@ -1296,7 +1432,7 @@ test("review 20: a watcher stop that races an operator Stop never relabels the o
   assert.equal(first.stoppingOutcome, "done");
   // The watcher, which had read the row as running a moment earlier, now finds the pod gone and runs ITS stop.
   f.runpod.pods.delete("pod1");
-  await f.services.watchTick();
+  await tick1(f.services);
   const done = f.mem.rows.get(running.sessionId)!;
   assert.equal(done.status, "done");
   assert.equal(done.stopReason, "stopped by operator");
@@ -1309,7 +1445,7 @@ test("review 21: the boot sweep honors a DELETE an earlier attempt recorded (ter
   const f = fixture();
   const running = await startRunning(f);
   f.advance(60_000);
-  await f.services.watchTick(); // seen alive at +65 s
+  await tick1(f.services); // seen alive at +65 s
   f.advance(30_000);
   const deletedAt = f.getNow();
   // An earlier attempt's DELETE went through (recorded) and the process died before any terminal write; the pod is gone.

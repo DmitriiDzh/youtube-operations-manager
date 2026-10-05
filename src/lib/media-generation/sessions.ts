@@ -3,6 +3,7 @@ import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gate
 import {
   COMFY_PROXY_PORT,
   DomainError,
+  MEDIA_SESSION_ACTIVE_STATUSES,
   MEDIA_SESSION_NON_TERMINAL_STATUSES,
   type MediaSession,
   type MediaSessionLimits,
@@ -10,7 +11,7 @@ import {
   type MediaSettings,
 } from "./contracts";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
-import type { VolumeLock } from "./volume-lock";
+import { describeVolumeLockHolder, type VolumeLock } from "./volume-lock";
 import { round2 } from "@/lib/shared-money";
 import { parseWithSchema, rejectSessionInputSchema, requestSessionInputSchema, sessionIdInputSchema, stopSessionInputSchema } from "./schemas";
 
@@ -65,10 +66,16 @@ export type StoppingOutcome = "done" | "failed" | "interrupted";
 export type SessionPatch = Partial<Omit<StoredSessionRow, "id" | "status">> & { status: MediaSessionStatus };
 
 export type MediaSessionStore = {
-  /** `null` = the device's single open slot is taken (AC-P14-05). */
-  insert(row: Omit<StoredSessionRow, "createdAt"> & { createdAt?: Date }): Promise<StoredSessionRow | null>;
+  /** Slice 6: never refused -- concurrent sessions are bounded at approve (`approve`), not at request. */
+  insert(row: Omit<StoredSessionRow, "createdAt"> & { createdAt?: Date }): Promise<StoredSessionRow>;
   get(id: string): Promise<StoredSessionRow | null>;
-  getOpen(): Promise<StoredSessionRow | null>;
+  /** Every non-terminal session (pending included), oldest first. */
+  listOpen(): Promise<StoredSessionRow[]>;
+  /**
+   * `pending -> approved` as ONE atomic step guarded by "fewer than `maxActive` sessions hold a pod" and "no exclusive
+   * volume-lock row" (AC-P14-22/23). `null` = a guard or the row's status refused; nothing changed.
+   */
+  approve(id: string, set: Omit<SessionPatch, "status">, maxActive: number): Promise<StoredSessionRow | null>;
   /** Newest first; `channelId` filters in the query itself (never a post-filter of a capped page). */
   list(limit: number, channelId?: string): Promise<StoredSessionRow[]>;
   /** Sessions with a pod that bills in the window: `startedAt` set and (`stoppedAt` null, or `startedAt` ≥ since, or `stoppedAt` ≥ since). */
@@ -98,8 +105,9 @@ export type SessionServiceDependencies = {
   /** Start: pod creation -> ComfyUI answering. Stop: terminate -> confirmed gone. */
   timeouts?: { startMs?: number; pollMs?: number; stopMs?: number };
   /**
-   * AC-P14-18 as a constraint (review round 9, `volume-lock.ts`): the session holds the one "volume busy" lock
-   * from its `approved` write until it is terminal, so a model pull cannot write the volume meanwhile.
+   * AC-P14-18 as a constraint (review round 9; shared/exclusive since slice 6, `volume-lock.ts`): an active session
+   * holds the volume SHARED by being an active row; a model pull's or operator pod's EXCLUSIVE row blocks the approve
+   * (store.approve's guard), and a crash-stale row is cleared first (`activeHolder`).
    */
   volumeLock: VolumeLock;
   log?: (line: string) => void;
@@ -118,6 +126,10 @@ const DEFAULT_STOP_TIMEOUT_MS = 90_000;
 const ABANDONED_START_GRACE_MS = 5 * 60_000;
 /** Consecutive RunPod failures tolerated while waiting for a new pod (the same tolerance the job poller has). */
 const MAX_START_POLL_FAILURES = 5;
+
+const isActive = (row: StoredSessionRow) => (MEDIA_SESSION_ACTIVE_STATUSES as readonly MediaSessionStatus[]).includes(row.status);
+
+export type WatchTickResult = { action: "none" | "stopped" | "interrupted" | "retried_stop"; sessionId: string | null; reason: string | null };
 
 /** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
 export function podNameFor(sessionId: string): string {
@@ -251,8 +263,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       error: extra.error ?? null,
       ...facts,
     });
-    // Terminal = the volume is free again. (A crash between these two writes leaves a lock whose holder is terminal;
-    // the next acquire sees that and steals it.)
+    // Since slice 6 a session holds the volume by being active, so becoming terminal frees its share. A `session:` lock
+    // row can exist only as a leftover of a pre-slice-6 build; release it if it is this session's.
     if (terminal) await deps.volumeLock.release(`session:${row.id}`);
     return terminal;
   }
@@ -413,7 +425,272 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     return "reconciled";
   }
 
-  return {
+  /**
+   * The background half of an approve: pending -> approved happened; from here approved -> starting (pod created,
+   * `startedAt` = now, which is when RunPod starts billing) -> running once ComfyUI answers behind the token proxy. A
+   * failure after the pod exists terminates it and ends the session `failed` (AC-P14-07).
+   */
+  async function startApproved(approved: StoredSessionRow, settings: MediaSettings, client: RunpodApiClient, token: string, onStage: (text: string) => void): Promise<MediaSession> {
+    const sessionId = approved.id;
+    onStage("Creating the pod");
+    let pod: RunpodPod;
+    const startedAt = deps.clock.now();
+    try {
+      pod = await client.createPod({
+        name: podNameFor(sessionId),
+        templateId: settings.templateId ?? undefined,
+        gpu: { id: settings.gpuTypeId as string, count: 1 },
+        cloud: settings.cloudType,
+        dataCenterId: settings.datacenterId ?? undefined,
+        mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
+        ports: [`${COMFY_PROXY_PORT}/http`],
+        env: { COMFY_TOKEN: token },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
+      let orphan: RunpodPod | undefined;
+      try {
+        orphan = await findLivePodByName(client, podNameFor(sessionId));
+      } catch (lookupError) {
+        // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
+        // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
+        // repeats the name search once RunPod answers (review round 9).
+        const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
+        await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
+        throw new DomainError({
+          code: "media_session_start_failed",
+          message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
+          details: { sessionId, status: "approved" },
+        });
+      }
+      if (!orphan) {
+        await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
+        throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
+      }
+      log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
+      pod = orphan;
+    }
+    // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
+    // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
+    const abortStart = async (lastDetail: string): Promise<MediaSession> => {
+      onStage("Terminating the pod");
+      let terminated: { confirmed: boolean; lastStatus: string | null };
+      try {
+        terminated = await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
+          if (!alreadyGone) await deps.store.transition(sessionId, ["approved", "starting"], { status: (await requireRow(sessionId)).status as "approved" | "starting", podId: pod.id, startedAt, terminateSentAt: at });
+        });
+      } catch (error) {
+        terminated = { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})` };
+      }
+      // An operator Stop (or the watcher/boot sweep) may have taken the row meanwhile: never overwrite its outcome.
+      const latest = await requireRow(sessionId);
+      if (latest.status === "approved" || latest.status === "starting") {
+        // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
+        const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
+        if (terminated.confirmed) {
+          await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` }, podFacts);
+        } else {
+          await deps.store.transition(sessionId, ["approved", "starting"], {
+            status: "stopping",
+            ...podFacts,
+            stopReason: `start failed: ${lastDetail}`,
+            stoppingOutcome: "failed",
+            error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
+          });
+        }
+      }
+      // An operator Stop (or the watcher/boot sweep) ended the session on purpose while it was starting: that is the
+      // session's outcome, not a start failure to report as an error (review round 19).
+      const final = await requireRow(sessionId);
+      if (latest.status !== "approved" && latest.status !== "starting") return toPublicSession(final, deps.clock.now());
+      throw new DomainError({
+        code: "media_session_start_failed",
+        message: `The session could not start: ${lastDetail}.`,
+        details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: final.status },
+      });
+    };
+
+    let comfyUiProxyUrl: string;
+    let starting: StoredSessionRow | null;
+    try {
+      comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
+      starting = await deps.store.transition(sessionId, ["approved"], {
+        status: "starting",
+        podId: pod.id,
+        comfyUiProxyUrl,
+        startedAt,
+        costPerHr: pod.costPerHr ?? approved.costPerHr,
+      });
+    } catch (error) {
+      return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!starting) {
+      // Swept or stopped meanwhile: never leave the pod behind -- and never DISCARD an unconfirmed terminate either
+      // (review round 15): the pod and its cost are written onto whatever row state the other party left, so the
+      // operator's listing shows the pod to terminate by hand.
+      let outcome: TerminateOutcome | null = null;
+      let failure: string | null = null;
+      try {
+        outcome = await terminateAndConfirm(client, pod.id);
+      } catch (cause) {
+        failure = cause instanceof Error ? cause.message : String(cause);
+      }
+      const latest = await requireRow(sessionId);
+      const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
+      if (!outcome?.confirmed) {
+        const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
+        log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
+        await deps.store.transition(sessionId, [latest.status], {
+          status: latest.status,
+          ...facts,
+          error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and its terminate could not be confirmed (${detail}): terminate it by hand (media pod-terminate ${pod.id})`,
+        });
+      } else {
+        // Confirmed gone -- but it billed from `startedAt` until now, on no row so far: record the pod and its cost on
+        // whatever row the other party left, so the daily cap sees the spend (AC-P14-17, review round 19).
+        const stoppedAt = deps.clock.now();
+        const cost = finalCost({ ...latest, ...facts }, stoppedAt);
+        await deps.store.transition(sessionId, [latest.status], {
+          status: latest.status,
+          ...facts,
+          ...(MEDIA_SESSION_NON_TERMINAL_STATUSES.includes(latest.status) ? {} : { stoppedAt, secondsUsed: cost.secondsUsed, usdCharged: cost.usdCharged }),
+          error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and was terminated (${cost.secondsUsed} s billed)`,
+        });
+      }
+      throw invalidState(sessionId, "approved", latest.status);
+    }
+
+    onStage("Waiting for the pod to run");
+    const deadline = startedAt.getTime() + startTimeoutMs;
+    const comfy = deps.createComfyClient({ baseUrl: comfyUiProxyUrl, token });
+    let phase: "pod" | "comfy" = "pod";
+    let lastDetail = "";
+    // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
+    // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
+    let pollFailures = 0;
+    const getPodTolerant = async (): Promise<{ ok: true; pod: RunpodPod | null } | { ok: false }> => {
+      try {
+        const current = await client.getPod(pod.id);
+        pollFailures = 0;
+        return { ok: true, pod: current };
+      } catch (error) {
+        if (++pollFailures >= MAX_START_POLL_FAILURES) throw error;
+        lastDetail = `RunPod unreachable (${pollFailures}×): ${error instanceof Error ? error.message : String(error)}`;
+        return { ok: false };
+      }
+    };
+    const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
+    try {
+      for (;;) {
+        const polled = await getPodTolerant();
+        if (!polled.ok) {
+          if (deps.clock.now().getTime() >= deadline) {
+            lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
+            break;
+          }
+          await deps.sleep(pollMs);
+          continue;
+        }
+        if (phase === "pod") {
+          const current = polled.pod;
+          if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
+            lastDetail = `pod ${current?.status ?? "gone"}`;
+            break;
+          }
+          await seenAlive(); // billed at least until here (AC-P14-17)
+          // RunPod says RUNNING while the image still downloads; the container is up only once `runtime` appears
+          // (slice 0). Until then the honest stage is "downloading the image", and a timeout says the container never started.
+          if (current.status === "RUNNING" && current.containerUptimeSec !== null) {
+            phase = "comfy";
+            onStage("Waiting for ComfyUI to answer");
+          } else if (current.status === "RUNNING") {
+            lastDetail = "the container never started on the host (image download or host problem)";
+            onStage("Downloading the image and starting the container");
+          }
+        } else {
+          // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
+          const current = polled.pod;
+          if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
+            lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
+            break;
+          }
+          await seenAlive();
+          try {
+            await comfy.getSystemStats();
+            const ready = deps.clock.now();
+            const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null });
+            if (!running) {
+              lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
+              break;
+            }
+            return toPublicSession(running, ready);
+          } catch (error) {
+            if (error instanceof DomainError && error.code !== "comfyui_unavailable" && error.code !== "comfyui_rejected") throw error;
+            lastDetail = error instanceof Error ? error.message : String(error);
+          }
+        }
+        if (deps.clock.now().getTime() >= deadline) {
+          lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
+          break;
+        }
+        await deps.sleep(pollMs);
+      }
+    } catch (error) {
+      // A gateway/API failure mid-poll (RunPod 5xx, the toggle switched off, ...): the pod still exists.
+      return abortStart(`${error instanceof Error ? error.message : String(error)}`);
+    }
+    return abortStart(lastDetail);
+  }
+
+  /** One session's watcher step (see `watchTick`). */
+  async function watchOne(open: StoredSessionRow): Promise<WatchTickResult> {
+    const now = deps.clock.now();
+    if (open.status === "stopping") {
+      const stopped = await retryStop(open, "stop retried by watcher", "done");
+      return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason: open.stopReason };
+    }
+    if (open.status === "approved" || open.status === "starting") {
+      if (!isStartAbandoned(open, now)) return { action: "none", sessionId: open.id, reason: null };
+      const since = open.startedAt ?? open.approvedAt ?? open.createdAt;
+      const reason = `start abandoned: still ${open.status} ${Math.round((now.getTime() - since.getTime()) / 60_000)} min after approval (the approving request did not finish)`;
+      const result = await reconcileAbandoned(open, reason, "failed");
+      return { action: result === "reconciled" ? "stopped" : result === "retrying" ? "retried_stop" : "none", sessionId: open.id, reason };
+    }
+    if (open.status !== "running") return { action: "none", sessionId: open.id, reason: null };
+
+    const settings = await deps.base.getSettings();
+    const client = await deps.base.resolveRunpodClient();
+    const pod = open.podId ? await client.getPod(open.podId) : null;
+    if (!pod || pod.status === "TERMINATED") {
+      // Through stopRow (DELETE first, then confirm), never on the strength of one GET: a transient 404 on a live pod would
+      // otherwise free the slot and the lock while the pod keeps billing (review round 18). An already-gone pod is billed
+      // to its last sighting by stopRow's alreadyGone path.
+      const stopped = await stopRow(open, "pod disappeared", "interrupted");
+      return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: "pod disappeared" };
+    }
+    if (pod.status === "EXITED" || pod.status === "ERROR") {
+      // Through stopRow, so an unconfirmed termination keeps the row `stopping` (podId kept) instead of marking it interrupted on trust.
+      const stopped = await stopRow(open, `pod was ${pod.status}; terminated`, "interrupted");
+      return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: `pod ${pod.status}` };
+    }
+    await deps.store.markSeenAlive(open.id, now);
+
+    const minutes = open.startedAt ? (now.getTime() - open.startedAt.getTime()) / 60_000 : 0;
+    const idleMinutes = (now.getTime() - (open.lastActivityAt ?? open.readyAt ?? open.startedAt ?? now).getTime()) / 60_000;
+    const usd = liveUsd(open, now) ?? 0;
+    const spentToday = await spentTodayUsd(now);
+    let reason: string | null = null;
+    if (minutes >= open.maxMinutes) reason = `max minutes reached (${open.maxMinutes})`;
+    else if (open.maxUsd !== null && usd >= open.maxUsd) reason = `max USD reached ($${open.maxUsd})`;
+    else if (spentToday >= settings.maxUsdPerDay) reason = `daily cap reached ($${settings.maxUsdPerDay})`;
+    else if (idleMinutes >= settings.idleMinutes) reason = `idle for ${Math.floor(idleMinutes)} min (limit ${settings.idleMinutes})`;
+    if (!reason) return { action: "none", sessionId: open.id, reason: null };
+    const stopped = await stopRow(open, reason);
+    return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
+  }
+
+  const services = {
     toPublicSession: (row: StoredSessionRow) => toPublicSession(row, deps.clock.now()),
 
     async getSession(input: unknown): Promise<MediaSession> {
@@ -428,7 +705,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
 
     async getLimits(): Promise<MediaSessionLimits> {
       const now = deps.clock.now();
-      const [settings, overview, open, spent] = await Promise.all([deps.base.getSettings(), deps.base.getOverview(), deps.store.getOpen(), spentTodayUsd(now)]);
+      const [settings, overview, open, spent] = await Promise.all([deps.base.getSettings(), deps.base.getOverview(), deps.store.listOpen(), spentTodayUsd(now)]);
+      const openSessions = open.map((row) => toPublicSession(row, now));
       return {
         maxUsdPerDay: settings.maxUsdPerDay,
         spentTodayUsd: spent,
@@ -436,7 +714,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         defaultMaxMinutes: settings.defaultMaxMinutes,
         idleMinutes: settings.idleMinutes,
         watchIntervalSeconds: settings.watchIntervalSeconds,
-        openSession: open ? toPublicSession(open, now) : null,
+        openSessions,
+        openSession: openSessions[0] ?? null,
+        maxConcurrentSessions: settings.maxConcurrentSessions,
+        activeSessionCount: open.filter(isActive).length,
         ready: overview.ready,
         missing: overview.missing,
       };
@@ -445,7 +726,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     /**
      * A pending request with a LOCAL estimate (AC-P14-03): no RunPod call; the GPU price saved with
      * the settings is the input. A request that does not fit today's remaining cap is still created
-     * and flagged. Refused when the feature is not ready or a non-terminal session exists (AC-P14-05).
+     * and flagged. Refused when the feature is not ready. Since slice 6 (owner, 2026-10-05) any number of requests may
+     * be pending; how many may hold a pod at once is bounded at approve (`maxConcurrentSessions`).
      */
     async requestSession(input: unknown): Promise<MediaSession> {
       const parsed = parseWithSchema(requestSessionInputSchema, input, "media session request");
@@ -455,7 +737,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
       }
       if (settings.gpuOnDemandPricePerHr === null) {
-        throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Settings → Media." });
+        throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Production → Setup." });
       }
       const maxMinutes = parsed.maxMinutes ?? settings.defaultMaxMinutes;
       // The upper bound is whichever cap bites first: the minutes at the saved price, or the session's own USD cap.
@@ -496,14 +778,6 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         lastSeenAliveAt: null,
         terminateSentAt: null,
       });
-      if (!row) {
-        const open = await deps.store.getOpen();
-        throw new DomainError({
-          code: "media_session_conflict",
-          message: "Another session is already open on this device; stop or resolve it first.",
-          details: { openSessionId: open?.id ?? null, openStatus: open?.status ?? null },
-        });
-      }
       return toPublicSession(row, now);
     },
 
@@ -516,12 +790,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     },
 
     /**
-     * Web-only (fenced). Preconditions run BEFORE any transition (AC-P14-04); then pending ->
-     * approved -> starting (pod created, `startedAt` = now, which is when RunPod starts billing)
-     * -> running once ComfyUI answers behind the token proxy. A failure after the pod exists
-     * terminates it and ends the session `failed` (AC-P14-07).
+     * Web-only (fenced). Slice 6 (AC-P14-24, owner 2026-10-05: no blocking pop-up): the preconditions run BEFORE any
+     * transition (AC-P14-04), then `pending -> approved` happens synchronously and this returns at once with the
+     * `approved` session; `started` is the start running on in the background (pod created -> ComfyUI answering behind
+     * the token proxy). Every start failure lands on the row (`failed`/`stopping` + error), so a caller that does not
+     * wait for `started` still sees the outcome in the sessions table.
      */
-    async approveAndStartSession(input: { sessionId: unknown; approvedByUserId?: string | null; onStage?: (text: string) => void }): Promise<MediaSession> {
+    async approveSession(input: { sessionId: unknown; approvedByUserId?: string | null; onStage?: (text: string) => void }): Promise<{ session: MediaSession; started: Promise<MediaSession> }> {
       const { sessionId } = parseWithSchema(sessionIdInputSchema, { sessionId: input.sessionId }, "approve session");
       const onStage = input.onStage ?? (() => undefined);
       const row = await requireRow(sessionId);
@@ -533,24 +808,25 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
       }
       const now = deps.clock.now();
-      const spent = await spentTodayUsd(now);
-      // AC-P14-17: the daily total drives the cap -- the session's own upper bound must fit what is left today.
-      if (spent >= settings.maxUsdPerDay || round2(spent + row.estimateUsd) > settings.maxUsdPerDay) {
+      const [spent, open] = await Promise.all([spentTodayUsd(now), deps.store.listOpen()]);
+      // AC-P14-17 with concurrent sessions (§5.2): what is spent today, plus what the OTHER active sessions may still spend
+      // up to their own estimate, plus this session's estimate must fit the daily cap. (Not atomic between two approves --
+      // the watcher stops every session once the day's total reaches the cap; only the concurrency count is atomic.)
+      const reservedUsd = round2(open.filter((r) => r.id !== sessionId && isActive(r)).reduce((sum, r) => sum + Math.max(0, r.estimateUsd - (liveUsd(r, now) ?? 0)), 0));
+      if (spent >= settings.maxUsdPerDay || round2(spent + reservedUsd + row.estimateUsd) > settings.maxUsdPerDay) {
         throw new DomainError({
           code: "media_daily_cap_reached",
-          message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Settings → Media, or wait for tomorrow. The request stays pending.`,
-          details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, estimateUsd: row.estimateUsd },
+          message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
+          details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, reservedUsd, estimateUsd: row.estimateUsd },
         });
       }
-      // (No "another session is open" check here: this row is `pending`, i.e. it holds the device's unique open slot --
-      // `media_sessions_open_slot_idx` is the guarantee, review round 20.)
       // The request's estimate, cap check and record describe the GPU/datacenter saved when it was made; the pod is built
       // from the CURRENT settings. If they diverged, the approval would bill something the record never describes
       // (review round 11): refuse, the requester asks again against the new settings.
       if (row.gpuTypeId !== settings.gpuTypeId || row.datacenterId !== settings.datacenterId || row.costPerHr !== settings.gpuOnDemandPricePerHr) {
         throw new DomainError({
           code: "media_settings_invalid",
-          message: `Settings → Media changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
+          message: `Production → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
           details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
         });
       }
@@ -558,237 +834,39 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const token = deps.generateToken();
       const sealed = await deps.base.sealSecret(token);
 
-      // AC-P14-18 as a constraint: the volume lock is taken BEFORE the `approved` write and held until the session is
-      // terminal; a running model pull holds it, so this throws `media_session_conflict` naming it, and the request
-      // stays pending with nothing changed.
-      const acquisition = await deps.volumeLock.acquire(`session:${sessionId}`);
-      const approved = await deps.store.transition(sessionId, ["pending"], {
-        status: "approved",
-        approvedAt: now,
-        approvedByUserId: input.approvedByUserId ?? null,
-        tokenCiphertext: sealed.ciphertext,
-        tokenIv: sealed.iv,
-        tokenAuthTag: sealed.authTag,
-      });
+      // AC-P14-18: a model pull / operator pod holding the volume exclusively refuses the approve (a crash-stale lock row
+      // is cleared here first, so a dead pull never blocks sessions); the guarded UPDATE re-checks it atomically.
+      const exclusive = await deps.volumeLock.activeHolder();
+      if (exclusive) {
+        throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(exclusive.owner), details: { sessionId, holder: exclusive.owner } });
+      }
+      const approved = await deps.store.approve(
+        sessionId,
+        { approvedAt: now, approvedByUserId: input.approvedByUserId ?? null, tokenCiphertext: sealed.ciphertext, tokenIv: sealed.iv, tokenAuthTag: sealed.authTag },
+        settings.maxConcurrentSessions
+      );
       if (!approved) {
-        // A concurrent approve of the same session won this transition (a retried POST): the lock is now ITS lock,
-        // whichever of the two calls happened to insert the row -- release only when the session is not open under this
-        // owner any more (review round 15).
+        // Say which guard refused: the row moved on (a retried POST / a reject), a lock row appeared, or the limit is full.
         const latest = await requireRow(sessionId);
-        const heldByTheWinner = ["approved", "starting", "running", "stopping"].includes(latest.status);
-        if (!heldByTheWinner && acquisition === "acquired") await deps.volumeLock.release(`session:${sessionId}`);
-        throw invalidState(sessionId, "pending", latest.status);
-      }
-
-      onStage("Creating the pod");
-      let pod: RunpodPod;
-      const startedAt = deps.clock.now();
-      try {
-        pod = await client.createPod({
-          name: podNameFor(sessionId),
-          templateId: settings.templateId ?? undefined,
-          gpu: { id: settings.gpuTypeId as string, count: 1 },
-          cloud: settings.cloudType,
-          dataCenterId: settings.datacenterId ?? undefined,
-          mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
-          ports: [`${COMFY_PROXY_PORT}/http`],
-          env: { COMFY_TOKEN: token },
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
-        let orphan: RunpodPod | undefined;
-        try {
-          orphan = await findLivePodByName(client, podNameFor(sessionId));
-        } catch (lookupError) {
-          // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
-          // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
-          // repeats the name search once RunPod answers (review round 9).
-          const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
-          await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
-          throw new DomainError({
-            code: "media_session_start_failed",
-            message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
-            details: { sessionId, status: "approved" },
-          });
-        }
-        if (!orphan) {
-          await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
-          throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
-        }
-        log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
-        pod = orphan;
-      }
-      // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
-      // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
-      const abortStart = async (lastDetail: string): Promise<MediaSession> => {
-        onStage("Terminating the pod");
-        let terminated: { confirmed: boolean; lastStatus: string | null };
-        try {
-          terminated = await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
-            if (!alreadyGone) await deps.store.transition(sessionId, ["approved", "starting"], { status: (await requireRow(sessionId)).status as "approved" | "starting", podId: pod.id, startedAt, terminateSentAt: at });
-          });
-        } catch (error) {
-          terminated = { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})` };
-        }
-        // An operator Stop (or the watcher/boot sweep) may have taken the row meanwhile: never overwrite its outcome.
-        const latest = await requireRow(sessionId);
-        if (latest.status === "approved" || latest.status === "starting") {
-          // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
-          const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
-          if (terminated.confirmed) {
-            await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` }, podFacts);
-          } else {
-            await deps.store.transition(sessionId, ["approved", "starting"], {
-              status: "stopping",
-              ...podFacts,
-              stopReason: `start failed: ${lastDetail}`,
-              stoppingOutcome: "failed",
-              error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
-            });
-          }
-        }
-        // An operator Stop (or the watcher/boot sweep) ended the session on purpose while it was starting: that is the
-        // session's outcome, not a start failure to report as an error (review round 19).
-        const final = await requireRow(sessionId);
-        if (latest.status !== "approved" && latest.status !== "starting") return toPublicSession(final, deps.clock.now());
+        if (latest.status !== "pending") throw invalidState(sessionId, "pending", latest.status);
+        const holder = await deps.volumeLock.holder();
+        if (holder) throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(holder.owner), details: { sessionId, holder: holder.owner } });
+        const active = (await deps.store.listOpen()).filter(isActive);
         throw new DomainError({
-          code: "media_session_start_failed",
-          message: `The session could not start: ${lastDetail}.`,
-          details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: final.status },
+          code: "media_session_conflict",
+          message: `${active.length} of ${settings.maxConcurrentSessions} concurrent sessions are already active (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
+          details: { sessionId, activeSessions: active.map((r) => r.id), maxConcurrentSessions: settings.maxConcurrentSessions },
         });
-      };
+      }
+      const started = startApproved(approved, settings, client, token, onStage);
+      started.catch(() => undefined); // the outcome is on the row; a caller that ignores `started` must not crash the process
+      return { session: toPublicSession(approved, now), started };
+    },
 
-      let comfyUiProxyUrl: string;
-      let starting: StoredSessionRow | null;
-      try {
-        comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
-        starting = await deps.store.transition(sessionId, ["approved"], {
-          status: "starting",
-          podId: pod.id,
-          comfyUiProxyUrl,
-          startedAt,
-          costPerHr: pod.costPerHr ?? approved.costPerHr,
-        });
-      } catch (error) {
-        return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      if (!starting) {
-        // Swept or stopped meanwhile: never leave the pod behind -- and never DISCARD an unconfirmed terminate either
-        // (review round 15): the pod and its cost are written onto whatever row state the other party left, so the
-        // operator's listing shows the pod to terminate by hand.
-        let outcome: TerminateOutcome | null = null;
-        let failure: string | null = null;
-        try {
-          outcome = await terminateAndConfirm(client, pod.id);
-        } catch (cause) {
-          failure = cause instanceof Error ? cause.message : String(cause);
-        }
-        const latest = await requireRow(sessionId);
-        const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
-        if (!outcome?.confirmed) {
-          const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
-          log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
-          await deps.store.transition(sessionId, [latest.status], {
-            status: latest.status,
-            ...facts,
-            error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and its terminate could not be confirmed (${detail}): terminate it by hand (media pod-terminate ${pod.id})`,
-          });
-        } else {
-          // Confirmed gone -- but it billed from `startedAt` until now, on no row so far: record the pod and its cost on
-          // whatever row the other party left, so the daily cap sees the spend (AC-P14-17, review round 19).
-          const stoppedAt = deps.clock.now();
-          const cost = finalCost({ ...latest, ...facts }, stoppedAt);
-          await deps.store.transition(sessionId, [latest.status], {
-            status: latest.status,
-            ...facts,
-            ...(MEDIA_SESSION_NON_TERMINAL_STATUSES.includes(latest.status) ? {} : { stoppedAt, secondsUsed: cost.secondsUsed, usdCharged: cost.usdCharged }),
-            error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and was terminated (${cost.secondsUsed} s billed)`,
-          });
-        }
-        throw invalidState(sessionId, "approved", latest.status);
-      }
-
-      onStage("Waiting for the pod to run");
-      const deadline = startedAt.getTime() + startTimeoutMs;
-      const comfy = deps.createComfyClient({ baseUrl: comfyUiProxyUrl, token });
-      let phase: "pod" | "comfy" = "pod";
-      let lastDetail = "";
-      // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
-      // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
-      let pollFailures = 0;
-      const getPodTolerant = async (): Promise<{ ok: true; pod: RunpodPod | null } | { ok: false }> => {
-        try {
-          const current = await client.getPod(pod.id);
-          pollFailures = 0;
-          return { ok: true, pod: current };
-        } catch (error) {
-          if (++pollFailures >= MAX_START_POLL_FAILURES) throw error;
-          lastDetail = `RunPod unreachable (${pollFailures}×): ${error instanceof Error ? error.message : String(error)}`;
-          return { ok: false };
-        }
-      };
-      const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
-      try {
-        for (;;) {
-          const polled = await getPodTolerant();
-          if (!polled.ok) {
-            if (deps.clock.now().getTime() >= deadline) {
-              lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
-              break;
-            }
-            await deps.sleep(pollMs);
-            continue;
-          }
-          if (phase === "pod") {
-            const current = polled.pod;
-            if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
-              lastDetail = `pod ${current?.status ?? "gone"}`;
-              break;
-            }
-            await seenAlive(); // billed at least until here (AC-P14-17)
-            // RunPod says RUNNING while the image still downloads; the container is up only once `runtime` appears
-            // (slice 0). Until then the honest stage is "downloading the image", and a timeout says the container never started.
-            if (current.status === "RUNNING" && current.containerUptimeSec !== null) {
-              phase = "comfy";
-              onStage("Waiting for ComfyUI to answer");
-            } else if (current.status === "RUNNING") {
-              lastDetail = "the container never started on the host (image download or host problem)";
-              onStage("Downloading the image and starting the container");
-            }
-          } else {
-            // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
-            const current = polled.pod;
-            if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
-              lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
-              break;
-            }
-            await seenAlive();
-            try {
-              await comfy.getSystemStats();
-              const ready = deps.clock.now();
-              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null });
-              if (!running) {
-                lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
-                break;
-              }
-              return toPublicSession(running, ready);
-            } catch (error) {
-              if (error instanceof DomainError && error.code !== "comfyui_unavailable" && error.code !== "comfyui_rejected") throw error;
-              lastDetail = error instanceof Error ? error.message : String(error);
-            }
-          }
-          if (deps.clock.now().getTime() >= deadline) {
-            lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
-            break;
-          }
-          await deps.sleep(pollMs);
-        }
-      } catch (error) {
-        // A gateway/API failure mid-poll (RunPod 5xx, the toggle switched off, ...): the pod still exists.
-        return abortStart(`${error instanceof Error ? error.message : String(error)}`);
-      }
-      return abortStart(lastDetail);
+    /** Approve and wait for the start to finish (the operator CLI and tests); the Web route uses `approveSession`. */
+    async approveAndStartSession(input: { sessionId: unknown; approvedByUserId?: string | null; onStage?: (text: string) => void }): Promise<MediaSession> {
+      const { started } = await services.approveSession(input);
+      return started;
     },
 
     /** Web-only (fenced): running|starting|stopping -> terminate -> done. */
@@ -837,53 +915,21 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
      * maxUsd -> terminate; a pod found EXITED/gone -> interrupted; a session stuck `stopping` is retried;
      * an `approved`/`starting` row whose approve request died mid-start is reconciled once it is
      * unmistakably abandoned (review round 6 -- before, such a pod billed until a manual restart).
+     *
+     * Slice 6: every open session, one result each (oldest first; a pending row answers "none"). One session's RunPod
+     * failure never skips the others -- it is reported as that session's error and the next tick retries.
      */
-    async watchTick(): Promise<{ action: "none" | "stopped" | "interrupted" | "retried_stop"; sessionId: string | null; reason: string | null }> {
-      const open = await deps.store.getOpen();
-      if (!open) return { action: "none", sessionId: null, reason: null };
-      const now = deps.clock.now();
-      if (open.status === "stopping") {
-        const stopped = await retryStop(open, "stop retried by watcher", "done");
-        return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason: open.stopReason };
+    async watchTick(): Promise<WatchTickResult[]> {
+      const results: WatchTickResult[] = [];
+      for (const open of await deps.store.listOpen()) {
+        try {
+          results.push(await watchOne(open));
+        } catch (cause) {
+          log(`[media] watcher: session ${open.id} failed this tick: ${cause instanceof Error ? cause.message : String(cause)}`);
+          results.push({ action: "none", sessionId: open.id, reason: `watch failed: ${cause instanceof Error ? cause.message : String(cause)}` });
+        }
       }
-      if (open.status === "approved" || open.status === "starting") {
-        if (!isStartAbandoned(open, now)) return { action: "none", sessionId: open.id, reason: null };
-        const since = open.startedAt ?? open.approvedAt ?? open.createdAt;
-        const reason = `start abandoned: still ${open.status} ${Math.round((now.getTime() - since.getTime()) / 60_000)} min after approval (the approving request did not finish)`;
-        const result = await reconcileAbandoned(open, reason, "failed");
-        return { action: result === "reconciled" ? "stopped" : result === "retrying" ? "retried_stop" : "none", sessionId: open.id, reason };
-      }
-      if (open.status !== "running") return { action: "none", sessionId: open.id, reason: null };
-
-      const settings = await deps.base.getSettings();
-      const client = await deps.base.resolveRunpodClient();
-      const pod = open.podId ? await client.getPod(open.podId) : null;
-      if (!pod || pod.status === "TERMINATED") {
-        // Through stopRow (DELETE first, then confirm), never on the strength of one GET: a transient 404 on a live pod would
-        // otherwise free the slot and the lock while the pod keeps billing (review round 18). An already-gone pod is billed
-        // to its last sighting by stopRow's alreadyGone path.
-        const stopped = await stopRow(open, "pod disappeared", "interrupted");
-        return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: "pod disappeared" };
-      }
-      if (pod.status === "EXITED" || pod.status === "ERROR") {
-        // Through stopRow, so an unconfirmed termination keeps the row `stopping` (podId kept) instead of marking it interrupted on trust.
-        const stopped = await stopRow(open, `pod was ${pod.status}; terminated`, "interrupted");
-        return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: `pod ${pod.status}` };
-      }
-      await deps.store.markSeenAlive(open.id, now);
-
-      const minutes = open.startedAt ? (now.getTime() - open.startedAt.getTime()) / 60_000 : 0;
-      const idleMinutes = (now.getTime() - (open.lastActivityAt ?? open.readyAt ?? open.startedAt ?? now).getTime()) / 60_000;
-      const usd = liveUsd(open, now) ?? 0;
-      const spentToday = await spentTodayUsd(now);
-      let reason: string | null = null;
-      if (minutes >= open.maxMinutes) reason = `max minutes reached (${open.maxMinutes})`;
-      else if (open.maxUsd !== null && usd >= open.maxUsd) reason = `max USD reached ($${open.maxUsd})`;
-      else if (spentToday >= settings.maxUsdPerDay) reason = `daily cap reached ($${settings.maxUsdPerDay})`;
-      else if (idleMinutes >= settings.idleMinutes) reason = `idle for ${Math.floor(idleMinutes)} min (limit ${settings.idleMinutes})`;
-      if (!reason) return { action: "none", sessionId: open.id, reason: null };
-      const stopped = await stopRow(open, reason);
-      return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
+      return results;
     },
 
     /**
@@ -893,14 +939,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
      * failure: the row keeps a state the watcher/next boot can still act on.
      */
     async bootSweep(): Promise<{ swept: string[] }> {
-      const open = await deps.store.getOpen();
-      if (!open || open.status === "pending") return { swept: [] };
-      try {
-        await reconcileAbandoned(open, "interrupted by a server restart", "interrupted");
-      } catch (cause) {
-        log(`[media] boot sweep of session ${open.id} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      const swept: string[] = [];
+      for (const open of await deps.store.listOpen()) {
+        if (open.status === "pending") continue;
+        try {
+          await reconcileAbandoned(open, "interrupted by a server restart", "interrupted");
+        } catch (cause) {
+          log(`[media] boot sweep of session ${open.id} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        }
+        swept.push(open.id);
       }
-      return { swept: [open.id] };
+      return { swept };
     },
 
     /**
@@ -909,28 +958,43 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
      */
     async holdsVolumeLock(sessionId: string): Promise<boolean> {
       const row = await deps.store.get(sessionId);
-      return Boolean(row && ["approved", "starting", "running", "stopping"].includes(row.status));
+      return Boolean(row && isActive(row));
     },
 
     /** For the idle auto-shutdown: a pod in flight is work (an MCP-driven session makes no HTTP traffic to this server). */
-    async hasOpenPod(): Promise<boolean> {
-      const open = await deps.store.getOpen();
-      return Boolean(open && ["approved", "starting", "running", "stopping"].includes(open.status));
+    /** Sessions holding a pod right now (slice 6: the shared side of the volume lock). */
+    async activeSessionIds(): Promise<string[]> {
+      return (await deps.store.listOpen()).filter(isActive).map((row) => row.id);
     },
 
-    /** App exit (AC-P14-09): terminate the running pod first, bounded by the stop timeout; never throws. */
-    async stopForShutdown(): Promise<{ stopped: string | null }> {
+    async hasOpenPod(): Promise<boolean> {
+      return (await deps.store.listOpen()).some(isActive);
+    },
+
+    /**
+     * App exit (AC-P14-09): terminate every running pod first, in parallel, each bounded by the stop timeout; never
+     * throws. `stopped` lists the sessions whose termination was confirmed.
+     */
+    async stopForShutdown(): Promise<{ stopped: string[] }> {
+      let open: StoredSessionRow[];
       try {
-        const open = await deps.store.getOpen();
-        if (!open || !["starting", "running", "stopping"].includes(open.status)) return { stopped: null };
-        const stopped = open.status === "stopping" ? await retryStop(open, "application shutdown", "done") : await stopRow(open, "application shutdown");
-        return { stopped: stopped.status === "stopping" ? null : open.id };
+        open = (await deps.store.listOpen()).filter((row) => ["starting", "running", "stopping"].includes(row.status));
       } catch (error) {
         log(`[media] shutdown stop failed: ${error instanceof Error ? error.message : String(error)}`);
-        return { stopped: null };
+        return { stopped: [] };
       }
+      const outcomes = await Promise.allSettled(
+        open.map((row) => (row.status === "stopping" ? retryStop(row, "application shutdown", "done") : stopRow(row, "application shutdown")))
+      );
+      const stopped: string[] = [];
+      outcomes.forEach((outcome, index) => {
+        if (outcome.status === "fulfilled" && outcome.value.status !== "stopping") stopped.push(open[index].id);
+        if (outcome.status === "rejected") log(`[media] shutdown stop of session ${open[index].id} failed: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`);
+      });
+      return { stopped };
     },
   };
+  return services;
 }
 
 export type MediaSessionServices = ReturnType<typeof createMediaSessionServices>;
