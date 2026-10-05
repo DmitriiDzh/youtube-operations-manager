@@ -390,6 +390,9 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
     ["PUT", "/api/settings"],
     ["POST", "/api/agent-tokens"],
     ["POST", "/api/factory-agent-token"],
+    // BL-130 AC-TI-12: importing a token is a registration, not a stop switch.
+    ["POST", "/api/agent-tokens/import"],
+    ["POST", "/api/factory-agent-token/import"],
     ["PUT", "/api/logical-paths/value"],
     ["DELETE", "/api/logical-paths"],
     ["POST", "/api/channel-connections/disconnect/extra"],
