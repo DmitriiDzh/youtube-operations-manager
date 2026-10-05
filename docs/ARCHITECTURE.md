@@ -2416,6 +2416,17 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   body transfers a 30-minute budget (the abort signal also cuts the body stream) and metadata calls 60 s.
   The daily cap's day is the operator machine's local day. Web `POST /sessions` and `POST /jobs` refuse a
   `channelId` that is not a connected channel (AGENTS.md §F); the MCP path asserts the bound channel.
+- **Orphan-proofing (review round 5).** A `createPod` call can fail after RunPod created the pod (timeout,
+  dropped connection): sessions and model pulls both name their pods deterministically
+  (`ytm-media-<session prefix>`, `ytm-models-pull-<pull prefix>`) and look the pod up by name through the
+  cursor-paged `listPods` before concluding "no pod"; the start wait re-checks the pod on every ComfyUI
+  poll so a container that dies while booting aborts within one interval; a pull's pod is confirmed gone
+  before the pull is terminal (the volume stays "busy" until then); a job cancelled while its submit was
+  in flight has its prompt withdrawn (`/queue delete` or `/interrupt`); a `queued` row is swept only
+  after a 5-minute grace period. The janitor deletes BY LEDGER ONLY: a key under `exchange/` goes only
+  when its `media_exchange_files` row says the file is local -- a failed or cancelled job's leftovers,
+  which may be a finished generation nobody recorded, stay for the operator (`scripts/media/s3.sh`).
+  The SIGINT/SIGTERM terminate is best-effort (Next.js owns the exit); the boot sweep is authoritative.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

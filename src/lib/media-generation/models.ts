@@ -15,6 +15,13 @@ import { parseWithSchema } from "./schemas";
 export const MODELS_PREFIX = "models/";
 const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"] as const;
 const DEFAULT_PULL_CAP_MS = 6 * 60 * 60_000;
+const TERMINATE_CONFIRM_MS = 60_000;
+const TERMINATE_POLL_MS = 5_000;
+
+/** Deterministic, so a pod created by a `createPod` call that failed after the fact can still be found. */
+export function pullPodNameFor(pullId: string): string {
+  return `ytm-models-pull-${pullId.slice(0, 8)}`;
+}
 
 export const startModelPullInputSchema = z
   .object({
@@ -59,6 +66,7 @@ export type ModelServiceDependencies = {
   };
   generateId(): string;
   clock: { now(): Date };
+  sleep?(ms: number): Promise<void>;
   pullCapMs?: number;
   /** AC-P14-18 in the other direction: no pull may write to the volume while a GPU pod is open on it. */
   hasOpenPod?: () => Promise<boolean>;
@@ -76,6 +84,7 @@ export function buildPullCommand(repoId: string, file: string, folder: string): 
 
 export function createMediaModelServices(deps: ModelServiceDependencies) {
   const pullCapMs = deps.pullCapMs ?? DEFAULT_PULL_CAP_MS;
+  const sleepFn = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   // The pulls list is one JSON value read-modified-written by several callers in this process (the UI's GET,
   // the watch loop, startPull): every mutation runs through this chain so none is lost.
@@ -118,6 +127,14 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     const client = await deps.base.resolveRunpodClient();
     try {
       await client.terminatePod(pull.podId);
+      // The volume is shared: the pull is over only once RunPod confirms the pod is gone (bounded wait), like sessions do.
+      const deadline = deps.clock.now().getTime() + TERMINATE_CONFIRM_MS;
+      for (;;) {
+        const current = await client.getPod(pull.podId);
+        if (!current || current.status === "TERMINATED") break;
+        if (deps.clock.now().getTime() >= deadline) throw new Error(`pod still ${current.status} after terminate`);
+        await sleepFn(TERMINATE_POLL_MS);
+      }
     } catch (cause) {
       const stillRunning: ModelPull = {
         ...pull,
@@ -207,18 +224,28 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       const client = await deps.base.resolveRunpodClient();
       // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.
       const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${parsed.file}`;
-      const pod = await client.createPod({
-        name: `ytm-models-pull-${deps.generateId().slice(0, 8)}`,
+      const pullId = deps.generateId();
+      const podName = pullPodNameFor(pullId);
+      let pod: { id: string };
+      try {
+        pod = await client.createPod({
+          name: podName,
         image: "python:3.12-slim",
         cpu: { id: parsed.cpuFlavorId ?? "cpu3c", vcpuCount: parsed.vcpuCount ?? 2 },
         cloud: "SECURE",
         dataCenterId: settings.datacenterId,
         mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
-        cmd: ["bash", "-lc", buildPullCommand(parsed.repoId, parsed.file, parsed.folder)],
-        startSsh: false,
-      });
+          cmd: ["bash", "-lc", buildPullCommand(parsed.repoId, parsed.file, parsed.folder)],
+          startSsh: false,
+        });
+      } catch (error) {
+        // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
+        const orphan = (await client.listPods().catch(() => [])).find((p) => p.name === podName && p.status !== "TERMINATED");
+        if (!orphan) throw error;
+        pod = orphan;
+      }
       const pull: ModelPull = {
-        pullId: deps.generateId(),
+        pullId,
         podId: pod.id,
         repoId: parsed.repoId,
         file: parsed.file,

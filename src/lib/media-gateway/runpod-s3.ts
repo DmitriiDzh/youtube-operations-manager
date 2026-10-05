@@ -133,24 +133,25 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
     });
   }
 
+  async function listObjects(args: { prefix?: string; maxKeys?: number; continuationToken?: string } = {}) {
+    const query: Record<string, string> = { "list-type": "2", "max-keys": String(args.maxKeys ?? 1000) };
+    if (args.prefix) query.prefix = args.prefix;
+    if (args.continuationToken) query["continuation-token"] = args.continuationToken;
+    const response = await signedFetch("GET", objectUrl("", query));
+    if (!response.ok) throw failure(response, "GET", args.prefix ?? "");
+    return parseListObjectsXml(await response.text());
+  }
+
   return {
     endpointHost: endpoint.host,
-
-    async listObjects(args: { prefix?: string; maxKeys?: number; continuationToken?: string } = {}) {
-      const query: Record<string, string> = { "list-type": "2", "max-keys": String(args.maxKeys ?? 1000) };
-      if (args.prefix) query.prefix = args.prefix;
-      if (args.continuationToken) query["continuation-token"] = args.continuationToken;
-      const response = await signedFetch("GET", objectUrl("", query));
-      if (!response.ok) throw failure(response, "GET", args.prefix ?? "");
-      return parseListObjectsXml(await response.text());
-    },
+    listObjects,
 
     /** Every object under a prefix, following continuation tokens. */
     async listAllObjects(prefix: string): Promise<S3ObjectSummary[]> {
       const all: S3ObjectSummary[] = [];
       let token: string | undefined;
       do {
-        const page = await this.listObjects({ prefix, continuationToken: token });
+        const page = await listObjects({ prefix, continuationToken: token });
         all.push(...page.objects);
         token = page.isTruncated && page.nextContinuationToken ? page.nextContinuationToken : undefined;
       } while (token);
@@ -223,7 +224,7 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
 
     /** The cheapest authenticated call: one key of the listing. */
     async testAccess(): Promise<{ ok: true }> {
-      await this.listObjects({ maxKeys: 1 });
+      await listObjects({ maxKeys: 1 });
       return { ok: true };
     },
   };

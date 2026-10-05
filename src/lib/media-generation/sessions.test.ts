@@ -629,3 +629,40 @@ test("review 3: a pod created before the `starting` write (process died in betwe
   assert.equal(f.mem.rows.get(requested.sessionId)!.podId, "pod1");
   assert.equal(runpod.pods.has("pod1"), false);
 });
+
+// -- review round 5 (2026-10-05) ------------------------------------------------------------------
+
+test("review 5: a createPod call that fails after RunPod created the pod continues with the pod found by its name (never an orphan)", async () => {
+  const runpod = fakeRunpod();
+  const f = fixture({ runpod });
+  const requested = await f.services.requestSession(operatorRequest);
+  const originalCreate = runpod.client.createPod.bind(runpod.client);
+  (runpod.client as { createPod: (input: unknown) => Promise<unknown> }).createPod = async (input: unknown) => {
+    await originalCreate(input as never); // RunPod did create it...
+    throw new Error("RunPod API request failed: The operation was aborted due to timeout"); // ...but the response was lost
+  };
+  (runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ id: "pod1", name: `ytm-media-${requested.sessionId.slice(0, 8)}`, status: "RUNNING" }];
+  const running = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod1");
+});
+
+test("review 5: a pod that dies while ComfyUI is booting aborts the start within one poll, not after the whole budget", async () => {
+  const runpod = fakeRunpod();
+  const comfy = fakeComfy({ never: true });
+  const f = fixture({ runpod, comfy });
+  const requested = await f.services.requestSession(operatorRequest);
+  const original = runpod.client.getPod.bind(runpod.client);
+  let polls = 0;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    polls++;
+    if (polls === 3) runpod.setStatus("pod1", "ERROR");
+    return original(id);
+  };
+  const before = f.getNow().getTime();
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  assert.ok(f.getNow().getTime() - before < 60_000, "aborted well before the 60 s test budget");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /pod ERROR while waiting for ComfyUI/);
+});

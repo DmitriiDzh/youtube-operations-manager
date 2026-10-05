@@ -176,15 +176,17 @@ function fixtureWithFlakyTerminate() {
   const objects = new Map<string, number>();
   let json: string | null = null;
   let terminateFailures = 1;
+  let gone = false;
   const client = {
     async createPod() {
       return { id: "cpupod1", status: "RUNNING", costPerHr: 0.08 };
     },
     async getPod(id: string) {
-      return { id, status: "RUNNING" };
+      return gone ? null : { id, status: "RUNNING" };
     },
     async terminatePod() {
       if (terminateFailures-- > 0) throw new Error("RunPod API returned HTTP 502");
+      gone = true;
       return { terminated: true, alreadyGone: false };
     },
   } as unknown as RunpodApiClient;
@@ -245,4 +247,72 @@ test("review 3: a pull is refused while a GPU session is open on the volume", as
 test("review 4: the Hugging Face CLI's .cache litter is not listed as a model", async () => {
   const f = fixture({ objects: new Map([["models/checkpoints/a.safetensors", 100], ["models/checkpoints/.cache/huggingface/download/a.safetensors.metadata", 1], ["models/checkpoints/.cache/huggingface/download/a.safetensors.incomplete", 50]]) });
   assert.deepEqual((await f.services.listModels()).map((m) => m.key), ["models/checkpoints/a.safetensors"]);
+});
+
+// -- review round 5 (2026-10-05) ------------------------------------------------------------------
+
+test("review 5: a pull is terminal only once RunPod confirms the pod is gone; a pod that lingers keeps the pull running (volume still busy)", async () => {
+  const objects = new Map<string, number>([["models/vae/c.bin", 5]]);
+  let json: string | null = null;
+  let status = "RUNNING";
+  const client = {
+    async createPod() {
+      return { id: "cpupod1", status: "RUNNING", costPerHr: 0.08 };
+    },
+    async getPod(id: string) {
+      return status === "GONE" ? null : { id, status };
+    },
+    async terminatePod() {
+      return { terminated: true, alreadyGone: false }; // accepted, but the container lingers
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  let now = new Date("2026-10-05T12:00:00Z");
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "id",
+    clock: { now: () => now },
+    sleep: async (ms) => {
+      now = new Date(now.getTime() + ms);
+    },
+  });
+  await services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  const [lingering] = await services.pollPulls();
+  assert.equal(lingering.status, "running");
+  assert.match(lingering.error ?? "", /still RUNNING after terminate/);
+  assert.equal(await services.hasActivePull(), true);
+  status = "GONE";
+  const [done] = await services.pollPulls();
+  assert.equal(done.status, "done");
+  assert.equal(await services.hasActivePull(), false);
+});
+
+test("review 5: a createPod call that fails after RunPod created the pull pod still records the pull (found by its deterministic name)", async () => {
+  let json: string | null = null;
+  const client = {
+    async createPod(input: { name: string }) {
+      void input;
+      throw new Error("RunPod API request failed: The operation was aborted due to timeout");
+    },
+    async listPods() {
+      return [{ id: "cpupod9", name: "ytm-models-pull-pull-abc", status: "RUNNING" }];
+    },
+    async getPod(id: string) {
+      return { id, status: "RUNNING" };
+    },
+    async terminatePod() {
+      return { terminated: true, alreadyGone: false };
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "pull-abcdef",
+    clock: { now: () => new Date() },
+  });
+  const pull = await services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  assert.equal(pull.podId, "cpupod9");
+  assert.equal(await services.hasActivePull(), true);
 });

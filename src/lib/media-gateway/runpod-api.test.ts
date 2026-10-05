@@ -201,3 +201,16 @@ test("review: a pod's env is redacted (the per-session COMFY_TOKEN never leaves 
   assert.ok(!JSON.stringify(pod).includes("tok-secret"));
   assert.equal("env" in pod.raw, false);
 });
+
+test("review 5: listPods follows the v2 cursor pagination", async () => {
+  const { fetchImpl, calls } = fakeFetch((call) =>
+    call.url.includes("cursor=c2")
+      ? { status: 200, body: { items: [{ id: "p2", status: "RUNNING" }], pagination: { nextCursor: null, hasNextPage: false } } }
+      : { status: 200, body: { items: [{ id: "p1", status: "RUNNING" }], pagination: { nextCursor: "c2", hasNextPage: true } } }
+  );
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  const pods = await client.listPods();
+  assert.deepEqual(pods.map((p) => p.id), ["p1", "p2"]);
+  assert.equal(calls.length, 2);
+  assert.equal(new URL(calls[1].url).searchParams.get("cursor"), "c2");
+});

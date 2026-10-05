@@ -98,6 +98,11 @@ export function podNameFor(sessionId: string): string {
 }
 
 /** The cap's day is the operator's machine's local day (this app runs on that machine), not UTC. */
+/** Every pod of the account (the gateway follows the v2 cursor pagination). */
+async function listAllPods(client: RunpodApiClient): Promise<RunpodPod[]> {
+  return client.listPods();
+}
+
 function startOfLocalDay(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
@@ -400,8 +405,19 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
-        throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
+        // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
+        let orphan: RunpodPod | undefined;
+        try {
+          orphan = (await listAllPods(client)).find((p) => p.name === podNameFor(sessionId) && p.status !== "TERMINATED");
+        } catch {
+          orphan = undefined;
+        }
+        if (!orphan) {
+          await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
+          throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
+        }
+        log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
+        pod = orphan;
       }
       // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
       // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
@@ -478,6 +494,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               onStage("Waiting for ComfyUI to answer");
             }
           } else {
+            // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
+            const current = await client.getPod(pod.id);
+            if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
+              lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
+              break;
+            }
             try {
               await comfy.getSystemStats();
               const ready = deps.clock.now();
@@ -584,7 +606,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
         try {
           const client = await deps.base.resolveRunpodClient();
-          const orphan = (await client.listPods()).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
+          const orphan = (await listAllPods(client)).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
           if (orphan) {
             podId = orphan.id;
             // The pod billed from its creation; record that like abortStart does (AC-P14-17).

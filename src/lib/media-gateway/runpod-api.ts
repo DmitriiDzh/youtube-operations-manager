@@ -283,9 +283,20 @@ export function createRunpodApiClient(args: {
       return toNetworkVolume(body);
     },
 
+    /** Every pod of the account: v2 lists are paged (`{ items, pagination: { nextCursor, hasNextPage } }`), so the cursor is followed. */
     async listPods(): Promise<RunpodPod[]> {
-      const { body } = await request("GET", "/pods");
-      return extractList(body, ["pods"]).map(toPod).filter((p) => p.id);
+      const pods: RunpodPod[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 100; page++) {
+        const params = new URLSearchParams({ limit: "1000" });
+        if (cursor) params.set("cursor", cursor);
+        const { body } = await request("GET", `/pods?${params.toString()}`);
+        pods.push(...extractList(body, ["pods"]).map(toPod).filter((p) => p.id));
+        const pagination = asRecord(asRecord(body).pagination);
+        cursor = pagination.hasNextPage === true && typeof pagination.nextCursor === "string" ? pagination.nextCursor : null;
+        if (!cursor) break;
+      }
+      return pods;
     },
 
     async getPod(id: string): Promise<RunpodPod | null> {

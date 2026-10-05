@@ -123,6 +123,8 @@ const DEFAULT_MAX_GENERATION_MS = 2 * 60 * 60_000;
 const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 /** How long a `transferring` job keeps being retried when its outputs cannot be received yet. */
 const TRANSFER_RETRY_WINDOW_MS = 24 * 60 * 60_000;
+/** A `queued` row younger than this is a `createJob` still submitting, not a leftover. */
+const SUBMIT_GRACE_MS = 5 * 60_000;
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> } & Record<string, unknown>>;
 
@@ -612,8 +614,20 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
       await deps.sessions.touchActivity(parsed.sessionId);
       const updated = await deps.store.jobs.transition(jobId, ["queued"], { status: "submitted", promptId: submitted.promptId, submittedAt: deps.clock.now() });
+      if (!updated) {
+        // Cancelled or swept while the submit was in flight: the prompt must not run unowned.
+        try {
+          const queue = await comfy.getQueue();
+          if (queue.runningPromptIds.includes(submitted.promptId)) await comfy.interrupt();
+          else await comfy.deleteQueued([submitted.promptId]);
+        } catch {
+          // best effort
+        }
+        const current = await requireJob(jobId);
+        throw new DomainError({ code: "media_job_invalid_state", message: `Job was ${current.status} before the submit completed; the prompt was withdrawn`, details: { jobId, status: current.status } });
+      }
       deps.schedule(() => processJob(jobId));
-      return toPublicJob(updated ?? row);
+      return toPublicJob(updated);
     },
 
     processJob,
@@ -657,8 +671,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       for (const row of await deps.store.jobs.listNonTerminal()) {
         if (inFlight.has(row.id)) continue;
         if (row.status === "queued" || !row.promptId) {
-          // Never submitted (a crash between insert and the `submitted` write): nothing to resume.
-          await failJob(row, "never submitted to ComfyUI");
+          // Never submitted. `createJob` is between its insert and its `submitted` write for a few seconds at most
+          // (a submit through the proxy), so only a row older than the grace period is a real leftover.
+          if (deps.clock.now().getTime() - row.createdAt.getTime() > SUBMIT_GRACE_MS) await failJob(row, "never submitted to ComfyUI");
           continue;
         }
         // A transfer needs only S3 (the pod may be gone already); a poll needs the session's ComfyUI -- without it
@@ -724,12 +739,11 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           continue;
         }
         const ledger = await deps.store.ledger.get(key);
-        // A failed/cancelled job may still own completed outputs that were never pulled (transfer failure, restart):
-        // those are the only copy and stay until pulled by hand or recorded in the ledger.
-        const unpulledOutputs = job.outputsJson ? (JSON.parse(job.outputsJson) as MediaJobOutput[]).some((o) => o.remoteKey === key && !o.localPath) : false;
-        const safeToDelete = Boolean(ledger && ledger.localPath) || ((job.status === "failed" || job.status === "cancelled") && !unpulledOutputs);
-        if (!safeToDelete) {
-          kept.push({ key, reason: job.status === "done" ? "done job without a ledger row" : `${job.status} job with an unpulled output` });
+        // BY LEDGER ONLY (ADR 0019's rule): a key is deleted only when its row says the file is local. A failed or
+        // cancelled job's leftovers may be a finished generation nobody recorded (restart mid-generation) -- the only
+        // copy -- so they stay until pulled by hand (`scripts/media/s3.sh`), never auto-deleted.
+        if (!ledger || !ledger.localPath) {
+          kept.push({ key, reason: `${job.status} job, not in the ledger` });
           continue;
         }
         if (!dryRun) {

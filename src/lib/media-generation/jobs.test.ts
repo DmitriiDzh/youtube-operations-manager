@@ -434,16 +434,16 @@ test("AC-P14-14: the janitor lists only exchange/, skips exchange/in/ and unknow
   assert.deepEqual(dry.deleted, []);
   assert.ok(dry.kept.some((k) => k.key === "exchange/in/ref.png" && k.reason === "reference input"));
   assert.ok(dry.kept.some((k) => k.key === "exchange/unknown-job/x.png" && k.reason === "unknown job"));
-  assert.ok(dry.kept.some((k) => k.key === "exchange/job-1/leftover.png" && k.reason === "done job without a ledger row"));
+  assert.ok(dry.kept.some((k) => k.key === "exchange/job-1/leftover.png" && k.reason === "done job, not in the ledger"));
   assert.ok(objects.has("models/checkpoints/big.safetensors"));
   assert.ok(s3.calls.every((c) => !c.startsWith("list:") || c === "list:exchange/"), "only exchange/ is ever listed");
-  // A failed job's leftovers ARE garbage.
+  // Review round 5: BY LEDGER ONLY -- a failed job's leftovers may be a finished generation nobody recorded; they stay too.
   f.mem.jobs.set("job-9", { ...f.mem.jobs.get(job.jobId)!, id: "job-9", status: "failed" });
   objects.set("exchange/job-9/partial.png", new Uint8Array([1]));
   const real = await f.services.cleanupExchange({ dryRun: false });
-  assert.deepEqual(real.deleted, ["exchange/job-9/partial.png"]);
-  assert.equal(objects.has("exchange/job-9/partial.png"), false);
-  assert.ok(objects.has("exchange/in/ref.png") && objects.has("exchange/unknown-job/x.png") && objects.has("exchange/job-1/leftover.png"));
+  assert.deepEqual(real.deleted, []);
+  assert.ok(real.kept.some((k) => k.key === "exchange/job-9/partial.png" && k.reason === "failed job, not in the ledger"));
+  assert.ok(objects.has("exchange/job-9/partial.png") && objects.has("exchange/in/ref.png") && objects.has("exchange/unknown-job/x.png") && objects.has("exchange/job-1/leftover.png"));
 });
 
 // -- review round 1 (2026-10-05) ------------------------------------------------------------------
@@ -608,9 +608,11 @@ test("review 2: the janitor keeps a failed job's completed-but-unpulled outputs 
   f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, status: "failed" });
   f.mem.jobs.set("job-9", { ...f.mem.jobs.get(job.jobId)!, id: "job-9", status: "failed", outputsJson: null });
   const report = await f.services.cleanupExchange({ dryRun: false });
-  assert.deepEqual(report.deleted, ["exchange/job-9/partial.png"]);
-  assert.ok(report.kept.some((k) => k.key === "exchange/job-1/ComfyUI_00001_.png" && /unpulled output/.test(k.reason)));
-  assert.ok(objects.has("exchange/job-1/ComfyUI_00001_.png"));
+  // Review round 5 (by ledger only): neither the unpulled output nor the unrecorded leftover is deleted.
+  assert.deepEqual(report.deleted, []);
+  assert.ok(report.kept.some((k) => k.key === "exchange/job-1/ComfyUI_00001_.png" && k.reason === "failed job, not in the ledger"));
+  assert.ok(report.kept.some((k) => k.key === "exchange/job-9/partial.png" && k.reason === "failed job, not in the ledger"));
+  assert.ok(objects.has("exchange/job-1/ComfyUI_00001_.png") && objects.has("exchange/job-9/partial.png"));
 });
 
 test("review 2: a job stuck in `transferring` is resumed and completed from its recorded outputs without re-pulling what already landed", async () => {
@@ -668,7 +670,7 @@ test("review 4: a submitted job whose session is gone is failed by the resume pa
     id: "job-x", sessionId: "s1", channelId: "UC1", templateId: t.templateId, templateVersion: 1, paramsJson: "{}", status: "submitted", createdBy: "agent",
     promptId: "prompt-1", outputsJson: null, assetIdsJson: null, error: null, createdAt: new Date(), submittedAt: new Date(), finishedAt: null,
   });
-  stopped.mem.jobs.set("job-q", { ...stopped.mem.jobs.get("job-x")!, id: "job-q", status: "queued", promptId: null });
+  stopped.mem.jobs.set("job-q", { ...stopped.mem.jobs.get("job-x")!, id: "job-q", status: "queued", promptId: null, createdAt: new Date("2026-10-05T10:00:00Z") }); // older than the submit grace period
   stopped.mem.jobs.set("job-t", { ...stopped.mem.jobs.get("job-x")!, id: "job-t", status: "transferring", outputsJson: "[]" });
   assert.deepEqual(await stopped.services.resumeInFlightJobs(), { resumed: ["job-t"] });
   assert.equal(stopped.mem.jobs.get("job-x")!.status, "failed");
@@ -691,4 +693,47 @@ test("review 4: a transient 'cannot receive outputs' keeps the job transferring 
   assert.equal(r.status, "transferring");
   assert.match(r.error ?? "", /cannot receive outputs.*retrying/);
   assert.equal(r.outputs.length, 1);
+});
+
+// -- review round 5 (2026-10-05) ------------------------------------------------------------------
+
+test("review 5: the janitor deletes BY LEDGER ONLY -- a failed job's leftovers with no ledger row are kept", async () => {
+  const objects = new Map<string, Uint8Array>([["exchange/job-9/partial.png", new Uint8Array([1])]]);
+  const s3 = fakeS3(objects);
+  const f = fixture({ s3 });
+  const t = await importDefault(f.services);
+  f.mem.jobs.set("job-9", {
+    id: "job-9", sessionId: "s1", channelId: "UC1", templateId: t.templateId, templateVersion: 1, paramsJson: "{}", status: "failed", createdBy: "agent",
+    promptId: "p", outputsJson: null, assetIdsJson: null, error: "interrupted by a server restart", createdAt: new Date(), submittedAt: new Date(), finishedAt: new Date(),
+  });
+  const report = await f.services.cleanupExchange({ dryRun: false });
+  assert.deepEqual(report.deleted, []);
+  assert.ok(report.kept.some((k) => k.key === "exchange/job-9/partial.png" && k.reason === "failed job, not in the ledger"));
+  assert.ok(objects.has("exchange/job-9/partial.png"));
+});
+
+test("review 5: a fresh queued row is left alone by the resume pass (createJob may still be submitting); an old one is failed", async () => {
+  const f = fixture({ sessionRunning: false });
+  const t = await importDefault(f.services);
+  const base = { sessionId: "s1", channelId: "UC1", templateId: t.templateId, templateVersion: 1, paramsJson: "{}", status: "queued" as const, createdBy: "agent" as const, promptId: null, outputsJson: null, assetIdsJson: null, error: null, submittedAt: null, finishedAt: null };
+  f.mem.jobs.set("fresh", { ...base, id: "fresh", createdAt: new Date("2026-10-05T11:59:30Z") });
+  f.mem.jobs.set("old", { ...base, id: "old", createdAt: new Date("2026-10-05T11:00:00Z") });
+  await f.services.resumeInFlightJobs();
+  assert.equal(f.mem.jobs.get("fresh")!.status, "queued");
+  assert.equal(f.mem.jobs.get("old")!.status, "failed");
+});
+
+test("review 5: a job cancelled while its submit was in flight withdraws the prompt and reports the real state", async () => {
+  const comfy = fakeComfyWithQueue({ running: [], pending: ["prompt-1"] });
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  // Cancel the row the instant it is inserted (before the `submitted` write).
+  const originalInsert = f.mem.store.jobs.insert;
+  f.mem.store.jobs.insert = async (row) => {
+    const inserted = await originalInsert(row);
+    f.mem.jobs.set(row.id, { ...inserted, status: "cancelled" });
+    return inserted;
+  };
+  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_job_invalid_state");
+  assert.deepEqual(comfy.deleted, [["prompt-1"]]);
 });

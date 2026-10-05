@@ -157,3 +157,10 @@ test("review 3: Montreal-style datacenter ids are accepted; a stale .part file f
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("review 5: the client's methods work when destructured (no `this` dependency)", async () => {
+  const { fetchImpl } = fakeFetch(() => new Response("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>", { status: 200 }));
+  const { listAllObjects, testAccess } = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+  assert.deepEqual(await listAllObjects("exchange/"), []);
+  assert.deepEqual(await testAccess(), { ok: true });
+});
