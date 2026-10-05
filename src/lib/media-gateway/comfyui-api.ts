@@ -1,5 +1,6 @@
 import { DomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
+import { isJsonBody, jsonRequest } from "./http";
 import { asRecord } from "./json";
 
 // ---------------------------------------------------------------------------
@@ -99,44 +100,27 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
     const headers: Record<string, string> = { accept: "application/json" };
     if (args.token) headers.authorization = `Bearer ${args.token}`;
     if (options.json !== undefined) headers["content-type"] = "application/json";
-    let response: Response;
-    try {
-      response = await fetchImpl(`${baseUrl}${path}`, {
-        method,
-        headers,
-        body: options.json === undefined ? undefined : JSON.stringify(options.json),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (error) {
-      throw new DomainError({
-        code: "comfyui_unavailable",
-        message: `ComfyUI request failed: ${error instanceof Error ? error.message : String(error)}`,
-        details: { method, path },
-      });
-    }
-    let text: string;
-    try {
-      text = await response.text();
-    } catch (error) {
-      throw new DomainError({
-        code: "comfyui_unavailable",
-        message: `ComfyUI response could not be read: ${error instanceof Error ? error.message : String(error)}`,
-        details: { method, path, status: response.status },
-      });
-    }
-    let body: unknown = null;
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = { raw: text.slice(0, 500) };
-      }
-    }
+    const response = await jsonRequest({
+      fetchImpl,
+      url: `${baseUrl}${path}`,
+      method,
+      headers,
+      body: options.json === undefined ? undefined : JSON.stringify(options.json),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      unavailable: (stage, detail, status) =>
+        new DomainError({
+          code: "comfyui_unavailable",
+          message: stage === "request" ? `ComfyUI request failed: ${detail}` : `ComfyUI response could not be read: ${detail}`,
+          details: { method, path, ...(status !== undefined ? { status } : {}) },
+        }),
+    });
+    const body = response.body;
     if (!response.ok) {
-      // A 4xx WITH a JSON body is ComfyUI's own verdict (a prompt that failed validation, an unknown prompt): definitive,
-      // `comfyui_rejected`. Anything else (5xx, a proxy's HTML/plain-text 4xx, a timeout) is `comfyui_unavailable` --
-      // transient, retried by the poll loop (review round 12).
-      const definitive = response.status >= 400 && response.status < 500 && body !== null && typeof body === "object" && !("raw" in (body as Record<string, unknown>));
+      // A 4xx WITH a JSON body is ComfyUI's own verdict (a prompt that failed validation): definitive, `comfyui_rejected`
+      // -- definitive for POST /prompt only; a poll's caller folds it into its failure counter, since /history never
+      // answers 4xx from ComfyUI itself (review rounds 12 and 15). Anything else (5xx, a proxy's HTML/plain-text 4xx,
+      // a timeout) is `comfyui_unavailable`.
+      const definitive = response.status >= 400 && response.status < 500 && isJsonBody(body);
       throw new DomainError({
         code: definitive ? "comfyui_rejected" : "comfyui_unavailable",
         message: `ComfyUI ${definitive ? "rejected" : "returned HTTP"} ${definitive ? `${method} ${path} (HTTP ${response.status})` : `${response.status} for ${method} ${path}`}.`,

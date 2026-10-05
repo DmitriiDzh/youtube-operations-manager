@@ -494,13 +494,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         history = await comfy.getHistory(job.promptId);
         pollFailures = 0;
       } catch (error) {
-        if (error instanceof DomainError && error.code === "comfyui_rejected") {
-          // ComfyUI's own verdict (an unknown prompt, a 4xx with a body): definitive, no retries.
-          await failJob(job, `ComfyUI rejected the poll: ${describeComfyRejection(error)}`);
-          return;
-        }
         // One 502/timeout through RunPod's proxy is routine during a heavy generation: fail only after a run of them,
-        // or once the session itself is gone.
+        // or once the session itself is gone. A JSON 4xx on /history can only come from an intermediary (ComfyUI itself
+        // never answers 4xx there), so `comfyui_rejected` is definitive for POST /prompt only and is counted like any
+        // other poll failure here (review round 15).
         pollFailures++;
         const stillRunning = await deps.sessions.getRunningSession(job.sessionId);
         if (!stillRunning || pollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
@@ -875,6 +872,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         }
         const backoff = transferBackoff.get(row.id);
         if (row.status === "transferring" && backoff && backoff.notBefore > deps.clock.now().getTime()) continue; // not yet
+        // The scheduled poll's first activity touch lands asynchronously; the watcher's idle check runs right after this
+        // pass in the same tick (review round 15) -- so a job being picked up counts as activity NOW.
+        if (row.status !== "transferring") await deps.sessions.touchActivity(row.sessionId);
         resumed.push(row.id);
         deps.schedule(() => processJob(row.id));
       }

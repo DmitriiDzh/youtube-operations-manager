@@ -507,7 +507,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // AC-P14-18 as a constraint: the volume lock is taken BEFORE the `approved` write and held until the session is
       // terminal; a running model pull holds it, so this throws `media_session_conflict` naming it, and the request
       // stays pending with nothing changed.
-      await deps.volumeLock.acquire(`session:${sessionId}`);
+      const acquisition = await deps.volumeLock.acquire(`session:${sessionId}`);
       const approved = await deps.store.transition(sessionId, ["pending"], {
         status: "approved",
         approvedAt: now,
@@ -517,8 +517,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         tokenAuthTag: sealed.authTag,
       });
       if (!approved) {
-        await deps.volumeLock.release(`session:${sessionId}`);
-        throw invalidState(sessionId, "pending", (await requireRow(sessionId)).status);
+        // A concurrent approve of the same session won this transition (a retried POST): the lock is now ITS lock,
+        // whichever of the two calls happened to insert the row -- release only when the session is not open under this
+        // owner any more (review round 15).
+        const latest = await requireRow(sessionId);
+        const heldByTheWinner = ["approved", "starting", "running", "stopping"].includes(latest.status);
+        if (!heldByTheWinner && acquisition === "acquired") await deps.volumeLock.release(`session:${sessionId}`);
+        throw invalidState(sessionId, "pending", latest.status);
       }
 
       onStage("Creating the pod");
@@ -609,13 +614,29 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (!starting) {
-        // Swept or stopped meanwhile: never leave the pod behind.
+        // Swept or stopped meanwhile: never leave the pod behind -- and never DISCARD an unconfirmed terminate either
+        // (review round 15): the pod and its cost are written onto whatever row state the other party left, so the
+        // operator's listing shows the pod to terminate by hand.
+        let outcome: TerminateOutcome | null = null;
+        let failure: string | null = null;
         try {
-          await terminateAndConfirm(client, pod.id);
-        } catch {
-          // the row is no longer ours; the owner of the new state (boot sweep / stop) confirms termination
+          outcome = await terminateAndConfirm(client, pod.id);
+        } catch (cause) {
+          failure = cause instanceof Error ? cause.message : String(cause);
         }
-        throw invalidState(sessionId, "approved", (await requireRow(sessionId)).status);
+        const latest = await requireRow(sessionId);
+        if (!outcome?.confirmed) {
+          const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
+          log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
+          await deps.store.transition(sessionId, [latest.status], {
+            status: latest.status,
+            podId: pod.id,
+            startedAt,
+            costPerHr: pod.costPerHr ?? latest.costPerHr,
+            error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and its terminate could not be confirmed (${detail}): terminate it by hand (media pod-terminate ${pod.id})`,
+          });
+        }
+        throw invalidState(sessionId, "approved", latest.status);
       }
 
       onStage("Waiting for the pod to run");
@@ -680,9 +701,16 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // the operator's press only retries the terminate.
       if (row.status === "stopping") return toPublicSession(await retryStop(row, reason, "done"), deps.clock.now());
       if (row.status === "approved") {
-        // The approve request is gone (it threw: createPod failed and RunPod could not say whether a pod exists) -- the
-        // operator's Stop is the manual override the watcher's abandoned-start path would otherwise reach only later:
-        // search the pod by name now; while RunPod still cannot be asked, say so and keep the slot (review round 14).
+        // The approve request is gone (it threw: createPod failed and RunPod could not say whether a pod exists -- the row
+        // carries its error) or is unmistakably abandoned by age -- the operator's Stop is the manual override the
+        // watcher's abandoned-start path would otherwise reach only later. While the approve request may still be inside
+        // createPod, a Stop would finish the row before the pod exists and orphan it (review round 15): refused.
+        const now = deps.clock.now();
+        const since = row.startedAt ?? row.approvedAt ?? row.createdAt;
+        const abandoned = row.error !== null || now.getTime() - since.getTime() >= startTimeoutMs + stopTimeoutMs + ABANDONED_START_GRACE_MS;
+        if (!abandoned) {
+          throw new DomainError({ code: "media_session_invalid_state", message: "The approve request is still creating the pod; wait for it to finish (or fail) before stopping.", details: { sessionId: row.id, status: row.status } });
+        }
         const result = await reconcileAbandoned(row, reason, "failed");
         if (result === "deferred") {
           throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod could not be asked whether a pod named ${podNameFor(row.id)} exists; the session stays approved (slot kept) -- try again when RunPod answers.`, details: { sessionId: row.id } });

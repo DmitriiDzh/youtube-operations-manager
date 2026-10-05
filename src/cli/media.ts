@@ -46,6 +46,7 @@ export const MEDIA_CLI_COMMANDS = [
   "job-create",
   "janitor",
   "models",
+  "models-poll",
   "model-pull",
   "model-rm",
   "pods",
@@ -61,6 +62,7 @@ export type MediaCliCommand = (typeof MEDIA_CLI_COMMANDS)[number];
 
 const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>([
   "credentials-test", // writes media_credentials.verified_at to the local database (review round 13)
+  "models-poll", // advances the pulls: terminates finished pull pods, rewrites the list (review round 15)
   "volume-create",
   "template-create",
   "workflow-template-import",
@@ -84,7 +86,9 @@ export const HELP = [
   "  workflow-templates | workflow-template-import --file <template.json>   {name, workflow, parameters}",
   "  jobs [sessionId] | job-get <jobId> | job-create --file <job.json>      {sessionId, channelId, templateId, params}",
   "  janitor [--delete]                      exchange/ leftovers on the volume (dry run unless --delete)",
-  "  models                                  models/ on the volume + recorded pulls (the running server advances them)",
+  "  models                                  models/ on the volume + recorded pulls (read-only)",
+  "  models-poll                             advance the pulls once (terminate finished pull pods); the running server does this on every tick",
+
   "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--cpu cpu3c] [--vcpu 2]",
   "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
@@ -241,8 +245,11 @@ export async function runMediaCli(args: {
         break;
       }
       case "models":
-        // Read-only: the web server's watch loop advances the pulls (terminates finished pods), never a listing.
+        // Read-only: the web server's watch loop (or `models-poll`) advances the pulls, never a listing.
         data = { pulls: await core.listPulls(), models: await core.listModels() };
+        break;
+      case "models-poll":
+        data = { pulls: await core.pollPulls() };
         break;
       case "model-pull":
         data = await core.startPull({

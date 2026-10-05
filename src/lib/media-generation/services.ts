@@ -12,7 +12,12 @@ import {
   type MediaSettings,
 } from "./contracts";
 import type { KeyFile } from "./key-file";
+import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import type { VolumeLock } from "./volume-lock";
+import { sleep } from "@/lib/shared-async";
+
+const PASSTHROUGH_STOP_TIMEOUT_MS = 90_000;
+const PASSTHROUGH_STOP_POLL_MS = 5_000;
 import {
   createNetworkVolumeInputSchema,
   createPodPassthroughSchema,
@@ -60,6 +65,8 @@ export type ServiceDependencies = {
   activeVolumeHolder?: () => Promise<string | null>;
   /** The volume lock itself, for the operator pod passthrough (an operator pod mounting the volume is a writer too). */
   volumeLock?: VolumeLock;
+  /** For the terminate passthrough's confirm polling (tests inject a clock-advancing one). */
+  sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
 };
 
@@ -422,7 +429,9 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const settings = await readSettings();
       const mountsConfiguredVolume = Boolean(settings.networkVolumeId && parsed.mounts?.network?.some((m) => m.volumeId === settings.networkVolumeId));
       const owner = mountsConfiguredVolume && deps.volumeLock ? (`pod:${parsed.name}` as const) : null;
-      if (owner) await deps.volumeLock!.acquire(owner);
+      if (owner && (await deps.volumeLock!.acquire(owner)) === "already-held") {
+        throw new DomainError({ code: "media_session_conflict", message: `A pod named ${parsed.name} already holds the network volume; terminate it first (media pod-terminate).`, details: { holder: owner } });
+      }
       try {
         return withProxyUrl(await (await runpodClient()).createPod(parsed as CreatePodInput));
       } catch (error) {
@@ -434,13 +443,20 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     async terminatePod(podId: string) {
       const client = await runpodClient();
       const pod = await client.getPod(podId).catch(() => null);
-      const result = await client.terminatePod(podId);
-      // Free the volume once the operator's pod is gone (the lock would otherwise expire only via the staleness check).
-      if (deps.volumeLock && pod?.name) {
+      // The same terminate-and-confirm step every other lock owner waits for (review round 15): the volume is freed only
+      // once RunPod confirms the pod is gone, never while the container is still tearing down (and flushing).
+      const outcome = await terminateAndConfirm(client, podId, { now: () => deps.clock.now(), sleep: deps.sleep ?? sleep }, { timeoutMs: PASSTHROUGH_STOP_TIMEOUT_MS, pollMs: PASSTHROUGH_STOP_POLL_MS });
+      if (deps.volumeLock && outcome.confirmed) {
+        // Release the pod's lock: by name when the pod was still listed, otherwise (already gone before this call, so its
+        // name is unknown) whenever the held `pod:<name>` no longer has a live pod behind it.
         const holder = await deps.volumeLock.holder();
-        if (holder?.owner === `pod:${pod.name}`) await deps.volumeLock.release(`pod:${pod.name}`);
+        if (holder?.owner.startsWith("pod:")) {
+          const heldName = holder.owner.slice("pod:".length);
+          const stillLive = pod?.name === heldName ? false : await findLivePodByName(client, heldName).then((p) => Boolean(p), () => true);
+          if (!stillLive) await deps.volumeLock.release(holder.owner as `pod:${string}`);
+        }
       }
-      return result;
+      return { terminated: true as const, alreadyGone: outcome.alreadyGone, confirmed: outcome.confirmed, lastStatus: outcome.lastStatus };
     },
 
     // -- S3 passthrough (operator CLI; the exchange component is slice 3) ------------------------

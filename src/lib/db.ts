@@ -7281,7 +7281,8 @@ export async function tryAcquireMediaVolumeLock(owner: string, at: Date, databas
     const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
     if (stored !== null) {
       const holder = parseMediaVolumeLockValue(stored);
-      return { acquired: holder.owner === owner, holder };
+      // Ours only if it is OUR row (owner and acquire time): a row the same owner inserted earlier is "already held".
+      return { acquired: holder.owner === owner && holder.since.getTime() === at.getTime(), holder };
     }
   }
   return { acquired: false, holder: { owner: "unknown (the lock row kept vanishing between insert and read)", since: at } };

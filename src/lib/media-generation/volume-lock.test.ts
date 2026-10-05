@@ -50,3 +50,12 @@ test("a fresh lock whose owner is not yet visibly active is NOT stolen; the same
   await lock.acquire("pull:p1");
   assert.equal(store.current(), "pull:p1");
 });
+
+// Review round 15: acquire reports whether THIS call took the lock, so only that call releases on its own failure path.
+test("acquire returns 'acquired' for the call that took the lock and 'already-held' for a re-entrant call by the same owner", async () => {
+  const store = createMemoryVolumeLockStore();
+  const lock = createVolumeLock({ store, isHolderActive: async () => true });
+  assert.equal(await lock.acquire("session:s1"), "acquired");
+  assert.equal(await lock.acquire("session:s1"), "already-held");
+  assert.equal(store.current(), "session:s1");
+});

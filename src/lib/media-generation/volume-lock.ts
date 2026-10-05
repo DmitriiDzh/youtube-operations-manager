@@ -21,7 +21,7 @@ export const VOLUME_LOCK_STALE_AFTER_MS = 2 * 60_000;
 export type VolumeLockHolder = { owner: string; since: Date };
 
 export type VolumeLockStore = {
-  /** Atomic insert-if-absent; `holder` is whoever holds the lock afterwards (the caller when acquired). */
+  /** Atomic insert-if-absent; `acquired` only when THIS call inserted the row; `holder` is whoever holds it afterwards. */
   tryAcquire(owner: string, at: Date): Promise<{ acquired: boolean; holder: VolumeLockHolder }>;
   /** Removes the row only if `owner` holds it; `false` when it did not. */
   release(owner: string): Promise<boolean>;
@@ -31,8 +31,12 @@ export type VolumeLockStore = {
 export type VolumeLockOwner = `session:${string}` | `pull:${string}` | `pod:${string}`;
 
 export type VolumeLock = {
-  /** Takes the lock for `owner` or throws `media_session_conflict` naming the holder. Re-entrant for the same owner. */
-  acquire(owner: VolumeLockOwner): Promise<void>;
+  /**
+   * Takes the lock for `owner` or throws `media_session_conflict` naming the holder. Re-entrant for the same owner,
+   * and says which: only the call that reports "acquired" may release on its own failure path (review round 15 --
+   * a second concurrent approve of the same session must not free the lock the first one relies on).
+   */
+  acquire(owner: VolumeLockOwner): Promise<"acquired" | "already-held">;
   release(owner: VolumeLockOwner): Promise<boolean>;
   holder(): Promise<VolumeLockHolder | null>;
 };
@@ -51,7 +55,8 @@ export function createVolumeLock(deps: { store: VolumeLockStore; isHolderActive(
     async acquire(owner) {
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = await deps.store.tryAcquire(owner, now());
-        if (result.acquired || result.holder.owner === owner) return;
+        if (result.acquired) return "acquired";
+        if (result.holder.owner === owner) return "already-held";
         const conflict = () =>
           new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(result.holder.owner), details: { holder: result.holder.owner, since: result.holder.since.toISOString() } });
         if (await deps.isHolderActive(result.holder.owner)) throw conflict();
@@ -74,8 +79,9 @@ export function createMemoryVolumeLockStore(): VolumeLockStore & { current: () =
   let holder: VolumeLockHolder | null = null;
   return {
     async tryAcquire(owner, at) {
-      if (holder === null) holder = { owner, since: at };
-      return { acquired: holder.owner === owner, holder };
+      const taken = holder === null;
+      if (taken) holder = { owner, since: at };
+      return { acquired: taken, holder: holder as VolumeLockHolder };
     },
     async release(owner) {
       if (holder?.owner !== owner) return false;

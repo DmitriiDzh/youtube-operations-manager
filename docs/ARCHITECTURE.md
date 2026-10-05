@@ -2554,6 +2554,20 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   (`substr`), never `LIKE`. `creative_assets_reference_idx` (schema v56) backs the per-output asset
   lookup. The pull command removes the Hugging Face CLI's download cache from the volume after the
   download and on any exit (a trap), as does `models-pull.sh`.
+- **One transport, one pull implementation, no orphan on a late pod (review round 15).**
+  `media-gateway/http.ts` is the one fetch → timeout → body → JSON-or-raw step both the RunPod and the
+  ComfyUI children call (status mapping stays with each child). `comfyui_rejected` is definitive for
+  `POST /prompt` only; a poll counts it like any other failure (ComfyUI never answers 4xx on `/history`;
+  an intermediary does). `VolumeLock.acquire` reports "acquired" vs "already-held" (a store's `acquired`
+  is true only for the row THIS call inserted), and an approve that loses the `approved` transition to a
+  concurrent approve of the same session leaves the lock to the winner. A Stop on an `approved` row is
+  refused while its approve request may still be inside `createPod` (no error on the row, not yet
+  abandoned by age); a pod created after the row was stopped meanwhile, whose terminate cannot be
+  confirmed, is written onto the row (`podId`, cost, how to terminate it) instead of being forgotten.
+  `resumeInFlightJobs` credits session activity synchronously for each job it picks up (the watcher's idle
+  check follows in the same tick). The operator terminate passthrough confirms the pod is gone before
+  releasing `pod:<name>`. `models-pull.sh` drives `media model-pull` per manifest line and `media
+  models-poll` (a gated command that advances the pulls) instead of re-implementing the pull shell.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

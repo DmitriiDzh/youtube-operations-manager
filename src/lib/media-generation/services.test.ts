@@ -147,13 +147,17 @@ function fakeS3(options: { fails?: boolean } = {}) {
 function fixture(opts: { keyFileContent?: string | null; runpod?: ReturnType<typeof fakeRunpod>; s3?: ReturnType<typeof fakeS3>; activeVolumeHolder?: () => Promise<string | null>; volumeLock?: import("./volume-lock").VolumeLock } = {}) {
   const mem = memoryStore();
   const key = memoryKeyFile(opts.keyFileContent ?? null);
+  let now = new Date("2026-10-05T12:34:56Z");
   const runpod = opts.runpod ?? fakeRunpod();
   const s3 = opts.s3 ?? fakeS3();
   const services = createMediaGenerationServices({
     store: mem.store,
     keyFile: key.keyFile,
     gateway: { createRunpodClient: runpod.factory, createS3Client: s3.factory },
-    clock: { now: () => new Date("2026-10-05T12:34:56Z") },
+    clock: { now: () => now },
+    sleep: async (ms) => {
+      now = new Date(now.getTime() + ms); // the terminate passthrough's confirm poll advances the fake clock
+    },
     ...(opts.activeVolumeHolder ? { activeVolumeHolder: opts.activeVolumeHolder } : {}),
     ...(opts.volumeLock ? { volumeLock: opts.volumeLock } : {}),
   });
@@ -506,4 +510,28 @@ test("review 14: the credentials cannot be changed or cleared, and the volume/da
   // Limits and the GPU only affect future sessions: still editable.
   assert.equal((await f.services.updateSettings({ idleMinutes: 3 })).idleMinutes, 3);
   assert.equal((await f.services.updateSettings({ networkVolumeId: "vol-eu" })).networkVolumeId, "vol-eu", "re-saving the same volume is not a change");
+});
+
+test("review 15: the operator terminate passthrough releases the pod's volume lock only once RunPod confirms the pod is gone", async () => {
+  const { createMemoryVolumeLockStore, createVolumeLock } = await import("./volume-lock");
+  const runpod = fakeRunpod();
+  const client = runpod.client as unknown as Record<string, unknown>;
+  let status: string | null = "RUNNING";
+  client.createPod = async (input: { name: string }) => ({ id: "p-1", name: input.name, status: "RUNNING", costPerHr: 0.08, dataCenterId: "EU-RO-1", gpuTypeId: null, gpuCount: 0, networkVolumeIds: [], ports: null, env: {}, createdAt: null, startedAt: null, raw: {} });
+  client.getPod = async (id: string) => (status ? { id, name: "ytm-models-pull", status } : null);
+  client.terminatePod = async () => ({ terminated: true, alreadyGone: false }); // the container lingers
+  const store = createMemoryVolumeLockStore();
+  const volumeLock = createVolumeLock({ store, isHolderActive: async () => true });
+  const { services } = fixture({ runpod, volumeLock });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
+  await services.createPod({ name: "ytm-models-pull", image: "python:3.12-slim", cpu: { id: "cpu3c", vcpuCount: 2 }, cloud: "SECURE", mounts: { network: [{ volumeId: "vol-eu", path: "/workspace" }] } });
+  assert.equal(store.current(), "pod:ytm-models-pull");
+  const unconfirmed = await services.terminatePod("p-1");
+  assert.equal(unconfirmed.confirmed, false);
+  assert.equal(store.current(), "pod:ytm-models-pull", "still held while the container tears down");
+  status = null;
+  const confirmed = await services.terminatePod("p-1");
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(store.current(), null);
 });

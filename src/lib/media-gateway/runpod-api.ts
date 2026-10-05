@@ -1,5 +1,6 @@
 import { DomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
+import { jsonRequest } from "./http";
 import { asNumber, asRecord, asString } from "./json";
 
 // ---------------------------------------------------------------------------
@@ -185,43 +186,21 @@ export function createRunpodApiClient(args: {
 
   async function request(method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
     await authorize("runpod_api");
-    let response: Response;
-    try {
-      response = await fetchImpl(`${baseUrl}${path}`, {
-        method,
-        headers: {
-          authorization: `Bearer ${args.apiKey}`,
-          accept: "application/json",
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (error) {
-      throw new DomainError({
-        code: "runpod_api_unavailable",
-        message: `RunPod API request failed: ${error instanceof Error ? error.message : String(error)}`,
-        details: { method, path },
-      });
-    }
-    let text: string;
-    try {
-      text = await response.text(); // the 30 s signal can also fire while the body streams
-    } catch (error) {
-      throw new DomainError({
-        code: "runpod_api_unavailable",
-        message: `RunPod API response could not be read: ${error instanceof Error ? error.message : String(error)}`,
-        details: { method, path, status: response.status },
-      });
-    }
-    let parsed: unknown = null;
-    if (text) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = { raw: text.slice(0, 500) };
-      }
-    }
+    const response = await jsonRequest({
+      fetchImpl,
+      url: `${baseUrl}${path}`,
+      method,
+      headers: { authorization: `Bearer ${args.apiKey}`, accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      unavailable: (stage, detail, status) =>
+        new DomainError({
+          code: "runpod_api_unavailable",
+          message: stage === "request" ? `RunPod API request failed: ${detail}` : `RunPod API response could not be read: ${detail}`,
+          details: { method, path, ...(status !== undefined ? { status } : {}) },
+        }),
+    });
+    const parsed = response.body;
     if (response.status === 401 || response.status === 403) {
       throw new DomainError({
         code: "media_credentials_invalid",

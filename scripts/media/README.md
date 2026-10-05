@@ -13,8 +13,9 @@ Setup order (slice 0):
 2. `scripts/media/volume-create.sh --name models --dc EU-RO-1 --size 150`, then select it in Settings.
 3. `scripts/media/volume-bootstrap.sh` — uploads `pod/pod-start.sh`, `pod/Caddyfile`,
    `pod/extra_model_paths.yaml` to `ytm/` on the volume and creates the `models/*` folders.
-4. `scripts/media/models-pull.sh my.manifest` — a CPU pod downloads the models straight onto the
-   volume, then terminates itself (format: `pod/models.manifest.example`).
+4. `scripts/media/models-pull.sh my.manifest` — one `media model-pull` per manifest line (each a CPU
+   pod downloading straight onto the volume, recorded and cancellable in Settings → Media → Models),
+   advanced with `media models-poll` until done (format: `pod/models.manifest.example`).
 5. `scripts/media/template-create.sh` — creates the pod template (`pod/template.json`); put the id in
    Settings → Media → Compute.
 6. `scripts/media/pod-create.sh` — starts a ComfyUI pod with a fresh token; `pod-terminate.sh <id>`

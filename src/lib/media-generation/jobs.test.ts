@@ -1148,7 +1148,7 @@ test("review 12: a 0-byte object (the file is open, nothing flushed) is 'not the
   assert.equal(done.outputs[0].bytes, 3);
 });
 
-test("review 12: a definitive ComfyUI rejection while polling (comfyui_rejected) fails the job at once; a transient failure is still retried", async () => {
+test("review 12/15: a comfyui_rejected from a /history poll (an intermediary's JSON 4xx -- ComfyUI itself never answers 4xx there) is counted like any other poll failure, not a verdict", async () => {
   const comfy = fakeComfy([null]);
   (comfy.client as unknown as { getHistory: () => Promise<unknown> }).getHistory = async () => {
     const { DomainError } = await import("./contracts");
@@ -1160,8 +1160,7 @@ test("review 12: a definitive ComfyUI rejection while polling (comfyui_rejected)
   await f.runScheduled();
   const failed = await f.services.getJob({ jobId: job.jobId });
   assert.equal(failed.status, "failed");
-  assert.match(failed.error ?? "", /ComfyUI rejected the poll/);
-  assert.equal(f.activity.length, 1, "no retries: only the submit counted");
+  assert.match(failed.error ?? "", /ComfyUI unreachable \(5 consecutive polls\)/);
 });
 
 test("review 12: a transfer that cannot be received backs off exponentially (15 s, 30 s, ...) instead of being re-driven on every watch tick", async () => {
@@ -1258,4 +1257,18 @@ test("review 13: createJob refuses to submit when the S3 transport is not config
   });
   await assert.rejects(services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
   assert.equal(f.comfy.submits.length, 0);
+});
+
+// -- review round 15 (2026-10-05) -----------------------------------------------------------------
+
+test("review 15: resumeInFlightJobs credits session activity synchronously for each job it picks up (the watcher's idle check runs right after it, before the scheduled poll's first touch)", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  f.mem.jobs.set("job-cli", {
+    id: "job-cli", sessionId: "s1", channelId: "UC1", templateId: t.templateId, templateVersion: 1, paramsJson: "{}", status: "submitted", createdBy: "operator",
+    promptId: "prompt-1", outputsJson: null, assetIdsJson: null, error: null, createdAt: new Date(), submittedAt: new Date(), finishedAt: null,
+  });
+  const before = f.activity.length;
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: ["job-cli"] });
+  assert.equal(f.activity.length, before + 1, "touched before any scheduled poll ran");
 });

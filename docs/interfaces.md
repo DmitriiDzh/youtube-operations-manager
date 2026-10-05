@@ -1060,7 +1060,7 @@ CLI: "Operator CLI access" must be on; `credentials-test` (it writes `verified_a
 `gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
 `template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `workflow-templates`,
 `workflow-template-import --file`, `jobs [sessionId]`, `job-get <id>`, `job-create --file`, `janitor [--delete]`, `models`,
-`model-pull --repo --file --folder [--cpu] [--vcpu]`, `model-rm <key>`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
+`models-poll` (gated: advances the pulls, terminates finished pull pods), `model-pull --repo --file --folder [--cpu] [--vcpu]`, `model-rm <key>`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
 `pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-put <file> <key>`, `s3-rm <key>`.
 JSON envelope on stdout, non-zero exit on failure. Pod objects carry `comfyUiProxyUrl` (the token-proxy
 port on RunPod's HTTP proxy), so no script spells the proxy host itself. There is deliberately no

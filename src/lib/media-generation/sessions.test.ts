@@ -1046,3 +1046,63 @@ test("review 14: an `approved` row whose approve request died has an operator St
   assert.equal(f.lock.current(), null);
   assert.equal((await f.services.getLimits()).openSession, null);
 });
+
+// -- review round 15 (2026-10-05) -----------------------------------------------------------------
+
+test("review 15: a concurrent second approve of the same session that loses the `approved` transition must NOT release the volume lock the winner relies on", async () => {
+  const f = fixture({ runpod: fakeRunpod({ runningAfterPolls: 3 }) });
+  const requested = await f.services.requestSession(operatorRequest);
+  // Make the first approve's `approved` write slow enough for a second approve to get past the preconditions.
+  const originalTransition = f.mem.store.transition.bind(f.mem.store);
+  let firstApprovedWrite: Promise<unknown> | null = null;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  (f.mem.store as { transition: typeof originalTransition }).transition = async (id, from, set) => {
+    if (set.status === "approved" && firstApprovedWrite === null) {
+      firstApprovedWrite = gate;
+      await gate;
+    }
+    return originalTransition(id, from, set);
+  };
+  const first = f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  await new Promise((r) => setTimeout(r, 0));
+  const second = f.services.approveAndStartSession({ sessionId: requested.sessionId }); // the retried POST
+  await new Promise((r) => setTimeout(r, 0));
+  release();
+  const [a, b] = await Promise.allSettled([first, second]);
+  const winner = a.status === "fulfilled" ? a : b;
+  assert.equal(winner.status, "fulfilled");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "running");
+  assert.equal(f.lock.current(), `session:${requested.sessionId}`, "the running session still holds the volume");
+});
+
+test("review 15: Stop on an `approved` row is refused while its approve request may still be inside createPod (no error on the row, not yet abandoned by age)", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: f.getNow() });
+  await assert.rejects(f.services.stopSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_invalid_state" && /still creating the pod/.test(e.message));
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "approved");
+  // Abandoned by age: the manual override works (no pod of its name exists -> failed, slot freed).
+  f.advance(10 * 60_000);
+  const stopped = await f.services.stopSession({ sessionId: requested.sessionId });
+  assert.equal(stopped.status, "failed");
+});
+
+test("review 15: a pod created after the session was stopped meanwhile, whose terminate cannot be confirmed, is written onto the row (podId, cost, how to terminate it) instead of being forgotten", async () => {
+  const runpod = fakeRunpod({ terminateSticks: true });
+  const f = fixture({ runpod });
+  const requested = await f.services.requestSession(operatorRequest);
+  const originalCreate = runpod.client.createPod.bind(runpod.client);
+  (runpod.client as unknown as { createPod: (i: unknown) => Promise<unknown> }).createPod = async (input) => {
+    const pod = await originalCreate(input as never);
+    // The operator's Stop lands while createPod is in flight: the row is already abandoned by its error text.
+    f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, error: "pod creation failed (timeout) and RunPod could not be asked" });
+    await f.services.stopSession({ sessionId: requested.sessionId });
+    return pod;
+  };
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_invalid_state");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.podId, "pod1", "the late pod is recorded on the terminal row");
+  assert.match(row.error ?? "", /terminate it by hand \(media pod-terminate pod1\)/);
+});
