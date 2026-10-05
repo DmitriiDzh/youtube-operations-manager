@@ -5957,7 +5957,12 @@ function makeMediaHandlers(options: { channelOfSession?: string; channelOfJob?: 
       return { ...session, status: "pending", requestedBy: (input as { requestedBy: string }).requestedBy };
     },
     getSession: async () => session,
-    listSessions: async () => [session, { ...session, sessionId: "ms-other", channelId: "UC_other" }],
+    // Review round 6: the channel filter is pushed into the store query (never a post-filter of a capped page), so the
+    // fake honours the argument the way `listMediaSessions(limit, channelId)` does.
+    listSessions: async (limit: number, channelId?: string) => {
+      calls.push({ method: "listSessions", input: { limit, channelId } });
+      return [session, { ...session, sessionId: "ms-other", channelId: "UC_other" }].filter((s) => !channelId || s.channelId === channelId);
+    },
     getLimits: async () => ({ maxUsdPerDay: 10, spentTodayUsd: 1, remainingTodayUsd: 9, defaultMaxMinutes: 60, idleMinutes: 10, watchIntervalSeconds: 60, openSession: { ...session, channelId: "UC_other" }, ready: true, missing: [] }),
     listWorkflowTemplates: async () => [{ templateId: "t1", name: "txt2img" }],
     createJob: async (input: unknown) => {
@@ -6040,6 +6045,7 @@ test("MCP agent_get_media_session / agent_get_media_job: another channel's sessi
   const mine = makeMediaHandlers();
   const sessions = parseToolJson(await mine.handlers.agentGetMediaSession({ channelId: "UC_1" })).sessions;
   assert.deepEqual(sessions.map((s: { sessionId: string }) => s.sessionId), ["ms-1"]);
+  assert.deepEqual(mine.calls.at(-1), { method: "listSessions", input: { limit: 20, channelId: "UC_1" } });
   await mine.handlers.agentGetMediaJob({ channelId: "UC_1", sessionId: "ms-1" });
   assert.deepEqual(mine.calls.at(-1), { method: "listJobs", input: { channelId: "UC_1", sessionId: "ms-1" } });
 });

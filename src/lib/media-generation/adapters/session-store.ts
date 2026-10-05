@@ -40,6 +40,7 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     usdCharged: row.usdCharged ?? null,
     stopReason: row.stopReason ?? null,
     error: row.error ?? null,
+    stoppingOutcome: row.stoppingOutcome ?? null,
   };
 }
 
@@ -57,8 +58,8 @@ export function createMediaSessionStore(): MediaSessionStore {
       const row = await getOpenMediaSession();
       return row ? fromDb(row) : null;
     },
-    async list(limit) {
-      return (await listMediaSessions(limit)).map(fromDb);
+    async list(limit, channelId) {
+      return (await listMediaSessions(limit, channelId)).map(fromDb);
     },
     async listBillableSince(since) {
       return (await listMediaSessionsBillableSince(since)).map(fromDb);

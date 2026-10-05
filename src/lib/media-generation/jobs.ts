@@ -99,6 +99,8 @@ export type JobServiceDependencies = {
   fs: {
     mkdirp(dir: string): Promise<void>;
     sha256File(filePath: string): Promise<string>;
+    /** Removes a file this module wrote itself (a download that failed verification); missing = fine. */
+    remove(filePath: string): Promise<void>;
   };
   registerAsset(input: {
     channelId: string;
@@ -108,6 +110,8 @@ export type JobServiceDependencies = {
     title: string;
     provenance: Record<string, unknown>;
   }): Promise<{ assetId: string }>;
+  /** The asset already cataloged for this local file, if an earlier attempt registered it before dying. */
+  findAssetByLocalPath(channelId: string, localPath: string): Promise<{ assetId: string } | null>;
   generateId(): string;
   clock: { now(): Date };
   sleep(ms: number): Promise<void>;
@@ -313,7 +317,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     const pulled = await s3.getObjectToFile(output.remoteKey, localPath);
     const readBack = await deps.fs.sha256File(localPath);
     if (readBack !== pulled.sha256 || (head.size > 0 && pulled.bytes !== head.size)) {
-      return { ...output, note: `verification failed (stream ${pulled.sha256.slice(0, 8)}, file ${readBack.slice(0, 8)}, ${pulled.bytes}/${head.size} bytes)` };
+      // Never leave a file that failed verification in the operator's folder looking like a result; the remote copy stays.
+      await deps.fs.remove(localPath).catch((error) => log(`[media] could not remove unverified ${localPath}: ${error instanceof Error ? error.message : String(error)}`));
+      return { ...output, note: `verification failed (stream ${pulled.sha256.slice(0, 8)}, file ${readBack.slice(0, 8)}, ${pulled.bytes}/${head.size} bytes); the file was removed` };
     }
     await deps.store.ledger.upsert({ remoteKey: output.remoteKey, jobId: job.id, localPath, bytes: pulled.bytes, sha256: pulled.sha256, pulledAt: deps.clock.now() });
     let remoteDeleted = false;
@@ -324,27 +330,31 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     } catch (error) {
       log(`[media] remote delete of ${output.remoteKey} failed: ${error instanceof Error ? error.message : String(error)}; the janitor retries`);
     }
-    // The file is now the only copy (pulled, remote deleted): a catalog failure must not make it look "not pulled".
+    const pulledOutput = { ...output, localPath, bytes: pulled.bytes, sha256: pulled.sha256, remoteDeleted };
+    return catalogOutput(job, pulledOutput, fileName, provenance);
+  }
+
+  /**
+   * The asset entry for a pulled file (AC-P14-15). The file is the only copy by now (pulled, remote
+   * deleted): a catalog failure must not make it look "not pulled". Idempotent: an entry an earlier
+   * attempt registered before dying is reused, never duplicated.
+   */
+  async function catalogOutput(job: StoredJobRow, output: MediaJobOutput & { localPath: string; bytes: number; sha256: string }, fileName: string, provenance: Record<string, unknown>): Promise<MediaJobOutput> {
     try {
-      const asset = await deps.registerAsset({
-        channelId: job.channelId,
-        assetType: assetTypeFor(output.kind),
-        referenceKind: "local_path",
-        referenceValue: localPath,
-        title: fileName,
-        provenance: { ...provenance, comfyNodeId: output.nodeId, outputKind: output.kind, sha256: pulled.sha256, bytes: pulled.bytes },
-      });
-      return { ...output, localPath, bytes: pulled.bytes, sha256: pulled.sha256, remoteDeleted, assetId: asset.assetId, note: null };
+      const existing = await deps.findAssetByLocalPath(job.channelId, output.localPath);
+      const asset =
+        existing ??
+        (await deps.registerAsset({
+          channelId: job.channelId,
+          assetType: assetTypeFor(output.kind),
+          referenceKind: "local_path",
+          referenceValue: output.localPath,
+          title: fileName,
+          provenance: { ...provenance, comfyNodeId: output.nodeId, outputKind: output.kind, sha256: output.sha256, bytes: output.bytes },
+        }));
+      return { ...output, assetId: asset.assetId, note: output.note };
     } catch (error) {
-      return {
-        ...output,
-        localPath,
-        bytes: pulled.bytes,
-        sha256: pulled.sha256,
-        remoteDeleted,
-        assetId: null,
-        note: `pulled, but asset registration failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
+      return { ...output, assetId: null, note: `pulled, but asset registration failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -489,7 +499,10 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
       const ledger = await deps.store.ledger.get(output.remoteKey);
       if (ledger) {
-        results.push({ ...output, localPath: ledger.localPath, bytes: ledger.bytes, sha256: ledger.sha256, remoteDeleted: ledger.remoteDeletedAt !== null, note: output.note ?? "pulled by an earlier attempt" });
+        // Pulled by an earlier attempt that died before the job row recorded it: the file is local (ledger), so only
+        // the catalog step is (re)done -- reusing the entry if that attempt got that far (review round 6).
+        const earlier = { ...output, localPath: ledger.localPath, bytes: ledger.bytes, sha256: ledger.sha256, remoteDeleted: ledger.remoteDeletedAt !== null, note: output.note ?? "pulled by an earlier attempt" };
+        results.push(await catalogOutput(job, earlier, path.basename(ledger.localPath), provenance));
         continue;
       }
       try {
@@ -748,7 +761,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         }
         if (!dryRun) {
           await s3.deleteObject(key);
-          if (ledger) await deps.store.ledger.markRemoteDeleted(key, deps.clock.now());
+          await deps.store.ledger.markRemoteDeleted(key, deps.clock.now());
         }
         deleted.push(key);
       }

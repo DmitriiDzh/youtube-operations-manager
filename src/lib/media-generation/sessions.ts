@@ -49,7 +49,11 @@ export type StoredSessionRow = {
   usdCharged: number | null;
   stopReason: string | null;
   error: string | null;
+  /** The terminal status a `stopping` row is heading for (schema v53), so a retried stop reports it truthfully. */
+  stoppingOutcome: StoppingOutcome | null;
 };
+
+export type StoppingOutcome = "done" | "failed" | "interrupted";
 
 export type SessionPatch = Partial<Omit<StoredSessionRow, "id" | "status">> & { status: MediaSessionStatus };
 
@@ -58,7 +62,8 @@ export type MediaSessionStore = {
   insert(row: Omit<StoredSessionRow, "createdAt"> & { createdAt?: Date }): Promise<StoredSessionRow | null>;
   get(id: string): Promise<StoredSessionRow | null>;
   getOpen(): Promise<StoredSessionRow | null>;
-  list(limit: number): Promise<StoredSessionRow[]>;
+  /** Newest first; `channelId` filters in the query itself (never a post-filter of a capped page). */
+  list(limit: number, channelId?: string): Promise<StoredSessionRow[]>;
   /** Sessions with a pod that bills in the window: `startedAt` set and (`stoppedAt` null, or `startedAt` ≥ since, or `stoppedAt` ≥ since). */
   listBillableSince(since: Date): Promise<StoredSessionRow[]>;
   /** Atomic `from -> set.status`; `null` = not in `from`. */
@@ -91,6 +96,11 @@ export type SessionServiceDependencies = {
 const DEFAULT_START_TIMEOUT_MS = 8 * 60_000;
 const DEFAULT_POLL_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 90_000;
+/**
+ * An `approved`/`starting` row older than start + stop timeout plus this margin has no approve request
+ * behind it any more (that request either returned or threw by then): it was abandoned mid-start.
+ */
+const ABANDONED_START_GRACE_MS = 2 * 60_000;
 
 /** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
 export function podNameFor(sessionId: string): string {
@@ -98,11 +108,6 @@ export function podNameFor(sessionId: string): string {
 }
 
 /** The cap's day is the operator's machine's local day (this app runs on that machine), not UTC. */
-/** Every pod of the account (the gateway follows the v2 cursor pagination). */
-async function listAllPods(client: RunpodApiClient): Promise<RunpodPod[]> {
-  return client.listPods();
-}
-
 function startOfLocalDay(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
@@ -223,12 +228,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     });
   }
 
-  /** stopping/starting/running -> terminate -> confirm -> terminal. Leaves `stopping` when the API cannot confirm. */
-  async function stopRow(row: StoredSessionRow, reason: string, terminalStatus: "done" | "interrupted" | "failed" = "done"): Promise<StoredSessionRow> {
-    const stopping = await deps.store.transition(row.id, ["starting", "running", "stopping"], { status: "stopping", stopReason: reason });
+  /**
+   * stopping/starting/running -> terminate -> confirm -> terminal. Leaves `stopping` when the API cannot
+   * confirm. The outcome is persisted on the row (`stoppingOutcome`) so a retry -- the watcher, the boot
+   * sweep -- finishes with the status the stop was started for, not a default `done`.
+   */
+  async function stopRow(row: StoredSessionRow, reason: string, outcome: StoppingOutcome = "done"): Promise<StoredSessionRow> {
+    const stopping = await deps.store.transition(row.id, ["starting", "running", "stopping"], { status: "stopping", stopReason: reason, stoppingOutcome: outcome });
     if (!stopping) throw invalidState(row.id, "starting|running|stopping", row.status);
+    const terminal = { stopReason: reason, error: outcome === "done" ? null : reason };
     if (!stopping.podId) {
-      const finished = await finish(stopping, ["stopping"], terminalStatus, { stopReason: reason });
+      const finished = await finish(stopping, ["stopping"], outcome, terminal);
       return finished ?? stopping;
     }
     const client = await deps.base.resolveRunpodClient();
@@ -238,8 +248,71 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const kept = await deps.store.transition(row.id, ["stopping"], { status: "stopping", error: `pod still ${result.lastStatus} after terminate; retrying` });
       return kept ?? stopping;
     }
-    const finished = await finish(stopping, ["stopping"], terminalStatus, { stopReason: reason });
+    const finished = await finish(stopping, ["stopping"], outcome, terminal);
     return finished ?? stopping;
+  }
+
+  /** A `stopping` row is always resumed with ITS reason and outcome (an operator's "max USD reached" is never relabelled). */
+  async function retryStop(row: StoredSessionRow, fallbackReason: string, fallbackOutcome: StoppingOutcome): Promise<StoredSessionRow> {
+    return stopRow(row, row.stopReason ?? fallbackReason, row.stoppingOutcome ?? fallbackOutcome);
+  }
+
+  /**
+   * Reconciles a non-terminal, non-pending row that no request owns any more (boot sweep; an approve
+   * request that died mid-start). An `approved` row without podId is the one case where the pod can only
+   * be found by its deterministic name -- and that search must never be skipped by moving the row on
+   * while RunPod is unreachable (review round 6): the row then stays `approved` (slot taken, error
+   * recorded) until a later tick/boot can ask RunPod again.
+   */
+  async function reconcileAbandoned(open: StoredSessionRow, reason: string, outcome: Extract<StoppingOutcome, "failed" | "interrupted">): Promise<"reconciled" | "retrying" | "deferred"> {
+    if (open.status === "stopping") {
+      const stopped = await retryStop(open, reason, outcome);
+      return stopped.status === "stopping" ? "retrying" : "reconciled";
+    }
+    let podId = open.podId;
+    let orphanFacts: { podId: string; startedAt: Date; costPerHr: number | null } | null = null;
+    if (!podId && open.status === "approved") {
+      // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
+      try {
+        const client = await deps.base.resolveRunpodClient();
+        const orphan = (await client.listPods()).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
+        if (orphan) {
+          podId = orphan.id;
+          // The pod billed from its creation; record that like abortStart does (AC-P14-17).
+          orphanFacts = { podId: orphan.id, startedAt: orphan.createdAt ? new Date(orphan.createdAt) : (open.approvedAt ?? deps.clock.now()), costPerHr: orphan.costPerHr ?? open.costPerHr };
+        }
+      } catch (cause) {
+        await deps.store.transition(open.id, ["approved"], {
+          status: "approved",
+          error: `could not check RunPod for a pod named ${podNameFor(open.id)} (${cause instanceof Error ? cause.message : String(cause)}); retrying`,
+        });
+        return "deferred";
+      }
+      if (orphanFacts) await deps.store.transition(open.id, ["approved"], { status: "approved", ...orphanFacts });
+    }
+    if (podId) {
+      let unconfirmed: string | null = null;
+      try {
+        const client = await deps.base.resolveRunpodClient();
+        const result = await terminateAndConfirm(client, podId);
+        if (!result.confirmed) unconfirmed = `pod still ${result.lastStatus} after terminate`;
+      } catch (cause) {
+        unconfirmed = `pod ${podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
+      }
+      if (unconfirmed) {
+        // Never free the slot while the pod may still bill: `stopping` keeps podId and the watcher retries (like stopRow).
+        await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], {
+          status: "stopping",
+          ...(orphanFacts ?? {}),
+          stopReason: reason,
+          stoppingOutcome: outcome,
+          error: `${unconfirmed}; the watcher retries`,
+        });
+        return "retrying";
+      }
+    }
+    await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: reason }, orphanFacts ?? {});
+    return "reconciled";
   }
 
   return {
@@ -250,9 +323,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       return toPublicSession(await requireRow(sessionId), deps.clock.now());
     },
 
-    async listSessions(limit = 50): Promise<MediaSession[]> {
+    async listSessions(limit = 50, channelId?: string): Promise<MediaSession[]> {
       const now = deps.clock.now();
-      return (await deps.store.list(limit)).map((row) => toPublicSession(row, now));
+      return (await deps.store.list(limit, channelId)).map((row) => toPublicSession(row, now));
     },
 
     async getLimits(): Promise<MediaSessionLimits> {
@@ -321,6 +394,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         usdCharged: null,
         stopReason: null,
         error: null,
+        stoppingOutcome: null,
       });
       if (!row) {
         const open = await deps.store.getOpen();
@@ -408,7 +482,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
         let orphan: RunpodPod | undefined;
         try {
-          orphan = (await listAllPods(client)).find((p) => p.name === podNameFor(sessionId) && p.status !== "TERMINATED");
+          orphan = (await client.listPods()).find((p) => p.name === podNameFor(sessionId) && p.status !== "TERMINATED");
         } catch {
           orphan = undefined;
         }
@@ -441,6 +515,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               status: "stopping",
               ...podFacts,
               stopReason: `start failed: ${lastDetail}`,
+              stoppingOutcome: "failed",
               error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
             });
           }
@@ -552,15 +627,24 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
 
     /**
      * The watcher (AC-P14-06/07): idle ≥ idleMinutes with no activity, minutes ≥ maxMinutes, usd ≥
-     * maxUsd -> terminate; a pod found EXITED/gone -> interrupted; a session stuck `stopping` is retried.
+     * maxUsd -> terminate; a pod found EXITED/gone -> interrupted; a session stuck `stopping` is retried;
+     * an `approved`/`starting` row whose approve request died mid-start is reconciled once it is
+     * unmistakably abandoned (review round 6 -- before, such a pod billed until a manual restart).
      */
     async watchTick(): Promise<{ action: "none" | "stopped" | "interrupted" | "retried_stop"; sessionId: string | null; reason: string | null }> {
       const open = await deps.store.getOpen();
       if (!open) return { action: "none", sessionId: null, reason: null };
       const now = deps.clock.now();
       if (open.status === "stopping") {
-        const stopped = await stopRow(open, open.stopReason ?? "stop retried by watcher");
+        const stopped = await retryStop(open, "stop retried by watcher", "done");
         return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason: open.stopReason };
+      }
+      if (open.status === "approved" || open.status === "starting") {
+        const since = open.startedAt ?? open.approvedAt ?? open.createdAt;
+        if (now.getTime() - since.getTime() < startTimeoutMs + stopTimeoutMs + ABANDONED_START_GRACE_MS) return { action: "none", sessionId: open.id, reason: null };
+        const reason = `start abandoned: still ${open.status} ${Math.round((now.getTime() - since.getTime()) / 60_000)} min after approval (the approving request did not finish)`;
+        const result = await reconcileAbandoned(open, reason, "failed");
+        return { action: result === "reconciled" ? "stopped" : result === "retrying" ? "retried_stop" : "none", sessionId: open.id, reason };
       }
       if (open.status !== "running") return { action: "none", sessionId: open.id, reason: null };
 
@@ -572,9 +656,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return { action: "interrupted", sessionId: open.id, reason: "pod disappeared" };
       }
       if (pod.status === "EXITED" || pod.status === "ERROR") {
-        await terminateAndConfirm(client, pod.id);
-        await finish(open, ["running"], "interrupted", { error: `pod was ${pod.status}; terminated` });
-        return { action: "interrupted", sessionId: open.id, reason: `pod ${pod.status}` };
+        // Through stopRow, so an unconfirmed termination keeps the row `stopping` (podId kept) instead of marking it interrupted on trust.
+        const stopped = await stopRow(open, `pod was ${pod.status}; terminated`, "interrupted");
+        return { action: stopped.status === "stopping" ? "retried_stop" : "interrupted", sessionId: open.id, reason: `pod ${pod.status}` };
       }
 
       const minutes = open.startedAt ? (now.getTime() - open.startedAt.getTime()) / 60_000 : 0;
@@ -594,54 +678,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     /**
      * Boot (AC-P14-08): a session left non-terminal by a process that died is reconciled -- the pod
      * is terminated if it still exists -- and marked `interrupted` (a `pending` request is harmless
-     * and stays). Quiet on a RunPod failure: the next tick/boot retries.
+     * and stays; a row already `stopping` finishes with its own reason/outcome). Quiet on a RunPod
+     * failure: the row keeps a state the watcher/next boot can still act on.
      */
     async bootSweep(): Promise<{ swept: string[] }> {
       const open = await deps.store.getOpen();
       if (!open || open.status === "pending") return { swept: [] };
-      const error = "interrupted by a server restart";
-      let podId = open.podId;
-      let orphanFacts: { podId: string; startedAt: Date; costPerHr: number | null } | null = null;
-      if (!podId && open.status === "approved") {
-        // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
-        try {
-          const client = await deps.base.resolveRunpodClient();
-          const orphan = (await listAllPods(client)).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
-          if (orphan) {
-            podId = orphan.id;
-            // The pod billed from its creation; record that like abortStart does (AC-P14-17).
-            orphanFacts = { podId: orphan.id, startedAt: orphan.createdAt ? new Date(orphan.createdAt) : (open.approvedAt ?? deps.clock.now()), costPerHr: orphan.costPerHr ?? open.costPerHr };
-          }
-        } catch (cause) {
-          await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], {
-            status: "stopping",
-            stopReason: error,
-            error: `could not check RunPod for a pod named ${podNameFor(open.id)} (${cause instanceof Error ? cause.message : String(cause)}); the watcher retries`,
-          });
-          return { swept: [open.id] };
-        }
-        if (orphanFacts) await deps.store.transition(open.id, ["approved"], { status: "approved", ...orphanFacts });
+      try {
+        await reconcileAbandoned(open, "interrupted by a server restart", "interrupted");
+      } catch (cause) {
+        log(`[media] boot sweep of session ${open.id} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
-      if (podId) {
-        let unconfirmed: string | null = null;
-        try {
-          const client = await deps.base.resolveRunpodClient();
-          const result = await terminateAndConfirm(client, podId);
-          if (!result.confirmed) unconfirmed = `pod still ${result.lastStatus} after terminate`;
-        } catch (cause) {
-          unconfirmed = `pod ${podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
-        }
-        if (unconfirmed) {
-          // Never free the slot while the pod may still bill: `stopping` keeps podId and the watcher retries (like stopRow).
-          await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], {
-            status: "stopping",
-            stopReason: error,
-            error: `${unconfirmed}; the watcher retries`,
-          });
-          return { swept: [open.id] };
-        }
-      }
-      await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], "interrupted", { error }, orphanFacts ?? {});
       return { swept: [open.id] };
     },
 
@@ -656,7 +703,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       try {
         const open = await deps.store.getOpen();
         if (!open || !["starting", "running", "stopping"].includes(open.status)) return { stopped: null };
-        const stopped = await stopRow(open, "application shutdown");
+        const stopped = open.status === "stopping" ? await retryStop(open, "application shutdown", "done") : await stopRow(open, "application shutdown");
         return { stopped: stopped.status === "stopping" ? null : open.id };
       } catch (error) {
         log(`[media] shutdown stop failed: ${error instanceof Error ? error.message : String(error)}`);

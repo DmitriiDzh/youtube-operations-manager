@@ -6,8 +6,8 @@ import {
   getStoredMediaCredentials,
   setMediaGatewayEnabled,
   setMediaGenerationSettingsJson,
-  setMediaModelPullsJson,
   setStoredMediaCredentialsVerifiedAt,
+  updateMediaModelPullsJson,
   upsertStoredMediaCredentials,
 } from "@/lib/db";
 import type { ModelPullStore } from "../models";
@@ -16,7 +16,7 @@ import type { MediaGenerationStore } from "../services";
 export function createModelPullStore(): ModelPullStore {
   return {
     getPullsJson: () => getMediaModelPullsJson(),
-    setPullsJson: (json) => setMediaModelPullsJson(json),
+    updatePullsJson: (mutate) => updateMediaModelPullsJson(mutate),
   };
 }
 

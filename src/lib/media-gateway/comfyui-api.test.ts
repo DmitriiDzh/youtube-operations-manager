@@ -104,9 +104,21 @@ test("a non-2xx or unreachable server is comfyui_unavailable; the gateway block 
   assert.equal(calls.length, 0);
 });
 
-test("viewUrl encodes filename/subfolder/type", () => {
+// Review round 6 (ComfyUI server docs: a history entry is `{prompt, outputs, status?}`; the `status` block is
+// absent on builds that predate it). A finished prompt is recognised by `status.completed`, by `status_str`
+// "success", or -- with no status block at all -- by its outputs; an error is never masked as completed.
+test("parseHistoryEntry: an entry with outputs and no status block, or status.completed, is completed; an empty entry without status stays unknown", () => {
+  const outputs = { "9": { images: [{ filename: "job1/a.png", subfolder: "job1", type: "output" }] } };
+  assert.equal(parseHistoryEntry("p", { p: { prompt: [], outputs } })?.status, "completed");
+  assert.equal(parseHistoryEntry("p", { p: { prompt: [], outputs, status: { completed: true, messages: [] } } })?.status, "completed");
+  assert.equal(parseHistoryEntry("p", { p: { prompt: [], outputs: {} } })?.status, "unknown");
+  assert.equal(parseHistoryEntry("p", { p: { prompt: [], outputs, status: { status_str: "error", completed: false, messages: [] } } })?.status, "error");
+  assert.equal(parseHistoryEntry("p", { p: { prompt: [], outputs: {}, status: { completed: false, messages: [] } } })?.status, "unknown");
+});
+
+test("the client exposes exactly the calls the job pipeline makes -- no /view or /upload surface nothing exercises", () => {
   const client = createComfyUiClient({ baseUrl: "https://x", token: null, authorize: noAuth });
-  assert.equal(client.viewUrl({ filename: "a b.png", subfolder: "job1", type: "output" }), "https://x/view?filename=a+b.png&subfolder=job1&type=output");
+  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getQueue", "getSystemStats", "interrupt", "submitPrompt"]);
 });
 
 test("review: getQueue exposes the running and pending prompt ids; deleteQueued posts {delete:[...]} and skips an empty list", async () => {

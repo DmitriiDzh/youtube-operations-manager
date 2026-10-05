@@ -502,7 +502,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - `src/app/api/media-generation/*` — операторские маршруты (сессия обязательна);
   - `src/components/media-generation-settings.tsx` — под-вкладка Settings → Media;
   - `src/cli/media.ts` — operator CLI (гейт «Operator CLI access» + device mutation gate для мутаций).
-- **Схема:** v50 (`media_credentials`), v51 (`media_sessions`), v52 (`media_workflow_templates`, `media_jobs`, `media_exchange_files`) — все device-local, не в snapshot/sync.
+- **Схема:** v50 (`media_credentials`), v51 (`media_sessions`), v52 (`media_workflow_templates`, `media_jobs`, `media_exchange_files`), v53 (`media_sessions.stopping_outcome` — целевой статус повторяемой остановки) — все device-local, не в snapshot/sync.
 - **Подробно:** ARCHITECTURE §25, план `docs/roadmap/plans/PHASE_14_PLAN.md`, исследование `MEDIA_GENERATION_RUNPOD_COMFYUI_SYNCTHING_RESEARCH.md`.
 
 ### 2.10 Web UI — **IMPLEMENTED**

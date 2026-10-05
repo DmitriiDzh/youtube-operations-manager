@@ -158,6 +158,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   const comfy = opts.comfy ?? fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
   const s3 = opts.s3 ?? fakeS3(new Map([["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9])]]));
   const registered: Array<Record<string, unknown>> = [];
+  const removed: string[] = [];
   const activity: string[] = [];
   let now = new Date("2026-10-05T12:00:00Z");
   let ids = 0;
@@ -185,10 +186,18 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
         const bytes = s3.files.get(p);
         return bytes ? sha256(bytes) : "missing";
       },
+      remove: async (p) => {
+        removed.push(p);
+        s3.files.delete(p);
+      },
     },
     registerAsset: async (input) => {
       registered.push(input);
       return { assetId: `asset-${registered.length}` };
+    },
+    findAssetByLocalPath: async (_channelId, localPath) => {
+      const index = registered.findIndex((r) => r.referenceValue === localPath);
+      return index === -1 ? null : { assetId: `asset-${index + 1}` };
     },
     // The first id goes to the imported template, the second to the first job ("job-1").
     generateId: () => {
@@ -207,7 +216,11 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   const runScheduled = async () => {
     while (scheduled.length) await scheduled.shift()!();
   };
-  return { services, mem, comfy, s3, registered, activity, runScheduled };
+  const registerAsset = async (input: Record<string, unknown>) => {
+    registered.push(input);
+    return { assetId: `asset-${registered.length}` };
+  };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -519,10 +532,12 @@ function fixtureWithFailingRegister() {
         const bytes = s3.files.get(p);
         return bytes ? sha256(bytes) : "missing";
       },
+      remove: async () => {},
     },
     registerAsset: async () => {
       throw new Error("creative_assets insert failed");
     },
+    findAssetByLocalPath: async () => null,
     generateId: () => {
       ids++;
       return ids === 1 ? "tpl-1" : ids === 2 ? "job-1" : `id-${ids}`;
@@ -736,4 +751,68 @@ test("review 5: a job cancelled while its submit was in flight withdraws the pro
   };
   await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_job_invalid_state");
   assert.deepEqual(comfy.deleted, [["prompt-1"]]);
+});
+
+// -- review round 6 (2026-10-05) ------------------------------------------------------------------
+
+test("review 6: a download that fails verification is removed from the workspace folder (never left looking like a result); the remote copy stays", async () => {
+  const f = fixture();
+  // The read-back hash differs from the stream hash (disk error / a concurrent writer): corrupt bytes on disk.
+  const original = f.s3.client.getObjectToFile.bind(f.s3.client);
+  (f.s3.client as { getObjectToFile: (k: string, d: string) => Promise<unknown> }).getObjectToFile = async (key, dest) => {
+    const result = (await original(key, dest)) as { bytes: number; sha256: string };
+    f.s3.files.set(dest, new Uint8Array([1, 2, 3, 4])); // what actually landed
+    return result;
+  };
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const failed = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.outputs[0].localPath, null);
+  assert.match(failed.outputs[0].note ?? "", /verification failed/);
+  assert.deepEqual(f.removed, ["/ws/99 Data Exchange/From YTM/media/job-1/ComfyUI_00001_.png"]);
+  assert.equal(f.s3.files.size, 0, "no unverified file remains in the workspace");
+  assert.ok(!f.s3.calls.includes("delete:exchange/job-1/ComfyUI_00001_.png"), "the remote copy is kept for a retry");
+  assert.equal(f.registered.length, 0);
+});
+
+test("review 6: a transfer resumed from the ledger still registers the asset (once), so every pulled output has an assetId with provenance", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  // An earlier attempt pulled the file, wrote the ledger row, deleted the remote object and died before registering.
+  const localPath = "/ws/99 Data Exchange/From YTM/media/job-1/ComfyUI_00001_.png";
+  await f.mem.store.ledger.upsert({ remoteKey: "exchange/job-1/ComfyUI_00001_.png", jobId: job.jobId, localPath, bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), pulledAt: new Date() });
+  await f.mem.store.ledger.markRemoteDeleted("exchange/job-1/ComfyUI_00001_.png", new Date());
+  const row = f.mem.jobs.get(job.jobId)!;
+  f.mem.jobs.set(job.jobId, {
+    ...row,
+    status: "transferring",
+    outputsJson: JSON.stringify([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null, note: null }]),
+  });
+  await f.services.resumeInFlightJobs();
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.equal(done.outputs[0].localPath, localPath);
+  assert.equal(done.outputs[0].assetId, "asset-1");
+  assert.deepEqual(done.assetIds, ["asset-1"]);
+  assert.equal(f.registered.length, 1);
+  assert.equal(f.registered[0].referenceValue, localPath);
+  assert.ok(!f.s3.calls.some((c) => c.startsWith("get:")), "nothing is re-downloaded");
+
+  // The same resume when the earlier attempt DID register before dying: the entry is reused, never duplicated.
+  const again = fixture();
+  const t2 = await importDefault(again.services);
+  const job2 = await again.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await again.mem.store.ledger.upsert({ remoteKey: "exchange/job-1/ComfyUI_00001_.png", jobId: job2.jobId, localPath, bytes: 3, sha256: sha256(new Uint8Array([9, 9, 9])), pulledAt: new Date() });
+  await again.registerAsset({ channelId: "UC1", assetType: "generated_image", referenceKind: "local_path", referenceValue: localPath, title: "ComfyUI_00001_.png", provenance: {} });
+  const row2 = again.mem.jobs.get(job2.jobId)!;
+  again.mem.jobs.set(job2.jobId, { ...row2, status: "transferring", outputsJson: JSON.stringify([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null, note: null }]) });
+  await again.services.resumeInFlightJobs();
+  await again.runScheduled();
+  const done2 = await again.services.getJob({ jobId: job2.jobId });
+  assert.deepEqual(done2.assetIds, ["asset-1"]);
+  assert.equal(again.registered.length, 1, "no duplicate catalog entry");
 });

@@ -11,7 +11,7 @@ import { buildPullCommand, createMediaModelServices, modelFileName, type ModelPu
 function fixture(opts: { objects?: Map<string, number>; podStatus?: string; createFails?: boolean } = {}) {
   const objects = opts.objects ?? new Map<string, number>();
   let json: string | null = null;
-  const store: ModelPullStore = { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) };
+  const store: ModelPullStore = { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) };
   const calls: string[] = [];
   let podStatus = opts.podStatus ?? "RUNNING";
   const client = {
@@ -201,7 +201,7 @@ function fixtureWithFlakyTerminate() {
     async deleteObject() {},
   } as unknown as RunpodS3Client;
   const services = createMediaModelServices({
-    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: {
       getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }),
       resolveRunpodClient: async () => client,
@@ -233,7 +233,7 @@ test("review 3: a pull is refused while a GPU session is open on the volume", as
   const client = { async createPod() { throw new Error("must not be reached"); } } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
   const services = createMediaModelServices({
-    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "id",
     clock: { now: () => new Date() },
@@ -269,7 +269,7 @@ test("review 5: a pull is terminal only once RunPod confirms the pod is gone; a 
   const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
   let now = new Date("2026-10-05T12:00:00Z");
   const services = createMediaModelServices({
-    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "id",
     clock: { now: () => now },
@@ -307,7 +307,7 @@ test("review 5: a createPod call that fails after RunPod created the pull pod st
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
   const services = createMediaModelServices({
-    store: { getPullsJson: async () => json, setPullsJson: async (j) => void (json = j) },
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "pull-abcdef",
     clock: { now: () => new Date() },
@@ -315,4 +315,75 @@ test("review 5: a createPod call that fails after RunPod created the pull pod st
   const pull = await services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
   assert.equal(pull.podId, "cpupod9");
   assert.equal(await services.hasActivePull(), true);
+});
+
+// -- review round 6 (2026-10-05) ------------------------------------------------------------------
+
+test("review 6: two PROCESSES (the web watch loop and the operator CLI) mutating the pulls list never lose a pull -- the store's read-modify-write is atomic per mutation, not a whole-list overwrite from a stale read", async () => {
+  // One shared store (the database), two independent service instances (two processes, two serialization chains).
+  let json: string | null = null;
+  const store: ModelPullStore = { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) };
+  const objects = new Map<string, number>();
+  let headCalls = 0;
+  let releaseHead: () => void = () => undefined;
+  const headGate = new Promise<void>((resolve) => (releaseHead = resolve));
+  const s3 = {
+    async headObject(key: string) {
+      headCalls++;
+      if (headCalls === 1) await headGate; // the web loop's slow S3 call, during which the CLI appends a pull
+      const size = objects.get(key);
+      return size === undefined ? null : { size, etag: null, lastModified: null };
+    },
+    async listAllObjects() {
+      return [];
+    },
+    async deleteObject() {},
+  } as unknown as RunpodS3Client;
+  let created = 0;
+  const client = {
+    async createPod() {
+      created++;
+      return { id: `cpupod${created}`, status: "PROVISIONING" };
+    },
+    async getPod(id: string) {
+      return { id, status: "TERMINATED" };
+    },
+    async terminatePod() {
+      return { terminated: true, alreadyGone: false };
+    },
+  } as unknown as RunpodApiClient;
+  const make = (prefix: string) =>
+    createMediaModelServices({
+      store,
+      base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+      generateId: () => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      clock: { now: () => new Date("2026-10-05T12:00:00Z") },
+    });
+  const web = make("web");
+  const cli = make("cli");
+  const a = await web.startPull({ repoId: "a/b", file: "first.bin", folder: "vae" });
+  objects.set("models/vae/first.bin", 5);
+  const webPoll = web.pollPulls(); // reads [A], then blocks in headObject
+  await new Promise((r) => setTimeout(r, 0));
+  // The CLI (another process) cannot see an active pull as "already running"? It can -- so simulate its append the way
+  // its own startPull writes: a merge against the current list (A is done from its point of view only after the poll).
+  // Here the CLI records its pull directly through the shared store, exactly as startPull does once its checks pass.
+  await store.updatePullsJson((current) => JSON.stringify([...JSON.parse(current ?? "[]"), { pullId: "cli-B", podId: "cpupod2", repoId: "a/b", file: "second.bin", expectedKey: "models/vae/second.bin", status: "running", startedAt: "2026-10-05T12:00:00.000Z", finishedAt: null, bytes: null, error: null }]));
+  releaseHead();
+  await webPoll;
+  const pulls = await cli.listPulls();
+  assert.equal(pulls.find((p) => p.pullId === a.pullId)?.status, "done");
+  assert.equal(pulls.find((p) => p.pullId === "cli-B")?.status, "running", "the pull appended by the other process survives the web loop's write");
+  assert.equal(await web.hasActivePull(), true, "the volume is still reported busy (AC-P14-18)");
+});
+
+test("review 6: listPulls is read-only -- it never terminates a pod or rewrites the list (a GET/listing must not mutate)", async () => {
+  const f = fixture();
+  await f.services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" });
+  f.objects.set("models/vae/c.bin", 10);
+  const before = f.calls.length;
+  const [pull] = await f.services.listPulls();
+  assert.equal(pull.status, "running");
+  assert.equal(f.calls.length, before, "no RunPod/S3 call from a listing");
+  assert.ok(!f.calls.includes("terminate:cpupod1"));
 });

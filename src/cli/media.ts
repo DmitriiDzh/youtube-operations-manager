@@ -83,7 +83,7 @@ export const HELP = [
   "  workflow-templates | workflow-template-import --file <template.json>   {name, workflow, parameters}",
   "  jobs [sessionId] | job-get <jobId> | job-create --file <job.json>      {sessionId, channelId, templateId, params}",
   "  janitor [--delete]                      exchange/ leftovers on the volume (dry run unless --delete)",
-  "  models                                  models/ on the volume + pulls in flight (each call advances the pulls)",
+  "  models                                  models/ on the volume + recorded pulls (the running server advances them)",
   "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--cpu cpu3c] [--vcpu 2]",
   "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
@@ -232,7 +232,8 @@ export async function runMediaCli(args: {
         data = await core.cleanupExchange({ dryRun: parsed.flags.delete !== true });
         break;
       case "models":
-        data = { pulls: await core.pollPulls(), models: await core.listModels() };
+        // Read-only: the web server's watch loop advances the pulls (terminates finished pods), never a listing.
+        data = { pulls: await core.listPulls(), models: await core.listModels() };
         break;
       case "model-pull":
         data = await core.startPull({

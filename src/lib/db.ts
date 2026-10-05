@@ -791,6 +791,12 @@ export const mediaSessions = sqliteTable(
     usdCharged: real("usd_charged"),
     stopReason: text("stop_reason"),
     error: text("error"),
+    /**
+     * Schema v53 (review round 6): the terminal status a `stopping` row is heading for (`done` for an
+     * operator/watcher/shutdown stop, `failed` for an aborted start, `interrupted` for a boot sweep), so a
+     * retried stop reports what really happened instead of defaulting to `done`.
+     */
+    stoppingOutcome: text("stopping_outcome", { enum: ["done", "failed", "interrupted"] }),
   },
   (table) => [uniqueIndex("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -3035,6 +3041,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "remote_deleted_at INTEGER)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS media_exchange_files_job_idx ON media_exchange_files(job_id)");
+    },
+  },
+  {
+    version: 53,
+    description:
+      "media_sessions.stopping_outcome -- the terminal status a `stopping` session is heading for, so a retried stop reports failed/interrupted/done truthfully (Phase 14 review round 6); additive nullable column, existing rows untouched",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN stopping_outcome TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -7176,8 +7194,21 @@ export async function getMediaModelPullsJson(database: AppDb = db): Promise<stri
   return await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
 }
 
-export async function setMediaModelPullsJson(json: string, database: AppDb = db): Promise<void> {
-  await setAppSetting(MEDIA_MODEL_PULLS_KEY, json, database);
+/**
+ * The only writer: a read-modify-write of the pulls list in ONE write transaction (libSQL's `BEGIN IMMEDIATE`), so the
+ * web server's watch loop and the operator CLI -- separate processes -- never overwrite each other's
+ * change (review round 6). Returns what was written.
+ */
+export async function updateMediaModelPullsJson(mutate: (current: string | null) => string, database: AppDb = db): Promise<string> {
+  return database.transaction(async (tx) => {
+    const [row] = await tx.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, MEDIA_MODEL_PULLS_KEY));
+    const next = mutate(row?.value ?? null);
+    await tx
+      .insert(appSettings)
+      .values({ key: MEDIA_MODEL_PULLS_KEY, value: next })
+      .onConflictDoUpdate({ target: appSettings.key, set: { value: next } });
+    return next;
+  });
 }
 
 /** The Settings → Media values as one JSON string (validated by `src/lib/media-generation/schemas.ts`); `null` = never saved. */
@@ -7234,8 +7265,14 @@ export async function getOpenMediaSession(database: AppDb = db): Promise<StoredM
   return row ?? null;
 }
 
-export async function listMediaSessions(limit = 50, database: AppDb = db): Promise<StoredMediaSession[]> {
-  return database.select().from(mediaSessions).orderBy(desc(mediaSessions.createdAt)).limit(limit);
+/** Newest first; `channelId` filters IN the query (never a post-filter of a capped page -- review round 6). */
+export async function listMediaSessions(limit = 50, channelId?: string, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(channelId ? eq(mediaSessions.channelId, channelId) : undefined)
+    .orderBy(desc(mediaSessions.createdAt))
+    .limit(limit);
 }
 
 /** Sessions whose pod bills in the window (for the daily spend): started, with no stop yet, or started/stopped on or after `since`. */
@@ -7370,10 +7407,6 @@ export async function markMediaExchangeFileRemoteDeleted(remoteKey: string, at: 
 export async function getMediaExchangeFile(remoteKey: string, database: AppDb = db): Promise<StoredMediaExchangeFile | null> {
   const [row] = await database.select().from(mediaExchangeFiles).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
   return row ?? null;
-}
-
-export async function listMediaExchangeFilesByJob(jobId: string, database: AppDb = db): Promise<StoredMediaExchangeFile[]> {
-  return database.select().from(mediaExchangeFiles).where(eq(mediaExchangeFiles.jobId, jobId));
 }
 
 // ---------------------------------------------------------------------------

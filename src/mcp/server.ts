@@ -1297,7 +1297,8 @@ export function createMcpToolHandlers(
           }
           return toolSuccessResult({ session });
         }
-        const sessions = (await mediaGenerationCore.listSessions(50)).filter((s) => s.channelId === parsedInput.data.channelId).slice(0, 20);
+        // The channel filter runs in the query (not over a capped page), so a channel's sessions never vanish behind another channel's.
+        const sessions = await mediaGenerationCore.listSessions(20, parsedInput.data.channelId);
         return toolSuccessResult({ sessions });
       } catch (error) {
         return toolErrorResult(error);

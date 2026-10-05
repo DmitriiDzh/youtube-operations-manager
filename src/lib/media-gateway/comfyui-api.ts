@@ -5,9 +5,10 @@ import { asRecord } from "./json";
 // ---------------------------------------------------------------------------
 // Phase 14 -- the single funnel for the ComfyUI server API on a pod
 // (docs.comfy.org/development/comfyui-server/comms_routes, checked 2026-10-05): POST /prompt,
-// GET /history/{id}, GET /queue, POST /interrupt, GET /system_stats, POST /upload/image. The base
-// URL is built from the pod id (RunPod's HTTP proxy), never from operator input, and every call
-// carries the per-session bearer token the pod's reverse proxy checks (PHASE_14_PLAN.md §2.5).
+// GET /history/{id}, GET /queue, POST /queue {delete}, POST /interrupt, GET /system_stats -- exactly
+// the calls the job pipeline makes, nothing speculative (files travel over S3, never /view or
+// /upload). The base URL is built from the pod id (RunPod's HTTP proxy), never from operator input,
+// and every call carries the per-session bearer token the pod's reverse proxy checks (PHASE_14_PLAN.md §2.5).
 // ---------------------------------------------------------------------------
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -35,9 +36,16 @@ export type ComfyHistoryEntry = {
 export type ComfyUiClient = ReturnType<typeof createComfyUiClient>;
 
 
+/**
+ * A history entry is `{ prompt, outputs, status? }`. The `status` block (`status_str`, `completed`,
+ * `messages`) is what current ComfyUI writes; a build that omits it still lists `outputs` once the
+ * prompt finished, so an entry with outputs and no error IS a completed prompt (review round 6 -- a
+ * finished prompt must never be polled until the generation deadline and then failed).
+ */
 export function parseHistoryEntry(promptId: string, raw: unknown): ComfyHistoryEntry | null {
   const entry = asRecord(asRecord(raw)[promptId]);
   if (Object.keys(entry).length === 0) return null;
+  const hasStatusBlock = entry.status !== undefined && entry.status !== null;
   const status = asRecord(entry.status);
   const statusStr = typeof status.status_str === "string" ? status.status_str : null;
   const messages: string[] = [];
@@ -72,13 +80,13 @@ export function parseHistoryEntry(promptId: string, raw: unknown): ComfyHistoryE
       }
     }
   }
-  return {
-    promptId,
-    status: statusStr === "success" ? "completed" : statusStr === "error" ? "error" : "unknown",
-    statusMessages: messages,
-    outputs,
-    raw: entry,
-  };
+  const resolved: ComfyHistoryEntry["status"] =
+    statusStr === "error"
+      ? "error"
+      : statusStr === "success" || status.completed === true || (!hasStatusBlock && outputs.length > 0)
+        ? "completed"
+        : "unknown";
+  return { promptId, status: resolved, statusMessages: messages, outputs, raw: entry };
 }
 
 export function createComfyUiClient(args: { baseUrl: string; token: string | null; fetchImpl?: typeof fetch; authorize?: Authorize }) {
@@ -86,7 +94,7 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = args.baseUrl.replace(/\/$/, "");
 
-  async function request(method: string, path: string, options: { json?: unknown; form?: FormData } = {}): Promise<{ status: number; body: unknown }> {
+  async function request(method: string, path: string, options: { json?: unknown } = {}): Promise<{ status: number; body: unknown }> {
     await authorize("comfyui_api");
     const headers: Record<string, string> = { accept: "application/json" };
     if (args.token) headers.authorization = `Bearer ${args.token}`;
@@ -96,7 +104,7 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
       response = await fetchImpl(`${baseUrl}${path}`, {
         method,
         headers,
-        body: options.form ?? (options.json === undefined ? undefined : JSON.stringify(options.json)),
+        body: options.json === undefined ? undefined : JSON.stringify(options.json),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
@@ -187,25 +195,6 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
     async deleteQueued(promptIds: string[]): Promise<void> {
       if (promptIds.length === 0) return;
       await request("POST", "/queue", { json: { delete: promptIds } });
-    },
-
-    async uploadImage(input: { filename: string; bytes: Uint8Array; subfolder?: string; overwrite?: boolean }): Promise<{ name: string; subfolder: string }> {
-      const form = new FormData();
-      const bytes = new Uint8Array(input.bytes.byteLength);
-      bytes.set(input.bytes);
-      form.set("image", new Blob([bytes]), input.filename);
-      if (input.subfolder) form.set("subfolder", input.subfolder);
-      form.set("overwrite", input.overwrite ? "true" : "false");
-      form.set("type", "input");
-      const { body } = await request("POST", "/upload/image", { form });
-      const record = asRecord(body);
-      return { name: typeof record.name === "string" ? record.name : input.filename, subfolder: typeof record.subfolder === "string" ? record.subfolder : "" };
-    },
-
-    /** The `/view` URL for an output -- used only for previews; files themselves travel over S3. */
-    viewUrl(file: ComfyOutputFile): string {
-      const params = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder, type: file.type });
-      return `${baseUrl}/view?${params.toString()}`;
     },
   };
 }

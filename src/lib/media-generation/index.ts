@@ -113,6 +113,11 @@ function buildCore(jobScheduling: JobScheduling) {
       const asset = await assets.registerAsset(input);
       return { assetId: asset.assetId };
     },
+    findAssetByLocalPath: async (channelId, localPath) => {
+      const { assets: existing } = await assets.listAssets({ channelId });
+      const match = existing.find((a) => a.referenceKind === "local_path" && a.referenceValue === localPath);
+      return match ? { assetId: match.assetId } : null;
+    },
     generateId: () => randomUUID(),
     clock: { now },
     sleep,

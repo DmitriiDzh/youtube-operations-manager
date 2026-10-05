@@ -41,8 +41,8 @@ function memorySessionStore() {
     async getOpen() {
       return [...rows.values()].find((r) => !TERMINAL.has(r.status)) ?? null;
     },
-    async list(limit) {
-      return [...rows.values()].slice(-limit).reverse();
+    async list(limit, channelId) {
+      return [...rows.values()].filter((r) => !channelId || r.channelId === channelId).slice(-limit).reverse();
     },
     async listBillableSince(since) {
       return [...rows.values()].filter((r) => r.startedAt && (r.stoppedAt === null || r.startedAt >= since || r.stoppedAt >= since));
@@ -524,7 +524,9 @@ test("review: when termination cannot be confirmed after a failed start, the ses
   assert.equal((await f.services.getLimits()).openSession?.status, "stopping");
   f.runpod.pods.delete("pod1");
   assert.equal((await f.services.watchTick()).action, "stopped");
-  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "done");
+  // Review round 6: AC-P14-07 says a start that fails ends the session `failed` -- the earlier expectation of `done`
+  // here described the defect (a retried stop defaulting to `done`), not the requirement.
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "failed");
 });
 
 test("review: an operator Stop during the start wait is not overwritten by the start loop's own failure path", async () => {
@@ -560,7 +562,9 @@ test("review 2: the boot sweep never frees the slot while the pod's termination 
   assert.equal((await f.services.getLimits()).openSession?.sessionId, running.sessionId);
   f.runpod.pods.delete("pod1");
   assert.equal((await f.services.watchTick()).action, "stopped");
-  assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
+  // Review round 6: AC-P14-08 says a session reconciled by the boot sweep is `interrupted`; the earlier `done` here
+  // was the defect (the retry lost the sweep's outcome), not the requirement.
+  assert.equal(f.mem.rows.get(running.sessionId)!.status, "interrupted");
 
   const unreachable = fixture();
   const s = await startRunning(unreachable);
@@ -665,4 +669,113 @@ test("review 5: a pod that dies while ComfyUI is booting aborts the start within
   const row = f.mem.rows.get(requested.sessionId)!;
   assert.equal(row.status, "failed");
   assert.match(row.error ?? "", /pod ERROR while waiting for ComfyUI/);
+});
+
+// -- review round 6 (2026-10-05) ------------------------------------------------------------------
+
+test("review 6: a session left `starting` by an approve request that died is reconciled by the watcher once unmistakably abandoned -- pod terminated, session failed, cost recorded", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  // The approving request died right after the `starting` write (a non-DomainError escaped): pod1 bills, nobody polls it.
+  await f.runpod.client.createPod({ name: `ytm-media-${requested.sessionId.slice(0, 8)}`, env: {} } as never);
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "starting", podId: "pod1", approvedAt: f.getNow(), startedAt: f.getNow(), costPerHr: 0.69 });
+  // Inside the start budget (60 s) + stop budget (20 s) + grace (120 s) the approve may still be running: hands off.
+  f.advance(150_000);
+  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "starting");
+  assert.ok(f.runpod.pods.has("pod1"));
+  // Past it, the pod can only be an orphan.
+  f.advance(60_000);
+  const tick = await f.services.watchTick();
+  assert.equal(tick.action, "stopped");
+  assert.match(tick.reason ?? "", /start abandoned/);
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(f.runpod.pods.has("pod1"), false);
+  assert.equal(row.secondsUsed, 210);
+  assert.equal(row.usdCharged, 0.04); // 210 s × 0.69 / 3600 = 0.04025
+  assert.equal(await f.services.hasOpenPod(), false, "the idle shutdown is no longer blocked");
+});
+
+test("review 6: an `approved` row without podId is never moved to `stopping` while RunPod is unreachable -- the deterministic-name search is kept for a later tick/boot, then the pod is found and terminated", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const pod = await f.runpod.client.createPod({ name: `ytm-media-${requested.sessionId.slice(0, 8)}`, env: {} } as never);
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: f.getNow() });
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ ...pod, name: `ytm-media-${requested.sessionId.slice(0, 8)}`, status: "RUNNING" }];
+  const listPods = f.runpod.client.listPods;
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => {
+    throw new Error("RunPod API returned HTTP 503");
+  };
+  // Boot while RunPod is down.
+  assert.deepEqual(await f.services.bootSweep(), { swept: [requested.sessionId] });
+  let row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "approved", "stays approved so the name search still triggers");
+  assert.equal(row.podId, null);
+  assert.match(row.error ?? "", /could not check RunPod/);
+  assert.equal(await f.services.hasOpenPod(), true, "the slot stays taken while a pod may bill");
+  // A watcher tick with RunPod still down (and the row already abandoned by age): still deferred, nothing finished.
+  f.advance(10 * 60_000);
+  assert.equal((await f.services.watchTick()).action, "none");
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "approved");
+  // RunPod is back: the pod is found by name, terminated, the cost recorded.
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = listPods;
+  const tick = await f.services.watchTick();
+  assert.equal(tick.action, "stopped");
+  row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.podId, "pod1");
+  assert.equal(f.runpod.pods.has("pod1"), false);
+});
+
+test("review 6: a stop retried from `stopping` finishes with the outcome it was started for -- `failed` for an aborted start, `done` with the original reason for an operator/watcher stop swept at boot", async () => {
+  // Aborted start whose termination could not be confirmed -> stopping; the retry must NOT report `done`.
+  const runpod = fakeRunpod({ terminateSticks: true });
+  const f = fixture({ runpod, comfy: fakeComfy({ never: true }) });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }));
+  assert.equal(f.mem.rows.get(requested.sessionId)!.status, "stopping");
+  f.runpod.pods.delete("pod1");
+  await f.services.watchTick();
+  const aborted = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(aborted.status, "failed");
+  assert.match(aborted.stopReason ?? "", /start failed/);
+  assert.equal(aborted.readyAt, null);
+
+  // Watcher stop (max USD) whose termination hung -> stopping; a restart's boot sweep keeps the reason and ends `done`.
+  const g = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
+  const running = await startRunning(g, { maxMinutes: 600, maxUsd: 0.05 });
+  g.advance(10 * 60_000); // 600 s × 0.69 / 3600 = 0.115 ≥ 0.05
+  assert.equal((await g.services.watchTick()).action, "retried_stop");
+  assert.equal(g.mem.rows.get(running.sessionId)!.status, "stopping");
+  g.runpod.pods.delete("pod1");
+  await g.services.bootSweep();
+  const swept = g.mem.rows.get(running.sessionId)!;
+  assert.equal(swept.status, "done");
+  assert.equal(swept.stopReason, "max USD reached ($0.05)");
+});
+
+test("review 6: a pod found EXITED whose termination cannot be confirmed keeps the session `stopping` (podId kept) and ends `interrupted` once confirmed", async () => {
+  const f = fixture({ runpod: fakeRunpod({ terminateSticks: true }) });
+  const running = await startRunning(f);
+  f.runpod.setStatus("pod1", "EXITED");
+  assert.equal((await f.services.watchTick()).action, "retried_stop");
+  assert.equal(f.mem.rows.get(running.sessionId)!.status, "stopping");
+  f.runpod.pods.delete("pod1");
+  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal(f.mem.rows.get(running.sessionId)!.status, "interrupted");
+});
+
+test("review 6: listSessions filters by channel in the store query, so a channel's sessions are found behind any number of another channel's", async () => {
+  const f = fixture();
+  const mine = await f.services.requestSession({ channelId: "UC_A", requestedBy: "operator" });
+  await f.services.rejectSession({ sessionId: mine.sessionId, reason: "later" });
+  for (let i = 0; i < 60; i++) {
+    const other = await f.services.requestSession({ channelId: "UC_B", requestedBy: "operator" });
+    await f.services.rejectSession({ sessionId: other.sessionId, reason: "x" });
+  }
+  const page = await f.services.listSessions(50);
+  assert.ok(!page.some((s) => s.channelId === "UC_A"), "a capped page without the filter would hide it");
+  const filtered = await f.services.listSessions(20, "UC_A");
+  assert.deepEqual(filtered.map((s) => s.sessionId), [mine.sessionId]);
 });

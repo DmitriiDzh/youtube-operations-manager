@@ -2427,7 +2427,25 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   when its `media_exchange_files` row says the file is local -- a failed or cancelled job's leftovers,
   which may be a finished generation nobody recorded, stay for the operator (`scripts/media/s3.sh`).
   The SIGINT/SIGTERM terminate is best-effort (Next.js owns the exit); the boot sweep is authoritative.
-- **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51, owner decisions D2/D3).** A session is one
+- **Abandoned starts and truthful outcomes (review round 6).** `media_sessions.stopping_outcome` (schema v53)
+  records the terminal status a `stopping` row is heading for (`done` / `failed` / `interrupted`), so a stop
+  retried by the watcher or the boot sweep ends with that status and the original `stopReason` (an aborted
+  start never reads as `done`; "max USD reached" survives a restart). The watcher reconciles an `approved`/
+  `starting` row whose approve request died once it is older than start + stop timeout + 2 min (pod
+  terminated, session `failed`, cost recorded) -- before, such a pod billed until a manual restart while
+  `hasOpenPod` blocked the idle shutdown. The boot sweep keeps an `approved` row without podId `approved`
+  (error recorded) while RunPod is unreachable, because only that state triggers the deterministic-name
+  search; an EXITED pod whose termination is unconfirmed stays `stopping` instead of `interrupted` on trust.
+  The pulls list is read-modified-written in ONE libSQL write transaction (`updateMediaModelPullsJson`,
+  `BEGIN IMMEDIATE`) and merged per pull, so the operator CLI (a separate process) and the web watch loop
+  never drop each other's pull; `GET /models` and the CLI `models` are read-only (`listPulls`) -- only the
+  watch loop advances pulls, so a read verb never terminates pods behind the device mutation gate's back.
+  A download that fails verification is removed from the workspace folder (the remote copy stays for a
+  retry); a transfer resumed from the ledger still registers the asset, reusing an entry an earlier attempt
+  may have created (`findAssetByLocalPath`). A ComfyUI history entry without a `status` block but with
+  outputs is `completed`; `agent_get_media_session`'s list filters by channel in the query. Dead surface
+  removed: `uploadImage`/`viewUrl` on the ComfyUI client, `listMediaExchangeFilesByJob`.
+- **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod
   calls, AC-P14-03) and `fitsToday` against the daily cap; a request that does not fit is still created
@@ -2488,8 +2506,9 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   the volume (never another prefix); `deleteModel` accepts only a `models/…` object key. `startPull` creates
   a CPU pod (`python:3.12-slim`, default flavor `cpu3c`, 2 vCPU) with the volume at `/workspace` whose
   command installs the Hugging Face CLI and downloads one file into `models/<folder>/`, then idles;
-  `pollPulls` (every GET of the Models card, every media watch tick) terminates the pod as soon as the
-  expected key has a size, or marks the pull failed when the pod died first, or timed out after 6 h --
-  never "stop". The in-flight list lives in `app_settings.media_model_pulls` (device-local). A GPU
+  `pollPulls` (every media watch tick -- never a GET or a CLI listing, which are read-only) terminates the
+  pod as soon as the expected key has a size, or marks the pull failed when the pod died first, or timed
+  out after 6 h -- never "stop". The in-flight list lives in `app_settings.media_model_pulls`
+  (device-local; every mutation is one write transaction merged per pull, review round 6). A GPU
   session's approve is refused while a pull is running (shared volume, AC-P14-18); the CLI mirrors the
   panel (`models`, `model-pull`, `model-rm`).
