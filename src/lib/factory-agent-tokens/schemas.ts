@@ -8,3 +8,11 @@ export const issueFactoryTokenInputSchema = z
     label: z.string().trim().max(100).optional(),
   })
   .strict();
+
+/** BL-130. `token` is only typed here; the service checks its format without echoing it. */
+export const importFactoryTokenInputSchema = z
+  .object({
+    token: z.string(),
+    label: z.string().trim().max(100).optional(),
+  })
+  .strict();

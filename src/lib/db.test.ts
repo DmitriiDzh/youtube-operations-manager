@@ -27,6 +27,8 @@ import {
   findActiveFactoryAgentTokenByHash,
   listActiveFactoryAgentTokens,
   replaceFactoryAgentToken,
+  findFactoryAgentTokenByHash,
+  findAgentChannelTokenByHash,
   revokeFactoryAgentTokens,
   getLogicalPathValue,
   insertLogicalPathRow,
@@ -3040,6 +3042,35 @@ test("logical_paths: seeds exactly the two initial names without values; values 
     assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), true);
     assert.equal(await getLogicalPathValue("device-a", "script_library", isolatedDb), null);
     assert.equal(await deleteLogicalPathRow("script_library", isolatedDb), false);
+  }));
+
+// BL-130 (docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md §2.3 rule 4): import must tell "active here" from
+// "revoked here", so the any-status lookup returns revoked rows with their revokedAt, and unknown hashes as null.
+test("find*TokenByHash return active and revoked rows (revokedAt set) and null for an unknown hash", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await replaceAgentChannelToken({ id: "c1", channelId: "UC_A", userId: "u-a", tokenHash: "hc1", label: null }, isolatedDb);
+    await replaceAgentChannelToken({ id: "c2", channelId: "UC_A", userId: "u-a", tokenHash: "hc2", label: null }, isolatedDb);
+    const revokedChannel = await findAgentChannelTokenByHash("hc1", isolatedDb);
+    assert.equal(revokedChannel?.id, "c1");
+    assert.ok(revokedChannel?.revokedAt instanceof Date);
+    const activeChannel = await findAgentChannelTokenByHash("hc2", isolatedDb);
+    assert.equal(activeChannel?.revokedAt, null);
+    assert.equal(activeChannel?.userId, "u-a");
+    assert.equal(await findAgentChannelTokenByHash("nope", isolatedDb), null);
+
+    await replaceFactoryAgentToken({ id: "f1", tokenHash: "hf1", label: null }, isolatedDb);
+    await replaceFactoryAgentToken({ id: "f2", tokenHash: "hf2", label: null }, isolatedDb);
+    assert.ok((await findFactoryAgentTokenByHash("hf1", isolatedDb))?.revokedAt instanceof Date);
+    assert.equal((await findFactoryAgentTokenByHash("hf2", isolatedDb))?.revokedAt, null);
+    assert.equal(await findFactoryAgentTokenByHash("hc2", isolatedDb), null);
+
+    // A second import of the same hash cannot create a second row: the insert fails and rolls back its revoke.
+    // (Drizzle wraps the SQLite UNIQUE error as "Failed query: ..."; the constraint is in its cause.)
+    await assert.rejects(replaceFactoryAgentToken({ id: "f3", tokenHash: "hf2", label: null }, isolatedDb));
+    assert.equal((await findFactoryAgentTokenByHash("hf2", isolatedDb))?.revokedAt, null);
   }));
 
 // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md AC-FO-10): at most one active

@@ -2086,7 +2086,10 @@ binding without modification. The few reads that never called `assertActiveChann
 `transcript`, `preview`, `channel_sync`'s explicit id) are wrapped once in their core wiring.
 
 **Identity.** A channel token (`src/lib/agent-tokens`) is the only agent identity.
-- It is a SHA-256 hash with the `ytom_ch_` prefix, stored device-locally.
+- It is a SHA-256 hash with the `ytom_ch_` prefix, stored device-locally. Since BL-130 (ADR 0024) the plaintext is
+  `ytom_ch_<channelId>.<secret>`; verification also requires the embedded id to equal the row's channel (legacy tokens
+  without it still verify). The operator can register an already-issued token on another device (`importToken`, same
+  identity check as issuing, only into the embedded channel); each device keeps its own row, so revocation is per device (RISK-108).
 - It records the Google identity that owned the channel live at issue time; credentials come
   from there, never from `channels.connected_user_id`.
 - The token is verified once at process entry, which enters the scope, and re-verified on every
@@ -2369,7 +2372,7 @@ The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTO
   `SNAPSHOT_TRANSFERRED_TABLES` and not in sync-gateway, by owner decision (each machine configures only its own values). Reads filter on the bootstrap
   `deviceId`; a read never creates it, never touches the filesystem and returns the stored string exactly as stored. Only the operator routes
   (`/api/logical-paths`, session required) create, set (validated once with `src/lib/local-path-validation`, like Phase 11) or delete.
-- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity.
+- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity. It can also be registered by operator import of an already-issued token (BL-130, ADR 0024); revocation is per device.
   It lives in its own table so that a channel token can never be looked up as a factory token or the reverse; the prefix check rejects a foreign
   token before any lookup.
 

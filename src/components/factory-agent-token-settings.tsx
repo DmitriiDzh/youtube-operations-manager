@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { AgentTokenImportForm } from "./agent-token-import-form";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
@@ -122,7 +123,9 @@ export function FactoryAgentTokenSettings() {
           works only on its own endpoint (/api/mcp/factory) and cannot use a channel agent&apos;s
           tools or data; a channel agent&apos;s token does not work there either. Issuing a new token
           revokes the old one. The token is shown only once, right after issuing, and is stored only as a
-          hash on this device. It follows the same MCP connection on/off switch as channel agents.
+          hash on this device. It follows the same MCP connection on/off switch as channel agents. To use
+          the same token on another device, paste it there with &quot;Use an existing token&quot;. Revoking a
+          token applies only to the device where you revoke it.
         </InfoTooltip>
       </h3>
 
@@ -159,6 +162,18 @@ export function FactoryAgentTokenSettings() {
           </>
         )}
       </div>
+
+      {!loadFailed && (
+        <AgentTokenImportForm<TokenSummary>
+          endpoint="/api/factory-agent-token/import"
+          placeholder="ytom_fo_..."
+          replacesActive={Boolean(active)}
+          onImported={(summary) => {
+            setActive(summary);
+            setRevealed(null);
+          }}
+        />
+      )}
 
       {revealed && (
         <div className="space-y-1 rounded-lg border border-amber-900 bg-amber-950/30 p-2">
@@ -198,7 +213,7 @@ export function FactoryAgentTokenSettings() {
           description={
             pending === "rotate"
               ? "The current token stops working immediately. The Factory Operator needs the new token in its configuration."
-              : "The Factory Operator loses access immediately. Channel agents are not affected."
+              : "The Factory Operator loses access on this device immediately. Channel agents are not affected. If the token was also entered on other devices, revoke it there too."
           }
           confirmLabel={pending === "rotate" ? "Rotate" : "Revoke"}
           confirmVariant="danger"

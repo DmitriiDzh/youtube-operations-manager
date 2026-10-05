@@ -5077,6 +5077,20 @@ export async function findActiveAgentChannelTokenByHash(
   return rows[0] ?? null;
 }
 
+/** BL-130. Token row by hash whether active or revoked, or null -- import must tell "already
+ * active here" apart from "revoked here" (a revoked token is never re-activated on this device). */
+export async function findAgentChannelTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredAgentChannelToken | null> {
+  const rows = await database
+    .select(agentChannelTokenColumns)
+    .from(agentChannelTokens)
+    .where(eq(agentChannelTokens.tokenHash, tokenHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export async function listActiveAgentChannelTokens(database: AppDb = db): Promise<StoredAgentChannelToken[]> {
   return database.select(agentChannelTokenColumns).from(agentChannelTokens).where(isNull(agentChannelTokens.revokedAt));
 }
@@ -5248,6 +5262,19 @@ export async function findActiveFactoryAgentTokenByHash(
     .select(factoryAgentTokenColumns)
     .from(factoryAgentTokens)
     .where(and(eq(factoryAgentTokens.tokenHash, tokenHash), isNull(factoryAgentTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** BL-130. Factory token row by hash whether active or revoked, or null (see `findAgentChannelTokenByHash`). */
+export async function findFactoryAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredFactoryAgentToken | null> {
+  const rows = await database
+    .select(factoryAgentTokenColumns)
+    .from(factoryAgentTokens)
+    .where(eq(factoryAgentTokens.tokenHash, tokenHash))
     .limit(1);
   return rows[0] ?? null;
 }

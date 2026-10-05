@@ -25,6 +25,10 @@ function createMemoryStore() {
     async findActiveByHash(tokenHash) {
       return rows.find((row) => row.tokenHash === tokenHash && !row.revoked) ?? null;
     },
+    async findByHash(tokenHash) {
+      const row = rows.find((candidate) => candidate.tokenHash === tokenHash);
+      return row ? { ...row, revokedAt: row.revoked ? new Date("2026-10-05T12:00:00Z") : null } : null;
+    },
     async listActive() {
       return rows.filter((row) => !row.revoked);
     },
@@ -54,12 +58,14 @@ test("issueToken returns the plaintext once, stores only its SHA-256, binds chan
   const { services, memory } = createServices();
   const issued = await services.issueToken({ channelId: "UC_A", label: "Codex" });
 
-  assert.equal(issued.token, "ytom_ch_secret-1");
+  // Was "ytom_ch_secret-1": the requirement changed -- tokens now embed their channel id
+  // (BL-130, docs/decisions/0024-agent-token-import.md, AGENT_TOKEN_IMPORT_PLAN.md §2.2).
+  assert.equal(issued.token, "ytom_ch_UC_A.secret-1");
   assert.equal(issued.channelId, "UC_A");
   assert.equal(issued.label, "Codex");
-  const expectedHash = createHash("sha256").update("ytom_ch_secret-1").digest("hex");
+  const expectedHash = createHash("sha256").update("ytom_ch_UC_A.secret-1").digest("hex");
   assert.equal(memory.rows[0].tokenHash, expectedHash);
-  assert.equal(JSON.stringify(memory.rows).includes("ytom_ch_secret-1"), false, "plaintext must never be stored");
+  assert.equal(JSON.stringify(memory.rows).includes("ytom_ch_UC_A.secret-1"), false, "plaintext must never be stored");
   assert.deepEqual(await services.verifyToken(issued.token), { tokenId: issued.tokenId, channelId: "UC_A", userId: "user-a" });
   assert.equal(JSON.stringify(await services.listActiveTokens()).includes("secret"), false, "listing never exposes the token");
 });

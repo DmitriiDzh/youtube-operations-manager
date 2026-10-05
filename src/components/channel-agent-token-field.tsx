@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { AgentTokenImportForm } from "./agent-token-import-form";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 
@@ -124,7 +125,9 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
             The one token that binds an AI agent to this channel. An agent that presents this token to the
             app&apos;s MCP endpoint (as a Bearer credential) can only read and change this channel&apos;s data. It
             cannot see or switch to any other channel. Issuing a new token revokes the old one. The token is
-            shown only once, right after issuing. It is stored only as a hash on this device.
+            shown only once, right after issuing. It is stored only as a hash on this device. To use the same
+            agent on another device, paste this token there with &quot;Use an existing token&quot;. Revoking a
+            token applies only to the device where you revoke it.
           </InfoTooltip>
         </span>
         <span className="text-zinc-500">
@@ -163,6 +166,19 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
           </>
         )}
       </div>
+
+      {active !== undefined && !loadFailed && (
+        <AgentTokenImportForm<TokenSummary>
+          endpoint="/api/agent-tokens/import"
+          extraBody={{ channelId }}
+          placeholder="ytom_ch_..."
+          replacesActive={active !== null}
+          onImported={(summary) => {
+            setActive(summary);
+            setRevealed(null);
+          }}
+        />
+      )}
 
       {revealed && (
         <div className="space-y-1 rounded-lg border border-amber-900 bg-amber-950/30 p-2">
@@ -204,7 +220,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
           description={
             pending === "rotate"
               ? "The current token stops working immediately. The agent needs the new token in its configuration."
-              : "The agent using this token loses access to this channel immediately."
+              : "The agent using this token loses access to this channel on this device immediately. If the token was also entered on other devices, revoke it there too."
           }
           confirmLabel={pending === "rotate" ? "Rotate" : "Revoke"}
           confirmVariant="danger"

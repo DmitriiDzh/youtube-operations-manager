@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DomainError, FACTORY_AGENT_TOKEN_PREFIX } from "./contracts";
 import type { FactoryTokenBinding, FactoryTokenSummary, IssuedFactoryToken } from "./contracts";
-import { issueFactoryTokenInputSchema, parseWithSchema } from "./schemas";
+import { importFactoryTokenInputSchema, issueFactoryTokenInputSchema, parseWithSchema } from "./schemas";
 
 export type StoredFactoryTokenRow = { id: string; label: string | null; createdAt: Date };
 
@@ -10,6 +10,8 @@ export type FactoryTokenStore = {
   replace(input: { id: string; tokenHash: string; label: string | null }): Promise<void>;
   revoke(): Promise<number>;
   findActiveByHash(tokenHash: string): Promise<StoredFactoryTokenRow | null>;
+  /** Active or revoked (BL-130 import must tell the two apart); `revokedAt` null = active. */
+  findByHash(tokenHash: string): Promise<(StoredFactoryTokenRow & { revokedAt: Date | null }) | null>;
   listActive(): Promise<StoredFactoryTokenRow[]>;
 };
 
@@ -23,6 +25,17 @@ export type ServiceDependencies = {
 export function hashFactoryToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
+
+/** A label is stored and shown in plaintext: refuse one that looks like a token pasted in the wrong field.
+ * Kept local rather than imported from `agent-tokens`, so the two token modules stay independent (`AGENTS.md` §M). */
+function rejectTokenLikeLabel(label: string | undefined): void {
+  if (label && /^ytom_/i.test(label.trim())) {
+    throw new DomainError({ code: "validation_failed", message: "label must not be a token" });
+  }
+}
+
+/** BL-130: what `issueToken` generates after the prefix -- base64url of 32 random bytes. */
+const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 function toSummary(row: StoredFactoryTokenRow): FactoryTokenSummary {
   return { tokenId: row.id, label: row.label, createdAt: row.createdAt.toISOString() };
@@ -38,11 +51,51 @@ export function createFactoryTokenServices(deps: ServiceDependencies) {
      */
     async issueToken(input: unknown): Promise<IssuedFactoryToken> {
       const parsed = parseWithSchema(issueFactoryTokenInputSchema, input ?? {}, "issue factory token input");
+      rejectTokenLikeLabel(parsed.label);
       const token = `${FACTORY_AGENT_TOKEN_PREFIX}${generateSecret()}`;
       const id = randomUUID();
       const label = parsed.label && parsed.label.length > 0 ? parsed.label : null;
       await deps.store.replace({ id, tokenHash: hashFactoryToken(token), label });
       return { tokenId: id, label, createdAt: new Date().toISOString(), token };
+    },
+
+    /**
+     * Operator-only (BL-130). Registers on THIS device the factory token already issued on another one.
+     * The plaintext never leaves this function (errors never carry it); only its hash is stored. Like
+     * issuing, it revokes the previous active factory token here. Re-importing the active token is a
+     * no-op; a token this device revoked is refused, never re-activated. Revocation stays per device.
+     */
+    async importToken(input: unknown): Promise<FactoryTokenSummary> {
+      const parsed = parseWithSchema(importFactoryTokenInputSchema, input, "import factory token input");
+      const token = parsed.token.trim();
+      if (!token.startsWith(FACTORY_AGENT_TOKEN_PREFIX) || !SECRET_PATTERN.test(token.slice(FACTORY_AGENT_TOKEN_PREFIX.length))) {
+        throw new DomainError({ code: "AGENT_TOKEN_IMPORT_MALFORMED", message: "this is not a Factory Operator token (ytom_fo_...)" });
+      }
+      rejectTokenLikeLabel(parsed.label);
+      const tokenHash = hashFactoryToken(token);
+      const existingOutcome = (existing: (StoredFactoryTokenRow & { revokedAt: Date | null }) | null): FactoryTokenSummary | null => {
+        if (!existing) return null;
+        if (existing.revokedAt !== null) {
+          throw new DomainError({
+            code: "AGENT_TOKEN_IMPORT_REVOKED",
+            message: "this token was revoked on this device and cannot be used here again -- issue a new one",
+          });
+        }
+        return toSummary(existing);
+      };
+      const known = existingOutcome(await deps.store.findByHash(tokenHash));
+      if (known) return known;
+      const label = parsed.label && parsed.label.length > 0 ? parsed.label : null;
+      const id = randomUUID();
+      try {
+        await deps.store.replace({ id, tokenHash, label });
+      } catch (error) {
+        // A concurrent import of the same token won the UNIQUE race; report the winner's row.
+        const raced = existingOutcome(await deps.store.findByHash(tokenHash));
+        if (raced) return raced;
+        throw error;
+      }
+      return { tokenId: id, label, createdAt: new Date().toISOString() };
     },
 
     /** Operator-only. Revokes the active token; idempotent. Never touches any channel token. */

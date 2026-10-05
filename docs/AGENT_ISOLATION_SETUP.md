@@ -26,6 +26,14 @@ repository.
 3. **Rotate** issues a new token and invalidates the old one at once. **Revoke** invalidates it
    without issuing a new one. A running agent's next call then fails with `AGENT_TOKEN_INVALID`.
 
+**Same token on another device (BL-130, ADR 0024).** On the other device, connect the same channel
+first, then Settings → Channels → the channel's row → **Use an existing token** and paste the token.
+The agent configuration stays identical on both devices. A token carries its channel
+(`ytom_ch_<channelId>.…`) and can only be imported into that channel; tokens issued before this
+format must be reissued first. **Revoke and Rotate act only on the device where you press them** —
+revoke a leaked token on every device where it was entered (`docs/TECHNICAL_DEBT.md` RISK-108). The
+MCP connection switch is also per device.
+
 The token is tied to the channel's Google identity as it is at issue time. **Disconnecting the
 channel, or reconnecting it with a different Google account, invalidates the token immediately**
 (disconnecting also revokes it). Issue a new one afterwards.
@@ -91,4 +99,5 @@ Recommended, per agent, where the agent client supports it:
 The Factory Operator is a second agent role with its own token (`ytom_fo_...`, Settings -> AI Agent) and its own endpoint (`/api/mcp/factory`). It is read-only (logical path
 registry, capabilities, the list of channels with their workspace paths) and has no channel binding. The same advice as in §5 applies to it: keep its launch
 configuration (which holds its token) outside every channel agent's folder, and never put a channel token and the factory token in one configuration. The two tokens are not
-interchangeable: each endpoint rejects the other's token.
+interchangeable: each endpoint rejects the other's token. The same factory token can be entered on another device with **Use an existing token** in its
+card; as with channel tokens, revoking applies only to the device where you revoke it.
