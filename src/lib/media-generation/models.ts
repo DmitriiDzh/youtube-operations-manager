@@ -75,6 +75,15 @@ export function buildPullCommand(repoId: string, file: string, folder: string): 
 export function createMediaModelServices(deps: ModelServiceDependencies) {
   const pullCapMs = deps.pullCapMs ?? DEFAULT_PULL_CAP_MS;
 
+  // The pulls list is one JSON value read-modified-written by several callers in this process (the UI's GET,
+  // the watch loop, startPull): every mutation runs through this chain so none is lost.
+  let chain: Promise<unknown> = Promise.resolve();
+  function serialized<T>(work: () => Promise<T>): Promise<T> {
+    const next = chain.then(work, work);
+    chain = next.catch(() => undefined);
+    return next;
+  }
+
   async function readPulls(): Promise<ModelPull[]> {
     const json = await deps.store.getPullsJson();
     if (!json) return [];
@@ -149,7 +158,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     },
 
     async hasActivePull(): Promise<boolean> {
-      return (await readPulls()).some((p) => p.status === "running");
+      return hasActivePull();
     },
 
     /**
@@ -157,12 +166,36 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
      * `models/<folder>/`. Returns at once; `pollPull` watches the key and terminates the pod.
      */
     async startPull(input: unknown): Promise<ModelPull> {
+      return serialized(() => startPullInner(input));
+    },
+
+    async pollPulls(): Promise<ModelPull[]> {
+      return serialized(() => pollPullsInner());
+    },
+
+    /** Operator abort: terminate the pull pod now. */
+    async cancelPull(input: unknown): Promise<ModelPull> {
+      const { pullId } = parseWithSchema(z.object({ pullId: z.string().min(1).max(64) }).strict(), input, "pull id");
+      return serialized(async () => {
+        const pull = (await readPulls()).find((p) => p.pullId === pullId);
+        if (!pull) throw new DomainError({ code: "media_job_not_found", message: "No model pull with this id", details: { pullId } });
+        if (pull.status !== "running") throw new DomainError({ code: "media_job_invalid_state", message: `Pull is ${pull.status}`, details: { pullId } });
+        return finishPull(pull, "failed", { error: "cancelled by operator" });
+      });
+    },
+  };
+
+  async function hasActivePull(): Promise<boolean> {
+    return (await readPulls()).some((p) => p.status === "running");
+  }
+
+  async function startPullInner(input: unknown): Promise<ModelPull> {
       const parsed = parseWithSchema(startModelPullInputSchema, input, "model pull");
       const settings = await deps.base.getSettings();
       if (!settings.datacenterId || !settings.networkVolumeId) {
         throw new DomainError({ code: "media_generation_not_configured", message: "Set the datacenter and the network volume in Settings → Media before pulling models." });
       }
-      if (await this.hasActivePull()) {
+      if (await hasActivePull()) {
         throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
       }
       const client = await deps.base.resolveRunpodClient();
@@ -192,49 +225,36 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       };
       await writePulls([...(await readPulls()), pull]);
       return pull;
-    },
+  }
 
-    /**
-     * One check of every running pull: the expected key on the volume -> done (pod terminated); the
-     * pod gone/EXITED before the file arrived -> failed; older than the cap -> timeout (terminated).
-     */
-    async pollPulls(): Promise<ModelPull[]> {
+  /**
+   * One check of every running pull: the expected key on the volume -> done (pod terminated); the
+   * pod gone/EXITED before the file arrived -> failed; older than the cap -> timeout (terminated).
+   */
+  async function pollPullsInner(): Promise<ModelPull[]> {
       const pulls = await readPulls();
       const running = pulls.filter((p) => p.status === "running");
       if (running.length === 0) return pulls;
       const s3 = await deps.base.s3();
       const client = await deps.base.resolveRunpodClient();
       const now = deps.clock.now().getTime();
-      const results: ModelPull[] = [];
       for (const pull of running) {
         const head = await s3.headObject(pull.expectedKey);
         if (head && head.size > 0) {
-          results.push(await finishPull(pull, "done", { bytes: head.size }));
+          await finishPull(pull, "done", { bytes: head.size });
           continue;
         }
         const pod = await client.getPod(pull.podId);
         if (!pod || pod.status === "TERMINATED" || pod.status === "EXITED" || pod.status === "ERROR") {
-          results.push(await finishPull(pull, "failed", { error: `pod ${pod?.status ?? "gone"} before the file appeared` }));
+          await finishPull(pull, "failed", { error: `pod ${pod?.status ?? "gone"} before the file appeared` });
           continue;
         }
         if (now - Date.parse(pull.startedAt) > pullCapMs) {
-          results.push(await finishPull(pull, "timeout", { error: `no file after ${Math.round(pullCapMs / 3_600_000)} h` }));
-          continue;
+          await finishPull(pull, "timeout", { error: `no file after ${Math.round(pullCapMs / 3_600_000)} h` });
         }
-        results.push(pull);
       }
       return readPulls();
-    },
-
-    /** Operator abort: terminate the pull pod now. */
-    async cancelPull(input: unknown): Promise<ModelPull> {
-      const { pullId } = parseWithSchema(z.object({ pullId: z.string().min(1).max(64) }).strict(), input, "pull id");
-      const pull = (await readPulls()).find((p) => p.pullId === pullId);
-      if (!pull) throw new DomainError({ code: "media_job_not_found", message: "No model pull with this id", details: { pullId } });
-      if (pull.status !== "running") throw new DomainError({ code: "media_job_invalid_state", message: `Pull is ${pull.status}`, details: { pullId } });
-      return finishPull(pull, "failed", { error: "cancelled by operator" });
-    },
-  };
+  }
 }
 
 export type MediaModelServices = ReturnType<typeof createMediaModelServices>;

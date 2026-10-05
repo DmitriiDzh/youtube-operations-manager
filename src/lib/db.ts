@@ -7238,9 +7238,12 @@ export async function listMediaSessions(limit = 50, database: AppDb = db): Promi
   return database.select().from(mediaSessions).orderBy(desc(mediaSessions.createdAt)).limit(limit);
 }
 
-/** Sessions whose pod started on or after `since` (for the daily spend). */
-export async function listMediaSessionsStartedSince(since: Date, database: AppDb = db): Promise<StoredMediaSession[]> {
-  return database.select().from(mediaSessions).where(gte(mediaSessions.startedAt, since));
+/** Sessions whose pod bills in the window (for the daily spend): started, with no stop yet, or started/stopped on or after `since`. */
+export async function listMediaSessionsBillableSince(since: Date, database: AppDb = db): Promise<StoredMediaSession[]> {
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(and(isNotNull(mediaSessions.startedAt), or(isNull(mediaSessions.stoppedAt), gte(mediaSessions.startedAt, since), gte(mediaSessions.stoppedAt, since))));
 }
 
 /**

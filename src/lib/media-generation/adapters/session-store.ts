@@ -3,7 +3,7 @@ import {
   getOpenMediaSession,
   insertMediaSession,
   listMediaSessions,
-  listMediaSessionsStartedSince,
+  listMediaSessionsBillableSince,
   touchMediaSessionActivity,
   transitionMediaSession,
   type StoredMediaSession,
@@ -60,8 +60,8 @@ export function createMediaSessionStore(): MediaSessionStore {
     async list(limit) {
       return (await listMediaSessions(limit)).map(fromDb);
     },
-    async listStartedSince(since) {
-      return (await listMediaSessionsStartedSince(since)).map(fromDb);
+    async listBillableSince(since) {
+      return (await listMediaSessionsBillableSince(since)).map(fromDb);
     },
     async transition(id, from, set) {
       const row = await transitionMediaSession(id, from, set);

@@ -210,3 +210,17 @@ function fixtureWithFlakyTerminate() {
   });
   return { services, objects };
 }
+
+test("review 2: concurrent startPull and pollPulls never lose a pull (the list mutations are serialized)", async () => {
+  const f = fixture();
+  await f.services.startPull({ repoId: "a/b", file: "first.bin", folder: "vae" });
+  f.objects.set("models/vae/first.bin", 5);
+  // A poll (which finishes the first pull) and a second start race on the same JSON list.
+  const [, second] = await Promise.all([f.services.pollPulls(), (async () => {
+    await new Promise((r) => setTimeout(r, 0));
+    return f.services.startPull({ repoId: "a/b", file: "second.bin", folder: "vae" }).catch(() => null);
+  })()]);
+  const pulls = await f.services.listPulls();
+  if (second) assert.ok(pulls.some((p) => p.pullId === second.pullId && p.status === "running"), "the second pull must be in the list");
+  assert.ok(pulls.some((p) => p.expectedKey === "models/vae/first.bin" && p.status === "done"));
+});

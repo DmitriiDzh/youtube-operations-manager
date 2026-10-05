@@ -59,7 +59,8 @@ export type MediaSessionStore = {
   get(id: string): Promise<StoredSessionRow | null>;
   getOpen(): Promise<StoredSessionRow | null>;
   list(limit: number): Promise<StoredSessionRow[]>;
-  listStartedSince(since: Date): Promise<StoredSessionRow[]>;
+  /** Sessions with a pod that bills in the window: `startedAt` set and (`stoppedAt` null, or `startedAt` ≥ since, or `stoppedAt` ≥ since). */
+  listBillableSince(since: Date): Promise<StoredSessionRow[]>;
   /** Atomic `from -> set.status`; `null` = not in `from`. */
   transition(id: string, from: readonly MediaSessionStatus[], set: SessionPatch): Promise<StoredSessionRow | null>;
   touchActivity(id: string, at: Date): Promise<void>;
@@ -157,8 +158,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     return row;
   }
 
+  /** Every session billed today: started today, stopped today, or still open (a session across midnight counts in full). */
   async function spentTodayUsd(now: Date): Promise<number> {
-    const rows = await deps.store.listStartedSince(startOfUtcDay(now));
+    const rows = await deps.store.listBillableSince(startOfUtcDay(now));
     return round2(rows.reduce((sum, row) => sum + (liveUsd(row, now) ?? 0), 0));
   }
 
@@ -190,10 +192,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     row: StoredSessionRow,
     from: readonly MediaSessionStatus[],
     status: Extract<MediaSessionStatus, "done" | "failed" | "interrupted">,
-    extra: { stopReason?: string | null; error?: string | null }
+    extra: { stopReason?: string | null; error?: string | null },
+    /** Pod facts to record alongside (a pod that existed but was never written to the row, AC-P14-17). */
+    podFacts: { podId?: string; startedAt?: Date; costPerHr?: number | null } = {}
   ): Promise<StoredSessionRow | null> {
     const stoppedAt = deps.clock.now();
-    const cost = finalCost(row, stoppedAt);
+    const effective: StoredSessionRow = { ...row, ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}), ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}) };
+    const cost = finalCost(effective, stoppedAt);
     return deps.store.transition(row.id, from, {
       status,
       stoppedAt,
@@ -201,6 +206,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       usdCharged: cost.usdCharged,
       stopReason: extra.stopReason ?? null,
       error: extra.error ?? null,
+      ...(podFacts.podId ? { podId: podFacts.podId } : {}),
+      ...(podFacts.startedAt ? { startedAt: podFacts.startedAt } : {}),
+      ...(podFacts.costPerHr !== undefined ? { costPerHr: podFacts.costPerHr } : {}),
     });
   }
 
@@ -268,7 +276,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Settings → Media." });
       }
       const maxMinutes = parsed.maxMinutes ?? settings.defaultMaxMinutes;
-      const estimateUsd = round2((settings.gpuOnDemandPricePerHr * maxMinutes) / 60);
+      // The upper bound is whichever cap bites first: the minutes at the saved price, or the session's own USD cap.
+      const byMinutes = (settings.gpuOnDemandPricePerHr * maxMinutes) / 60;
+      const estimateUsd = round2(parsed.maxUsd ? Math.min(byMinutes, parsed.maxUsd) : byMinutes);
       const spent = await spentTodayUsd(now);
       const fitsToday = estimateUsd <= Math.max(0, settings.maxUsdPerDay - spent);
       const row = await deps.store.insert({
@@ -400,12 +410,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // An operator Stop (or the watcher/boot sweep) may have taken the row meanwhile: never overwrite its outcome.
         const latest = await requireRow(sessionId);
         if (latest.status === "approved" || latest.status === "starting") {
+          // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
+          const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
           if (terminated.confirmed) {
-            await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` });
+            await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` }, podFacts);
           } else {
             await deps.store.transition(sessionId, ["approved", "starting"], {
               status: "stopping",
-              podId: pod.id,
+              ...podFacts,
               stopReason: `start failed: ${lastDetail}`,
               error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
             });
@@ -559,18 +571,34 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     async bootSweep(): Promise<{ swept: string[] }> {
       const open = await deps.store.getOpen();
       if (!open || open.status === "pending") return { swept: [] };
-      let error = "interrupted by a server restart";
+      const error = "interrupted by a server restart";
       if (open.podId) {
+        let unconfirmed: string | null = null;
         try {
           const client = await deps.base.resolveRunpodClient();
           const result = await terminateAndConfirm(client, open.podId);
-          if (!result.confirmed) error += `; pod still ${result.lastStatus} after terminate`;
+          if (!result.confirmed) unconfirmed = `pod still ${result.lastStatus} after terminate`;
         } catch (cause) {
-          error += `; pod ${open.podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
+          unconfirmed = `pod ${open.podId} could not be reached (${cause instanceof Error ? cause.message : String(cause)})`;
+        }
+        if (unconfirmed) {
+          // Never free the slot while the pod may still bill: `stopping` keeps podId and the watcher retries (like stopRow).
+          await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], {
+            status: "stopping",
+            stopReason: error,
+            error: `${unconfirmed}; the watcher retries`,
+          });
+          return { swept: [open.id] };
         }
       }
       await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], "interrupted", { error });
       return { swept: [open.id] };
+    },
+
+    /** For the idle auto-shutdown: a pod in flight is work (an MCP-driven session makes no HTTP traffic to this server). */
+    async hasOpenPod(): Promise<boolean> {
+      const open = await deps.store.getOpen();
+      return Boolean(open && ["approved", "starting", "running", "stopping"].includes(open.status));
     },
 
     /** App exit (AC-P14-09): terminate the running pod first, bounded by the stop timeout; never throws. */

@@ -44,8 +44,8 @@ function memorySessionStore() {
     async list(limit) {
       return [...rows.values()].slice(-limit).reverse();
     },
-    async listStartedSince(since) {
-      return [...rows.values()].filter((r) => r.startedAt && r.startedAt >= since);
+    async listBillableSince(since) {
+      return [...rows.values()].filter((r) => r.startedAt && (r.stoppedAt === null || r.startedAt >= since || r.stoppedAt >= since));
     },
     async transition(id, from, set) {
       const row = rows.get(id);
@@ -545,4 +545,71 @@ test("review: an operator Stop during the start wait is not overwritten by the s
   assert.equal(row.status, "done");
   assert.equal(row.stopReason, "stopped by operator");
   assert.equal(runpod.pods.has("pod1"), false);
+});
+
+// -- review round 2 (2026-10-05) ------------------------------------------------------------------
+
+test("review 2: the boot sweep never frees the slot while the pod's termination is unconfirmed -- the session goes to `stopping` with its podId and the watcher retries", async () => {
+  const runpod = fakeRunpod({ terminateSticks: true });
+  const f = fixture({ runpod });
+  const running = await startRunning(f);
+  assert.deepEqual(await f.services.bootSweep(), { swept: [running.sessionId] });
+  const row = f.mem.rows.get(running.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod1");
+  assert.equal((await f.services.getLimits()).openSession?.sessionId, running.sessionId);
+  f.runpod.pods.delete("pod1");
+  assert.equal((await f.services.watchTick()).action, "stopped");
+  assert.equal(f.mem.rows.get(running.sessionId)!.status, "done");
+
+  const unreachable = fixture();
+  const s = await startRunning(unreachable);
+  (unreachable.runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async () => {
+    throw new Error("RunPod API returned HTTP 502");
+  };
+  await unreachable.services.bootSweep();
+  assert.equal(unreachable.mem.rows.get(s.sessionId)!.status, "stopping");
+});
+
+test("review 2: the estimate is min(price × minutes / 60, maxUsd), so a tight maxUsd fits the daily cap", async () => {
+  const f = fixture({ settings: { maxUsdPerDay: 1 } });
+  const session = await f.services.requestSession({ ...operatorRequest, maxMinutes: 600, maxUsd: 0.8 });
+  assert.equal(session.estimateUsd, 0.8); // 0.6 × 10 h = $6 capped by maxUsd
+  assert.equal(session.fitsToday, true);
+  const started = await f.services.approveAndStartSession({ sessionId: session.sessionId });
+  assert.equal(started.status, "running");
+});
+
+test("review 2: today's spend includes a session that started before midnight and is still open or stopped today", async () => {
+  const f = fixture({ now: new Date("2026-10-05T23:30:00Z"), settings: { idleMinutes: 1000 } });
+  const a = await startRunning(f, { maxMinutes: 600 });
+  f.advance(2 * 60 * 60_000); // now 01:30 next day, A still running: 0.69 × 2 h ≈ $1.38
+  const limits = await f.services.getLimits();
+  assert.ok(limits.spentTodayUsd >= 1.3, `spent today should include the open session, got ${limits.spentTodayUsd}`);
+  await f.services.stopSession({ sessionId: a.sessionId });
+  const after = await f.services.getLimits();
+  assert.ok(after.spentTodayUsd >= 1.3, "a session stopped today still counts");
+});
+
+test("review 2: a pod created but never written as `starting` is still recorded (podId, startedAt, cost) on the failed row", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const originalTransition = f.mem.store.transition;
+  let failedOnce = false;
+  f.mem.store.transition = async (id, from, set) => {
+    if (set.status === "starting" && !failedOnce) {
+      failedOnce = true;
+      throw new Error("SQLITE_BUSY");
+    }
+    return originalTransition(id, from, set);
+  };
+  f.advance(60_000);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.podId, "pod1");
+  assert.ok(row.startedAt);
+  assert.equal(row.costPerHr, 0.69);
+  assert.ok((row.secondsUsed ?? 0) >= 0 && row.usdCharged !== null);
+  assert.equal(f.runpod.pods.has("pod1"), false);
 });

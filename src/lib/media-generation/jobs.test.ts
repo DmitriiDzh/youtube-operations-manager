@@ -562,3 +562,74 @@ test("review: resumeInFlightJobs polls a submitted job nobody in this process tr
   assert.equal(f.comfy.submits.length, 1);
   assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [] });
 });
+
+// -- review round 2 (2026-10-05) ------------------------------------------------------------------
+
+test("review 2: a transient /history failure is retried while the session runs; only a run of failures fails the job", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  const client = comfy.client as unknown as { getHistory: () => Promise<unknown> };
+  const original = client.getHistory.bind(comfy.client);
+  let failures = 2;
+  client.getHistory = async () => {
+    if (failures-- > 0) {
+      const { DomainError } = await import("./contracts");
+      throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI returned HTTP 502" });
+    }
+    return original();
+  };
+  const f = fixture({ comfy });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+
+  const always = fakeComfy([null]);
+  (always.client as unknown as { getHistory: () => Promise<unknown> }).getHistory = async () => {
+    const { DomainError } = await import("./contracts");
+    throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI returned HTTP 502" });
+  };
+  const g = fixture({ comfy: always });
+  const t2 = await importDefault(g.services);
+  const job2 = await g.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t2.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await g.runScheduled();
+  const r = await g.services.getJob({ jobId: job2.jobId });
+  assert.equal(r.status, "failed");
+  assert.match(r.error ?? "", /5 consecutive polls/);
+});
+
+test("review 2: the janitor keeps a failed job's completed-but-unpulled outputs (the only copy) and still deletes a failed job's folder with nothing recorded", async () => {
+  const objects = new Map<string, Uint8Array>([
+    ["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9])],
+    ["exchange/job-9/partial.png", new Uint8Array([1])],
+  ]);
+  const s3 = fakeS3(objects);
+  const f = fixture({ s3, workspaceFails: true }); // the transfer fails after ComfyUI completed
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
+  f.mem.jobs.set("job-9", { ...f.mem.jobs.get(job.jobId)!, id: "job-9", status: "failed", outputsJson: null });
+  const report = await f.services.cleanupExchange({ dryRun: false });
+  assert.deepEqual(report.deleted, ["exchange/job-9/partial.png"]);
+  assert.ok(report.kept.some((k) => k.key === "exchange/job-1/ComfyUI_00001_.png" && /unpulled output/.test(k.reason)));
+  assert.ok(objects.has("exchange/job-1/ComfyUI_00001_.png"));
+});
+
+test("review 2: a job stuck in `transferring` is resumed and completed from its recorded outputs without re-pulling what already landed", async () => {
+  const f = fixture();
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  // Simulate another process that recorded the outputs, pulled nothing, and died.
+  const row = f.mem.jobs.get(job.jobId)!;
+  f.mem.jobs.set(job.jobId, {
+    ...row,
+    status: "transferring",
+    outputsJson: JSON.stringify([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1", remoteKey: "exchange/job-1/ComfyUI_00001_.png", localPath: null, bytes: null, sha256: null, remoteDeleted: false, assetId: null, note: null }]),
+  });
+  assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: [job.jobId] });
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.ok(done.outputs[0].localPath);
+  assert.equal(f.registered.length, 1);
+});

@@ -359,3 +359,19 @@ test("s3() needs the pair, the datacenter and the volume", async () => {
   await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
   assert.ok(await services.s3());
 });
+
+test("review 2: changing the cloud type re-prices the chosen GPU from the catalog", async () => {
+  const runpod = fakeRunpod();
+  const priced = runpod.client as unknown as { listGpuTypes: (o?: { cloud?: string }) => Promise<unknown[]> };
+  priced.listGpuTypes = async (o) => [
+    { id: "NVIDIA GeForce RTX 4090", displayName: "RTX 4090", memoryInGb: 24, secureCloud: true, communityCloud: true, onDemandPricePerHr: o?.cloud === "COMMUNITY" ? 0.34 : 0.69, spotPricePerHr: null, estimatedAvailability: "HIGH", dataCenters: [] },
+  ];
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  const secure = await services.updateSettings({ gpuTypeId: "NVIDIA GeForce RTX 4090" });
+  assert.equal(secure.gpuOnDemandPricePerHr, 0.69);
+  const community = await services.updateSettings({ cloudType: "COMMUNITY" });
+  assert.equal(community.gpuOnDemandPricePerHr, 0.34);
+  const cleared = await services.updateSettings({ gpuTypeId: null });
+  assert.equal(cleared.gpuOnDemandPricePerHr, null);
+});

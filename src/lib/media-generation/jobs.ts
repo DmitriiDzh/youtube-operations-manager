@@ -121,6 +121,8 @@ export type JobServiceDependencies = {
 
 const DEFAULT_POLL_MS = 4_000;
 const DEFAULT_MAX_GENERATION_MS = 2 * 60 * 60_000;
+/** Consecutive `/history` failures (proxy 502, 30 s timeout) tolerated while the session still runs. */
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> } & Record<string, unknown>>;
 
@@ -360,7 +362,14 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
   async function processJobInner(jobId: string): Promise<void> {
     const job = await deps.store.jobs.get(jobId);
-    if (!job || (job.status !== "submitted" && job.status !== "generating") || !job.promptId) return;
+    if (!job || !job.promptId) return;
+    if (job.status === "transferring" && job.outputsJson) {
+      // A transfer another process (or an earlier life of this one) never finished: redo it from the recorded outputs.
+      await transferOutputs(job, JSON.parse(job.outputsJson) as MediaJobOutput[]);
+      return;
+    }
+    if (job.status !== "submitted" && job.status !== "generating") return;
+    let pollFailures = 0;
     const session = await deps.sessions.getRunningSession(job.sessionId);
     if (!session) {
       await failJob(job, "the session is no longer running");
@@ -381,9 +390,18 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       let history;
       try {
         history = await comfy.getHistory(job.promptId);
+        pollFailures = 0;
       } catch (error) {
-        await failJob(job, `ComfyUI unreachable: ${error instanceof Error ? error.message : String(error)}`);
-        return;
+        // One 502/timeout through RunPod's proxy is routine during a heavy generation: fail only after a run of them,
+        // or once the session itself is gone.
+        pollFailures++;
+        const stillRunning = await deps.sessions.getRunningSession(job.sessionId);
+        if (!stillRunning || pollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+          await failJob(job, `ComfyUI unreachable (${pollFailures} consecutive polls): ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+        await deps.sleep(pollMs);
+        continue;
       }
       await deps.sessions.touchActivity(job.sessionId);
       if (history) {
@@ -419,6 +437,16 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
     const transferring = await deps.store.jobs.transition(jobId, ["submitted", "generating"], { status: "transferring", outputsJson: JSON.stringify(outputs) });
     if (!transferring) return;
+    await transferOutputs(job, outputs);
+  }
+
+  /**
+   * Pulls every recorded output (re-entrant: an output already pulled by an earlier attempt is
+   * recognised by its ledger row and never re-downloaded or re-registered).
+   */
+  async function transferOutputs(job: StoredJobRow, outputs: MediaJobOutput[]): Promise<void> {
+    const jobId = job.id;
+    const session = await deps.sessions.getRunningSession(job.sessionId);
     let outputDir: string;
     let s3: RunpodS3Client;
     try {
@@ -439,12 +467,21 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       templateName: template?.name ?? null,
       params: JSON.parse(job.paramsJson),
       promptId: job.promptId,
-      podId: session.podId,
-      gpuTypeId: session.gpuTypeId,
-      costPerHr: session.costPerHr,
+      podId: session?.podId ?? null,
+      gpuTypeId: session?.gpuTypeId ?? null,
+      costPerHr: session?.costPerHr ?? null,
     };
     const results: MediaJobOutput[] = [];
     for (const output of outputs) {
+      if (output.localPath) {
+        results.push(output); // already pulled by an earlier attempt
+        continue;
+      }
+      const ledger = await deps.store.ledger.get(output.remoteKey);
+      if (ledger) {
+        results.push({ ...output, localPath: ledger.localPath, bytes: ledger.bytes, sha256: ledger.sha256, remoteDeleted: ledger.remoteDeletedAt !== null, note: output.note ?? "pulled by an earlier attempt" });
+        continue;
+      }
       try {
         results.push(await pullOutput(job, output, outputDir, s3, provenance));
       } catch (error) {
@@ -610,12 +647,17 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async resumeInFlightJobs(): Promise<{ resumed: string[] }> {
       const resumed: string[] = [];
       for (const row of await deps.store.jobs.listNonTerminal()) {
-        if (row.status === "queued" || row.status === "transferring" || inFlight.has(row.id) || !row.promptId) continue;
+        if (row.status === "queued" || inFlight.has(row.id) || !row.promptId) continue;
         if (!(await deps.sessions.getRunningSession(row.sessionId))) continue;
         resumed.push(row.id);
         deps.schedule(() => processJob(row.id));
       }
       return { resumed };
+    },
+
+    /** For the idle auto-shutdown: a job in flight is work even when no HTTP request is (an MCP-driven session). */
+    async hasInFlightJobs(): Promise<boolean> {
+      return (await deps.store.jobs.listNonTerminal()).length > 0;
     },
 
     /** Boot: a job left non-terminal by a dead process fails as interrupted (its pod is gone by then too). */
@@ -662,9 +704,12 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           continue;
         }
         const ledger = await deps.store.ledger.get(key);
-        const safeToDelete = (ledger && ledger.localPath) || job.status === "failed" || job.status === "cancelled";
+        // A failed/cancelled job may still own completed outputs that were never pulled (transfer failure, restart):
+        // those are the only copy and stay until pulled by hand or recorded in the ledger.
+        const unpulledOutputs = job.outputsJson ? (JSON.parse(job.outputsJson) as MediaJobOutput[]).some((o) => o.remoteKey === key && !o.localPath) : false;
+        const safeToDelete = Boolean(ledger && ledger.localPath) || ((job.status === "failed" || job.status === "cancelled") && !unpulledOutputs);
         if (!safeToDelete) {
-          kept.push({ key, reason: "done job without a ledger row" });
+          kept.push({ key, reason: job.status === "done" ? "done job without a ledger row" : `${job.status} job with an unpulled output` });
           continue;
         }
         if (!dryRun) {

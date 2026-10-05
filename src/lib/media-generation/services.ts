@@ -226,6 +226,9 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const next = parseWithSchema(mediaSettingsSchema, { ...current, ...update }, "media settings");
       if (update.gpuTypeId === null) next.gpuOnDemandPricePerHr = null;
 
+      // A cloud-type change re-prices the already-chosen GPU (SECURE and COMMUNITY differ), so it touches the catalog too.
+      const repriceGpu = update.cloudType !== undefined && update.cloudType !== current.cloudType && next.gpuTypeId !== null && update.gpuTypeId === undefined;
+      if (repriceGpu) update.gpuTypeId = next.gpuTypeId;
       const needsCatalog = (update.gpuTypeId !== undefined && update.gpuTypeId !== null) || (update.networkVolumeId !== undefined && update.networkVolumeId !== null) || (update.datacenterId !== undefined && update.datacenterId !== null);
       if (needsCatalog) {
         const client = await runpodClient();

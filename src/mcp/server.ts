@@ -582,7 +582,8 @@ export function createMcpToolHandlers(
   researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore(),
   // Phase 14 slice 5 -- registered directly here (AGENTS.md §M: agent-operations gains no dependency on it). Request/read/job subset only:
   // approving, starting and stopping a session are Web-only (session-approval-inventory.test.ts).
-  mediaGenerationCore: MediaGenerationCoreSubset = createMediaGenerationCore()
+  // Detached: a job the agent submits is polled by the web server's watch loop, never by this request-scoped core.
+  mediaGenerationCore: MediaGenerationCoreSubset = createMediaGenerationCore({ jobScheduling: "detached" })
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({

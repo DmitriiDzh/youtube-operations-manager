@@ -230,6 +230,10 @@ async function startServerSession() {
     isBusy: async () => {
       if (getOperationRegistry().hasActive()) return true;
       if ((await getOperationLock(rawSqlClient)) !== null) return true;
+      // Phase 14: a pod in flight or a generating job is work, even though an MCP-driven agent sends this
+      // server no HTTP traffic (an idle exit would terminate the pod mid-generation; capped by MAX_IDLE_DEFERRAL_MS).
+      if (await media.hasOpenPod().catch(() => false)) return true;
+      if (await media.hasInFlightJobs().catch(() => false)) return true;
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },
