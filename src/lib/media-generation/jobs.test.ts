@@ -88,9 +88,6 @@ function memoryStore() {
       async get(key) {
         return ledger.get(key) ?? null;
       },
-      async listByJob(jobId) {
-        return [...ledger.values()].filter((r) => r.jobId === jobId);
-      },
     },
   };
   return { store, templates, jobs, ledger, templateCount: () => templateCounter };
@@ -188,7 +185,6 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
         const bytes = s3.files.get(p);
         return bytes ? sha256(bytes) : "missing";
       },
-      fileSize: async (p) => s3.files.get(p)?.byteLength ?? null,
     },
     registerAsset: async (input) => {
       registered.push(input);
@@ -355,7 +351,8 @@ test("AC-P14-15: no asset is registered for a job that did not reach done (execu
   const j3 = await noWorkspace.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t3.templateId, params: { prompt: "x" }, createdBy: "agent" });
   await noWorkspace.runScheduled();
   const r3 = await noWorkspace.services.getJob({ jobId: j3.jobId });
-  assert.equal(r3.status, "failed");
+  // Review round 4: a missing workspace is transient (the drive may come back) -- the job stays `transferring` for a retry, never `done`.
+  assert.equal(r3.status, "transferring");
   assert.match(r3.error ?? "", /cannot receive outputs/);
   assert.ok(!noWorkspace.s3.calls.some((c) => c.startsWith("get:") || c.startsWith("delete:")), "nothing is pulled or deleted without a workspace");
 });
@@ -522,7 +519,6 @@ function fixtureWithFailingRegister() {
         const bytes = s3.files.get(p);
         return bytes ? sha256(bytes) : "missing";
       },
-      fileSize: async () => null,
     },
     registerAsset: async () => {
       throw new Error("creative_assets insert failed");
@@ -607,7 +603,9 @@ test("review 2: the janitor keeps a failed job's completed-but-unpulled outputs 
   const t = await importDefault(f.services);
   const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
   await f.runScheduled();
-  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "transferring"); // review round 4: retried, not failed
+  // The retry window expired: the job ends failed with its completed outputs still recorded (and still only on the volume).
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, status: "failed" });
   f.mem.jobs.set("job-9", { ...f.mem.jobs.get(job.jobId)!, id: "job-9", status: "failed", outputsJson: null });
   const report = await f.services.cleanupExchange({ dryRun: false });
   assert.deepEqual(report.deleted, ["exchange/job-9/partial.png"]);
@@ -659,4 +657,38 @@ test("review 3: a `transferring` job is resumed even when its session is no long
   const done = await f.services.getJob({ jobId: "job-1" });
   assert.equal(done.status, "done");
   assert.ok(done.outputs[0].localPath);
+});
+
+// -- review round 4 (2026-10-05) ------------------------------------------------------------------
+
+test("review 4: a submitted job whose session is gone is failed by the resume pass (never a perpetual in-flight job); the boot sweep leaves a transferring job for the resume", async () => {
+  const stopped = fixture({ sessionRunning: false });
+  const t = await importDefault(stopped.services);
+  stopped.mem.jobs.set("job-x", {
+    id: "job-x", sessionId: "s1", channelId: "UC1", templateId: t.templateId, templateVersion: 1, paramsJson: "{}", status: "submitted", createdBy: "agent",
+    promptId: "prompt-1", outputsJson: null, assetIdsJson: null, error: null, createdAt: new Date(), submittedAt: new Date(), finishedAt: null,
+  });
+  stopped.mem.jobs.set("job-q", { ...stopped.mem.jobs.get("job-x")!, id: "job-q", status: "queued", promptId: null });
+  stopped.mem.jobs.set("job-t", { ...stopped.mem.jobs.get("job-x")!, id: "job-t", status: "transferring", outputsJson: "[]" });
+  assert.deepEqual(await stopped.services.resumeInFlightJobs(), { resumed: ["job-t"] });
+  assert.equal(stopped.mem.jobs.get("job-x")!.status, "failed");
+  assert.equal(stopped.mem.jobs.get("job-q")!.status, "failed");
+  assert.equal(await stopped.services.hasInFlightJobs(), true); // only job-t, which is being transferred
+
+  const boot = fixture();
+  boot.mem.jobs.set("job-t", { ...stopped.mem.jobs.get("job-t")!, status: "transferring", outputsJson: "[]" });
+  boot.mem.jobs.set("job-g", { ...stopped.mem.jobs.get("job-x")!, id: "job-g", status: "generating" });
+  assert.deepEqual(await boot.services.sweepInterruptedJobs(), { failed: ["job-g"] });
+  assert.equal(boot.mem.jobs.get("job-t")!.status, "transferring");
+});
+
+test("review 4: a transient 'cannot receive outputs' keeps the job transferring for a retry instead of failing it", async () => {
+  const f = fixture({ workspaceFails: true });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const r = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(r.status, "transferring");
+  assert.match(r.error ?? "", /cannot receive outputs.*retrying/);
+  assert.equal(r.outputs.length, 1);
 });

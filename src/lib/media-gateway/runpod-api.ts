@@ -1,5 +1,6 @@
 import { DomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
+import { asNumber, asRecord, asString } from "./json";
 
 // ---------------------------------------------------------------------------
 // Phase 14 -- the single funnel for the RunPod REST API v2 (https://api.runpod.io/v2; v1 at
@@ -78,17 +79,6 @@ export type RunpodApiClient = ReturnType<typeof createRunpodApiClient>;
 
 type Fetch = typeof fetch;
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function asNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
 
 /**
  * v2 list responses wrap the array (`{ items, pagination }`, `{ gpus }`, `{ dataCenters }`, ...).

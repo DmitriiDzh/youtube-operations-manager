@@ -241,3 +241,8 @@ test("review 3: a pull is refused while a GPU session is open on the volume", as
   await assert.rejects(services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
   assert.deepEqual(await services.listPulls(), []);
 });
+
+test("review 4: the Hugging Face CLI's .cache litter is not listed as a model", async () => {
+  const f = fixture({ objects: new Map([["models/checkpoints/a.safetensors", 100], ["models/checkpoints/.cache/huggingface/download/a.safetensors.metadata", 1], ["models/checkpoints/.cache/huggingface/download/a.safetensors.incomplete", 50]]) });
+  assert.deepEqual((await f.services.listModels()).map((m) => m.key), ["models/checkpoints/a.safetensors"]);
+});

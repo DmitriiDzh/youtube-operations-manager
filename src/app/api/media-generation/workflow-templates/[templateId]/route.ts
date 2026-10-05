@@ -1,45 +1,17 @@
-import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
-import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media-generation";
-import { mediaErrorResponse, readJsonBody } from "../../shared";
+import { bodyRecord, defaultMediaRouteDeps, mediaParamsHandler, readJsonBody, type MediaRouteDeps } from "../../shared";
 
-type Deps = {
-  getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<MediaGenerationCore, "getWorkflowTemplate" | "updateWorkflowTemplate" | "deleteWorkflowTemplate">;
-};
+type Params = { templateId: string };
 
-let defaultCore: MediaGenerationCore | null = null;
-const defaultDeps = (): Deps => ({
-  getSession: () => getServerSession(authOptions),
-  get core() {
-    defaultCore ??= createMediaGenerationCore();
-    return defaultCore;
-  },
-});
-
-export function createWorkflowTemplateHandlers(deps: Deps = defaultDeps()) {
-  const withSession = async (run: (templateId: string) => Promise<NextResponse>, params: Promise<{ templateId: string }>) => {
-    const session = await deps.getSession();
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    try {
-      return await run((await params).templateId);
-    } catch (error) {
-      return mediaErrorResponse(error);
-    }
-  };
+export function createWorkflowTemplateHandlers(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
   return {
-    GET: (_request: Request, { params }: { params: Promise<{ templateId: string }> }) =>
-      withSession(async (templateId) => NextResponse.json({ template: await deps.core.getWorkflowTemplate({ templateId }) }), params),
-    PUT: (request: Request, { params }: { params: Promise<{ templateId: string }> }) =>
-      withSession(async (templateId) => {
-        const body = await readJsonBody(request);
-        if (!body.ok) return body.response;
-        const patch = body.body && typeof body.body === "object" ? (body.body as Record<string, unknown>) : {};
-        return NextResponse.json({ template: await deps.core.updateWorkflowTemplate({ ...patch, templateId }) });
-      }, params),
-    DELETE: (_request: Request, { params }: { params: Promise<{ templateId: string }> }) =>
-      withSession(async (templateId) => NextResponse.json(await deps.core.deleteWorkflowTemplate({ templateId })), params),
+    GET: mediaParamsHandler<Params>(deps, async ({ core, params }) => NextResponse.json({ template: await core.getWorkflowTemplate({ templateId: params.templateId }) })),
+    PUT: mediaParamsHandler<Params>(deps, async ({ core, request, params }) => {
+      const body = await readJsonBody(request);
+      if (!body.ok) return body.response;
+      return NextResponse.json({ template: await core.updateWorkflowTemplate({ ...bodyRecord(body.body), templateId: params.templateId }) });
+    }),
+    DELETE: mediaParamsHandler<Params>(deps, async ({ core, params }) => NextResponse.json(await core.deleteWorkflowTemplate({ templateId: params.templateId }))),
   };
 }
 

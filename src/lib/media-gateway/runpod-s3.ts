@@ -18,7 +18,10 @@ import { EMPTY_PAYLOAD_SHA256, sha256Hex, signSigV4 } from "./sigv4";
 // ---------------------------------------------------------------------------
 
 export const RUNPOD_S3_MAX_SINGLE_PUT_BYTES = 500 * 1024 * 1024;
-const REQUEST_TIMEOUT_MS = 60_000;
+/** Metadata calls (HEAD/LIST/DELETE) are quick; a body transfer (GET/PUT of up to 500 MB) gets a long budget --
+ * the signal also aborts the body stream in Node, so a short one would cut every large file off mid-transfer. */
+const METADATA_TIMEOUT_MS = 60_000;
+const TRANSFER_TIMEOUT_MS = 30 * 60_000;
 
 export type RunpodS3Config = {
   datacenterId: string;
@@ -89,7 +92,7 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
     return url;
   }
 
-  async function signedFetch(method: string, url: URL, options: { body?: Uint8Array | string; contentType?: string } = {}): Promise<Response> {
+  async function signedFetch(method: string, url: URL, options: { body?: Uint8Array | string; contentType?: string; timeoutMs?: number } = {}): Promise<Response> {
     await authorize("runpod_s3");
     const payloadHash = options.body === undefined ? EMPTY_PAYLOAD_SHA256 : sha256Hex(options.body);
     const headers = signSigV4({
@@ -105,7 +108,7 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       includeContentSha256Header: true,
     });
     try {
-      return await fetchImpl(url, { method, headers, body: options.body as BodyInit | undefined, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      return await fetchImpl(url, { method, headers, body: options.body as BodyInit | undefined, signal: AbortSignal.timeout(options.timeoutMs ?? METADATA_TIMEOUT_MS) });
     } catch (error) {
       throw new DomainError({
         code: "runpod_s3_unavailable",
@@ -167,7 +170,7 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
 
     /** Streams the object to `destinationPath` via a temp file + rename; returns the bytes written and their SHA-256. */
     async getObjectToFile(key: string, destinationPath: string): Promise<{ bytes: number; sha256: string }> {
-      const response = await signedFetch("GET", objectUrl(key));
+      const response = await signedFetch("GET", objectUrl(key), { timeoutMs: TRANSFER_TIMEOUT_MS });
       if (!response.ok || !response.body) throw failure(response, "GET", key);
       await mkdir(path.dirname(destinationPath), { recursive: true });
       const tmpPath = `${destinationPath}.part`;
@@ -207,7 +210,7 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
           details: { key, size },
         });
       }
-      const response = await signedFetch("PUT", objectUrl(key), { body, contentType });
+      const response = await signedFetch("PUT", objectUrl(key), { body, contentType, timeoutMs: TRANSFER_TIMEOUT_MS });
       if (!response.ok) throw failure(response, "PUT", key);
     },
 

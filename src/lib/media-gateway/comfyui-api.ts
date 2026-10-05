@@ -1,5 +1,6 @@
 import { DomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
+import { asRecord } from "./json";
 
 // ---------------------------------------------------------------------------
 // Phase 14 -- the single funnel for the ComfyUI server API on a pod
@@ -33,9 +34,6 @@ export type ComfyHistoryEntry = {
 
 export type ComfyUiClient = ReturnType<typeof createComfyUiClient>;
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
 
 export function parseHistoryEntry(promptId: string, raw: unknown): ComfyHistoryEntry | null {
   const entry = asRecord(asRecord(raw)[promptId]);

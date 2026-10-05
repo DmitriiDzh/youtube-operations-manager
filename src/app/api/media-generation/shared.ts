@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
+import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createMediaGenerationCore, DomainError, type MediaGenerationCore } from "@/lib/media-generation";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
@@ -8,20 +9,26 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 // Every handler: session required (401), thin translation to the one core, DomainError -> status
 // map. No route ever returns a stored secret: the core's public shapes carry none (AC-P14-02/21).
 // Mutating methods are covered by `src/proxy.ts`'s device-availability gate like every /api route.
+// One wrapper for static routes (`mediaHandler`) and one for dynamic segments (`mediaParamsHandler`),
+// so the 401 / DomainError / 500 translation exists exactly once (review round 4).
 
 export type MediaRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   core: MediaGenerationCore;
+  /** AGENTS.md §F: a body-supplied channelId must be one of this installation's connected channels. */
+  isConnectedChannel: (channelId: string) => Promise<boolean>;
 };
-
-let defaultCore: MediaGenerationCore | null = null;
 
 export function defaultMediaRouteDeps(): MediaRouteDeps {
   return {
     getSession: () => getServerSession(authOptions),
+    // The core is a process-wide singleton; resolved on first use so importing a route never builds it.
     get core() {
-      defaultCore ??= createMediaGenerationCore();
-      return defaultCore;
+      return createMediaGenerationCore();
+    },
+    async isConnectedChannel(channelId) {
+      const channels = await createChannelConnectionsCore().listConnectedChannels();
+      return channels.some((c) => c.channelId === channelId);
     },
   };
 }
@@ -41,10 +48,22 @@ export async function readJsonBody(request: Request): Promise<{ ok: true; body: 
   }
 }
 
+/** The body as a plain object (an array or scalar counts as empty). */
+export function bodyRecord(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+/** Refuses a channelId that is not one of this installation's connected channels (AGENTS.md §F). */
+export async function assertConnectedChannel(deps: MediaRouteDeps, channelId: unknown): Promise<void> {
+  if (typeof channelId !== "string" || !channelId || !(await deps.isConnectedChannel(channelId))) {
+    throw new DomainError({ code: "channel_not_connected", message: "channelId is not one of this installation's connected channels", details: { channelId } });
+  }
+}
+
 /** Wraps a handler: 401 without a session, DomainError mapping, 500 otherwise. */
 export function mediaHandler(
   deps: MediaRouteDeps,
-  run: (args: { core: MediaGenerationCore; request: Request }) => Promise<NextResponse>
+  run: (args: { core: MediaGenerationCore; request: Request; deps: MediaRouteDeps }) => Promise<NextResponse>
 ): (request: Request) => Promise<NextResponse> {
   return async function handler(request: Request) {
     const session = await deps.getSession();
@@ -52,7 +71,25 @@ export function mediaHandler(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     try {
-      return await run({ core: deps.core, request });
+      return await run({ core: deps.core, request, deps });
+    } catch (error) {
+      return mediaErrorResponse(error);
+    }
+  };
+}
+
+/** The same wrapper for a dynamic segment route (`[id]`): the awaited params are handed to `run`. */
+export function mediaParamsHandler<P extends Record<string, string>>(
+  deps: MediaRouteDeps,
+  run: (args: { core: MediaGenerationCore; request: Request; params: P; userId: string; deps: MediaRouteDeps }) => Promise<NextResponse>
+): (request: Request, context: { params: Promise<P> }) => Promise<NextResponse> {
+  return async function handler(request: Request, context: { params: Promise<P> }) {
+    const session = await deps.getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    try {
+      return await run({ core: deps.core, request, params: await context.params, userId: session.user.id, deps });
     } catch (error) {
       return mediaErrorResponse(error);
     }

@@ -1,25 +1,8 @@
-import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
-import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media-generation";
-import { mediaErrorResponse } from "../../shared";
+import { defaultMediaRouteDeps, mediaParamsHandler, type MediaRouteDeps } from "../../shared";
 
-type Deps = {
-  getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<MediaGenerationCore, "getJob">;
-};
-
-export function createJobGetHandler(deps: Deps = { getSession: () => getServerSession(authOptions), core: createMediaGenerationCore() }) {
-  return async function GET(_request: Request, { params }: { params: Promise<{ jobId: string }> }) {
-    const session = await deps.getSession();
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    try {
-      const { jobId } = await params;
-      return NextResponse.json({ job: await deps.core.getJob({ jobId }) });
-    } catch (error) {
-      return mediaErrorResponse(error);
-    }
-  };
+export function createJobGetHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
+  return mediaParamsHandler<{ jobId: string }>(deps, async ({ core, params }) => NextResponse.json({ job: await core.getJob({ jobId: params.jobId }) }));
 }
 
 export const GET = createJobGetHandler();

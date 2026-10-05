@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import type { JobServiceDependencies } from "../jobs";
 
 /** Local file access for the job services: create the per-job folder, hash a file, read its size. */
@@ -17,12 +17,5 @@ export function createExchangeLocalFs(): JobServiceDependencies["fs"] {
           .on("error", reject)
           .on("end", () => resolve(hash.digest("hex")));
       }),
-    fileSize: async (filePath) => {
-      try {
-        return (await stat(filePath)).size;
-      } catch {
-        return null;
-      }
-    },
   };
 }

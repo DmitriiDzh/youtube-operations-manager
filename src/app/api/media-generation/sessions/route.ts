@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { defaultMediaRouteDeps, mediaHandler, readJsonBody, type MediaRouteDeps } from "../shared";
+import { assertConnectedChannel, bodyRecord, defaultMediaRouteDeps, mediaHandler, readJsonBody, type MediaRouteDeps } from "../shared";
 
 // Phase 14 slice 2 -- sessions (docs/roadmap/plans/PHASE_14_PLAN.md §2.3). GET: recent sessions +
 // limits (spend today, cap, the open session). POST: the OPERATOR's own request (an agent's request
-// arrives through MCP in slice 5); creating one makes no RunPod call and costs nothing.
+// arrives through MCP in slice 5); creating one makes no RunPod call and costs nothing. The body's
+// channelId must be a connected channel (AGENTS.md §F) -- the MCP path asserts the bound channel instead.
 
 export function createSessionsGetHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
   return mediaHandler(deps, async ({ core }) => {
@@ -13,10 +14,11 @@ export function createSessionsGetHandler(deps: MediaRouteDeps = defaultMediaRout
 }
 
 export function createSessionsPostHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
-  return mediaHandler(deps, async ({ core, request }) => {
+  return mediaHandler(deps, async ({ core, request, deps: routeDeps }) => {
     const body = await readJsonBody(request);
     if (!body.ok) return body.response;
-    const input = body.body && typeof body.body === "object" ? (body.body as Record<string, unknown>) : {};
+    const input = bodyRecord(body.body);
+    await assertConnectedChannel(routeDeps, input.channelId);
     const session = await core.requestSession({ ...input, requestedBy: "operator" });
     return NextResponse.json({ session }, { status: 201 });
   });

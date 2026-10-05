@@ -189,19 +189,20 @@ async function startServerSession() {
   const MEDIA_WATCH_MIN_MS = 15_000;
   const mediaWatchLoop = async () => {
     try {
-      await media.watchTick();
+      // First: jobs nobody is polling (the operator CLI's detached core, a stuck transfer) -- their first poll
+      // counts as session activity, so this runs BEFORE the idle check below.
+      await media.resumeInFlightJobs();
     } catch {
       // RunPod unreachable, or nothing configured: try again next interval.
     }
     try {
-      // Slice 4: a model pull's CPU pod is terminated as soon as its file is on the volume, even with no browser open.
-      await media.pollPulls();
+      await media.watchTick();
     } catch {
       // same as above
     }
     try {
-      // Jobs submitted by the operator CLI (detached) are polled here.
-      await media.resumeInFlightJobs();
+      // Slice 4: a model pull's CPU pod is terminated as soon as its file is on the volume, even with no browser open.
+      await media.pollPulls();
     } catch {
       // same as above
     }

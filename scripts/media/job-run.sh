@@ -32,7 +32,7 @@ node -e '
     params[name] = raw === "true" ? true : raw === "false" ? false : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
   }
   process.stdout.write(JSON.stringify({ sessionId: session, channelId: channel, templateId: template, params }));
-' "$session" "$channel" "$template" "${params[@]}" > "$body"
+' "$session" "$channel" "$template" ${params[@]+"${params[@]}"} > "$body"
 
 job="$(media_data job-create --file "$body")"
 job_id="$(json_get 'data.jobId' <<<"$job")"

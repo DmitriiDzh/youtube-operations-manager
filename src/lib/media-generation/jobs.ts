@@ -83,7 +83,6 @@ export type MediaJobStore = {
     upsert(row: Omit<ExchangeLedgerRow, "remoteDeletedAt">): Promise<void>;
     markRemoteDeleted(remoteKey: string, at: Date): Promise<void>;
     get(remoteKey: string): Promise<ExchangeLedgerRow | null>;
-    listByJob(jobId: string): Promise<ExchangeLedgerRow[]>;
   };
 };
 
@@ -100,7 +99,6 @@ export type JobServiceDependencies = {
   fs: {
     mkdirp(dir: string): Promise<void>;
     sha256File(filePath: string): Promise<string>;
-    fileSize(filePath: string): Promise<number | null>;
   };
   registerAsset(input: {
     channelId: string;
@@ -123,6 +121,8 @@ const DEFAULT_POLL_MS = 4_000;
 const DEFAULT_MAX_GENERATION_MS = 2 * 60 * 60_000;
 /** Consecutive `/history` failures (proxy 502, 30 s timeout) tolerated while the session still runs. */
 const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+/** How long a `transferring` job keeps being retried when its outputs cannot be received yet. */
+const TRANSFER_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> } & Record<string, unknown>>;
 
@@ -454,7 +454,15 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       await deps.fs.mkdirp(outputDir);
       s3 = await deps.s3();
     } catch (error) {
-      await failJob(job, `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`, outputs);
+      // A transient cause (workspace drive unmounted, gateway toggle off, S3 unreachable): keep `transferring` so the
+      // watch loop retries, up to the retry window; the recorded outputs stay on the volume meanwhile.
+      const message = `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`;
+      const since = (job.submittedAt ?? job.createdAt).getTime();
+      if (deps.clock.now().getTime() - since > TRANSFER_RETRY_WINDOW_MS) {
+        await failJob(job, `${message} (gave up after ${Math.round(TRANSFER_RETRY_WINDOW_MS / 3_600_000)} h)`, outputs);
+      } else {
+        await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", error: `${message}; retrying` });
+      }
       return;
     }
     const template = await deps.store.templates.get(job.templateId);
@@ -647,9 +655,18 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async resumeInFlightJobs(): Promise<{ resumed: string[] }> {
       const resumed: string[] = [];
       for (const row of await deps.store.jobs.listNonTerminal()) {
-        if (row.status === "queued" || inFlight.has(row.id) || !row.promptId) continue;
-        // A transfer needs only S3 (the pod may be gone already); a poll needs the session's ComfyUI.
-        if (row.status !== "transferring" && !(await deps.sessions.getRunningSession(row.sessionId))) continue;
+        if (inFlight.has(row.id)) continue;
+        if (row.status === "queued" || !row.promptId) {
+          // Never submitted (a crash between insert and the `submitted` write): nothing to resume.
+          await failJob(row, "never submitted to ComfyUI");
+          continue;
+        }
+        // A transfer needs only S3 (the pod may be gone already); a poll needs the session's ComfyUI -- without it
+        // the job can never finish, so it fails now instead of lingering as "in flight" forever.
+        if (row.status !== "transferring" && !(await deps.sessions.getRunningSession(row.sessionId))) {
+          await failJob(row, "the session is no longer running");
+          continue;
+        }
         resumed.push(row.id);
         deps.schedule(() => processJob(row.id));
       }
@@ -665,6 +682,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async sweepInterruptedJobs(): Promise<{ failed: string[] }> {
       const failed: string[] = [];
       for (const row of await deps.store.jobs.listNonTerminal()) {
+        // A `transferring` row keeps its recorded outputs and is resumed by the watch loop (it needs only S3).
+        if (row.status === "transferring" && row.outputsJson) continue;
         await failJob(row, "interrupted by a server restart");
         failed.push(row.id);
       }

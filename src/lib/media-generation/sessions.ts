@@ -97,8 +97,9 @@ export function podNameFor(sessionId: string): string {
   return `ytm-media-${sessionId.slice(0, 8)}`;
 }
 
-function startOfUtcDay(now: Date): Date {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+/** The cap's day is the operator's machine's local day (this app runs on that machine), not UTC. */
+function startOfLocalDay(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
 
 function round2(value: number): number {
@@ -165,7 +166,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
 
   /** Every session billed today: started today, stopped today, or still open (a session across midnight counts in full). */
   async function spentTodayUsd(now: Date): Promise<number> {
-    const rows = await deps.store.listBillableSince(startOfUtcDay(now));
+    const rows = await deps.store.listBillableSince(startOfLocalDay(now));
     return round2(rows.reduce((sum, row) => sum + (liveUsd(row, now) ?? 0), 0));
   }
 
@@ -578,12 +579,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       if (!open || open.status === "pending") return { swept: [] };
       const error = "interrupted by a server restart";
       let podId = open.podId;
+      let orphanFacts: { podId: string; startedAt: Date; costPerHr: number | null } | null = null;
       if (!podId && open.status === "approved") {
         // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
         try {
           const client = await deps.base.resolveRunpodClient();
           const orphan = (await client.listPods()).find((p) => p.name === podNameFor(open.id) && p.status !== "TERMINATED");
-          if (orphan) podId = orphan.id;
+          if (orphan) {
+            podId = orphan.id;
+            // The pod billed from its creation; record that like abortStart does (AC-P14-17).
+            orphanFacts = { podId: orphan.id, startedAt: orphan.createdAt ? new Date(orphan.createdAt) : (open.approvedAt ?? deps.clock.now()), costPerHr: orphan.costPerHr ?? open.costPerHr };
+          }
         } catch (cause) {
           await deps.store.transition(open.id, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], {
             status: "stopping",
@@ -592,7 +598,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           });
           return { swept: [open.id] };
         }
-        if (podId) await deps.store.transition(open.id, ["approved"], { status: "approved", podId });
+        if (orphanFacts) await deps.store.transition(open.id, ["approved"], { status: "approved", ...orphanFacts });
       }
       if (podId) {
         let unconfirmed: string | null = null;
@@ -613,7 +619,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           return { swept: [open.id] };
         }
       }
-      await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], "interrupted", { error });
+      await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], "interrupted", { error }, orphanFacts ?? {});
       return { swept: [open.id] };
     },
 

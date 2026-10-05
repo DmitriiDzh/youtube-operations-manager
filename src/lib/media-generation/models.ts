@@ -138,7 +138,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       const s3 = await deps.base.s3();
       const objects = await s3.listAllObjects(MODELS_PREFIX);
       return objects
-        .filter((o) => !o.key.endsWith("/.keep"))
+        // Folder markers and the Hugging Face CLI's own download cache (`.cache/huggingface/...`) are not models.
+        .filter((o) => !o.key.endsWith("/.keep") && !o.key.includes("/.cache/"))
         .map((o) => {
           const rest = o.key.slice(MODELS_PREFIX.length);
           const [folder, ...parts] = rest.split("/");

@@ -582,8 +582,9 @@ export function createMcpToolHandlers(
   researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore(),
   // Phase 14 slice 5 -- registered directly here (AGENTS.md §M: agent-operations gains no dependency on it). Request/read/job subset only:
   // approving, starting and stopping a session are Web-only (session-approval-inventory.test.ts).
-  // Detached: a job the agent submits is polled by the web server's watch loop, never by this request-scoped core.
-  mediaGenerationCore: MediaGenerationCoreSubset = createMediaGenerationCore({ jobScheduling: "detached" })
+  // The in-app MCP endpoint (ADR 0013) runs INSIDE the web process: the shared background core polls the agent's job at
+  // once (and its first poll counts as session activity), exactly like a job from the Settings UI.
+  mediaGenerationCore: MediaGenerationCoreSubset = createMediaGenerationCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({

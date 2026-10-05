@@ -5,7 +5,6 @@ import {
   getMediaWorkflowTemplateById,
   insertMediaJob,
   insertMediaWorkflowTemplate,
-  listMediaExchangeFilesByJob,
   listMediaJobs,
   listMediaWorkflowTemplates,
   listNonTerminalMediaJobs,
@@ -57,7 +56,6 @@ export function createMediaJobStore(): MediaJobStore {
       upsert: (row) => upsertMediaExchangeFile(row),
       markRemoteDeleted: (key, at) => markMediaExchangeFileRemoteDeleted(key, at),
       get: (key) => getMediaExchangeFile(key).then((r) => (r ? { ...r, remoteDeletedAt: r.remoteDeletedAt ?? null } : null)),
-      listByJob: (jobId) => listMediaExchangeFilesByJob(jobId).then((rows) => rows.map((r) => ({ ...r, remoteDeletedAt: r.remoteDeletedAt ?? null }))),
     },
   };
 }
