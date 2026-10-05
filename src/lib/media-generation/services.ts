@@ -1,6 +1,8 @@
 import { decryptSecret, encryptSecret, type EncryptedPayload } from "@/lib/shared-crypto";
 import type { CreatePodInput, RunpodApiClient, RunpodDataCenter, RunpodGpuType, RunpodNetworkVolume, RunpodPod, RunpodS3Client, RunpodS3Config } from "@/lib/media-gateway";
+import { comfyUiProxyBaseUrl } from "@/lib/media-gateway";
 import {
+  COMFY_PROXY_PORT,
   DEFAULT_MEDIA_SETTINGS,
   DomainError,
   RUNPOD_KEY_PREFIX_LENGTH,
@@ -13,6 +15,7 @@ import type { KeyFile } from "./key-file";
 import {
   createNetworkVolumeInputSchema,
   createPodPassthroughSchema,
+  createTemplatePassthroughSchema,
   mediaSettingsSchema,
   parseWithSchema,
   setCredentialsInputSchema,
@@ -53,6 +56,17 @@ export type ServiceDependencies = {
   };
   clock: { now(): Date };
 };
+
+/** The URL this app (and the scripts) use for ComfyUI on a pod -- built here so no caller spells the proxy host itself. */
+function withProxyUrl(pod: RunpodPod): RunpodPod & { comfyUiProxyUrl: string } {
+  let comfyUiProxyUrl = "";
+  try {
+    comfyUiProxyUrl = comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
+  } catch {
+    // an id that does not look like a pod id (never from RunPod itself) gets no URL rather than an error
+  }
+  return { ...pod, comfyUiProxyUrl };
+}
 
 export function createMediaGenerationServices(deps: ServiceDependencies) {
   async function readSettings(): Promise<MediaSettings> {
@@ -271,19 +285,30 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       return (await runpodClient()).listTemplates();
     },
 
+    async listCpuTypes() {
+      return (await runpodClient()).listCpuTypes();
+    },
+
+    /** Operator-authored template body (scripts/media/template-create.sh); `public`/`serverless` cannot be true. */
+    async createTemplate(input: unknown) {
+      const parsed = parseWithSchema(createTemplatePassthroughSchema, input, "create template");
+      return (await runpodClient()).createTemplate(parsed as Record<string, unknown>);
+    },
+
     // -- Pod passthrough for the operator CLI / slice 0 (sessions are slice 2) -----------------
 
-    async listPods(): Promise<RunpodPod[]> {
-      return (await runpodClient()).listPods();
+    async listPods(): Promise<Array<RunpodPod & { comfyUiProxyUrl: string }>> {
+      return (await runpodClient()).listPods().then((pods) => pods.map(withProxyUrl));
     },
 
-    async getPod(podId: string): Promise<RunpodPod | null> {
-      return (await runpodClient()).getPod(podId);
+    async getPod(podId: string): Promise<(RunpodPod & { comfyUiProxyUrl: string }) | null> {
+      const pod = await (await runpodClient()).getPod(podId);
+      return pod ? withProxyUrl(pod) : null;
     },
 
-    async createPod(input: unknown): Promise<RunpodPod> {
+    async createPod(input: unknown): Promise<RunpodPod & { comfyUiProxyUrl: string }> {
       const parsed = parseWithSchema(createPodPassthroughSchema, input, "create pod");
-      return (await runpodClient()).createPod(parsed as CreatePodInput);
+      return withProxyUrl(await (await runpodClient()).createPod(parsed as CreatePodInput));
     },
 
     async terminatePod(podId: string) {

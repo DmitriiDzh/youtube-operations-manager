@@ -82,7 +82,31 @@ export const createPodPassthroughSchema = z
   .strict()
   .refine((v) => Boolean(v.image) || Boolean(v.templateId), { message: "image or templateId is required", path: ["image"] });
 
+/** RunPod v2 template body (docs: name + image required; mounts.persistent only; `network` is rejected by RunPod). */
+export const createTemplatePassthroughSchema = z
+  .object({
+    name: z.string().trim().min(1).max(191),
+    image: z.string().trim().min(1),
+    description: z.string().max(1000).optional(),
+    category: z.enum(["CPU", "NVIDIA", "AMD"]).optional(),
+    args: z.string().optional(),
+    cmd: z.array(z.string()).optional(),
+    entrypoint: z.array(z.string()).optional(),
+    disk: z.number().int().min(1).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    ports: z.array(z.string().regex(/^\d{1,5}\/(http|tcp)$/)).optional(),
+    registry: z.string().nullable().optional(),
+    mounts: z.object({ persistent: z.object({ size: z.number().int().min(10), path: z.string().min(1) }).strict().nullable().optional() }).strict().optional(),
+    startSsh: z.boolean().optional(),
+    startJupyter: z.boolean().optional(),
+    allowedCudaVersions: z.array(z.string()).optional(),
+    public: z.literal(false).optional(),
+    serverless: z.literal(false).optional(),
+  })
+  .strict();
+
 export type SetCredentialsInput = z.infer<typeof setCredentialsInputSchema>;
+export type CreateTemplatePassthroughInput = z.infer<typeof createTemplatePassthroughSchema>;
 export type UpdateSettingsInput = z.infer<typeof updateSettingsInputSchema>;
 export type CreateNetworkVolumeInput = z.infer<typeof createNetworkVolumeInputSchema>;
 export type CreatePodPassthroughInput = z.infer<typeof createPodPassthroughSchema>;

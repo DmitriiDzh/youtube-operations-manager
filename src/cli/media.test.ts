@@ -50,9 +50,9 @@ test("parseMediaArgs: flags, positionals, unknown command and --help", () => {
   assert.throws(() => parseMediaArgs([]));
 });
 
-test("exactly volume-create, pod-create, pod-terminate and s3-rm are gated", () => {
+test("exactly the commands that create, delete or upload something are gated", () => {
   const gated = MEDIA_CLI_COMMANDS.filter((c) => classifyMediaCommand(c) === "gated");
-  assert.deepEqual(gated, ["volume-create", "pod-create", "pod-terminate", "s3-rm"]);
+  assert.deepEqual(gated, ["volume-create", "template-create", "pod-create", "pod-terminate", "s3-put", "s3-rm"]);
 });
 
 test("Operator CLI access off -> refused with AGENT_TOKEN_INVALID, exit 1, core untouched", async () => {

@@ -1044,12 +1044,17 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 
 The operator's wrapper target for `scripts/media/*`; runs in-process against the same encrypted
 credential store, so no key is ever an argument or an environment variable. Same gates as the main
-CLI: "Operator CLI access" must be on; `volume-create`, `pod-create`, `pod-terminate`, `s3-rm` pass the
-device mutation gate. Commands: `status`, `credentials-test`, `settings`, `gpus`, `datacenters`,
-`volumes`, `volume-create --name --dc --size`, `templates`, `pods`, `pod-get <id>`, `pod-create --file
-<body.json>`, `pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-rm <key>`. JSON
-envelope on stdout, non-zero exit on failure. There is deliberately no `pod-stop`: a stopped pod's disk
-is billed at the doubled rate, so the only idle state is "terminated".
+CLI: "Operator CLI access" must be on; `volume-create`, `template-create`, `pod-create`, `pod-terminate`,
+`s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
+`gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
+`template-create --file <body.json>`, `pods`, `pod-get <id>`, `pod-create --file <body.json>`,
+`pod-terminate <id>`, `s3-ls [prefix]`, `s3-get <key> <dest>`, `s3-put <file> <key>`, `s3-rm <key>`.
+JSON envelope on stdout, non-zero exit on failure. Pod objects carry `comfyUiProxyUrl` (the token-proxy
+port on RunPod's HTTP proxy), so no script spells the proxy host itself. There is deliberately no
+`pod-stop`: a stopped pod's disk is billed at the doubled rate, so the only idle state is "terminated".
+Scripts: `scripts/media/README.md` (status, credentials-test, catalog, volumes, volume-create,
+volume-bootstrap, models-pull, template-create, pods, pod-create, pod-terminate, pod-watch, s3; the
+pod-side `pod/pod-start.sh`, `pod/Caddyfile`, `pod/extra_model_paths.yaml`, `pod/template.json`).
 
 -> Next: [docs/troubleshooting.md](./troubleshooting.md)
 

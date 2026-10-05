@@ -1,0 +1,19 @@
+# Token proxy in front of ComfyUI (PHASE_14_PLAN.md §2.5, owner decision D6). RunPod's HTTP proxy
+# exposes port 8189 to anyone who knows the pod id, so every request must carry the per-session
+# bearer token; everything else gets 401 and never reaches ComfyUI on 127.0.0.1:8188.
+{
+	admin off
+	auto_https off
+}
+
+:8189 {
+	@authorized header Authorization "Bearer {$COMFY_TOKEN}"
+	handle @authorized {
+		reverse_proxy 127.0.0.1:8188 {
+			flush_interval -1
+		}
+	}
+	handle {
+		respond "unauthorized" 401
+	}
+}

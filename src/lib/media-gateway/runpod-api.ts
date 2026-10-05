@@ -302,6 +302,32 @@ export function createRunpodApiClient(args: {
       }
     },
 
+    /** `GET /catalog/cpus` -- CPU flavors (for the model-pull pod, which needs no GPU). */
+    async listCpuTypes(): Promise<Array<{ id: string; name: string; vcpuMin: number | null; vcpuMax: number | null; securePricePerVcpuHr: number | null }>> {
+      const { body } = await request("GET", "/catalog/cpus?include=AVAILABILITY&product=POD");
+      return extractList(body, ["cpus"])
+        .map((raw) => {
+          const r = asRecord(raw);
+          const vcpu = asRecord(r.vcpu);
+          const price = asRecord(r.price);
+          return {
+            id: asString(r.id) ?? "",
+            name: asString(r.name) ?? asString(r.displayName) ?? "",
+            vcpuMin: asNumber(vcpu.min),
+            vcpuMax: asNumber(vcpu.max),
+            securePricePerVcpuHr: asNumber(price.securePerVcpu),
+          };
+        })
+        .filter((c) => c.id);
+    },
+
+    /** `POST /templates` with an operator-authored v2 body (name, image, ports, env, disk, mounts.persistent, ...). */
+    async createTemplate(body: Record<string, unknown>): Promise<{ id: string; name: string; raw: Record<string, unknown> }> {
+      const { body: created } = await request("POST", "/templates", body);
+      const r = asRecord(created);
+      return { id: asString(r.id) ?? "", name: asString(r.name) ?? "", raw: r };
+    },
+
     async listTemplates(): Promise<Array<{ id: string; name: string; raw: Record<string, unknown> }>> {
       const { body } = await request("GET", "/templates");
       return extractList(body, ["templates"])

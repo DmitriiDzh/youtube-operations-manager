@@ -164,6 +164,23 @@ test("getPod returns null on 404 and maps runtime ports, mounts and cost", async
   assert.deepEqual(pod.ports, [{ private: 8189, public: 12345, type: "http", ip: "1.2.3.4" }]);
 });
 
+test("createTemplate posts the operator body to /templates; listCpuTypes reads the CPU catalog", async () => {
+  const { fetchImpl, calls } = fakeFetch((call) =>
+    call.url.includes("/catalog/cpus")
+      ? { status: 200, body: { cpus: [{ id: "cpu3c", name: "Compute-Optimized", vcpu: { min: 2, max: 32 }, price: { securePerVcpu: 0.04 } }] } }
+      : { status: 201, body: { id: "tpl1", name: "ytm-comfy", image: "x/y:z" } }
+  );
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  const template = await client.createTemplate({ name: "ytm-comfy", image: "x/y:z", ports: ["8189/http"] });
+  assert.deepEqual({ id: template.id, name: template.name }, { id: "tpl1", name: "ytm-comfy" });
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(new URL(calls[0].url).pathname, "/v2/templates");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { name: "ytm-comfy", image: "x/y:z", ports: ["8189/http"] });
+  const cpus = await client.listCpuTypes();
+  assert.deepEqual(cpus, [{ id: "cpu3c", name: "Compute-Optimized", vcpuMin: 2, vcpuMax: 32, securePricePerVcpuHr: 0.04 }]);
+  assert.equal(new URL(calls[1].url).searchParams.get("product"), "POD");
+});
+
 test("extractList accepts a bare array or any known wrapper key; toPod tolerates missing fields", () => {
   assert.deepEqual(extractList([1], []), [1]);
   assert.deepEqual(extractList({ items: [2] }, ["pods"]), [2]);

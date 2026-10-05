@@ -36,29 +36,40 @@ export const MEDIA_CLI_COMMANDS = [
   "volumes",
   "volume-create",
   "templates",
+  "template-create",
+  "cpus",
   "pods",
   "pod-get",
   "pod-create",
   "pod-terminate",
   "s3-ls",
   "s3-get",
+  "s3-put",
   "s3-rm",
 ] as const;
 export type MediaCliCommand = (typeof MEDIA_CLI_COMMANDS)[number];
 
-const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>(["volume-create", "pod-create", "pod-terminate", "s3-rm"]);
+const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>([
+  "volume-create",
+  "template-create",
+  "pod-create",
+  "pod-terminate",
+  "s3-put",
+  "s3-rm",
+]);
 
 export const HELP = [
   "Usage: npm run media -- <command> [args]",
   "  status                                  credentials status, settings, readiness (never a secret)",
   "  credentials-test                        one RunPod read (+ one S3 listing when configured)",
   "  settings                                the stored Settings → Media values",
-  "  gpus | datacenters | volumes | templates | pods",
+  "  gpus | cpus | datacenters | volumes | templates | pods",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
+  "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
   "  pod-get <podId>",
   "  pod-create --file <body.json>           RunPod v2 create-pod body (see docs); terminated by you, never stopped",
   "  pod-terminate <podId>",
-  "  s3-ls [prefix] | s3-get <key> <dest> | s3-rm <key>",
+  "  s3-ls [prefix] | s3-get <key> <dest> | s3-put <file> <key> | s3-rm <key>",
 ].join("\n");
 
 export type ParsedMediaArgs = { command: MediaCliCommand; positional: string[]; flags: Record<string, string | true> };
@@ -111,12 +122,22 @@ function requirePositional(positional: string[], index: number, name: string): s
   return value;
 }
 
+async function readJsonFile(readFileText: (path: string) => Promise<string>, flags: Record<string, string | true>): Promise<unknown> {
+  const text = await readFileText(requireFlag(flags, "file"));
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new DomainError({ code: "validation_failed", message: "--file must contain valid JSON" });
+  }
+}
+
 export async function runMediaCli(args: {
   argv: string[];
   core?: MediaGenerationCore;
   operatorCliEnabled?: () => Promise<boolean>;
   assertDeviceAvailable?: () => Promise<void>;
   readFileText?: (path: string) => Promise<string>;
+  readFileBytes?: (path: string) => Promise<Uint8Array>;
   writeStdout?: (line: string) => void;
 }): Promise<number> {
   const writeStdout = args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
@@ -158,6 +179,12 @@ export async function runMediaCli(args: {
       case "templates":
         data = await core.listTemplates();
         break;
+      case "template-create":
+        data = await core.createTemplate(await readJsonFile(readFileText, parsed.flags));
+        break;
+      case "cpus":
+        data = await core.listCpuTypes();
+        break;
       case "volume-create":
         data = await core.createNetworkVolume({
           name: requireFlag(parsed.flags, "name"),
@@ -171,17 +198,9 @@ export async function runMediaCli(args: {
       case "pod-get":
         data = await core.getPod(requirePositional(parsed.positional, 0, "podId"));
         break;
-      case "pod-create": {
-        const text = await readFileText(requireFlag(parsed.flags, "file"));
-        let body: unknown;
-        try {
-          body = JSON.parse(text);
-        } catch {
-          throw new DomainError({ code: "validation_failed", message: "--file must contain valid JSON" });
-        }
-        data = await core.createPod(body);
+      case "pod-create":
+        data = await core.createPod(await readJsonFile(readFileText, parsed.flags));
         break;
-      }
       case "pod-terminate":
         data = await core.terminatePod(requirePositional(parsed.positional, 0, "podId"));
         break;
@@ -191,6 +210,14 @@ export async function runMediaCli(args: {
       case "s3-get":
         data = await (await core.s3()).getObjectToFile(requirePositional(parsed.positional, 0, "key"), requirePositional(parsed.positional, 1, "dest"));
         break;
+      case "s3-put": {
+        const file = requirePositional(parsed.positional, 0, "file");
+        const key = requirePositional(parsed.positional, 1, "key");
+        const bytes = await (args.readFileBytes ?? ((p: string) => readFile(p)))(file);
+        await (await core.s3()).putObject(key, bytes);
+        data = { uploaded: key, bytes: bytes.byteLength };
+        break;
+      }
       case "s3-rm":
         await (await core.s3()).deleteObject(requirePositional(parsed.positional, 0, "key"));
         data = { deleted: parsed.positional[0] };

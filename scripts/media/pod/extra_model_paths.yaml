@@ -1,0 +1,16 @@
+# ComfyUI model locations on the network volume (passed via --extra-model-paths-config).
+# Folder names follow ComfyUI's models/ layout; scripts/media/volume-bootstrap.sh creates them.
+ytm_volume:
+  base_path: /workspace/models
+  checkpoints: checkpoints
+  diffusion_models: diffusion_models
+  unet: diffusion_models
+  text_encoders: text_encoders
+  clip: text_encoders
+  vae: vae
+  loras: loras
+  clip_vision: clip_vision
+  audio_encoders: audio_encoders
+  upscale_models: upscale_models
+  controlnet: controlnet
+  embeddings: embeddings
