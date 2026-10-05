@@ -2361,7 +2361,7 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
 ## 25. Factory Operator access: logical path registry and a second agent role (BL-129, ADR 0022)
 
 The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`; the decision is
-`docs/decisions/0022-factory-operator-access.md`. Status: on `feature/factory-operator-access`, awaiting the owner's merge approval.
+`docs/decisions/0022-factory-operator-access.md`. Status: in `dev` (`ada77c5`), not released.
 
 **Two independent modules, no shared state.**
 - `src/lib/logical-paths/` is a registry of named local paths. `logical_paths(name, audience, description)` is the definition;

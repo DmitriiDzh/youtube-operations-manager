@@ -489,7 +489,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Настройки:** тумблеры «RSS feed reads» и «Wikipedia reads» в карточке чтения Settings → API.
 - **Подробно:** ARCHITECTURE §24, план `docs/roadmap/plans/PHASE_13_PLAN.md`.
 
-### 2.9aa Доступ Factory Operator: реестр логических путей и вторая роль агента (BL-129, `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`, ADR 0022) — **IMPLEMENTED на ветке `feature/factory-operator-access`, ждёт согласования мерджа в `dev`**
+### 2.9aa Доступ Factory Operator: реестр логических путей и вторая роль агента (BL-129, `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`, ADR 0022) — **IMPLEMENTED, в `dev` (`ada77c5`)**
 
 - **Реестр путей.** `src/lib/logical-paths/`, таблицы `logical_paths` (имя, аудитория `all_agents`/`factory_only`, описание) и `logical_path_values` (путь на устройство), SCHEMA_MIGRATIONS v50. Засеяны только имена `factory_shared` и `developer_exchange`; новый путь — строка, миграция не нужна. Обе таблицы только на этой машине (не в `SNAPSHOT_TRANSFERRED_TABLES` и не в sync-gateway): каждая машина настраивает только свои значения. Приложение хранит и отдаёт только строку пути, внутрь папки не заглядывает, чтение не создаёт `deviceId`.
 - **Оператор.** `GET/POST/DELETE /api/logical-paths` и `PUT /api/logical-paths/value` (сессия обязательна), карточка «Logical paths (this computer)» в Settings → AI Agent. Значение проверяется при сохранении так же, как путь рабочей папки канала.
