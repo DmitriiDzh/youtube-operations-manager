@@ -1750,3 +1750,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** none on quota safety; the owner may see a duplicate pending request or an over-estimate.
 - **Possible fix:** (2) a partial unique index or one transaction; (3) its own ADR if the owner asks for it.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-105 — Factory Operator token readable by a same-OS-user process; factory read surface is not isolated at OS level — OPEN, 2026-10-05
+
+- **What:** The Factory Operator token (`ytom_fo_`, ADR 0022) is stored only as a hash in the database but is held in plaintext in the role's MCP client configuration, exactly like a channel agent's token (Phase 12, `docs/AGENT_ISOLATION_SETUP.md` §5). A process running as the same OS user can read it (or the database), and a channel agent that did so could call the factory endpoint. The in-app wall (separate endpoint, token table, tool list) does not defend against that.
+- **Effect:** read-only. The factory tools expose logical path strings (including `factory_only` ones) and channel ids, titles and workspace paths; no credentials, account identities, videos or analytics, and no write.
+- **Possible fix:** OS-level isolation per agent (rejected by the owner for channel agents, Phase 12 D0(b)); or a short-lived token handed over per session. Re-evaluate if the factory tools ever gain a write or a broader read.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.

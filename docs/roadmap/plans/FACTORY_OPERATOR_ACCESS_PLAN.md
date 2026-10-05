@@ -1,6 +1,6 @@
 # Factory Operator access: logical path registry + separate agent role — plan
 
-**Status: PLAN, awaiting owner approval. Nothing is implemented.** Backlog item: BL-129. Branch: `feature/factory-operator-access`
+**Status: IMPLEMENTED (slices F1-F5) on `feature/factory-operator-access`; plan approved by the owner 2026-10-05; not merged, awaiting merge approval.** Backlog item: BL-129. Branch: `feature/factory-operator-access`
 (all slices on one branch, one merge-approval request, `AGENTS.md` §K.1/§K.2). Safety-critical per §L
 (agent isolation, token handling), so the full §A reading list applies.
 
