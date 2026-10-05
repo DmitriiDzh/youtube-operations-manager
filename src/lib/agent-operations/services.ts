@@ -426,6 +426,25 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "The local production-workspace folder path the operator set for a channel on THIS device (Settings -> Channels), returned as an absolute path string, or { configured: false } when none is set (never an empty-string path). Implemented as the `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command (`src/lib/channel-workspaces/`). This application never opens, lists, reads, writes, or re-validates anything inside the folder -- the string is returned exactly as stored, even if the folder has since been moved or deleted. Device-local: never synced or handed off, and a path set on another device is never returned. Read-only: no agent-callable way exists to set or clear it -- only the operator, through the Settings UI (`PUT /api/channel-workspaces`), the same self-authorization concern owner spec §17 raised for `local_path` asset registration. Requires channelId to be the caller's currently-active channel.",
   },
+  // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4) -- registered directly as the
+  // `agent_list_logical_paths` / `agent_get_logical_path` MCP tools calling `createLogicalPathsCore()`
+  // (`src/lib/logical-paths/`), NOT wrapped by this module -- same pattern as channel_workspace above.
+  {
+    id: "logical_paths.list_logical_paths",
+    mcpTools: ["agent_list_logical_paths"],
+    domain: "logical_paths",
+    permission: "READ",
+    description:
+      "The logical paths available to every agent (named folders the operator configured, e.g. a shared registry folder), each with THIS device's value or configured:false. Paths reserved for other roles are never listed. Implemented as the `agent_list_logical_paths` MCP tool (`src/lib/logical-paths/`). This application never opens, lists or reads anything inside a path. Device-local: a value set on another device is never returned. Read-only: no agent-callable way exists to create, set or delete a path -- only the operator, through the Settings UI. Not channel-scoped (instance-wide registry).",
+  },
+  {
+    id: "logical_paths.get_logical_path",
+    mcpTools: ["agent_get_logical_path"],
+    domain: "logical_paths",
+    permission: "READ",
+    description:
+      "One logical path's value on THIS device by name, as an absolute path string; LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE when none is set here (never an empty-string path), LOGICAL_PATH_NOT_FOUND for an unknown name or a path not available to agents (indistinguishable). Implemented as the `agent_get_logical_path` MCP tool. Read-only, local, no filesystem access.",
+  },
 ];
 
 /** The literal capability inventory, for tests that tie it to the real MCP tool registry (BL-118 drift test). */

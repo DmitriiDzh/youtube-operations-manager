@@ -2357,3 +2357,37 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   in-memory cache for 30 minutes, never persisted.
 - **Not exposed to agents yet:** the Wikipedia signals and the Music chart. That depends on the separate
   agent-recommendations proposal.
+
+## 25. Factory Operator access: logical path registry and a second agent role (BL-129, ADR 0022)
+
+The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`; the decision is
+`docs/decisions/0022-factory-operator-access.md`. Status: on `feature/factory-operator-access`, awaiting the owner's merge approval.
+
+**Two independent modules, no shared state.**
+- `src/lib/logical-paths/` is a registry of named local paths. `logical_paths(name, audience, description)` is the definition;
+  `logical_path_values(device_id, name, path)` is one value per device. Both tables are device-local: they are not in
+  `SNAPSHOT_TRANSFERRED_TABLES` and not in sync-gateway, by owner decision (each machine configures only its own values). Reads filter on the bootstrap
+  `deviceId`; a read never creates it, never touches the filesystem and returns the stored string exactly as stored. Only the operator routes
+  (`/api/logical-paths`, session required) create, set (validated once with `src/lib/local-path-validation`, like Phase 11) or delete.
+- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity.
+  It lives in its own table so that a channel token can never be looked up as a factory token or the reverse; the prefix check rejects a foreign
+  token before any lookup.
+
+**Two MCP surfaces, never mixed.**
+- Channel agents: `POST /api/mcp`, token `ytom_ch_`, `createMcpServer`, `bound` tools inside the channel agent scope (`src/lib/agent-session`).
+  Two additive reads were added (`agent_list_logical_paths`, `agent_get_logical_path`); the handler pins the registry to the `channel` scope, so only
+  `all_agents` paths are visible and a `factory_only` name fails exactly like an unknown name.
+- Factory Operator: `POST /api/mcp/factory`, token `ytom_fo_`, `createFactoryMcpServer` (`src/mcp/factory-server.ts`), a closed list of four read-only tools. The
+  server file imports only the MCP SDK, zod and shared-domain: everything it can reach arrives through dependencies wired in
+  `src/app/api/mcp/factory/route.ts`, which imports only the allowlisted modules (no YouTube gateway, database access beyond the connection toggle and the traffic
+  counter, analytics, change sets, batches). The endpoint never enters the channel agent scope, so it cannot read the operator's selected channel. Its
+  channel listing returns channel id, title and this device's workspace path only.
+- Shared, unchanged safeguards: loopback guard (extracted to `src/lib/loopback-guard`), the master MCP-connection switch (403 when off, for both
+  endpoints), per-call token re-verification (a revocation lands on the next call), traffic counted in `mcp_tool_calls`.
+- Revoking the factory token (`DELETE /api/factory-agent-token`) is an operator stop switch: it is exempt from the recovery-mode gate in `src/proxy.ts` like the channel-token revoke, so the role can be cut off exactly when something has gone wrong. The database also allows at most one active factory token (partial unique index, `factory_agent_tokens_one_active_idx`; migration v51 first revokes all but the newest active row if several exist).
+- `src/mcp/factory-server.test.ts` is the mechanical boundary: exact tool list, no `factory_*` name in `MCP_TOOL_CLASSIFICATION`, import allowlists, no channel-scope
+  identifiers in the factory files.
+
+**Known limit** (`docs/TECHNICAL_DEBT.md` RISK-105): a process running as the same OS user can read the factory token from its client configuration or the
+database. The exposure is read-only (path strings, channel titles and workspace paths). The in-app wall does not defend against a hostile same-user process (see
+`docs/AGENT_ISOLATION_SETUP.md` §5).

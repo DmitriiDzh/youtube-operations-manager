@@ -787,6 +787,66 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
     receiving.close();
   }));
 
+// Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md §2.2, AC-FO-01): the
+// logical path registry is device-local by owner decision (2026-10-05, each machine configures only
+// its own values) -- neither the definitions nor the values travel with a handoff, and the receiving
+// device's own rows survive an import.
+test("applySnapshotToDatabase: logical_paths and logical_path_values are device-local -- never exported, receiving device's own rows survive", () =>
+  withTempDir("snapshot-test-", async (dir) => {
+    for (const table of ["logical_paths", "logical_path_values", "factory_agent_tokens"]) {
+      assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes(table), false);
+    }
+
+    const source = await makeClient(dir, "source.db");
+    await source.execute({
+      sql: "INSERT INTO logical_path_values (device_id, name, path) VALUES (?, ?, ?)",
+      args: ["device-a", "factory_shared", "/Users/a/Factory/Shared"],
+    });
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    const published = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+    const tableRows = await published.execute(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('logical_paths', 'logical_path_values')"
+    );
+    assert.equal(tableRows.rows.length, 0, "the registry tables must not exist in the published snapshot");
+    published.close();
+
+    const receiving = await makeClient(dir, "receiving.db");
+    await receiving.execute({
+      sql: "INSERT INTO logical_path_values (device_id, name, path) VALUES (?, ?, ?)",
+      args: ["device-b", "factory_shared", "C:\\Factory\\Shared"],
+    });
+    await receiving.execute({
+      sql: "INSERT INTO logical_paths (name, audience, description) VALUES (?, ?, ?)",
+      args: ["local_only_name", "factory_only", ""],
+    });
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const values = await receiving.execute("SELECT device_id, name, path FROM logical_path_values");
+    assert.deepEqual(values.rows, [{ device_id: "device-b", name: "factory_shared", path: "C:\\Factory\\Shared" }]);
+    const names = await receiving.execute("SELECT name FROM logical_paths ORDER BY name");
+    assert.deepEqual(
+      names.rows.map((row) => row.name),
+      ["developer_exchange", "factory_shared", "local_only_name"]
+    );
+
+    source.close();
+    receiving.close();
+  }));
+
 // Architecture audit 2026-10-01 (M6): every table the schema creates is classified exactly once --
 // transferred with a handoff, or deliberately device-local with a reason.
 test("every schema table is classified as either transferred or device-local, never both, never neither", async () => {

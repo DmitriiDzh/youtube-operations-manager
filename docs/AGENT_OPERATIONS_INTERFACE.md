@@ -1066,6 +1066,16 @@ request (Web only, mechanically fenced); an approved request runs the REGULAR co
 daily budget). Channels collected or failed within 24 h are reported `not_needed`; a channel with an open request is `alreadyRequested`. A request is
 a request may end `done` with every channel `skipped_*` (read the per-channel results); incremental estimate about 2, at most 5 units; owned by the creating agent's channel (assignment kind `collection_request`); another request behaves as nonexistent. Contract: `docs/interfaces.md`.
 
+## 4p. Logical paths (BL-129, ADR 0022) -- IMPLEMENTED; `AGENT_API_VERSION` 3.3.0
+
+MINOR bump 3.2.0 -> 3.3.0: two new `READ` capabilities in the new `logical_paths` domain (data domain `logical_path_values`). `agent_list_logical_paths` and
+`agent_get_logical_path { name }` return the operator-configured named folders that are visible to every agent (for example a shared registry folder), with THIS
+device's value. They are not channel-scoped (the registry is instance-wide), `bound`, local, with no filesystem access: the string is returned exactly as stored.
+`configured: false` / `LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE` means no folder is set on this computer (never an empty path). A path the operator reserved for another
+role, and an unknown name, both fail with `LOGICAL_PATH_NOT_FOUND`, indistinguishably. No agent tool can create, set or delete a path. The Factory Operator is a
+different role on a different endpoint with its own tools and its own version: see `docs/interfaces.md` ("Factory Operator MCP endpoint") and ADR 0022; none of
+its tools appears in this interface, and none of the channel tools is callable on that endpoint.
+
 ## 8. Safety invariants this interface must never violate
 
 - Never expose Google OAuth tokens, AI-provider API keys, encryption keys, raw credential records,

@@ -742,6 +742,12 @@ Key MCP tools:
     identity stamp).
   - `agent_export_research_data` (BL-119, ADR 0019) — `{ channelId, researchChannelIds?, includeOwnChannel?=true, formats?=["csv"] }` (`.strict()`; no path or file name) → `{ generatedAt, exportsDir, files: [{ dataset, format, path, rows, bytes, expiresAt }], watchlistChannels: { exported, withoutSnapshots }, retentionNote }`. `DRAFT`, channel-scoped, passes the mutation gate; writes into the fixed folder `<channel workspace>/99 Data Exchange/From YTM/` (created on the first export; owner-approved exception, ADR 0019 amendment). Errors `RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED` / `RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE` / `RESEARCH_EXPORT_WRITE_FAILED`. `query_market_overview` — `{ channelIds?, limit?=50 (max 200), offset?=0 }` → `{ total, offset, limit, channels: [{ channelId, handleOrUrl, latestChannelSnapshot, channelSnapshotCount, videoSnapshotCount, evidenceCount, dataQualityFlags }], nextOffset }`; `READ`, local. `agent_query_channel_reach` also takes `videoId` and `groupBy: "video_day"` (adds `videoDaily`, capped at 5000 rows); `agent_query_video_analytics` takes `format: "wide"` (`wideRows`, `rows` empty); `channel_video_list` takes `fields`, `limit` (max 500), `offset` (→ `{ channelId, videos, total, offset, nextOffset }`). Agent API 3.1.0.
   - `agent_create_collection_request` (ADR 0021) — `{ researchChannelIds?: string[], reason?: string (<= 500) }` (`.strict()`; no force) → `{ created, request, notNeeded: [{ channelId, reason: "collected_recently"|"recent_failure", hoursSince }], alreadyRequested: [{ channelId, requestId }] }`. `DRAFT`, channel-bound, passes the mutation gate; zero YouTube calls. `request` = `{ requestId, channelIds, reason, status, estimate: { channels: [{ channelId, mode, expectedUnits, worstCaseUnits }], totalExpectedUnits, totalWorstCaseUnits, dailyBudgetUnits, unitsSpentToday, remainingTodayUnits, fitsToday }, result, unitsSpentTotal, error, ... }`; units are YouTube quota units, estimates are upper bounds (incremental: about 2, at most 5); `alreadyRequested[].requestId` only for requests assigned to the caller; a `done` request can have every channel skipped_*, read `result`. Errors `MARKET_INTELLIGENCE_QUOTA_DISABLED` (no daily budget), `RESEARCH_CHANNEL_NOT_AVAILABLE`. `agent_get_collection_request` — `{ requestId? }` → `{ request }` or `{ requests }` (latest 20 assigned to the caller); per-channel `result` entries `{ channelId, outcome: completed|partial_budget|failed|skipped_not_stale|skipped_recent_failure|skipped_quota_limited, videosStored, newSnapshotsObservedAt, unitsSpent }`; `COLLECTION_REQUEST_NOT_FOUND` for an unknown or unassigned id. `agent_get_collection_limits` — `{}` → `{ dailyBudgetUnits|null, unitsSpentToday, remainingTodayUnits|null, quotaDayResetsAt, defaultMaxVideosPerChannel, defaultPublishedAfter, staleWindowHours, perChannelOverrides }`; both `READ`, local. CLI: `agent create-collection-request [--researchChannelIds a,b] [--reason ...]`, `agent collection-limits`. Approve/run/reject are Web-only (`POST /api/market-intelligence/collection-requests/[requestId]/approve|reject`, session required; approve blocks until the run finishes). Agent API 3.2.0.
+  - `agent_list_logical_paths` / `agent_get_logical_path` (BL-129, ADR 0022; Agent API 3.3.0) — `{}` / `{ name }` (both `.strict()`; an extra field such as `scope` or `path` is rejected) →
+    `{ paths: [{ name, description, configured: false } | { name, description, configured: true, path }] }` / `{ name, path }`. `READ`, local, not channel-scoped
+    (an instance-wide registry). Only paths the operator made visible to all agents are returned, with THIS device's value. `agent_get_logical_path` fails with
+    `LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE` when no value is set on this device (never an empty path) and with `LOGICAL_PATH_NOT_FOUND` for an unknown
+    name or a path not available to agents (the two are indistinguishable). The string is returned exactly as stored; nothing at or under it is touched.
+    No MCP tool can create, set or delete a path: only the operator, through the Settings UI (`/api/logical-paths`).
   - `agent_get_channel_workspace` (Phase 11, `docs/AGENT_OPERATIONS_INTERFACE.md` §4m) —
     `{ channelId }` (`.strict()`) → `{ configured: false } | { configured: true, path: string }`.
     `READ`, channel-scoped (`assertActiveChannel`, like `agent_get_channel_context`).
@@ -843,6 +849,23 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
 
 ---
 
+## Factory Operator MCP endpoint (`POST /api/mcp/factory`, BL-129, ADR 0022)
+
+A second agent role, separate from the channel agents. Technical contract only (no operating instructions for the role).
+
+- **Transport:** stateless Streamable HTTP, loopback only, `Authorization: Bearer ytom_fo_...`. Order of checks: loopback (403 `AGENT_ENDPOINT_NOT_LOOPBACK`),
+  POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
+  unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
+  every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
+- **Factory API version:** `1.0.0` (`factory_get_capabilities`), independent of `AGENT_API_VERSION`.
+- **Tools (a closed list; all `READ`, local, no YouTube call, all inputs `.strict()`):**
+  - `factory_get_capabilities` — `{}` → `{ role: "factory_operator", factoryApiVersion, tools: [...], permissions: ["READ"] }`.
+  - `factory_list_logical_paths` — `{}` → `{ paths: [{ name, description, configured: false } | { name, description, configured: true, path }] }` for every path, with THIS device's value.
+  - `factory_get_logical_path` — `{ name }` → `{ name, path }`; errors `LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE` (defined, no value on this device; never an empty path) and `LOGICAL_PATH_NOT_FOUND`.
+  - `factory_list_channels` — `{}` → `{ channels: [{ channelId, title, workspace: { configured: false } | { configured: true, path } }] }`. No account identity, token, video or analytics data.
+- **Not available to this role:** every channel tool, every write, `write_*`/`auth_*`, YouTube reads. It cannot create, set or delete a path or issue a token.
+- **Tool errors** use the same `{ ok: false, error: { code, message, details } }` shape as the channel server.
+
 ## API Route Handlers (selected)
 
 All routes are App Router handlers and require authenticated session user.
@@ -875,6 +898,13 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
 `src/proxy.ts`.
 
 - `GET /api/agent-tokens` → `{ tokens: [{ tokenId, channelId, label, createdAt }] }` (metadata only).
+- Logical paths and the Factory Operator token (BL-129, ADR 0022), all operator-only (session required, 401 otherwise):
+  - `GET /api/logical-paths` → `{ paths: [{ name, audience, description, path | null, status: "exists" | "missing" | null, updatedAt | null }] }` (this device's value; `status` is a one-time check of the stored path).
+  - `POST /api/logical-paths` with `{ name, audience: "all_agents" | "factory_only", description? }` → `201 { path: { name } }`; `LOGICAL_PATH_ALREADY_EXISTS` (409), invalid name `validation_failed` (400).
+  - `DELETE /api/logical-paths` with `{ name }` → `{ path: { name } }` (also removes its values); `LOGICAL_PATH_NOT_FOUND` (404).
+  - `PUT /api/logical-paths/value` with `{ name, path | null }` → `{ value: { name, path | null } }`; `null` or blank clears this device's value; `LOGICAL_PATH_VALUE_INVALID` (400) for a path that is not an absolute existing directory outside app-data; `LOGICAL_PATH_NOT_FOUND` (404) for an unknown name.
+  - `DELETE /api/factory-agent-token` is a stop switch: like `DELETE /api/agent-tokens` it passes the recovery-mode gate (it is still refused while an export/import/migration holds the operation lock); every other route above stays gated.
+  - `GET /api/factory-agent-token` → `{ token: { tokenId, label, createdAt } | null }`; `POST` (body `{ label? }`, strict) → `201 { token: { ..., token } }` with `cache-control: no-store`, the plaintext exactly once; `DELETE` → `{ revoked: n }`. Issuing again revokes the previous token.
 - `POST /api/agent-tokens` with `{ channelId, label? }` → `201 { token: { ..., token } }`, with
   `cache-control: no-store`. The plaintext is returned exactly once. It revokes the channel's
   previous token. Errors: `AGENT_TOKEN_CHANNEL_NOT_CONNECTED` (404),
