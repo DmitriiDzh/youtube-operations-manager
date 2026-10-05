@@ -194,16 +194,13 @@ test("AC-FO-07: tools/list over the real endpoint is exactly the four factory to
 test("AC-FO-07: a channel tool name is not callable on the factory endpoint", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
-  for (const name of ["agent_get_channel_context", "channel_list", "list", "apply", "agent_get_channel_workspace", "write_channel_select"]) {
-    const result = await toolResultOrRpcError(await endpoint.handle(rpc(call(name), withToken(token))));
-    assert.equal(result.failed, true, name);
+  for (const name of ["agent_get_channel_context", "channel_list", "list", "apply", "agent_get_channel_workspace", "write_channel_select", "agent_get_logical_path"]) {
+    const body = await (await endpoint.handle(rpc(call(name), withToken(token)))).json();
+    // The MCP SDK's own answer for an unregistered tool: not a validation failure of a registered one.
+    assert.equal(body.result?.isError, true, name);
+    assert.match(String(body.result.content[0].text), /not found/i, name);
   }
 });
-
-async function toolResultOrRpcError(response: Response) {
-  const body = await response.json();
-  return { failed: Boolean(body.error) || Boolean(body.result?.isError) };
-}
 
 test("factory_get_capabilities reports the factory API version 1.0.0, READ only, and the tool list", async () => {
   const { endpoint, tokenServices } = setup();
@@ -249,8 +246,11 @@ test("AC-FO-09: tool inputs are strict -- an extra field (e.g. a path to set) is
     ["factory_list_channels", { channelId: "UC_A" }],
     ["factory_get_capabilities", { x: 1 }],
   ] as const) {
-    const result = await toolResultOrRpcError(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))));
-    assert.equal(result.failed, true, name);
+    const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
+    // A registered tool rejecting an extra field, NOT an unknown tool and not a success.
+    assert.equal(body.result?.isError, true, name);
+    assert.doesNotMatch(String(body.result.content[0].text), /not found/i, name);
+    assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
   }
 });
 
@@ -292,19 +292,58 @@ test("AC-FO-06: revoking the token makes the very next call of a running session
   assert.deepEqual(outcomes, ["allowed"]);
 });
 
-test("AC-FO-08: the factory endpoint never enters the channel-bound agent scope", async () => {
-  let scopeSeen: unknown = "unset";
+test("AC-FO-08: the factory endpoint never enters the channel-bound agent scope, for any of its four tools", async () => {
+  const seen: Record<string, unknown> = {};
   const { endpoint, tokenServices } = setup({
     toolDeps: {
       async listChannels() {
-        scopeSeen = getAgentSession();
+        seen.listChannels = getAgentSession();
         return [];
+      },
+      async listLogicalPaths() {
+        seen.listLogicalPaths = getAgentSession();
+        return [];
+      },
+      async readLogicalPath(input) {
+        seen.readLogicalPath = getAgentSession();
+        return { name: (input as { name: string }).name, path: "/x" };
       },
     },
   });
   const { token } = await tokenServices.issueToken({});
-  await endpoint.handle(rpc(call("factory_list_channels"), withToken(token)));
-  assert.equal(scopeSeen, null);
+  for (const [name, args] of [
+    ["factory_list_channels", {}],
+    ["factory_list_logical_paths", {}],
+    ["factory_get_logical_path", { name: "factory_shared" }],
+    ["factory_get_capabilities", {}],
+  ] as const) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+  }
+  assert.deepEqual(seen, { listChannels: null, listLogicalPaths: null, readLogicalPath: null });
+});
+
+test("review round 2: a database failure while re-verifying a running session is not reported as a revoked token", async () => {
+  const { deps, outcomes } = fakeToolDeps();
+  const server = createFactoryMcpServer(deps, {
+    connectionEnabled: true,
+    session: {
+      tokenId: "t",
+      async reverify() {
+        throw new Error("SQLITE_BUSY");
+      },
+    },
+  });
+  const endpoint = createFactoryMcpEndpoint({
+    isConnectionEnabled: async () => true,
+    verifyToken: async () => ({ tokenId: "t" }),
+    createServer: () => server,
+  });
+  const result = await toolResult(await endpoint.handle(rpc(call("factory_list_logical_paths"), withToken("ytom_fo_x"))));
+  assert.equal(result.isError, true);
+  assert.equal((result.payload.error as { code: string }).code, "internal_error");
+  assert.equal(JSON.stringify(result.payload).includes("SQLITE_BUSY"), false, "no driver detail leaks");
+  assert.equal(JSON.stringify(result.payload).includes("factory_shared"), false, "no data on a blocked call");
+  assert.deepEqual(outcomes, ["blocked"]);
 });
 
 test("with no valid session or with the connection disabled the server registers ZERO tools", async () => {

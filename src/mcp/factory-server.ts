@@ -86,9 +86,9 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         await session.reverify();
       } catch (error) {
         await deps.recordOutcome("blocked");
-        return errorResult(
-          error instanceof DomainError ? error : new DomainError({ code: "AGENT_TOKEN_INVALID", message: "agent token is missing, unknown, or revoked" })
-        );
+        // Only a real "token not accepted" is reported as an invalid token. A database failure while re-verifying must not
+        // tell the role its (perfectly good) token was revoked (same rule as the endpoint's own 503).
+        return errorResult(error instanceof DomainError && error.code === "AGENT_TOKEN_INVALID" ? error : new Error("token verification unavailable"));
       }
       await deps.recordOutcome("allowed");
       try {

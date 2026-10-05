@@ -3073,6 +3073,25 @@ test("factory_agent_tokens: replace keeps one active token; revoke hides it; sep
     assert.equal((await findActiveAgentChannelTokenByHash("hc", isolatedDb))?.id, "c1");
   }));
 
+test("factory_agent_tokens: migration v51 on a database that already holds several active rows keeps the newest and still boots", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    // Simulate the pre-index state: drop the index, stamp 50, leave three ACTIVE rows (plus one revoked).
+    await client.execute("DROP INDEX factory_agent_tokens_one_active_idx");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash, revoked_at) VALUES ('old-revoked', 'h0', 1)");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a1', 'h1')");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a2', 'h2')");
+    await client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a3', 'h3')");
+    await client.execute("UPDATE schema_meta SET value = '50' WHERE key = 'schema_version'");
+
+    await initializeDatabaseSchema(client);
+
+    assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
+    const active = await client.execute("SELECT id FROM factory_agent_tokens WHERE revoked_at IS NULL");
+    assert.deepEqual(active.rows.map((row) => row.id), ["a3"], "only the newest active token survives");
+    await assert.rejects(client.execute("INSERT INTO factory_agent_tokens (id, token_hash) VALUES ('a4', 'h4')"), /UNIQUE|constraint/i);
+  }));
+
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-11): at most one active token per channel,
 // replaced atomically; revoked tokens are never found by hash.
 test("agent_channel_tokens: replace keeps one active token per channel; revoke hides it from lookup", () =>

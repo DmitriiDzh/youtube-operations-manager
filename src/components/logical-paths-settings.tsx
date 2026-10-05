@@ -99,6 +99,11 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
+  // Resync the draft when the stored value changes (another tab, or a reload after save) so a stale draft cannot overwrite it.
+  useEffect(() => {
+    setDraft(entry.path ?? "");
+  }, [entry.path]);
+
   const trimmed = draft.trim();
   const dirty = trimmed !== (entry.path ?? "");
 
@@ -177,7 +182,7 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
             Delete path
           </button>
         ) : (
-          <span className="flex items-center gap-2 text-xs text-red-400">
+          <span role="alertdialog" aria-label={`Delete logical path ${entry.name}`} className="flex items-center gap-2 text-xs text-red-400">
             Remove this name and its value?
             <button
               onClick={() => call("/api/logical-paths", "DELETE", { name: entry.name }, "Deleted.")}
@@ -192,8 +197,8 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
           </span>
         )}
       </div>
-      {notice && <p className="text-xs text-green-500">{notice}</p>}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {notice && <p role="status" className="text-xs text-green-500">{notice}</p>}
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
     </li>
   );
 }
@@ -229,7 +234,13 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
   }
 
   return (
-    <div className="space-y-2 border-t border-zinc-800 pt-3">
+    <form
+      className="space-y-2 border-t border-zinc-800 pt-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!busy && name.trim() !== "") void create();
+      }}
+    >
       <p className="text-xs font-medium text-zinc-300">Add a logical path</p>
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -264,7 +275,7 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
           />
         </label>
         <button
-          onClick={create}
+          type="submit"
           disabled={busy || name.trim() === ""}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
@@ -275,7 +286,7 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
         Name: 2&ndash;64 characters, lowercase letters, digits and underscore, starting with a letter. The
         value is set separately, on each computer.
       </p>
-      {error && <p className="text-xs text-red-400">{error}</p>}
-    </div>
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
+    </form>
   );
 }

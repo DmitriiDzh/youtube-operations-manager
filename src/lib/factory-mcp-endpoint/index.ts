@@ -13,7 +13,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isLoopbackRequest } from "@/lib/loopback-guard";
-import { isDomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 
 /** The verified Factory Operator session of one request. */
 export type FactoryMcpSession = { tokenId: string; reverify(): Promise<void> };
@@ -81,7 +81,7 @@ export function createFactoryMcpEndpoint(deps: FactoryMcpEndpointDeps) {
       async reverify() {
         const current = await deps.verifyToken(token);
         if (current.tokenId !== binding.tokenId) {
-          throw new Error("agent token is missing, unknown, or revoked");
+          throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "agent token is missing, unknown, or revoked" });
         }
       },
     };

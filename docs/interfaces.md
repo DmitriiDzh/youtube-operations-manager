@@ -902,7 +902,8 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
   - `GET /api/logical-paths` → `{ paths: [{ name, audience, description, path | null, status: "exists" | "missing" | null, updatedAt | null }] }` (this device's value; `status` is a one-time check of the stored path).
   - `POST /api/logical-paths` with `{ name, audience: "all_agents" | "factory_only", description? }` → `201 { path: { name } }`; `LOGICAL_PATH_ALREADY_EXISTS` (409), invalid name `validation_failed` (400).
   - `DELETE /api/logical-paths` with `{ name }` → `{ path: { name } }` (also removes its values); `LOGICAL_PATH_NOT_FOUND` (404).
-  - `PUT /api/logical-paths/value` with `{ name, path | null }` → `{ value: { name, path | null } }`; `null` or blank clears this device's value; `LOGICAL_PATH_VALUE_INVALID` (400) for a path that is not an absolute existing directory outside app-data.
+  - `PUT /api/logical-paths/value` with `{ name, path | null }` → `{ value: { name, path | null } }`; `null` or blank clears this device's value; `LOGICAL_PATH_VALUE_INVALID` (400) for a path that is not an absolute existing directory outside app-data; `LOGICAL_PATH_NOT_FOUND` (404) for an unknown name.
+  - `DELETE /api/factory-agent-token` is a stop switch: like `DELETE /api/agent-tokens` it passes the recovery-mode gate (it is still refused while an export/import/migration holds the operation lock); every other route above stays gated.
   - `GET /api/factory-agent-token` → `{ token: { tokenId, label, createdAt } | null }`; `POST` (body `{ label? }`, strict) → `201 { token: { ..., token } }` with `cache-control: no-store`, the plaintext exactly once; `DELETE` → `{ revoked: n }`. Issuing again revokes the previous token.
 - `POST /api/agent-tokens` with `{ channelId, label? }` → `201 { token: { ..., token } }`, with
   `cache-control: no-store`. The plaintext is returned exactly once. It revokes the channel's

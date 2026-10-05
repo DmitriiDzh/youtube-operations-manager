@@ -37,7 +37,8 @@ it a flag on the existing endpoint would make isolation depend on one missing ch
 5. **Mechanical enforcement:** an inventory test pins the factory server's tool names to the explicit list, forbids any `factory_*` name in
    `MCP_TOOL_CLASSIFICATION`, allow-lists what the factory server, route and endpoint may import (no YouTube gateway, database, analytics, change sets,
    batches, `agent-session`) and forbids channel-scope identifiers in those files.
-6. **Shared loopback guard** extracted to `src/lib/loopback-guard` (`AGENTS.md` §M); the channel endpoint's old path re-exports it.
+6. **Stop switch and single active token.** Revoking the factory token is exempt from the recovery-mode gate (as for channel tokens, architecture audit H4), and the database enforces at most one active factory token with a partial unique index.
+7. **Shared loopback guard** extracted to `src/lib/loopback-guard` (`AGENTS.md` §M); the channel endpoint's old path re-exports it.
 
 ## Consequences
 

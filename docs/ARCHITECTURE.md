@@ -2384,6 +2384,7 @@ The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTO
   channel listing returns channel id, title and this device's workspace path only.
 - Shared, unchanged safeguards: loopback guard (extracted to `src/lib/loopback-guard`), the master MCP-connection switch (403 when off, for both
   endpoints), per-call token re-verification (a revocation lands on the next call), traffic counted in `mcp_tool_calls`.
+- Revoking the factory token (`DELETE /api/factory-agent-token`) is an operator stop switch: it is exempt from the recovery-mode gate in `src/proxy.ts` like the channel-token revoke, so the role can be cut off exactly when something has gone wrong. The database also allows at most one active factory token (partial unique index, `factory_agent_tokens_one_active_idx`; migration v51 first revokes all but the newest active row if several exist).
 - `src/mcp/factory-server.test.ts` is the mechanical boundary: exact tool list, no `factory_*` name in `MCP_TOOL_CLASSIFICATION`, import allowlists, no channel-scope
   identifiers in the factory files.
 

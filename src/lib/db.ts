@@ -2861,6 +2861,12 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
           "revoked_at INTEGER)"
       );
+      // A database that already holds several active rows (only possible if two overlapping issue calls raced before this
+      // index existed) must not wedge boot: keep the newest active token, revoke the others, THEN add the index.
+      await client.execute(
+        "UPDATE factory_agent_tokens SET revoked_at = unixepoch() WHERE revoked_at IS NULL AND rowid NOT IN " +
+          "(SELECT MAX(rowid) FROM factory_agent_tokens WHERE revoked_at IS NULL)"
+      );
       // At most ONE active row, enforced by the database (independent review): two overlapping issue calls can then
       // never leave two valid tokens -- the loser fails closed instead of the Settings card hiding a live second token.
       await client.execute(

@@ -22,7 +22,8 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // doc comment; found by independent review that this exemption alone was not sufficient.)
 // `/api/operation-lock` is the stuck-lock recovery route: it must work exactly while the operation
 // lock (or a failed database initialization) makes this gate refuse everything else.
-// `/api/mcp` (matched exactly, below, so a future `/api/mcp-x` route is NOT exempted) is the in-app agent endpoint (docs/decisions/0013-in-app-http-mcp-transport.md): every MCP
+// `/api/mcp` and everything under `/api/mcp/` (the channel agent endpoint and `/api/mcp/factory`, the Factory Operator's; a sibling such as
+// `/api/mcp-x` is NOT exempted) is the in-app agent endpoint (docs/decisions/0013-in-app-http-mcp-transport.md): every MCP
 // call is a POST -- including `initialize`, `tools/list` and pure reads -- so gating the path here
 // would block an agent's reads during recovery mode / an operation lock. The old stdio MCP server never
 // went through this proxy either; locally-mutating and remote-mutating tools keep their own gate

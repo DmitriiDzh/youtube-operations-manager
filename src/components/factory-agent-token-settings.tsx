@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
@@ -23,6 +23,8 @@ export function FactoryAgentTokenSettings() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [pending, setPending] = useState<"rotate" | "revoke" | null>(null);
   const [copied, setCopied] = useState(false);
+  // A synchronous guard: two quick clicks (a double-click on "Rotate") must issue ONE token. `busy` state alone updates a render late.
+  const inflight = useRef(false);
 
   const load = useCallback(async () => {
     setLoadFailed(false);
@@ -42,6 +44,8 @@ export function FactoryAgentTokenSettings() {
   }, [load]);
 
   async function issue() {
+    if (inflight.current) return;
+    inflight.current = true;
     setBusy(true);
     setError(null);
     setCopied(false);
@@ -62,12 +66,15 @@ export function FactoryAgentTokenSettings() {
     } catch {
       setError("Failed to issue a token");
     } finally {
+      inflight.current = false;
       setBusy(false);
       setPending(null);
     }
   }
 
   async function revoke() {
+    if (inflight.current) return;
+    inflight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -82,6 +89,7 @@ export function FactoryAgentTokenSettings() {
     } catch {
       setError("Failed to revoke the token");
     } finally {
+      inflight.current = false;
       setBusy(false);
       setPending(null);
     }
@@ -120,13 +128,13 @@ export function FactoryAgentTokenSettings() {
 
       <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
         <span className="text-zinc-500">
-          {active ? `active since ${formatDisplayDateTime(active.createdAt)}` : "none issued"}
+          {loadFailed ? "status unknown" : active ? `active since ${formatDisplayDateTime(active.createdAt)}` : "none issued"}
         </span>
         <span className="flex-1" />
-        {!active && (
+        {!active && !loadFailed && (
           <button
             onClick={issue}
-            disabled={busy || loadFailed}
+            disabled={busy}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
             {busy ? "Issuing..." : "Issue token"}
@@ -174,7 +182,7 @@ export function FactoryAgentTokenSettings() {
       )}
 
       {error && (
-        <p className="flex items-center gap-2 text-xs text-red-400">
+        <p role="alert" className="flex items-center gap-2 text-xs text-red-400">
           {error}
           {loadFailed && (
             <button onClick={() => load()} className="underline hover:text-red-300">
