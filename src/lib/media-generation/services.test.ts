@@ -53,8 +53,11 @@ function memoryKeyFile(initial: string | null = null) {
       content = JSON.stringify(next);
     },
     randomBytes: (size) => Buffer.alloc(size, 3),
+    async remove() {
+      content = null;
+    },
   };
-  return { keyFile: createKeyFile(access), content: () => content, drop: () => (content = null) };
+  return { keyFile: createKeyFile(access), content: () => content, drop: () => (content = null), corrupt: () => (content = "{not json") };
 }
 
 type FakeRunpod = {
@@ -534,4 +537,41 @@ test("review 15: the operator terminate passthrough releases the pod's volume lo
   const confirmed = await services.terminatePod("p-1");
   assert.equal(confirmed.confirmed, true);
   assert.equal(store.current(), null);
+});
+
+// -- review round 16 (2026-10-05) -----------------------------------------------------------------
+
+test("review 16: an unreadable key file is REPORTED (key_file_invalid), never thrown out of the overview; Clear then removes the row AND the unreadable key file so a fresh key is created on the next save (a readable key file is kept, AC-P14-21)", async () => {
+  const f = fixture();
+  await f.services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  f.key.corrupt();
+  const status = await f.services.getCredentialsStatus();
+  assert.deepEqual(status, { configured: false, reason: "key_file_invalid" });
+  assert.equal((await f.services.getOverview()).credentials.configured, false, "the card can still render");
+  await f.services.clearCredentials();
+  assert.equal(f.key.content(), null, "the corrupt key file is gone");
+  assert.deepEqual(await f.services.getCredentialsStatus(), { configured: false, reason: "no_credentials" });
+  const again = await f.services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  assert.equal(again.configured, true);
+  assert.ok(f.key.content(), "a fresh key file");
+});
+
+test("review 16: Community Cloud with a network volume is refused at settings time (volumes are Secure Cloud only)", async () => {
+  const { services } = fixture();
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" });
+  await assert.rejects(services.updateSettings({ cloudType: "COMMUNITY" }), (e: unknown) => isDomainError(e) && e.code === "media_settings_invalid" && /Community Cloud pods cannot mount a network volume/.test(e.message));
+  assert.equal((await services.updateSettings({ cloudType: "COMMUNITY", networkVolumeId: null })).networkVolumeId, null);
+});
+
+test("review 16: re-saving unchanged compute settings makes no catalog call; only a changed field is validated live", async () => {
+  const runpod = fakeRunpod();
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await services.updateSettings({ datacenterId: "EU-RO-1", gpuTypeId: "NVIDIA GeForce RTX 4090", networkVolumeId: "vol-eu", templateId: "tpl1" });
+  const before = runpod.calls.length;
+  await services.updateSettings({ datacenterId: "EU-RO-1", gpuTypeId: "NVIDIA GeForce RTX 4090", cloudType: "SECURE", templateId: "tpl1" }); // the Compute card's full resend
+  assert.equal(runpod.calls.length, before, "nothing changed, nothing asked");
+  await services.updateSettings({ datacenterId: "US-TX-3", gpuTypeId: "NVIDIA GeForce RTX 4090", cloudType: "SECURE", templateId: "tpl1", networkVolumeId: "vol-us" });
+  assert.ok(runpod.calls.length > before, "a changed datacenter is validated");
 });

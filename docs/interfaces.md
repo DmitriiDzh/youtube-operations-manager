@@ -1033,7 +1033,7 @@ Operator-only (session required); never returns a stored secret. Every RunPod ca
 routes checks the "Media gateway" toggle and counts in the gateway traffic stats.
 
 - `GET /api/media-generation/overview` — `{ credentials, settings, gatewayEnabled, ready, missing[] }`
-- `GET|PUT|DELETE /api/media-generation/credentials` — status `{ configured, runpodKeyPrefix, s3AccessKeyId, verifiedAt, updatedAt }` or `{ configured: false, reason: "no_credentials" | "key_file_missing" }`; PUT body `{ runpodApiKey, s3AccessKeyId?, s3SecretAccessKey? }` (encrypted with the per-device key file); DELETE clears
+- `GET|PUT|DELETE /api/media-generation/credentials` — status `{ configured, runpodKeyPrefix, s3AccessKeyId, verifiedAt, updatedAt }` or `{ configured: false, reason: "no_credentials" | "key_file_missing" | "key_file_invalid" }`; PUT body `{ runpodApiKey, s3AccessKeyId?, s3SecretAccessKey? }` (encrypted with the per-device key file); DELETE clears (and removes an unreadable key file)
 - `POST /api/media-generation/credentials/test` — one RunPod read (+ one S3 listing when configured) → `{ runpod, s3, verifiedAt }`
 - `GET|PUT /api/media-generation/settings` — `{ datacenterId, gpuTypeId, cloudType, networkVolumeId, templateId, maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds }`; PUT is a partial update, GPU/datacenter/volume are checked against RunPod's live catalog (`media_settings_invalid`)
 - `PUT /api/media-generation/gateway` — `{ enabled }` (the media gateway toggle; `enabled: false` → 409 `media_session_conflict` while a session is open or a model pull runs, since the toggle gates the only path that can terminate that pod)
@@ -1056,7 +1056,7 @@ routes checks the "Media gateway" toggle and counts in the gateway traffic stats
 The operator's wrapper target for `scripts/media/*`; runs in-process against the same encrypted
 credential store, so no key is ever an argument or an environment variable. Same gates as the main
 CLI: "Operator CLI access" must be on; `credentials-test` (it writes `verified_at`), `volume-create`,
-`template-create`, `pod-create`, `pod-terminate`, `s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `settings`,
+`template-create`, `pod-create`, `pod-terminate`, `s3-put`, `s3-rm` pass the device mutation gate. Commands: `status`, `credentials-test`, `credentials-clear` (gated), `settings`,
 `gpus`, `cpus`, `datacenters`, `volumes`, `volume-create --name --dc --size`, `templates`,
 `template-create --file <body.json>`, `sessions` (read-only; approve/stop/reject are Web-only), `workflow-templates`,
 `workflow-template-import --file`, `jobs [sessionId]`, `job-get <id>`, `job-create --file`, `janitor [--delete]`, `models`,

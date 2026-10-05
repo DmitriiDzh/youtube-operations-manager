@@ -127,8 +127,15 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
   async function credentialsStatus(): Promise<MediaCredentialsStatus> {
     const row = await deps.store.getCredentials();
     if (!row) return { configured: false, reason: "no_credentials" };
-    // AC-P14-21: a row with no key file on this device is "not configured" -- no decryption attempt.
-    if ((await deps.keyFile.readKey()) === null) return { configured: false, reason: "key_file_missing" };
+    // AC-P14-21: a row with no key file on this device is "not configured" -- no decryption attempt. A key file that
+    // cannot be read (truncated, hand-edited) is reported, never thrown: the card must still render so the operator can
+    // reset (review round 16).
+    try {
+      if ((await deps.keyFile.readKey()) === null) return { configured: false, reason: "key_file_missing" };
+    } catch (error) {
+      if (error instanceof DomainError && error.code === "encryption_key_not_configured") return { configured: false, reason: "key_file_invalid" };
+      throw error;
+    }
     return {
       configured: true,
       runpodKeyPrefix: row.runpodKeyPrefix,
@@ -223,9 +230,19 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       return credentialsStatus();
     },
 
+    /**
+     * Clears the row. The device key file stays (AC-P14-21) -- except when it is UNREADABLE: then it is removed with
+     * the row it protected, so the next save starts a fresh key (the only remedy for a corrupt file, review round 16).
+     */
     async clearCredentials(): Promise<MediaCredentialsStatus> {
       await assertVolumeFree("clear the RunPod credentials");
       await deps.store.clearCredentials();
+      try {
+        await deps.keyFile.readKey();
+      } catch (error) {
+        if (!(error instanceof DomainError && error.code === "encryption_key_not_configured")) throw error;
+        await deps.keyFile.removeKey();
+      }
       return credentialsStatus();
     },
 
@@ -282,16 +299,24 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       // A cloud-type change re-prices the already-chosen GPU (SECURE and COMMUNITY differ), so it touches the catalog too.
       // A changed cloud type OR datacenter re-validates and re-prices the kept GPU against the live catalog (AC-P14-19):
       // the GPU may not exist there, or cost something else (review round 10).
+      // RunPod's network volumes exist on Secure Cloud only (as the Compute card itself says): a Community pod could not
+      // mount one, so the pair is refused here, not by a failed createPod after a human approved (review round 16).
+      if (next.cloudType === "COMMUNITY" && next.networkVolumeId) {
+        throw new DomainError({ code: "media_settings_invalid", message: "Community Cloud pods cannot mount a network volume; choose Secure Cloud or clear the network volume.", details: { field: "cloudType" } });
+      }
+      // Only a CHANGED field is re-validated against the live catalog -- the Compute card resends every field on save,
+      // and an unchanged form must not cost three RunPod reads (review round 16).
+      const changed = <K extends keyof typeof update>(key: K) => update[key] !== undefined && update[key] !== null && update[key] !== current[key as keyof typeof current];
+      if (!changed("gpuTypeId")) delete update.gpuTypeId;
+      if (!changed("datacenterId")) delete update.datacenterId;
+      if (!changed("networkVolumeId")) delete update.networkVolumeId;
+      if (!changed("templateId")) delete update.templateId;
       const repriceGpu =
-        ((update.cloudType !== undefined && update.cloudType !== current.cloudType) || (update.datacenterId !== undefined && update.datacenterId !== current.datacenterId)) &&
+        ((update.cloudType !== undefined && update.cloudType !== current.cloudType) || update.datacenterId !== undefined) &&
         next.gpuTypeId !== null &&
         update.gpuTypeId === undefined;
       if (repriceGpu) update.gpuTypeId = next.gpuTypeId;
-      const needsCatalog =
-        (update.gpuTypeId !== undefined && update.gpuTypeId !== null) ||
-        (update.networkVolumeId !== undefined && update.networkVolumeId !== null) ||
-        (update.datacenterId !== undefined && update.datacenterId !== null) ||
-        (update.templateId !== undefined && update.templateId !== null);
+      const needsCatalog = update.gpuTypeId !== undefined || update.networkVolumeId !== undefined || update.datacenterId !== undefined || update.templateId !== undefined;
       if (needsCatalog) {
         const client = await runpodClient();
         if (next.datacenterId && update.datacenterId !== undefined) {

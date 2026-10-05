@@ -24,7 +24,7 @@ export const COMFY_PROXY_PORT = 8189;
 export const RUNPOD_KEY_PREFIX_LENGTH = 8;
 
 export type MediaCredentialsStatus =
-  | { configured: false; reason: "no_credentials" | "key_file_missing" }
+  | { configured: false; reason: "no_credentials" | "key_file_missing" | "key_file_invalid" }
   | {
       configured: true;
       runpodKeyPrefix: string;

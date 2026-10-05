@@ -290,6 +290,16 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     return finished ?? stopping;
   }
 
+  /**
+   * The ONE rule for "no approve request owns this `approved`/`starting` row any more" (review round 16): either that
+   * request already reported its death on the row (`error`), or the row is older than the request's whole budget.
+   */
+  function isStartAbandoned(row: StoredSessionRow, now: Date): boolean {
+    if (row.error !== null) return true;
+    const since = row.startedAt ?? row.approvedAt ?? row.createdAt;
+    return now.getTime() - since.getTime() >= startTimeoutMs + stopTimeoutMs + ABANDONED_START_GRACE_MS;
+  }
+
   /** A `stopping` row is always resumed with ITS reason and outcome (an operator's "max USD reached" is never relabelled). */
   async function retryStop(row: StoredSessionRow, fallbackReason: string, fallbackOutcome: StoppingOutcome): Promise<StoredSessionRow> {
     return stopRow(row, row.stopReason ?? fallbackReason, row.stoppingOutcome ?? fallbackOutcome);
@@ -705,10 +715,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // carries its error) or is unmistakably abandoned by age -- the operator's Stop is the manual override the
         // watcher's abandoned-start path would otherwise reach only later. While the approve request may still be inside
         // createPod, a Stop would finish the row before the pod exists and orphan it (review round 15): refused.
-        const now = deps.clock.now();
-        const since = row.startedAt ?? row.approvedAt ?? row.createdAt;
-        const abandoned = row.error !== null || now.getTime() - since.getTime() >= startTimeoutMs + stopTimeoutMs + ABANDONED_START_GRACE_MS;
-        if (!abandoned) {
+        if (!isStartAbandoned(row, deps.clock.now())) {
           throw new DomainError({ code: "media_session_invalid_state", message: "The approve request is still creating the pod; wait for it to finish (or fail) before stopping.", details: { sessionId: row.id, status: row.status } });
         }
         const result = await reconcileAbandoned(row, reason, "failed");
@@ -751,8 +758,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason: open.stopReason };
       }
       if (open.status === "approved" || open.status === "starting") {
+        if (!isStartAbandoned(open, now)) return { action: "none", sessionId: open.id, reason: null };
         const since = open.startedAt ?? open.approvedAt ?? open.createdAt;
-        if (now.getTime() - since.getTime() < startTimeoutMs + stopTimeoutMs + ABANDONED_START_GRACE_MS) return { action: "none", sessionId: open.id, reason: null };
         const reason = `start abandoned: still ${open.status} ${Math.round((now.getTime() - since.getTime()) / 60_000)} min after approval (the approving request did not finish)`;
         const result = await reconcileAbandoned(open, reason, "failed");
         return { action: result === "reconciled" ? "stopped" : result === "retrying" ? "retried_stop" : "none", sessionId: open.id, reason };

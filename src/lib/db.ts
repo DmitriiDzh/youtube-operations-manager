@@ -7265,17 +7265,24 @@ const MEDIA_VOLUME_LOCK_KEY = "media_volume_lock";
  * row. `app_settings.key` is the primary key, so the insert is the atomic test-and-set -- a session
  * approve and a model pull cannot both hold it. Returns whoever holds it afterwards.
  */
-/** The row's value is `<owner> <acquired-at epoch ms>` (review round 13: the age tells a crash-stale lock from a fresh one). */
+/**
+ * The row's value is JSON `{ owner, since }` (review round 13: the age tells a crash-stale lock from a fresh one;
+ * round 16: JSON, so an owner name with spaces, `_`/`%`, or non-BMP characters is matched exactly by `json_extract`).
+ */
 function parseMediaVolumeLockValue(value: string): { owner: string; since: Date } {
-  const at = value.lastIndexOf(" ");
-  const sinceMs = at === -1 ? NaN : Number(value.slice(at + 1));
-  return Number.isFinite(sinceMs) ? { owner: value.slice(0, at), since: new Date(sinceMs) } : { owner: value, since: new Date(0) };
+  try {
+    const parsed = JSON.parse(value) as { owner?: unknown; since?: unknown };
+    if (typeof parsed.owner === "string" && typeof parsed.since === "number" && Number.isFinite(parsed.since)) return { owner: parsed.owner, since: new Date(parsed.since) };
+  } catch {
+    // a pre-JSON value (never shipped; defensive)
+  }
+  return { owner: value, since: new Date(0) };
 }
 
 export async function tryAcquireMediaVolumeLock(owner: string, at: Date, database: AppDb = db): Promise<{ acquired: boolean; holder: { owner: string; since: Date } }> {
   // The holder may release between a no-op insert and the read-back; a null read-back then means "nobody holds it",
   // never "we do" -- insert again (review round 10). `acquired` is true only with OUR row in the table.
-  const value = `${owner} ${at.getTime()}`;
+  const value = JSON.stringify({ owner, since: at.getTime() });
   for (let attempt = 0; attempt < 5; attempt++) {
     await database.insert(appSettings).values({ key: MEDIA_VOLUME_LOCK_KEY, value }).onConflictDoNothing();
     const stored = await getAppSetting(MEDIA_VOLUME_LOCK_KEY, database);
@@ -7292,8 +7299,8 @@ export async function tryAcquireMediaVolumeLock(owner: string, at: Date, databas
 export async function releaseMediaVolumeLock(owner: string, database: AppDb = db): Promise<boolean> {
   const rows = await database
     .delete(appSettings)
-    // Exact, case-sensitive prefix match (`LIKE` would read `_`/`%` in a pod name as wildcards and compare case-insensitively).
-    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), sql`substr(${appSettings.value}, 1, ${owner.length + 1}) = ${`${owner} `}`))
+    // Exact owner match on the JSON field: never a prefix/LIKE comparison that a space, `_`/`%` or a non-BMP character could fool.
+    .where(and(eq(appSettings.key, MEDIA_VOLUME_LOCK_KEY), sql`json_extract(${appSettings.value}, '$.owner') = ${owner}`))
     .returning({ key: appSettings.key });
   return rows.length > 0;
 }

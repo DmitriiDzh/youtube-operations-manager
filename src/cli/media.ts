@@ -30,6 +30,7 @@ loadEnvConfig(process.cwd());
 export const MEDIA_CLI_COMMANDS = [
   "status",
   "credentials-test",
+  "credentials-clear",
   "settings",
   "gpus",
   "datacenters",
@@ -62,6 +63,7 @@ export type MediaCliCommand = (typeof MEDIA_CLI_COMMANDS)[number];
 
 const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>([
   "credentials-test", // writes media_credentials.verified_at to the local database (review round 13)
+  "credentials-clear", // removes the credentials row (and an unreadable key file, review round 16)
   "models-poll", // advances the pulls: terminates finished pull pods, rewrites the list (review round 15)
   "volume-create",
   "template-create",
@@ -80,6 +82,7 @@ export const HELP = [
   "Usage: npm run media -- <command> [args]",
   "  status                                  credentials status, settings, readiness (never a secret)",
   "  credentials-test                        one RunPod read (+ one S3 listing when configured)",
+  "  credentials-clear                       remove the stored credentials (and this device's key file only when it is unreadable -- the reset for a corrupt key file)",
   "  settings                                the stored Settings → Media values",
   "  gpus | cpus | datacenters | volumes | templates | pods",
   "  sessions                                recent generation sessions + limits (approve/stop are Web-only)",
@@ -191,6 +194,9 @@ export async function runMediaCli(args: {
         break;
       case "credentials-test":
         data = await core.testCredentials();
+        break;
+      case "credentials-clear":
+        data = await core.clearCredentials();
         break;
       case "settings":
         data = await core.getSettings();

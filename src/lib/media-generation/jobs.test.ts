@@ -963,7 +963,11 @@ test("review 8: a THROWN S3 failure while pulling (a 503 on the GET) keeps the j
   (g.s3.client as unknown as { getObjectToFile: () => Promise<unknown> }).getObjectToFile = async () => {
     throw new Error("RunPod S3 returned HTTP 503");
   };
-  g.mem.jobs.set(job2.jobId, { ...g.mem.jobs.get(job2.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") });
+  await g.runScheduled(); // generation completes, the first transfer attempt fails transiently
+  assert.equal((await g.services.getJob({ jobId: job2.jobId })).status, "transferring");
+  g.mem.jobs.set(job2.jobId, { ...g.mem.jobs.get(job2.jobId)!, submittedAt: new Date("2026-10-03T00:00:00Z") }); // the window is over
+  g.advance(60_000);
+  await g.services.resumeInFlightJobs();
   await g.runScheduled();
   const failed = await g.services.getJob({ jobId: job2.jobId });
   assert.equal(failed.status, "failed");
@@ -1271,4 +1275,32 @@ test("review 15: resumeInFlightJobs credits session activity synchronously for e
   const before = f.activity.length;
   assert.deepEqual(await f.services.resumeInFlightJobs(), { resumed: ["job-cli"] });
   assert.equal(f.activity.length, before + 1, "touched before any scheduled poll ran");
+});
+
+// -- review round 16 (2026-10-05) -----------------------------------------------------------------
+
+test("review 16: outputs in different subfolders under exchange/<jobId>/ with the same file name land in matching local subfolders -- never one over the other", async () => {
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "out_00001_.png", subfolder: "job-1/video" }, { nodeId: "12", kind: "images", filename: "out_00001_.png", subfolder: "job-1/frames" }])]);
+  const s3 = fakeS3(new Map([["exchange/job-1/video/out_00001_.png", new Uint8Array([1])], ["exchange/job-1/frames/out_00001_.png", new Uint8Array([2, 2])]]));
+  const f = fixture({ comfy, s3 });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  await f.runScheduled();
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.deepEqual(done.outputs.map((o) => o.localPath).sort(), ["/ws/99 Data Exchange/From YTM/media/job-1/frames/out_00001_.png", "/ws/99 Data Exchange/From YTM/media/job-1/video/out_00001_.png"]);
+  assert.deepEqual(done.outputs.map((o) => o.bytes).sort(), [1, 2]);
+  assert.equal(f.registered.length, 2);
+});
+
+test("review 16: the generation deadline counts from the job's submit, so a resume does not grant a fresh 2 h", async () => {
+  const f = fixture({ comfy: fakeComfy([null]) }); // never completes
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "agent" });
+  // Submitted 9 s ago (the test deadline is 10 s); a pickup now must fail within ~1 s of polling, not after 10 more.
+  f.mem.jobs.set(job.jobId, { ...f.mem.jobs.get(job.jobId)!, submittedAt: new Date(Date.parse("2026-10-05T12:00:00Z") - 9_000) });
+  const pollsBefore = f.activity.length;
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "failed");
+  assert.ok(f.activity.length - pollsBefore <= 2, `polled ${f.activity.length - pollsBefore} times, expected the remaining ~1 s only`);
 });

@@ -22,6 +22,9 @@ function memoryAccess(initial: string | null = null) {
       writes.push(content);
     },
     randomBytes: (size) => Buffer.alloc(size, 9),
+    async remove() {
+      content = null;
+    },
   };
   return { access, writes, get: () => content };
 }
@@ -73,7 +76,7 @@ test("the real file adapter writes media-generation.key under the app-data dir w
 
 test("review 11: the key-file methods work detached (no `this`)", async () => {
   let content: string | null = null;
-  const access: KeyFileAccess = { read: async () => content, write: async (c) => void (content = JSON.stringify(c)), randomBytes: (n) => Buffer.alloc(n, 7) };
+  const access: KeyFileAccess = { read: async () => content, write: async (c) => void (content = JSON.stringify(c)), remove: async () => void (content = null), randomBytes: (n) => Buffer.alloc(n, 7) };
   const { readOrCreateKey, readKey } = createKeyFile(access);
   assert.equal(await readKey(), null);
   const created = await readOrCreateKey();

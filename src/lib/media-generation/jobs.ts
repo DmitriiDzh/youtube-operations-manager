@@ -387,7 +387,12 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     // A 0-byte object is the same lag (the file is open, nothing flushed yet): never "complete" -- the empty stream would
     // hash equal to its empty read-back, be recorded, and the only copy DELETED (review round 12).
     if (!head || head.size === 0) throw new Error("output not visible on the volume yet");
-    const localPath = path.join(outputDir, fileName);
+    // The key's path BELOW exchange/<jobId>/ is kept locally (a Save node may nest its own subfolder): two outputs with
+    // the same file name in different subfolders never overwrite each other (review round 16); `safeRemoteKey` already
+    // refused `.`/`..` segments.
+    const below = output.remoteKey.slice(`${EXCHANGE_PREFIX}${job.id}/`.length).split("/").slice(0, -1);
+    const localPath = path.join(outputDir, ...below, fileName);
+    if (below.length > 0) await deps.fs.mkdirp(path.dirname(localPath));
     const pulled = await s3.getObjectToFile(output.remoteKey, localPath);
     const readBack = await deps.fs.sha256File(localPath);
     if (readBack !== pulled.sha256 || pulled.bytes !== head.size || pulled.bytes === 0) {
@@ -479,7 +484,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       await failJob(job, `no ComfyUI client: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    const deadline = deps.clock.now().getTime() + maxGenerationMs;
+    // Per job, from its submit -- not from this process's pickup, or every resume would grant a fresh 2 h (review round 16).
+    const deadline = (job.submittedAt ?? deps.clock.now()).getTime() + maxGenerationMs;
     let outputs: MediaJobOutput[] = [];
     let emptyPolls = 0;
     // Just submitted = ComfyUI knows the prompt; re-confirmed through /queue on every Nth empty poll (review round 8).
@@ -583,6 +589,23 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   }
 
   /**
+   * The ONE retry-window rule for a transfer that could not complete this time (review round 16): within the window
+   * the job stays `transferring` (outputs recorded as `forRetry`, next attempt after the backoff); past it the job
+   * FAILS with what was received recorded -- never a `done` quietly missing an output.
+   */
+  async function retryOrFail(job: StoredJobRow, message: string, forRetry: MediaJobOutput[], results: MediaJobOutput[]): Promise<void> {
+    const since = (job.submittedAt ?? job.createdAt).getTime();
+    if (deps.clock.now().getTime() - since <= TRANSFER_RETRY_WINDOW_MS) {
+      scheduleTransferRetry(job.id);
+      await deps.store.jobs.transition(job.id, ["transferring"], { status: "transferring", outputsJson: JSON.stringify(forRetry), error: `${message}; retrying` });
+      return;
+    }
+    transferBackoff.delete(job.id);
+    const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
+    await failJob(job, `not every output could be received within ${Math.round(TRANSFER_RETRY_WINDOW_MS / 3_600_000)} h (${message}${notes.length ? `; ${notes.join("; ")}` : ""})`, results);
+  }
+
+  /**
    * Pulls every recorded output (re-entrant: an output already pulled by an earlier attempt is
    * recognised by its ledger row and never re-downloaded or re-registered).
    */
@@ -598,15 +621,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     } catch (error) {
       // A transient cause (workspace drive unmounted, gateway toggle off, S3 unreachable): keep `transferring` so the
       // watch loop retries, up to the retry window; the recorded outputs stay on the volume meanwhile.
-      const message = `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`;
-      const since = (job.submittedAt ?? job.createdAt).getTime();
-      if (deps.clock.now().getTime() - since > TRANSFER_RETRY_WINDOW_MS) {
-        transferBackoff.delete(jobId);
-        await failJob(job, `${message} (gave up after ${Math.round(TRANSFER_RETRY_WINDOW_MS / 3_600_000)} h)`, outputs);
-      } else {
-        scheduleTransferRetry(jobId);
-        await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", error: `${message}; retrying` });
-      }
+      await retryOrFail(job, `cannot receive outputs: ${error instanceof Error ? error.message : String(error)}`, outputs, outputs);
       return;
     }
     const template = await deps.store.templates.get(job.templateId);
@@ -664,16 +679,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
     }
     if (transientFailure) {
-      if (deps.clock.now().getTime() - (job.submittedAt ?? job.createdAt).getTime() <= TRANSFER_RETRY_WINDOW_MS) {
-        scheduleTransferRetry(jobId);
-        await deps.store.jobs.transition(jobId, ["transferring"], { status: "transferring", outputsJson: JSON.stringify(forRetry), error: `pull failed: ${transientFailure}; retrying` });
-        return;
-      }
-      // The window is over with an output still not received: that is a FAILURE, never a `done` that quietly lacks an
-      // output (review round 13); what was pulled stays recorded on the row.
-      transferBackoff.delete(jobId);
-      const notes = results.filter((r) => r.note).map((r) => `${r.filename}: ${r.note}`);
-      await failJob(job, `not every output could be received within ${Math.round(TRANSFER_RETRY_WINDOW_MS / 3_600_000)} h (${notes.join("; ")})`, results);
+      await retryOrFail(job, `pull failed: ${transientFailure}`, forRetry, results);
       return;
     }
     transferBackoff.delete(jobId);

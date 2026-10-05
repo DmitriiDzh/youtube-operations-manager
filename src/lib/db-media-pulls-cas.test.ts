@@ -47,6 +47,13 @@ test("updateMediaModelPullsJson: two connections interleaving read-modify-write 
     assert.equal(await releaseMediaVolumeLock("pod:my_pod", dbB), false);
     assert.equal(await releaseMediaVolumeLock("pod:MYXPOD", dbB), false);
     assert.equal(await releaseMediaVolumeLock("pod:myXpod", dbB), true);
+    // Review round 16: exact owner match on the JSON field -- a name that is a prefix of another (plus a space) or one with
+    // non-BMP characters is handled exactly.
+    assert.equal((await tryAcquireMediaVolumeLock("pod:a b", t0, dbA)).acquired, true);
+    assert.equal(await releaseMediaVolumeLock("pod:a", dbB), false);
+    assert.equal(await releaseMediaVolumeLock("pod:a b", dbB), true);
+    assert.equal((await tryAcquireMediaVolumeLock("pod:🚀 pull", t0, dbA)).acquired, true);
+    assert.equal(await releaseMediaVolumeLock("pod:🚀 pull", dbB), true);
   } finally {
     a.close();
     b.close();

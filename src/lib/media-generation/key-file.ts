@@ -17,6 +17,8 @@ export type KeyFileAccess = {
   read(): Promise<string | null>;
   /** Writes the JSON content privately (0600) and atomically. */
   write(content: KeyFileContent): Promise<void>;
+  /** Deletes the file; a missing file is fine. */
+  remove(): Promise<void>;
   randomBytes(size: number): Buffer;
 };
 
@@ -50,6 +52,11 @@ export function createKeyFile(access: KeyFileAccess) {
   // Plain closures, no `this`: the methods keep working when passed detached (review round 11).
   return {
     readKey,
+
+    /** Deletes the key file (with the credentials row it protected): the only remedy for a corrupt file (review round 16). */
+    async removeKey(): Promise<void> {
+      await access.remove();
+    },
 
     /** Reads the key, creating it on first use -- for the operator's "save credentials" only. */
     async readOrCreateKey(): Promise<Buffer> {

@@ -2568,6 +2568,19 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   check follows in the same tick). The operator terminate passthrough confirms the pod is gone before
   releasing `pod:<name>`. `models-pull.sh` drives `media model-pull` per manifest line and `media
   models-poll` (a gated command that advances the pulls) instead of re-implementing the pull shell.
+- **A corrupt key file has a remedy; one rule each (review round 16).** An unreadable key file is reported
+  as `key_file_invalid` (the card renders a Reset); Clear removes the row and -- only when the key file is
+  unreadable -- the key file too (CLI: `credentials-clear`), so the next save starts a fresh key; a readable
+  key file is kept (AC-P14-21). An output's path below `exchange/<jobId>/`
+  is kept locally (two Save nodes with the same file name in different subfolders never overwrite each
+  other). The generation deadline counts from the job's submit, not from each pickup. The lock row is
+  JSON `{ owner, since }` matched by `json_extract` (a name with spaces, `_`/`%` or non-BMP characters is
+  exact). Cancelling a RESERVED pull searches the pod by name first (a pod the dead reserver created is
+  terminated, never orphaned). Community Cloud with a network volume is refused at settings time; only a
+  CHANGED compute field is validated against the live catalog. The Jobs card explains when the open
+  session belongs to another channel. The UI uses the core's own public types (`MediaSession`, ...), not
+  hand copies. `isStartAbandoned` and `retryOrFail` are the single statements of the abandonment and the
+  transfer-retry rules.
 - **Sessions (slice 2, `sessions.ts`, `media_sessions` schema v51 + v53 + v54, owner decisions D2/D3).** A session is one
   pod. `requestSession` (operator now, agent in slice 5) stores a pending row with a LOCAL estimate
   (`gpuOnDemandPricePerHr × maxMinutes / 60`, the price captured when the GPU was saved -- zero RunPod

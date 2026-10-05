@@ -227,7 +227,20 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         const pull = (await readPulls()).find((p) => p.pullId === pullId);
         if (!pull) throw new DomainError({ code: "media_job_not_found", message: "No model pull with this id", details: { pullId } });
         if (pull.status !== "running") throw new DomainError({ code: "media_job_invalid_state", message: `Pull is ${pull.status}`, details: { pullId } });
-        return finishPull(pull, "failed", { error: "cancelled by operator" });
+        let target = pull;
+        if (!pull.podId) {
+          // Reserved, pod not recorded: the reserving process may have died right after RunPod created it -- find it by
+          // its deterministic name before finishing, so the cancel terminates it instead of orphaning it (review round 16).
+          const client = await deps.base.resolveRunpodClient();
+          let orphan: { id: string } | undefined;
+          try {
+            orphan = await findLivePodByName(client, pullPodNameFor(pullId));
+          } catch (lookupError) {
+            throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod could not be asked whether a pod named ${pullPodNameFor(pullId)} exists; the pull stays reserved -- try again when RunPod answers.`, details: { pullId, cause: lookupError instanceof Error ? lookupError.message : String(lookupError) } });
+          }
+          if (orphan) target = { ...pull, podId: orphan.id };
+        }
+        return finishPull(target, "failed", { error: "cancelled by operator" });
       });
     },
   };

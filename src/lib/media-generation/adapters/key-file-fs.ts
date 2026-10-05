@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { MEDIA_KEY_FILE_NAME } from "../contracts";
@@ -22,6 +22,9 @@ export function createKeyFileFsAccess(filePath: string): KeyFileAccess {
     },
     async write(content) {
       await writeJsonFileAtomic(filePath, content);
+    },
+    async remove() {
+      await rm(filePath, { force: true });
     },
     randomBytes: (size) => randomBytes(size),
   };

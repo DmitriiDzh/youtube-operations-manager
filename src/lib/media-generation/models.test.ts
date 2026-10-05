@@ -571,3 +571,43 @@ test("review 10: a pull settled by another process while this one was inside cre
   assert.equal(store.current(), null);
   assert.equal(await services.hasActivePull(), false);
 });
+
+test("review 16: cancelling a RESERVED pull first looks for a pod of its deterministic name -- one that exists is terminated, never orphaned; while RunPod cannot be asked the reservation stays", async () => {
+  let json: string | null = JSON.stringify([{ pullId: "r1", podId: null, repoId: "a/b", file: "c.bin", expectedKey: "models/vae/c.bin", status: "running", startedAt: "2026-10-05T12:00:00.000Z", finishedAt: null, bytes: null, error: null }]);
+  const calls: string[] = [];
+  let listPodsDown = true;
+  let terminated = false;
+  const client = {
+    async listPods() {
+      if (listPodsDown) throw new Error("RunPod API returned HTTP 503");
+      return [{ id: "cpupod5", name: "ytm-models-pull-r1", status: "RUNNING" }];
+    },
+    async getPod(id: string) {
+      return { id, status: terminated ? "TERMINATED" : "RUNNING" };
+    },
+    async terminatePod(id: string) {
+      calls.push(`terminate:${id}`);
+      terminated = true;
+      return { terminated: true, alreadyGone: false };
+    },
+  } as unknown as RunpodApiClient;
+  const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
+  const { lock, store } = testLock();
+  await store.tryAcquire("pull:r1", new Date(0));
+  const services = createMediaModelServices({
+    store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
+    base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
+    generateId: () => "x",
+    clock: { now: () => new Date("2026-10-05T12:00:30Z") },
+    volumeLock: lock,
+  });
+  await assert.rejects(services.cancelPull({ pullId: "r1" }), (e: unknown) => isDomainError(e) && e.code === "runpod_api_unavailable");
+  assert.equal(await services.hasActivePull(), true, "still reserved");
+  assert.equal(store.current(), "pull:r1");
+  listPodsDown = false;
+  const cancelled = await services.cancelPull({ pullId: "r1" });
+  assert.equal(cancelled.status, "failed");
+  assert.equal(cancelled.podId, "cpupod5", "the pod found by name is recorded");
+  assert.deepEqual(calls, ["terminate:cpupod5"]);
+  assert.equal(store.current(), null);
+});

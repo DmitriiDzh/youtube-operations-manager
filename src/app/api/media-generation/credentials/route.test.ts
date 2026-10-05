@@ -39,6 +39,9 @@ function core(): MediaGenerationCore {
       keyContent = JSON.stringify(c);
     },
     randomBytes: (n) => Buffer.alloc(n, 1),
+    remove: async () => {
+      keyContent = null;
+    },
   };
   return createMediaGenerationServices({
     store,

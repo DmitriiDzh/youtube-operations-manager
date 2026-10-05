@@ -1,7 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { NETWORK_VOLUME_USD_PER_GB_MONTH } from "@/lib/media-generation/contracts";
+import {
+  NETWORK_VOLUME_USD_PER_GB_MONTH,
+  type MediaCredentialsStatus,
+  type MediaGenerationOverview,
+  type MediaJob,
+  type MediaSession,
+  type MediaSessionLimits,
+  type MediaSettings,
+  type MediaWorkflowTemplate,
+} from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
@@ -15,23 +24,10 @@ import { ToggleSwitch } from "./toggle-switch";
 // volume / template from RunPod's live lists, and sets the spend and watcher limits. Every RunPod
 // call behind this card is an explicit click ("Load", "Test", "Create"), never on mount.
 
-type CredentialsStatus =
-  | { configured: false; reason: "no_credentials" | "key_file_missing" }
-  | { configured: true; runpodKeyPrefix: string; s3AccessKeyId: string | null; verifiedAt: string | null; updatedAt: string };
-
-type Settings = {
-  datacenterId: string | null;
-  gpuTypeId: string | null;
-  cloudType: "SECURE" | "COMMUNITY";
-  networkVolumeId: string | null;
-  templateId: string | null;
-  maxUsdPerDay: number;
-  defaultMaxMinutes: number;
-  idleMinutes: number;
-  watchIntervalSeconds: number;
-};
-
-type Overview = { credentials: CredentialsStatus; settings: Settings; gatewayEnabled: boolean; ready: boolean; missing: string[] };
+// The core's own public shapes (review round 16): never a hand copy that drifts when contracts.ts changes.
+type CredentialsStatus = MediaCredentialsStatus;
+type Settings = MediaSettings;
+type Overview = MediaGenerationOverview;
 
 type Gpu = { id: string; displayName: string; memoryInGb: number | null; onDemandPricePerHr: number | null; estimatedAvailability: string | null; secureCloud: boolean; communityCloud: boolean };
 type DataCenter = { id: string; countryCode: string | null; region: string | null };
@@ -335,7 +331,7 @@ function ModelsCard({ configured }: { configured: boolean }) {
   );
 }
 
-type WorkflowTemplate = { templateId: string; name: string; version: number; description: string | null; parameters: Array<{ name: string; type: string; required: boolean; default: unknown; description: string | null }>; outputNodeIds: string[]; nodeCount: number };
+type WorkflowTemplate = MediaWorkflowTemplate;
 
 // Phase 14 slice 3 (owner decision D7): templates are imported by the operator -- a ComfyUI API-format
 // graph (Save As (API Format) in ComfyUI) plus the parameters an agent may set. Prompts are job
@@ -474,25 +470,14 @@ function WorkflowTemplatesCard() {
   );
 }
 
-type Job = {
-  jobId: string;
-  sessionId: string;
-  templateId: string;
-  status: string;
-  createdBy: string;
-  params: Record<string, string | number | boolean>;
-  outputs: Array<{ filename: string; localPath: string | null; note: string | null; assetId: string | null }>;
-  error: string | null;
-  createdAt: string;
-  finishedAt: string | null;
-};
+type Job = MediaJob;
 
 // Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
 // job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
 function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
-  const [openSession, setOpenSession] = useState<{ sessionId: string; status: string } | null>(null);
+  const [openSession, setOpenSession] = useState<{ sessionId: string; status: string; channelId: string } | null>(null);
   const [templateId, setTemplateId] = useState("");
   const [paramsText, setParamsText] = useState("{}");
   const [busy, setBusy] = useState(false);
@@ -515,7 +500,7 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
     () =>
       Promise.all([
         requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
-        requestJson<{ limits: { openSession: { sessionId: string; status: string } | null } }>("/api/media-generation/sessions"),
+        requestJson<{ limits: { openSession: { sessionId: string; status: string; channelId: string } | null } }>("/api/media-generation/sessions"),
       ]).then(
         ([t, s]) => {
           setTemplates(t.templates);
@@ -596,7 +581,9 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
     }
   }
 
-  const canRun = Boolean(activeChannelId) && openSession?.status === "running" && templates.length > 0;
+  // The device's one open session belongs to ONE channel; a job is submitted for the active channel (review round 16).
+  const sessionOfOtherChannel = Boolean(openSession && activeChannelId && openSession.channelId !== activeChannelId);
+  const canRun = Boolean(activeChannelId) && openSession?.status === "running" && !sessionOfOtherChannel && templates.length > 0;
 
   return (
     <Card
@@ -605,7 +592,13 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
     >
       {!canRun ? (
         <p className="text-xs text-zinc-500">
-          {!activeChannelId ? "Select an active channel." : openSession?.status !== "running" ? "Start a session first." : "Import a workflow template first."}
+          {!activeChannelId
+            ? "Select an active channel."
+            : openSession?.status !== "running"
+              ? "Start a session first."
+              : sessionOfOtherChannel
+                ? `The open session belongs to channel ${openSession?.channelId}; switch the active channel to it (or stop it and request one for this channel).`
+                : "Import a workflow template first."}
         </p>
       ) : (
         <div className="space-y-2">
@@ -693,28 +686,8 @@ function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
   );
 }
 
-type Session = {
-  sessionId: string;
-  channelId: string;
-  status: string;
-  requestedBy: "operator" | "agent";
-  reason: string | null;
-  maxMinutes: number;
-  maxUsd: number | null;
-  estimateUsd: number;
-  fitsToday: boolean;
-  costPerHr: number | null;
-  podId: string | null;
-  comfyUiProxyUrl: string | null;
-  createdAt: string;
-  startedAt: string | null;
-  stoppedAt: string | null;
-  secondsUsed: number | null;
-  usdCharged: number | null;
-  stopReason: string | null;
-  error: string | null;
-};
-type SessionLimits = { maxUsdPerDay: number; spentTodayUsd: number; remainingTodayUsd: number; defaultMaxMinutes: number; idleMinutes: number; openSession: Session | null };
+type Session = MediaSession;
+type SessionLimits = MediaSessionLimits;
 
 const OPEN_STATUSES = new Set(["pending", "approved", "starting", "running", "stopping"]);
 
@@ -1064,6 +1037,14 @@ function CredentialsCard({ status, onChanged }: { status: CredentialsStatus; onC
     >
       {!status.configured && status.reason === "key_file_missing" && (
         <p className="text-xs text-amber-400">Credentials exist in the database but this computer has no matching key file (for example after copying the database). Enter them again.</p>
+      )}
+      {!status.configured && status.reason === "key_file_invalid" && (
+        <div className="space-y-2">
+          <p className="text-xs text-red-400">This computer&rsquo;s key file is unreadable (truncated or edited), so the stored credentials cannot be decrypted. Reset removes both; then enter the keys again.</p>
+          <button type="button" onClick={() => setConfirmClear(true)} disabled={busy} className={dangerButton}>
+            Reset credentials and key file
+          </button>
+        </div>
       )}
 
       {status.configured && !editing && (
