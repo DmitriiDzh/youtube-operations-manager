@@ -61,6 +61,12 @@ test("new channel tokens embed their channel id: ytom_ch_<channelId>.<secret>", 
   assert.equal(issued.token, `ytom_ch_UC_A.${SECRET_1}`);
 });
 
+test("issue refuses a channel id the embedded format cannot carry, before any identity lookup", async () => {
+  const device = createDevice({ connected: { "UC.A": "user-a" }, live: { "user-a": "UC.A" }, secrets: [SECRET_1] });
+  await assertCode(device.services.issueToken({ channelId: "UC.A" }), "validation_failed");
+  assert.equal(device.rows.length, 0);
+});
+
 test("AC-TI-01: a token issued on device A, imported on device B, verifies on B with the same channel binding; A is unaffected", async () => {
   const deviceA = createDevice({ secrets: [SECRET_1] });
   const deviceB = createDevice();

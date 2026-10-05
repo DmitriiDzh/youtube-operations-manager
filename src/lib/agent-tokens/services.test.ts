@@ -58,6 +58,8 @@ test("issueToken returns the plaintext once, stores only its SHA-256, binds chan
   const { services, memory } = createServices();
   const issued = await services.issueToken({ channelId: "UC_A", label: "Codex" });
 
+  // Was "ytom_ch_secret-1": the requirement changed -- tokens now embed their channel id
+  // (BL-130, docs/decisions/0024-agent-token-import.md, AGENT_TOKEN_IMPORT_PLAN.md §2.2).
   assert.equal(issued.token, "ytom_ch_UC_A.secret-1");
   assert.equal(issued.channelId, "UC_A");
   assert.equal(issued.label, "Codex");

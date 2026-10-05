@@ -90,6 +90,15 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
      */
     async issueToken(input: unknown): Promise<IssuedAgentToken> {
       const parsed = parseWithSchema(issueAgentTokenInputSchema, input, "issue agent token input");
+      // The embedded-id format relies on the id never containing `.` (true for every YouTube id); fail
+      // closed at issue rather than mint a token that `verifyToken` would then reject on every call.
+      if (!CHANNEL_ID_PATTERN.test(parsed.channelId)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "channelId has characters a channel token cannot carry",
+          details: { channelId: parsed.channelId },
+        });
+      }
       const userId = await requireLiveOwner(parsed.channelId);
 
       const token = `${AGENT_TOKEN_PREFIX}${parsed.channelId}.${generateSecret()}`;
