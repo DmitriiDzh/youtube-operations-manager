@@ -66,3 +66,14 @@ test("readiness banner: rendered inside the Setup tab only, not above the tabs",
   const setup = render.slice(render.indexOf('tab === "setup"'));
   assert.ok(setup.slice(0, setup.indexOf("</div>")).includes("<ReadinessBanner "), "the banner is inside the Setup tab");
 });
+
+// Owner, Telegram 2026-10-06 (msgs 1807/1810): the "stop by itself" switch lives in Production → Setup → Limits as a saved
+// setting, no longer in the Sessions request form.
+test("release-when-done switch: in the Limits card (saved with the limits), not in the Sessions request form", async () => {
+  const card = await readFile(path.join(process.cwd(), "src", "components", "media-generation-settings.tsx"), "utf8");
+  const sessions = card.slice(card.indexOf("export function SessionsCard"), card.indexOf("export function", card.indexOf("export function SessionsCard") + 10));
+  assert.doesNotMatch(sessions, /Stop by itself when the jobs are done/);
+  const limits = card.slice(card.indexOf("export function LimitsCard"), card.indexOf("export function FactoryLimitsCard"));
+  assert.match(limits, /<ToggleSwitch label="Stop by itself when the jobs are done" checked=\{ownerReleaseWhenDone\}/);
+  assert.match(limits, /JSON\.stringify\(\{[^}]*ownerReleaseWhenDone \}\)/);
+});

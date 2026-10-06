@@ -1131,7 +1131,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         stoppingOutcome: null,
         lastSeenAliveAt: null,
         terminateSentAt: null,
-        releaseWhenDone: parsed.releaseWhenDone ?? false,
+        // Owner msgs 1807/1810: only the owner's own request takes the Setup default; agents and the factory decide themselves.
+        releaseWhenDone: parsed.releaseWhenDone ?? (parsed.requestedBy === "operator" ? settings.ownerReleaseWhenDone : false),
         gpuPlanJson: parsed.gpu ? JSON.stringify({ candidates: parsed.gpu.candidates, minVramGb: parsed.gpu.minVramGb ?? null, maxPricePerHr: parsed.gpu.maxPricePerHr ?? null }) : null,
       });
       return toPublicSession(row, now);
