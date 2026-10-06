@@ -363,3 +363,19 @@ test("AC-P14-25: a rejected key is not degraded -- it is media_credentials_inval
   const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401 })).fetchImpl });
   await assert.rejects(client.getAccountBalance(), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
 });
+
+// BL-138: the account id from the legacy GraphQL API (`myself { id }`), so devices compare accounts without sharing anything
+// derived from a key; unanswerable -> null (limits are then not shared), a bad key stays an error.
+test("getAccountId reads myself.id over GraphQL; an unanswerable query is null; a rejected key throws", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { data: { myself: { id: "user_2abcDEF" } } } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  assert.equal(await client.getAccountId(), "user_2abcDEF");
+  assert.equal(calls[0].url, "https://api.runpod.io/graphql");
+  assert.match(String(calls[0].init.body), /myself\s*\{\s*id\s*\}/);
+  for (const answer of [{ status: 500, body: { message: "down" } }, { status: 200, body: { errors: [{ message: "not authorized" }] } }, { status: 200, body: { data: { myself: {} } } }]) {
+    const c = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => answer).fetchImpl });
+    assert.equal(await c.getAccountId(), null);
+  }
+  const rejected = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401, body: {} })).fetchImpl });
+  await assert.rejects(rejected.getAccountId());
+});

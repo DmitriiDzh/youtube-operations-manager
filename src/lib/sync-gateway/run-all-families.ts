@@ -2,6 +2,7 @@ import { recordSyncFamilyResult, type SyncFamily } from "@/lib/db";
 import { createChangeDraftsSyncCoreForProduction } from "./change-drafts-sync";
 import { createEditorialProfileSyncRunnerForProduction } from "./editorial-profile-sync";
 import { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";
+import { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -32,12 +33,14 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
+    // BL-138: this device's RunPod sessions report out, the other devices' reports in.
+    runAndRecord("media_sessions", () => createMediaSessionsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

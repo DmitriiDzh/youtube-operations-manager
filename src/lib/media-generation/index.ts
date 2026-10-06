@@ -23,6 +23,8 @@ import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
+import { buildSessionsReport, deriveOtherDevices, type OtherDevicesView } from "./cross-device";
+import { createMediaSessionsShareCoreForProduction } from "@/lib/sync-gateway";
 
 type JobScheduling = "background" | "detached";
 
@@ -240,7 +242,47 @@ function buildCore(jobScheduling: JobScheduling) {
       result: row.result as MediaCapacityAttempt["result"],
       detail: row.detail ?? null,
     }));
-  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts };
+  // BL-138: the RunPod account id, read once an hour at most (a GraphQL read; null = could not be read, never shared limits).
+  let accountIdCache: { value: string | null; at: number } | null = null;
+  const runpodAccountId = async (): Promise<string | null> => {
+    if (accountIdCache && now().getTime() - accountIdCache.at < 60 * 60_000) return accountIdCache.value;
+    const value = await base
+      .resolveRunpodClient()
+      .then((client) => client.getAccountId())
+      .catch(() => null);
+    accountIdCache = { value, at: now().getTime() };
+    return value;
+  };
+  const deviceIdentity = async () => {
+    const config = await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists();
+    let host: string | null = null;
+    try {
+      host = hostname() || null;
+    } catch {
+      host = null;
+    }
+    return { deviceId: config.deviceId, hostname: host };
+  };
+  /** BL-138: hands this device's sessions report to the sync-gateway `media-sessions` family (run on every watcher tick). */
+  const publishSessionsShare = async (): Promise<void> => {
+    const [identity, list, limits, accountId] = await Promise.all([deviceIdentity(), sessions.listSessions(200), sessions.getLimits(), runpodAccountId()]);
+    await createMediaSessionsShareCoreForProduction().publishLocalReport(
+      buildSessionsReport({ ...identity, runpodAccountId: accountId, now: now(), sessions: list, spentTodayUsd: limits.spentTodayUsd })
+    );
+  };
+  /** BL-138: the other devices' sessions, checked against RunPod's live pods (one read), plus pods no device reports. */
+  const listOtherDevices = async (): Promise<OtherDevicesView> => {
+    const [peers, local, accountId] = await Promise.all([createMediaSessionsShareCoreForProduction().listPeerReports(), sessions.listSessions(200), runpodAccountId()]);
+    let livePods: Array<{ id: string; name: string; costPerHr: number | null; status: string }> | null = null;
+    let podsError: string | null = null;
+    try {
+      livePods = (await base.listPods()).map((p) => ({ id: p.id, name: p.name, costPerHr: p.costPerHr, status: p.status }));
+    } catch (error) {
+      podsError = error instanceof Error ? error.message : String(error);
+    }
+    return deriveOtherDevices({ peers, ownAccountId: accountId, localPodIds: local.map((s) => s.podId).filter((id): id is string => Boolean(id)), livePods, podsError, now: now() });
+  };
+  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts, publishSessionsShare, listOtherDevices };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

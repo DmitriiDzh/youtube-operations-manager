@@ -68,6 +68,10 @@ export type AppPaths = {
   aiConnectionsCatalogSyncFallbackDir: string;
   /** Pre-discard backups of the global ai-connections-catalog document. */
   aiConnectionsCatalogDiscardedBackupsDir: string;
+  /** BL-138: this device's own media sessions report and the peers' latest reports (`src/lib/sync-gateway/media-sessions/`). */
+  mediaSessionsShareDir: string;
+  /** BL-138: local-only fallback exchange directory for the media-sessions sync runner (no Syncthing folder configured). */
+  mediaSessionsSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

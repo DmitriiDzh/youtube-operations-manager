@@ -50,6 +50,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     aiConnectionsCatalogDraftsDir: path.join(appDataDir, "ai-connections-catalog-drafts"),
     aiConnectionsCatalogSyncFallbackDir: path.join(appDataDir, "ai-connections-catalog-sync-local"),
     aiConnectionsCatalogDiscardedBackupsDir: path.join(appDataDir, "ai-connections-catalog-discarded-backups"),
+    mediaSessionsShareDir: path.join(appDataDir, "media-sessions-share"),
+    mediaSessionsSyncFallbackDir: path.join(appDataDir, "media-sessions-sync-local"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };
