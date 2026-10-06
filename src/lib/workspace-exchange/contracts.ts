@@ -21,7 +21,7 @@ export type ExchangeFs = {
 };
 
 /** BL-132: reading an input file also needs `stat` (follows symlinks; the caller has proven the real path is contained). */
-export type ExchangeReadFs = ExchangeFs & { stat(p: string): Promise<{ isFile: boolean; size: number } | null> };
+export type ExchangeReadFs = ExchangeFs & { stat(p: string): Promise<{ isFile: boolean; size: number; dev?: number; ino?: number } | null> };
 
 export type ResolveFromYtmDirArgs = {
   /** The operator-set workspace path (already looked up by the caller). */

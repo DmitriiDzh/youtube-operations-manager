@@ -19,7 +19,7 @@ export function createExchangeFs(): ExchangeReadFs {
     stat: async (p) => {
       try {
         const info = await stat(p);
-        return { isFile: info.isFile(), size: info.size };
+        return { isFile: info.isFile(), size: info.size, dev: info.dev, ino: info.ino };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;

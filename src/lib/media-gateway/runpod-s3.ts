@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { constants as fsConstants, createWriteStream } from "node:fs";
+import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -223,49 +223,67 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
     /**
      * BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.4): uploads a local file by STREAMING it -- never buffered whole in memory.
      * SigV4 signs the payload hash, so the file is read twice: once to hash it, once as the body (with its exact
-     * Content-Length; a file that changes between the passes fails S3's own hash check). Same 500 MB single-PUT limit.
+     * Content-Length). Both passes read ONE open descriptor (opened with O_NOFOLLOW; independent review): the file checked
+     * by the caller cannot be swapped for another between the check and the upload -- `expectedIdentity` (dev + inode from
+     * the caller's check) must match, and `maxBytes` is enforced on the descriptor's own size. Same 500 MB single-PUT limit.
      */
-    async putObjectFromFile(key: string, filePath: string, contentType = "application/octet-stream"): Promise<{ bytes: number; sha256: string }> {
-      const { size } = await stat(filePath);
-      if (size > RUNPOD_S3_MAX_SINGLE_PUT_BYTES) {
-        throw new DomainError({
-          code: "runpod_s3_unavailable",
-          message: "Objects over 500 MB need a multipart upload, which this client does not implement.",
-          details: { key, size },
-        });
-      }
-      const hash = createHash("sha256");
-      for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer);
-      const payloadHash = hash.digest("hex");
-      await authorize("runpod_s3");
-      const url = objectUrl(key);
-      const headers = signSigV4({
-        method: "PUT",
-        url,
-        headers: { "content-type": contentType },
-        payloadHash,
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-        region: config.datacenterId,
-        service: "s3",
-        now: now(),
-        includeContentSha256Header: true,
-      });
-      let response: Response;
+    async putObjectFromFile(
+      key: string,
+      filePath: string,
+      contentType = "application/octet-stream",
+      options: { maxBytes?: number; expectedIdentity?: { dev: number; ino: number } } = {}
+    ): Promise<{ bytes: number; sha256: string }> {
+      const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
       try {
-        response = await fetchImpl(url, {
+        const info = await handle.stat();
+        if (!info.isFile()) throw new DomainError({ code: "runpod_s3_unavailable", message: `${path.basename(filePath)} is not a regular file`, details: { key } });
+        if (options.expectedIdentity && (info.dev !== options.expectedIdentity.dev || info.ino !== options.expectedIdentity.ino)) {
+          throw new DomainError({ code: "runpod_s3_unavailable", message: `${path.basename(filePath)} changed after it was checked; not uploaded`, details: { key } });
+        }
+        const size = info.size;
+        const limit = Math.min(options.maxBytes ?? RUNPOD_S3_MAX_SINGLE_PUT_BYTES, RUNPOD_S3_MAX_SINGLE_PUT_BYTES);
+        if (size > limit) {
+          throw new DomainError({
+            code: "runpod_s3_unavailable",
+            message: size > RUNPOD_S3_MAX_SINGLE_PUT_BYTES ? "Objects over 500 MB need a multipart upload, which this client does not implement." : `The file is ${size} bytes, over its limit of ${limit}.`,
+            details: { key, size, limit },
+          });
+        }
+        const hash = createHash("sha256");
+        for await (const chunk of handle.createReadStream({ start: 0, end: Math.max(0, size - 1), autoClose: false })) hash.update(chunk as Buffer);
+        const payloadHash = size === 0 ? EMPTY_PAYLOAD_SHA256 : hash.digest("hex");
+        await authorize("runpod_s3");
+        const url = objectUrl(key);
+        const headers = signSigV4({
           method: "PUT",
-          headers: { ...headers, "content-length": String(size) },
-          body: Readable.toWeb(createReadStream(filePath)) as unknown as BodyInit,
-          // Node's fetch needs this for a streamed request body.
-          duplex: "half",
-          signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
-        } as RequestInit & { duplex: "half" });
-      } catch (error) {
-        throw new DomainError({ code: "runpod_s3_unavailable", message: `RunPod S3 request failed: ${error instanceof Error ? error.message : String(error)}`, details: { method: "PUT", host: url.host } });
+          url,
+          headers: { "content-type": contentType },
+          payloadHash,
+          accessKeyId: config.accessKeyId,
+          secretAccessKey: config.secretAccessKey,
+          region: config.datacenterId,
+          service: "s3",
+          now: now(),
+          includeContentSha256Header: true,
+        });
+        let response: Response;
+        try {
+          response = await fetchImpl(url, {
+            method: "PUT",
+            headers: { ...headers, "content-length": String(size) },
+            body: Readable.toWeb(handle.createReadStream({ start: 0, end: Math.max(0, size - 1), autoClose: false })) as unknown as BodyInit,
+            // Node's fetch needs this for a streamed request body.
+            duplex: "half",
+            signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
+          } as RequestInit & { duplex: "half" });
+        } catch (error) {
+          throw new DomainError({ code: "runpod_s3_unavailable", message: `RunPod S3 request failed: ${error instanceof Error ? error.message : String(error)}`, details: { method: "PUT", host: url.host } });
+        }
+        if (!response.ok) throw failure(response, "PUT", key);
+        return { bytes: size, sha256: payloadHash };
+      } finally {
+        await handle.close();
       }
-      if (!response.ok) throw failure(response, "PUT", key);
-      return { bytes: size, sha256: payloadHash };
     },
 
     /** Idempotent: a 404 counts as deleted. */

@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { DomainError } from "../contracts";
 import { REGISTRY_FILE_MAX_BYTES, REGISTRY_TEMPLATE_FILE_PATTERN, TEMPLATE_INDEX_FILE } from "../template-registry";
@@ -6,8 +7,8 @@ import { REGISTRY_FILE_MAX_BYTES, REGISTRY_TEMPLATE_FILE_PATTERN, TEMPLATE_INDEX
 // ---------------------------------------------------------------------------
 // BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.3, ADR 0025) -- the ONE place YT Manager reads inside a logical path: the
 // factory template registry folder (`media_templates`). Only `index.json` and `<templateId>.v<version>.json` directly in
-// that folder are read; each must be a regular file whose real path is still a direct child of the folder's real path (a
-// symlink out of the folder is refused) and at most REGISTRY_FILE_MAX_BYTES. Nothing is ever written there.
+// that folder are read; each must be a regular file directly in the folder, opened without following a symlink, and at most
+// REGISTRY_FILE_MAX_BYTES. Nothing is ever written there.
 // ---------------------------------------------------------------------------
 
 function unavailable(message: string, details?: Record<string, unknown>): DomainError {
@@ -31,21 +32,28 @@ export function createTemplateRegistryReader(args: { resolveDir(): Promise<strin
         throw unavailable(`The template registry folder cannot be read: ${error instanceof Error ? error.message : String(error)}`, { path: dir });
       }
 
+      // One descriptor per file, opened with O_NOFOLLOW (independent review): a name swapped for a symlink after a check
+      // can never be followed; type and size come from the descriptor itself, and the bytes read are capped.
       async function readChild(name: string): Promise<string | null> {
-        const candidate = path.join(realDir, name);
-        let info;
+        let handle;
         try {
-          info = await lstat(candidate);
+          handle = await open(path.join(realDir, name), fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT") return null;
+          if (code === "ELOOP" || code === "EMLINK") throw new Error(`${name} is a symbolic link`);
           throw error;
         }
-        const real = info.isSymbolicLink() ? await realpath(candidate) : candidate;
-        if (path.dirname(real) !== realDir) throw new Error(`${name} points outside the registry folder`);
-        const target = await stat(real);
-        if (!target.isFile()) throw new Error(`${name} is not a regular file`);
-        if (target.size > REGISTRY_FILE_MAX_BYTES) throw new Error(`${name} is larger than ${REGISTRY_FILE_MAX_BYTES} bytes`);
-        return readFile(real, "utf8");
+        try {
+          const info = await handle.stat();
+          if (!info.isFile()) throw new Error(`${name} is not a regular file`);
+          if (info.size > REGISTRY_FILE_MAX_BYTES) throw new Error(`${name} is larger than ${REGISTRY_FILE_MAX_BYTES} bytes`);
+          const buffer = Buffer.alloc(info.size);
+          const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
+          return buffer.subarray(0, bytesRead).toString("utf8");
+        } finally {
+          await handle.close();
+        }
       }
 
       let indexText: string | null;

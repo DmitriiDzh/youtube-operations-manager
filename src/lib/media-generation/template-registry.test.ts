@@ -292,3 +292,27 @@ test("A1 (plan §2.2): model usage lists installed factory templates, LOCAL temp
   assert.equal(blind.registry, "unavailable");
   assert.ok(blind.users.some((u) => u.source === "owner"), "installed templates are still known");
 });
+
+test("review (fail closed): a template the index lists but whose file is missing, unreadable or invalid makes the registry 'unavailable' for model usage", async () => {
+  const h = harness();
+  h.publish([{ templateId: "fine", version: 1 }]);
+  h.folder.set("index.json", indexFile([{ templateId: "fine", version: 1 }, { templateId: "broken", version: 2 }]));
+  assert.equal((await h.services.modelUsage()).registry, "unavailable", "listed file not there");
+  h.folder.set(registryTemplateFileName("broken", 2), "{ nope");
+  const usage = await h.services.modelUsage();
+  assert.equal(usage.registry, "unavailable");
+  assert.match(usage.registryError ?? "", /broken v2/);
+});
+
+test("review: the 60 s check also notices a change in this device's templates (a local template that blocked a registry id was deleted)", async () => {
+  const h = harness();
+  const local = await h.services.importWorkflowTemplate({ name: "local", workflow: GRAPH, parameters: PARAMS });
+  h.folder.set("index.json", indexFile([{ templateId: local.templateId, version: 1 }]));
+  h.folder.set(registryTemplateFileName(local.templateId, 1), templateFile(local.templateId, 1));
+  const first = await h.services.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true });
+  assert.equal(first?.invalid.length, 1);
+  assert.equal(await h.services.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true }), null);
+  await h.services.deleteWorkflowTemplate({ templateId: local.templateId });
+  const after = await h.services.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true });
+  assert.deepEqual(after?.installed, [{ templateId: local.templateId, version: 1 }]);
+});

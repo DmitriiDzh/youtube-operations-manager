@@ -880,11 +880,6 @@ export const mediaJobs = sqliteTable(
 );
 
 /**
- * SCHEMA_MIGRATIONS version 52. The ledger the exchange janitor and the local writer act on -- BY
- * LEDGER ONLY (ADR 0019's rule): a remote key is deleted from the volume only after its row says the
- * file exists locally; nothing outside `exchange/` is ever listed or deleted. Device-local.
- */
-/**
  * Schema v61 (BL-132, FACTORY_MEDIA_CONTROL_PLAN.md §2.5): append-only audit of model pulls/cancels/deletions and
  * template installs/updates/removals, with who did it (`owner`, `factory`, `sync`). Device-local.
  */
@@ -901,7 +896,7 @@ export const mediaControlEvents = sqliteTable(
   (table) => [index("media_control_events_at_idx").on(table.at)]
 );
 
-/** Schema v61 (BL-132, plan §2.4): job input files uploaded to `exchange/in/<jobId>/`, so the janitor deletes them by ledger only. */
+/** Schema v61 (BL-132, plan §2.4/§7): job input files uploaded as `exchange/in/<jobId>-<param>-<name>`, so the janitor deletes them by ledger only. */
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -917,6 +912,11 @@ export const mediaExchangeInputs = sqliteTable(
   (table) => [index("media_exchange_inputs_job_idx").on(table.jobId)]
 );
 
+/**
+ * SCHEMA_MIGRATIONS version 52. The ledger the exchange janitor and the local writer act on -- BY
+ * LEDGER ONLY (ADR 0019's rule): a remote key is deleted from the volume only after its row says the
+ * file exists locally; nothing outside `exchange/` is ever listed or deleted. Device-local.
+ */
 export const mediaExchangeFiles = sqliteTable(
   "media_exchange_files",
   {
@@ -7935,7 +7935,7 @@ export async function upsertFactoryMediaWorkflowTemplate(
   const rows = await database
     .insert(mediaWorkflowTemplates)
     .values({ ...row, source: "factory", createdAt: now, updatedAt: now })
-    .onConflictDoUpdate({ target: mediaWorkflowTemplates.id, set: { ...rest, updatedAt: now }, where: eq(mediaWorkflowTemplates.source, "factory") })
+    .onConflictDoUpdate({ target: mediaWorkflowTemplates.id, set: { ...rest, updatedAt: now }, setWhere: eq(mediaWorkflowTemplates.source, "factory") })
     .returning();
   return rows[0] && rows[0].id === id && rows[0].source === "factory" ? rows[0] : null;
 }

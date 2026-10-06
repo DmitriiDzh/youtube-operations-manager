@@ -40,7 +40,9 @@ export async function resolveFromYtmDir(args: ResolveFromYtmDirArgs): Promise<st
  * absolute; the folder and `99 Data Exchange` must be plain folders inside the workspace; the file's REAL path (symlinks
  * resolved) must lie inside the folder's real path, and be a regular file. Read-only: nothing is created or deleted.
  */
-export async function resolveSentToYtmFile(args: Omit<ResolveFromYtmDirArgs, "fs"> & { fs: ExchangeReadFs; relativePath: string }): Promise<{ path: string; bytes: number }> {
+export async function resolveSentToYtmFile(
+  args: Omit<ResolveFromYtmDirArgs, "fs"> & { fs: ExchangeReadFs; relativePath: string }
+): Promise<{ path: string; bytes: number; identity?: { dev: number; ino: number } }> {
   const relative = args.relativePath;
   const segments = relative.split("/");
   if (!relative || relative.length > 500 || relative.startsWith("/") || /^[A-Za-z]:/.test(relative) || relative.includes("\\") || segments.some((s) => s === "" || s === "." || s === "..")) {
@@ -64,5 +66,6 @@ export async function resolveSentToYtmFile(args: Omit<ResolveFromYtmDirArgs, "fs
   if (realFile === realSent || !args.isPathInsideOrEqual(realSent, realFile)) throw args.unavailable(`${relative} resolves outside ${DATA_EXCHANGE_DIR_NAME}/${SENT_TO_YTM_DIR_NAME}`);
   const info = await args.fs.stat(realFile);
   if (!info || !info.isFile) throw args.unavailable(`${relative} is not a regular file`);
-  return { path: realFile, bytes: info.size };
+  // The identity lets the uploader prove it reads THIS file, not one swapped in after the check (independent review).
+  return { path: realFile, bytes: info.size, ...(info.dev !== undefined && info.ino !== undefined ? { identity: { dev: info.dev, ino: info.ino } } : {}) };
 }

@@ -52,7 +52,9 @@ export function createHuggingFaceClient(args: { fetchImpl?: Fetch; authorize?: A
     });
     const detail = asString(asRecord(response.body).error);
     if (response.status === 401 || response.status === 403) {
-      throw new DomainError({ code: "media_model_gated", message: `The repository is gated or private (HTTP ${response.status}); only public repositories can be pulled.`, details: { ...context, status: response.status, detail } });
+      // Unauthenticated, the Hub answers 401 for a repository that does not exist too (independent review): it cannot be
+      // told apart from a private one, so the message names both.
+      throw new DomainError({ code: "media_model_gated", message: `Hugging Face refused access (HTTP ${response.status}): the repository is gated or private, or does not exist (check the repo id); only public repositories can be pulled.`, details: { ...context, status: response.status, detail } });
     }
     if (response.status === 404) {
       throw new DomainError({ code: "media_model_not_found", message: `Hugging Face has no such repository or revision (HTTP 404).`, details: { ...context, status: 404, detail } });

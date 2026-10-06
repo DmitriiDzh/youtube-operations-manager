@@ -1729,15 +1729,41 @@ test("AC-FM-11: a file that is not in Sent to YTM, or is over the parameter's si
   assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0);
 });
 
-test("AC-FM-12: an upload failure fails the job before ComfyUI gets the prompt", async () => {
-  const s3 = fakeS3(new Map(), { putFails: true });
-  const f = fixture({ s3, sentToYtm: new Map([["a.png", { path: "/x/a.png", bytes: 10 }]]) });
-  const t = await importImg2Img(f.services);
-  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", ref: "a.png" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_input_unavailable");
+// Changed by the independent review of BL-132: inputs are uploaded BEFORE the job row exists (a long upload must not be
+// failed as "never submitted" by the resume pass), so an upload failure now leaves NO job at all, and every input already
+// uploaded for it is deleted again.
+test("AC-FM-12: an upload failure creates no job, reaches no ComfyUI, and deletes the inputs already uploaded", async () => {
+  const s3 = fakeS3(new Map());
+  const f = fixture({ s3, sentToYtm: new Map([["a.png", { path: "/x/a.png", bytes: 10 }], ["b.png", { path: "/x/b.png", bytes: 10 }]]) });
+  const twoInputs = await f.services.importWorkflowTemplate({
+    name: "two-refs",
+    workflow: { ...IMG2IMG, "11": { class_type: "LoadImage", inputs: { image: "x.png" } } },
+    parameters: [...IMG_PARAMS, { name: "style", type: "image", nodeId: "11", input: "image", required: true }],
+  });
+  const original = (s3.client as unknown as { putObjectFromFile: (k: string, p: string, c: string) => Promise<unknown> }).putObjectFromFile;
+  (s3.client as unknown as { putObjectFromFile: (k: string, p: string, c: string) => Promise<unknown> }).putObjectFromFile = async (key, filePath, type) => {
+    if (key.includes("-style-")) throw new Error("RunPod S3 returned HTTP 500 for PUT");
+    return original(key, filePath, type);
+  };
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: twoInputs.templateId, params: { prompt: "x", ref: "a.png", style: "b.png" }, createdBy: "agent" }),
+    (e: unknown) => isDomainError(e) && e.code === "media_input_unavailable" && /input "style"/.test(e.message)
+  );
   assert.equal(f.comfy.submits.length, 0);
-  const [row] = [...f.mem.jobs.values()];
-  assert.equal(row.status, "failed");
-  assert.match(row.error ?? "", /input "ref"/);
+  assert.equal(f.mem.jobs.size, 0, "no job row");
+  assert.ok(f.s3.calls.includes("delete:exchange/in/job-1-ref-a.png"), "the first input is removed again");
+  assert.equal(f.mem.inputs.get("exchange/in/job-1-ref-a.png")?.remoteDeletedAt instanceof Date, true);
+});
+
+test("BL-132 review: the janitor leaves an input whose job row does not exist yet (a createJob still uploading) for an hour, then removes it", async () => {
+  const objects = new Map<string, Uint8Array>([["exchange/in/ghost-ref-a.png", new Uint8Array([1])]]);
+  const f = fixture({ s3: fakeS3(objects) });
+  f.mem.inputs.set("exchange/in/ghost-ref-a.png", { remoteKey: "exchange/in/ghost-ref-a.png", jobId: "ghost", parameter: "ref", sourcePath: "a.png", bytes: 1, sha256: "x", uploadedAt: new Date("2026-10-05T11:30:00Z"), remoteDeletedAt: null });
+  const early = await f.services.cleanupExchange({ dryRun: false });
+  assert.ok(early.kept.some((k) => k.key === "exchange/in/ghost-ref-a.png" && /still being created/.test(k.reason)));
+  f.advance(31 * 60_000);
+  const late = await f.services.cleanupExchange({ dryRun: false });
+  assert.ok(late.deleted.includes("exchange/in/ghost-ref-a.png"));
 });
 
 test("AC-FM-12: the janitor deletes a job's uploaded input only once the job is terminal, by ledger; the operator's own exchange/in/ files are never touched", async () => {

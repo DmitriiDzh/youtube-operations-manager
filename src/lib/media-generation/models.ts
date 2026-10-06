@@ -259,9 +259,14 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       .sort((a, b) => a.key.localeCompare(b.key));
   }
 
+  /** Never throws (independent review): a usage that cannot be computed is "unknown" -- the factory is then refused, the owner is not. */
   async function usageOrUnknown(): Promise<MediaModelUsage> {
     if (!deps.modelUsage) return { registry: "unavailable", registryError: "model usage is not wired", users: [] };
-    return deps.modelUsage();
+    try {
+      return await deps.modelUsage();
+    } catch (error) {
+      return { registry: "unavailable", registryError: `template usage could not be read: ${error instanceof Error ? error.message : String(error)}`, users: [] };
+    }
   }
 
   /** Records an audit row; a failure to record never fails or undoes the action it describes (logged instead). */
@@ -278,6 +283,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     const s3 = await deps.base.s3();
     for (const object of await s3.listAllObjects(`${PULL_STAGING_PREFIX}${pullId}/`)) await s3.deleteObject(object.key);
     await s3.deleteObject(pullResultKey(pullId));
+    await s3.deleteObject(`${pullResultKey(pullId)}.part`); // a pod killed between its printf and its mv
   }
 
   /** Deletes `models/<folder>/.cache/**` for the folder of `expectedKey` (the HF CLI's download cache). */
@@ -304,19 +310,23 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     async deleteModel(input: unknown, options: { actor?: PullActor } = {}): Promise<{ deleted: string }> {
       const { key } = parseWithSchema(modelKeySchema, input, "model key");
       const actor = options.actor ?? "owner";
-      const usage = await usageOrUnknown();
-      const users = usage.users.filter((u) => u.key === key);
-      if (actor === "factory") {
-        if (usage.registry === "unavailable") {
-          throw new DomainError({ code: "media_template_registry_unavailable", message: `The template registry cannot be read on this device, so it cannot be shown that no template uses ${key}; nothing was deleted. (${usage.registryError ?? "not configured"})`, details: { key } });
-        }
-        if (users.length > 0) {
-          throw new DomainError({ code: "media_model_in_use", message: `${key} is used by ${users.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")}; nothing was deleted.`, details: { key, usedBy: users } });
-        }
-      }
+      // The lock first, then the check, then the delete (independent review): nothing that takes the volume can slip in
+      // between the "unused" verdict and the delete.
       const owner = `delete:${deps.generateId()}` as const;
       await deps.volumeLock.acquire(owner);
+      let usage: MediaModelUsage;
+      let users: MediaModelUsage["users"];
       try {
+        usage = await usageOrUnknown();
+        users = usage.users.filter((u) => u.key === key);
+        if (actor === "factory") {
+          if (usage.registry === "unavailable") {
+            throw new DomainError({ code: "media_template_registry_unavailable", message: `The template registry cannot be read completely on this device, so it cannot be shown that no template uses ${key}; nothing was deleted. (${usage.registryError ?? "not configured"})`, details: { key } });
+          }
+          if (users.length > 0) {
+            throw new DomainError({ code: "media_model_in_use", message: `${key} is used by ${users.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")}; nothing was deleted.`, details: { key, usedBy: users } });
+          }
+        }
         const s3 = await deps.base.s3();
         await s3.deleteObject(key);
       } finally {
@@ -405,6 +415,17 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
             throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod could not be asked whether a pod named ${pullPodNameFor(pullId)} exists; the pull stays reserved -- try again when RunPod answers.`, details: { pullId, cause: lookupError instanceof Error ? lookupError.message : String(lookupError) } });
           }
           if (orphan) target = { ...pull, podId: orphan.id };
+        }
+        // The pod may already have verified and moved the file (independent review): then the pull is done, not cancelled --
+        // the record must not say "nothing was kept" while a verified file sits at its final key.
+        if (target.expectedSha256) {
+          const verdict = await deps.base
+            .s3()
+            .then((s3) => s3.getObjectText(pullResultKey(pullId)))
+            .then((text) => (text === null ? null : parseVerdict(text)), () => null);
+          if (verdict && verdict.ok && verdict.sha256 === target.expectedSha256) {
+            return finishPull(target, "done", { bytes: verdict.bytes, actualSha256: verdict.sha256, actor });
+          }
         }
         return finishPull(target, "failed", { error: actor === "factory" ? "cancelled by the Factory Operator" : "cancelled by operator", actor });
       });
@@ -612,6 +633,12 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
           const head = await s3!.headObject(pull.expectedKey).catch(() => undefined);
           if (head && head.size === verdict.bytes) {
             await finishPull(pull, "done", { bytes: verdict.bytes, actualSha256: verdict.sha256 });
+            continue;
+          }
+          // The move is a rename on the volume: once S3 shows the key at all, a different size is a contradiction, not lag
+          // (independent review) -- fail now instead of letting the pod idle to the 6 h cap. Absent (null) = lag: wait.
+          if (head && head.size !== verdict.bytes) {
+            await finishPull(pull, "failed", { error: `the pod reported ${verdict.bytes} bytes, the volume shows ${head.size} at ${pull.expectedKey}`, actualSha256: verdict.sha256, bytes: head.size });
             continue;
           }
         }

@@ -145,6 +145,10 @@ import {
   listExperimentOutcomesByExperiment,
   insertHypothesisEvidence,
   listHypothesisEvidenceByHypothesis,
+  insertMediaWorkflowTemplate as insertMediaWorkflowTemplateForBl132,
+  listMediaControlEvents as listMediaControlEventsForBl132,
+  insertMediaControlEvent as insertMediaControlEventForBl132,
+  upsertFactoryMediaWorkflowTemplate,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -3358,4 +3362,27 @@ test("renewResearchChannelCollectionClaims: renews only claims still carrying th
     assert.equal(at("UC_MINE"), t1.getTime());
     assert.equal(at("UC_TAKEN"), other.getTime());
     assert.equal(at("UC_FREE"), null);
+  }));
+
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.3, independent review): the factory upsert must NEVER overwrite an owner-imported
+// row with the same id -- checked here against the real database, not a fake store.
+test("BL-132 upsertFactoryMediaWorkflowTemplate: installs and replaces factory rows; an owner row with the same id is untouched and the call returns null", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const factoryRow = (version: number, name: string) => ({ id: "flux-tpl", name, description: null, version, workflowJson: "{}", parametersJson: "[]", outputNodeIdsJson: "[]", nodeCount: 1, registrySha256: `sha-${version}`, modelsJson: "[]" });
+    const installed = await upsertFactoryMediaWorkflowTemplate(factoryRow(3, "v3"), isolatedDb);
+    assert.deepEqual([installed?.id, installed?.version, installed?.source, installed?.registrySha256], ["flux-tpl", 3, "factory", "sha-3"]);
+    const replaced = await upsertFactoryMediaWorkflowTemplate(factoryRow(4, "v4"), isolatedDb);
+    assert.deepEqual([replaced?.version, replaced?.name, replaced?.source], [4, "v4", "factory"]);
+
+    await insertMediaWorkflowTemplateForBl132({ id: "owner-id", name: "mine", description: null, workflowJson: '{"a":1}', parametersJson: "[]" }, isolatedDb);
+    const refused = await upsertFactoryMediaWorkflowTemplate({ ...factoryRow(9, "hijack"), id: "owner-id" }, isolatedDb);
+    assert.equal(refused, null);
+    const rows = await client.execute("SELECT id, name, version, source, workflow_json FROM media_workflow_templates WHERE id = 'owner-id'");
+    assert.deepEqual(rows.rows.map((r) => [r.name, r.version, r.source, r.workflow_json]), [["mine", 1, "owner", '{"a":1}']]);
+
+    await insertMediaControlEventForBl132({ at: new Date("2026-10-06T10:00:00Z"), actor: "factory", action: "model_deleted", subject: "models/vae/x", detailsJson: null }, isolatedDb);
+    await insertMediaControlEventForBl132({ at: new Date("2026-10-06T11:00:00Z"), actor: "owner", action: "model_pull_started", subject: "models/vae/y", detailsJson: "{}" }, isolatedDb);
+    assert.deepEqual((await listMediaControlEventsForBl132(10, isolatedDb)).map((e) => [e.actor, e.subject]), [["owner", "models/vae/y"], ["factory", "models/vae/x"]]);
   }));

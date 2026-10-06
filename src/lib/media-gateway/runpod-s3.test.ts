@@ -243,3 +243,27 @@ test("putObjectFromFile refuses a file over the single-PUT limit without calling
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("BL-132 review: putObjectFromFile reads one descriptor -- a file whose identity differs from the checked one, a symlink, or one over its own maxBytes is refused before any request", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ytm-s3-put-"));
+  try {
+    const { writeFile, stat, symlink } = await import("node:fs/promises");
+    const file = path.join(dir, "a.png");
+    await writeFile(file, "0123456789");
+    const real = await stat(file);
+    const { fetchImpl, calls } = fakeFetch(() => new Response(null, { status: 200 }));
+    const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+    await assert.rejects(client.putObjectFromFile("exchange/in/x", file, "image/png", { expectedIdentity: { dev: real.dev, ino: real.ino + 1 } }), (e: unknown) => isDomainError(e) && /changed after it was checked/.test(e.message));
+    await assert.rejects(client.putObjectFromFile("exchange/in/x", file, "image/png", { maxBytes: 9 }), (e: unknown) => isDomainError(e) && /over its limit of 9/.test(e.message));
+    const link = path.join(dir, "link.png");
+    await symlink(file, link);
+    await assert.rejects(client.putObjectFromFile("exchange/in/x", link, "image/png"));
+    assert.equal(calls.length, 0);
+    assert.deepEqual(await client.putObjectFromFile("exchange/in/x", file, "image/png", { expectedIdentity: { dev: real.dev, ino: real.ino }, maxBytes: 10 }), {
+      bytes: 10,
+      sha256: (await import("node:crypto")).createHash("sha256").update("0123456789").digest("hex"),
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

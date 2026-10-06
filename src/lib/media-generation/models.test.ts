@@ -981,3 +981,47 @@ test("AC-FM-05: the model list skips staging/cache litter and carries each file'
     ]
   );
 });
+
+// -- BL-132 independent review fixes -------------------------------------------------------------------------------
+
+test("review: a cancel that arrives after the pod verified and moved the file settles the pull as done (the record never claims nothing was kept)", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  f.objects.set("models/checkpoints/m.safetensors", 1000);
+  f.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: true, sha256: WANT, bytes: 1000 }));
+  const settled = await f.services.cancelPull({ pullId: pull.pullId }, { actor: "factory" });
+  assert.equal(settled.status, "done");
+  assert.equal(settled.actualSha256, WANT);
+  assert.ok(f.calls.includes("terminate:cpupod1"));
+});
+
+test("review: a verdict whose size the volume contradicts fails the pull at once instead of idling to the 6 h cap", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  f.objects.set("models/checkpoints/m.safetensors", 999);
+  f.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: true, sha256: WANT, bytes: 1000 }));
+  const [failed] = await f.services.pollPulls();
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /1000 bytes.*999/);
+  assert.ok(f.calls.includes(`delete:ytm-pulls/${pull.pullId}.json.part`), "a stray .part verdict is cleaned too");
+});
+
+test("review: a usage lookup that throws refuses the factory deletion but never blocks the owner's", async () => {
+  const make = () =>
+    createTestModelServices({
+      store: { getPullsJson: async () => null, updatePullsJson: async (m) => m(null) },
+      base: {
+        getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }),
+        resolveRunpodClient: async () => ({}) as unknown as RunpodApiClient,
+        s3: async () => ({ async deleteObject() {} }) as unknown as RunpodS3Client,
+      },
+      generateId: () => "id",
+      clock: { now: () => new Date("2026-10-06T12:00:00Z") },
+      volumeLock: testLock().lock,
+      modelUsage: async () => {
+        throw new Error("database is locked");
+      },
+    });
+  await assert.rejects(make().deleteModel({ key: KEY }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_template_registry_unavailable" && /database is locked/.test(e.message));
+  assert.deepEqual(await make().deleteModel({ key: KEY }, { actor: "owner" }), { deleted: KEY });
+});

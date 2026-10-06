@@ -164,7 +164,7 @@ export type JobServiceDependencies = {
    * BL-132 (plan §2.4): a job input file named relative to the channel workspace's `99 Data Exchange/Sent to YTM/`,
    * proven contained (`workspace-exchange`); throws `media_input_unavailable`. Absent = inputs are not available here.
    */
-  resolveInputFile?(channelId: string, relativePath: string): Promise<{ path: string; bytes: number }>;
+  resolveInputFile?(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; identity?: { dev: number; ino: number } }>;
   /** BL-132: the factory template registry folder (`adapters/template-registry-fs.ts`); absent = no registry on this device. */
   registry?: { read(): Promise<{ indexText: string; readTemplateFile(name: string): Promise<string | null> }> };
   /** BL-132 audit sink. */
@@ -590,11 +590,18 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const name = registryTemplateFileName(entry.templateId, entry.version);
       files.set(name, await snapshot.readTemplateFile(name).catch(() => null));
     }
-    const fingerprint = registryContentSha256(JSON.stringify([snapshot.indexText, ...[...files.entries()].map(([name, text]) => [name, text === null ? null : registryContentSha256(text)])]));
-    if (input.onlyIfChanged && fingerprint === lastRegistryFingerprint) return null;
-
-    // 2. Each listed template.
+    // 2. Each listed template. The fingerprint covers this device's template rows too (independent review): a change there
+    // (e.g. the owner deleted a local template whose id blocked a registry one) is picked up by the 60 s check as well.
     const rows = await deps.store.templates.list();
+    const fingerprintOf = (current: StoredTemplateRow[]) =>
+      registryContentSha256(
+        JSON.stringify([
+          snapshot.indexText,
+          ...[...files.entries()].map(([name, text]) => [name, text === null ? null : registryContentSha256(text)]),
+          ...current.map((r) => [r.id, r.version, r.source ?? "owner", r.registrySha256 ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+        ])
+      );
+    if (input.onlyIfChanged && fingerprintOf(rows) === lastRegistryFingerprint) return null;
     for (const entry of index.templates) {
       const { templateId, version } = entry;
       const text = files.get(registryTemplateFileName(templateId, version)) ?? null;
@@ -668,7 +675,8 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
       result.removed.push({ templateId: row.id, version: row.version });
     }
-    return finish(fingerprint);
+    // Remembered as the state AFTER this sync's own writes, so the next unchanged tick is skipped.
+    return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list()));
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {
@@ -1171,12 +1179,17 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       try {
         if (!deps.registry) throw new DomainError({ code: "media_template_registry_unavailable", message: "No template registry is wired on this device." });
         const snapshot = await deps.registry.read();
+        // Every listed template must be readable: one that is not there yet (a file sync still copying), unreadable or
+        // invalid declares models nobody can know, so the registry counts as unavailable -- the factory deletion is then
+        // refused (fail closed, independent review).
+        const unknown: string[] = [];
         for (const entry of parseRegistryIndex(snapshot.indexText).templates) {
           const text = await snapshot.readTemplateFile(registryTemplateFileName(entry.templateId, entry.version)).catch(() => null);
-          if (text === null) continue;
-          const parsed = parseRegistryTemplate(text, entry);
-          if (parsed.ok) add(entry.templateId, entry.version, "registry", parsed.template.models);
+          const parsed = text === null ? null : parseRegistryTemplate(text, entry);
+          if (parsed?.ok) add(entry.templateId, entry.version, "registry", parsed.template.models);
+          else unknown.push(`${entry.templateId} v${entry.version}`);
         }
+        if (unknown.length > 0) throw new Error(`listed templates that cannot be read: ${unknown.join(", ")}`);
       } catch (error) {
         registry = "unavailable";
         registryError = error instanceof Error ? error.message : String(error);
@@ -1212,7 +1225,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       await deps.resolveOutputRoot(parsed.channelId);
       const s3 = await deps.s3();
       // BL-132 (plan §2.4, AC-FM-11): every input file is found and checked BEFORE anything is written or uploaded.
-      const inputs: Array<{ parameter: MediaTemplateParameter; relativePath: string; file: { path: string; bytes: number } }> = [];
+      const inputs: Array<{ parameter: MediaTemplateParameter; relativePath: string; maxBytes: number; file: { path: string; bytes: number; identity?: { dev: number; ino: number } } }> = [];
       for (const p of parameters.filter((q) => isInputParameterType(q.type) && typeof values[q.name] === "string")) {
         const relativePath = values[p.name] as string;
         if (!deps.resolveInputFile || !deps.store.inputs) throw new DomainError({ code: "media_input_unavailable", message: "Job input files are not available on this server.", details: { parameter: p.name } });
@@ -1221,7 +1234,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         if (file.bytes === 0 || file.bytes > limit) {
           throw new DomainError({ code: "media_input_unavailable", message: `"${p.name}": ${relativePath} is ${file.bytes} bytes; an input must be 1 byte to ${limit} bytes.`, details: { parameter: p.name, bytes: file.bytes, maxBytes: limit } });
         }
-        inputs.push({ parameter: p, relativePath, file });
+        inputs.push({ parameter: p, relativePath, maxBytes: limit, file });
       }
       const jobId = deps.generateId();
       // Each input goes to the ROOT of ComfyUI's input folder under a job-unique flat name (`<jobId>-<param>-<name>`), and
@@ -1232,6 +1245,26 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       });
       const promptValues = { ...values, ...Object.fromEntries(uploads.map((u) => [u.parameter.name, u.name])) };
       const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, promptValues, jobId);
+      // BL-132: the inputs are uploaded BEFORE the job row exists (independent review): a long upload (up to 500 MB each)
+      // can then never be failed as "never submitted" by the resume pass's queued-row grace period, and nothing reaches
+      // ComfyUI unless every input is on the volume. Each upload counts as session activity (the idle timeout must not stop
+      // the pod mid-upload). On any failure the inputs already uploaded are deleted again and no job exists.
+      const uploaded: string[] = [];
+      for (const upload of uploads) {
+        try {
+          await deps.sessions.touchActivity(parsed.sessionId);
+          const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name), { maxBytes: upload.maxBytes, expectedIdentity: upload.file.identity });
+          uploaded.push(upload.remoteKey);
+          await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
+        } catch (error) {
+          for (const key of uploaded) {
+            await s3.deleteObject(key).catch((cleanupError) => log(`[media] could not delete the uploaded input ${key}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`));
+            await deps.store.inputs?.markRemoteDeleted(key, deps.clock.now()).catch(() => undefined);
+          }
+          const message = `input "${upload.parameter.name}" (${upload.relativePath}) could not be uploaded: ${error instanceof Error ? error.message : String(error)}`;
+          throw new DomainError({ code: "media_input_unavailable", message, details: { parameter: upload.parameter.name } });
+        }
+      }
       const now = deps.clock.now();
       const row = await deps.store.jobs.insert({
         id: jobId,
@@ -1250,17 +1283,6 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         submittedAt: null,
         finishedAt: null,
       });
-      // BL-132: upload the inputs before ComfyUI sees the prompt; a failure fails the job before any GPU work.
-      for (const upload of uploads) {
-        try {
-          const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name));
-          await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
-        } catch (error) {
-          const message = `input "${upload.parameter.name}" (${upload.relativePath}) could not be uploaded: ${error instanceof Error ? error.message : String(error)}`;
-          await failJob(row, message);
-          throw new DomainError({ code: "media_input_unavailable", message, details: { jobId, parameter: upload.parameter.name } });
-        }
-      }
       let comfy: ComfyUiClient;
       try {
         comfy = await deps.sessions.comfyClientForSession(parsed.sessionId);
@@ -1419,6 +1441,12 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           const owner = jobCache.get(input.jobId) ?? null;
           if (owner && !MEDIA_JOB_TERMINAL_STATUSES.includes(owner.status)) {
             kept.push({ key, reason: `input of a ${owner.status} job` });
+            continue;
+          }
+          // No job row: a createJob still uploading (the row is written after the uploads) -- or one that died. Only an
+          // hour-old one is a leftover.
+          if (!owner && deps.clock.now().getTime() - input.uploadedAt.getTime() < 60 * 60_000) {
+            kept.push({ key, reason: "input of a job still being created" });
             continue;
           }
           if (dryRun) {

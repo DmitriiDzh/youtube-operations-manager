@@ -202,7 +202,7 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 | AC-FM-09 | A template removed from the index is removed from this device. Owner-imported templates are never touched by sync. |
 | AC-FM-10 | A template whose loader nodes or parameter enums reference a model not in its declared `models` list is `invalid` and not installed. |
 | AC-FM-11 | A job input path that escapes `Sent to YTM` (`..`, absolute, a symlink out), is not a regular file, has a wrong extension or is too large is refused before any upload or GPU work. |
-| AC-FM-12 | A job with an input uploads it under `exchange/in/<jobId>/`, the graph input names it, and the janitor deletes it only after the job is terminal and only by ledger. The source file in `Sent to YTM` is untouched. |
+| AC-FM-12 | A job with an input uploads it under `exchange/in/<jobId>-<param>-<name>` (§7) before the job row and the prompt exist, the graph input names it, and the janitor deletes it only after the job is terminal (or, for an input whose job row never appeared, after an hour) and only by ledger. An upload failure creates no job and deletes the inputs already uploaded. The source file in `Sent to YTM` is untouched. |
 | AC-FM-13 | `factory_get_capabilities` reports the WRITE permission and the new tools. The factory server's tool list equals exactly the four existing tools plus §2.6. No session or job tool and no channel tool is reachable with a factory token. No `factory_*` tool appears in a channel session. |
 | AC-FM-14 | Every pull, cancel, delete and template change appears in `media_control_events` with its actor (`owner`, `factory`, `sync`) and is shown in the Web UI. |
 | AC-FM-15 | Factory API is `1.1.0` and Agent API is `3.5.0`. The full existing suite passes unchanged, and existing jobs, sessions and owner-imported templates behave as before. |
@@ -249,3 +249,10 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 - **Still to verify live** (paid; only after the owner's go-ahead): the pull pod's `hf download --revision` + `sha256sum` + `mv` on
   `python:3.12-slim`; RunPod S3 accepting the streamed PUT with an explicit Content-Length; ComfyUI `LoadImage`/`LoadAudio` reading the flat
   input name.
+- **After the independent review (2026-10-06):** inputs are uploaded before the job row exists (a long upload can no longer be failed by
+  the resume pass's 5-minute grace for queued rows) and each upload counts as session activity; the uploader reads ONE descriptor opened
+  with O_NOFOLLOW whose dev/inode must match the checked file and whose size must fit the parameter's `maxBytes`; the registry reader
+  also reads from one O_NOFOLLOW descriptor and never quotes file content in errors; model usage counts a listed-but-unreadable
+  template as "registry unavailable" (the factory deletion is refused) and never throws for the owner; the delete takes the volume lock
+  before checking usage; a cancel after a verified verdict settles the pull as done; a verdict the volume contradicts fails at once; the
+  60 s check's fingerprint includes this device's template rows.

@@ -71,7 +71,9 @@ export function parseRegistryIndex(text: string): RegistryIndex {
   try {
     json = JSON.parse(text);
   } catch (error) {
-    throw new DomainError({ code: "media_template_registry_unavailable", message: `${TEMPLATE_INDEX_FILE} is not valid JSON: ${error instanceof Error ? error.message : String(error)}` });
+    // The parser's own message quotes the file; only a generic reason leaves this module (independent review).
+    void error;
+    throw new DomainError({ code: "media_template_registry_unavailable", message: `${TEMPLATE_INDEX_FILE} is not valid JSON` });
   }
   const parsed = indexSchema.safeParse(json);
   if (!parsed.success) {
@@ -89,7 +91,8 @@ export function parseRegistryTemplate(text: string, expected: { templateId: stri
   try {
     json = JSON.parse(text);
   } catch (error) {
-    return { ok: false, reason: `not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
+    void error;
+    return { ok: false, reason: "not valid JSON" };
   }
   const parsed = templateFileSchema.safeParse(json);
   if (!parsed.success) return { ok: false, reason: `does not match ytm.media-template v1: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}` };
