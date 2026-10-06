@@ -773,6 +773,21 @@ sequential calls at the same instant). The accepted tradeoff: if the collection 
 or crashes mid-run, today's window is still marked "collected" and won't retry until tomorrow's
 boundary — judged the better failure mode than doubling quota on every multi-tab load.
 
+**Every connected channel (BL-142, 2026-10-06, owner msgs 1867/1868/1874).** The dashboard no longer calls the
+per-channel `auto-collect` and `weekly-reports/generate-if-due` routes; once per load (after the active channel is
+resolved) it calls `POST /api/analytics/auto-collect-all` (`src/lib/analytics/auto-collect-all.ts`), then the Research
+`collect-if-stale` as before. The session's active channel is collected with the session's credentials while the
+dashboard waits; every other channel runs after the response, one after another, with its own `connected_user_id`,
+through the quota-guarded `runAutoCollectionIfStale` (BL-117 reserve and quota attribution apply), and its
+`assertActiveChannel` still fails closed for a user who has another channel selected. Per channel the weekly report runs
+after the collection, also when it failed. Note that `collectMetrics` marks a channel collected only after a
+**successful** run, so nothing in it throttles a failure: a failing background channel is held back for 6 hours by an
+in-process backoff (`channel-fanout`), the active channel is retried at once as before. One all-channels run at a time
+per process. The BL-118 catch-up of every channel with a gap runs after the background part; a channel whose collection
+just failed is not planned. Reasons a background channel was not collected are logged (no persisted record). The
+response shows only the active channel (ADR 0004). Shared rules with BL-141 live in `src/lib/channel-fanout/`
+(credential choice, error code, backoff, channel list). Cross-account token use: RISK-112. The per-channel routes remain.
+
 **`GET /api/settings` is not purely read-only**: `getAnalyticsSyncSettings`'s detect-and-persist
 behavior means a plain `GET` can write the OS-detected timezone on first read (stated in that
 route's own doc comment, not left as a surprise).
