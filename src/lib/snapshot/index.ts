@@ -40,3 +40,4 @@ export {
 export { sha256File } from "./adapters/checksum";
 export { scrubDatabaseCopy } from "./adapters/scrub";
 export { computeContentFingerprint, computeFileContentFingerprint } from "./adapters/fingerprint";
+export { diffTransferredContent, type TransferredTableDiff } from "./adapters/content-diff";

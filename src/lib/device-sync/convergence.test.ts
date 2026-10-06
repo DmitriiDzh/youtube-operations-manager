@@ -381,3 +381,46 @@ test("AC-FD-11: with a real conflict open, 'sync before a background write' says
     a.client.close();
     b.client.close();
   }));
+
+test("AC-FD-12: the divergence preview says, per section, what only this computer has, what only the other has, and what differs", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await divergedPair(root);
+    // B also edits a row both computers share: the same id with different content is "changed".
+    await b.client.execute("UPDATE research_channels SET reason = 'edited on b' WHERE id = 'UC1'");
+    await tick(b);
+    await syncAll();
+    await tick(a);
+    const target = divergenceSnapshot(a);
+    assert.ok(target);
+    const lineageBefore = (await a.client.execute("SELECT * FROM snapshot_lineage")).rows;
+    const foldersBefore = [...(await snapshotDirs(a.folder))].sort();
+
+    const preview = await a.runner.divergencePreview(target);
+    assert.equal(preview.peer.snapshotId, target);
+    assert.equal(preview.peer.sourceDeviceId, "device-b");
+    const research = preview.sections.find((s) => s.section === "Research");
+    assert.deepEqual(
+      { onlyHere: research?.onlyHere, onlyThere: research?.onlyThere, changed: research?.changed },
+      { onlyHere: 1, onlyThere: 1, changed: 1 },
+      "UC-a only here, UC-b only there, UC1 edited on b"
+    );
+    for (const section of ["Batches", "Audit", "Decisions"]) {
+      const s = preview.sections.find((x) => x.section === section);
+      assert.deepEqual({ onlyHere: s?.onlyHere, onlyThere: s?.onlyThere, changed: s?.changed }, { onlyHere: 0, onlyThere: 0, changed: 0 }, section);
+    }
+    assert.ok(preview.commonBase, "both histories start from S1, which is still in the folder");
+
+    // Read-only: nothing published, lineage untouched.
+    assert.deepEqual([...(await snapshotDirs(a.folder))].sort(), foldersBefore);
+    assert.deepEqual((await a.client.execute("SELECT * FROM snapshot_lineage")).rows, lineageBefore);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-12: the preview refuses a snapshot that is not a current conflict", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    await assert.rejects(() => a.runner.divergencePreview("00000000-0000-4000-8000-000000000000"), /no longer the one in conflict|not in the sync folder/);
+    a.client.close();
+    b.client.close();
+  }));

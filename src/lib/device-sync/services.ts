@@ -9,6 +9,7 @@ import { getOperationLock, OperationLockError, releaseStaleExportLock, withOpera
 import {
   computeContentFingerprint,
   computeFileContentFingerprint,
+  diffTransferredContent,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
   isFastForwardOf,
@@ -30,9 +31,13 @@ import {
   DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS,
   DEVICE_SYNC_TRANSFER_GRACE_MS,
   DeviceSyncError,
+  DIVERGENCE_SECTIONS,
+  divergenceSectionOf,
   EMPTY_DEVICE_SYNC_STATUS,
   TAKE_THEIRS_BACKUP_PREFIX,
   type DecisionInput,
+  type DivergencePreview,
+  type DivergenceSection,
   type DeviceSyncNotice,
   type DeviceSyncStatus,
   type SnapshotEntry,
@@ -293,11 +298,13 @@ function transientSnapshotError(error: unknown): boolean {
 function divergenceNotice(snapshot: SnapshotEntry, localDirty: boolean, multipleTips: boolean): DeviceSyncNotice {
   return {
     kind: "divergence",
+    // Owner, Telegram 2026-10-06: the old "does not continue this computer's history" read as if only
+    // the other computer had changed anything; in practice both had (this one had published already).
     message: multipleTips
-      ? "Several other computers published data that conflicts. Choose which data to keep."
+      ? "Several other computers changed Batches/audit/Research/Decisions data differently from this computer. Choose which version to keep."
       : localDirty
-        ? "Both computers changed data since they last synced. Choose which computer's data to keep."
-        : "The other computer published data that does not continue this computer's history. Choose which data to keep.",
+        ? "Both computers changed Batches/audit/Research/Decisions data since they last agreed, and the data differs. Choose which version to keep."
+        : "Both computers changed Batches/audit/Research/Decisions data since they last agreed (this computer's version is already published), and the data differs. Choose which version to keep.",
     snapshotId: snapshot.snapshotId,
     sourceDeviceId: snapshot.sourceDeviceId,
     createdAt: snapshot.createdAt,
@@ -434,9 +441,10 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
    * so a standing divergence does not copy the whole file again every tick. A transient error (still
    * transferring) is not kept and is retried next tick.
    */
-  const stagedFingerprints = new Map<string, string | null>();
-  async function stagedFingerprintOf(folder: string, snapshotId: string): Promise<string | null> {
-    if (stagedFingerprints.has(snapshotId)) return stagedFingerprints.get(snapshotId) ?? null;
+  /** Runs `fn` on a private copy of a peer snapshot's data, verified (checksums), copied and
+   * migrated to this build exactly as `importHandoff` stages it -- never ATTACHed in the shared
+   * folder, where Syncthing would pick up any side file. The copy is always removed. */
+  async function withStagedPeerCopy<T>(folder: string, snapshotId: string, fn: (stagedPath: string) => Promise<T>): Promise<T> {
     const snapshotDir = path.join(folder, snapshotId);
     await mkdir(deps.workingDir, { recursive: true });
     const workingCopyPath = path.join(deps.workingDir, `compare-${randomUUID()}.db`);
@@ -453,14 +461,31 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         snapshotDbClient.close();
       }
       await migrateStagedCopy(workingCopyPath);
-      const fingerprint = await computeFileContentFingerprint(deps.client, workingCopyPath);
+      return await fn(workingCopyPath);
+    } finally {
+      for (const suffix of ["", "-wal", "-shm"]) await rm(`${workingCopyPath}${suffix}`, { force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * False divergences (owner, Telegram 2026-10-06, msgs 1758/1764): the content fingerprint of a peer
+   * snapshot as THIS build would import it. A snapshot never changes, so the result is kept per id;
+   * `null` (cannot be compared: needs a newer schema, unreadable) is kept too, so a standing
+   * divergence does not copy the whole file again every tick. A transient error (still
+   * transferring) is not kept and is retried next tick.
+   */
+  const stagedFingerprints = new Map<string, string | null>();
+  async function stagedFingerprintOf(folder: string, snapshotId: string): Promise<string | null> {
+    if (stagedFingerprints.has(snapshotId)) return stagedFingerprints.get(snapshotId) ?? null;
+    try {
+      const fingerprint = await withStagedPeerCopy(folder, snapshotId, (stagedPath) =>
+        computeFileContentFingerprint(deps.client, stagedPath)
+      );
       stagedFingerprints.set(snapshotId, fingerprint);
       return fingerprint;
     } catch (error) {
       if (!transientSnapshotError(error)) stagedFingerprints.set(snapshotId, null);
       return null;
-    } finally {
-      for (const suffix of ["", "-wal", "-shm"]) await rm(`${workingCopyPath}${suffix}`, { force: true }).catch(() => {});
     }
   }
 
@@ -906,6 +931,52 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     return next;
   }
 
+  /**
+   * Divergence preview for the Merge tab (owner, Telegram 2026-10-06, msg 1758: "show between what
+   * and what I am choosing"): the current conflicting peer tip, this computer's position, the newest
+   * snapshot both histories share, and per transferred table what only this computer has, what only
+   * the other has, and what both have but differently. Read-only: nothing is published or replaced.
+   */
+  async function divergencePreviewUnlocked(snapshotId: string): Promise<DivergencePreview> {
+    const { config, snapshot, snapshots } = await requireCurrentPeerTip(snapshotId);
+    const lineage = await readLineageState(deps.client);
+    const tables = await withStagedPeerCopy(config.folder, snapshotId, (stagedPath) => diffTransferredContent(deps.client, stagedPath));
+    const known = ancestryOf(lineage.lastSnapshotId, snapshots, lineage.ancestors ?? []);
+    if (lineage.lastSnapshotId) known.add(lineage.lastSnapshotId);
+    const peerAncestry = ancestryOf(snapshot.snapshotId, snapshots);
+    const base = snapshots
+      .filter((s) => known.has(s.snapshotId) && peerAncestry.has(s.snapshotId))
+      .sort((x, y) => y.generation - x.generation)[0];
+    const sections = new Map<DivergenceSection, { onlyHere: number; onlyThere: number; changed: number }>();
+    for (const section of DIVERGENCE_SECTIONS) sections.set(section, { onlyHere: 0, onlyThere: 0, changed: 0 });
+    for (const t of tables) {
+      const total = sections.get(divergenceSectionOf(t.table)) as { onlyHere: number; onlyThere: number; changed: number };
+      total.onlyHere += t.onlyHere;
+      total.onlyThere += t.onlyThere;
+      total.changed += t.changed;
+    }
+    const status = await loadStatusSafe();
+    return {
+      peer: {
+        snapshotId: snapshot.snapshotId,
+        sourceDeviceId: snapshot.sourceDeviceId,
+        createdAt: snapshot.createdAt,
+        generation: snapshot.generation,
+      },
+      local: {
+        deviceId: config.deviceId,
+        headSnapshotId: lineage.lastSnapshotId,
+        lastExportAt: status.lastExportAt,
+        unpublishedChanges: await hasUnpublishedLocalChanges(deps.client),
+      },
+      commonBase: base ? { snapshotId: base.snapshotId, createdAt: base.createdAt, sourceDeviceId: base.sourceDeviceId } : null,
+      sections: [...sections.entries()].map(([section, totals]) => ({ section, ...totals })),
+      tables: tables
+        .filter((t) => t.onlyHere + t.onlyThere + t.changed > 0)
+        .map((t) => ({ ...t, section: divergenceSectionOf(t.table) })),
+    };
+  }
+
   // One action at a time per runner (review round 1): a tick and a resolution each load the status
   // at the start and save it at the end, so overlapping ones would overwrite each other's result.
   let queue: Promise<unknown> = Promise.resolve();
@@ -923,6 +994,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       backgroundWriteVerdict(await serialize(() => tick())),
     keepMine: (snapshotId: string) => serialize(() => keepMineUnlocked(snapshotId)),
     takeTheirs: (snapshotId: string) => serialize(() => takeTheirsUnlocked(snapshotId)),
+    divergencePreview: (snapshotId: string) => serialize(() => divergencePreviewUnlocked(snapshotId)),
     getStatus: loadStatusSafe,
   };
 }

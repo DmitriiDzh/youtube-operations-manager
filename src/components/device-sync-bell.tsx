@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ConfirmDialog } from "./confirm-dialog";
 
 /**
  * Automatic device sync notifications (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7): a bell in
  * the header showing what the server-side sync last did, and anything that needs a human --
- * above all a divergence (both computers changed data), resolved only by an explicit choice here.
+ * above all a divergence (both computers changed data). The choice itself is made in the Merge
+ * tab, which shows what differs between the two versions (owner, Telegram 2026-10-06, msg 1758).
  */
 
 type Notice = {
@@ -56,12 +56,11 @@ function BellIcon() {
   );
 }
 
-export function DeviceSyncBell() {
+export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: () => void }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<{ choice: "keep_mine" | "take_theirs"; snapshotId: string } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -83,12 +82,11 @@ export function DeviceSyncBell() {
   useEffect(() => {
     if (!open) return;
     function onClick(event: MouseEvent) {
-      if (confirm) return;
       if (panelRef.current && !panelRef.current.contains(event.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
-  }, [open, confirm]);
+  }, [open]);
 
   async function post(url: string, body?: unknown) {
     setWorking(true);
@@ -150,22 +148,17 @@ export function DeviceSyncBell() {
                   {notice.createdAt && (
                     <p className="text-[11px] text-zinc-500">Other computer&apos;s data from {formatTime(notice.createdAt)}</p>
                   )}
-                  <div className="flex flex-wrap gap-2">
+                  {onReviewDivergence && (
                     <button
-                      disabled={working}
-                      onClick={() => setConfirm({ choice: "keep_mine", snapshotId: notice.snapshotId! })}
-                      className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                      onClick={() => {
+                        setOpen(false);
+                        onReviewDivergence();
+                      }}
+                      className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500"
                     >
-                      Keep this computer&apos;s data
+                      See what differs and choose (Merge tab)
                     </button>
-                    <button
-                      disabled={working}
-                      onClick={() => setConfirm({ choice: "take_theirs", snapshotId: notice.snapshotId! })}
-                      className="rounded-md border border-zinc-600 px-3 py-1 text-xs font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-50"
-                    >
-                      Take the other computer&apos;s data
-                    </button>
-                  </div>
+                  )}
                 </>
               )}
             </div>
@@ -185,24 +178,6 @@ export function DeviceSyncBell() {
         </div>
       )}
 
-      {confirm && (
-        <ConfirmDialog
-          title={confirm.choice === "keep_mine" ? "Keep this computer's data?" : "Take the other computer's data?"}
-          description={
-            confirm.choice === "keep_mine"
-              ? "This computer's Batches history, audit trail, Research and Decisions data will be published and will replace the other computer's version of that data the next time it syncs. The other computer's changes since the last sync will be lost there."
-              : "This computer's Batches history, audit trail, Research and Decisions data will be replaced by the other computer's version. A backup of this computer's current data is saved first. Changes made here since the last sync will no longer be in the app."
-          }
-          confirmLabel={confirm.choice === "keep_mine" ? "Keep mine" : "Take theirs"}
-          confirmVariant="danger"
-          onCancel={() => setConfirm(null)}
-          onConfirm={() => {
-            const { choice, snapshotId } = confirm;
-            setConfirm(null);
-            void post("/api/device-sync/resolve", { choice, snapshotId });
-          }}
-        />
-      )}
     </div>
   );
 }

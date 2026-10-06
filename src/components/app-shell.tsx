@@ -27,6 +27,8 @@ export function AppShell<T extends string>(props: {
   /** The channel request failed (typically a stale Google sign-in): say so instead of "Loading..." forever. */
   channelUnavailable?: boolean;
   onSignOut: () => void;
+  /** Where the bell's "see what differs" leads (the Merge tab). */
+  onReviewDeviceSyncDivergence?: () => void;
   children: ReactNode;
 }) {
   return (
@@ -90,7 +92,7 @@ export function AppShell<T extends string>(props: {
           </div>
           <div className="flex items-center gap-3">
             <FeatureErrorBoundary label="Device sync">
-              <DeviceSyncBell />
+              <DeviceSyncBell onReviewDivergence={props.onReviewDeviceSyncDivergence} />
             </FeatureErrorBoundary>
             <button
               onClick={props.onSignOut}
