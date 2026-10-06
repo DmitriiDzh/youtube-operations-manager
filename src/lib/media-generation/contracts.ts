@@ -68,7 +68,7 @@ export type MediaSettings = {
   capacityRetrySeconds: number;
   /** ... for at most this long, then the session fails with `media_no_capacity`. */
   capacityWaitMinutes: number;
-  /** Master switch for sessions the Factory Operator starts itself (off until the owner turns it on). */
+  /** Master switch for sessions the Factory Operator starts itself (on by default, owner 2026-10-06 msg 1683). */
   factorySessionsEnabled: boolean;
   /** A factory start is approved by itself only within ALL of these (owner defaults, O2); above them it waits for the owner. */
   factoryMaxUsdPerSession: number;
@@ -94,7 +94,7 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   gpuMaxPricePerHr: null,
   capacityRetrySeconds: 30,
   capacityWaitMinutes: 30,
-  factorySessionsEnabled: false,
+  factorySessionsEnabled: true,
   factoryMaxUsdPerSession: 2,
   factoryMaxMinutesPerSession: 60,
   factoryMaxUsdPerDay: 5,

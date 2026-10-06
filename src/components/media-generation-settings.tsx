@@ -1774,7 +1774,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
 
 // BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md §2.1): the owner's limits for sessions the Factory Operator starts
 // itself. Within all of them (and the device limits above) a factory start is approved by the factory; otherwise it waits in
-// the Sessions table for you. Off until you switch it on.
+// the Sessions table for you. On by default (owner, 2026-10-06); switch it off to make every factory start wait for you.
 export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
   const initial = () => ({
     perSessionUsd: String(settings.factoryMaxUsdPerSession),

@@ -17,7 +17,7 @@ priority list or price cap, and reports "no capacity" as HTTP 400 with a human-r
 ## Decision
 
 1. **Owner limits for factory sessions:**
-   - The limits are a master switch (off by default) plus four caps: per session (USD, minutes), per day and per month for the factory's
+   - The limits are a master switch (on by default, owner 2026-10-06 msg 1683) plus four caps: per session (USD, minutes), per day and per month for the factory's
      own sessions (this machine's local calendar). They are settings in Production → Setup.
    - A factory start (`requestedBy: factory`) is **approved by the factory itself** only when it fits every one of them **and** every device
      limit the owner's approve checks: the daily cap, concurrency, the volume lock, and unchanged settings.
@@ -54,5 +54,5 @@ priority list or price cap, and reports "no capacity" as HTTP 400 with a human-r
 - Schema v64 (additive, device-local): the `media_sessions` columns `approved_by`, `gpu_plan_json` and `capacity_*`, the
   `media_workflow_templates.gpu_json` column, and the `media_capacity_attempts` table.
 - RISK-109 grows: a leaked factory token can now spend GPU money without a click, bounded by the factory limits, the device limits and the
-  switch.
+  switch (on by default).
 - Not changed: the agent API, a single network volume, and Global Volumes (beta, no API, no atomic rename; plan §3).

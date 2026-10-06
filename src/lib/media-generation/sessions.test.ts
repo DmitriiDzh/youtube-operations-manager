@@ -1692,8 +1692,9 @@ async function settle() {
   for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
+// The switch is ON by default (owner, 2026-10-06 msg 1683); this test turns it off.
 test("AC-FG-02: with the factory switch off a factory start only creates a pending request for the owner; no pod", async () => {
-  const f = fixture();
+  const f = fixture({ settings: { factorySessionsEnabled: false } });
   const result = await f.services.factoryStartSession({ channelId: "UC1" });
   assert.equal(result.approved, false);
   assert.match(result.heldBy ?? "", /switched off/);
@@ -1817,4 +1818,9 @@ test("review: the session's USD cap stops a pod that is still starting (a dear G
   const tick = await tick1(f.services);
   assert.match(tick.reason ?? "", /max USD reached \(\$0.005\) while starting/);
   assert.equal(runpod.pods.has("podX"), false, "terminated");
+});
+
+test("owner 2026-10-06 (msg 1683): factory sessions are switched ON by default", async () => {
+  const { DEFAULT_MEDIA_SETTINGS: defaults } = await import("./contracts");
+  assert.equal(defaults.factorySessionsEnabled, true);
 });
