@@ -198,6 +198,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   media_exchange_files: "ledger of files this device pulled from the network volume into the workspace (Phase 14); paths are meaningless elsewhere",
   media_control_events: "audit of model/template actions on this device (BL-132); each device keeps its own log",
   media_exchange_inputs: "ledger of job input files this device uploaded to the network volume (BL-132); source paths are meaningless elsewhere",
+  media_capacity_attempts: "this device's createPod attempts (BL-133 capacity log); about RunPod capacity, not shared state",
 });
 
 /**

@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getMediaSessionJobSummary, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getMediaSessionJobSummary, insertMediaCapacityAttempt, listMediaCapacityAttempts, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -15,7 +15,7 @@ import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
-import { DomainError, type MediaControlEventView, type MediaModelUsage } from "./contracts";
+import { DomainError, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
@@ -118,6 +118,8 @@ function buildCore(jobScheduling: JobScheduling) {
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     jobSummary: (sessionId) => getMediaSessionJobSummary(sessionId),
+    capacityLog: { record: (attempt) => insertMediaCapacityAttempt(attempt) },
+    events: createMediaControlEventSink(),
     base,
     createComfyClient: ({ baseUrl, token }) => createComfyUiClient({ baseUrl, token }),
     comfyUiProxyBaseUrl,
@@ -225,7 +227,18 @@ function buildCore(jobScheduling: JobScheduling) {
       subject: row.subject,
       details: row.detailsJson ? (JSON.parse(row.detailsJson) as Record<string, unknown>) : null,
     }));
-  return { ...base, ...sessions, ...jobs, ...models, listControlEvents };
+  /** BL-133 capacity log (plan §2.5): newest first. */
+  const listCapacityAttempts = async (filter: { since?: Date; gpuTypeId?: string; limit?: number } = {}): Promise<MediaCapacityAttempt[]> =>
+    (await listMediaCapacityAttempts({ since: filter.since, gpuTypeId: filter.gpuTypeId, limit: Math.min(Math.max(1, filter.limit ?? 100), 500) })).map((row) => ({
+      at: row.at.toISOString(),
+      sessionId: row.sessionId,
+      datacenterId: row.datacenterId ?? null,
+      gpuTypeId: row.gpuTypeId,
+      pricePerHr: row.pricePerHr ?? null,
+      result: row.result as MediaCapacityAttempt["result"],
+      detail: row.detail ?? null,
+    }));
+  return { ...base, ...sessions, ...jobs, ...models, listControlEvents, listCapacityAttempts };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

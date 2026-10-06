@@ -10,7 +10,9 @@ import test from "node:test";
 // BL-135 (ADR 0023 amendment 2, owner 2026-10-06): `releaseSession` -- the requesting channel ending its OWN session -- is
 // deliberately NOT fenced: it can only withdraw a request or stop a pod (stop spending), never approve, start or resume.
 
-const FENCED_SYMBOLS = ["approveSession", "approveAndStartSession", "stopSession", "rejectSession", "stopForShutdown", "bootSweep", "watchTick"];
+// BL-133: the Factory Operator's self-approving start/stop are fenced the same way -- reachable only through the factory
+// endpoint's route (src/app/api/mcp/factory), never from the channel MCP server, the CLI or agent-operations.
+const FENCED_SYMBOLS = ["approveSession", "approveAndStartSession", "stopSession", "rejectSession", "stopForShutdown", "bootSweep", "watchTick", "factoryStartSession", "factoryStopSession"];
 const FENCED_DIRS = [path.join("src", "mcp"), path.join("src", "cli"), path.join("src", "lib", "agent-operations")];
 
 async function listFiles(dir: string): Promise<string[]> {

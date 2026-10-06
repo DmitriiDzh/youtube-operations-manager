@@ -51,6 +51,7 @@ function templateFromDb(t: StoredMediaWorkflowTemplate): StoredTemplateRow {
     source: t.source === "factory" ? "factory" : "owner",
     registrySha256: t.registrySha256 ?? null,
     modelsJson: t.modelsJson ?? null,
+    gpuJson: t.gpuJson ?? null,
   };
 }
 

@@ -15,9 +15,10 @@ import { DomainError } from "@/lib/shared-domain";
 
 /**
  * The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). 1.1.0 (BL-132, ADR 0025): the
- * media tools below -- additive; the four 1.0.0 tools are unchanged.
+ * media tools; 1.2.0 (BL-133, ADR 0026): GPU sessions within the owner's factory limits, jobs in them, the capacity log.
+ * Additive; the earlier tools are unchanged.
  */
-export const FACTORY_API_VERSION = "1.1.0";
+export const FACTORY_API_VERSION = "1.2.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -34,14 +35,32 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_delete_model",
   "factory_media_list_templates",
   "factory_media_sync_templates",
+  // BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5): sessions it starts itself, jobs in them, the capacity log.
+  "factory_media_start_session",
+  "factory_media_get_session",
+  "factory_media_stop_session",
+  "factory_media_create_job",
+  "factory_media_get_job",
+  "factory_media_cancel_job",
+  "factory_media_capacity_log",
 ] as const;
 
 /**
  * The tools that change something (owner decision D1: no second approval in the Web UI; each is audited with the actor
  * `factory` and passes the device mutation gate first). Everything else in the list is a read. No tool sets a logical
- * path, a workspace or a token, and none starts a session or a job (D4).
+ * path, a workspace or a token. Since BL-133 (ADR 0026) the factory starts GPU sessions -- approved by itself ONLY within
+ * the owner's factory limits, otherwise left pending for the owner -- and runs jobs in the sessions it started.
  */
-export const FACTORY_WRITE_TOOL_NAMES = ["factory_media_pull_model", "factory_media_cancel_pull", "factory_media_delete_model", "factory_media_sync_templates"] as const;
+export const FACTORY_WRITE_TOOL_NAMES = [
+  "factory_media_pull_model",
+  "factory_media_cancel_pull",
+  "factory_media_delete_model",
+  "factory_media_sync_templates",
+  "factory_media_start_session",
+  "factory_media_stop_session",
+  "factory_media_create_job",
+  "factory_media_cancel_job",
+] as const;
 
 export type FactoryChannelEntry = {
   channelId: string;
@@ -69,6 +88,14 @@ export type FactoryToolDeps = {
     deleteModel(input: { key: string }): Promise<Record<string, unknown>>;
     listTemplates(): Promise<Record<string, unknown>>;
     syncTemplates(input: { dryRun: boolean }): Promise<Record<string, unknown>>;
+    // BL-133.
+    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean }): Promise<Record<string, unknown>>;
+    getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
+    endSession(input: { sessionId: string }): Promise<Record<string, unknown>>;
+    createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean> }): Promise<Record<string, unknown>>;
+    getJob(input: { jobId?: string; sessionId?: string }): Promise<Record<string, unknown>>;
+    cancelJob(input: { jobId: string }): Promise<Record<string, unknown>>;
+    capacityLog(input: { since?: string; gpuTypeId?: string; limit?: number }): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -115,6 +142,38 @@ const pullIdInput = z.object({ pullId: z.string().min(1).max(64) }).strict();
 const optionalPullIdInput = z.object({ pullId: z.string().min(1).max(64).optional() }).strict();
 const modelKeyInput = z.object({ key: z.string().min(1).max(1000) }).strict();
 const syncInput = z.object({ dryRun: z.boolean().optional() }).strict();
+// BL-133 inputs (the media core validates again).
+const gpuPlanInput = z
+  .object({
+    candidates: z.array(z.string().min(1).max(128)).min(1).max(10),
+    minVramGb: z.number().int().min(1).max(1024).nullable().optional(),
+    maxPricePerHr: z.number().gt(0).max(1000).nullable().optional(),
+  })
+  .strict();
+const startSessionInput = z
+  .object({
+    channelId: z.string().min(1).max(64),
+    maxMinutes: z.number().int().min(1).max(1440).optional(),
+    maxUsd: z.number().gt(0).max(10_000).optional(),
+    templateId: z.string().min(1).max(64).optional(),
+    gpu: gpuPlanInput.optional(),
+    releaseWhenDone: z.boolean().optional(),
+  })
+  .strict();
+const sessionIdInput = z.object({ sessionId: z.string().min(1).max(64) }).strict();
+const optionalSessionIdInput = z.object({ sessionId: z.string().min(1).max(64).optional() }).strict();
+const createJobInput = z
+  .object({
+    sessionId: z.string().min(1).max(64),
+    templateId: z.string().min(1).max(64),
+    params: z.record(z.string().min(1).max(64), z.union([z.string().max(20_000), z.number(), z.boolean()])).default({}),
+  })
+  .strict();
+const getJobInput = z.object({ jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() }).strict();
+const jobIdInput = z.object({ jobId: z.string().min(1).max(64) }).strict();
+const capacityLogInput = z
+  .object({ since: z.string().datetime().optional(), gpuTypeId: z.string().min(1).max(128).optional(), limit: z.number().int().min(1).max(500).optional() })
+  .strict();
 
 function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
   const parsed = schema.safeParse(args ?? {});
@@ -311,6 +370,91 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       if (!input.dryRun) await deps.assertMutationAllowed();
       return successResult(await deps.media.syncTemplates({ dryRun: input.dryRun ?? false }));
     }
+  );
+
+  // -- BL-133: GPU sessions within the owner's factory limits, jobs in them, the capacity log ---------------------------
+
+  registerTool(
+    "factory_media_start_session",
+    {
+      description:
+        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, releaseWhenDone? }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Poll factory_media_get_session.",
+      inputSchema: startSessionInput,
+    },
+    async (args) => {
+      const input = parseInput(startSessionInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.startSession(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_get_session",
+    {
+      description:
+        "One of YOUR sessions by sessionId ({ session }: status pending|approved|waiting_capacity|starting|running|stopping|done|failed|rejected|interrupted, approvedBy, gpuTypeId it got, costPerHr, capacity { attempts, nextAttemptAt, waitUntil }, usdCharged, error), or your recent sessions ({ sessions }). Sessions you did not start are not visible. Read-only.",
+      inputSchema: optionalSessionIdInput,
+    },
+    async (args) => successResult(await deps.media.getSession(parseInput(optionalSessionIdInput, args)))
+  );
+
+  registerTool(
+    "factory_media_stop_session",
+    {
+      description: "End a session YOU started: { sessionId }. A pending one is withdrawn, a waiting one ends at no cost, a starting/running pod is terminated. Stop as soon as your jobs are done.",
+      inputSchema: sessionIdInput,
+    },
+    async (args) => {
+      const input = parseInput(sessionIdInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.endSession(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_create_job",
+    {
+      description:
+        "Submit a generation job to one of YOUR running sessions: { sessionId, templateId, params }. The same contract as the channel agents' agent_create_media_job (parameters validated first; image/audio/video inputs are paths relative to the session channel's 99 Data Exchange/Sent to YTM/; outputs and manifest.json land in that channel's From YTM/media/<jobId>/). Poll factory_media_get_job.",
+      inputSchema: createJobInput,
+    },
+    async (args) => {
+      const input = parseInput(createJobInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.createJob(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_get_job",
+    {
+      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools. Read-only.",
+      inputSchema: getJobInput,
+    },
+    async (args) => successResult(await deps.media.getJob(parseInput(getJobInput, args)))
+  );
+
+  registerTool(
+    "factory_media_cancel_job",
+    {
+      description: "Cancel a queued or generating job of YOUR sessions: { jobId }. Never stops the session.",
+      inputSchema: jobIdInput,
+    },
+    async (args) => {
+      const input = parseInput(jobIdInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.cancelJob(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_capacity_log",
+    {
+      description:
+        "Every pod start attempt on this computer, newest first: { attempts: [{ at, sessionId, datacenterId, gpuTypeId, pricePerHr, result: placed|no_capacity|error, detail }] } -- { since? (ISO time), gpuTypeId?, limit? (default 100, max 500) }. Kept 90 days. Use it to judge whether a GPU is usually available. Read-only.",
+      inputSchema: capacityLogInput,
+    },
+    async (args) => successResult(await deps.media.capacityLog(parseInput(capacityLogInput, args)))
   );
 
   return server;

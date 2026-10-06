@@ -93,6 +93,7 @@ const DOMAIN_ERROR_STATUS = {
   media_session_invalid_state: 409,
   media_daily_cap_reached: 409,
   media_session_start_failed: 502,
+  media_no_capacity: 503,
   media_template_not_found: 404,
   media_template_invalid: 422,
   media_job_not_found: 404,

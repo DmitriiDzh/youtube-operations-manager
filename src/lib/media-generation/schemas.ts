@@ -44,6 +44,26 @@ export const mediaSettingsSchema = z
     watchIntervalSeconds: z.number().int().min(15).max(3600),
     maxConcurrentSessions: z.number().int().min(MAX_CONCURRENT_SESSIONS_RANGE.min).max(MAX_CONCURRENT_SESSIONS_RANGE.max),
     gpuOnDemandPricePerHr: z.number().min(0).max(1000).nullable(),
+    // BL-133 (FACTORY_GPU_SESSIONS_PLAN.md §2.1/§2.3/§2.4).
+    gpuFallbackIds: z.array(z.string().trim().min(1).max(128)).max(10),
+    gpuMinVramGb: z.number().int().min(1).max(1024).nullable(),
+    gpuMaxPricePerHr: z.number().gt(0).max(1000).nullable(),
+    capacityRetrySeconds: z.number().int().min(15).max(3600),
+    capacityWaitMinutes: z.number().int().min(1).max(1440),
+    factorySessionsEnabled: z.boolean(),
+    factoryMaxUsdPerSession: z.number().gt(0).max(10_000),
+    factoryMaxMinutesPerSession: z.number().int().min(1).max(1440),
+    factoryMaxUsdPerDay: z.number().gt(0).max(10_000),
+    factoryMaxUsdPerMonth: z.number().gt(0).max(100_000),
+  })
+  .strict();
+
+/** BL-133: a GPU plan in a request or a registry template. */
+export const gpuPlanSchema = z
+  .object({
+    candidates: z.array(z.string().trim().min(1).max(128)).min(1).max(10),
+    minVramGb: z.number().int().min(1).max(1024).nullable().optional(),
+    maxPricePerHr: z.number().gt(0).max(1000).nullable().optional(),
   })
   .strict();
 
@@ -58,7 +78,9 @@ export const requestSessionInputSchema = z
     reason: z.string().trim().max(500).nullable().optional(),
     /** BL-135: stop the pod automatically once every job of the session is finished and no new one came for a minute. */
     releaseWhenDone: z.boolean().optional(),
-    requestedBy: z.enum(["operator", "agent"]),
+    /** BL-133: GPU candidates to try in order (else the device's GPU + fallback list). */
+    gpu: gpuPlanSchema.optional(),
+    requestedBy: z.enum(["operator", "agent", "factory"]),
   })
   .strict();
 
@@ -119,7 +141,7 @@ export const createJobInputSchema = z
     channelId: z.string().min(1).max(64),
     templateId: z.string().min(1).max(64),
     params: z.record(parameterNameSchema, scalarSchema).default({}),
-    createdBy: z.enum(["operator", "agent"]),
+    createdBy: z.enum(["operator", "agent", "factory"]),
   })
   .strict();
 

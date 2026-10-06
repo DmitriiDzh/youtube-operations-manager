@@ -768,7 +768,7 @@ export const mediaSessions = sqliteTable(
     channelId: text("channel_id").notNull(),
     status: text("status", { enum: MEDIA_SESSION_STATUSES }).notNull().default("pending"),
     openSlot: integer("open_slot"),
-    requestedBy: text("requested_by", { enum: ["operator", "agent"] }).notNull(),
+    requestedBy: text("requested_by", { enum: ["operator", "agent", "factory"] }).notNull(),
     reason: text("reason"),
     maxMinutes: integer("max_minutes").notNull(),
     maxUsd: real("max_usd"),
@@ -814,6 +814,12 @@ export const mediaSessions = sqliteTable(
     terminateSentAt: integer("terminate_sent_at", { mode: "timestamp" }),
     /** Schema v63 (BL-135): stop the pod once every job of the session is finished and none followed for a minute. */
     releaseWhenDone: integer("release_when_done", { mode: "boolean" }),
+    // Schema v64 (BL-133): who approved it, the GPU plan asked for, and the capacity wait.
+    approvedBy: text("approved_by"),
+    gpuPlanJson: text("gpu_plan_json"),
+    capacityAttempts: integer("capacity_attempts"),
+    capacityNextAttemptAt: integer("capacity_next_attempt_at", { mode: "timestamp" }),
+    capacityWaitUntil: integer("capacity_wait_until", { mode: "timestamp" }),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -847,6 +853,8 @@ export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
   registrySha256: text("registry_sha256"),
   /** Schema v61: a `factory` row's declared models `[{ folder, file, sha256 }]` (the deletion guard and `usedBy` read it). */
   modelsJson: text("models_json"),
+  /** Schema v64 (BL-133): a registry template's GPU plan `{ candidates, minVramGb, maxPricePerHr }`. */
+  gpuJson: text("gpu_json"),
 });
 
 export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
@@ -867,7 +875,7 @@ export const mediaJobs = sqliteTable(
     templateVersion: integer("template_version").notNull(),
     paramsJson: text("params_json").notNull(),
     status: text("status", { enum: MEDIA_JOB_STATUSES }).notNull().default("queued"),
-    createdBy: text("created_by", { enum: ["operator", "agent"] }).notNull(),
+    createdBy: text("created_by", { enum: ["operator", "agent", "factory"] }).notNull(),
     promptId: text("prompt_id"),
     outputsJson: text("outputs_json"),
     assetIdsJson: text("asset_ids_json"),
@@ -899,6 +907,22 @@ export const mediaControlEvents = sqliteTable(
 );
 
 /** Schema v61 (BL-132, plan §2.4/§7): job input files uploaded as `exchange/in/<jobId>-<param>-<name>`, so the janitor deletes them by ledger only. */
+/** Schema v64 (BL-133): one row per createPod attempt (placed / no capacity / error), kept 90 days. Device-local. */
+export const mediaCapacityAttempts = sqliteTable(
+  "media_capacity_attempts",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    at: integer("at", { mode: "timestamp" }).notNull(),
+    sessionId: text("session_id").notNull(),
+    datacenterId: text("datacenter_id"),
+    gpuTypeId: text("gpu_type_id").notNull(),
+    pricePerHr: real("price_per_hr"),
+    result: text("result").notNull(),
+    detail: text("detail"),
+  },
+  (table) => [index("media_capacity_attempts_at_idx").on(table.at)]
+);
+
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -3342,6 +3366,39 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 64,
+    description:
+      "media_sessions.approved_by/gpu_plan_json/capacity_* + media_capacity_attempts + media_workflow_templates.gpu_json -- Factory Operator GPU sessions, GPU fallback and the capacity wait (BL-133, docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md). Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES); additive, existing sessions behave as before",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE media_sessions ADD COLUMN approved_by TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN gpu_plan_json TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN capacity_attempts INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN capacity_next_attempt_at INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN capacity_wait_until INTEGER",
+        "ALTER TABLE media_workflow_templates ADD COLUMN gpu_json TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_capacity_attempts (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "at INTEGER NOT NULL, " +
+          "session_id TEXT NOT NULL, " +
+          "datacenter_id TEXT, " +
+          "gpu_type_id TEXT NOT NULL, " +
+          "price_per_hr REAL, " +
+          "result TEXT NOT NULL, " +
+          "detail TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_capacity_attempts_at_idx ON media_capacity_attempts(at)");
     },
   },
 ];
@@ -7682,6 +7739,29 @@ export async function getMediaModelPullsJson(database: AppDb = db): Promise<stri
 export type MediaControlEventRow = { id: number; at: Date; actor: string; action: string; subject: string; detailsJson: string | null };
 
 /** BL-132: appends one audit row (model pull/cancel/delete, template install/update/remove/sync). Never updated or deleted. */
+/** BL-133: one createPod attempt; rows older than 90 days are pruned on the way. */
+export async function insertMediaCapacityAttempt(
+  row: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: string; detail: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(mediaCapacityAttempts).values(row);
+  await database.delete(mediaCapacityAttempts).where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)));
+}
+
+/** Newest first, optionally since a time and for one GPU type. */
+export async function listMediaCapacityAttempts(
+  filter: { since?: Date; gpuTypeId?: string; limit: number },
+  database: AppDb = db
+): Promise<Array<typeof mediaCapacityAttempts.$inferSelect>> {
+  const conditions = [filter.since ? gte(mediaCapacityAttempts.at, filter.since) : undefined, filter.gpuTypeId ? eq(mediaCapacityAttempts.gpuTypeId, filter.gpuTypeId) : undefined].filter((c) => c !== undefined);
+  return database
+    .select()
+    .from(mediaCapacityAttempts)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(mediaCapacityAttempts.at), desc(mediaCapacityAttempts.id))
+    .limit(filter.limit);
+}
+
 export async function insertMediaControlEvent(
   row: { at: Date; actor: string; action: string; subject: string; detailsJson: string | null },
   database: AppDb = db
@@ -7957,7 +8037,7 @@ export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<
  * taken by a local template.
  */
 export async function upsertFactoryMediaWorkflowTemplate(
-  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string },
+  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const now = new Date();

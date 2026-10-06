@@ -166,6 +166,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   media_exchange_files: notApiData("ledger of pulled output files (Phase 14)"),
   media_control_events: notApiData("audit of model/template actions on this device (BL-132)"),
   media_exchange_inputs: notApiData("ledger of job input files uploaded to the volume (BL-132)"),
+  media_capacity_attempts: notApiData("createPod attempts on RunPod (BL-133 capacity log)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),

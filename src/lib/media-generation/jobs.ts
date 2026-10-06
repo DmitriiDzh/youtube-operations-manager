@@ -13,6 +13,7 @@ import {
   type MediaJob,
   type MediaJobManifest,
   type MediaJobOutput,
+  type MediaGpuPlan,
   type MediaJobInput,
   type MediaJobStatus,
   type MediaModelReference,
@@ -68,6 +69,8 @@ export type StoredTemplateRow = {
   source?: "owner" | "factory";
   registrySha256?: string | null;
   modelsJson?: string | null;
+  /** Schema v64 (BL-133): a registry template's GPU plan. */
+  gpuJson?: string | null;
 };
 
 export type StoredJobRow = {
@@ -78,7 +81,7 @@ export type StoredJobRow = {
   templateVersion: number;
   paramsJson: string;
   status: MediaJobStatus;
-  createdBy: "operator" | "agent";
+  createdBy: "operator" | "agent" | "factory";
   promptId: string | null;
   outputsJson: string | null;
   assetIdsJson: string | null;
@@ -98,7 +101,7 @@ export type MediaJobStore = {
     list(): Promise<StoredTemplateRow[]>;
     delete(id: string): Promise<boolean>;
     /** BL-132: install/replace a registry template; `null` = the id belongs to an owner-imported (local) template. */
-    upsertFactory(row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string }): Promise<StoredTemplateRow | null>;
+    upsertFactory(row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null }): Promise<StoredTemplateRow | null>;
   };
   jobs: {
     insert(row: Omit<StoredJobRow, "createdAt"> & { createdAt?: Date }): Promise<StoredJobRow>;
@@ -281,6 +284,7 @@ export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate 
     description: row.description,
     source: row.source ?? "owner",
     models: templateModels(row),
+    gpu: row.gpuJson ? (JSON.parse(row.gpuJson) as MediaGpuPlan) : null,
     parameters: JSON.parse(row.parametersJson) as MediaTemplateParameter[],
     outputNodeIds: shape.outputNodeIds,
     nodeCount: shape.nodeCount,
@@ -656,6 +660,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           nodeCount: Object.keys(parsed.template.workflow).length,
           registrySha256: sha,
           modelsJson: JSON.stringify(parsed.template.models.map((m) => ({ folder: m.folder, file: m.file, sha256: m.sha256 ?? null }))),
+          gpuJson: parsed.template.gpu ? JSON.stringify({ candidates: parsed.template.gpu.candidates, minVramGb: parsed.template.gpu.minVramGb ?? null, maxPricePerHr: parsed.template.gpu.maxPricePerHr ?? null }) : null,
         });
         if (!written) {
           invalid("this id belongs to a template imported by hand on this device");

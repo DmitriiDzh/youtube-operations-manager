@@ -6,6 +6,9 @@ import type { MediaSessionLimits } from "@/lib/media-generation/contracts";
 import {
   ComputeCard,
   JobsCard,
+  CapacityLogCard,
+  FactoryLimitsCard,
+  GpuFallbackCard,
   LimitsCard,
   ModelsCard,
   ReadinessBanner,
@@ -156,6 +159,9 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
         <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
         <VolumeCard overview={overview} onChanged={refresh} />
         <LimitsCard settings={overview.settings} onChanged={refresh} />
+        <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
+        <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
+        <CapacityLogCard />
       </div>
     </div>
   );

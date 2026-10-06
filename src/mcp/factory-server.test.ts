@@ -7,18 +7,26 @@ import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTOR
 // Mechanical enforcement from docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md §2.5 (AC-FO-07, AC-FO-09,
 // AC-FO-13): the Factory Operator's tool set is closed and separate from the channel agents' tool set.
 
-// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025): eight media tools join the four 1.0.0 tools.
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025): eight media tools join the four 1.0.0 tools; BL-133
+// (FACTORY_GPU_SESSIONS_PLAN.md, ADR 0026): seven more -- its own sessions, jobs in them, the capacity log.
 const EXPECTED_TOOLS = [
   "factory_get_capabilities",
   "factory_get_logical_path",
   "factory_list_channels",
   "factory_list_logical_paths",
+  "factory_media_cancel_job",
   "factory_media_cancel_pull",
+  "factory_media_capacity_log",
+  "factory_media_create_job",
   "factory_media_delete_model",
+  "factory_media_get_job",
   "factory_media_get_pull",
+  "factory_media_get_session",
   "factory_media_list_models",
   "factory_media_list_templates",
   "factory_media_pull_model",
+  "factory_media_start_session",
+  "factory_media_stop_session",
   "factory_media_storage_status",
   "factory_media_sync_templates",
 ];
@@ -57,15 +65,24 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
   assert.equal(source.includes("factory-server"), false);
 });
 
-// AC-FO-09 as amended by ADR 0025 (BL-132): the factory role may now write, but ONLY the four media actions named in
-// FACTORY_WRITE_TOOL_NAMES; every other tool is a read, and no tool sets a path, a workspace or a token, or touches
-// sessions/jobs (D4).
-test("AC-FO-09 (amended by ADR 0025): writes are exactly the four media actions; everything else is a read; nothing sets a path, workspace or token", () => {
-  assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), ["factory_media_cancel_pull", "factory_media_delete_model", "factory_media_pull_model", "factory_media_sync_templates"]);
+// AC-FO-09 as amended by ADR 0025 (BL-132) and ADR 0026 (BL-133): the factory writes ONLY through the tools named in
+// FACTORY_WRITE_TOOL_NAMES (four media actions, then its own sessions and jobs); every other tool is a read; no tool sets a
+// path, a workspace or a token, and none approves or rejects a session for anyone else.
+test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/session/job actions; everything else is a read; nothing sets a path, workspace or token", () => {
+  assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
+    "factory_media_cancel_job",
+    "factory_media_cancel_pull",
+    "factory_media_create_job",
+    "factory_media_delete_model",
+    "factory_media_pull_model",
+    "factory_media_start_session",
+    "factory_media_stop_session",
+    "factory_media_sync_templates",
+  ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage))_?/, `${name} must be a read`);
-    assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|session|job/, `${name} must not touch paths, workspaces, tokens, sessions or jobs`);
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity))_?/, `${name} must be a read`);
+    assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
 
@@ -115,8 +132,8 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.1.0 since BL-132), separate from the channel agents' version", async () => {
-  assert.equal(FACTORY_API_VERSION, "1.1.0");
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.2.0 since BL-133), separate from the channel agents' version", async () => {
+  assert.equal(FACTORY_API_VERSION, "1.2.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

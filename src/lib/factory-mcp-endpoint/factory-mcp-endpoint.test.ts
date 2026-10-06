@@ -74,6 +74,13 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       deleteModel: async (input) => (mediaCalls.push(`deleteModel:${input.key}`), { deleted: input.key }),
       listTemplates: async () => (mediaCalls.push("listTemplates"), { templates: [] }),
       syncTemplates: async (input) => (mediaCalls.push(`syncTemplates:${input.dryRun}`), { result: { outcome: "ok" } }),
+      startSession: async (input) => (mediaCalls.push(`startSession:${input.channelId}`), { session: { sessionId: "s1" }, approved: true, heldBy: null }),
+      getSession: async (input) => (mediaCalls.push(`getSession:${input.sessionId ?? ""}`), { sessions: [] }),
+      endSession: async (input) => (mediaCalls.push(`stopSession:${input.sessionId}`), { session: { sessionId: input.sessionId } }),
+      createJob: async (input) => (mediaCalls.push(`createJob:${input.sessionId}`), { job: { jobId: "j1" } }),
+      getJob: async (input) => (mediaCalls.push(`getJob:${input.jobId ?? ""}`), { job: { jobId: "j1" } }),
+      cancelJob: async (input) => (mediaCalls.push(`cancelJob:${input.jobId}`), { job: { jobId: input.jobId } }),
+      capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
     },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
@@ -210,9 +217,10 @@ test("a non-token verification failure (database down) is a 503, never a false '
   assert.equal((await errorOf(response)).code, "AGENT_ENDPOINT_UNAVAILABLE");
 });
 
-// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025, AC-FM-13) widened the closed list by eight media tools; the four
-// 1.0.0 tools are unchanged. No session, job or channel tool is added.
-test("AC-FO-07 / AC-FM-13: tools/list over the real endpoint is exactly the four 1.0.0 tools plus the eight media tools", async () => {
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025, AC-FM-13) widened the closed list by eight media tools; BL-133
+// (FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5, ADR 0026, owner 2026-10-06) by seven more: the factory's own sessions, its jobs in
+// them and the capacity log. No channel tool, and no tool that approves a session for anyone else, is added.
+test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exactly the four 1.0.0 tools, the eight 1.1.0 media tools and the seven 1.2.0 tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
@@ -222,16 +230,23 @@ test("AC-FO-07 / AC-FM-13: tools/list over the real endpoint is exactly the four
     "factory_get_logical_path",
     "factory_list_channels",
     "factory_list_logical_paths",
+    "factory_media_cancel_job",
     "factory_media_cancel_pull",
+    "factory_media_capacity_log",
+    "factory_media_create_job",
     "factory_media_delete_model",
+    "factory_media_get_job",
     "factory_media_get_pull",
+    "factory_media_get_session",
     "factory_media_list_models",
     "factory_media_list_templates",
     "factory_media_pull_model",
+    "factory_media_start_session",
+    "factory_media_stop_session",
     "factory_media_storage_status",
     "factory_media_sync_templates",
   ]);
-  assert.equal(names.some((n) => /session|job/.test(n)), false, "no session or job tool for the factory (D4)");
+  assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
 });
 
@@ -247,14 +262,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 });
 
 // BL-132 (AC-FM-13): the capabilities answer now reports WRITE and names the write tools; version 1.1.0.
-test("factory_get_capabilities reports the factory API version 1.1.0, READ and WRITE, the tool list and the write tools", async () => {
+// BL-133: version 1.2.0 and the seven session/job/capacity tools (four of them writes).
+test("factory_get_capabilities reports the factory API version 1.2.0, READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.1.0",
+    factoryApiVersion: "1.2.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -268,9 +284,25 @@ test("factory_get_capabilities reports the factory API version 1.1.0, READ and W
       "factory_media_delete_model",
       "factory_media_list_templates",
       "factory_media_sync_templates",
+      "factory_media_start_session",
+      "factory_media_get_session",
+      "factory_media_stop_session",
+      "factory_media_create_job",
+      "factory_media_get_job",
+      "factory_media_cancel_job",
+      "factory_media_capacity_log",
     ],
     permissions: ["READ", "WRITE"],
-    writeTools: ["factory_media_pull_model", "factory_media_cancel_pull", "factory_media_delete_model", "factory_media_sync_templates"],
+    writeTools: [
+      "factory_media_pull_model",
+      "factory_media_cancel_pull",
+      "factory_media_delete_model",
+      "factory_media_sync_templates",
+      "factory_media_start_session",
+      "factory_media_stop_session",
+      "factory_media_create_job",
+      "factory_media_cancel_job",
+    ],
   });
 });
 
@@ -458,5 +490,36 @@ test("with no valid session or with the connection disabled the server registers
     const server = createFactoryMcpServer(fakeToolDeps().deps, options);
     const registered = (server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools;
     assert.deepEqual(Object.keys(registered), []);
+  }
+});
+
+test("BL-133 (AC-FG-08): the session and job writes pass the device mutation gate first and reach nothing when it is closed; the reads do not need it", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const writes: Array<[string, Record<string, unknown>, string]> = [
+    ["factory_media_start_session", { channelId: "UC_A" }, "startSession:UC_A"],
+    ["factory_media_stop_session", { sessionId: "s1" }, "stopSession:s1"],
+    ["factory_media_create_job", { sessionId: "s1", templateId: "t1", params: { prompt: "x" } }, "createJob:s1"],
+    ["factory_media_cancel_job", { jobId: "j1" }, "cancelJob:j1"],
+  ];
+  for (const [name, args, reached] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate", reached], name);
+  }
+  toolDeps.gateClosed.value = true;
+  for (const [name, args] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, true, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate"], name);
+  }
+  for (const [name, args, reached] of [
+    ["factory_media_get_session", {}, "getSession:"],
+    ["factory_media_get_job", { jobId: "j1" }, "getJob:j1"],
+    ["factory_media_capacity_log", {}, "capacityLog"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [reached], name);
   }
 });

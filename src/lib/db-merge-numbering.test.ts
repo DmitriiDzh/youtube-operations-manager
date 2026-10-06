@@ -14,7 +14,7 @@ import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 // BL-132 then added v61 (media_control_events, media_exchange_inputs, template source columns, the `media_templates`
 // logical-path NAME), so three names are seeded; v62 re-applies v61's last two additions for a database an intermediate
 // build stamped 61 (see the test below); v63 adds media_sessions.release_when_done (BL-135). Every path converges to
-// SCHEMA_CURRENT_VERSION; the two convergence paths are unchanged.
+// SCHEMA_CURRENT_VERSION (v64: BL-133 session GPU plan, capacity wait, capacity log); the two convergence paths are unchanged.
 
 const MEDIA_TABLES = ["media_credentials", "media_sessions", "media_workflow_templates", "media_jobs", "media_exchange_files"];
 const FACTORY_TABLES = ["logical_paths", "logical_path_values", "factory_agent_tokens"];
@@ -40,8 +40,8 @@ async function withDb(run: (client: Client) => Promise<void>): Promise<void> {
   }
 }
 
-test("merge numbering: the current schema is 63 with both branches' tables", async () => {
-  assert.equal(SCHEMA_CURRENT_VERSION, 63);
+test("merge numbering: the current schema is 64 with both branches' tables", async () => {
+  assert.equal(SCHEMA_CURRENT_VERSION, 64);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

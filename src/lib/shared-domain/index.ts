@@ -131,6 +131,8 @@ export type DomainErrorCode =
   | "media_session_invalid_state"
   | "media_daily_cap_reached"
   | "media_session_start_failed"
+  // BL-133: no GPU candidate could be placed in the volume's datacenter within the capacity wait.
+  | "media_no_capacity"
   // Phase 14 slice 3 -- workflow templates, jobs and the exchange folder.
   | "media_template_not_found"
   | "media_template_invalid"

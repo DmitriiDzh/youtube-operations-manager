@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { DomainError, MEDIA_MODEL_FOLDERS, type MediaModelReference, type MediaTemplateParameter } from "./contracts";
-import { templateParameterSchema, workflowGraphSchema } from "./schemas";
+import { gpuPlanSchema, templateParameterSchema, workflowGraphSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // BL-132 (docs/roadmap/plans/FACTORY_MEDIA_CONTROL_PLAN.md §2.3) -- the factory template registry's FILE FORMAT and
@@ -59,6 +59,8 @@ const templateFileSchema = z
     workflow: workflowGraphSchema,
     parameters: z.array(templateParameterSchema).max(100),
     models: z.array(modelRefSchema).max(100),
+    /** BL-133 (optional): the GPUs this template should run on, tried in order by a factory start that names it. */
+    gpu: gpuPlanSchema.optional(),
   })
   .strict();
 
