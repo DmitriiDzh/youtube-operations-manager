@@ -45,7 +45,8 @@ with random ids, no way to pass an input file (reference image, start frame, aud
 ## Consequences
 
 - Schema v61 (additive, device-local): `media_control_events`, `media_exchange_inputs`, `media_workflow_templates.source/registry_sha256/models_json`,
-  the `media_templates` logical-path name.
+  the `media_templates` logical-path name. v62 re-applies the last two idempotently: one real database was stamped 61 by an intermediate
+  development build (an ad-hoc script imported the app's database module during development) before v61 gained them.
 - A leaked factory token can now spend a little money and delete unused models without a click (RISK-109); the bounds are listed there.
 - Not verified live yet (owner go-ahead needed for paid calls): ComfyUI loaders accepting the flat input name, RunPod S3 accepting the streamed PUT
   with an explicit Content-Length, the pull pod's `hf download --revision` + `sha256sum` + `mv` on `python:3.12-slim`.

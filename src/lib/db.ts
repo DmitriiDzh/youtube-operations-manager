@@ -3314,6 +3314,22 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 62,
+    description:
+      "completes v61 for a database stamped 61 by an intermediate BL-132 development build (one real database was: it got the v61 tables and source/registry_sha256 but not media_workflow_templates.models_json or the media_templates logical-path name, which v61 gained later). Re-applies those two idempotently; a database that ran the final v61 is unchanged",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_workflow_templates ADD COLUMN models_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+      await client.execute(
+        "INSERT OR IGNORE INTO logical_paths (name, audience, description) VALUES " +
+          "('media_templates', 'factory_only', 'Factory media template registry (index.json + <templateId>.v<version>.json)')"
+      );
+    },
+  },
 ];
 
 /**
