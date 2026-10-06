@@ -2881,4 +2881,7 @@ and cached, a percent from nodes and steps that reaches 100 only on success). It
 per process on `globalThis`) and is attached to job reads as the optional `progress`. The stream never changes a job's
 status: when it cannot open or drops, progress is `unavailable` and the job continues exactly as before (§M). Shown in
 Production → Jobs (a bar per generating job, refreshed every 2 s) and Sessions ("Now" under each running session: the
-current job, its progress, how many wait). Not yet verified against a live pod (RunPod's proxy carrying the websocket).
+current job, its progress, how many wait). **Live-verified 2026-10-07** on an RTX 4090 pod through RunPod's proxy with the
+ACE-Step 1.5 2B turbo template: `execution_start`, `execution_cached`, `executing` per node, `progress_state` and the
+KSampler's `progress` (8 of 8) all arrived, node 1 included (the socket connected before the submit). ComfyUI sends
+nothing while a node works before its first step, so such a stretch shows only the node name.
