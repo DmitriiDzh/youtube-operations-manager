@@ -70,6 +70,9 @@ export type DeviceSyncStatus = {
   lastExportSnapshotId: string | null;
   lastImportAt: string | null;
   lastImportSnapshotId: string | null;
+  /** A divergence settled automatically because both sides held identical data (no row changed). */
+  lastAdoptedAt?: string | null;
+  lastAdoptedSnapshotId?: string | null;
   notices: DeviceSyncNotice[];
   /** snapshotId -> first time it was seen unreadable / not yet fully transferred (ms). */
   pendingSince: Record<string, number>;
@@ -89,6 +92,8 @@ export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
   lastExportSnapshotId: null,
   lastImportAt: null,
   lastImportSnapshotId: null,
+  lastAdoptedAt: null,
+  lastAdoptedSnapshotId: null,
   notices: [],
   pendingSince: {},
   busyReason: null,

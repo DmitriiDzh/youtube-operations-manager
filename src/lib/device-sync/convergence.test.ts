@@ -249,3 +249,105 @@ test("round 2 #3: the computer that loses a 'keep mine' keeps a never-pruned bac
     a.client.close();
     b.client.close();
   }));
+
+// ---------------------------------------------------------------------------------------------
+// False divergences (owner request, Telegram 2026-10-06, msgs 1758/1764): two computers whose data
+// ended up IDENTICAL after a fork (both ran the same automatic job, both applied the same app
+// update) must not ask a human which of two equal copies to keep. Adopting the other computer's
+// snapshot as the lineage head changes no row, so nothing can be lost. Different content must still
+// ask, exactly as before (DEVICE_AUTO_SYNC_PLAN.md §3.6). Expected outcomes below are stated from
+// that requirement, not read off the implementation (AGENTS.md §L).
+// ---------------------------------------------------------------------------------------------
+
+/** The same row on any computer: every column given, so no per-device default (time) differs. */
+async function createSame(device: Device, id: string) {
+  await device.client.execute({
+    sql: "INSERT INTO research_channels (id, reason, created_via, added_at) VALUES (?, 'r', 'web_ui', 1790000000)",
+    args: [id],
+  });
+  device.created.push(id);
+}
+
+/** A and B share S1, then BOTH make the identical change and each publishes it on its own branch. */
+async function identicalFork(root: string) {
+  const a = await makeDevice(root, "a");
+  const b = await makeDevice(root, "b");
+  const syncAll = makeNetwork([a, b]);
+  await createSame(a, "UC1");
+  await tick(a);
+  await syncAll();
+  await tick(b);
+  await createSame(a, "UC-same");
+  await createSame(b, "UC-same");
+  await tick(a);
+  await tick(b);
+  return { a, b, syncAll };
+}
+
+test("AC-FD-01: a fork whose two sides hold identical data settles on both computers without asking or publishing", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    const before = new Set([...(await snapshotDirs(a.folder)), ...(await snapshotDirs(b.folder))]);
+    assert.equal(before.size, 3, "precondition: S1 plus one branch per computer");
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    const after = new Set([...(await snapshotDirs(a.folder)), ...(await snapshotDirs(b.folder))]);
+    assert.deepEqual([...after].sort(), [...before].sort(), "adopting an identical copy publishes nothing new");
+    for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-same", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-02: after both computers adopted each other's identical copy, the next real change still fast-forwards", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    await create(a, "UC-after");
+    await settleAndCheck([a, b], syncAll, "change after adoption", true);
+    assert.deepEqual(await ids(b.client), ["UC-after", "UC-same", "UC1"]);
+    await create(b, "UC-after-b");
+    await settleAndCheck([a, b], syncAll, "change back the other way", true);
+    assert.deepEqual(await ids(a.client), ["UC-after", "UC-after-b", "UC-same", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-03: a fork whose sides differ still asks a human, on both computers", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    assert.ok(divergenceSnapshot(a), "A must ask");
+    assert.ok(divergenceSnapshot(b), "B must ask");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04: an identical fork where one side changes again before it looks still asks", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    await create(b, "UC-b-extra");
+    await syncAll();
+    await tick(a);
+    await tick(b);
+    assert.ok(divergenceSnapshot(b), "B's data now differs from A's branch: B must ask");
+    await settleAndCheck([a, b], syncAll, "identical fork, then B changed");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-05: adopting an identical copy replaces nothing, so it takes no backup and imports nothing", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    const listBackups = async (d: Device) => {
+      try {
+        return (await readdir(d.backups)).filter((n) => n.endsWith(".db")).sort();
+      } catch {
+        return [];
+      }
+    };
+    const before = await Promise.all([a, b].map(listBackups));
+    const importsBefore = [a, b].map((d) => d.status().lastImportSnapshotId);
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    assert.deepEqual(await Promise.all([a, b].map(listBackups)), before, "no new backup on either computer");
+    assert.deepEqual([a, b].map((d) => d.status().lastImportSnapshotId), importsBefore, "no import ran");
+    a.client.close();
+    b.client.close();
+  }));

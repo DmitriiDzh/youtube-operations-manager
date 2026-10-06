@@ -1,17 +1,25 @@
 import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { createClient } from "@libsql/client";
+import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
-import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
+import { getOperationLock, OperationLockError, releaseStaleExportLock, withOperationLock } from "@/lib/operation-lock";
 import {
+  computeContentFingerprint,
+  computeFileContentFingerprint,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
   isFastForwardOf,
   listSnapshotIdsStrict,
+  migrateStagedCopy,
   readLineageFile,
   readLineageState,
   readManifestFromDir,
   SnapshotError,
+  verifySnapshotForImport,
+  writeLineageState,
   type SqlExecutor,
 } from "@/lib/snapshot";
 import { SchemaVersionError } from "@/lib/schema-versioning";
@@ -385,6 +393,74 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   }
 
   /**
+   * False divergences (owner, Telegram 2026-10-06, msgs 1758/1764): the content fingerprint of a peer
+   * snapshot as THIS build would import it -- verified, copied and migrated exactly like
+   * `importHandoff` stages it, never ATTACHed in the shared folder. A snapshot never changes, so the
+   * result is kept per id; `null` (cannot be compared: needs a newer schema, unreadable) is kept too,
+   * so a standing divergence does not copy the whole file again every tick. A transient error (still
+   * transferring) is not kept and is retried next tick.
+   */
+  const stagedFingerprints = new Map<string, string | null>();
+  async function stagedFingerprintOf(folder: string, snapshotId: string): Promise<string | null> {
+    if (stagedFingerprints.has(snapshotId)) return stagedFingerprints.get(snapshotId) ?? null;
+    const snapshotDir = path.join(folder, snapshotId);
+    await mkdir(deps.workingDir, { recursive: true });
+    const workingCopyPath = path.join(deps.workingDir, `compare-${randomUUID()}.db`);
+    try {
+      await verifySnapshotForImport({
+        snapshotDir,
+        localLineage: await readLineageState(deps.client),
+        acceptDivergentLineage: true,
+      });
+      const snapshotDbClient = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+      try {
+        await copyDatabaseConsistently(snapshotDbClient, workingCopyPath);
+      } finally {
+        snapshotDbClient.close();
+      }
+      await migrateStagedCopy(workingCopyPath);
+      const fingerprint = await computeFileContentFingerprint(deps.client, workingCopyPath);
+      stagedFingerprints.set(snapshotId, fingerprint);
+      return fingerprint;
+    } catch (error) {
+      if (!transientSnapshotError(error)) stagedFingerprints.set(snapshotId, null);
+      return null;
+    } finally {
+      for (const suffix of ["", "-wal", "-shm"]) await rm(`${workingCopyPath}${suffix}`, { force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * A divergence whose two sides hold the SAME transferred data (both computers ran the same
+   * automatic job, or applied the same app update): this device takes the peer tip as its lineage
+   * head. No row changes, so nothing can be lost and no backup or import is needed. Its own branch
+   * stays in its ancestry, so the next export continues both histories and the peer -- whose head
+   * may be that branch -- fast-forwards to it. Publishes nothing: a marker here would ping-pong
+   * between two computers doing the same. Under the `export` lock (it changes no application data,
+   * and a dead holder's lock is auto-released), with the content re-checked inside it.
+   */
+  async function adoptIfIdentical(folder: string, tip: SnapshotEntry): Promise<boolean> {
+    const peerFingerprint = await stagedFingerprintOf(folder, tip.snapshotId);
+    if (!peerFingerprint) return false;
+    if ((await computeContentFingerprint(deps.client)) !== peerFingerprint) return false;
+    return withOperationLock(deps.client, "export", async () => {
+      const live = await computeContentFingerprint(deps.client);
+      if (live !== peerFingerprint) return false;
+      const lineage = await readLineageState(deps.client);
+      const ancestors = [tip.parentSnapshotId, ...(tip.ancestors ?? []), lineage.lastSnapshotId, ...(lineage.ancestors ?? [])].filter(
+        (id, index, all): id is string => id !== null && id !== tip.snapshotId && all.indexOf(id) === index
+      );
+      await writeLineageState(deps.client, {
+        lastSnapshotId: tip.snapshotId,
+        lastGeneration: Math.max(tip.generation, lineage.lastGeneration),
+        contentFingerprint: live,
+        ancestors,
+      });
+      return true;
+    });
+  }
+
+  /**
    * One scheduler tick (§3.2-§3.4). Never throws: every outcome is recorded in the status.
    * `force` skips only the minimum export interval ("Sync now"); `exportOnly` (the flush before an
    * idle shutdown) acts only if the decision is an export.
@@ -485,6 +561,24 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
           });
 
         case "divergence": {
+          if (!decision.multipleTips && decision.snapshot.schemaVersion <= deps.currentSchemaVersion) {
+            let adopted = false;
+            try {
+              adopted = await adoptIfIdentical(folder, decision.snapshot);
+            } catch (error) {
+              if (error instanceof OperationLockError) throw error;
+              // Could not compare: fall through to asking a human (fail closed).
+            }
+            if (adopted) {
+              return finish({
+                ...status,
+                state: "synced",
+                lastAdoptedAt: new Date(now()).toISOString(),
+                lastAdoptedSnapshotId: decision.snapshot.snapshotId,
+                notices: stuckNotice(status),
+              });
+            }
+          }
           let next: DeviceSyncStatus = {
             ...status,
             state: "attention",
