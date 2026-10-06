@@ -63,3 +63,12 @@ test("the summary line leaves out what is zero or unavailable, and says when aut
     [{ text: "Automatic collection is off (no daily budget in Settings → API)", tone: "warn" }]
   );
 });
+
+test("AC-R2-1/3: the Videos table asks the server for one page and has no derived-metric columns", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "market-videos-panel.tsx"), "utf8");
+  assert.match(panel, /new URLSearchParams\(\{ page: String\(page\), limit: String\(PAGE_SIZE\), sort \}\)/);
+  assert.match(panel, /const PAGE_SIZE = 50;/);
+  const headers = [...panel.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1]);
+  assert.deepEqual(headers, ["Title", "Channel", "Published", "Views (as of)", "Topic"]);
+  assert.doesNotMatch(panel, /formatFieldVelocity|formatBreakout|\.velocity|\.breakout/);
+});

@@ -65,3 +65,27 @@ test("videos-overview route GET: an unexpected error maps to a 500", async () =>
   const response = await handler();
   assert.equal(response.status, 500);
 });
+
+test("BL-140 AC-R2-1/4: with ?page= the route returns one page; without it the old response", async () => {
+  const videos = Array.from({ length: 120 }, (_, i) => ({
+    videoId: `v${i}`,
+    channelId: "c1",
+    channelHandleOrUrl: "@c1",
+    title: `Video ${i}`,
+    publishedAt: new Date(Date.UTC(2026, 9, 6) - i * 3_600_000).toISOString(),
+    viewCount: i,
+    observedAt: "2026-10-06T12:00:00.000Z",
+    velocity: { value: null, basis: "withheld_by_policy" },
+    breakout: null,
+    topics: [],
+  }));
+  const handler = createVideosOverviewGetHandler({
+    getSession: async () => ({ user: { id: "user-1" } }),
+    core: { getMarketVideosOverview: async () => ({ videos, methodology: {} }) as never },
+  });
+  const paged = await (await handler(new Request("http://localhost/api/market-intelligence/videos-overview?page=3"))).json();
+  assert.equal(paged.total, 120);
+  assert.deepEqual(paged.rows.map((r: { videoId: string }) => r.videoId), Array.from({ length: 20 }, (_, i) => `v${100 + i}`));
+  const old = await (await handler(new Request("http://localhost/api/market-intelligence/videos-overview"))).json();
+  assert.equal(old.videos.length, 120);
+});
