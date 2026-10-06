@@ -773,6 +773,17 @@ sequential calls at the same instant). The accepted tradeoff: if the collection 
 or crashes mid-run, today's window is still marked "collected" and won't retry until tomorrow's
 boundary — judged the better failure mode than doubling quota on every multi-tab load.
 
+**Every connected channel (BL-142, 2026-10-06, owner msgs 1867/1868/1874).** The dashboard no longer calls the
+per-channel `auto-collect` and `weekly-reports/generate-if-due` routes; once per load (after the active channel is
+resolved) it calls `POST /api/analytics/auto-collect-all` (`src/lib/analytics/auto-collect-all.ts`), then the Research
+`collect-if-stale` as before. For each stored channel, one after another: the active channel with the session's
+credentials, every other with its own `connected_user_id`, through the quota-guarded `runAutoCollectionIfStale` (so the
+BL-117 reserve and quota attribution apply to background channels too) and then `runWeeklyReportIfDue`. Their
+`assertActiveChannel` still fails closed for a user who has another channel selected. The BL-118 catch-up of every
+channel with a gap runs after the response, sequentially, each as its own tracked operation. A failure is throttled by
+the mark-then-run gate above; like the single-channel automatic call before, a failed run is not stored. The response
+shows only the active channel (ADR 0004). Cross-account token use: RISK-112. The per-channel routes remain.
+
 **`GET /api/settings` is not purely read-only**: `getAnalyticsSyncSettings`'s detect-and-persist
 behavior means a plain `GET` can write the OS-detected timezone on first read (stated in that
 route's own doc comment, not left as a surprise).

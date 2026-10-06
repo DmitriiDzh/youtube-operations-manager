@@ -6,6 +6,7 @@ import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { quotaScoped } from "@/lib/youtube-quota";
 import { createAnalyticsServices } from "./services";
+import { runAutoCollectionForAllChannels } from "./auto-collect-all";
 
 function defaultAuthResolver() {
   return {
@@ -37,7 +38,7 @@ export function createAnalyticsCore() {
   // BL-117: API calls made while collecting metrics are logged against this kind of work in the quota history.
   const guard = createQuotaGuardCore();
   const context = { kind: "analytics_collection", id: null, label: "Analytics collection" };
-  return {
+  const core = {
     ...services,
     collectMetrics: quotaScoped(services.collectMetrics, context),
     // BL-117 (owner decision 2026-10-03): the AUTOMATIC collection waits while less than the configured reserve of the daily
@@ -52,9 +53,27 @@ export function createAnalyticsCore() {
       return services.runAutoCollectionIfStale(input);
     }, context),
   };
+  const channelAccess = createChannelAccessCore();
+  return {
+    ...core,
+    // BL-142: the dashboard's automatic collection for every connected channel. It is handed the quota-guarded
+    // functions above, never the raw services, so background channels keep the same reserve and quota attribution.
+    runAutoCollectionForAllChannels: (input: { sessionUserId: string }) =>
+      runAutoCollectionForAllChannels(
+        {
+          listChannelConnections: () => store.channelStore.listChannelConnections(),
+          getActiveChannelId: (userId) => channelAccess.getActiveChannelId(userId),
+          runAutoCollectionIfStale: core.runAutoCollectionIfStale,
+          runWeeklyReportIfDue: core.runWeeklyReportIfDue,
+          getHistoryCatchUpPlan: core.getHistoryCatchUpPlan,
+        },
+        input
+      ),
+  };
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
+export type { AutoCollectAllResult, AutoCollectChannelOutcome } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";
 export { buildChannelOverviewView } from "./overview-view";

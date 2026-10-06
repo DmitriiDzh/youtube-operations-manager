@@ -1,6 +1,7 @@
 import {
   getAnalyticsSyncSettings,
   getStoredChannel,
+  listStoredChannels,
   getWeeklyReportByWeek,
   advanceVideoHistory,
   listAnalyticsCollectionRunsByChannel,
@@ -67,6 +68,10 @@ export function createAnalyticsStoreAdapter() {
       markAnalyticsAutoCollected,
       async getChannelPublishedAt(channelId: string) {
         return (await getStoredChannel(channelId))?.publishedAt ?? null;
+      },
+      // BL-142: each stored channel and the Google user whose token belongs to it.
+      async listChannelConnections() {
+        return (await listStoredChannels()).map((channel) => ({ channelId: channel.channelId, connectedUserId: channel.connectedUserId }));
       },
     },
     settingsStore: {

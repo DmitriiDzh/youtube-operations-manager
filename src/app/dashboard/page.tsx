@@ -174,32 +174,21 @@ export default function Dashboard() {
   useEffect(() => {
     if (!channel?.id || autoCollectTriggeredRef.current) return;
     autoCollectTriggeredRef.current = true;
-    const channelId = channel.id;
-    // Phase 8 follow-up, slice 4 (weekly reports) -- chained via .finally() AFTER auto-collect
-    // resolves (success or failure), never fired in parallel, so a Monday dashboard load's weekly
-    // snapshot sees whatever that same load's own auto-collect just refreshed (advisor review,
-    // 2026-09-23; src/lib/analytics/weekly-report.ts's own doc comment has the full trigger design).
-    fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/auto-collect`, { method: "POST" })
+    // BL-142 (owner, Telegram 2026-10-06): one call collects EVERY connected channel (each with its own token; the
+    // active one with this session's), and per channel runs the weekly report right after its collection, so a Monday
+    // load's weekly snapshot sees that load's own data (advisor review, 2026-09-23; src/lib/analytics/weekly-report.ts).
+    // Waits for `channel`, so the session's active channel is already recorded.
+    fetch("/api/analytics/auto-collect-all", { method: "POST" })
       .catch(() => {
         // Non-fatal -- the staleness check means the next dashboard load simply tries again.
       })
       .finally(() => {
-        fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/weekly-reports/generate-if-due`, {
-          method: "POST",
-        })
-          .catch(() => {
-            // Non-fatal -- the due-week check means the next dashboard load simply tries again.
-          })
-          .finally(() => {
-            // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §7) -- third
-            // fire-and-forget call, chained after the two Phase-8 ones above (never in parallel,
-            // same rationale). Channel-agnostic (market intelligence's own watchlist is global,
-            // not scoped to `channel.id`) -- the server's own budget/staleness checks decide
-            // whether anything actually runs.
-            fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).catch(() => {
-              // Non-fatal -- the staleness/budget check means the next dashboard load simply tries again.
-            });
-          });
+        // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §7) -- chained after the Analytics collection
+        // (never in parallel, same rationale). Channel-agnostic (market intelligence's own watchlist is global) -- the
+        // server's own budget/staleness checks decide whether anything actually runs.
+        fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).catch(() => {
+          // Non-fatal -- the staleness/budget check means the next dashboard load simply tries again.
+        });
       });
   }, [channel]);
 

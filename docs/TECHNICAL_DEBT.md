@@ -1828,10 +1828,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Re-evaluate:** if two devices are regularly used at once, or a shared counter becomes available.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
 
-## RISK-112 — A dashboard load uses every connected channel's own Google token for Reach reports — OPEN, 2026-10-06
+## RISK-112 — A dashboard load uses every connected channel's own Google token (Reach reports, Analytics) — OPEN, 2026-10-06
 
 - **What:** BL-141. `POST /api/reach/sync-all` (`reach-reports` `syncAllReachReports`) makes Reporting API calls, including a token refresh, with the stored token of every connected channel's Google user, not only the signed-in session's. Before, a session only ever used its own token.
 - **Bounded by:** each channel still passes `assertActiveChannel` for its own user (a user who has switched to another channel is not synced); a report file whose rows name another channel is rejected whole; the response shows only the session's active channel (ADR 0004); nothing is written to YouTube. A broken background token is retried at most every 6 hours, and its reason is recorded in that channel's own status.
-- **Accepted because:** the owner asked for it (Telegram 2026-10-06, msg 1865); this is a single-operator, local app where every connected channel is the owner's.
+- **Also (BL-142):** `POST /api/analytics/auto-collect-all` does the same for the Analytics collection, weekly report and history catch-up (Analytics API reads with each channel's token), bounded the same way plus the BL-117 quota reserve.
+- **Accepted because:** the owner asked for it (Telegram 2026-10-06, msgs 1865 and 1874); this is a single-operator, local app where every connected channel is the owner's.
 - **Re-evaluate:** if the app ever serves more than one operator, or a connected channel can belong to someone else.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
