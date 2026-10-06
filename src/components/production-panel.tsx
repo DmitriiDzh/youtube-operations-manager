@@ -154,7 +154,7 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
         <JobsCard activeChannelId={activeChannelId} />
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
-        <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} />
+        <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />
       </div>
       <div className={tab === "templates" ? "space-y-6" : "hidden"}>
         <WorkflowTemplatesCard />

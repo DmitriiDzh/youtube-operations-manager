@@ -44,3 +44,15 @@ test("AC-P14-25: the balance header shows the GraphQL balance, or says the balan
   assert.equal(degraded.headline, "balance unavailable");
   assert.equal(degraded.detail, "RunPod spend (2026-09-05 – 2026-10-06): $3.75 (pods $0.25, network volumes $3.50). The balance read failed: RunPod GraphQL returned HTTP 500.");
 });
+
+// Owner, Telegram 2026-10-06 (msg 1793): Production → Models → "Models on the volume" refreshes by itself every time the
+// Models tab is opened, without pressing the button. Every Production tab stays mounted (hidden by CSS), so "opened" is
+// the tab becoming active, not the card mounting.
+test("models on the volume: the Models tab tells the card it is active, and the card loads whenever it becomes active", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "production-panel.tsx"), "utf8");
+  assert.match(panel, /<ModelsCard[^>]*active=\{tab === "models"\}/);
+  const card = await readFile(path.join(process.cwd(), "src", "components", "media-generation-settings.tsx"), "utf8");
+  const body = card.slice(card.indexOf("export function ModelsCard"), card.indexOf("const pulling = pulls.some"));
+  assert.match(body, /export function ModelsCard\(\{ configured, active \}/);
+  assert.match(body, /useEffect\(\(\) => \{\s*if \(!active \|\| !configured\) return;\s*void load\(\);\s*\}, \[active, configured, load\]\);/);
+});

@@ -182,8 +182,9 @@ function gb(bytes: number): string {
 
 // Phase 14 slice 4 (owner decision D5): the models on the network volume, and "add from Hugging Face"
 // through a cheap CPU pod attached to the volume (terminated as soon as the file is there). Every
-// listing is one S3 call made on an explicit Load/Refresh; while a pull runs the card refreshes itself.
-export function ModelsCard({ configured }: { configured: boolean }) {
+// listing is one S3 call, made each time the Models tab is opened (owner, Telegram 2026-10-06, msg 1793) or on Refresh;
+// while a pull runs the card refreshes itself.
+export function ModelsCard({ configured, active }: { configured: boolean; active: boolean }) {
   const [models, setModels] = useState<ModelFile[] | null>(null);
   const [pulls, setPulls] = useState<ModelPull[]>([]);
   const [repoId, setRepoId] = useState("");
@@ -200,12 +201,15 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [storageError, setStorageError] = useState<string | null>(null);
   const [usage, setUsage] = useState<MediaVolumeUsage | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   // `withUsage`: the whole-volume listing (BL-136) runs on an explicit Load/Refresh only, never on the pull poll -- it can take
   // longer than the poll interval on a volume with many files (independent review).
   const load = useCallback(
-    (withUsage = true) =>
-      Promise.all([
+    (withUsage = true) => {
+      // The 15 s pull poll (withUsage = false) refreshes quietly, without flipping the button.
+      if (withUsage) setLoading(true);
+      return Promise.all([
         requestJson<{ models: ModelFile[]; pulls: ModelPull[]; registry: "ok" | "unavailable"; registryError: string | null; events: MediaControlEventView[] }>("/api/media-generation/models").then(
           (data) => {
             setModels(data.models);
@@ -237,9 +241,20 @@ export function ModelsCard({ configured }: { configured: boolean }) {
               }
             )
           : Promise.resolve(),
-      ]).then(() => undefined),
+      ])
+        .then(() => undefined)
+        .finally(() => {
+          if (withUsage) setLoading(false);
+        });
+    },
     []
   );
+
+  // Every Production tab stays mounted (hidden by CSS), so "the owner opened Models" is `active` turning true.
+  useEffect(() => {
+    if (!active || !configured) return;
+    void load();
+  }, [active, configured, load]);
 
   const pulling = pulls.some((p) => p.status === "running");
   useEffect(() => {
@@ -311,8 +326,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => void load()} disabled={busy} className={secondaryButton}>
-              {models ? "Refresh" : "Load models"}
+            <button type="button" onClick={() => void load()} disabled={busy || loading} className={secondaryButton}>
+              {loading ? "Loading..." : models ? "Refresh" : "Load models"}
             </button>
             {models && (
               <span className="text-xs text-zinc-500">
