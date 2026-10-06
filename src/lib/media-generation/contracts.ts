@@ -190,6 +190,33 @@ export type MediaWorkflowTemplate = {
   updatedAt: string;
 };
 
+/** BL-132 (plan §2.5): one audit row as shown in the Web UI and the factory tools. */
+export type MediaControlEventView = { at: string; actor: "owner" | "factory" | "sync"; action: string; subject: string; details: Record<string, unknown> | null };
+
+/** BL-132 (plan §2.2): the network volume as RunPod reports it. RunPod bills the rented size. */
+export type MediaStorageStatus = { volumeId: string; dataCenterId: string | null; sizeGb: number; usedGb: number | null; freeGb: number | null; monthlyUsd: number };
+
+/**
+ * BL-132 (plan §2.2, owner addition A1): which templates use which model file. `registry` = whether the factory template
+ * registry could be read on this device; when it could not, a factory deletion is refused (fail closed).
+ */
+export type MediaModelUsage = {
+  registry: "ok" | "unavailable";
+  registryError: string | null;
+  users: Array<{ key: string; templateId: string; version: number; source: "factory" | "owner" | "registry" }>;
+};
+
+/** A model file on the volume with its verified hash (when a pull recorded one) and the templates that use it. */
+export type MediaModelEntry = {
+  key: string;
+  folder: string;
+  name: string;
+  bytes: number;
+  lastModified: string | null;
+  sha256: string | null;
+  usedBy: Array<{ templateId: string; version: number; source: "factory" | "owner" | "registry" }>;
+};
+
 /** BL-132: what started a template-registry sync (`auto` = the 60 s check found a change). */
 export type MediaTemplateSyncTrigger = "auto" | "factory" | "owner";
 

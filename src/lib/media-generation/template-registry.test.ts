@@ -269,3 +269,26 @@ test("registry format: the index must be ytm.media-template-index v1 with unique
   assert.deepEqual(refs.map((r) => `${r.folder}/${r.file}`), ["text_encoders/t5xxl.safetensors", "text_encoders/clip_l.safetensors", "loras/styles/anime.safetensors"]);
   assert.deepEqual(checkDeclaredModels({ workflow: { "3": { class_type: "UnetLoaderGGUF", inputs: { unet_name: "flux.gguf" } } }, parameters: [], models: [] }), [], "custom loaders are not checked (plan §2.3)");
 });
+
+test("A1 (plan §2.2): model usage lists installed factory templates, LOCAL templates (models from their loader nodes) and every template the registry lists; an unreadable registry is reported", async () => {
+  const h = harness();
+  const local = await h.services.importWorkflowTemplate({ name: "local", workflow: { ...GRAPH, "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "my-local.safetensors" } } }, parameters: PARAMS });
+  h.publish([{ templateId: "installed", version: 1 }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  // A template only listed (not yet installed here) still protects its models.
+  h.folder.set("index.json", indexFile([{ templateId: "installed", version: 1 }, { templateId: "elsewhere", version: 4 }]));
+  h.folder.set(registryTemplateFileName("elsewhere", 4), templateFile("elsewhere", 4, { models: [...MODELS, { folder: "loras", file: "style.safetensors" }] }));
+  const usage = await h.services.modelUsage();
+  assert.equal(usage.registry, "ok");
+  const keyed = usage.users.map((u) => `${u.key}<-${u.templateId}@${u.version}:${u.source}`).sort();
+  assert.deepEqual(keyed, [
+    "models/checkpoints/flux1-schnell-fp8.safetensors<-elsewhere@4:registry",
+    "models/checkpoints/flux1-schnell-fp8.safetensors<-installed@1:factory", // listed AND installed: one user, not two
+    `models/checkpoints/my-local.safetensors<-${local.templateId}@1:owner`,
+    "models/loras/style.safetensors<-elsewhere@4:registry",
+  ]);
+  h.setUnreadable("drive unmounted");
+  const blind = await h.services.modelUsage();
+  assert.equal(blind.registry, "unavailable");
+  assert.ok(blind.users.some((u) => u.source === "owner"), "installed templates are still known");
+});

@@ -9,7 +9,10 @@ import {
   type MediaJob,
   type MediaSession,
   type MediaSessionLimits,
+  type MediaControlEventView,
+  type MediaModelEntry,
   type MediaSettings,
+  type MediaStorageStatus,
   type MediaTemplateSyncResult,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
@@ -150,7 +153,7 @@ export function RunpodConnectionSettings() {
   );
 }
 
-type ModelFile = { key: string; folder: string; name: string; bytes: number; lastModified: string | null };
+type ModelFile = MediaModelEntry;
 type ModelPull = {
   pullId: string;
   podId: string | null;
@@ -188,17 +191,33 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelFile | null>(null);
+  const [registry, setRegistry] = useState<{ state: "ok" | "unavailable"; error: string | null }>({ state: "ok", error: null });
+  const [events, setEvents] = useState<MediaControlEventView[]>([]);
+  const [storage, setStorage] = useState<MediaStorageStatus | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
 
   const load = useCallback(
     () =>
-      requestJson<{ models: ModelFile[]; pulls: ModelPull[] }>("/api/media-generation/models").then(
-        (data) => {
-          setModels(data.models);
-          setPulls(data.pulls);
-          setError(null);
-        },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to list the volume")
-      ),
+      Promise.all([
+        requestJson<{ models: ModelFile[]; pulls: ModelPull[]; registry: "ok" | "unavailable"; registryError: string | null; events: MediaControlEventView[] }>("/api/media-generation/models").then(
+          (data) => {
+            setModels(data.models);
+            setPulls(data.pulls);
+            setRegistry({ state: data.registry, error: data.registryError });
+            setEvents(data.events);
+            setError(null);
+          },
+          (err: unknown) => setError(err instanceof Error ? err.message : "Failed to list the volume")
+        ),
+        // The volume's size comes from RunPod, not S3: a failure there must not hide the listing.
+        requestJson<{ storage: MediaStorageStatus }>("/api/media-generation/storage").then(
+          (data) => {
+            setStorage(data.storage);
+            setStorageError(null);
+          },
+          (err: unknown) => setStorageError(err instanceof Error ? err.message : "Could not read the volume's size")
+        ),
+      ]).then(() => undefined),
     []
   );
 
@@ -281,6 +300,17 @@ export function ModelsCard({ configured }: { configured: boolean }) {
               </span>
             )}
           </div>
+          {storage && (
+            <p className="text-xs text-zinc-400">
+              Volume {storage.volumeId}
+              {storage.dataCenterId ? ` (${storage.dataCenterId})` : ""}: {storage.sizeGb} GB rented
+              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : " · usage not reported"} · ${storage.monthlyUsd.toFixed(2)}/month
+            </p>
+          )}
+          {storageError && <p className="text-xs text-amber-400">Volume size: {storageError}</p>}
+          {models && registry.state === "unavailable" && (
+            <p className="text-xs text-amber-400">The factory template registry cannot be read on this device, so &ldquo;used by&rdquo; shows only this device&rsquo;s templates ({registry.error}).</p>
+          )}
           {models && models.length > 0 && (
             <div className="overflow-x-auto">
               <table className="min-w-[560px] w-full text-left text-xs text-zinc-400">
@@ -289,6 +319,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                     <th className="py-1 pr-3">Folder</th>
                     <th className="py-1 pr-3">File</th>
                     <th className="py-1 pr-3">Size</th>
+                    <th className="py-1 pr-3">SHA-256</th>
+                    <th className="py-1 pr-3">Used by</th>
                     <th className="py-1"></th>
                   </tr>
                 </thead>
@@ -298,6 +330,12 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                       <td className="py-1 pr-3">{m.folder}</td>
                       <td className="py-1 pr-3 font-mono">{m.name}</td>
                       <td className="py-1 pr-3 whitespace-nowrap">{gb(m.bytes)}</td>
+                      <td className="py-1 pr-3 font-mono" title={m.sha256 ?? "not verified by a pull on this device"}>
+                        {m.sha256 ? `${m.sha256.slice(0, 12)}…` : "—"}
+                      </td>
+                      <td className="py-1 pr-3">
+                        {m.usedBy.length === 0 ? "—" : m.usedBy.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")}
+                      </td>
                       <td className="py-1">
                         <button type="button" onClick={() => setDeleteTarget(m)} disabled={busy} className={dangerButton}>
                           Delete
@@ -368,13 +406,31 @@ export function ModelsCard({ configured }: { configured: boolean }) {
             </div>
           </div>
           <p className="text-xs text-zinc-500">Check each model&rsquo;s licence for your use before pulling it; this app takes no position.</p>
+          {events.length > 0 && (
+            <details className="text-xs text-zinc-400">
+              <summary className="cursor-pointer text-zinc-500">Recent model and template actions ({events.length})</summary>
+              <ul className="mt-1 space-y-0.5">
+                {events.map((e, i) => (
+                  <li key={`${e.at}-${i}`}>
+                    {new Date(e.at).toLocaleString()} · {e.actor === "factory" ? "Factory Operator" : e.actor === "sync" ? "automatic sync" : "you"} · {e.action.replace(/_/g, " ")} · <span className="font-mono">{e.subject}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       )}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {deleteTarget && (
         <ConfirmDialog
           title={`Delete ${deleteTarget.name} from the volume?`}
-          description="The file is removed from the network volume; pull it again if a workflow needs it."
+          description={
+            deleteTarget.usedBy.length > 0
+              ? `Used by ${deleteTarget.usedBy.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")} — jobs of these templates will fail until it is pulled again. There is no undo except pulling it again.`
+              : registry.state === "unavailable"
+                ? "The factory template registry cannot be read here, so it cannot be checked whether a factory template needs this file. There is no undo except pulling it again."
+                : "No template uses this file. It is removed from the network volume; pull it again if a workflow needs it."
+          }
           confirmLabel="Delete"
           confirmVariant="danger"
           onCancel={() => setDeleteTarget(null)}

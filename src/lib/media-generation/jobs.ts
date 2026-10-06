@@ -12,6 +12,7 @@ import {
   type MediaJobOutput,
   type MediaJobStatus,
   type MediaModelReference,
+  type MediaModelUsage,
   type MediaTemplateParameter,
   type MediaTemplateSyncResult,
   type MediaTemplateSyncTrigger,
@@ -1080,6 +1081,39 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const run = registrySyncChain.then(() => runRegistrySync(input));
       registrySyncChain = run.catch(() => undefined);
       return run;
+    },
+
+    /**
+     * BL-132 (plan §2.2, owner addition A1): every template that uses a model file -- this device's installed templates
+     * (factory and local) plus every template the registry currently lists (identical on every device, so a model a
+     * template on ANOTHER device needs is protected too). Read-only: no sync, no write.
+     */
+    async modelUsage(): Promise<MediaModelUsage> {
+      const users: MediaModelUsage["users"] = [];
+      const add = (templateId: string, version: number, source: MediaModelUsage["users"][number]["source"], models: Array<{ folder: string | null; file: string }>) => {
+        for (const m of models) {
+          if (!m.folder) continue;
+          const key = `models/${m.folder}/${m.file}`;
+          if (!users.some((u) => u.key === key && u.templateId === templateId && u.version === version)) users.push({ key, templateId, version, source });
+        }
+      };
+      for (const row of await deps.store.templates.list()) add(row.id, row.version, row.source ?? "owner", templateModels(row));
+      let registry: MediaModelUsage["registry"] = "ok";
+      let registryError: string | null = null;
+      try {
+        if (!deps.registry) throw new DomainError({ code: "media_template_registry_unavailable", message: "No template registry is wired on this device." });
+        const snapshot = await deps.registry.read();
+        for (const entry of parseRegistryIndex(snapshot.indexText).templates) {
+          const text = await snapshot.readTemplateFile(registryTemplateFileName(entry.templateId, entry.version)).catch(() => null);
+          if (text === null) continue;
+          const parsed = parseRegistryTemplate(text, entry);
+          if (parsed.ok) add(entry.templateId, entry.version, "registry", parsed.template.models);
+        }
+      } catch (error) {
+        registry = "unavailable";
+        registryError = error instanceof Error ? error.message : String(error);
+      }
+      return { registry, registryError, users };
     },
 
     /** The last (non-dry-run) sync result, or null if none ran on this device. */

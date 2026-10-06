@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { HuggingFaceFileInfo, RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { sleep } from "@/lib/shared-async";
-import { DomainError, MEDIA_MODEL_FOLDERS, type MediaSettings } from "./contracts";
+import { DomainError, MEDIA_MODEL_FOLDERS, NETWORK_VOLUME_USD_PER_GB_MONTH, type MediaModelEntry, type MediaModelUsage, type MediaSettings, type MediaStorageStatus } from "./contracts";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { parseWithSchema } from "./schemas";
 import type { VolumeLock } from "./volume-lock";
@@ -102,6 +102,8 @@ export type ModelServiceDependencies = {
   hub: { getFileInfo(input: { repoId: string; file: string; revision?: string }): Promise<HuggingFaceFileInfo> };
   /** Audit sink; a failure to record never fails the action itself (it is logged). */
   events: { record(event: MediaControlEvent): Promise<void> };
+  /** BL-132: which templates use which model (the job services' `modelUsage`); absent = nothing known, registry unavailable. */
+  modelUsage?: () => Promise<MediaModelUsage>;
   base: {
     getSettings(): Promise<MediaSettings>;
     resolveRunpodClient(): Promise<RunpodApiClient>;
@@ -243,6 +245,25 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     return finished;
   }
 
+  async function listModelFiles(): Promise<Array<{ key: string; folder: string; name: string; bytes: number; lastModified: string | null }>> {
+    const s3 = await deps.base.s3();
+    const objects = await s3.listAllObjects(MODELS_PREFIX);
+    return objects
+      // Folder markers and the Hugging Face CLI's own download cache (`.cache/huggingface/...`) are not models.
+      .filter((o) => !o.key.endsWith("/.keep") && !o.key.includes("/.cache/"))
+      .map((o) => {
+        const rest = o.key.slice(MODELS_PREFIX.length);
+        const [folder, ...parts] = rest.split("/");
+        return { key: o.key, folder, name: parts.join("/") || folder, bytes: o.size, lastModified: o.lastModified };
+      })
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  async function usageOrUnknown(): Promise<MediaModelUsage> {
+    if (!deps.modelUsage) return { registry: "unavailable", registryError: "model usage is not wired", users: [] };
+    return deps.modelUsage();
+  }
+
   /** Records an audit row; a failure to record never fails or undoes the action it describes (logged instead). */
   async function audit(event: MediaControlEvent): Promise<void> {
     try {
@@ -271,26 +292,71 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
   return {
     /** Everything under `models/` on the volume (size, folder), never other prefixes. */
     async listModels(): Promise<Array<{ key: string; folder: string; name: string; bytes: number; lastModified: string | null }>> {
-      const s3 = await deps.base.s3();
-      const objects = await s3.listAllObjects(MODELS_PREFIX);
-      return objects
-        // Folder markers and the Hugging Face CLI's own download cache (`.cache/huggingface/...`) are not models.
-        .filter((o) => !o.key.endsWith("/.keep") && !o.key.includes("/.cache/"))
-        .map((o) => {
-          const rest = o.key.slice(MODELS_PREFIX.length);
-          const [folder, ...parts] = rest.split("/");
-          return { key: o.key, folder, name: parts.join("/") || folder, bytes: o.size, lastModified: o.lastModified };
-        })
-        .sort((a, b) => a.key.localeCompare(b.key));
+      return listModelFiles();
     },
 
-    /** Deletes one object under `models/` (explicit action; never a prefix, never outside models/). */
+    /**
+     * Deletes one object under `models/` (explicit action; never a prefix, never outside models/). BL-132 (plan §2.2): the
+     * FACTORY is refused while any template uses the file (`media_model_in_use`) or while the registry cannot be read to
+     * tell (fail closed); the OWNER is shown the same check in the Web UI before confirming and is never locked out of
+     * their own storage. Both are refused while sessions or a pull hold the volume (a running job may be reading it).
+     */
     async deleteModel(input: unknown, options: { actor?: PullActor } = {}): Promise<{ deleted: string }> {
       const { key } = parseWithSchema(modelKeySchema, input, "model key");
-      const s3 = await deps.base.s3();
-      await s3.deleteObject(key);
-      await audit({ actor: options.actor ?? "owner", action: "model_deleted", subject: key });
+      const actor = options.actor ?? "owner";
+      const usage = await usageOrUnknown();
+      const users = usage.users.filter((u) => u.key === key);
+      if (actor === "factory") {
+        if (usage.registry === "unavailable") {
+          throw new DomainError({ code: "media_template_registry_unavailable", message: `The template registry cannot be read on this device, so it cannot be shown that no template uses ${key}; nothing was deleted. (${usage.registryError ?? "not configured"})`, details: { key } });
+        }
+        if (users.length > 0) {
+          throw new DomainError({ code: "media_model_in_use", message: `${key} is used by ${users.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")}; nothing was deleted.`, details: { key, usedBy: users } });
+        }
+      }
+      const owner = `delete:${deps.generateId()}` as const;
+      await deps.volumeLock.acquire(owner);
+      try {
+        const s3 = await deps.base.s3();
+        await s3.deleteObject(key);
+      } finally {
+        await deps.volumeLock.release(owner);
+      }
+      await audit({ actor, action: "model_deleted", subject: key, details: users.length > 0 || usage.registry === "unavailable" ? { usedBy: users, registry: usage.registry } : undefined });
       return { deleted: key };
+    },
+
+    /** BL-132 (plan §2.2): the network volume's rented size, use, free space and monthly cost, as RunPod reports it. */
+    async storageStatus(): Promise<MediaStorageStatus> {
+      const settings = await deps.base.getSettings();
+      if (!settings.networkVolumeId) throw new DomainError({ code: "media_generation_not_configured", message: "No network volume is chosen (Production → Setup)." });
+      const volume = await (await deps.base.resolveRunpodClient()).getNetworkVolume(settings.networkVolumeId);
+      if (!volume) throw new DomainError({ code: "media_settings_invalid", message: `RunPod has no network volume ${settings.networkVolumeId} on this account.`, details: { volumeId: settings.networkVolumeId } });
+      const usedGb = volume.usedSizeGb;
+      return {
+        volumeId: volume.id,
+        dataCenterId: volume.dataCenterId ?? settings.datacenterId ?? null,
+        sizeGb: volume.sizeGb,
+        usedGb,
+        freeGb: usedGb === null ? null : Math.max(0, volume.sizeGb - usedGb),
+        monthlyUsd: Math.round(volume.sizeGb * NETWORK_VOLUME_USD_PER_GB_MONTH * 100) / 100,
+      };
+    },
+
+    /** BL-132: the model list with each file's verified SHA-256 (from this device's pulls) and the templates using it. */
+    async listModelsWithUsage(): Promise<{ models: MediaModelEntry[]; registry: MediaModelUsage["registry"]; registryError: string | null }> {
+      const [files, usage, pulls] = await Promise.all([listModelFiles(), usageOrUnknown(), readPulls()]);
+      const hashes = new Map<string, string>();
+      for (const pull of pulls) if (pull.status === "done" && pull.actualSha256) hashes.set(pull.expectedKey, pull.actualSha256);
+      return {
+        registry: usage.registry,
+        registryError: usage.registryError,
+        models: files.map((f) => ({
+          ...f,
+          sha256: hashes.get(f.key) ?? null,
+          usedBy: usage.users.filter((u) => u.key === f.key).map(({ templateId, version, source }) => ({ templateId, version, source })),
+        })),
+      };
     },
 
     /** Read-only: the recorded pulls as they are (a GET never advances them -- the watch loop does). */

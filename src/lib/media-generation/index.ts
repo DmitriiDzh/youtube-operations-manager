@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getMediaTemplateSyncLastJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -15,7 +15,7 @@ import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
-import { DomainError } from "./contracts";
+import { DomainError, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
@@ -58,6 +58,7 @@ function buildCore(jobScheduling: JobScheduling) {
   let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   let modelsRef: ReturnType<typeof createMediaModelServices> | null = null;
   let baseRef: ReturnType<typeof createMediaGenerationServices> | null = null;
+  let jobsRef: { modelUsage(): Promise<MediaModelUsage> } | null = null;
   const isHolderActive = async (holder: string): Promise<boolean> => {
     if (holder.startsWith("session:")) return (await sessionsRef?.holdsVolumeLock(holder.slice("session:".length))) ?? false;
     if (holder.startsWith("pull:")) return (await modelsRef?.isPullActive(holder.slice("pull:".length))) ?? false;
@@ -103,6 +104,11 @@ function buildCore(jobScheduling: JobScheduling) {
     store: createModelPullStore(),
     hub: createHuggingFaceClient(),
     events: createMediaControlEventSink(),
+    // Late-bound: the job services (which own the templates) are built below.
+    modelUsage: async () => {
+      if (!jobsRef) throw new Error("media job services are not ready");
+      return jobsRef.modelUsage();
+    },
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
     generateId: () => randomUUID(),
     clock: { now },
@@ -201,7 +207,17 @@ function buildCore(jobScheduling: JobScheduling) {
     events: createMediaControlEventSink(),
     syncState: { get: () => getMediaTemplateSyncLastJson(), set: (json) => setMediaTemplateSyncLastJson(json) },
   });
-  return { ...base, ...sessions, ...jobs, ...models };
+  jobsRef = jobs;
+  /** BL-132 audit (plan §2.5): newest first. */
+  const listControlEvents = async (limit = 50): Promise<MediaControlEventView[]> =>
+    (await listMediaControlEvents(Math.min(Math.max(1, limit), 200))).map((row) => ({
+      at: row.at.toISOString(),
+      actor: row.actor as MediaControlEventView["actor"],
+      action: row.action,
+      subject: row.subject,
+      details: row.detailsJson ? (JSON.parse(row.detailsJson) as Record<string, unknown>) : null,
+    }));
+  return { ...base, ...sessions, ...jobs, ...models, listControlEvents };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

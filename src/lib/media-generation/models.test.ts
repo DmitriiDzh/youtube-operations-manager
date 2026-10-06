@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
-import { DEFAULT_MEDIA_SETTINGS, isDomainError } from "./contracts";
+import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaModelUsage } from "./contracts";
 import { buildPullCommand, createMediaModelServices, modelFileName, type MediaControlEvent, type ModelPull, type ModelPullStore, type ModelServiceDependencies } from "./models";
 import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
 
@@ -85,6 +85,8 @@ function fixture(
     volume?: { sizeGb: number; usedSizeGb: number | null } | null;
     verdicts?: Verdicts;
     podWritesVerdict?: boolean;
+    usage?: MediaModelUsage;
+    lockHeldBy?: string;
   } = {}
 ) {
   const objects = opts.objects ?? new Map<string, number>();
@@ -151,7 +153,8 @@ function fixture(
       generateId: () => `id-${++ids}`,
       clock: { now: () => now },
       pullCapMs: 60 * 60_000,
-      volumeLock: testLock().lock,
+      volumeLock: testLock({ heldBy: opts.lockHeldBy }).lock,
+      ...(opts.usage ? { modelUsage: async () => opts.usage! } : {}),
     },
     { verdicts, podWritesVerdict: opts.podWritesVerdict }
   );
@@ -894,7 +897,7 @@ test("BL-132: the pull downloads the commit the Hub resolved the revision to, an
 });
 
 test("AC-FM-14: start, finish, cancel and delete are audited with the actor (factory or owner)", async () => {
-  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const f = fixture({ hub: fakeHub({ sha256: WANT }), usage: { registry: "ok", registryError: null, users: [] } });
   const first = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" }, { requestedBy: "factory" });
   f.objects.set("models/checkpoints/m.safetensors", 1000);
   await f.services.pollPulls();
@@ -913,4 +916,68 @@ test("AC-FM-14: start, finish, cancel and delete are audited with the actor (fac
   );
   assert.equal(f.events[1].details?.actualSha256, WANT);
   assert.equal(f.events[0].details?.pullId, first.pullId);
+});
+
+// -- BL-132 M2 (plan §2.2, AC-FM-05/06; owner addition A1: local templates count too) -------------------------------
+
+const KEY = "models/checkpoints/flux1-schnell-fp8.safetensors";
+const inUse = (source: "factory" | "owner" | "registry"): MediaModelUsage => ({ registry: "ok", registryError: null, users: [{ key: KEY, templateId: source === "owner" ? "uuid-local" : "flux-schnell", version: 2, source }] });
+
+test("AC-FM-06: the factory cannot delete a model a template uses -- a registry template, an installed factory template, or a LOCAL template -- and nothing is deleted", async () => {
+  for (const source of ["registry", "factory", "owner"] as const) {
+    const f = fixture({ objects: new Map([[KEY, 100]]), usage: inUse(source) });
+    await assert.rejects(f.services.deleteModel({ key: KEY }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_model_in_use" && /flux-schnell v2|uuid-local v2 \(local\)/.test(e.message));
+    assert.ok(f.objects.has(KEY), `still there (${source})`);
+  }
+});
+
+test("AC-FM-06: with the registry not readable on this device the factory deletion is refused (fail closed); an unused model is deleted", async () => {
+  const blind = fixture({ objects: new Map([[KEY, 100]]), usage: { registry: "unavailable", registryError: "not configured", users: [] } });
+  await assert.rejects(blind.services.deleteModel({ key: KEY }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_template_registry_unavailable");
+  assert.ok(blind.objects.has(KEY));
+  const free = fixture({ objects: new Map([[KEY, 100]]), usage: { registry: "ok", registryError: null, users: [] } });
+  assert.deepEqual(await free.services.deleteModel({ key: KEY }, { actor: "factory" }), { deleted: KEY });
+  assert.ok(!free.objects.has(KEY));
+});
+
+test("AC-FM-06: the owner is never locked out -- a used model, or an unreadable registry, does not block the owner's (confirmed) deletion; the audit keeps what was known", async () => {
+  const f = fixture({ objects: new Map([[KEY, 100]]), usage: inUse("registry") });
+  assert.deepEqual(await f.services.deleteModel({ key: KEY }, { actor: "owner" }), { deleted: KEY });
+  assert.deepEqual(f.events.at(-1)?.details, { usedBy: inUse("registry").users, registry: "ok" });
+});
+
+test("plan §2.2: a deletion is refused while a pull or a session holds the volume (a running job may be reading the file)", async () => {
+  const f = fixture({ objects: new Map([[KEY, 100]]), usage: { registry: "ok", registryError: null, users: [] }, lockHeldBy: "pull:other" });
+  await assert.rejects(f.services.deleteModel({ key: KEY }, { actor: "owner" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  assert.ok(f.objects.has(KEY));
+});
+
+test("AC-FM-05: storage status reports rented size, used, free and the monthly cost of the rented size", async () => {
+  const f = fixture({ volume: { sizeGb: 150, usedSizeGb: 37.5 } });
+  assert.deepEqual(await f.services.storageStatus(), { volumeId: "vol-eu", dataCenterId: "EU-RO-1", sizeGb: 150, usedGb: 37.5, freeGb: 112.5, monthlyUsd: 10.5 });
+  const unknown = fixture({ volume: { sizeGb: 50, usedSizeGb: null } });
+  const status = await unknown.services.storageStatus();
+  assert.deepEqual([status.usedGb, status.freeGb, status.monthlyUsd], [null, null, 3.5]);
+});
+
+test("AC-FM-05: the model list skips staging/cache litter and carries each file's verified SHA-256 (from a pull) and the templates using it", async () => {
+  const f = fixture({
+    hub: fakeHub({ sha256: WANT }),
+    objects: new Map([[KEY, 100], ["models/vae/ae.safetensors", 5], ["models/vae/.cache/huggingface/x.incomplete", 9], ["ytm-staging/p/x", 1]]),
+    usage: inUse("factory"),
+  });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "new.safetensors", folder: "loras" });
+  f.objects.set("models/loras/new.safetensors", 1000);
+  f.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: true, sha256: WANT, bytes: 1000 }));
+  await f.services.pollPulls();
+  const listed = await f.services.listModelsWithUsage();
+  assert.equal(listed.registry, "ok");
+  assert.deepEqual(
+    listed.models.map((m) => [m.key, m.sha256, m.usedBy.map((u) => `${u.templateId}@${u.version}:${u.source}`)]),
+    [
+      [KEY, null, ["flux-schnell@2:factory"]],
+      ["models/loras/new.safetensors", WANT, []],
+      ["models/vae/ae.safetensors", null, []],
+    ]
+  );
 });
