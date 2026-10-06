@@ -68,3 +68,11 @@ test("Now on a session: the generating job, and how many others of that session 
   // Nothing generating: the oldest submitted one is next.
   assert.equal(nowRunningOn("s1", jobs.filter((j) => j.jobId !== "c")).current?.jobId, "b");
 });
+
+test("BL-144 review: when ComfyUI reports which job runs, that one is current and the other in-flight jobs wait", () => {
+  const running: MediaJob = { ...job("young", "s1", "generating", "2026-10-06T19:05:00Z"), progress: { ...base } };
+  const queuedInComfy: MediaJob = { ...job("old", "s1", "generating", "2026-10-06T19:00:00Z"), progress: { ...base, state: "waiting", percent: 0, currentNode: null, step: null, nodesDone: 0, nodesCached: 0 } };
+  const now = nowRunningOn("s1", [queuedInComfy, running, job("q", "s1", "queued", "2026-10-06T19:06:00Z")]);
+  assert.equal(now.current?.jobId, "young");
+  assert.equal(now.waiting, 2, "the job still in ComfyUI's queue and the queued one");
+});

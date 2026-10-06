@@ -1868,3 +1868,54 @@ test("BL-144: when the progress stream cannot open, the job still runs to done e
   assert.deepEqual([(seen[0] as { state: string }).state, (seen[0] as { detail: string }).detail], ["unavailable", "websocket refused"]);
   assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
 });
+
+test("BL-144 review: the progress socket is opened before the prompt is submitted, so ComfyUI's first events reach it", async () => {
+  const progress = createJobProgressRegistry();
+  const comfy = fakeComfy([completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  const order: string[] = [];
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async (input: { onOpened?: () => void }) => {
+    order.push("open");
+    input.onOpened?.();
+    return { close: () => {} };
+  };
+  const submit = client.submitPrompt as (i: unknown) => Promise<unknown>;
+  client.submitPrompt = async (i: unknown) => {
+    order.push("submit");
+    return submit(i);
+  };
+  const f = fixture({ comfy, progress });
+  const t = await importDefault(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  assert.deepEqual(order, ["open", "submit"]);
+  await f.runScheduled();
+  assert.deepEqual(order, ["open", "submit"], "the open stream is reused while polling, not opened again");
+});
+
+test("BL-144 review: a dropped stream shows unavailable and is not reopened sooner than every 15 s", async () => {
+  const progress = createJobProgressRegistry();
+  // Five empty polls (1 s apart in the fixture's clock), then the result.
+  const comfy = fakeComfy([null, null, null, null, null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  let opens = 0;
+  let drop: ((reason: string) => void) | null = null;
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async (input: { onOpened?: () => void; onClosed: (r: string) => void }) => {
+    opens++;
+    drop = input.onClosed;
+    input.onOpened?.();
+    return { close: () => {} };
+  };
+  const seen: string[] = [];
+  const getHistory = client.getHistory as () => Promise<unknown>;
+  client.getHistory = async () => {
+    if (drop && seen.length === 0) drop("closed (1006)");
+    seen.push(progress.get("job-1")?.state ?? "none");
+    return getHistory();
+  };
+  const f = fixture({ comfy, progress });
+  const t = await importDefault(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal(seen[0], "unavailable");
+  assert.equal(opens, 1, "within 15 s of the drop no new connection is attempted");
+});

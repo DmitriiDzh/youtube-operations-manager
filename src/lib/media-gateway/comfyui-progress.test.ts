@@ -124,3 +124,29 @@ test("openProgressStream refuses before connecting when the media gateway is off
   await assert.rejects(client.openProgressStream({ clientId: "c", onEvent: () => {}, onClosed: () => {} }), /media_gateway_disabled/);
   assert.equal(opened.length, 0);
 });
+
+test("BL-144 review: ComfyUI's on-connect `executing` without a prompt id is kept", () => {
+  assert.deepEqual(parseComfyProgressMessage(msg("executing", { node: "3" })), { type: "executing", promptId: null, nodeId: "3" });
+  assert.equal(parseComfyProgressMessage(msg("executing", { node: null })), null);
+});
+
+test("BL-144 review: switching the media gateway off closes an open progress stream", async () => {
+  const { factory, opened } = fakeSocketFactory();
+  let enabled = true;
+  const client = createComfyUiClient({
+    baseUrl: "https://abc123-8189.proxy.runpod.net",
+    token: "t",
+    authorize: async () => {},
+    socketFactory: factory,
+    gatewayEnabled: async () => enabled,
+    gatewayRecheckMs: 5,
+  });
+  const closes: string[] = [];
+  await client.openProgressStream({ clientId: "c", onEvent: () => {}, onClosed: (r) => closes.push(r) });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(closes, []);
+  enabled = false;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(closes, ["media gateway switched off"]);
+  assert.equal(opened[0].socket.closedWith, 1000);
+});

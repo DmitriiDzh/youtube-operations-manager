@@ -917,16 +917,6 @@ type SessionLimits = MediaSessionLimits;
 const OPEN_STATUSES = new Set(["pending", "approved", "starting", "running", "stopping"]);
 const TRANSITIONAL_STATUSES = new Set(["approved", "starting", "stopping"]);
 /** Poll fast while a pod is being created or terminated, slower otherwise (an agent's new request still shows up). */
-/** BL-144: a running session's current job (generating, else transferring, else the oldest submitted) and how many wait. */
-export function nowRunningOn(sessionId: string, jobs: MediaJob[]): { current: MediaJob | null; waiting: number } {
-  const mine = jobs.filter((j) => j.sessionId === sessionId);
-  const byAge = (a: MediaJob, b: MediaJob) => Date.parse(a.createdAt) - Date.parse(b.createdAt);
-  const pick = (status: MediaJob["status"]) => mine.filter((j) => j.status === status).sort(byAge)[0] ?? null;
-  const current = pick("generating") ?? pick("transferring") ?? pick("submitted");
-  const waiting = mine.filter((j) => (j.status === "queued" || j.status === "submitted") && j.jobId !== current?.jobId).length;
-  return { current, waiting };
-}
-
 const SESSIONS_FAST_POLL_MS = 5_000;
 const SESSIONS_SLOW_POLL_MS = 15_000;
 
@@ -980,6 +970,23 @@ const statusTone: Record<string, string> = {
 // are listed in one table with live statuses and per-row Approve / Reject / Stop. Approving answers at once; the pod
 // start runs in the background and the row's status tells the rest -- no blocking pop-up. Every action that spends or
 // ends a pod asks for a confirmation IN the row (no modal, no native dialog).
+/**
+ * BL-144: a running session's current job and how many wait behind it, from ComfyUI's own reports where available: the
+ * job whose progress says it is running (or just finished/failed) is current; other submitted/generating jobs of the
+ * session are waiting in ComfyUI's queue (the app marks every submitted job "generating" after its first poll, so the
+ * status alone cannot tell). Without progress, the oldest transferring/generating/submitted job is shown as current.
+ */
+export function nowRunningOn(sessionId: string, jobs: MediaJob[]): { current: MediaJob | null; waiting: number } {
+  const mine = jobs.filter((j) => j.sessionId === sessionId);
+  const byAge = (a: MediaJob, b: MediaJob) => Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  const inComfy = mine.filter((j) => j.status === "submitted" || j.status === "generating").sort(byAge);
+  const reportedActive = inComfy.find((j) => j.progress && ["running", "finished", "error", "interrupted"].includes(j.progress.state)) ?? null;
+  const transferring = mine.filter((j) => j.status === "transferring").sort(byAge)[0] ?? null;
+  const current = reportedActive ?? transferring ?? inComfy[0] ?? null;
+  const waiting = mine.filter((j) => j.status === "queued").length + inComfy.filter((j) => j.jobId !== current?.jobId).length;
+  return { current, waiting };
+}
+
 export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: boolean; activeChannelId: string | null; onLimits?: (limits: SessionLimits) => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [limits, setLimits] = useState<SessionLimits | null>(null);
@@ -1019,34 +1026,47 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
 
   // BL-144: what each running pod is doing right now -- its current job with ComfyUI's live progress, and how many
   // jobs wait behind it. Read only while a session runs.
-  const anyRunning = openSessions.some((s) => s.status === "running");
+  // Polled per running session (its own jobs only); every 2 s while one of them is in flight, otherwise every 15 s.
+  const runningIds = openSessions.filter((s) => s.status === "running").map((s) => s.sessionId).sort().join(",");
   const [liveJobs, setLiveJobs] = useState<MediaJob[]>([]);
   const [templateNames, setTemplateNames] = useState<Map<string, string>>(new Map());
+  const jobsInFlight = liveJobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
   useEffect(() => {
-    if (!anyRunning) return;
+    if (!runningIds) return;
     let cancelled = false;
     const load = () =>
-      requestJson<{ jobs: MediaJob[] }>("/api/media-generation/jobs").then(
-        (j) => {
-          if (!cancelled) setLiveJobs(j.jobs);
+      Promise.all(
+        runningIds.split(",").map((sessionId) => requestJson<{ jobs: MediaJob[] }>(`/api/media-generation/jobs?sessionId=${encodeURIComponent(sessionId)}`).then((j) => j.jobs))
+      ).then(
+        (lists) => {
+          if (!cancelled) setLiveJobs(lists.flat());
         },
         () => {
           // Non-fatal: the block keeps its last state.
         }
       );
+    void load();
+    const timer = setInterval(() => void load(), jobsInFlight ? 2_000 : 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [runningIds, jobsInFlight]);
+  // Template names for the "Now" line; fetched again when a job names a template not seen yet.
+  const missingTemplate = liveJobs.some((j) => !templateNames.has(j.templateId));
+  useEffect(() => {
+    if (!runningIds || !missingTemplate) return;
+    let cancelled = false;
     requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates").then(
       (t) => {
         if (!cancelled) setTemplateNames(new Map(t.templates.map((x) => [x.templateId, `${x.name} v${x.version}`])));
       },
       () => {}
     );
-    void load();
-    const timer = setInterval(() => void load(), 2_000);
     return () => {
       cancelled = true;
-      clearInterval(timer);
     };
-  }, [anyRunning]);
+  }, [runningIds, missingTemplate]);
 
   async function request() {
     if (!activeChannelId) return;

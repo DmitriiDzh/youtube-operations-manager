@@ -11,8 +11,11 @@ import { asRecord } from "./json";
 export type ComfyProgressEvent =
   | { type: "execution_start"; promptId: string }
   | { type: "execution_cached"; promptId: string; nodeIds: string[] }
-  /** `nodeId: null` is ComfyUI's legacy "this prompt finished" signal. */
-  | { type: "executing"; promptId: string; nodeId: string | null }
+  /**
+   * `nodeId: null` is ComfyUI's legacy "this prompt finished" signal. `promptId: null` is ComfyUI's re-send of the node
+   * it is executing to a socket that just connected (no prompt id in that message).
+   */
+  | { type: "executing"; promptId: string | null; nodeId: string | null }
   | { type: "progress"; promptId: string; nodeId: string | null; value: number; max: number }
   | { type: "executed"; promptId: string; nodeId: string }
   /** Newer ComfyUI: the state of every node of the prompt at once. */
@@ -34,7 +37,14 @@ export function parseComfyProgressMessage(text: string): ComfyProgressEvent | nu
   }
   const data = asRecord(message.data);
   const promptId = typeof data.prompt_id === "string" ? data.prompt_id : null;
-  if (!promptId) return null;
+  // On connect ComfyUI re-sends `executing` for its current node without a prompt id; that one message is kept.
+  if (!promptId) {
+    if (message.type === "executing") {
+      const nodeId = nodeIdOf(data.node);
+      return nodeId ? { type: "executing", promptId: null, nodeId } : null;
+    }
+    return null;
+  }
   switch (message.type) {
     case "execution_start":
       return { type: "execution_start", promptId };

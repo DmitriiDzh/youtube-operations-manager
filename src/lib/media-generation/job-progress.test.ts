@@ -102,3 +102,47 @@ test("workflowNodeTypes reads an API-format graph", () => {
     ["4", "SaveImage"],
   ]);
 });
+
+test("BL-144 review: ComfyUI's on-connect re-send of the current node (no prompt id) is accepted", () => {
+  const r = createJobProgressRegistry();
+  r.begin("j1", { promptId: "p1", workflowJson: GRAPH }, at(0));
+  r.connected("j1", at(1));
+  r.apply("j1", { type: "executing", promptId: null, nodeId: "3" }, at(2));
+  const p = r.get("j1")!;
+  assert.deepEqual([p.state, p.currentNode], ["running", { id: "3", type: "KSampler" }]);
+});
+
+test("BL-144 review: a node that reports executed is no longer current (not counted twice)", () => {
+  const r = createJobProgressRegistry();
+  r.begin("j1", { promptId: "p1", workflowJson: GRAPH }, at(0));
+  r.apply("j1", { type: "executing", promptId: "p1", nodeId: "3" }, at(1));
+  r.apply("j1", { type: "executed", promptId: "p1", nodeId: "3" }, at(2));
+  const p = r.get("j1")!;
+  assert.deepEqual([p.currentNode, p.nodesDone], [null, 1]);
+});
+
+test("BL-144 review: steps reported for another node mark the previous node done", () => {
+  const r = createJobProgressRegistry();
+  r.begin("j1", { promptId: "p1", workflowJson: GRAPH }, at(0));
+  r.apply("j1", { type: "executing", promptId: "p1", nodeId: "2" }, at(1));
+  r.apply("j1", { type: "progress", promptId: "p1", nodeId: "3", value: 1, max: 30 }, at(2));
+  const p = r.get("j1")!;
+  assert.deepEqual([p.currentNode?.id, p.nodesDone], ["3", 1]);
+});
+
+test("BL-144 review: a reconnection of a running job stays running; a first connection waits", () => {
+  const r = createJobProgressRegistry();
+  r.begin("j1", { promptId: "p1", workflowJson: GRAPH }, at(0));
+  r.apply("j1", { type: "execution_start", promptId: "p1" }, at(1));
+  r.unavailable("j1", "closed (1006)", at(2));
+  r.reconnecting("j1", at(3));
+  assert.equal(r.get("j1")?.state, "connecting");
+  r.connected("j1", at(4));
+  assert.equal(r.get("j1")?.state, "running");
+  r.begin("j2", { promptId: null, workflowJson: GRAPH }, at(0));
+  r.connected("j2", at(1));
+  assert.equal(r.get("j2")?.state, "waiting");
+  r.setPrompt("j2", "p2");
+  r.apply("j2", { type: "progress", promptId: "OTHER", nodeId: "3", value: 1, max: 2 }, at(2));
+  assert.equal(r.get("j2")?.state, "waiting", "once the prompt id is known, other prompts' events are ignored");
+});

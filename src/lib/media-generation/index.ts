@@ -41,7 +41,6 @@ type JobScheduling = "background" | "detached";
  * on the pulls JSON (review round 3). Next's dev hot-reload re-evaluates modules, which `globalThis`
  * survives.
  */
-
 export function createMediaGenerationCore(options: { jobScheduling?: JobScheduling } = {}) {
   // "detached" (the operator CLI, the MCP server): a submitted job is NOT polled by that process -- the web
   // server's watch loop picks it up (`resumeInFlightJobs`), so the CLI exits at once and nothing is polled twice.

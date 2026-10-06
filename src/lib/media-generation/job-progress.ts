@@ -64,7 +64,9 @@ function recompute(s: Internal, at: Date): void {
 
 /** Applies one ComfyUI event to a job's progress. Events of other prompts are ignored once the job's prompt is known. */
 export function applyProgressEvent(s: Internal, event: ComfyProgressEvent, at: Date): void {
-  if (s.promptId && event.promptId !== s.promptId) return;
+  // The socket is per job (clientId ytm-<jobId>), so this is only a safety net; ComfyUI's on-connect re-send of the
+  // current node carries no prompt id and is accepted.
+  if (s.promptId && event.promptId && event.promptId !== s.promptId) return;
   const p = s.progress;
   const node = (id: string) => ({ id, type: s.graph.get(id) ?? null });
   switch (event.type) {
@@ -92,12 +94,21 @@ export function applyProgressEvent(s: Internal, event: ComfyProgressEvent, at: D
       break;
     case "progress":
       p.state = "running";
-      if (event.nodeId && (!p.currentNode || p.currentNode.id !== event.nodeId)) p.currentNode = node(event.nodeId);
+      p.startedAt ??= at.toISOString();
+      if (event.nodeId && (!p.currentNode || p.currentNode.id !== event.nodeId)) {
+        // A step report for another node means the previous one has finished (its `executing` may have been missed).
+        if (p.currentNode) s.done.add(p.currentNode.id);
+        p.currentNode = node(event.nodeId);
+      }
       p.step = { value: event.value, max: event.max };
       break;
     case "executed":
       s.done.add(event.nodeId);
-      if (p.currentNode?.id === event.nodeId) p.step = null;
+      if (p.currentNode?.id === event.nodeId) {
+        // Finished: no longer "current", so it is not counted twice (done + current).
+        p.currentNode = null;
+        p.step = null;
+      }
       break;
     case "progress_state": {
       for (const n of event.nodes) if (n.state === "finished") s.done.add(n.nodeId);
@@ -142,12 +153,31 @@ export function createJobProgressRegistry() {
       recompute(s, at);
       jobs.set(jobId, s);
     },
-    /** The socket is open: until ComfyUI starts the prompt, the job is waiting in ComfyUI's queue. */
+    /**
+     * The socket is open. A first connection waits for ComfyUI to start the prompt; a reconnection of a job that was
+     * already running stays running (ComfyUI re-sends its current node on connect).
+     */
     connected(jobId: string, at: Date): void {
       const s = jobs.get(jobId);
       if (!s || s.progress.state !== "connecting") return;
-      s.progress.state = "waiting";
+      s.progress.state = s.progress.startedAt ? "running" : "waiting";
       recompute(s, at);
+    },
+    /** The prompt id ComfyUI assigned (known only after the submit, which happens with the socket already open). */
+    setPrompt(jobId: string, promptId: string): void {
+      const s = jobs.get(jobId);
+      if (s) s.promptId = promptId;
+    },
+    /** A dropped stream is being reopened. */
+    reconnecting(jobId: string, at: Date): void {
+      const s = jobs.get(jobId);
+      if (!s || s.progress.state !== "unavailable") return;
+      s.progress.state = "connecting";
+      s.progress.detail = null;
+      recompute(s, at);
+    },
+    has(jobId: string): boolean {
+      return jobs.has(jobId);
     },
     apply(jobId: string, event: ComfyProgressEvent, at: Date): void {
       const s = jobs.get(jobId);

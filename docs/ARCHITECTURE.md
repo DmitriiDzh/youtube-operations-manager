@@ -2865,10 +2865,14 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   session's approve is refused while a pull is running (shared volume, AC-P14-18); the CLI mirrors the
   panel (`models`, `model-pull`, `model-rm`).
 
-**Live job progress (BL-144, 2026-10-06, owner msg 1887: real information, not estimates).** While a job generates,
-`jobs.ts` (`watchProgress`, around the unchanged `/history` polling loop) opens ComfyUI's websocket through the media
-gateway (`comfyui-api.ts` `openProgressStream`: `wss://<pod>-<port>.proxy.runpod.net/ws?clientId=ytm-<jobId>`, the
-per-session bearer token in the upgrade request's header, the same "Media gateway" toggle and traffic counter). ComfyUI
+**Live job progress (BL-144, 2026-10-06, owner msg 1887: real information, not estimates).** `jobs.ts` opens
+ComfyUI's websocket **before** submitting a prompt (ComfyUI only sends events to sockets already connected with that
+client id; the submit waits up to 5 s for it), keeps it through the unchanged `/history` polling loop, reopens a dropped
+one at most every 15 s, and opens one late for a job picked up after a restart (ComfyUI re-sends its current node on
+connect, without a prompt id). The socket goes through the media gateway (`comfyui-api.ts` `openProgressStream`: `wss://<pod>-<port>.proxy.runpod.net/ws?clientId=ytm-<jobId>`, the
+per-session bearer token in the upgrade request's header, the same "Media gateway" toggle and traffic counter; an open
+socket re-checks the toggle every 15 s and closes when it is off). The node count and names come from the template's
+graph only while the template is at the job's version. ComfyUI
 sends a prompt's execution events only to the client id it was submitted with, so the socket sees exactly that job.
 `media-gateway/comfyui-progress.ts` parses `execution_start`, `execution_cached`, `executing`, `progress`, `executed`,
 `progress_state`, `execution_success`, `execution_error`, `execution_interrupted`; `media-generation/job-progress.ts`

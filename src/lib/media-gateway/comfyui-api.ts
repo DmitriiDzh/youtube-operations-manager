@@ -1,5 +1,5 @@
 import { DomainError } from "@/lib/shared-domain";
-import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
+import { assertMediaGatewayAuthorized, isMediaGatewayEnabled, type Authorize } from "./authorization";
 import { isJsonBody, jsonRequest } from "./http";
 import { asRecord } from "./json";
 import {
@@ -98,7 +98,17 @@ export function parseHistoryEntry(promptId: string, raw: unknown): ComfyHistoryE
   return { promptId, status: resolved, statusMessages: messages, outputs, raw: entry };
 }
 
-export function createComfyUiClient(args: { baseUrl: string; token: string | null; fetchImpl?: typeof fetch; authorize?: Authorize; socketFactory?: ProgressSocketFactory }) {
+export function createComfyUiClient(args: {
+  baseUrl: string;
+  token: string | null;
+  fetchImpl?: typeof fetch;
+  authorize?: Authorize;
+  socketFactory?: ProgressSocketFactory;
+  /** BL-144: re-checked while a progress stream is open; switching the gateway off closes the stream. */
+  gatewayEnabled?: () => Promise<boolean>;
+  /** How often an open progress stream re-checks the gateway toggle (ms). */
+  gatewayRecheckMs?: number;
+}) {
   const fetchImpl = args.fetchImpl ?? fetch;
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = args.baseUrl.replace(/\/$/, "");
@@ -224,10 +234,30 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
       if (args.token) headers.authorization = `Bearer ${args.token}`;
       const socket = (args.socketFactory ?? defaultProgressSocketFactory)(comfyProgressSocketUrl(baseUrl, input.clientId), { headers });
       let closed = false;
+      // Every other gateway call checks the toggle per request; an open socket re-checks it on a timer instead.
+      const gatewayEnabled = args.gatewayEnabled ?? isMediaGatewayEnabled;
+      const recheck = setInterval(() => {
+        void gatewayEnabled().then(
+          (enabled) => {
+            if (!enabled) closeSocket("media gateway switched off");
+          },
+          () => {}
+        );
+      }, args.gatewayRecheckMs ?? 15_000);
+      (recheck as { unref?: () => void }).unref?.();
       const finish = (reason: string) => {
         if (closed) return;
         closed = true;
+        clearInterval(recheck);
         input.onClosed(reason);
+      };
+      const closeSocket = (reason: string) => {
+        finish(reason);
+        try {
+          socket.close(1000, "done");
+        } catch {
+          // Already closed.
+        }
       };
       socket.onmessage = (event) => {
         if (typeof event.data !== "string") return; // binary previews
@@ -239,12 +269,7 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
       socket.onclose = (event) => finish(`closed (${event.code})`);
       return {
         close() {
-          finish("closed by the app");
-          try {
-            socket.close(1000, "done");
-          } catch {
-            // Already closed.
-          }
+          closeSocket("closed by the app");
         },
       };
     },
