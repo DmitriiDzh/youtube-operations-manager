@@ -1,6 +1,6 @@
 # BL-138 — RunPod sessions visible on every device
 
-**Status:** plan, awaiting the owner's agreement. Requested by the owner (Telegram 2026-10-06, msg 1706: "Информация об арендованных
+**Status:** implemented (ADR 0028); owner answers msg 1739: Stop from any device — yes; shared limits when the devices use one RunPod account. Requested by the owner (Telegram 2026-10-06, msg 1706: "Информация об арендованных
 сессиях тоже должна передаваться между устройствами, чтобы везде отображалась актуальное текущее состояние"); started on msg 1735.
 
 ## Today
