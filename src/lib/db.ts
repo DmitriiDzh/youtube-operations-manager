@@ -3218,6 +3218,10 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     description:
       "creative_assets(channel_id, reference_kind, reference_value) index -- the media job pipeline looks an asset up by its local path per pulled output (Phase 14 review round 14); additive index, data untouched",
     apply: async (client) => {
+      // A published snapshot has no `creative_assets` (device-local, scrubbed), and the 50..58 collision guard below
+      // re-runs this migration on such a staged copy (owner's Windows computer, 2026-10-06): nothing to index there.
+      const table = (await client.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_assets'")) as { rows: unknown[] };
+      if (table.rows.length === 0) return;
       await client.execute("CREATE INDEX IF NOT EXISTS creative_assets_reference_idx ON creative_assets(channel_id, reference_kind, reference_value)");
     },
   },
