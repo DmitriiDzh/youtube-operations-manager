@@ -858,6 +858,40 @@ export const rejectCollectionRequestInputSchema = z
 // every other value outside these three are deliberately excluded from a "collection warning".
 const overviewCollectionWarningFlagSchema = z.enum(["stale_observation", "quota_limited", "missing_snapshot", "feed_fallback_used"]);
 
+// BL-140 R3 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.3): Research → Channels rows. UI-only, no MCP/CLI
+// contract. Observed values with their observation time and bookkeeping only -- no derived metric (Phase 13).
+export const getWatchlistTableOutputSchema = z
+  .object({
+    channels: z.array(
+      z
+        .object({
+          channelId: z.string().min(1),
+          handleOrUrl: z.string().nullable(),
+          reason: z.string(),
+          addedAt: z.string(),
+          latestObservation: z
+            .object({
+              observedAt: z.string(),
+              subscriberCount: z.number().int().nullable(),
+              hiddenSubscriberCount: z.boolean(),
+              viewCount: z.number().int().nullable(),
+              videoCount: z.number().int().nullable(),
+            })
+            .strict()
+            .nullable(),
+          videosObserved: z.number().int().nonnegative(),
+          latestRun: z
+            .object({ status: z.enum(["success", "skipped_quota_limited", "failed"]), ranAt: z.string().nullable() })
+            .strict()
+            .nullable(),
+          dataQualityFlags: z.array(dataQualityFlagSchema),
+          status: z.enum(["current", "attention", "failed", "never_collected"]),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
 export const getMarketOverviewOutputSchema = z
   .object({
     watchlistCount: z.number().int().nonnegative(),

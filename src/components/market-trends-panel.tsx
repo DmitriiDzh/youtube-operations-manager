@@ -458,7 +458,7 @@ export function MarketTrendsPanel() {
               />
               <button
                 onClick={() => handleUpdateStatus(openTrend.trendCandidateId)}
-                disabled={updatingStatus || statusReason.trim().length === 0}
+                disabled={updatingStatus || statusReason.trim().length === 0 || statusChoice === openTrend.status}
                 className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
               >
                 Change status

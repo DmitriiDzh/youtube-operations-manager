@@ -86,6 +86,7 @@ import {
   getChannelVideoSnapshotHistoryInputSchema,
   getChannelVideoSnapshotHistoryOutputSchema,
   getMarketOverviewOutputSchema,
+  getWatchlistTableOutputSchema,
   collectionLimitsSchema,
   collectionChannelResultSchema,
   getCollectionRequestInputSchema,
@@ -1970,7 +1971,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           status: status as "current" | "attention" | "failed" | "never_collected",
         });
       }
-      return { channels: rows };
+      return parseWithSchema(getWatchlistTableOutputSchema, { channels: rows }, "get watchlist table output");
     },
 
     /**
