@@ -351,3 +351,33 @@ test("AC-FD-05: adopting an identical copy replaces nothing, so it takes no back
     a.client.close();
     b.client.close();
   }));
+
+test("AC-FD-11: 'sync before a background write' takes the other computer's fresh data first, then allows the write", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const syncAll = makeNetwork([a, b]);
+    await create(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await create(a, "UC-fresh");
+    await tick(a);
+    await syncAll();
+    b.clock.t += 5 * 60_000;
+    const verdict = await b.runner.syncBeforeBackgroundWrite();
+    assert.equal(verdict.allowed, true);
+    assert.deepEqual(await ids(b.client), ["UC-fresh", "UC1"], "B holds A's data before writing anything");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-11: with a real conflict open, 'sync before a background write' says wait", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    b.clock.t += 5 * 60_000;
+    const verdict = await b.runner.syncBeforeBackgroundWrite();
+    assert.equal(verdict.allowed, false);
+    a.client.close();
+    b.client.close();
+  }));

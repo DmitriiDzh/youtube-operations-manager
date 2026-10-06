@@ -13,7 +13,7 @@ import { EMPTY_DEVICE_SYNC_STATUS, type DeviceSyncStatus } from "./contracts";
 import { createDeviceSyncRunner, type DeviceSyncRunner } from "./services";
 
 export * from "./contracts";
-export { ancestryOf, decideSyncAction, type DeviceSyncRunner } from "./services";
+export { ancestryOf, backgroundWriteVerdict, decideSyncAction, type BackgroundWriteVerdict, type DeviceSyncRunner } from "./services";
 
 // Process-wide, keyed on `globalThis` (review round 1): Next.js compiles `instrumentation.ts` (the
 // scheduler) separately from the route handlers, so a module-level singleton could give "Sync now"

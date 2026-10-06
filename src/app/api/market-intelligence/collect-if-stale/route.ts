@@ -4,8 +4,22 @@ import { authOptions } from "@/lib/auth";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import { DomainError } from "@/lib/market-intelligence/contracts";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
+import { getDeviceSyncRunner } from "@/lib/device-sync";
+import { collectAfterDeviceSync } from "./sync-gate";
 
 const core = createMarketIntelligenceCore();
+
+/** An import holds the lock for about a second; a sync that takes longer than this is treated as
+ * "not caught up yet" -- the next dashboard load tries again. */
+const SYNC_FIRST_TIMEOUT_MS = 60_000;
+
+function syncFirstWithTimeout() {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ allowed: false; reason: string }>((resolve) => {
+    timer = setTimeout(() => resolve({ allowed: false, reason: "device sync is still running" }), SYNC_FIRST_TIMEOUT_MS);
+  });
+  return Promise.race([getDeviceSyncRunner().syncBeforeBackgroundWrite(), timeout]).finally(() => clearTimeout(timer));
+}
 
 // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §6) -- mirrors
 // .../analytics/auto-collect's own shape/idempotence contract: called once per dashboard mount
@@ -22,7 +36,11 @@ export async function POST() {
   }
 
   try {
-    const result = await core.runCollectionIfStale({ credentialRef: { userId: session.user.id } });
+    const userId = session.user.id;
+    const result = await collectAfterDeviceSync({
+      syncFirst: syncFirstWithTimeout,
+      collect: () => core.runCollectionIfStale({ credentialRef: { userId } }),
+    });
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof DomainError) {

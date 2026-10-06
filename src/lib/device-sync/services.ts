@@ -197,6 +197,40 @@ export async function pruneAutoImportBackups(dir: string, keep = DEVICE_SYNC_KEE
 }
 
 // ---------------------------------------------------------------------------------------------
+// Background writes (false divergences, owner Telegram 2026-10-06)
+// ---------------------------------------------------------------------------------------------
+
+export type BackgroundWriteVerdict = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Whether an AUTOMATIC write to transferred data (e.g. the dashboard's Market Intelligence
+ * refresh) may run now, given a just-finished tick. It may once this computer has caught up with
+ * the other one (or there is no sync); otherwise its new rows would start a second branch next to
+ * data the other computer already published -- the 5 October conflict. Never applies to an action
+ * a person starts on purpose.
+ */
+export function backgroundWriteVerdict(status: DeviceSyncStatus): BackgroundWriteVerdict {
+  switch (status.state) {
+    case "disabled":
+    case "not_configured":
+    case "synced":
+    case "exported":
+    case "imported":
+      return { allowed: true };
+    case "waiting":
+      return Object.keys(status.pendingSince ?? {}).length === 0
+        ? { allowed: true }
+        : { allowed: false, reason: "data from another computer is still arriving in the sync folder" };
+    case "attention":
+      return { allowed: false, reason: "device sync needs your attention (see the bell)" };
+    case "busy":
+      return { allowed: false, reason: `device sync is paused: ${status.busyReason ?? "another operation is running"}` };
+    case "folder_unreachable":
+      return { allowed: false, reason: "the sync folder is not reachable, so the other computer's data cannot be checked" };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------------------------
 
@@ -883,6 +917,10 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   return {
     tick: (options: { force?: boolean; exportOnly?: boolean } = {}) => serialize(() => tick(options)),
+    /** One tick now (it imports the other computer's newer data first, when there is any), then the
+     * verdict for an automatic write. */
+    syncBeforeBackgroundWrite: async (): Promise<BackgroundWriteVerdict> =>
+      backgroundWriteVerdict(await serialize(() => tick())),
     keepMine: (snapshotId: string) => serialize(() => keepMineUnlocked(snapshotId)),
     takeTheirs: (snapshotId: string) => serialize(() => takeTheirsUnlocked(snapshotId)),
     getStatus: loadStatusSafe,
