@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
+import type { HuggingFaceFileInfo, RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { sleep } from "@/lib/shared-async";
 import { DomainError, type MediaSettings } from "./contracts";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
@@ -17,6 +17,13 @@ import type { VolumeLock } from "./volume-lock";
 // ---------------------------------------------------------------------------
 
 export const MODELS_PREFIX = "models/";
+/**
+ * BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.1): the pull pod downloads into `ytm-staging/<pullId>/` -- outside `models/`
+ * (never listed as a model) and outside `exchange/` (the janitor's domain) -- hashes the file there, moves it into
+ * `models/` only on a match, and writes its verdict to `ytm-pulls/<pullId>.json`.
+ */
+export const PULL_STAGING_PREFIX = "ytm-staging/";
+export const PULL_RESULTS_PREFIX = "ytm-pulls/";
 const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"] as const;
 const DEFAULT_PULL_CAP_MS = 6 * 60 * 60_000;
 const TERMINATE_CONFIRM_MS = 60_000;
@@ -36,6 +43,10 @@ export const startModelPullInputSchema = z
     /** Path of the file inside the repo. */
     file: z.string().trim().min(1).max(500).refine((v) => !v.includes("..") && !v.startsWith("/"), "a repo-relative path"),
     folder: z.enum(MODEL_FOLDERS),
+    /** Branch, tag or commit (default `main`); resolved to a commit before the pod starts, and that commit is downloaded. */
+    revision: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._/-]+$/, "a branch, tag or commit").refine((v) => !v.includes(".."), "a branch, tag or commit").optional(),
+    /** Expected SHA-256 of the file. Optional here (the Hub's declared hash is used); the factory tool requires it. */
+    sha256: z.string().trim().toLowerCase().regex(/^[0-9a-f]{64}$/, "64 hex characters").optional(),
     cpuFlavorId: z.string().trim().min(1).max(64).optional(),
     vcpuCount: z.number().int().min(1).max(32).optional(),
   })
@@ -57,7 +68,23 @@ export type ModelPull = {
   finishedAt: string | null;
   bytes: number | null;
   error: string | null;
+  // BL-132 -- absent on pulls recorded before it (those keep the old "file present = done" rule).
+  revision?: string;
+  /** The commit the revision resolved to; the pod downloads exactly this. */
+  commitSha?: string | null;
+  /** The hash the file must have; a pull with one is done only on the pod's matching verdict. */
+  expectedSha256?: string | null;
+  /** What the pod measured. */
+  actualSha256?: string | null;
+  /** The Hub's size, known before the pod started. */
+  expectedBytes?: number | null;
+  requestedBy?: PullActor;
 };
+
+export type PullActor = "owner" | "factory";
+
+/** BL-132 audit (FACTORY_MEDIA_CONTROL_PLAN.md §2.5): one row per model action, with who did it. */
+export type MediaControlEvent = { actor: "owner" | "factory" | "sync"; action: string; subject: string; details?: Record<string, unknown> };
 
 export type ModelPullStore = {
   getPullsJson(): Promise<string | null>;
@@ -71,6 +98,10 @@ export type ModelPullStore = {
 
 export type ModelServiceDependencies = {
   store: ModelPullStore;
+  /** The Hugging Face Hub metadata read (`src/lib/media-gateway/huggingface.ts`), done before any pod is created. */
+  hub: { getFileInfo(input: { repoId: string; file: string; revision?: string }): Promise<HuggingFaceFileInfo> };
+  /** Audit sink; a failure to record never fails the action itself (it is logged). */
+  events: { record(event: MediaControlEvent): Promise<void> };
   base: {
     getSettings(): Promise<MediaSettings>;
     resolveRunpodClient(): Promise<RunpodApiClient>;
@@ -88,14 +119,38 @@ export function modelFileName(file: string): string {
   return file.split("/").filter(Boolean).pop() ?? file;
 }
 
-/** The shell the CPU pod runs: install the HF CLI, download one file into the right models folder, then idle until terminated. */
-export function buildPullCommand(repoId: string, file: string, folder: string): string {
+/**
+ * The shell the CPU pod runs (BL-132): download one file at an exact commit into the pull's staging folder, hash it,
+ * MOVE it into `models/<folder>/` only when the hash matches (else it is deleted with the staging folder), write the
+ * verdict `{ ok, sha256, bytes }` to `ytm-pulls/<pullId>.json` (via a `.part` + rename), then idle until terminated.
+ * The final key therefore never exists unverified (AC-FM-03). The HF CLI's cache lives inside the staging folder and
+ * goes with it (review round 14's concern); `set -e` + the trap mean any failure leaves no staging litter and no verdict.
+ */
+export function buildPullCommand(args: { pullId: string; repoId: string; file: string; folder: string; commitSha: string; expectedSha256: string }): string {
   const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-  const dir = `/workspace/models/${folder}`;
-  // The HF CLI's download cache (`.cache/huggingface/download/*.incomplete|.metadata|.lock`) would otherwise stay on
-  // the paid volume forever, invisible in the Models panel (review round 14): removed after the download and on any
-  // exit (a failed or cancelled pull leaves a multi-GB `.incomplete` blob).
-  return `set -e; trap 'rm -rf ${dir}/.cache' EXIT; pip install -q -U 'huggingface_hub[cli]'; mkdir -p ${dir}; hf download ${q(repoId)} ${q(file)} --local-dir ${dir}; rm -rf ${dir}/.cache; echo YTM_PULL_DONE; sleep infinity`;
+  const stage = `/workspace/${PULL_STAGING_PREFIX}${args.pullId}`;
+  const result = `/workspace/${PULL_RESULTS_PREFIX}${args.pullId}.json`;
+  const staged = `${stage}/${q(args.file)}`;
+  const final = `/workspace/${MODELS_PREFIX}${args.folder}/${q(args.file)}`;
+  return [
+    "set -e",
+    `trap 'rm -rf ${stage}' EXIT`,
+    "pip install -q -U 'huggingface_hub[cli]'",
+    `mkdir -p ${stage} /workspace/${PULL_RESULTS_PREFIX}`,
+    `hf download ${q(args.repoId)} ${q(args.file)} --revision ${q(args.commitSha)} --local-dir ${stage}`,
+    `ACTUAL=$(sha256sum ${staged} | cut -d' ' -f1)`,
+    `BYTES=$(stat -c %s ${staged})`,
+    `if [ "$ACTUAL" = ${q(args.expectedSha256)} ]; then mkdir -p "$(dirname ${final})"; mv ${staged} ${final}; OK=true; else OK=false; fi`,
+    `rm -rf ${stage}`,
+    `printf '{"ok":%s,"sha256":"%s","bytes":%s}\\n' "$OK" "$ACTUAL" "$BYTES" > ${result}.part`,
+    `mv ${result}.part ${result}`,
+    "echo YTM_PULL_DONE",
+    "sleep infinity",
+  ].join("\n");
+}
+
+export function pullResultKey(pullId: string): string {
+  return `${PULL_RESULTS_PREFIX}${pullId}.json`;
 }
 
 function parsePulls(json: string | null): ModelPull[] {
@@ -108,10 +163,10 @@ function parsePulls(json: string | null): ModelPull[] {
   }
 }
 
-/** Keep the list small: the last 20 finished pulls plus every running one. */
+/** Keep the list bounded: the last 100 finished pulls plus every running one (the full history is the audit table). */
 function trimPulls(pulls: ModelPull[]): ModelPull[] {
   const running = pulls.filter((p) => p.status === "running");
-  const finished = pulls.filter((p) => p.status !== "running").slice(-20);
+  const finished = pulls.filter((p) => p.status !== "running").slice(-100);
   return [...running, ...finished];
 }
 
@@ -146,7 +201,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
    * fails the pull stays `running` (with the error recorded) so the next poll retries it and
    * `hasActivePull` keeps telling the truth about the volume.
    */
-  async function finishPull(pull: ModelPull, status: ModelPull["status"], extra: { bytes?: number | null; error?: string | null }): Promise<ModelPull> {
+  async function finishPull(pull: ModelPull, status: ModelPull["status"], extra: { bytes?: number | null; error?: string | null; actualSha256?: string | null; actor?: PullActor }): Promise<ModelPull> {
     try {
       if (pull.podId) {
         // The volume is shared: the pull is over only once RunPod confirms the pod is gone (bounded wait), the same
@@ -167,10 +222,41 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     // The pod is gone (possibly killed before its own `rm -rf .cache` ran, review round 17): the HF CLI's cache keys under
     // the pull's folder are deleted over S3 so nothing invisible stays on the paid volume. Best effort.
     await cleanupPullCache(pull.expectedKey).catch(() => undefined);
-    const finished: ModelPull = { ...pull, status, finishedAt: deps.clock.now().toISOString(), bytes: extra.bytes ?? null, error: extra.error ?? null };
+    // BL-132: the pod's staging folder (a killed pod never ran its own `rm`) and its verdict file go too. Best effort.
+    await cleanupPullStaging(pull.pullId).catch(() => undefined);
+    const finished: ModelPull = {
+      ...pull,
+      status,
+      finishedAt: deps.clock.now().toISOString(),
+      bytes: extra.bytes ?? null,
+      error: extra.error ?? null,
+      ...(extra.actualSha256 !== undefined ? { actualSha256: extra.actualSha256 } : {}),
+    };
     await savePull(finished);
     await deps.volumeLock.release(`pull:${pull.pullId}`);
+    await audit({
+      actor: extra.actor ?? pull.requestedBy ?? "owner",
+      action: status === "done" ? "model_pull_done" : extra.error === "cancelled by operator" || extra.error === "cancelled by the Factory Operator" ? "model_pull_cancelled" : `model_pull_${status}`,
+      subject: pull.expectedKey,
+      details: { pullId: pull.pullId, repoId: pull.repoId, file: pull.file, revision: pull.revision ?? null, commitSha: pull.commitSha ?? null, expectedSha256: pull.expectedSha256 ?? null, actualSha256: finished.actualSha256 ?? null, bytes: finished.bytes, error: finished.error },
+    });
     return finished;
+  }
+
+  /** Records an audit row; a failure to record never fails or undoes the action it describes (logged instead). */
+  async function audit(event: MediaControlEvent): Promise<void> {
+    try {
+      await deps.events.record(event);
+    } catch (error) {
+      console.warn(`[media] could not record the ${event.action} event for ${event.subject}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Deletes `ytm-staging/<pullId>/**` and `ytm-pulls/<pullId>.json` -- this pull's own keys only. */
+  async function cleanupPullStaging(pullId: string): Promise<void> {
+    const s3 = await deps.base.s3();
+    for (const object of await s3.listAllObjects(`${PULL_STAGING_PREFIX}${pullId}/`)) await s3.deleteObject(object.key);
+    await s3.deleteObject(pullResultKey(pullId));
   }
 
   /** Deletes `models/<folder>/.cache/**` for the folder of `expectedKey` (the HF CLI's download cache). */
@@ -198,11 +284,12 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         .sort((a, b) => a.key.localeCompare(b.key));
     },
 
-    /** Deletes one object under `models/` (explicit operator action; never a prefix, never outside models/). */
-    async deleteModel(input: unknown): Promise<{ deleted: string }> {
+    /** Deletes one object under `models/` (explicit action; never a prefix, never outside models/). */
+    async deleteModel(input: unknown, options: { actor?: PullActor } = {}): Promise<{ deleted: string }> {
       const { key } = parseWithSchema(modelKeySchema, input, "model key");
       const s3 = await deps.base.s3();
       await s3.deleteObject(key);
+      await audit({ actor: options.actor ?? "owner", action: "model_deleted", subject: key });
       return { deleted: key };
     },
 
@@ -224,8 +311,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
      * Creates a CPU pod attached to the volume that downloads one file from Hugging Face into
      * `models/<folder>/`. Returns at once; `pollPulls` watches the key and terminates the pod.
      */
-    async startPull(input: unknown): Promise<ModelPull> {
-      return serialized(() => startPullInner(input));
+    async startPull(input: unknown, options: { requestedBy?: PullActor } = {}): Promise<ModelPull> {
+      return serialized(() => startPullInner(input, options.requestedBy ?? "owner"));
     },
 
     async pollPulls(): Promise<ModelPull[]> {
@@ -233,7 +320,8 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     },
 
     /** Operator abort: terminate the pull pod now. */
-    async cancelPull(input: unknown): Promise<ModelPull> {
+    async cancelPull(input: unknown, options: { actor?: PullActor } = {}): Promise<ModelPull> {
+      const actor = options.actor ?? "owner";
       const { pullId } = parseWithSchema(z.object({ pullId: z.string().min(1).max(64) }).strict(), input, "pull id");
       return serialized(async () => {
         const pull = (await readPulls()).find((p) => p.pullId === pullId);
@@ -252,7 +340,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
           }
           if (orphan) target = { ...pull, podId: orphan.id };
         }
-        return finishPull(target, "failed", { error: "cancelled by operator" });
+        return finishPull(target, "failed", { error: actor === "factory" ? "cancelled by the Factory Operator" : "cancelled by operator", actor });
       });
     },
   };
@@ -261,7 +349,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     return (await readPulls()).some((p) => p.status === "running");
   }
 
-  async function startPullInner(input: unknown): Promise<ModelPull> {
+  async function startPullInner(input: unknown, requestedBy: PullActor): Promise<ModelPull> {
     const parsed = parseWithSchema(startModelPullInputSchema, input, "model pull");
     const settings = await deps.base.getSettings();
     if (!settings.datacenterId || !settings.networkVolumeId) {
@@ -270,7 +358,36 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     if (await hasActivePull()) {
       throw new DomainError({ code: "media_session_conflict", message: "A model pull is already running; wait for it to finish." });
     }
+    // BL-132 pre-check (AC-FM-01): everything that can refuse the pull is asked BEFORE any pod exists -- no cost.
+    const hub = await deps.hub.getFileInfo({ repoId: parsed.repoId, file: parsed.file, revision: parsed.revision });
+    if (hub.sha256 && parsed.sha256 && hub.sha256 !== parsed.sha256) {
+      throw new DomainError({
+        code: "media_model_hash_mismatch",
+        message: `Hugging Face declares SHA-256 ${hub.sha256} for ${parsed.repoId}/${parsed.file}@${hub.revision}, not the requested ${parsed.sha256}.`,
+        details: { repoId: parsed.repoId, file: parsed.file, revision: hub.revision, declared: hub.sha256, requested: parsed.sha256 },
+      });
+    }
+    const expectedSha256 = parsed.sha256 ?? hub.sha256;
+    if (!expectedSha256) {
+      throw new DomainError({
+        code: "validation_failed",
+        message: `${parsed.file} has no SHA-256 on Hugging Face (not an LFS file); pass the expected sha256 explicitly.`,
+        details: { repoId: parsed.repoId, file: parsed.file },
+      });
+    }
     const client = await deps.base.resolveRunpodClient();
+    const volume = await client.getNetworkVolume(settings.networkVolumeId);
+    if (volume && volume.usedSizeGb !== null) {
+      // RunPod sizes are decimal GB; the file must fit in what is left (a staged file is moved, never copied).
+      const freeBytes = Math.max(0, (volume.sizeGb - volume.usedSizeGb) * 1e9);
+      if (hub.bytes > freeBytes) {
+        throw new DomainError({
+          code: "media_volume_full",
+          message: `${parsed.file} is ${(hub.bytes / 1e9).toFixed(2)} GB, but the network volume has only ${(freeBytes / 1e9).toFixed(2)} GB free (${volume.usedSizeGb} of ${volume.sizeGb} GB used).`,
+          details: { bytes: hub.bytes, freeBytes, sizeGb: volume.sizeGb, usedGb: volume.usedSizeGb },
+        });
+      }
+    }
     // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.
     const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${parsed.file}`;
     // The poll declares the pull done when the key has a size: a key that already exists would be "done" on the
@@ -288,7 +405,24 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     // AC-P14-18 as a constraint: the volume lock (held by an open session, if any) is taken BEFORE anything is written;
     // then the pull is RESERVED (recorded with no pod yet) so a crash inside createPod leaves a record the poll settles.
     await deps.volumeLock.acquire(`pull:${pullId}`);
-    const reserved: ModelPull = { pullId, podId: null, repoId: parsed.repoId, file: parsed.file, expectedKey, status: "running", startedAt: deps.clock.now().toISOString(), finishedAt: null, bytes: null, error: null };
+    const reserved: ModelPull = {
+      pullId,
+      podId: null,
+      repoId: parsed.repoId,
+      file: parsed.file,
+      expectedKey,
+      status: "running",
+      startedAt: deps.clock.now().toISOString(),
+      finishedAt: null,
+      bytes: null,
+      error: null,
+      revision: hub.revision,
+      commitSha: hub.commitSha,
+      expectedSha256,
+      actualSha256: null,
+      expectedBytes: hub.bytes,
+      requestedBy,
+    };
     await savePull(reserved);
     let pod: { id: string };
     try {
@@ -299,7 +433,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         cloud: "SECURE",
         dataCenterId: settings.datacenterId,
         mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
-        cmd: ["bash", "-lc", buildPullCommand(parsed.repoId, parsed.file, parsed.folder)],
+        cmd: ["bash", "-lc", buildPullCommand({ pullId, repoId: parsed.repoId, file: parsed.file, folder: parsed.folder, commitSha: hub.commitSha, expectedSha256 })],
         startSsh: false,
       });
     } catch (error) {
@@ -341,6 +475,12 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       }
       throw new DomainError({ code: "media_job_invalid_state", message: `The pull was ${settled?.status ?? "removed"} before its pod was recorded; the pod ${pod.id} was terminated.`, details: { pullId, podId: pod.id } });
     }
+    await audit({
+      actor: requestedBy,
+      action: "model_pull_started",
+      subject: expectedKey,
+      details: { pullId, repoId: parsed.repoId, file: parsed.file, revision: hub.revision, commitSha: hub.commitSha, expectedSha256, bytes: hub.bytes, podId: pod.id },
+    });
     return pull;
   }
 
@@ -381,17 +521,48 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       }
       // Each check stands on its own (review round 18): a flaky S3 must not hide a dead pod or the cap, and a flaky RunPod
       // must not hide a finished file; a check that cannot be made is "unknown", not "fine".
-      let head: { size: number } | null | undefined;
-      try {
-        if (!s3) throw new Error("the S3 key pair is not usable");
-        head = await s3.headObject(pull.expectedKey);
-      } catch (error) {
-        head = undefined;
-        await savePull({ ...pull, error: `S3 could not be asked for ${pull.expectedKey} (${error instanceof Error ? error.message : String(error)}); retrying` });
-      }
-      if (head && head.size > 0) {
-        await finishPull(pull, "done", { bytes: head.size });
-        continue;
+      if (pull.expectedSha256) {
+        // BL-132: a verified pull is settled ONLY by the pod's verdict (AC-FM-02/03). A file at the final key with no
+        // verdict yet is not "done" (the verdict follows the move within seconds); a mismatch verdict means the pod deleted
+        // the file. The verdict's bytes must also be what S3 sees at the final key (its view can lag -- then wait).
+        let verdictText: string | null | undefined;
+        try {
+          if (!s3) throw new Error("the S3 key pair is not usable");
+          verdictText = await s3.getObjectText(pullResultKey(pull.pullId));
+        } catch (error) {
+          verdictText = undefined;
+          await savePull({ ...pull, error: `S3 could not be asked for the pull's verdict (${error instanceof Error ? error.message : String(error)}); retrying` });
+        }
+        const verdict = typeof verdictText === "string" ? parseVerdict(verdictText) : null;
+        if (typeof verdictText === "string" && !verdict) {
+          await finishPull(pull, "failed", { error: "the pod's verdict file could not be read" });
+          continue;
+        }
+        if (verdict) {
+          if (!verdict.ok || verdict.sha256 !== pull.expectedSha256) {
+            await finishPull(pull, "failed", { error: `hash mismatch: expected ${pull.expectedSha256}, the downloaded file has ${verdict.sha256}; the file was deleted`, actualSha256: verdict.sha256, bytes: verdict.bytes });
+            continue;
+          }
+          const head = await s3!.headObject(pull.expectedKey).catch(() => undefined);
+          if (head && head.size === verdict.bytes) {
+            await finishPull(pull, "done", { bytes: verdict.bytes, actualSha256: verdict.sha256 });
+            continue;
+          }
+        }
+      } else {
+        // A pull recorded before BL-132 (no expected hash): the old rule -- the key on the volume means done.
+        let head: { size: number } | null | undefined;
+        try {
+          if (!s3) throw new Error("the S3 key pair is not usable");
+          head = await s3.headObject(pull.expectedKey);
+        } catch (error) {
+          head = undefined;
+          await savePull({ ...pull, error: `S3 could not be asked for ${pull.expectedKey} (${error instanceof Error ? error.message : String(error)}); retrying` });
+        }
+        if (head && head.size > 0) {
+          await finishPull(pull, "done", { bytes: head.size });
+          continue;
+        }
       }
       let pod: { status: string } | null | undefined;
       try {
@@ -409,6 +580,17 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
     }
     return readPulls();
   }
+}
+
+/** The pod's `{ ok, sha256, bytes }`, or `null` when the file is not in that shape. */
+function parseVerdict(text: string): { ok: boolean; sha256: string; bytes: number } | null {
+  try {
+    const parsed = JSON.parse(text) as { ok?: unknown; sha256?: unknown; bytes?: unknown };
+    if (typeof parsed.ok === "boolean" && typeof parsed.sha256 === "string" && typeof parsed.bytes === "number") return { ok: parsed.ok, sha256: parsed.sha256.toLowerCase(), bytes: parsed.bytes };
+  } catch {
+    // fall through
+  }
+  return null;
 }
 
 export type MediaModelServices = ReturnType<typeof createMediaModelServices>;

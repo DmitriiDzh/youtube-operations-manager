@@ -17,7 +17,8 @@ async function listFiles(dir: string): Promise<string[]> {
   return out;
 }
 
-const HOST_PATTERN = /(api|rest)\.runpod\.io|s3api-[a-z0-9-]+\.runpod\.io|proxy\.runpod\.net/;
+// BL-132: the Hugging Face Hub API joins the gateway (the pull pod's own `hf download` runs on RunPod, not here).
+const HOST_PATTERN = /(api|rest)\.runpod\.io|s3api-[a-z0-9-]+\.runpod\.io|proxy\.runpod\.net|huggingface\.co\/api/;
 
 test("media-gateway inventory: no production file outside src/lib/media-gateway references a runpod.io host", async () => {
   const root = process.cwd();

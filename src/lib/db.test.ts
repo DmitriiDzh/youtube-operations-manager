@@ -884,7 +884,8 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
 // are never lost, and -- the core behavior a rolling window actually exists to provide -- an
 // event outside the window is excluded from the count even though it is still in the table.
 // Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories; Phase 14 adds the three
-// media-gateway children (docs/roadmap/plans/PHASE_14_PLAN.md §2.1: one counter per child).
+// media-gateway children (docs/roadmap/plans/PHASE_14_PLAN.md §2.1: one counter per child); BL-132 adds the
+// fourth, the Hugging Face Hub (FACTORY_MEDIA_CONTROL_PLAN.md §2.1).
 test("getGatewayTrafficLast24h: every category reports a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
@@ -899,6 +900,7 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
         "cloud_monitoring_reads",
         "comfyui_api",
         "data_api_reads",
+        "huggingface_api",
         "live_writes",
         "mcp_tool_calls",
         "reporting_reads",

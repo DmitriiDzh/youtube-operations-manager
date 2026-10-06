@@ -1,7 +1,7 @@
 import { DomainError } from "@/lib/shared-domain";
 import { getMediaGatewayEnabled, recordGatewayCallOutcome, type GatewayTrafficCategory } from "@/lib/db";
 
-export type MediaGatewayCategory = Extract<GatewayTrafficCategory, "runpod_api" | "runpod_s3" | "comfyui_api">;
+export type MediaGatewayCategory = Extract<GatewayTrafficCategory, "runpod_api" | "runpod_s3" | "comfyui_api" | "huggingface_api">;
 
 /**
  * Phase 14 -- the one toggle for every outbound media-generation call (RunPod REST, the S3 API,

@@ -138,6 +138,20 @@ export type DomainErrorCode =
   | "media_job_invalid_state"
   | "media_job_params_invalid"
   | "media_workspace_unavailable"
+  // BL-132 (docs/roadmap/plans/FACTORY_MEDIA_CONTROL_PLAN.md) -- factory control of models, storage, templates, job inputs.
+  // HUGGINGFACE_UNAVAILABLE: the Hub did not answer. MODEL_NOT_FOUND: no such repo/revision/file. MODEL_GATED: a gated or
+  // private repo (no HF token in this phase). MODEL_HASH_MISMATCH: the requested SHA-256 differs from the Hub's or from the
+  // downloaded bytes. VOLUME_FULL: the file is larger than the volume's free space. MODEL_IN_USE: a template uses the file.
+  // TEMPLATE_REGISTRY_UNAVAILABLE: the registry folder is not configured/readable on this device. INPUT_UNAVAILABLE: a job
+  // input file failed its checks or could not be uploaded.
+  | "huggingface_unavailable"
+  | "media_model_not_found"
+  | "media_model_gated"
+  | "media_model_hash_mismatch"
+  | "media_volume_full"
+  | "media_model_in_use"
+  | "media_template_registry_unavailable"
+  | "media_input_unavailable"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

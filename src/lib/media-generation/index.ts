@@ -5,14 +5,14 @@ import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
-import { comfyUiProxyBaseUrl, createComfyUiClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
+import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
 import { sleep as sharedSleep } from "@/lib/shared-async";
 import { createExchangeFs, resolveFromYtmDir } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
-import { createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
+import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError } from "./contracts";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
@@ -99,6 +99,8 @@ function buildCore(jobScheduling: JobScheduling) {
   baseRef = base;
   const models = createMediaModelServices({
     store: createModelPullStore(),
+    hub: createHuggingFaceClient(),
+    events: createMediaControlEventSink(),
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
     generateId: () => randomUUID(),
     clock: { now },

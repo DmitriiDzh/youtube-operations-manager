@@ -2,8 +2,68 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError } from "./contracts";
-import { buildPullCommand, createMediaModelServices, modelFileName, type ModelPullStore } from "./models";
+import { buildPullCommand, createMediaModelServices, modelFileName, type MediaControlEvent, type ModelPull, type ModelPullStore, type ModelServiceDependencies } from "./models";
 import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
+
+
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.1): a pull is now checked against the Hugging Face Hub before any pod and is
+// settled by the pod's verdict file. The Phase-14 tests below keep their lifecycle expectations; this harness supplies
+// the two new dependencies and emulates the pod's contract -- once its file is at the final key, its verdict
+// `ytm-pulls/<pullId>.json` says ok with the expected hash and the file's size -- unless a test sets a verdict itself.
+const HUB_SHA = "b".repeat(64);
+type Verdicts = Map<string, string>;
+function fakeHub(info: Partial<{ sha256: string | null; bytes: number; commitSha: string }> = {}, calls?: string[]): ModelServiceDependencies["hub"] {
+  return {
+    async getFileInfo(input) {
+      calls?.push(`hub:${input.repoId}:${input.file}:${input.revision ?? "main"}`);
+      return { repoId: input.repoId, revision: input.revision ?? "main", commitSha: info.commitSha ?? "c0ffee", path: input.file, bytes: info.bytes ?? 1000, sha256: info.sha256 === undefined ? HUB_SHA : info.sha256 };
+    },
+  };
+}
+function createTestModelServices(
+  deps: Omit<ModelServiceDependencies, "hub" | "events"> & Partial<Pick<ModelServiceDependencies, "hub" | "events">>,
+  options: { verdicts?: Verdicts; podWritesVerdict?: boolean } = {}
+) {
+  const verdicts = options.verdicts ?? new Map<string, string>();
+  const podWritesVerdict = options.podWritesVerdict ?? true;
+  const s3 = async () => {
+    const inner = await deps.base.s3();
+    return new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === "getObjectText") {
+          return async (key: string) => {
+            if (verdicts.has(key)) return verdicts.get(key)!;
+            const match = /^ytm-pulls\/(.+)\.json$/.exec(key);
+            if (!match || !podWritesVerdict) return null;
+            const pull = (JSON.parse((await deps.store.getPullsJson()) ?? "[]") as ModelPull[]).find((p) => p.pullId === match[1]);
+            const head = pull ? await target.headObject(pull.expectedKey) : null;
+            return pull && head ? JSON.stringify({ ok: true, sha256: pull.expectedSha256, bytes: head.size }) : null;
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        if (value === undefined && prop === "deleteObject") return async () => {};
+        if (value === undefined && prop === "listAllObjects") return async () => [];
+        return value;
+      },
+    });
+  };
+  const resolveRunpodClient = async () => {
+    const inner = await deps.base.resolveRunpodClient();
+    return new Proxy(inner, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (value === undefined && prop === "getNetworkVolume") return async () => null; // size unknown: no free-space check
+        return value;
+      },
+    });
+  };
+  return createMediaModelServices({
+    ...deps,
+    hub: deps.hub ?? fakeHub(),
+    events: deps.events ?? { record: async () => {} },
+    base: { ...deps.base, s3, resolveRunpodClient },
+  });
+}
 
 /** A lock whose holder is "active" exactly while held (no cross-module staleness check in these unit tests). */
 function testLock(opts: { heldBy?: string } = {}) {
@@ -16,7 +76,17 @@ function testLock(opts: { heldBy?: string } = {}) {
 // after success or failure; the listing shows the file afterwards; the GPU session cannot start while a pull runs (checked in
 // sessions.test.ts through the hasActivePull hook). The janitor/listing never leave models/.
 
-function fixture(opts: { objects?: Map<string, number>; podStatus?: string; createFails?: boolean } = {}) {
+function fixture(
+  opts: {
+    objects?: Map<string, number>;
+    podStatus?: string;
+    createFails?: boolean;
+    hub?: ModelServiceDependencies["hub"];
+    volume?: { sizeGb: number; usedSizeGb: number | null } | null;
+    verdicts?: Verdicts;
+    podWritesVerdict?: boolean;
+  } = {}
+) {
   const objects = opts.objects ?? new Map<string, number>();
   let json: string | null = null;
   const store: ModelPullStore = { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) };
@@ -41,6 +111,14 @@ function fixture(opts: { objects?: Map<string, number>; podStatus?: string; crea
     async listPods() {
       return []; // RunPod reachable: no pod of the deterministic name exists
     },
+    ...(opts.volume !== undefined
+      ? {
+          async getNetworkVolume(id: string) {
+            calls.push(`volume:${id}`);
+            return opts.volume === null ? null : { id, name: "v", dataCenterId: "EU-RO-1", ...opts.volume };
+          },
+        }
+      : {}),
   } as unknown as RunpodApiClient;
   const s3 = {
     async listAllObjects(prefix: string) {
@@ -58,19 +136,26 @@ function fixture(opts: { objects?: Map<string, number>; podStatus?: string; crea
   } as unknown as RunpodS3Client;
   let now = new Date("2026-10-05T12:00:00Z");
   let ids = 0;
-  const services = createMediaModelServices({
-    store,
-    base: {
-      getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }),
-      resolveRunpodClient: async () => client,
-      s3: async () => s3,
+  const events: MediaControlEvent[] = [];
+  const verdicts = opts.verdicts ?? new Map<string, string>();
+  const services = createTestModelServices(
+    {
+      store,
+      hub: opts.hub,
+      events: { record: async (e) => void events.push(e) },
+      base: {
+        getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }),
+        resolveRunpodClient: async () => client,
+        s3: async () => s3,
+      },
+      generateId: () => `id-${++ids}`,
+      clock: { now: () => now },
+      pullCapMs: 60 * 60_000,
+      volumeLock: testLock().lock,
     },
-    generateId: () => `id-${++ids}`,
-    clock: { now: () => now },
-    pullCapMs: 60 * 60_000,
-    volumeLock: testLock().lock,
-  });
-  return { services, calls, objects, setPodStatus: (s: string) => (podStatus = s), advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
+    { verdicts, podWritesVerdict: opts.podWritesVerdict }
+  );
+  return { services, calls, objects, events, verdicts, pulls: () => JSON.parse(json ?? "[]") as ModelPull[], setPodStatus: (s: string) => (podStatus = s), advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
 }
 
 test("listModels lists only models/ (folder + name + size), skipping .keep markers", async () => {
@@ -92,15 +177,23 @@ test("deleteModel accepts only a models/ object key", async () => {
   assert.equal(f.objects.size, 0);
 });
 
-test("buildPullCommand downloads into the right folder and quotes the arguments; modelFileName keeps the base name", () => {
-  const cmd = buildPullCommand("Comfy-Org/flux1-schnell", "split_files/flux1-schnell-fp8.safetensors", "checkpoints");
-  assert.ok(cmd.includes("hf download 'Comfy-Org/flux1-schnell' 'split_files/flux1-schnell-fp8.safetensors' --local-dir /workspace/models/checkpoints"));
+test("BL-132 buildPullCommand: downloads the exact commit into the pull's staging folder, hashes it there, moves it into models/ only on a match, writes the verdict via .part + rename; arguments are quoted", () => {
+  const cmd = buildPullCommand({ pullId: "p1", repoId: "Comfy-Org/flux1-schnell", file: "split_files/flux1-schnell-fp8.safetensors", folder: "checkpoints", commitSha: "abc123", expectedSha256: "e".repeat(64) });
+  const lines = cmd.split("\n");
+  const at = (needle: string) => lines.findIndex((l) => l.includes(needle));
+  assert.equal(lines[0], "set -e");
+  assert.ok(lines.includes("trap 'rm -rf /workspace/ytm-staging/p1' EXIT"), "staging removed on any exit");
+  assert.ok(cmd.includes("hf download 'Comfy-Org/flux1-schnell' 'split_files/flux1-schnell-fp8.safetensors' --revision 'abc123' --local-dir /workspace/ytm-staging/p1"));
+  assert.ok(cmd.includes("sha256sum /workspace/ytm-staging/p1/'split_files/flux1-schnell-fp8.safetensors'"));
+  assert.ok(cmd.includes(`if [ "$ACTUAL" = '${"e".repeat(64)}' ]; then`));
+  assert.ok(cmd.includes("mv /workspace/ytm-staging/p1/'split_files/flux1-schnell-fp8.safetensors' /workspace/models/checkpoints/'split_files/flux1-schnell-fp8.safetensors'; OK=true; else OK=false; fi"));
+  // Order: download -> hash -> conditional move -> staging gone -> verdict written last, atomically.
+  assert.ok(at("hf download") < at("sha256sum") && at("sha256sum") < at("then mkdir") && at("then mkdir") < lines.indexOf("rm -rf /workspace/ytm-staging/p1") && lines.indexOf("rm -rf /workspace/ytm-staging/p1") < at("> /workspace/ytm-pulls/p1.json.part"));
+  assert.ok(lines.includes("mv /workspace/ytm-pulls/p1.json.part /workspace/ytm-pulls/p1.json"));
   assert.ok(cmd.endsWith("sleep infinity"));
-  // Review round 14: the HF CLI's download cache is removed after the download and on any exit (a trap).
-  assert.ok(cmd.includes("--local-dir /workspace/models/checkpoints; rm -rf /workspace/models/checkpoints/.cache;"));
-  assert.ok(cmd.includes("trap 'rm -rf /workspace/models/checkpoints/.cache' EXIT"));
+  assert.ok(!cmd.includes("/workspace/models/checkpoints --local-dir") && !/--local-dir \/workspace\/models/.test(cmd), "never downloads straight into models/");
   assert.equal(modelFileName("split_files/x.safetensors"), "x.safetensors");
-  assert.ok(buildPullCommand("a/b", "it's.bin", "vae").includes("'it'\\''s.bin'"));
+  assert.ok(buildPullCommand({ pullId: "p", repoId: "a/b", file: "it's.bin", folder: "vae", commitSha: "c", expectedSha256: "f".repeat(64) }).includes("'it'\\''s.bin'"));
 });
 
 test("AC-P14-18: startPull creates a CPU pod on the volume; pollPulls terminates it once the file is on the volume and reports done", async () => {
@@ -221,7 +314,7 @@ function fixtureWithFlakyTerminate() {
     },
     async deleteObject() {},
   } as unknown as RunpodS3Client;
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: {
       getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }),
@@ -254,7 +347,7 @@ test("review 3: a pull is refused while a GPU session is open on the volume", as
   let json: string | null = null;
   const client = { async createPod() { throw new Error("must not be reached"); } } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "id",
@@ -290,7 +383,7 @@ test("review 5: a pull is terminal only once RunPod confirms the pod is gone; a 
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
   let now = new Date("2026-10-05T12:00:00Z");
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "id",
@@ -330,7 +423,7 @@ test("review 5: a createPod call that fails after RunPod created the pull pod st
     },
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "pull-abcdef",
@@ -381,7 +474,7 @@ test("review 6: two PROCESSES (the web watch loop and the operator CLI) mutating
   } as unknown as RunpodApiClient;
   const sharedLock = testLock();
   const make = (prefix: string) =>
-    createMediaModelServices({
+    createTestModelServices({
       store,
       base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
       generateId: () => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
@@ -452,7 +545,7 @@ test("review 8/9 (AC-P14-18 as a constraint): the pull holds the volume lock fro
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
   const { lock, store } = testLock();
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "pull-1",
@@ -502,7 +595,7 @@ test("review 8: a reservation whose createPod never returned is settled by the p
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject(key: string) { const size = objects.get(key); return size === undefined ? null : { size, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
   let clock = now;
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "x",
@@ -550,7 +643,7 @@ test("review 10: a pull settled by another process while this one was inside cre
   } as unknown as RunpodApiClient;
   const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
   const { lock, store } = testLock();
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "pull-1",
@@ -594,7 +687,7 @@ test("review 16: cancelling a RESERVED pull first looks for a pod of its determi
   const s3 = { async listAllObjects() { return []; }, async headObject() { return null; }, async deleteObject() {} } as unknown as RunpodS3Client;
   const { lock, store } = testLock();
   await store.tryAcquire("pull:r1", new Date(0));
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => s3 },
     generateId: () => "x",
@@ -646,7 +739,7 @@ test("review 18: a flaky S3 does not hide a dead pull pod or the 6 h cap -- each
   const flakyS3 = { async listAllObjects() { return []; }, async headObject() { throw new Error("RunPod S3 returned HTTP 503"); }, async deleteObject() {} } as unknown as RunpodS3Client;
   const { lock, store } = testLock();
   await store.tryAcquire("pull:p1", new Date(0));
-  const services = createMediaModelServices({
+  const services = createTestModelServices({
     store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
     base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: async () => client, s3: async () => flakyS3 },
     generateId: () => "x",
@@ -668,7 +761,7 @@ test("review 20: an unusable S3 pair does not skip the dead-pod check and the ca
     const s3 = { async listAllObjects() { return []; }, async headObject() { return { size: 7, etag: null, lastModified: null }; }, async deleteObject() {} } as unknown as RunpodS3Client;
     const { lock, store } = testLock();
     void store.tryAcquire("pull:p1", new Date(0));
-    const services = createMediaModelServices({
+    const services = createTestModelServices({
       store: { getPullsJson: async () => json, updatePullsJson: async (m) => (json = m(json)) },
       base: { getSettings: async () => ({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", networkVolumeId: "vol-eu" }), resolveRunpodClient: over.client ?? (async () => client), s3: over.s3 ?? (async () => s3) },
       generateId: () => "x",
@@ -685,4 +778,139 @@ test("review 20: an unusable S3 pair does not skip the dead-pod check and the ca
   const [b] = await noRunpod.services.pollPulls();
   assert.equal(b.status, "running", "done needs the terminate, which needs RunPod -- the pull stays running with the error recorded");
   assert.match(b.error ?? "", /could not be terminated/);
+});
+
+// -- BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.1, AC-FM-01..04, AC-FM-14): verified pulls -------------------------------
+// Expected values are stated from the plan and the owner's decision D2 ("the request carries the expected hash; a mismatch
+// deletes the file and fails the pull"), not read off the implementation.
+
+const WANT = "1".repeat(64);
+const OTHER = "2".repeat(64);
+
+test("AC-FM-01: a requested SHA-256 that differs from the Hub's declared hash is refused before any pod is created -- nothing billed or stored", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: OTHER }) });
+  await assert.rejects(
+    f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints", sha256: WANT }),
+    (e: unknown) => isDomainError(e) && e.code === "media_model_hash_mismatch"
+  );
+  assert.ok(!f.calls.some((c) => c.startsWith("createPod")));
+  assert.deepEqual(f.pulls(), []);
+  assert.equal(await f.services.hasActivePull(), false);
+});
+
+test("AC-FM-01: a gated repo, an unknown file and the Hub being down all refuse the pull before any pod", async () => {
+  for (const code of ["media_model_gated", "media_model_not_found", "huggingface_unavailable"] as const) {
+    const f = fixture({
+      hub: {
+        async getFileInfo() {
+          const { DomainError } = await import("./contracts");
+          throw new DomainError({ code, message: code });
+        },
+      },
+    });
+    await assert.rejects(f.services.startPull({ repoId: "a/b", file: "m", folder: "vae", sha256: WANT }), (e: unknown) => isDomainError(e) && e.code === code);
+    assert.ok(!f.calls.some((c) => c.startsWith("createPod")));
+  }
+});
+
+test("D2: without a requested hash the Hub's declared one is used; a non-LFS file (no declared hash) needs it explicitly", async () => {
+  const declared = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await declared.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "vae" });
+  assert.equal(pull.expectedSha256, WANT);
+  assert.ok(declared.calls.some((c) => c.includes(`'${WANT}'`)), "the pod checks against that hash");
+
+  const plain = fixture({ hub: fakeHub({ sha256: null }) });
+  await assert.rejects(plain.services.startPull({ repoId: "a/b", file: "cfg.json", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  const explicit = await plain.services.startPull({ repoId: "a/b", file: "cfg.json", folder: "vae", sha256: WANT.toUpperCase() });
+  assert.equal(explicit.expectedSha256, WANT, "stored lower-case");
+});
+
+test("AC-FM-04: a file larger than the volume's free space is refused (media_volume_full) before any pod; a volume of unknown usage is not a refusal", async () => {
+  const full = fixture({ hub: fakeHub({ bytes: 11e9 }), volume: { sizeGb: 50, usedSizeGb: 40 } });
+  await assert.rejects(full.services.startPull({ repoId: "a/b", file: "big.safetensors", folder: "checkpoints" }), (e: unknown) => isDomainError(e) && e.code === "media_volume_full" && (e.details as { freeBytes: number }).freeBytes === 10e9);
+  assert.ok(!full.calls.some((c) => c.startsWith("createPod")));
+  const fits = fixture({ hub: fakeHub({ bytes: 9e9 }), volume: { sizeGb: 50, usedSizeGb: 40 } });
+  assert.equal((await fits.services.startPull({ repoId: "a/b", file: "ok.safetensors", folder: "checkpoints" })).status, "running");
+  const unknown = fixture({ hub: fakeHub({ bytes: 999e9 }), volume: { sizeGb: 50, usedSizeGb: null } });
+  assert.equal((await unknown.services.startPull({ repoId: "a/b", file: "x.safetensors", folder: "checkpoints" })).status, "running");
+});
+
+test("AC-FM-02: the pod's mismatch verdict fails the pull with both hashes, nothing is under models/, and the pull's staging + verdict keys are deleted", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  f.objects.set(`ytm-staging/${pull.pullId}/m.safetensors.partial`, 7); // litter of a pod that was killed mid-way
+  f.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: false, sha256: OTHER, bytes: 1000 }));
+  const [failed] = await f.services.pollPulls();
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", new RegExp(`expected ${WANT}.*${OTHER}`));
+  assert.equal(failed.actualSha256, OTHER);
+  assert.ok(f.calls.includes("terminate:cpupod1"));
+  assert.ok(f.calls.includes(`delete:ytm-staging/${pull.pullId}/m.safetensors.partial`));
+  assert.ok(f.calls.includes(`delete:ytm-pulls/${pull.pullId}.json`));
+  assert.deepEqual(await f.services.listModels(), []);
+  assert.equal(await f.services.hasActivePull(), false);
+});
+
+test("AC-FM-02: a matching verdict with the file at the final key ends done with the measured hash and size; the model is listed", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  f.objects.set("models/checkpoints/m.safetensors", 1000);
+  f.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: true, sha256: WANT, bytes: 1000 }));
+  const [done] = await f.services.pollPulls();
+  assert.equal(done.status, "done");
+  assert.equal(done.actualSha256, WANT);
+  assert.equal(done.bytes, 1000);
+  assert.deepEqual((await f.services.listModels()).map((m) => m.key), ["models/checkpoints/m.safetensors"]);
+});
+
+test("AC-FM-03: a file at the final key WITHOUT the pod's verdict is not done; a verdict whose size S3 does not show yet waits; a verdict file that is not JSON fails the pull", async () => {
+  const noVerdict = fixture({ hub: fakeHub({ sha256: WANT }), podWritesVerdict: false });
+  await noVerdict.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  noVerdict.objects.set("models/checkpoints/m.safetensors", 1000);
+  assert.equal((await noVerdict.services.pollPulls())[0].status, "running");
+
+  const lag = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await lag.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  lag.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: true, sha256: WANT, bytes: 1000 }));
+  assert.equal((await lag.services.pollPulls())[0].status, "running", "S3 does not show the file yet");
+  lag.objects.set("models/checkpoints/m.safetensors", 1000);
+  assert.equal((await lag.services.pollPulls())[0].status, "done");
+
+  const garbled = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const g = await garbled.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  garbled.verdicts.set(`ytm-pulls/${g.pullId}.json`, "{ not json");
+  const [failed] = await garbled.services.pollPulls();
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /verdict/);
+});
+
+test("BL-132: the pull downloads the commit the Hub resolved the revision to, and records revision, commit, expected size and who asked", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT, commitSha: "deadbeef", bytes: 4242 }) });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "loras", revision: "v1.0" }, { requestedBy: "factory" });
+  assert.deepEqual([pull.revision, pull.commitSha, pull.expectedBytes, pull.requestedBy], ["v1.0", "deadbeef", 4242, "factory"]);
+  assert.ok(f.calls.some((c) => c.includes("--revision 'deadbeef'")));
+  await assert.rejects(f.services.startPull({ repoId: "a/b", file: "x", folder: "vae", revision: "../etc" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(f.services.startPull({ repoId: "a/b", file: "x", folder: "vae", sha256: "abc" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+});
+
+test("AC-FM-14: start, finish, cancel and delete are audited with the actor (factory or owner)", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const first = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" }, { requestedBy: "factory" });
+  f.objects.set("models/checkpoints/m.safetensors", 1000);
+  await f.services.pollPulls();
+  await f.services.deleteModel({ key: "models/checkpoints/m.safetensors" }, { actor: "factory" });
+  const second = await f.services.startPull({ repoId: "a/b", file: "n.safetensors", folder: "vae" });
+  await f.services.cancelPull({ pullId: second.pullId }, { actor: "owner" });
+  assert.deepEqual(
+    f.events.map((e) => [e.actor, e.action, e.subject]),
+    [
+      ["factory", "model_pull_started", "models/checkpoints/m.safetensors"],
+      ["factory", "model_pull_done", "models/checkpoints/m.safetensors"],
+      ["factory", "model_deleted", "models/checkpoints/m.safetensors"],
+      ["owner", "model_pull_started", "models/vae/n.safetensors"],
+      ["owner", "model_pull_cancelled", "models/vae/n.safetensors"],
+    ]
+  );
+  assert.equal(f.events[1].details?.actualSha256, WANT);
+  assert.equal(f.events[0].details?.pullId, first.pullId);
 });

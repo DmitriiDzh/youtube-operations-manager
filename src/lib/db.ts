@@ -839,6 +839,10 @@ export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
   updatedAt: integer("updated_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
+  /** Schema v61 (BL-132): `owner` = imported by the operator (local), `factory` = installed from the template registry. */
+  source: text("source").notNull().default("owner"),
+  /** Schema v61: SHA-256 of the registry file a `factory` row was installed from (same version, other content = refused). */
+  registrySha256: text("registry_sha256"),
 });
 
 export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
@@ -878,6 +882,39 @@ export const mediaJobs = sqliteTable(
  * LEDGER ONLY (ADR 0019's rule): a remote key is deleted from the volume only after its row says the
  * file exists locally; nothing outside `exchange/` is ever listed or deleted. Device-local.
  */
+/**
+ * Schema v61 (BL-132, FACTORY_MEDIA_CONTROL_PLAN.md §2.5): append-only audit of model pulls/cancels/deletions and
+ * template installs/updates/removals, with who did it (`owner`, `factory`, `sync`). Device-local.
+ */
+export const mediaControlEvents = sqliteTable(
+  "media_control_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    at: integer("at", { mode: "timestamp" }).notNull(),
+    actor: text("actor").notNull(),
+    action: text("action").notNull(),
+    subject: text("subject").notNull(),
+    detailsJson: text("details_json"),
+  },
+  (table) => [index("media_control_events_at_idx").on(table.at)]
+);
+
+/** Schema v61 (BL-132, plan §2.4): job input files uploaded to `exchange/in/<jobId>/`, so the janitor deletes them by ledger only. */
+export const mediaExchangeInputs = sqliteTable(
+  "media_exchange_inputs",
+  {
+    remoteKey: text("remote_key").primaryKey(),
+    jobId: text("job_id").notNull(),
+    parameter: text("parameter").notNull(),
+    sourcePath: text("source_path").notNull(),
+    bytes: integer("bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    uploadedAt: integer("uploaded_at", { mode: "timestamp" }).notNull(),
+    remoteDeletedAt: integer("remote_deleted_at", { mode: "timestamp" }),
+  },
+  (table) => [index("media_exchange_inputs_job_idx").on(table.jobId)]
+);
+
 export const mediaExchangeFiles = sqliteTable(
   "media_exchange_files",
   {
@@ -3230,6 +3267,45 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 61,
+    description:
+      "media_control_events + media_exchange_inputs + media_workflow_templates.source/registry_sha256 -- factory control of media (BL-132, docs/roadmap/plans/FACTORY_MEDIA_CONTROL_PLAN.md): an append-only audit of model/template actions with their actor, the ledger of job input files uploaded to the volume, and which templates come from the factory registry. Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES); additive, existing rows become source 'owner'",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_control_events (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "at INTEGER NOT NULL, " +
+          "actor TEXT NOT NULL, " +
+          "action TEXT NOT NULL, " +
+          "subject TEXT NOT NULL, " +
+          "details_json TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_control_events_at_idx ON media_control_events(at)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS media_exchange_inputs (" +
+          "remote_key TEXT PRIMARY KEY, " +
+          "job_id TEXT NOT NULL, " +
+          "parameter TEXT NOT NULL, " +
+          "source_path TEXT NOT NULL, " +
+          "bytes INTEGER NOT NULL, " +
+          "sha256 TEXT NOT NULL, " +
+          "uploaded_at INTEGER NOT NULL, " +
+          "remote_deleted_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS media_exchange_inputs_job_idx ON media_exchange_inputs(job_id)");
+      for (const statement of [
+        "ALTER TABLE media_workflow_templates ADD COLUMN source TEXT NOT NULL DEFAULT 'owner'",
+        "ALTER TABLE media_workflow_templates ADD COLUMN registry_sha256 TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
 ];
 
 /**
@@ -5295,7 +5371,9 @@ export type GatewayTrafficCategory =
   // Phase 14 -- the three media-gateway children (`src/lib/media-gateway/`), one counter each.
   | "runpod_api"
   | "runpod_s3"
-  | "comfyui_api";
+  | "comfyui_api"
+  // BL-132 -- the Hugging Face Hub metadata reads (`src/lib/media-gateway/huggingface.ts`).
+  | "huggingface_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -5317,6 +5395,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "runpod_api",
   "runpod_s3",
   "comfyui_api",
+  "huggingface_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -7560,6 +7639,21 @@ const MEDIA_MODEL_PULLS_KEY = "media_model_pulls";
 /** Phase 14 slice 4: the model pulls in flight (CPU pods downloading onto the volume), as a JSON list; `null` = none ever. */
 export async function getMediaModelPullsJson(database: AppDb = db): Promise<string | null> {
   return await getAppSetting(MEDIA_MODEL_PULLS_KEY, database);
+}
+
+export type MediaControlEventRow = { id: number; at: Date; actor: string; action: string; subject: string; detailsJson: string | null };
+
+/** BL-132: appends one audit row (model pull/cancel/delete, template install/update/remove/sync). Never updated or deleted. */
+export async function insertMediaControlEvent(
+  row: { at: Date; actor: string; action: string; subject: string; detailsJson: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(mediaControlEvents).values(row);
+}
+
+/** Newest first. */
+export async function listMediaControlEvents(limit: number, database: AppDb = db): Promise<MediaControlEventRow[]> {
+  return database.select().from(mediaControlEvents).orderBy(desc(mediaControlEvents.at), desc(mediaControlEvents.id)).limit(limit);
 }
 
 const MEDIA_VOLUME_LOCK_KEY = "media_volume_lock";

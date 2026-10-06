@@ -150,7 +150,23 @@ export function RunpodConnectionSettings() {
 }
 
 type ModelFile = { key: string; folder: string; name: string; bytes: number; lastModified: string | null };
-type ModelPull = { pullId: string; podId: string | null; repoId: string; file: string; expectedKey: string; status: string; startedAt: string; finishedAt: string | null; bytes: number | null; error: string | null };
+type ModelPull = {
+  pullId: string;
+  podId: string | null;
+  repoId: string;
+  file: string;
+  expectedKey: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  bytes: number | null;
+  error: string | null;
+  // BL-132: absent on pulls recorded before it.
+  revision?: string;
+  expectedSha256?: string | null;
+  actualSha256?: string | null;
+  requestedBy?: "owner" | "factory";
+};
 const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"];
 
 function gb(bytes: number): string {
@@ -166,6 +182,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [repoId, setRepoId] = useState("");
   const [file, setFile] = useState("");
   const [folder, setFolder] = useState("checkpoints");
+  const [revision, setRevision] = useState("");
+  const [sha256, setSha256] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelFile | null>(null);
@@ -197,7 +215,13 @@ export function ModelsCard({ configured }: { configured: boolean }) {
       await requestJson("/api/media-generation/models/pull", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ repoId: repoId.trim(), file: file.trim(), folder }),
+        body: JSON.stringify({
+          repoId: repoId.trim(),
+          file: file.trim(),
+          folder,
+          ...(revision.trim() ? { revision: revision.trim() } : {}),
+          ...(sha256.trim() ? { sha256: sha256.trim() } : {}),
+        }),
       });
       setFile("");
       await load();
@@ -240,7 +264,7 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   return (
     <Card
       title="Models on the volume"
-      help="The files under models/ on the network volume, read through RunPod's S3 API (no pod needed). 'Pull from Hugging Face' starts a small CPU pod attached to the volume that downloads one file straight into models/<folder>/ and is terminated as soon as the file is there (a few cents per pull); a GPU session cannot start while a pull is writing. ComfyUI finds the folders through extra_model_paths.yaml."
+      help="The files under models/ on the network volume, read through RunPod's S3 API (no pod needed). 'Pull from Hugging Face' first checks the file on Hugging Face (size, SHA-256, free space; public repositories only), then starts a small CPU pod attached to the volume that downloads that exact commit, checks the SHA-256 and only then moves the file into models/<folder>/; a mismatch deletes it and fails the pull. The pod is terminated as soon as it is done (a few cents per pull); a GPU session cannot start while a pull is writing. ComfyUI finds the folders through extra_model_paths.yaml."
     >
       {!configured ? (
         <p className="text-xs text-zinc-500">Save credentials and choose a network volume first.</p>
@@ -295,6 +319,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                     {" → "}
                     {p.expectedKey}
                     {p.bytes !== null ? ` · ${gb(p.bytes)}` : ""}
+                    {p.actualSha256 && p.status === "done" ? ` · SHA-256 verified ${p.actualSha256.slice(0, 12)}…` : ""}
+                    {p.requestedBy === "factory" ? " · requested by the Factory Operator" : ""}
                     {p.error ? ` · ${p.error}` : ""}
                     {p.podId ? ` · pod ${p.podId}` : " · reserving a pod…"}
                   </span>
@@ -325,6 +351,14 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="block text-xs text-zinc-400">
+              Revision (optional)
+              <input type="text" value={revision} onChange={(e) => setRevision(e.target.value)} className={inputClass} placeholder="main" />
+            </label>
+            <label className="block text-xs text-zinc-400 sm:col-span-2">
+              Expected SHA-256 (optional: Hugging Face&rsquo;s own hash is used and checked on the pod)
+              <input type="text" value={sha256} onChange={(e) => setSha256(e.target.value)} className={`${inputClass} font-mono`} placeholder="64 hex characters" />
             </label>
             <div className="flex items-end">
               <button type="button" onClick={startPull} disabled={busy || pulling || !repoId.trim() || !file.trim()} className={primaryButton}>
@@ -1294,14 +1328,14 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
         left={
           <div className="flex items-center gap-3">
             <ToggleSwitch label="Enable the media gateway" checked={overview.gatewayEnabled} onChange={toggleGateway} />
-            <span className="text-sm text-zinc-300">Media gateway (RunPod API, S3 API, ComfyUI)</span>
+            <span className="text-sm text-zinc-300">Media gateway (RunPod API, S3 API, ComfyUI, Hugging Face Hub)</span>
           </div>
         }
         right={
           <div>
             <GatewayTrafficStats size="lg" window={traffic("runpod_api")} />
             <p className="text-xs text-zinc-500">
-              S3: {traffic("runpod_s3")?.totalAttempts ?? 0} · ComfyUI: {traffic("comfyui_api")?.totalAttempts ?? 0} attempts (24h)
+              S3: {traffic("runpod_s3")?.totalAttempts ?? 0} · ComfyUI: {traffic("comfyui_api")?.totalAttempts ?? 0} · Hugging Face: {traffic("huggingface_api")?.totalAttempts ?? 0} attempts (24h)
             </p>
           </div>
         }

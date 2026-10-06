@@ -5,6 +5,7 @@
 //   - `runpod-api.ts`   RunPod REST API v2 (pods, catalog, network volumes, templates)
 //   - `runpod-s3.ts`    RunPod's S3-compatible access to a network volume (SigV4 in `sigv4.ts`)
 //   - `comfyui-api.ts`  the ComfyUI server on a pod, through RunPod's HTTP proxy
+//   - `huggingface.ts`  the Hugging Face Hub metadata a model pull is checked against (BL-132)
 // Every child checks the one "Media gateway" toggle and records a traffic event
 // (`authorization.ts`); `inventory.test.ts` fails the suite if any other file reaches a
 // runpod.io host. Callers import only from this barrel.
@@ -14,3 +15,4 @@ export * from "./authorization";
 export * from "./runpod-api";
 export * from "./runpod-s3";
 export * from "./comfyui-api";
+export * from "./huggingface";
