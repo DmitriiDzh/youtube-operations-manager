@@ -145,7 +145,6 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
         <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "work").map(tabButton)}</div>
         <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "setup").map(tabButton)}</div>
       </div>
-      <ReadinessBanner overview={overview} />
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
         <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />
         <OtherDevicesCard ready={overview.credentials.configured} onActiveElsewhere={setActiveElsewhere} />
@@ -160,6 +159,7 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
         <WorkflowTemplatesCard />
       </div>
       <div className={tab === "setup" ? "max-w-3xl space-y-6" : "hidden"}>
+        <ReadinessBanner overview={overview} />
         <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
         <VolumeCard overview={overview} onChanged={refresh} />
         <LimitsCard settings={overview.settings} onChanged={refresh} />

@@ -56,3 +56,13 @@ test("models on the volume: the Models tab tells the card it is active, and the 
   assert.match(body, /export function ModelsCard\(\{ configured, active \}/);
   assert.match(body, /useEffect\(\(\) => \{\s*if \(!active \|\| !configured\) return;\s*void load\(\);\s*\}, \[active, configured, load\]\);/);
 });
+
+// Owner, Telegram 2026-10-06 (msgs 1804/1806): the media-generation readiness line ("Media generation is configured…" /
+// "Not ready yet — missing…") shows only under Production → Setup, not above every tab.
+test("readiness banner: rendered inside the Setup tab only, not above the tabs", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "production-panel.tsx"), "utf8");
+  const render = panel.slice(panel.indexOf("<BalanceHeader"));
+  assert.equal(render.match(/<ReadinessBanner /g)?.length, 1, "exactly one banner");
+  const setup = render.slice(render.indexOf('tab === "setup"'));
+  assert.ok(setup.slice(0, setup.indexOf("</div>")).includes("<ReadinessBanner "), "the banner is inside the Setup tab");
+});
