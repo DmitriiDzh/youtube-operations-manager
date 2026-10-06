@@ -1108,5 +1108,9 @@ against operator-imported workflow templates (parameters validated before any Co
 `<channel workspace>/99 Data Exchange/From YTM/media/<jobId>/`, registered in the asset catalog with provenance, and deleted from the
 server volume. A final job's folder ends with `manifest.json` (FO-REQ-0002: job, template, params, device, every delivered file with
 `bytes`/`sha256`, missing outputs); `done` is only reached once it is on disk. On another device (folder synced by a file-sync tool) the
-folder is complete when the manifest exists AND every listed file is present with its `bytes`. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
+folder is complete when the manifest exists AND every listed file is present with its `bytes`. BL-132 (Agent API 3.5.0, ADR 0025): templates carry
+`source` (`factory` = from the factory template registry, the same id and version on every device; `owner` = imported locally) and `models`; a
+parameter of type `image`/`audio`/`video` is an INPUT FILE named by a path relative to the workspace's `99 Data Exchange/Sent to YTM/`, checked and
+uploaded for that job before the prompt is submitted (`media_input_unavailable` otherwise), listed in the job's `inputs[]`, removed from the server
+after the job ends; the agent's own file is never deleted. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
 idle / minutes / USD; every job submit or poll counts as activity. Contract: `docs/interfaces.md`.

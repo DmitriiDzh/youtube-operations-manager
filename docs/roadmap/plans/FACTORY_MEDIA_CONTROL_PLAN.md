@@ -1,6 +1,6 @@
 # Factory Operator control of media models, storage, templates and job inputs — plan
 
-**Status: ACCEPTED by the owner 2026-10-06 (relayed in FO-MSG-0006, "Принимаю"); O1–O5 answered (§5); implementation on `feature/factory-media-control`.** Backlog item: BL-132. Branch for the implementation:
+**Status: ACCEPTED by the owner 2026-10-06 (relayed in FO-MSG-0006, "Принимаю"); O1–O5 answered (§5a). IMPLEMENTED (slices M1–M5 + docs) on `feature/factory-media-control`; ADR 0025; not merged; live RunPod checks pending the owner's go-ahead (§7).** Backlog item: BL-132. Branch for the implementation:
 `feature/factory-media-control` (all slices on one branch, one merge-approval request, `AGENTS.md` §K.1/§K.2). Safety-critical per §L:
 it gives an agent token actions that cost money and delete data, so the full §A reading list applies.
 
@@ -234,3 +234,18 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 - Template sync for owner-imported templates; channel-specific templates.
 - Deleting files from `Sent to YTM` (unless O2 says so).
 - Any operating instruction for the factory or channels (`AGENTS.md` §B).
+
+## 7. Implementation notes and deviations (2026-10-06)
+
+- **Pull records** stay the existing `app_settings` JSON list (now the last 100 finished + all running) instead of a new `media_model_pulls`
+  table; the durable, append-only history the audit needs (AC-FM-14) is `media_control_events`. Reason: the pull list's atomic
+  read-modify-write and its many review-round guarantees are kept unchanged.
+- **Input names** are flat at the root of ComfyUI's input folder (`exchange/in/<jobId>-<param>-<name>`) instead of a per-job subfolder: a
+  loader then needs no subfolder support at all (the fallback named in §2.4, taken up front).
+- **Owner deletion** is never blocked by the guard on the server; the Web dialog shows `usedBy` (or "registry cannot be read") before the owner
+  confirms. The factory path is enforced server-side.
+- **Model usage** also counts the templates the registry lists but this device has not installed, so a model needed on another device is
+  protected too; a local template's models are its known loader nodes' literal names, recorded at import (schema v61 `models_json`).
+- **Still to verify live** (paid; only after the owner's go-ahead): the pull pod's `hf download --revision` + `sha256sum` + `mv` on
+  `python:3.12-slim`; RunPod S3 accepting the streamed PUT with an explicit Content-Length; ComfyUI `LoadImage`/`LoadAudio` reading the flat
+  input name.

@@ -96,8 +96,9 @@ Recommended, per agent, where the agent client supports it:
 
 ## 6. The Factory Operator token (ADR 0022)
 
-The Factory Operator is a second agent role with its own token (`ytom_fo_...`, Settings -> AI Agent) and its own endpoint (`/api/mcp/factory`). It is read-only (logical path
-registry, capabilities, the list of channels with their workspace paths) and has no channel binding. The same advice as in §5 applies to it: keep its launch
+The Factory Operator is a second agent role with its own token (`ytom_fo_...`, Settings -> AI Agent) and its own endpoint (`/api/mcp/factory`). It reads the logical path
+registry, the capabilities and the list of channels with their workspace paths, and since ADR 0025 it can also **pull and delete models on the RunPod volume and sync
+the template registry** -- without an approval click (each action is audited with its actor; RISK-109). It cannot start GPU sessions or jobs, and it has no channel binding. The same advice as in §5 applies to it: keep its launch
 configuration (which holds its token) outside every channel agent's folder, and never put a channel token and the factory token in one configuration. The two tokens are not
 interchangeable: each endpoint rejects the other's token. The same factory token can be entered on another device with **Use an existing token** in its
 card; as with channel tokens, revoking applies only to the device where you revoke it.
