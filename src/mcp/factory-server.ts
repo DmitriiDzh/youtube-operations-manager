@@ -428,7 +428,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_media_get_job",
     {
-      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools. Read-only.",
+      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools, including the live `progress` from ComfyUI while a job generates (BL-144). Read-only.",
       inputSchema: getJobInput,
     },
     async (args) => successResult(await deps.media.getJob(parseInput(getJobInput, args)))

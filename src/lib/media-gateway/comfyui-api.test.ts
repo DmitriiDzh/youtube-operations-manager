@@ -124,7 +124,9 @@ test("parseHistoryEntry: an entry with outputs and no status block, or status.co
 
 test("the client exposes exactly the calls the job pipeline makes -- no /view or /upload surface nothing exercises", () => {
   const client = createComfyUiClient({ baseUrl: "https://x", token: null, authorize: noAuth });
-  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getQueue", "getSystemStats", "interrupt", "submitPrompt"]);
+  // BL-144 (owner, Telegram 2026-10-06, msg 1887): the job pipeline now also reads ComfyUI's execution events
+  // (`openProgressStream`, read-only websocket) -- the one addition; still no /view or /upload.
+  assert.deepEqual(Object.keys(client).sort(), ["baseUrl", "deleteQueued", "getHistory", "getQueue", "getSystemStats", "interrupt", "openProgressStream", "submitPrompt"]);
 });
 
 test("review: getQueue exposes the running and pending prompt ids; deleteQueued posts {delete:[...]} and skips an empty list", async () => {

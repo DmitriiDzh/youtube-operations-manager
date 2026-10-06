@@ -1,5 +1,6 @@
 import path from "node:path";
-import type { ComfyUiClient, RunpodS3Client } from "@/lib/media-gateway";
+import type { JobProgressRegistry } from "./job-progress";
+import type { ComfyUiClient, ProgressStream, RunpodS3Client } from "@/lib/media-gateway";
 import {
   DomainError,
   EXCHANGE_INPUT_PREFIX,
@@ -128,6 +129,8 @@ export type ExchangeInputRow = { remoteKey: string; jobId: string; parameter: st
 
 export type JobServiceDependencies = {
   store: MediaJobStore;
+  /** BL-144: live progress from ComfyUI's websocket while a job generates; absent = not watched (tests, CLI). */
+  progress?: JobProgressRegistry;
   sessions: {
     getRunningSession(sessionId: string): Promise<{ sessionId: string; channelId: string; podId: string | null; gpuTypeId: string | null; costPerHr: number | null } | null>;
     comfyClientForSession(sessionId: string): Promise<ComfyUiClient>;
@@ -541,7 +544,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   async function withInputs(job: MediaJob): Promise<MediaJob> {
     const rows = deps.store.inputs ? await deps.store.inputs.listByJob(job.jobId) : [];
     const inputs: MediaJobInput[] = rows.map((r) => ({ parameter: r.parameter, sourcePath: r.sourcePath, remoteKey: r.remoteKey, bytes: r.bytes, sha256: r.sha256, uploadedAt: r.uploadedAt.toISOString(), remoteDeleted: r.remoteDeletedAt !== null }));
-    return { ...job, inputs };
+    // BL-144: live ComfyUI progress while this device watches the job's generation (absent otherwise).
+    const progress = deps.progress?.get(job.jobId) ?? null;
+    return { ...job, inputs, ...(progress ? { progress } : {}) };
   }
 
   function factoryManaged(templateId: string): DomainError {
@@ -834,7 +839,48 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
   }
 
+  /**
+   * BL-144: while a job generates, ComfyUI's own execution events are read from its websocket into the in-memory
+   * progress registry. Independent of the /history polling below, which alone decides the job's status: a stream that
+   * cannot open or drops only makes the progress "unavailable" (§M).
+   */
+  async function watchProgress(job: { id: string; sessionId: string; templateId: string; promptId: string | null }): Promise<ProgressStream | null> {
+    const registry = deps.progress;
+    if (!registry) return null;
+    let workflowJson: string | null = null;
+    try {
+      workflowJson = (await deps.store.templates.get(job.templateId))?.workflowJson ?? null;
+    } catch {
+      // Without the graph there is no percent, but node and step progress still show.
+    }
+    registry.begin(job.id, { promptId: job.promptId, workflowJson }, deps.clock.now());
+    try {
+      const comfy = await deps.sessions.comfyClientForSession(job.sessionId);
+      return await comfy.openProgressStream({
+        clientId: `ytm-${job.id}`,
+        onOpened: () => registry.connected(job.id, deps.clock.now()),
+        onEvent: (event) => registry.apply(job.id, event, deps.clock.now()),
+        onClosed: (reason) => registry.unavailable(job.id, reason, deps.clock.now()),
+      });
+    } catch (error) {
+      registry.unavailable(job.id, error instanceof Error ? error.message : String(error), deps.clock.now());
+      return null;
+    }
+  }
+
   async function processJobInner(jobId: string): Promise<void> {
+    const job = await deps.store.jobs.get(jobId);
+    const watching = job && job.promptId && (job.status === "submitted" || job.status === "generating");
+    const stream = watching ? await watchProgress(job) : null;
+    try {
+      await pollJob(jobId);
+    } finally {
+      stream?.close();
+      if (watching) deps.progress?.end(jobId);
+    }
+  }
+
+  async function pollJob(jobId: string): Promise<void> {
     const job = await deps.store.jobs.get(jobId);
     if (!job || !job.promptId) return;
     if (job.status === "transferring" && job.outputsJson) {

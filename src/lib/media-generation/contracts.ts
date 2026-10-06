@@ -1,3 +1,4 @@
+import type { JobLiveProgress } from "./job-progress";
 import {
   DomainError,
   isDomainError,
@@ -359,6 +360,11 @@ export type MediaJob = {
   finishedAt: string | null;
   /** BL-132: the job's input files as uploaded to the volume (empty when the template has no input parameter). */
   inputs?: MediaJobInput[];
+  /**
+   * BL-144: live progress from ComfyUI's own execution events, present only while this device watches the job's
+   * generation (job-progress.ts). Never estimated.
+   */
+  progress?: JobLiveProgress;
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */

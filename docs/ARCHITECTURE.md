@@ -2864,3 +2864,17 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   (device-local; every mutation is one write transaction merged per pull, review round 6). A GPU
   session's approve is refused while a pull is running (shared volume, AC-P14-18); the CLI mirrors the
   panel (`models`, `model-pull`, `model-rm`).
+
+**Live job progress (BL-144, 2026-10-06, owner msg 1887: real information, not estimates).** While a job generates,
+`jobs.ts` (`watchProgress`, around the unchanged `/history` polling loop) opens ComfyUI's websocket through the media
+gateway (`comfyui-api.ts` `openProgressStream`: `wss://<pod>-<port>.proxy.runpod.net/ws?clientId=ytm-<jobId>`, the
+per-session bearer token in the upgrade request's header, the same "Media gateway" toggle and traffic counter). ComfyUI
+sends a prompt's execution events only to the client id it was submitted with, so the socket sees exactly that job.
+`media-gateway/comfyui-progress.ts` parses `execution_start`, `execution_cached`, `executing`, `progress`, `executed`,
+`progress_state`, `execution_success`, `execution_error`, `execution_interrupted`; `media-generation/job-progress.ts`
+reduces them into `JobLiveProgress` (current node and its class type from the template graph, the node's steps, nodes done
+and cached, a percent from nodes and steps that reaches 100 only on success). It lives in memory in the media core (one
+per process on `globalThis`) and is attached to job reads as the optional `progress`. The stream never changes a job's
+status: when it cannot open or drops, progress is `unavailable` and the job continues exactly as before (§M). Shown in
+Production → Jobs (a bar per generating job, refreshed every 2 s) and Sessions ("Now" under each running session: the
+current job, its progress, how many wait). Not yet verified against a live pod (RunPod's proxy carrying the websocket).

@@ -2,6 +2,14 @@ import { DomainError } from "@/lib/shared-domain";
 import { assertMediaGatewayAuthorized, type Authorize } from "./authorization";
 import { isJsonBody, jsonRequest } from "./http";
 import { asRecord } from "./json";
+import {
+  comfyProgressSocketUrl,
+  defaultProgressSocketFactory,
+  parseComfyProgressMessage,
+  type ComfyProgressEvent,
+  type ProgressSocketFactory,
+  type ProgressStream,
+} from "./comfyui-progress";
 
 // ---------------------------------------------------------------------------
 // Phase 14 -- the single funnel for the ComfyUI server API on a pod
@@ -90,7 +98,7 @@ export function parseHistoryEntry(promptId: string, raw: unknown): ComfyHistoryE
   return { promptId, status: resolved, statusMessages: messages, outputs, raw: entry };
 }
 
-export function createComfyUiClient(args: { baseUrl: string; token: string | null; fetchImpl?: typeof fetch; authorize?: Authorize }) {
+export function createComfyUiClient(args: { baseUrl: string; token: string | null; fetchImpl?: typeof fetch; authorize?: Authorize; socketFactory?: ProgressSocketFactory }) {
   const fetchImpl = args.fetchImpl ?? fetch;
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = args.baseUrl.replace(/\/$/, "");
@@ -197,6 +205,48 @@ export function createComfyUiClient(args: { baseUrl: string; token: string | nul
     async deleteQueued(promptIds: string[]): Promise<void> {
       if (promptIds.length === 0) return;
       await request("POST", "/queue", { json: { delete: promptIds } });
+    },
+
+    /**
+     * BL-144: ComfyUI's live execution events for prompts submitted with this `clientId` (comfyui-progress.ts). Read-only;
+     * the bearer token goes in the upgrade request's header, never in the URL. Checks the media gateway toggle and
+     * records a traffic event like every other call. `onClosed` fires once, however the socket ends; a closed stream is
+     * never reopened here -- the caller decides.
+     */
+    async openProgressStream(input: {
+      clientId: string;
+      onEvent: (event: ComfyProgressEvent) => void;
+      onClosed: (reason: string) => void;
+      onOpened?: () => void;
+    }): Promise<ProgressStream> {
+      await authorize("comfyui_api");
+      const headers: Record<string, string> = {};
+      if (args.token) headers.authorization = `Bearer ${args.token}`;
+      const socket = (args.socketFactory ?? defaultProgressSocketFactory)(comfyProgressSocketUrl(baseUrl, input.clientId), { headers });
+      let closed = false;
+      const finish = (reason: string) => {
+        if (closed) return;
+        closed = true;
+        input.onClosed(reason);
+      };
+      socket.onmessage = (event) => {
+        if (typeof event.data !== "string") return; // binary previews
+        const parsed = parseComfyProgressMessage(event.data);
+        if (parsed) input.onEvent(parsed);
+      };
+      socket.onopen = () => input.onOpened?.();
+      socket.onerror = () => finish("error");
+      socket.onclose = (event) => finish(`closed (${event.code})`);
+      return {
+        close() {
+          finish("closed by the app");
+          try {
+            socket.close(1000, "done");
+          } catch {
+            // Already closed.
+          }
+        },
+      };
     },
   };
 }

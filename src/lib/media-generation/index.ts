@@ -16,6 +16,7 @@ import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
+import { createJobProgressRegistry } from "./job-progress";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
@@ -40,6 +41,7 @@ type JobScheduling = "background" | "detached";
  * on the pulls JSON (review round 3). Next's dev hot-reload re-evaluates modules, which `globalThis`
  * survives.
  */
+
 export function createMediaGenerationCore(options: { jobScheduling?: JobScheduling } = {}) {
   // "detached" (the operator CLI, the MCP server): a submitted job is NOT polled by that process -- the web
   // server's watch loop picks it up (`resumeInFlightJobs`), so the CLI exits at once and nothing is polled twice.
@@ -142,6 +144,8 @@ function buildCore(jobScheduling: JobScheduling) {
   const assets = createAssetCatalogCore();
   const jobs = createMediaJobServices({
     store: createMediaJobStore(),
+    // BL-144: live ComfyUI progress of the jobs this core watches (the core itself is one per process, on globalThis).
+    progress: createJobProgressRegistry(),
     sessions: {
       async getRunningSession(sessionId) {
         // Contracted as "null when not running"; an unknown id is "not running", never a throw out of a resume loop.
