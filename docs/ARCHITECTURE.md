@@ -1604,8 +1604,12 @@ suffix -- YouTube has no API flag); each channel gets `match` (videos matched, t
 the query). *By channel name* is the original `discoverChannels`. Both then record each found channel's public counts
 (`stats`: subscribers or hidden, videos, views, creation date, observed-at) with one `channels.list` per 50 (1 pool unit)
 -- best effort, a failed lookup never fails the search. Schema v65 adds those columns; the 30-day purge blanks them with
-the title. Searches no longer require the daily unit budget (they never spend it); a search is logged in the quota
-history as "Research search" and left out of the 10,000-unit pool total. An agent's research request is limited to 200
+the title; a re-found candidate drops its older counts/match before they are re-observed, so nothing older than its
+`last_seen_at` is ever served. The lookups' pool units are recorded on the search's run row (`pool_units_spent`) and
+count in the Research daily unit budget; with no room left they are skipped. Searches no longer require that budget to
+be set (the search itself never spends it); a search is logged in the quota history as "Research search", and
+`countsAgainstPool` (youtube-quota) keeps `search.list` out of every 10,000-unit pool total (Settings bar, quota
+guard, quota history). An agent's research request is limited to 200
 characters like the search; on approval the found candidates are assigned to the requesting channel (approve route).
 Discover offers Track (= promote, reason pre-filled from the query), Ignore and Archive; the old "watching" status is
 no longer offered. Known gap, not fixed here: `videos.batchGetStats` returns no duration, so video durations are empty

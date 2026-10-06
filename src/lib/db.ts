@@ -1572,6 +1572,9 @@ export const marketDiscoveryRuns = sqliteTable(
     candidatesFound: integer("candidates_found"),
     candidatesNew: integer("candidates_new"),
     errorMessage: text("error_message"),
+    // BL-145 (v65): units of the 10,000-unit POOL this search spent besides the search itself (channel counts, video
+    // views). `units_spent` stays the search bucket's 1. Counted in the Research daily unit budget.
+    poolUnitsSpent: integer("pool_units_spent"),
   },
   (table) => [index("market_discovery_runs_ran_at_idx").on(table.ranAt)]
 );
@@ -3421,7 +3424,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 65,
     description:
-      "market_discovery_candidates.subscriber_count/hidden_subscriber_count/video_count/view_count/channel_published_at/stats_observed_at/match_query/match_video_count/match_view_count -- BL-145 (owner, Telegram 2026-10-07): each search result's public counts from one channels.list call. Additive nullable columns (existing candidates: unknown); blanked with the title after 30 days",
+      "market_discovery_candidates.subscriber_count/hidden_subscriber_count/video_count/view_count/channel_published_at/stats_observed_at/match_query/match_video_count/match_view_count + market_discovery_runs.pool_units_spent -- BL-145 (owner, Telegram 2026-10-07): each search result's public counts from one channels.list call. Additive nullable columns (existing candidates: unknown); blanked with the title after 30 days",
     apply: async (client) => {
       for (const statement of [
         "ALTER TABLE market_discovery_candidates ADD COLUMN subscriber_count INTEGER",
@@ -3433,6 +3436,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         "ALTER TABLE market_discovery_candidates ADD COLUMN match_query TEXT",
         "ALTER TABLE market_discovery_candidates ADD COLUMN match_video_count INTEGER",
         "ALTER TABLE market_discovery_candidates ADD COLUMN match_view_count INTEGER",
+        "ALTER TABLE market_discovery_runs ADD COLUMN pool_units_spent INTEGER",
       ]) {
         try {
           await client.execute(statement);
@@ -8706,7 +8710,12 @@ export async function getMarketIntelligenceUnitsSpentSince(since: Date, database
     .select({ total: sql<number | null>`SUM(${marketIntelligenceCollectionRuns.unitsSpent})` })
     .from(marketIntelligenceCollectionRuns)
     .where(gte(marketIntelligenceCollectionRuns.ranAt, since));
-  return collectionRow?.total ?? 0;
+  // BL-145: a search's own pool units (channel counts, video views) are part of this budget too.
+  const [discoveryRow] = await database
+    .select({ total: sql<number | null>`SUM(${marketDiscoveryRuns.poolUnitsSpent})` })
+    .from(marketDiscoveryRuns)
+    .where(gte(marketDiscoveryRuns.ranAt, since));
+  return (collectionRow?.total ?? 0) + (discoveryRow?.total ?? 0);
 }
 
 /** Phase 13 slice 13.4: `search.list` calls made since `since` -- each `market_discovery_runs` row is
@@ -8926,9 +8935,25 @@ export async function touchMarketDiscoveryCandidateLastSeen(
   reasonDiscovered: string | null,
   database: AppDb = db
 ): Promise<void> {
+  // BL-145 review: the observed counts and the genre match belong to the observation the 30-day clock dates. A refresh
+  // restarts that clock, so the older counts/match are dropped here; the same search re-observes them right after
+  // (or leaves them empty when that lookup fails) -- never older API data served under a newer date.
   await database
     .update(marketDiscoveryCandidates)
-    .set({ lastSeenAt: at, title, reasonDiscovered })
+    .set({
+      lastSeenAt: at,
+      title,
+      reasonDiscovered,
+      subscriberCount: null,
+      hiddenSubscriberCount: null,
+      videoCount: null,
+      viewCount: null,
+      channelPublishedAt: null,
+      statsObservedAt: null,
+      matchQuery: null,
+      matchVideoCount: null,
+      matchViewCount: null,
+    })
     .where(eq(marketDiscoveryCandidates.id, channelId));
 }
 
@@ -8953,6 +8978,7 @@ export async function insertMarketDiscoveryRun(
     candidatesNew?: number | null;
     errorMessage?: string | null;
     ranAt?: Date;
+    poolUnitsSpent?: number | null;
   },
   database: AppDb = db
 ): Promise<void> {
@@ -8960,6 +8986,7 @@ export async function insertMarketDiscoveryRun(
     query: input.query,
     status: input.status,
     unitsSpent: input.unitsSpent,
+    poolUnitsSpent: input.poolUnitsSpent ?? null,
     candidatesFound: input.candidatesFound ?? null,
     candidatesNew: input.candidatesNew ?? null,
     errorMessage: input.errorMessage ?? null,

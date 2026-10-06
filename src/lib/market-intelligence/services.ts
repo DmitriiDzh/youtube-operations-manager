@@ -348,6 +348,8 @@ type StoredMarketDiscoveryCandidateForService = {
  * API data, III.E.4.d). Past 30 days since it was last seen they are never served, even before the
  * purge has run -- an undecided candidate is hidden, a decided one keeps only its id and decision
  * (owner msg 1139), the same rule the purge applies. */
+type PoolAllowance = { spent: number; take(units: number): boolean };
+
 function candidateExpired(row: StoredMarketDiscoveryCandidateForService, now: Date): boolean {
   return now.getTime() - row.lastSeenAt.getTime() > API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 }
@@ -725,6 +727,8 @@ type ServiceDependencies = {
     candidatesNew?: number | null;
     errorMessage?: string | null;
     ranAt?: Date;
+    /** BL-145: pool units (10k) this search spent besides the search itself. */
+    poolUnitsSpent?: number | null;
   }): Promise<void>;
   // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
   listMarketTopics(): Promise<StoredMarketTopicForService[]>;
@@ -1532,26 +1536,51 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
    * getWatchlistEntryContext uses it too, so the flags have one source.
    */
   /**
+   * BL-145 review: the pool units (10k) a search may still spend on its lookups -- what is left of the Research daily
+   * unit budget (unlimited when no budget is set: collection is off, and the search itself is a manual action). `take`
+   * reserves units before a call and refuses when they do not fit; `spent` goes into the search's run row, which the
+   * budget then counts.
+   */
+  async function poolAllowance(now: Date): Promise<PoolAllowance> {
+    const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+    let left = budget === null ? Number.POSITIVE_INFINITY : Math.max(0, budget - (await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now))));
+    const allowance = {
+      spent: 0,
+      take(units: number): boolean {
+        if (units > left) return false;
+        left -= units;
+        allowance.spent += units;
+        return true;
+      },
+    };
+    return allowance;
+  }
+
+  /**
    * BL-145 (owner, Telegram 2026-10-07): the found channels' public counts (subscribers, videos, views, creation date)
    * from one channels.list call per 50 (1 pool unit each), so a result can be judged without opening YouTube. Best
    * effort: if it fails, the search still counts and the candidates simply show no counts.
    */
-  async function recordCandidateCounts(credentials: ResolvedCredentials, candidateIds: string[], now: Date): Promise<void> {
+  async function recordCandidateCounts(credentials: ResolvedCredentials, candidateIds: string[], now: Date, pool: PoolAllowance): Promise<void> {
     if (candidateIds.length === 0) return;
+    if (!pool.take(Math.ceil(new Set(candidateIds).size / 50))) return; // over the Research unit budget: no counts
+    let stats: PublicChannelStats[];
     try {
-      const stats = await deps.youtubeApi.getPublicChannelStats({ credentials, channelIds: candidateIds });
-      for (const st of stats) {
-        await deps.setMarketDiscoveryCandidateStats(st.channelId, {
-          subscriberCount: st.subscriberCount,
-          hiddenSubscriberCount: st.hiddenSubscriberCount,
-          videoCount: st.videoCount,
-          viewCount: st.viewCount,
-          channelPublishedAt: st.publishedAt,
-          observedAt: now,
-        });
-      }
+      stats = await deps.youtubeApi.getPublicChannelStats({ credentials, channelIds: candidateIds });
     } catch {
-      // Counts stay unknown for this search's candidates.
+      // Only the YouTube call is best effort: counts stay unknown for this search's candidates. A local write failure below
+      // is a real error and propagates (BL-145 review).
+      return;
+    }
+    for (const st of stats) {
+      await deps.setMarketDiscoveryCandidateStats(st.channelId, {
+        subscriberCount: st.subscriberCount,
+        hiddenSubscriberCount: st.hiddenSubscriberCount,
+        videoCount: st.videoCount,
+        viewCount: st.viewCount,
+        channelPublishedAt: st.publishedAt,
+        observedAt: now,
+      });
     }
   }
 
@@ -2745,6 +2774,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // BL-145 (P4): every candidate this search created or found again, so an approved agent request can hand them
       // to the requesting channel.
       const candidateIds: string[] = [];
+      const pool = await poolAllowance(now);
 
       try {
         const results = await deps.youtubeApi.searchPublicChannels({ credentials, query: parsedInput.query });
@@ -2774,12 +2804,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           candidateIds.push(result.channelId);
         }
 
-        await recordCandidateCounts(credentials, candidateIds, now);
+        await recordCandidateCounts(credentials, candidateIds, now, pool);
 
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "success",
           unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
+          poolUnitsSpent: pool.spent,
           candidatesFound,
           candidatesNew: candidatesNewCount,
           ranAt: now,
@@ -2795,6 +2826,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           query: parsedInput.query,
           status: "failed",
           unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
+          poolUnitsSpent: pool.spent,
           candidatesFound,
           candidatesNew: candidatesNewCount,
           errorMessage: error instanceof Error ? error.message : String(error),
@@ -2825,6 +2857,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       let candidatesFound: number | null = null;
       let candidatesNew: number | null = null;
+      const pool = await poolAllowance(now);
       try {
         const videos = await deps.youtubeApi.searchPublicMusicVideos({ credentials, query: parsedInput.query, publishedAfter });
         const byChannel = new Map<string, { title: string; videoIds: string[]; titles: string[] }>();
@@ -2845,7 +2878,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         // Views of the matching videos (observed now), for "N matching videos, X views on them". Best effort.
         const viewsByVideo = new Map<string, number | null>();
         const matchedVideoIds = [...byChannel.values()].flatMap((c) => c.videoIds);
-        if (matchedVideoIds.length > 0) {
+        if (matchedVideoIds.length > 0 && pool.take(Math.ceil(matchedVideoIds.length / 50))) {
           try {
             for (const snap of await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds: matchedVideoIds })) viewsByVideo.set(snap.videoId, snap.viewCount);
           } catch {
@@ -2883,12 +2916,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           candidateIds.push(channelId);
         }
 
-        await recordCandidateCounts(credentials, candidateIds, now);
+        await recordCandidateCounts(credentials, candidateIds, now, pool);
 
         await deps.insertMarketDiscoveryRun({
           query: runQuery,
           status: "success",
           unitsSpent: SEARCH_LIST_UNIT_COST,
+          poolUnitsSpent: pool.spent,
           candidatesFound,
           candidatesNew,
           ranAt: now,
@@ -2903,6 +2937,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           query: runQuery,
           status: "failed",
           unitsSpent: SEARCH_LIST_UNIT_COST,
+          poolUnitsSpent: pool.spent,
           candidatesFound,
           candidatesNew,
           errorMessage: error instanceof Error ? error.message : String(error),
@@ -2913,7 +2948,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     },
 
     async listDiscoveryCandidates(): Promise<{ candidates: MarketDiscoveryCandidate[] }> {
-      const rows = await deps.listMarketDiscoveryCandidates();
+      // Newest first (the store's order); within one search (same lastSeenAt) a genre search's channels with more matching
+      // videos come first (BL-145 review: the store's order alone left ties to chance).
+      const rows = [...(await deps.listMarketDiscoveryCandidates())].sort(
+        (a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime() || (b.matchVideoCount ?? 0) - (a.matchVideoCount ?? 0)
+      );
       return parseWithSchema(
         listDiscoveryCandidatesOutputSchema,
         {

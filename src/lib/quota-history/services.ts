@@ -1,4 +1,4 @@
-import { startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
+import { countsAgainstPool, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { groupQuotaCalls, type QuotaCallLike, type QuotaHistoryEntry } from "./grouping";
 
 export type QuotaHistoryService = "data" | "analytics";
@@ -58,8 +58,8 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
       ]);
       return [...local, ...peers]
         .filter((c) => c.occurredAt >= sinceSeconds)
-        // BL-145 (P7): `search.list` has its own bucket (100 calls/day), so it is not part of the 10,000-unit pool total.
-        .filter((c) => !(args.service === "data" && c.method === "search.list"))
+        // BL-145 (P7): calls with their own bucket (search.list) are not part of the 10,000-unit pool total.
+        .filter((c) => countsAgainstPool(args.service, c.method))
         .reduce((sum, c) => sum + (c.units ?? 0), 0);
     },
 
@@ -87,7 +87,9 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
       const status = cloudQuota.status;
       const windowStartSeconds = !status ? null : quotaWindowStartSeconds(status.window, now);
       const unitsInWindow = (rows: readonly QuotaCallLike[]) =>
-        windowStartSeconds === null ? 0 : rows.filter((c) => c.occurredAt >= windowStartSeconds).reduce((sum, c) => sum + (c.units ?? 0), 0);
+        windowStartSeconds === null
+          ? 0
+          : rows.filter((c) => c.occurredAt >= windowStartSeconds && countsAgainstPool(args.service, c.method)).reduce((sum, c) => sum + (c.units ?? 0), 0);
       const localUnits = unitsInWindow(localCalls);
       const peerUnits = unitsInWindow(peerCalls);
 

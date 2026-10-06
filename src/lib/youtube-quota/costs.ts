@@ -50,6 +50,15 @@ export function quotaUnitsForCall(service: QuotaLedgerService, method: string): 
   return Object.prototype.hasOwnProperty.call(table, method) ? table[method] : null;
 }
 
+/**
+ * BL-145: whether a logged call counts against the 10,000-unit daily pool. `search.list` has its own bucket (100
+ * calls/day) since 2026-06-01, so it never does. The one shared rule for every pool total (Settings bar, quota guard,
+ * quota history), so they cannot disagree.
+ */
+export function countsAgainstPool(service: QuotaLedgerService, method: string): boolean {
+  return !(service === "data" && method === "search.list");
+}
+
 /** Methods that change channel content (50+ units): the history says "changed", not just "called". */
 export function isWriteMethod(method: string): boolean {
   return /\.(insert|update|delete|rate)$/.test(method);

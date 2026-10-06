@@ -454,7 +454,11 @@ function createFakeStore() {
     // Phase 13 slice 13.4: the shared 10k pool counts collection runs only; searches have their own
     // bucket and are counted below.
     async getMarketIntelligenceUnitsSpentSince(since: Date) {
-      return collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
+      return (
+        collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0) +
+        // BL-145: a search's pool units count too (db.ts sums market_discovery_runs.pool_units_spent).
+        discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + ((row as { poolUnitsSpent?: number | null }).poolUnitsSpent ?? 0), 0)
+      );
     },
     async countMarketDiscoverySearchesSince(since: Date) {
       return discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).length;
@@ -585,6 +589,18 @@ function createFakeStore() {
         row.lastSeenAt = at;
         row.title = title;
         row.reasonDiscovered = reasonDiscovered;
+        // Mirrors db.ts: a refresh drops the older counts and match (BL-145 review).
+        Object.assign(row, {
+          subscriberCount: null,
+          hiddenSubscriberCount: null,
+          videoCount: null,
+          viewCount: null,
+          channelPublishedAt: null,
+          statsObservedAt: null,
+          matchQuery: null,
+          matchVideoCount: null,
+          matchViewCount: null,
+        });
       }
     },
     async setMarketDiscoveryCandidateStats(
@@ -610,11 +626,13 @@ function createFakeStore() {
       candidatesNew?: number | null;
       errorMessage?: string | null;
       ranAt?: Date;
+      poolUnitsSpent?: number | null;
     }) {
       discoveryRuns.push({
         query: input.query,
         status: input.status,
         unitsSpent: input.unitsSpent,
+        ...(input.poolUnitsSpent !== undefined ? { poolUnitsSpent: input.poolUnitsSpent } : {}),
         candidatesFound: input.candidatesFound ?? null,
         candidatesNew: input.candidatesNew ?? null,
         errorMessage: input.errorMessage ?? null,
@@ -5372,4 +5390,66 @@ test("BL-145 genre: the same preconditions as a name search -- no call once the 
     (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
   );
   assert.equal(musicVideoSearchCalls.length, 0);
+});
+
+// BL-145 review findings (expected values by hand).
+test("BL-145 review: a re-found candidate never keeps older counts or match under the new date -- a failed lookup leaves them empty", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store } = createFixture({
+    now,
+    searchResults: [{ channelId: "UC_A00000000000000000000", title: "A", description: null }],
+    channelStats: async () => {
+      throw new Error("lookup failed");
+    },
+  });
+  store.discoveryCandidates.set("UC_A00000000000000000000", {
+    id: "UC_A00000000000000000000",
+    title: "A (old)",
+    status: "new",
+    discoverySource: "youtube.search.list:music_videos",
+    discoveryQuery: "old",
+    reasonDiscovered: null,
+    firstSeenAt: new Date("2026-09-01T00:00:00.000Z"),
+    lastSeenAt: new Date("2026-09-20T00:00:00.000Z"),
+    createdVia: "web_ui",
+    subscriberCount: 99,
+    hiddenSubscriberCount: false,
+    videoCount: 9,
+    viewCount: 9,
+    channelPublishedAt: null,
+    statsObservedAt: new Date("2026-09-20T00:00:00.000Z"),
+    matchQuery: "old",
+    matchVideoCount: 5,
+    matchViewCount: 500,
+  } as never);
+  await services.discoverChannels({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  const a = (await services.listDiscoveryCandidates()).candidates[0];
+  assert.deepEqual([a.lastSeenAt, a.stats, a.match], [now.toISOString(), null, null]);
+});
+
+test("BL-145 review: a search's pool units are recorded and count in the Research budget; with no room left the lookups are skipped", async () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const tight = createFixture({ now, musicVideos: GENRE_VIDEOS, publicVideoSnapshots: [], channelStats: [] });
+  tight.store.setQuotaBudget(1);
+  await tight.services.discoverChannelsByGenre({ query: "bossa", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  // Budget 1: the video-views lookup (1 unit) fits, the channel counts (1 more) do not.
+  assert.equal(tight.channelStatsCalls.length, 0);
+  assert.equal((tight.store.discoveryRuns.at(-1) as { poolUnitsSpent?: number }).poolUnitsSpent, 1);
+
+  const roomy = createFixture({ now, musicVideos: GENRE_VIDEOS, channelStats: [] });
+  roomy.store.setQuotaBudget(100);
+  await roomy.services.discoverChannelsByGenre({ query: "bossa", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal((roomy.store.discoveryRuns.at(-1) as { poolUnitsSpent?: number }).poolUnitsSpent, 2);
+  assert.equal((await roomy.services.getCollectionLimits()).unitsSpentToday, 2, "the budget counts the search's 2 pool units");
+});
+
+test("BL-145 review: channels found in the same search are listed with the most matching videos first", async () => {
+  const videos = [
+    { videoId: "b1", channelId: "UC_B00000000000000000000", channelTitle: "B", title: "x", publishedAt: null },
+    { videoId: "a1", channelId: "UC_A00000000000000000000", channelTitle: "A", title: "x", publishedAt: null },
+    { videoId: "a2", channelId: "UC_A00000000000000000000", channelTitle: "A", title: "x", publishedAt: null },
+  ];
+  const { services } = createFixture({ musicVideos: videos });
+  await services.discoverChannelsByGenre({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual((await services.listDiscoveryCandidates()).candidates.map((c) => c.channelId), ["UC_A00000000000000000000", "UC_B00000000000000000000"]);
 });

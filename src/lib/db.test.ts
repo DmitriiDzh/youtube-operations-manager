@@ -3387,3 +3387,18 @@ test("BL-132 upsertFactoryMediaWorkflowTemplate: installs and replaces factory r
     await insertMediaControlEventForBl132({ at: new Date("2026-10-06T11:00:00Z"), actor: "owner", action: "model_pull_started", subject: "models/vae/y", detailsJson: "{}" }, isolatedDb);
     assert.deepEqual((await listMediaControlEventsForBl132(10, isolatedDb)).map((e) => [e.actor, e.subject]), [["owner", "models/vae/y"], ["factory", "models/vae/x"]]);
   }));
+
+
+// BL-145 review: a search's pool units (channel counts, video views) are part of the Research unit budget; the search's own
+// bucket unit (units_spent) is not. Expected 3 + 2 = 5 by hand.
+test("getMarketIntelligenceUnitsSpentSince adds a search's pool units, not its search-bucket unit", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_BL145_BUDGET00000000", reason: "r", createdVia: "web_ui" });
+    const now = new Date();
+    await insertMarketIntelligenceCollectionRun({ researchChannelId: "UC_BL145_BUDGET00000000", status: "success", unitsSpent: 3 }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "q [genre]", status: "success", unitsSpent: 1, poolUnitsSpent: 2, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "old style", status: "success", unitsSpent: 1, ranAt: now }, isolatedDb);
+    assert.equal(await getMarketIntelligenceUnitsSpentSince(new Date(now.getTime() - 3_600_000), isolatedDb), 5);
+  }));

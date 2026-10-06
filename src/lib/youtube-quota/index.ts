@@ -63,7 +63,7 @@ export function rangesStraddleViewCountingChange(
   return contains(a) || contains(b) || (before(a) && after(b)) || (after(a) && before(b));
 }
 
-export { ANALYTICS_API_UNIT_COSTS, DATA_API_UNIT_COSTS, isWriteMethod, quotaUnitsForCall, type QuotaLedgerService } from "./costs";
+export { ANALYTICS_API_UNIT_COSTS, DATA_API_UNIT_COSTS, countsAgainstPool, isWriteMethod, quotaUnitsForCall, type QuotaLedgerService } from "./costs";
 export { currentQuotaContext, quotaScoped, runWithQuotaContext, type QuotaContext } from "./context";
 
 /**
