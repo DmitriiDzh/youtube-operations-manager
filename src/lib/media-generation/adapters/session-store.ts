@@ -45,6 +45,7 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     stoppingOutcome: row.stoppingOutcome ?? null,
     lastSeenAliveAt: row.lastSeenAliveAt ?? null,
     terminateSentAt: row.terminateSentAt ?? null,
+    releaseWhenDone: row.releaseWhenDone ?? false,
   };
 }
 

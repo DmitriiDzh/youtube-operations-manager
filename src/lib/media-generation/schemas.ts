@@ -56,6 +56,8 @@ export const requestSessionInputSchema = z
     maxMinutes: z.number().int().min(1).max(1440).optional(),
     maxUsd: z.number().gt(0).max(10_000).nullable().optional(),
     reason: z.string().trim().max(500).nullable().optional(),
+    /** BL-135: stop the pod automatically once every job of the session is finished and no new one came for a minute. */
+    releaseWhenDone: z.boolean().optional(),
     requestedBy: z.enum(["operator", "agent"]),
   })
   .strict();

@@ -812,6 +812,8 @@ export const mediaSessions = sqliteTable(
      * answers 404 then bills to this moment (the pod died by OUR hand then), not to the last sighting.
      */
     terminateSentAt: integer("terminate_sent_at", { mode: "timestamp" }),
+    /** Schema v63 (BL-135): stop the pod once every job of the session is finished and none followed for a minute. */
+    releaseWhenDone: integer("release_when_done", { mode: "boolean" }),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -3328,6 +3330,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         "INSERT OR IGNORE INTO logical_paths (name, audience, description) VALUES " +
           "('media_templates', 'factory_only', 'Factory media template registry (index.json + <templateId>.v<version>.json)')"
       );
+    },
+  },
+  {
+    version: 63,
+    description:
+      "media_sessions.release_when_done -- BL-135 (ADR 0023 amendment 2): a session requested with releaseWhenDone is stopped by the watcher once every job of it is finished and none followed for a minute. Additive nullable column; existing sessions behave as before",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE media_sessions ADD COLUMN release_when_done INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -7970,6 +7984,17 @@ export async function setMediaTemplateSyncLastJson(json: string, database: AppDb
 export async function deleteMediaWorkflowTemplate(id: string, database: AppDb = db): Promise<boolean> {
   const rows = await database.delete(mediaWorkflowTemplates).where(eq(mediaWorkflowTemplates.id, id)).returning({ id: mediaWorkflowTemplates.id });
   return rows.length > 0;
+}
+
+/** BL-135: how many jobs a session has, how many are not finished, and when the last one finished. */
+export async function getMediaSessionJobSummary(sessionId: string, database: AppDb = db): Promise<{ total: number; open: number; lastFinishedAt: Date | null }> {
+  const rows = await database.select({ status: mediaJobs.status, finishedAt: mediaJobs.finishedAt }).from(mediaJobs).where(eq(mediaJobs.sessionId, sessionId));
+  const finished = rows.map((r) => r.finishedAt).filter((d): d is Date => d instanceof Date);
+  return {
+    total: rows.length,
+    open: rows.filter((r) => !["done", "failed", "cancelled"].includes(r.status)).length,
+    lastFinishedAt: finished.length > 0 ? new Date(Math.max(...finished.map((d) => d.getTime()))) : null,
+  };
 }
 
 export async function insertMediaJob(row: NewStoredMediaJob, database: AppDb = db): Promise<StoredMediaJob> {

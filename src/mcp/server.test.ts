@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.5.0"); // MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(payload.agentApiVersion, "3.6.0"); // MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -5978,6 +5978,10 @@ function makeMediaHandlers(options: { channelOfSession?: string; channelOfJob?: 
       calls.push({ method: "cancelJob", input });
       return { ...job, status: "cancelled" };
     },
+    releaseSession: async (input: unknown) => {
+      calls.push({ method: "releaseSession", input });
+      return { ...session, status: "done", stopReason: "released by the channel agent" };
+    },
   };
   const handlers = createMcpToolHandlers(
     makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
@@ -5986,7 +5990,9 @@ function makeMediaHandlers(options: { channelOfSession?: string; channelOfJob?: 
   return { handlers, calls };
 }
 
-test("MCP server registers the seven media tools and NO tool that can approve, start or stop a session", () => {
+// BL-135 (ADR 0023 amendment 2, owner 2026-10-06) amended AC-P14-16: the channel may now END its own session
+// (agent_release_media_session) -- still no tool can approve, start, resume or reject one.
+test("MCP server registers the eight media tools; the only session-ending one is the release, and none can approve, start or reject", () => {
   const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
   const media = Object.keys(tools).filter((name) => name.includes("media")).sort();
@@ -5997,9 +6003,10 @@ test("MCP server registers the seven media tools and NO tool that can approve, s
     "agent_get_media_limits",
     "agent_get_media_session",
     "agent_list_media_templates",
+    "agent_release_media_session",
     "agent_request_media_session",
   ]);
-  assert.ok(!Object.keys(tools).some((name) => /media.*(approve|start|stop|reject)/.test(name)));
+  assert.ok(!Object.keys(tools).some((name) => /media.*(approve|start|stop|reject|resume)/.test(name)));
   for (const name of media) assert.equal(MCP_TOOL_CLASSIFICATION[name], "bound");
 });
 
@@ -6167,4 +6174,32 @@ test("agent_get_capabilities lists the two logical path capabilities as READ, ti
   assert.equal(byId.get("logical_paths.get_logical_path")?.permission, "READ");
   assert.deepEqual(byId.get("logical_paths.get_logical_path")?.mcpTools, ["agent_get_logical_path"]);
   assert.ok(payload.dataDomains.includes("logical_path_values"));
+});
+
+test("BL-135 MCP agent_release_media_session passes the caller's channel to the core (which only releases that channel's session); a non-active channel is refused before the core", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const ok = await handlers.agentReleaseMediaSession({ channelId: "UC_1", sessionId: "ms-1" });
+  assert.equal(ok.isError, undefined);
+  assert.deepEqual(calls, [{ method: "releaseSession", input: { sessionId: "ms-1", channelId: "UC_1" } }]);
+  assert.equal(parseToolJson(ok).session.status, "done");
+  const rejectingAccess = {
+    ...makeChannelAccessCoreStub(),
+    assertActiveChannel: async () => {
+      throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "not active" });
+    },
+  };
+  const guarded = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, rejectingAccess,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    {
+      releaseSession: async () => {
+        throw new Error("must not be reached");
+      },
+    } as never
+  );
+  const refused = await guarded.agentReleaseMediaSession({ channelId: "UC_2", sessionId: "ms-1" });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "CHANNEL_NOT_AUTHORIZED");
+  const extra = await handlers.agentReleaseMediaSession({ channelId: "UC_1", sessionId: "ms-1", force: true });
+  assert.equal(extra.isError, true, "strict input");
 });

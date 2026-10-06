@@ -87,4 +87,5 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_create_media_job: "bound",
   agent_get_media_job: "bound",
   agent_cancel_media_job: "bound",
+  agent_release_media_session: "bound",
 });

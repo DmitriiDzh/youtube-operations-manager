@@ -86,3 +86,16 @@ Supersedes "one open session per device" (decision 1, AC-P14-05) and the blockin
   gateway and key, degrading to the v2 billing spend when that read fails (AC-P14-25).
 - **Agent API 3.4.0 (MINOR):** `agent_get_media_limits` adds `openSessions` (this channel's), `maxConcurrentSessions`
   and `activeSessionCount`; `openSession` stays; a request no longer conflicts with another open session.
+
+## Amendment 2 (2026-10-06, BL-135 -- owner, Telegram msgs 1644–1649)
+
+Supersedes "the agent can neither approve, start nor stop a session" for ONE direction: ending. The owner asked that a finished task
+not keep a pod billing until the idle timeout.
+
+- **Release by the requesting channel.** `releaseSession` (MCP `agent_release_media_session`, Agent API 3.6.0, `bound`, behind the device
+  mutation gate): only the session's own channel; `pending` → withdrawn (`rejected`), `starting`/`running` → the same stop as the owner's,
+  `stopping` → returned as is, `approved` (pod still being created) and terminal → `media_session_invalid_state`. Approving, starting and
+  rejecting stay Web-only; the inventory test keeps fencing `stopSession`, `approveSession`, `rejectSession` and the watcher.
+- **Release when done.** A request may carry `releaseWhenDone` (schema v63 `media_sessions.release_when_done`; the Web request form has a
+  toggle, on by default). The watcher stops such a running session once it has at least one job, none is open, and a minute has passed since
+  both the last job finished and the last activity. Never before the first job, never while a job runs.
