@@ -3,6 +3,8 @@ import {
   assertDataApiReadsAuthorized,
   createYoutubeClient,
   getPublicChannelSnapshot,
+  getPublicChannelStats,
+  searchPublicMusicVideos,
   getPublicVideoSnapshots,
   getPublicVideoStatsBatch,
   getMostPopularMusicVideos,
@@ -47,15 +49,24 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
       const youtube = await createAuthorizedClient(args.credentials);
       return getPublicVideoStatsBatch(youtube, args.videoIds);
     },
-    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     // Phase 13 slice 13.9.
     async getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return getMostPopularMusicVideos(youtube, args.regionCode);
     },
+    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return searchPublicChannels(youtube, args.query);
+    },
+    // BL-145.
+    async searchPublicMusicVideos(args: { credentials: ResolvedCredentials; query: string; publishedAfter: string | null }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return searchPublicMusicVideos(youtube, { query: args.query, publishedAfter: args.publishedAfter });
+    },
+    async getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return getPublicChannelStats(youtube, args.channelIds);
     },
     // Phase 9 slices 9B/9C (found by independent review): an upfront, cheap check the orchestrator
     // calls BEFORE claiming any channel or charging any quota unit -- without it, a client

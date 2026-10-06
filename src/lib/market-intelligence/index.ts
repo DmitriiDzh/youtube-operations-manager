@@ -49,6 +49,8 @@ export function createMarketIntelligenceCore() {
     listMarketDiscoveryCandidates: store.listMarketDiscoveryCandidates,
     insertMarketDiscoveryCandidate: store.insertMarketDiscoveryCandidate,
     touchMarketDiscoveryCandidateLastSeen: store.touchMarketDiscoveryCandidateLastSeen,
+    setMarketDiscoveryCandidateStats: store.setMarketDiscoveryCandidateStats,
+    setMarketDiscoveryCandidateMatch: store.setMarketDiscoveryCandidateMatch,
     setMarketDiscoveryCandidateStatus: store.setMarketDiscoveryCandidateStatus,
     insertMarketDiscoveryRun: store.insertMarketDiscoveryRun,
     // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
@@ -95,6 +97,7 @@ export function createMarketIntelligenceCore() {
   // BL-117: API calls made by Research collection / discovery are logged against it in the quota history.
   const guard = createQuotaGuardCore();
   const context = { kind: "research_collection", id: null, label: "Research collection" };
+  const searchContext = { kind: "research_search", id: null, label: "Research search" };
   return {
     ...services,
     // BL-117 (owner decision 2026-10-03): the AUTOMATIC refresh waits while less than the configured reserve of the daily quota
@@ -106,7 +109,10 @@ export function createMarketIntelligenceCore() {
     // An approved collection request runs the regular collection for its own channels (same stale window, failed-channel pause and daily
     // budget). The background-reserve guard above is for the AUTOMATIC refresh; a person approving the request is the explicit trigger.
     runApprovedCollectionRequest: quotaScoped(services.runApprovedCollectionRequest, context),
-    discoverChannels: quotaScoped(services.discoverChannels, context),
+    // BL-145 (P7): searches are labelled as such in the quota history, not as collection.
+    discoverChannels: quotaScoped(services.discoverChannels, searchContext),
+    discoverChannelsByGenre: quotaScoped(services.discoverChannelsByGenre, searchContext),
+    approveMarketResearchRequest: quotaScoped(services.approveMarketResearchRequest, searchContext),
     captureChannelSnapshot: quotaScoped(services.captureChannelSnapshot, context),
     fetchPublicSnapshot: quotaScoped(services.fetchPublicSnapshot, context),
   };

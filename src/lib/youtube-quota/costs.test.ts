@@ -66,3 +66,12 @@ test("quota context: calls inside run() see it, nested/concurrent contexts do no
   assert.deepEqual([...seen].sort(), ["b1", "b2"]);
   assert.equal(currentQuotaContext(), null);
 });
+
+// BL-145: search.list has its own 100-calls bucket (since 2026-06-01), every other logged call is in the 10k pool.
+test("countsAgainstPool: search.list never counts against the 10,000-unit pool; other data and analytics calls do", async () => {
+  const { countsAgainstPool } = await import("./costs");
+  assert.equal(countsAgainstPool("data", "search.list"), false);
+  assert.equal(countsAgainstPool("data", "channels.list"), true);
+  assert.equal(countsAgainstPool("data", "videos.update"), true);
+  assert.equal(countsAgainstPool("analytics", "reports.query"), true);
+});

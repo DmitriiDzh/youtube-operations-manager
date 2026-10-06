@@ -11,6 +11,15 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 
 type DiscoveryCandidateStatus = "new" | "watching" | "ignored" | "archived" | "promoted";
 
+type CandidateStats = {
+  subscriberCount: number | null;
+  hiddenSubscriberCount: boolean;
+  videoCount: number | null;
+  viewCount: number | null;
+  channelPublishedAt: string | null;
+  observedAt: string;
+};
+
 type DiscoveryCandidate = {
   channelId: string;
   title: string;
@@ -20,18 +29,69 @@ type DiscoveryCandidate = {
   reasonDiscovered: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  /** BL-145: public counts observed right after the search that found it; null when unknown. */
+  stats: CandidateStats | null;
+  /** BL-145: what the latest genre search found of this channel. */
+  match: { query: string; videoCount: number; viewCount: number | null } | null;
 };
+
+export type SearchResult =
+  | { mode: "channels"; candidatesFound: number; candidatesNew: number }
+  | { mode: "genre"; videosFound: number; candidatesFound: number; candidatesNew: number; topicChannelsSkipped: number };
+
+/** BL-145: the line shown after a search. Exported for its test. */
+export function describeSearchResult(r: SearchResult): string {
+  if (r.mode === "genre") {
+    const skipped = r.topicChannelsSkipped > 0 ? ` Left out ${r.topicChannelsSkipped} auto-generated "- Topic" channel${r.topicChannelsSkipped === 1 ? "" : "s"}.` : "";
+    return `Found ${r.videosFound} music video${r.videosFound === 1 ? "" : "s"} from ${r.candidatesFound} channel${r.candidatesFound === 1 ? "" : "s"}, ${r.candidatesNew} new.${skipped}`;
+  }
+  return `Found ${r.candidatesFound}, ${r.candidatesNew} new.`;
+}
+
+/** BL-145: "3 matching videos · 600 views on them" for a channel a genre search found. Exported for its test. */
+export function describeCandidateMatch(match: DiscoveryCandidate["match"]): string | null {
+  if (!match) return null;
+  const videos = `${match.videoCount} matching video${match.videoCount === 1 ? "" : "s"}`;
+  return match.viewCount === null ? videos : `${videos} · ${compact(match.viewCount)} views on them`;
+}
+
+/** 1234 → "1.2K", 4560000 → "4.6M" (display only; the stored value is exact). */
+function compact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "")}K`;
+  return String(n);
+}
+
+/** BL-145: one line of a found channel's observed counts, e.g. "12.3K subscribers · 42 videos · 456K views · since 2019". Exported for its test. */
+export function describeCandidateStats(stats: CandidateStats | null): string | null {
+  if (!stats) return null;
+  const parts = [
+    stats.hiddenSubscriberCount ? "subscribers hidden" : stats.subscriberCount !== null ? `${compact(stats.subscriberCount)} subscribers` : null,
+    stats.videoCount !== null ? `${compact(stats.videoCount)} video${stats.videoCount === 1 ? "" : "s"}` : null,
+    stats.viewCount !== null ? `${compact(stats.viewCount)} views` : null,
+    stats.channelPublishedAt ? `since ${stats.channelPublishedAt.slice(0, 4)}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
 
 // Phase 13 slice 13.4: one search.list call = 1 of YouTube's 100 daily searches (its own quota bucket).
 
 // BL-140 R4 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.5): candidates by status, New first, paged on the server.
+// BL-145 (owner, Telegram 2026-10-07, msg 1904): "Watch" now means what it sounds like -- the channel joins the tracked
+// list that is collected regularly (the promote action, now called Track). The old "watching" status is no longer
+// offered; it appears as a filter only while some candidate still has it (older data).
 export const CANDIDATE_FILTERS: { value: DiscoveryCandidateStatus; label: string }[] = [
   { value: "new", label: "New" },
-  { value: "watching", label: "Watching" },
+  { value: "promoted", label: "Tracked" },
   { value: "ignored", label: "Ignored" },
-  { value: "promoted", label: "Promoted" },
   { value: "archived", label: "Archived" },
+  { value: "watching", label: "Shortlisted (old)" },
 ];
+
+/** The reason a Track pre-fills, editable before saving. Exported for its test. */
+export function defaultTrackReason(candidate: { discoveryQuery: string }): string {
+  return `Found by the search "${candidate.discoveryQuery}"`;
+}
 const PAGE_SIZE = 25;
 type CandidatesPage = { candidates: DiscoveryCandidate[]; total: number; page: number; limit: number; counts: Record<DiscoveryCandidateStatus, number> };
 
@@ -74,7 +134,10 @@ export function MarketDiscoveryPanel({
   const [confirmingSearch, setConfirmingSearch] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<{ candidatesFound: number; candidatesNew: number } | null>(null);
+  const [lastResult, setLastResult] = useState<SearchResult | null>(null);
+  // BL-145 (owner, msg 1904): searching channel names is not effective, so the genre search (music videos) is the default.
+  const [searchMode, setSearchMode] = useState<"genre" | "channels">("genre");
+  const [withinDays, setWithinDays] = useState<"" | "30" | "90" | "180" | "365">("");
   const [updatingChannelId, setUpdatingChannelId] = useState<string | null>(null);
   const [promotingChannelId, setPromotingChannelId] = useState<string | null>(null);
   const [promoteReason, setPromoteReason] = useState("");
@@ -125,9 +188,20 @@ export function MarketDiscoveryPanel({
   // collection) is picked up when this one is shown again (BL-140 review).
   const wasActive = useRef(active);
   useEffect(() => {
-    if (active && !wasActive.current) void fetchCandidates();
+    if (active && !wasActive.current) {
+      void fetchCandidates();
+      // BL-145 (P3): an Inbox approval or the Pacific-midnight reset changes the count while Discover is hidden.
+      void refreshSearchUsage();
+    }
     wasActive.current = active;
-  }, [active, fetchCandidates]);
+  }, [active, fetchCandidates, refreshSearchUsage]);
+
+  // BL-145 (P3): while Discover is shown, the searches-left counter stays current (midnight reset, other devices).
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => void refreshSearchUsage(), 60_000);
+    return () => clearInterval(timer);
+  }, [active, refreshSearchUsage]);
 
   const openCandidate = candidates.find((c) => c.channelId === openChannelId) ?? null;
   const searchesLeft = searchUsage ? Math.max(0, searchUsage.dailyLimit - searchUsage.searchesUsedToday) : null;
@@ -145,7 +219,9 @@ export function MarketDiscoveryPanel({
           const res = await fetch("/api/market-intelligence/discover", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ query }),
+            body: JSON.stringify(
+              searchMode === "genre" ? { query, mode: "genre", ...(withinDays ? { publishedWithinDays: Number(withinDays) } : {}) } : { query, mode: "channels" }
+            ),
           });
           return { res, data: await res.json() };
         },
@@ -167,7 +243,7 @@ export function MarketDiscoveryPanel({
     }
   }
 
-  async function handleUpdateStatus(channelId: string, status: "watching" | "ignored" | "archived") {
+  async function handleUpdateStatus(channelId: string, status: "ignored" | "archived") {
     setUpdatingChannelId(channelId);
     setActionError(null);
     try {
@@ -218,22 +294,53 @@ export function MarketDiscoveryPanel({
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
           Discover channels
           <InfoTooltip>
-            A YouTube channel search, run only when you click Search -- never automatic, never scheduled. Each search
+            By genre: searches music videos with these words and shows the channels that published them, with how many of their
+            videos matched (auto-generated &ldquo;- Topic&rdquo; channels are left out, recognised by that name ending). By channel
+            name: matches channel names and descriptions. Run only when you click Search -- never automatic. Each search
             uses 1 of YouTube&rsquo;s 100 searches per day, a separate quota from the daily units budget in Settings →
             API; it resets at midnight Pacific time. A result already on your watchlist is skipped; everything else
-            becomes a candidate you can watch, ignore, archive, or promote into the watchlist.
+            becomes a candidate you can Track (add to the tracked channels that are collected regularly), ignore or archive.
           </InfoTooltip>
         </h3>
+      </div>
+
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Search by">
+        {(
+          [
+            ["genre", "By genre (music videos)"],
+            ["channels", "By channel name"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={searchMode === value}
+            onClick={() => setSearchMode(value)}
+            className={`rounded-md px-2.5 py-1 text-xs font-medium ${searchMode === value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search query, e.g. a topic or niche"
+          placeholder={searchMode === "genre" ? "Genre words, e.g. bossa nova cafe, japanese city pop" : "Words in the channel's name or description"}
           aria-label="Search query"
           className="min-w-64 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
         />
+        {searchMode === "genre" && (
+          <select value={withinDays} onChange={(e) => setWithinDays(e.target.value as typeof withinDays)} aria-label="Published within" className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200">
+            <option value="">Any time</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 3 months</option>
+            <option value="180">Last 6 months</option>
+            <option value="365">Last 12 months</option>
+          </select>
+        )}
         <button
           onClick={() => setConfirmingSearch(true)}
           disabled={searching || query.trim().length === 0 || searchesLeft === 0}
@@ -250,14 +357,14 @@ export function MarketDiscoveryPanel({
 
       {lastResult && (
         <p className="text-xs text-zinc-400">
-          Found {lastResult.candidatesFound}, {lastResult.candidatesNew} new.
+          {describeSearchResult(lastResult)}
         </p>
       )}
       {searchError && <p className="text-sm text-red-400">{searchError}</p>}
       {actionError && <p className="text-sm text-red-400">{actionError}</p>}
 
       <div className="flex flex-wrap gap-1" role="tablist" aria-label="Candidate status">
-        {CANDIDATE_FILTERS.map((f) => (
+        {CANDIDATE_FILTERS.filter((f) => f.value !== "watching" || (data?.counts.watching ?? 0) > 0 || statusFilter === "watching").map((f) => (
           <button
             key={f.value}
             type="button"
@@ -279,7 +386,7 @@ export function MarketDiscoveryPanel({
       {loadError && <p className="text-sm text-red-400">{loadError}</p>}
       {data && data.total === 0 && (
         <p className="text-sm text-zinc-500">
-          {statusFilter === "new" ? "No new candidates. Run a search to find channels." : `No ${statusFilter} candidates.`}
+          {statusFilter === "new" ? "No new candidates. Run a search to find channels." : `No ${(CANDIDATE_FILTERS.find((f) => f.value === statusFilter)?.label ?? statusFilter).toLowerCase()} candidates.`}
         </p>
       )}
 
@@ -293,6 +400,8 @@ export function MarketDiscoveryPanel({
                     {candidate.title || candidate.channelId}
                     {!candidate.title && <span className="ml-2 text-xs font-normal text-zinc-500">(title expired, see details)</span>}
                   </p>
+                  {describeCandidateStats(candidate.stats) && <p className="truncate text-xs text-zinc-300">{describeCandidateStats(candidate.stats)}</p>}
+                  {describeCandidateMatch(candidate.match) && <p className="truncate text-xs text-emerald-300/80">{describeCandidateMatch(candidate.match)}</p>}
                   <p className="truncate text-xs text-zinc-500">
                     query &ldquo;{candidate.discoveryQuery}&rdquo; &middot; last seen {formatDisplayDateTime(candidate.lastSeenAt)}
                   </p>
@@ -302,15 +411,6 @@ export function MarketDiscoveryPanel({
                 </span>
                 {candidate.status !== "promoted" && (
                   <div className="flex flex-wrap gap-2">
-                    {candidate.status !== "watching" && (
-                      <button
-                        onClick={() => handleUpdateStatus(candidate.channelId, "watching")}
-                        disabled={updatingChannelId === candidate.channelId}
-                        className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-                      >
-                        Watch
-                      </button>
-                    )}
                     {candidate.status !== "ignored" && (
                       <button
                         onClick={() => handleUpdateStatus(candidate.channelId, "ignored")}
@@ -332,12 +432,13 @@ export function MarketDiscoveryPanel({
                     <button
                       onClick={() => {
                         setPromotingChannelId(candidate.channelId);
-                        setPromoteReason("");
+                        setPromoteReason(defaultTrackReason(candidate));
                       }}
                       disabled={updatingChannelId === candidate.channelId}
+                      title="Add to the tracked channels that are collected regularly"
                       className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                     >
-                      Promote
+                      Track
                     </button>
                   </div>
                 )}
@@ -349,14 +450,15 @@ export function MarketDiscoveryPanel({
                     value={promoteReason}
                     onChange={(e) => setPromoteReason(e.target.value)}
                     placeholder="Reason for tracking this channel"
-                    className="min-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                    aria-label="Reason for tracking"
+                    className="min-w-72 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
                   />
                   <button
                     onClick={() => handleConfirmPromote(candidate.channelId)}
                     disabled={updatingChannelId === candidate.channelId || promoteReason.trim().length === 0}
                     className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                   >
-                    Confirm promote
+                    Track channel
                   </button>
                   <button
                     onClick={() => setPromotingChannelId(null)}
@@ -397,6 +499,24 @@ export function MarketDiscoveryPanel({
 
       {openCandidate && (
         <SideDrawer title={openCandidate.title || openCandidate.channelId} subtitle={`${openCandidate.channelId} · ${openCandidate.status}`} onClose={() => setOpenChannelId(null)}>
+          <DrawerSection title="Channel">
+            <div className="space-y-1 text-xs text-zinc-400">
+              {openCandidate.stats ? (
+                <>
+                  <p>
+                    Subscribers:{" "}
+                    {openCandidate.stats.hiddenSubscriberCount ? "hidden by the channel" : (openCandidate.stats.subscriberCount?.toLocaleString("en-US") ?? "—")}
+                    {" "}&middot; videos: {openCandidate.stats.videoCount?.toLocaleString("en-US") ?? "—"} &middot; views:{" "}
+                    {openCandidate.stats.viewCount?.toLocaleString("en-US") ?? "—"}
+                  </p>
+                  {openCandidate.stats.channelPublishedAt && <p>Created {formatDisplayDateTime(openCandidate.stats.channelPublishedAt)}</p>}
+                  <p className="text-zinc-500">As of {formatDisplayDateTime(openCandidate.stats.observedAt)}</p>
+                </>
+              ) : (
+                <p>No counts observed for this channel.</p>
+              )}
+            </div>
+          </DrawerSection>
           <DrawerSection title="How it was found">
             <div className="space-y-1 text-xs text-zinc-400">
               <p>
@@ -427,7 +547,11 @@ export function MarketDiscoveryPanel({
       {confirmingSearch && (
         <ConfirmDialog
           title="Run this search?"
-          description={`This uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) for the query "${query}".`}
+          description={
+            searchMode === "genre"
+              ? `Searches music videos for "${query}"${withinDays ? ` published in the last ${withinDays} days` : ""} and groups them by channel. Uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) plus up to 2 units of the daily 10,000 for video views and channel counts.`
+              : `This uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) for the query "${query}", plus 1 unit of the daily 10,000 for the channels' counts.`
+          }
           confirmLabel="Search"
           onCancel={() => setConfirmingSearch(false)}
           onConfirm={handleConfirmSearch}

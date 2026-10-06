@@ -2,7 +2,11 @@
 
 Owner request (Telegram 2026-10-07, msg 1900): analyse how search works in Research, how the menu could be better, what
 information and actions to add, and check that every function and button in Research works as it should.
-**Status: analysis only; nothing implemented.** Backlog: BL-145.
+**Status:** owner decisions 2026-10-07 (msg 1904: counts yes but no country; Watch = add to the regularly scanned list;
+search by genre instead of channel names; tests allowed). Implemented on `feature/research-discover-v2`: P1–P4, P6–P8,
+the counts (§3, without country), Track, and the genre search. Not done: P5 (every query per candidate), search history,
+bulk actions, the region/language/order options; P9 (video duration) is its own item, BL-146 -- the cause is
+`videos.batchGetStats` returning no `contentDetails`. Backlog: BL-145.
 
 ## 1. How search works today
 

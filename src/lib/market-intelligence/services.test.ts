@@ -35,6 +35,8 @@ import {
   isDomainError,
   type DiscoveryCandidateStatus,
   type PublicChannelSearchResult,
+  type PublicChannelStats,
+  type PublicVideoSearchResult,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResolvedCredentials,
@@ -452,7 +454,11 @@ function createFakeStore() {
     // Phase 13 slice 13.4: the shared 10k pool counts collection runs only; searches have their own
     // bucket and are counted below.
     async getMarketIntelligenceUnitsSpentSince(since: Date) {
-      return collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
+      return (
+        collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0) +
+        // BL-145: a search's pool units count too (db.ts sums market_discovery_runs.pool_units_spent).
+        discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + ((row as { poolUnitsSpent?: number | null }).poolUnitsSpent ?? 0), 0)
+      );
     },
     async countMarketDiscoverySearchesSince(since: Date) {
       return discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).length;
@@ -583,7 +589,30 @@ function createFakeStore() {
         row.lastSeenAt = at;
         row.title = title;
         row.reasonDiscovered = reasonDiscovered;
+        // Mirrors db.ts: a refresh drops the older counts and match (BL-145 review).
+        Object.assign(row, {
+          subscriberCount: null,
+          hiddenSubscriberCount: null,
+          videoCount: null,
+          viewCount: null,
+          channelPublishedAt: null,
+          statsObservedAt: null,
+          matchQuery: null,
+          matchVideoCount: null,
+          matchViewCount: null,
+        });
       }
+    },
+    async setMarketDiscoveryCandidateStats(
+      channelId: string,
+      stats: { subscriberCount: number | null; hiddenSubscriberCount: boolean; videoCount: number | null; viewCount: number | null; channelPublishedAt: string | null; observedAt: Date }
+    ) {
+      const row = discoveryCandidates.get(channelId) as Record<string, unknown> | undefined;
+      if (row) Object.assign(row, { ...stats, statsObservedAt: stats.observedAt, observedAt: undefined });
+    },
+    async setMarketDiscoveryCandidateMatch(channelId: string, match: { query: string; videoCount: number; viewCount: number | null }) {
+      const row = discoveryCandidates.get(channelId) as Record<string, unknown> | undefined;
+      if (row) Object.assign(row, { matchQuery: match.query, matchVideoCount: match.videoCount, matchViewCount: match.viewCount });
     },
     async setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus) {
       const row = discoveryCandidates.get(channelId);
@@ -597,11 +626,13 @@ function createFakeStore() {
       candidatesNew?: number | null;
       errorMessage?: string | null;
       ranAt?: Date;
+      poolUnitsSpent?: number | null;
     }) {
       discoveryRuns.push({
         query: input.query,
         status: input.status,
         unitsSpent: input.unitsSpent,
+        ...(input.poolUnitsSpent !== undefined ? { poolUnitsSpent: input.poolUnitsSpent } : {}),
         candidatesFound: input.candidatesFound ?? null,
         candidatesNew: input.candidatesNew ?? null,
         errorMessage: input.errorMessage ?? null,
@@ -918,6 +949,10 @@ function createFixture(overrides?: {
   uploadsPlaylistVideoIds?: string[];
   publicVideoSnapshots?: PublicVideoSnapshot[];
   searchResults?: PublicChannelSearchResult[];
+  /** BL-145: what the genre search (music videos) returns. */
+  musicVideos?: PublicVideoSearchResult[];
+  /** BL-145: what channels.list returns for the found channels; a function lets a test fail it. */
+  channelStats?: PublicChannelStats[] | (() => Promise<PublicChannelStats[]>);
   searchImpl?: (args: { credentials: ResolvedCredentials; query: string }) => Promise<PublicChannelSearchResult[]>;
   dataApiReadsDisabled?: boolean;
   /** Phase 13 slices 13.5/13.6. Unset = the RSS feed / batchGetStats are unavailable (they throw), so
@@ -943,6 +978,8 @@ function createFixture(overrides?: {
   const playlistCalls: unknown[] = [];
   const videoSnapshotCalls: unknown[] = [];
   const searchCalls: unknown[] = [];
+  const channelStatsCalls: Array<{ channelIds: string[] }> = [];
+  const musicVideoSearchCalls: Array<{ query: string; publishedAfter: string | null }> = [];
   const assertReadsAvailableCalls: undefined[] = [];
   let currentNow = overrides?.now ?? new Date();
   let currentPlaylistPages = overrides?.playlistPages;
@@ -1017,6 +1054,15 @@ function createFixture(overrides?: {
         if (!overrides?.batchStats) throw new Error("batchGetStats unavailable (test default)");
         return overrides.batchStats;
       },
+      async searchPublicMusicVideos(args: { credentials: ResolvedCredentials; query: string; publishedAfter: string | null }) {
+        musicVideoSearchCalls.push({ query: args.query, publishedAfter: args.publishedAfter });
+        return overrides?.musicVideos ?? [];
+      },
+      async getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }) {
+        channelStatsCalls.push({ channelIds: args.channelIds });
+        const configured = overrides?.channelStats;
+        return typeof configured === "function" ? configured() : (configured ?? []);
+      },
       async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
         searchCalls.push(args);
         if (overrides?.searchImpl) return overrides.searchImpl(args);
@@ -1038,6 +1084,8 @@ function createFixture(overrides?: {
     playlistCalls,
     videoSnapshotCalls,
     searchCalls,
+    channelStatsCalls,
+    musicVideoSearchCalls,
     assertReadsAvailableCalls,
     feedCalls,
     batchStatsCalls,
@@ -2749,16 +2797,28 @@ test("AC-9B-16: if only the mark (not the audit row) fails, exactly one row is w
 // (AGENTS.md §L).
 // ---------------------------------------------------------------------------
 
-test("AC-9C-01: with budget null/unset, discoverChannels makes zero real calls and throws MARKET_INTELLIGENCE_QUOTA_DISABLED", async () => {
-  const { store, services, resolveCalls, searchCalls } = createFixture();
+// REVISED by BL-145 (P2, owner decision, Telegram 2026-10-07 msgs 1904/1905): a search never spends the daily UNIT
+// budget (it has its own bucket since 2026-06-01, see AC-9C-02), so "no unit budget set" (automatic collection off)
+// must no longer block a manual search. The old expectation refused it, which the owner decided is wrong.
+test("AC-9C-01 (BL-145): with the unit budget unset, a search still runs -- it uses only the 100-searches bucket", async () => {
+  const { store, services, searchCalls } = createFixture();
 
+  const result = await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(searchCalls.length, 1);
+  assert.equal(store.discoveryRuns.length, 1);
+  assert.equal(store.discoveryRuns[0].unitsSpent, 1);
+  assert.equal(result.candidatesFound, 0);
+});
+
+test("BL-145 (P6): the query is trimmed before the search, and a blank query is refused before any call", async () => {
+  const { services, searchCalls } = createFixture();
+  await services.discoverChannels({ query: "  cooking  ", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal((searchCalls[0] as { query: string }).query, "cooking");
   await assert.rejects(
-    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
-    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
+    () => services.discoverChannels({ query: "   ", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
   );
-  assert.equal(resolveCalls.length, 0, "must never resolve credentials before the budget check");
-  assert.equal(searchCalls.length, 0);
-  assert.equal(store.discoveryRuns.length, 0);
+  assert.equal(searchCalls.length, 1);
 });
 
 // Phase 13 slice 13.4 -- REVISED: since 2026-06-01 `search.list` has its own quota bucket of 100 calls
@@ -2831,7 +2891,9 @@ test("AC-9C-03/04/05: a result already watchlisted is skipped; a result matching
   });
 
   const result = await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
-  assert.deepEqual(result, { candidatesFound: 3, candidatesNew: 1 });
+  // BL-145 (P4): plus the candidates this search created or found again -- the existing one and the new one, in result
+  // order; never the already-watchlisted channel.
+  assert.deepEqual(result, { candidatesFound: 3, candidatesNew: 1, candidateIds: [OTHER_VALID_CHANNEL_ID, "UC_BRAND_NEW00000000000"] });
 
   assert.equal(store.discoveryCandidates.has(VALID_CHANNEL_ID), false, "a result already on the watchlist must never become a candidate");
 
@@ -3485,22 +3547,13 @@ test("AC-9G-B-05: approve/reject on an unknown id throws RESEARCH_REQUEST_NOT_FO
   );
 });
 
-test("AC-9G-B-05b: a missing/exhausted budget, or disabled Data API reads, leaves the request 'pending' -- never permanently burned into execution_failed", async () => {
+// REVISED by BL-145 (P2, owner 2026-10-07): an unset unit budget no longer blocks a search, so it is no longer one of
+// the preconditions here; the exhausted search bucket and disabled reads still are.
+test("AC-9G-B-05b: an exhausted search bucket, or disabled Data API reads, leaves the request 'pending' -- never permanently burned into execution_failed", async () => {
   const { store, services } = createFixture();
   const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
 
-  // No budget set at all (default null).
-  await assert.rejects(
-    () =>
-      services.approveMarketResearchRequest(
-        { requestId: created.requestId, credentialRef: { userId: "u1" } },
-        { createdVia: "web_ui" }
-      ),
-    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
-  );
-  assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
-
-  // Budget set, but today's search bucket is exhausted (13.4: 100 searches per quota day).
+  // Today's search bucket is exhausted (13.4: 100 searches per quota day).
   store.setQuotaBudget(50);
   for (let i = 0; i < 100; i++) {
     store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: new Date() });
@@ -5185,4 +5238,218 @@ test("BL-140: getMarketVideosOverview({ channelId }) returns only that channel's
   assert.deepEqual(narrowed.videos.map((v) => v.videoId), ["vB00000000000000000000"]);
   const all = await services.getMarketVideosOverview();
   assert.deepEqual(all.videos.map((v) => v.videoId).sort(), ["vA00000000000000000000", "vB00000000000000000000"]);
+});
+
+
+// BL-145 (P1, owner 2026-10-07): an agent's search request has the same 200-character limit as the search itself, so it
+// can no longer be approved and then always fail.
+test("BL-145 (P1): a research request query over 200 characters is refused at creation; 200 is accepted", async () => {
+  const { services } = createFixture();
+  await assert.rejects(
+    () => services.createMarketResearchRequest({ query: "a".repeat(201), rationale: "r" }, { createdVia: "mcp" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  const ok = await services.createMarketResearchRequest({ query: "a".repeat(200), rationale: "r" }, { createdVia: "mcp" });
+  assert.equal(ok.query.length, 200);
+});
+
+// BL-145 (owner, Telegram 2026-10-07, msg 1904 "1. Да"): each found channel shows its public counts, from one channels.list
+// call for the whole search; observed values with their time, never served after 30 days. Expected values by hand.
+test("BL-145: a search records each found channel's counts from one channels.list call and serves them with the candidate", async () => {
+  const now = new Date("2026-10-07T01:00:00.000Z");
+  const { services, channelStatsCalls } = createFixture({
+    now,
+    searchResults: [
+      { channelId: "UC_A00000000000000000000", title: "A", description: null },
+      { channelId: "UC_B00000000000000000000", title: "B", description: null },
+    ],
+    channelStats: [
+      { channelId: "UC_A00000000000000000000", subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 456000, publishedAt: "2019-01-01T00:00:00Z" },
+      { channelId: "UC_B00000000000000000000", subscriberCount: null, hiddenSubscriberCount: true, videoCount: 3, viewCount: 90, publishedAt: null },
+    ],
+  });
+  await services.discoverChannels({ query: "bossa nova", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(channelStatsCalls, [{ channelIds: ["UC_A00000000000000000000", "UC_B00000000000000000000"] }]);
+  const byId = new Map((await services.listDiscoveryCandidates()).candidates.map((c) => [c.channelId, c]));
+  assert.deepEqual(byId.get("UC_A00000000000000000000")?.stats, {
+    subscriberCount: 12300,
+    hiddenSubscriberCount: false,
+    videoCount: 42,
+    viewCount: 456000,
+    channelPublishedAt: "2019-01-01T00:00:00Z",
+    observedAt: now.toISOString(),
+  });
+  assert.deepEqual(byId.get("UC_B00000000000000000000")?.stats, {
+    subscriberCount: null,
+    hiddenSubscriberCount: true,
+    videoCount: 3,
+    viewCount: 90,
+    channelPublishedAt: null,
+    observedAt: now.toISOString(),
+  });
+});
+
+test("BL-145: when the counts lookup fails, the search still succeeds and the candidates simply have no counts", async () => {
+  const { services, store } = createFixture({
+    searchResults: [{ channelId: "UC_A00000000000000000000", title: "A", description: null }],
+    channelStats: async () => {
+      throw new Error("quota exceeded");
+    },
+  });
+  const result = await services.discoverChannels({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(result.candidatesNew, 1);
+  assert.equal(store.discoveryRuns.at(-1)?.status, "success");
+  assert.equal((await services.listDiscoveryCandidates()).candidates[0].stats, null);
+});
+
+test("BL-145: counts, like the title, are not served for a decided candidate last seen more than 30 days ago", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  store.discoveryCandidates.set("UC_OLD0000000000000000000", {
+    id: "UC_OLD0000000000000000000",
+    title: "Old",
+    status: "ignored",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "q",
+    reasonDiscovered: "d",
+    firstSeenAt: new Date("2026-08-01T00:00:00.000Z"),
+    lastSeenAt: new Date("2026-08-01T00:00:00.000Z"),
+    createdVia: "web_ui",
+    subscriberCount: 5,
+    hiddenSubscriberCount: false,
+    videoCount: 1,
+    viewCount: 1,
+    channelPublishedAt: null,
+    statsObservedAt: new Date("2026-08-01T00:00:00.000Z"),
+  } as never);
+  const old = (await services.listDiscoveryCandidates()).candidates.find((c) => c.channelId === "UC_OLD0000000000000000000");
+  assert.deepEqual([old?.title, old?.stats], ["", null]);
+});
+
+// BL-145 (owner, Telegram 2026-10-07, msg 1904 "3. find by genre"): a genre search looks for music VIDEOS and groups them
+// by channel. Fixture: 6 videos -- 3 from A, 1 from B, 2 from an auto-generated "- Topic" channel. Expected by hand.
+const GENRE_VIDEOS = [
+  { videoId: "a1", channelId: "UC_A00000000000000000000", channelTitle: "Bossa Cafe", title: "Bossa morning", publishedAt: "2026-09-01T00:00:00Z" },
+  { videoId: "t1", channelId: "UC_T00000000000000000000", channelTitle: "Some Artist - Topic", title: "Track", publishedAt: null },
+  { videoId: "b1", channelId: "UC_B00000000000000000000", channelTitle: "Jazz Room", title: "Night bossa", publishedAt: null },
+  { videoId: "a2", channelId: "UC_A00000000000000000000", channelTitle: "Bossa Cafe", title: "Bossa evening", publishedAt: null },
+  { videoId: "t2", channelId: "UC_T00000000000000000000", channelTitle: "Some Artist - Topic", title: "Track 2", publishedAt: null },
+  { videoId: "a3", channelId: "UC_A00000000000000000000", channelTitle: "Bossa Cafe", title: "Bossa rain", publishedAt: null },
+];
+const snap = (videoId: string, viewCount: number) => ({ videoId, title: "", publishedAt: null, viewCount, likeCount: null, commentCount: null });
+
+test("BL-145 genre: videos grouped by channel, most matches first, '- Topic' channels left out, match counts and views stored", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store, musicVideoSearchCalls, channelStatsCalls } = createFixture({
+    now,
+    musicVideos: GENRE_VIDEOS,
+    publicVideoSnapshots: [snap("a1", 100), snap("a2", 200), snap("a3", 300), snap("b1", 50)],
+  });
+  const result = await services.discoverChannelsByGenre({ query: "bossa nova cafe", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(result, {
+    videosFound: 6,
+    candidatesFound: 2,
+    candidatesNew: 2,
+    topicChannelsSkipped: 1,
+    candidateIds: ["UC_A00000000000000000000", "UC_B00000000000000000000"],
+  });
+  assert.deepEqual(musicVideoSearchCalls, [{ query: "bossa nova cafe", publishedAfter: null }]);
+  assert.deepEqual(channelStatsCalls, [{ channelIds: ["UC_A00000000000000000000", "UC_B00000000000000000000"] }]);
+  const byId = new Map((await services.listDiscoveryCandidates()).candidates.map((c) => [c.channelId, c]));
+  assert.deepEqual(byId.get("UC_A00000000000000000000")?.match, { query: "bossa nova cafe", videoCount: 3, viewCount: 600 });
+  assert.deepEqual(byId.get("UC_B00000000000000000000")?.match, { query: "bossa nova cafe", videoCount: 1, viewCount: 50 });
+  assert.equal(byId.get("UC_A00000000000000000000")?.reasonDiscovered, '3 matching videos: "Bossa morning", "Bossa evening", "Bossa rain"');
+  assert.equal(byId.get("UC_A00000000000000000000")?.discoverySource, "youtube.search.list:music_videos");
+  assert.equal(byId.has("UC_T00000000000000000000"), false);
+  assert.deepEqual([store.discoveryRuns.at(-1)?.query, store.discoveryRuns.at(-1)?.status, store.discoveryRuns.at(-1)?.unitsSpent], ["bossa nova cafe [genre]", "success", 1]);
+});
+
+test("BL-145 genre: 'published within 90 days' asks only for videos after now minus 90 days; the run log says so", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store, musicVideoSearchCalls } = createFixture({ now, musicVideos: [] });
+  await services.discoverChannelsByGenre({ query: "lofi", publishedWithinDays: 90, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(musicVideoSearchCalls, [{ query: "lofi", publishedAfter: "2026-07-09T00:00:00.000Z" }]);
+  assert.equal(store.discoveryRuns.at(-1)?.query, "lofi [genre, 90 d]");
+});
+
+test("BL-145 genre: a channel already tracked is not a candidate; unknown views leave the match views empty, not 0", async () => {
+  const { services } = createFixture({ musicVideos: GENRE_VIDEOS, publicVideoSnapshots: [snap("a1", 100)] });
+  await services.addToWatchlist({ channelId: "UC_B00000000000000000000", reason: "r" }, { createdVia: "web_ui" });
+  const result = await services.discoverChannelsByGenre({ query: "bossa", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual([result.candidatesFound, result.candidatesNew, result.candidateIds], [2, 1, ["UC_A00000000000000000000"]]);
+  const a = (await services.listDiscoveryCandidates()).candidates.find((c) => c.channelId === "UC_A00000000000000000000");
+  assert.deepEqual(a?.match, { query: "bossa", videoCount: 3, viewCount: null });
+});
+
+test("BL-145 genre: the same preconditions as a name search -- no call once the 100 searches are used", async () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const { services, store, musicVideoSearchCalls } = createFixture({ now });
+  for (let i = 0; i < 100; i++) store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: now });
+  await assert.rejects(
+    () => services.discoverChannelsByGenre({ query: "lofi", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
+  );
+  assert.equal(musicVideoSearchCalls.length, 0);
+});
+
+// BL-145 review findings (expected values by hand).
+test("BL-145 review: a re-found candidate never keeps older counts or match under the new date -- a failed lookup leaves them empty", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store } = createFixture({
+    now,
+    searchResults: [{ channelId: "UC_A00000000000000000000", title: "A", description: null }],
+    channelStats: async () => {
+      throw new Error("lookup failed");
+    },
+  });
+  store.discoveryCandidates.set("UC_A00000000000000000000", {
+    id: "UC_A00000000000000000000",
+    title: "A (old)",
+    status: "new",
+    discoverySource: "youtube.search.list:music_videos",
+    discoveryQuery: "old",
+    reasonDiscovered: null,
+    firstSeenAt: new Date("2026-09-01T00:00:00.000Z"),
+    lastSeenAt: new Date("2026-09-20T00:00:00.000Z"),
+    createdVia: "web_ui",
+    subscriberCount: 99,
+    hiddenSubscriberCount: false,
+    videoCount: 9,
+    viewCount: 9,
+    channelPublishedAt: null,
+    statsObservedAt: new Date("2026-09-20T00:00:00.000Z"),
+    matchQuery: "old",
+    matchVideoCount: 5,
+    matchViewCount: 500,
+  } as never);
+  await services.discoverChannels({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  const a = (await services.listDiscoveryCandidates()).candidates[0];
+  assert.deepEqual([a.lastSeenAt, a.stats, a.match], [now.toISOString(), null, null]);
+});
+
+test("BL-145 review: a search's pool units are recorded and count in the Research budget; with no room left the lookups are skipped", async () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const tight = createFixture({ now, musicVideos: GENRE_VIDEOS, publicVideoSnapshots: [], channelStats: [] });
+  tight.store.setQuotaBudget(1);
+  await tight.services.discoverChannelsByGenre({ query: "bossa", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  // Budget 1: the video-views lookup (1 unit) fits, the channel counts (1 more) do not.
+  assert.equal(tight.channelStatsCalls.length, 0);
+  assert.equal((tight.store.discoveryRuns.at(-1) as { poolUnitsSpent?: number }).poolUnitsSpent, 1);
+
+  const roomy = createFixture({ now, musicVideos: GENRE_VIDEOS, channelStats: [] });
+  roomy.store.setQuotaBudget(100);
+  await roomy.services.discoverChannelsByGenre({ query: "bossa", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal((roomy.store.discoveryRuns.at(-1) as { poolUnitsSpent?: number }).poolUnitsSpent, 2);
+  assert.equal((await roomy.services.getCollectionLimits()).unitsSpentToday, 2, "the budget counts the search's 2 pool units");
+});
+
+test("BL-145 review: channels found in the same search are listed with the most matching videos first", async () => {
+  const videos = [
+    { videoId: "b1", channelId: "UC_B00000000000000000000", channelTitle: "B", title: "x", publishedAt: null },
+    { videoId: "a1", channelId: "UC_A00000000000000000000", channelTitle: "A", title: "x", publishedAt: null },
+    { videoId: "a2", channelId: "UC_A00000000000000000000", channelTitle: "A", title: "x", publishedAt: null },
+  ];
+  const { services } = createFixture({ musicVideos: videos });
+  await services.discoverChannelsByGenre({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual((await services.listDiscoveryCandidates()).candidates.map((c) => c.channelId), ["UC_A00000000000000000000", "UC_B00000000000000000000"]);
 });

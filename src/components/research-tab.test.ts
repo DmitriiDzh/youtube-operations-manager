@@ -6,7 +6,7 @@ import { describeResearchSummary, RESEARCH_TABS, shouldOpenInbox, type ResearchS
 import { videosQueryParams } from "./market-videos-panel";
 import { isAnotherModalOpen } from "./side-drawer";
 import { filterWatchlistRows } from "./market-research-panel";
-import { CANDIDATE_FILTERS } from "./market-discovery-panel";
+import { CANDIDATE_FILTERS, defaultTrackReason } from "./market-discovery-panel";
 import { describeVisibleTo } from "./market-channel-assignment";
 
 // BL-140 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4, §7 R1; owner decisions msg 1827).
@@ -168,7 +168,8 @@ test("§4.3: 'Show all in Videos' opens Videos filtered to the channel, and the 
 
 test("AC-R4-1: Discover lists candidates by status, New by default, one server page at a time", async () => {
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
-  assert.deepEqual(CANDIDATE_FILTERS.map((f) => f.label), ["New", "Watching", "Ignored", "Promoted", "Archived"]);
+  // BL-145 (owner, msg 1904): Watch is gone; Promote is "Track"; the old "watching" status shows only for older data.
+  assert.deepEqual(CANDIDATE_FILTERS.map((f) => f.label), ["New", "Tracked", "Ignored", "Archived", "Shortlisted (old)"]);
   assert.match(panel, /useState<DiscoveryCandidateStatus>\("new"\)/);
   // The chip editor is only in the drawer; the rows carry the pill.
   assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1);
@@ -265,4 +266,41 @@ test("each summary link opens its list showing what it counted, and sub-tabs ref
   for (const [panel, tab] of [["MarketResearchPanel", "channels"], ["MarketVideosPanel", "videos"], ["MarketDiscoveryPanel", "discover"]]) {
     assert.match(shell, new RegExp(`<${panel}[^>]*active=\\{tab === "${tab}"\\}`), panel);
   }
+});
+
+// BL-145 (owner, Telegram 2026-10-07, msg 1904): one Track button adds the channel to the regularly collected list, with a
+// reason already filled from the search (editable); there is no separate Watch any more.
+test("BL-145: Track pre-fills the reason from the search query; no Watch button is offered", async () => {
+  assert.equal(defaultTrackReason({ discoveryQuery: "bossa nova cafe" }), 'Found by the search "bossa nova cafe"');
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
+  assert.doesNotMatch(panel, />\s*Watch\s*</);
+  assert.doesNotMatch(panel, /handleUpdateStatus\([^)]*"watching"\)/);
+});
+
+test("BL-145: a found channel's counts read as one short line; hidden subscribers say so; nothing known shows nothing", async () => {
+  const { describeCandidateStats } = await import("./market-discovery-panel");
+  const at = "2026-10-07T01:00:00.000Z";
+  assert.equal(
+    describeCandidateStats({ subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 4_560_000, channelPublishedAt: "2019-05-01T00:00:00Z", observedAt: at }),
+    "12K subscribers · 42 videos · 4.6M views · since 2019"
+  );
+  assert.equal(
+    describeCandidateStats({ subscriberCount: null, hiddenSubscriberCount: true, videoCount: 1, viewCount: 950, channelPublishedAt: null, observedAt: at }),
+    "subscribers hidden · 1 video · 950 views"
+  );
+  assert.equal(describeCandidateStats({ subscriberCount: 1500, hiddenSubscriberCount: false, videoCount: null, viewCount: null, channelPublishedAt: null, observedAt: at }), "1.5K subscribers");
+  assert.equal(describeCandidateStats(null), null);
+});
+
+test("BL-145 genre: the result line and a channel's match line say what was found, in plain words", async () => {
+  const { describeSearchResult, describeCandidateMatch } = await import("./market-discovery-panel");
+  assert.equal(
+    describeSearchResult({ mode: "genre", videosFound: 50, candidatesFound: 31, candidatesNew: 29, topicChannelsSkipped: 4 }),
+    'Found 50 music videos from 31 channels, 29 new. Left out 4 auto-generated "- Topic" channels.'
+  );
+  assert.equal(describeSearchResult({ mode: "genre", videosFound: 1, candidatesFound: 1, candidatesNew: 0, topicChannelsSkipped: 0 }), "Found 1 music video from 1 channel, 0 new.");
+  assert.equal(describeSearchResult({ mode: "channels", candidatesFound: 25, candidatesNew: 24 }), "Found 25, 24 new.");
+  assert.equal(describeCandidateMatch({ query: "q", videoCount: 3, viewCount: 1_234_000 }), "3 matching videos · 1.2M views on them");
+  assert.equal(describeCandidateMatch({ query: "q", videoCount: 1, viewCount: null }), "1 matching video");
+  assert.equal(describeCandidateMatch(null), null);
 });

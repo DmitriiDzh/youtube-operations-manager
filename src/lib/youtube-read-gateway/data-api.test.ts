@@ -8,6 +8,8 @@ import {
   createYoutubeClient,
   getChannelForSync,
   getPublicChannelSnapshot,
+  getPublicChannelStats,
+  searchPublicMusicVideos,
   getPublicVideoSnapshots,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
@@ -875,4 +877,69 @@ test("listUploadsPlaylistVideoIds reports the running count of unique ids after 
 
   assert.deepEqual(ids, ["a", "b", "c"]);
   assert.deepEqual(found, [2, 3], "the duplicate b on page 2 is not counted twice");
+});
+
+
+// BL-145 (owner, Telegram 2026-10-07): the counts of the channels a search found, one channels.list call per 50 ids.
+test("getPublicChannelStats asks for snippet+statistics of up to 50 ids per call, de-duplicated; a hidden count is null", async () => {
+  const calls: Array<{ part: string[]; id: string[] }> = [];
+  const youtube = fakeYoutubeClient({
+    channelsList: (async (args: { part: string[]; id: string[] }) => {
+      calls.push({ part: args.part, id: args.id });
+      return {
+        data: {
+          items: args.id.map((id) =>
+            id === "UC_HIDDEN"
+              ? { id, snippet: { publishedAt: "2020-02-03T04:05:06Z" }, statistics: { subscriberCount: "0", viewCount: "10", videoCount: "2", hiddenSubscriberCount: true } }
+              : { id, snippet: { publishedAt: "2019-01-01T00:00:00Z" }, statistics: { subscriberCount: "12300", viewCount: "456000", videoCount: "42", hiddenSubscriberCount: false } }
+          ),
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const ids = [...Array.from({ length: 51 }, (_, i) => `UC_${i}`), "UC_0", "UC_HIDDEN"];
+  const stats = await getPublicChannelStats(youtube, ids);
+  // 52 distinct ids: one call of 50, one of 2.
+  assert.deepEqual(calls.map((c) => [c.part, c.id.length]), [
+    [["snippet", "statistics"], 50],
+    [["snippet", "statistics"], 2],
+  ]);
+  assert.equal(stats.length, 52);
+  assert.deepEqual(stats[0], { channelId: "UC_0", subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 456000, publishedAt: "2019-01-01T00:00:00Z" });
+  assert.deepEqual(stats.find((x) => x.channelId === "UC_HIDDEN"), {
+    channelId: "UC_HIDDEN",
+    subscriberCount: null,
+    hiddenSubscriberCount: true,
+    videoCount: 2,
+    viewCount: 10,
+    publishedAt: "2020-02-03T04:05:06Z",
+  });
+});
+
+
+// BL-145 (owner, msg 1904): the genre search asks for VIDEOS in the Music category, not channels.
+test("searchPublicMusicVideos asks search.list for type=video in category 10 (Music), 50 results, with publishedAfter only when given", async () => {
+  const calls: unknown[] = [];
+  const youtube = fakeYoutubeClient({
+    searchList: (async (args: unknown) => {
+      calls.push(args);
+      return {
+        data: {
+          items: [
+            { id: { videoId: "v1" }, snippet: { channelId: "UC_A", channelTitle: "A", title: "Bossa 1", publishedAt: "2026-09-01T00:00:00Z" } },
+            { id: { videoId: "v2" }, snippet: { channelTitle: "no channel id" } },
+            { id: { channelId: "UC_X" }, snippet: { channelId: "UC_X" } },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["search"]["list"],
+  });
+  const found = await searchPublicMusicVideos(youtube, { query: "bossa nova cafe" });
+  await searchPublicMusicVideos(youtube, { query: "q", publishedAfter: "2026-07-01T00:00:00Z" });
+  assert.deepEqual(calls, [
+    { part: ["snippet"], q: "bossa nova cafe", type: ["video"], videoCategoryId: "10", maxResults: 50 },
+    { part: ["snippet"], q: "q", type: ["video"], videoCategoryId: "10", maxResults: 50, publishedAfter: "2026-07-01T00:00:00Z" },
+  ]);
+  assert.deepEqual(found, [{ videoId: "v1", channelId: "UC_A", channelTitle: "A", title: "Bossa 1", publishedAt: "2026-09-01T00:00:00Z" }]);
 });

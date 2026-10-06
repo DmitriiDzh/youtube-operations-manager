@@ -260,6 +260,42 @@ export async function getPublicChannelSnapshot(
   };
 }
 
+/** BL-145: one channel's public counts as `channels.list` reports them right now. */
+export type PublicChannelStats = {
+  channelId: string;
+  subscriberCount: number | null;
+  hiddenSubscriberCount: boolean;
+  videoCount: number | null;
+  viewCount: number | null;
+  /** The channel's creation time (RFC 3339), as YouTube reports it. */
+  publishedAt: string | null;
+};
+
+/**
+ * BL-145 (owner, Telegram 2026-10-07): the public counts of up to 50 channels per `channels.list` call (1 unit of the
+ * 10,000-unit pool per call), for the channels a search just found. A hidden subscriber count is `null`, never YouTube's
+ * placeholder 0. A channel YouTube does not return (deleted, terminated) is simply absent from the result.
+ */
+export async function getPublicChannelStats(youtube: youtube_v3.Youtube, channelIds: string[]): Promise<PublicChannelStats[]> {
+  const results: PublicChannelStats[] = [];
+  for (const batch of chunk([...new Set(channelIds)], YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.channels.list({ part: ["snippet", "statistics"], id: batch, maxResults: batch.length });
+    for (const channel of res.data.items ?? []) {
+      if (!channel.id) continue;
+      const hidden = channel.statistics?.hiddenSubscriberCount === true;
+      results.push({
+        channelId: channel.id,
+        subscriberCount: hidden ? null : parseStatCount(channel.statistics?.subscriberCount),
+        hiddenSubscriberCount: hidden,
+        videoCount: parseStatCount(channel.statistics?.videoCount),
+        viewCount: parseStatCount(channel.statistics?.viewCount),
+        publishedAt: channel.snippet?.publishedAt ?? null,
+      });
+    }
+  }
+  return results;
+}
+
 export async function listUploadsPlaylistVideoIds(
   youtube: youtube_v3.Youtube,
   uploadsPlaylistId: string,
@@ -426,6 +462,51 @@ export async function searchPublicChannels(
       channelId,
       title: item.snippet?.title ?? "",
       description: item.snippet?.description ?? null,
+    });
+  }
+  return results;
+}
+
+/** BL-145: one music video a genre search returned. */
+export type PublicVideoSearchResult = {
+  videoId: string;
+  channelId: string;
+  channelTitle: string;
+  title: string;
+  publishedAt: string | null;
+};
+
+/** YouTube's "Music" video category (videoCategories.list, stable id). */
+export const YOUTUBE_MUSIC_CATEGORY_ID = "10";
+
+/**
+ * BL-145 (owner, Telegram 2026-10-07, msg 1904: "searching channel names is not effective, find by genre"): one
+ * `search.list` call for VIDEOS in the Music category matching the genre words (1 call of the 100-searches bucket, up to
+ * 50 results), optionally only those published after a date. The caller groups them by channel.
+ */
+export async function searchPublicMusicVideos(
+  youtube: youtube_v3.Youtube,
+  input: { query: string; publishedAfter?: string | null; maxResults?: number }
+): Promise<PublicVideoSearchResult[]> {
+  const res = await youtube.search.list({
+    part: ["snippet"],
+    q: input.query,
+    type: ["video"],
+    videoCategoryId: YOUTUBE_MUSIC_CATEGORY_ID,
+    maxResults: input.maxResults ?? 50,
+    ...(input.publishedAfter ? { publishedAfter: input.publishedAfter } : {}),
+  });
+  const results: PublicVideoSearchResult[] = [];
+  for (const item of res.data.items ?? []) {
+    const videoId = item.id?.videoId;
+    const channelId = item.snippet?.channelId;
+    if (!videoId || !channelId) continue;
+    results.push({
+      videoId,
+      channelId,
+      channelTitle: item.snippet?.channelTitle ?? "",
+      title: item.snippet?.title ?? "",
+      publishedAt: item.snippet?.publishedAt ?? null,
     });
   }
   return results;

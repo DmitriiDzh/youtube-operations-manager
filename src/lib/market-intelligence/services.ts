@@ -50,6 +50,8 @@ import {
   type MarketTrendEvidence,
   type MarketVideoSnapshot,
   type PublicChannelSearchResult,
+  type PublicChannelStats,
+  type PublicVideoSearchResult,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResearchChannel,
@@ -77,6 +79,8 @@ import {
   createTrendCandidateInputSchema,
   createTrendCandidateOutputSchema,
   deleteTopicInputSchema,
+  discoverChannelsByGenreInputSchema,
+  discoverChannelsByGenreOutputSchema,
   discoverChannelsInputSchema,
   discoverChannelsOutputSchema,
   fetchPublicSnapshotInputSchema,
@@ -329,12 +333,23 @@ type StoredMarketDiscoveryCandidateForService = {
   firstSeenAt: Date;
   lastSeenAt: Date;
   createdVia: string;
+  subscriberCount?: number | null;
+  hiddenSubscriberCount?: boolean | null;
+  videoCount?: number | null;
+  viewCount?: number | null;
+  channelPublishedAt?: string | null;
+  statsObservedAt?: Date | null;
+  matchQuery?: string | null;
+  matchVideoCount?: number | null;
+  matchViewCount?: number | null;
 };
 
 /** Phase 13 (review round 6): a candidate's title/reason come from `search.list` (another channel's
  * API data, III.E.4.d). Past 30 days since it was last seen they are never served, even before the
  * purge has run -- an undecided candidate is hidden, a decided one keeps only its id and decision
  * (owner msg 1139), the same rule the purge applies. */
+type PoolAllowance = { spent: number; take(units: number): boolean };
+
 function candidateExpired(row: StoredMarketDiscoveryCandidateForService, now: Date): boolean {
   return now.getTime() - row.lastSeenAt.getTime() > API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 }
@@ -350,6 +365,22 @@ function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForServic
     reasonDiscovered: expired ? null : row.reasonDiscovered,
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
+    // BL-145: API data like the title -- never served past the 30 days.
+    stats:
+      expired || !row.statsObservedAt
+        ? null
+        : {
+            subscriberCount: row.subscriberCount ?? null,
+            hiddenSubscriberCount: row.hiddenSubscriberCount === true,
+            videoCount: row.videoCount ?? null,
+            viewCount: row.viewCount ?? null,
+            channelPublishedAt: row.channelPublishedAt ?? null,
+            observedAt: row.statsObservedAt.toISOString(),
+          },
+    match:
+      expired || !row.matchQuery || row.matchVideoCount === null || row.matchVideoCount === undefined
+        ? null
+        : { query: row.matchQuery, videoCount: row.matchVideoCount, viewCount: row.matchViewCount ?? null },
   };
 }
 
@@ -577,6 +608,10 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       query: string;
     }): Promise<PublicChannelSearchResult[]>;
+    /** BL-145: a search.list for music VIDEOS (1 call of the 100-searches bucket). */
+    searchPublicMusicVideos(args: { credentials: ResolvedCredentials; query: string; publishedAfter: string | null }): Promise<PublicVideoSearchResult[]>;
+    /** BL-145: `channels.list` counts of up to 50 channels per call, 1 pool unit each. */
+    getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }): Promise<PublicChannelStats[]>;
     // Found by independent review -- a cheap, upfront, local-only check called BEFORE any channel
     // is claimed or any budget spent, so a disabled toggle never gets mischarged as if it were a
     // real, failed network call.
@@ -676,6 +711,13 @@ type ServiceDependencies = {
     createdVia: string;
   }): Promise<void>;
   touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null): Promise<void>;
+  /** BL-145: records what the latest genre search found of a candidate. */
+  setMarketDiscoveryCandidateMatch(channelId: string, match: { query: string; videoCount: number; viewCount: number | null }): Promise<void>;
+  /** BL-145: records a candidate's public counts as just observed. */
+  setMarketDiscoveryCandidateStats(
+    channelId: string,
+    stats: { subscriberCount: number | null; hiddenSubscriberCount: boolean; videoCount: number | null; viewCount: number | null; channelPublishedAt: string | null; observedAt: Date }
+  ): Promise<void>;
   setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus): Promise<void>;
   insertMarketDiscoveryRun(input: {
     query: string;
@@ -685,6 +727,8 @@ type ServiceDependencies = {
     candidatesNew?: number | null;
     errorMessage?: string | null;
     ranAt?: Date;
+    /** BL-145: pool units (10k) this search spent besides the search itself. */
+    poolUnitsSpent?: number | null;
   }): Promise<void>;
   // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
   listMarketTopics(): Promise<StoredMarketTopicForService[]>;
@@ -916,24 +960,15 @@ const startOfQuotaDay = startOfYoutubeQuotaDay;
  * The upfront, zero-cost preconditions a real `search.list` call needs -- extracted so
  * `approveMarketResearchRequest` (Phase 9 slice 9G, part B) can run the SAME checks BEFORE its own
  * atomic `pending -> approved` transition, never duplicated inline. Found necessary by advisor
- * review, before implementation: without this, the first approval on any install where the owner
- * has never set a daily quota budget (the operator-set-only default, no hardcoded value) would
- * unconditionally fail AFTER the transition already happened, permanently landing the request in
- * `execution_failed` with no path back to `pending`. Throwing here, before any state changes,
- * leaves the caller's own state untouched on a precondition failure.
+ * review, before implementation: without this, an approval whose search cannot run (no searches left
+ * today, reads switched off) would fail AFTER the transition already happened, permanently landing the
+ * request in `execution_failed` with no path back to `pending`. Throwing here, before any state
+ * changes, leaves the caller's own state untouched on a precondition failure.
  */
 async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date): Promise<void> {
-  const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
-  if (budget === null) {
-    throw new DomainError({
-      code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
-      message: "Set a daily YouTube API unit budget in Settings before running discovery",
-      details: {},
-    });
-  }
-
-  // The operator's budget still has to be set (it is the switch that enables discovery at all), but
-  // a search no longer spends it: searches have their own bucket of SEARCH_LIST_DAILY_CALL_LIMIT.
+  // BL-145 (P2, owner 2026-10-07): a search no longer needs the daily UNIT budget to be set -- it never spends that
+  // budget (searches have their own bucket of SEARCH_LIST_DAILY_CALL_LIMIT), and "automatic collection is off" must not
+  // silently block a manual search. The search cap and the reads toggle below still apply.
   const searchesToday = await deps.countMarketDiscoverySearchesSince(startOfQuotaDay(now));
   const remaining = SEARCH_LIST_DAILY_CALL_LIMIT - searchesToday;
   if (remaining < 1) {
@@ -1500,6 +1535,55 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
    * was ever observed. Reads no video snapshots, so it stays cheap enough for the polled Research summary (BL-140).
    * getWatchlistEntryContext uses it too, so the flags have one source.
    */
+  /**
+   * BL-145 review: the pool units (10k) a search may still spend on its lookups -- what is left of the Research daily
+   * unit budget (unlimited when no budget is set: collection is off, and the search itself is a manual action). `take`
+   * reserves units before a call and refuses when they do not fit; `spent` goes into the search's run row, which the
+   * budget then counts.
+   */
+  async function poolAllowance(now: Date): Promise<PoolAllowance> {
+    const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+    let left = budget === null ? Number.POSITIVE_INFINITY : Math.max(0, budget - (await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now))));
+    const allowance = {
+      spent: 0,
+      take(units: number): boolean {
+        if (units > left) return false;
+        left -= units;
+        allowance.spent += units;
+        return true;
+      },
+    };
+    return allowance;
+  }
+
+  /**
+   * BL-145 (owner, Telegram 2026-10-07): the found channels' public counts (subscribers, videos, views, creation date)
+   * from one channels.list call per 50 (1 pool unit each), so a result can be judged without opening YouTube. Best
+   * effort: if it fails, the search still counts and the candidates simply show no counts.
+   */
+  async function recordCandidateCounts(credentials: ResolvedCredentials, candidateIds: string[], now: Date, pool: PoolAllowance): Promise<void> {
+    if (candidateIds.length === 0) return;
+    if (!pool.take(Math.ceil(new Set(candidateIds).size / 50))) return; // over the Research unit budget: no counts
+    let stats: PublicChannelStats[];
+    try {
+      stats = await deps.youtubeApi.getPublicChannelStats({ credentials, channelIds: candidateIds });
+    } catch {
+      // Only the YouTube call is best effort: counts stay unknown for this search's candidates. A local write failure below
+      // is a real error and propagates (BL-145 review).
+      return;
+    }
+    for (const st of stats) {
+      await deps.setMarketDiscoveryCandidateStats(st.channelId, {
+        subscriberCount: st.subscriberCount,
+        hiddenSubscriberCount: st.hiddenSubscriberCount,
+        videoCount: st.videoCount,
+        viewCount: st.viewCount,
+        channelPublishedAt: st.publishedAt,
+        observedAt: now,
+      });
+    }
+  }
+
   async function readCollectionState(channelId: string) {
     const channelSnapshotRows = await deps.listMarketChannelSnapshotsByChannel(channelId);
     const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(channelId);
@@ -2664,14 +2748,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * itself throws** (found by independent/advisor review: an earlier version only wrapped the
      * `search.list` call itself in try/catch -- a throw from the dedup loop afterward, e.g. a
      * `insertMarketDiscoveryCandidate` primary-key violation from an overlapping concurrent
-     * request, propagated uncaught with NO run row written at all. YouTube had already been
-     * charged the real 100 units for the search itself; the ledger would have silently
-     * undercounted them, letting a later collection/discovery call overspend the shared budget).
+     * request, propagated uncaught with NO run row written at all. YouTube had already counted the
+     * search against its 100-searches-per-day bucket; the run log would have silently undercounted
+     * it, letting later searches go past that cap).
      */
     async discoverChannels(
       input: unknown,
       callOrigin: { createdVia: CreatedVia }
-    ): Promise<{ candidatesFound: number; candidatesNew: number }> {
+    ): Promise<{ candidatesFound: number; candidatesNew: number; candidateIds: string[] }> {
       const parsedInput = parseWithSchema(discoverChannelsInputSchema, input, "discover channels input");
 
       const now = deps.clock.now();
@@ -2687,6 +2771,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // count for work that never happened.
       let candidatesFound: number | null = null;
       let candidatesNewCount: number | null = null;
+      // BL-145 (P4): every candidate this search created or found again, so an approved agent request can hand them
+      // to the requesting channel.
+      const candidateIds: string[] = [];
+      const pool = await poolAllowance(now);
 
       try {
         const results = await deps.youtubeApi.searchPublicChannels({ credentials, query: parsedInput.query });
@@ -2700,6 +2788,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
           if (existingCandidate) {
             await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now, result.title, result.description);
+            candidateIds.push(result.channelId);
             continue;
           }
 
@@ -2712,12 +2801,16 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             createdVia: callOrigin.createdVia,
           });
           candidatesNewCount += 1;
+          candidateIds.push(result.channelId);
         }
+
+        await recordCandidateCounts(credentials, candidateIds, now, pool);
 
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "success",
           unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
+          poolUnitsSpent: pool.spent,
           candidatesFound,
           candidatesNew: candidatesNewCount,
           ranAt: now,
@@ -2725,7 +2818,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
         return parseWithSchema(
           discoverChannelsOutputSchema,
-          { candidatesFound, candidatesNew: candidatesNewCount },
+          { candidatesFound, candidatesNew: candidatesNewCount, candidateIds },
           "discover channels output"
         );
       } catch (error) {
@@ -2733,6 +2826,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           query: parsedInput.query,
           status: "failed",
           unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
+          poolUnitsSpent: pool.spent,
           candidatesFound,
           candidatesNew: candidatesNewCount,
           errorMessage: error instanceof Error ? error.message : String(error),
@@ -2742,8 +2836,123 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
     },
 
+    /**
+     * BL-145 (owner, Telegram 2026-10-07, msg 1904: "searching channel names is not effective; find by genre"): one
+     * search.list for music VIDEOS matching the genre words (1 call of the 100-searches bucket), optionally only recent
+     * ones, grouped by the channel that published them. Auto-generated "… - Topic" channels (YouTube's artist pages, no
+     * API flag -- recognised by the title suffix) are left out. Each channel becomes (or refreshes) a candidate exactly
+     * like a name search, plus `match`: how many of its videos matched and their total views (one videos.list call, 1
+     * pool unit; best effort), then the same counts lookup (1 more pool unit). Same preconditions, same run log.
+     */
+    async discoverChannelsByGenre(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<{ videosFound: number; candidatesFound: number; candidatesNew: number; topicChannelsSkipped: number; candidateIds: string[] }> {
+      const parsedInput = parseWithSchema(discoverChannelsByGenreInputSchema, input, "discover channels by genre input");
+      const now = deps.clock.now();
+      await assertDiscoveryPreconditions(deps, now);
+      const credentials = await deps.authResolver.resolve({ credentialRef: parsedInput.credentialRef, requiredScopes: [YOUTUBE_READ_SCOPE] });
+      const publishedAfter = parsedInput.publishedWithinDays ? new Date(now.getTime() - parsedInput.publishedWithinDays * 86_400_000).toISOString() : null;
+      const runQuery = `${parsedInput.query} [genre${parsedInput.publishedWithinDays ? `, ${parsedInput.publishedWithinDays} d` : ""}]`;
+
+      let candidatesFound: number | null = null;
+      let candidatesNew: number | null = null;
+      const pool = await poolAllowance(now);
+      try {
+        const videos = await deps.youtubeApi.searchPublicMusicVideos({ credentials, query: parsedInput.query, publishedAfter });
+        const byChannel = new Map<string, { title: string; videoIds: string[]; titles: string[] }>();
+        let topicChannelsSkipped = 0;
+        const skippedTopic = new Set<string>();
+        for (const v of videos) {
+          if (/ - Topic$/.test(v.channelTitle)) {
+            if (!skippedTopic.has(v.channelId)) topicChannelsSkipped += 1;
+            skippedTopic.add(v.channelId);
+            continue;
+          }
+          const entry = byChannel.get(v.channelId) ?? { title: v.channelTitle, videoIds: [], titles: [] };
+          entry.videoIds.push(v.videoId);
+          entry.titles.push(v.title);
+          byChannel.set(v.channelId, entry);
+        }
+
+        // Views of the matching videos (observed now), for "N matching videos, X views on them". Best effort.
+        const viewsByVideo = new Map<string, number | null>();
+        const matchedVideoIds = [...byChannel.values()].flatMap((c) => c.videoIds);
+        if (matchedVideoIds.length > 0 && pool.take(Math.ceil(matchedVideoIds.length / 50))) {
+          try {
+            for (const snap of await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds: matchedVideoIds })) viewsByVideo.set(snap.videoId, snap.viewCount);
+          } catch {
+            // Views stay unknown; the match count is still real.
+          }
+        }
+
+        // Most matching videos first, so the list reads in order of relevance to the genre.
+        const channels = [...byChannel.entries()].sort((a, b) => b[1].videoIds.length - a[1].videoIds.length);
+        candidatesFound = channels.length;
+        candidatesNew = 0;
+        const candidateIds: string[] = [];
+        for (const [channelId, c] of channels) {
+          if (await deps.getResearchChannelById(channelId)) continue;
+          const reason = `${c.videoIds.length} matching video${c.videoIds.length === 1 ? "" : "s"}: ${c.titles
+            .slice(0, 3)
+            .map((t) => `"${t}"`)
+            .join(", ")}${c.titles.length > 3 ? ", …" : ""}`;
+          if (await deps.getMarketDiscoveryCandidateById(channelId)) {
+            await deps.touchMarketDiscoveryCandidateLastSeen(channelId, now, c.title, reason);
+          } else {
+            await deps.insertMarketDiscoveryCandidate({
+              id: channelId,
+              title: c.title,
+              discoverySource: "youtube.search.list:music_videos",
+              discoveryQuery: parsedInput.query,
+              reasonDiscovered: reason,
+              createdVia: callOrigin.createdVia,
+            });
+            candidatesNew += 1;
+          }
+          const views = c.videoIds.map((id) => viewsByVideo.get(id));
+          const viewCount = views.every((v) => typeof v === "number") ? (views as number[]).reduce((a, b) => a + b, 0) : null;
+          await deps.setMarketDiscoveryCandidateMatch(channelId, { query: parsedInput.query, videoCount: c.videoIds.length, viewCount });
+          candidateIds.push(channelId);
+        }
+
+        await recordCandidateCounts(credentials, candidateIds, now, pool);
+
+        await deps.insertMarketDiscoveryRun({
+          query: runQuery,
+          status: "success",
+          unitsSpent: SEARCH_LIST_UNIT_COST,
+          poolUnitsSpent: pool.spent,
+          candidatesFound,
+          candidatesNew,
+          ranAt: now,
+        });
+        return parseWithSchema(
+          discoverChannelsByGenreOutputSchema,
+          { videosFound: videos.length, candidatesFound, candidatesNew, topicChannelsSkipped, candidateIds },
+          "discover channels by genre output"
+        );
+      } catch (error) {
+        await deps.insertMarketDiscoveryRun({
+          query: runQuery,
+          status: "failed",
+          unitsSpent: SEARCH_LIST_UNIT_COST,
+          poolUnitsSpent: pool.spent,
+          candidatesFound,
+          candidatesNew,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          ranAt: now,
+        });
+        throw error;
+      }
+    },
+
     async listDiscoveryCandidates(): Promise<{ candidates: MarketDiscoveryCandidate[] }> {
-      const rows = await deps.listMarketDiscoveryCandidates();
+      // Newest first (the store's order); within one search (same lastSeenAt) a genre search's channels with more matching
+      // videos come first (BL-145 review: the store's order alone left ties to chance).
+      const rows = [...(await deps.listMarketDiscoveryCandidates())].sort(
+        (a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime() || (b.matchVideoCount ?? 0) - (a.matchVideoCount ?? 0)
+      );
       return parseWithSchema(
         listDiscoveryCandidatesOutputSchema,
         {
@@ -3296,7 +3505,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     async approveMarketResearchRequest(
       input: unknown,
       callOrigin: { createdVia: CreatedVia }
-    ): Promise<MarketResearchRequest> {
+    ): Promise<MarketResearchRequest & { candidateIds?: string[] }> {
       const parsedInput = parseWithSchema(approveMarketResearchRequestInputSchema, input, "approve market research request input");
 
       const existing = await deps.getMarketResearchRequestById(parsedInput.requestId);
@@ -3396,7 +3605,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       return parseWithSchema(
         approveMarketResearchRequestOutputSchema,
-        toMarketResearchRequest(executed),
+        // BL-145 (P4): the candidates the search produced, for the route to share with the requesting channel.
+        { ...toMarketResearchRequest(executed), candidateIds: discoveryResult.candidateIds },
         "approve market research request output"
       );
     },
