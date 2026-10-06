@@ -17,6 +17,7 @@ type Totals = { onlyHere: number; onlyThere: number; changed: number };
 type Preview = {
   peer: { snapshotId: string; sourceDeviceId: string; createdAt: string; generation: number };
   local: { deviceId: string; headSnapshotId: string | null; lastExportAt: string | null; unpublishedChanges: boolean };
+  peerTips: number;
   commonBase: { snapshotId: string; createdAt: string; sourceDeviceId: string } | null;
   sections: Array<{ section: string } & Totals>;
   tables: Array<{ table: string; section: string } & Totals>;
@@ -71,26 +72,38 @@ export function DeviceSyncDivergenceCard() {
   }, [refresh]);
 
   const snapshotId = notice?.snapshotId ?? null;
+  const loadPreview = useCallback(async (id: string): Promise<Preview | null> => {
+    try {
+      const res = await fetch(`/api/device-sync/divergence?snapshotId=${encodeURIComponent(id)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPreviewError(data.message ?? `Error ${res.status}`);
+        return null;
+      }
+      setPreviewError(null);
+      setPreview(data as Preview);
+      return data as Preview;
+    } catch (e) {
+      setPreviewError(String(e));
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     setPreview(null);
     setPreviewError(null);
+    if (snapshotId) void loadPreview(snapshotId);
+  }, [snapshotId, loadPreview]);
+
+  /** The numbers in the confirm dialog come from a fresh comparison, made when it opens: data may
+   * have changed since the card was first drawn (review round 1, #6). */
+  async function openConfirm(choice: "keep_mine" | "take_theirs") {
     if (!snapshotId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/device-sync/divergence?snapshotId=${encodeURIComponent(snapshotId)}`);
-        const data = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!res.ok) setPreviewError(data.message ?? `Error ${res.status}`);
-        else setPreview(data as Preview);
-      } catch (e) {
-        if (!cancelled) setPreviewError(String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [snapshotId]);
+    setWorking(true);
+    const fresh = await loadPreview(snapshotId);
+    setWorking(false);
+    if (fresh) setConfirm(choice);
+  }
 
   async function resolve(choice: "keep_mine" | "take_theirs") {
     if (!snapshotId) return;
@@ -154,8 +167,14 @@ export function DeviceSyncDivergenceCard() {
       <div className="mt-3">
         {!preview && !previewError && <p className="text-sm text-zinc-400">Comparing the two versions...</p>}
         {previewError && <p className="text-sm text-red-300">Could not compare the two versions: {previewError}</p>}
-        {preview && differing.length === 0 && (
+        {preview && differing.length === 0 && preview.peerTips === 1 && (
           <p className="text-sm text-zinc-300">The two versions now hold the same data; this resolves itself on the next sync.</p>
+        )}
+        {preview && preview.peerTips > 1 && (
+          <p className="text-sm text-amber-300">
+            {preview.peerTips} other versions are in conflict; this compares with the newest one only. &ldquo;Keep this
+            computer&apos;s data&rdquo; replaces all of them.
+          </p>
         )}
         {preview && differing.length > 0 && (
           <table className="w-full text-left text-sm">
@@ -199,7 +218,7 @@ export function DeviceSyncDivergenceCard() {
         <div className="space-y-2">
           <button
             disabled={working}
-            onClick={() => setConfirm("keep_mine")}
+            onClick={() => void openConfirm("keep_mine")}
             className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
             Keep this computer&apos;s data
@@ -212,7 +231,7 @@ export function DeviceSyncDivergenceCard() {
         <div className="space-y-2">
           <button
             disabled={working}
-            onClick={() => setConfirm("take_theirs")}
+            onClick={() => void openConfirm("take_theirs")}
             className="w-full rounded-md border border-zinc-600 px-3 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-50"
           >
             Take the other computer&apos;s data

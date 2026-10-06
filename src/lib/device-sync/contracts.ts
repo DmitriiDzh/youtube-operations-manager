@@ -124,6 +124,8 @@ export function divergenceSectionOf(table: string): DivergenceSection {
 export type DivergencePreview = {
   peer: { snapshotId: string; sourceDeviceId: string; createdAt: string; generation: number };
   local: { deviceId: string; headSnapshotId: string | null; lastExportAt: string | null; unpublishedChanges: boolean };
+  /** How many conflicting tips there are; the comparison is with `peer` only (review round 1, #6). */
+  peerTips: number;
   /** The newest snapshot both histories contain, when it is still in the sync folder. */
   commonBase: { snapshotId: string; createdAt: string; sourceDeviceId: string } | null;
   sections: Array<{ section: DivergenceSection; onlyHere: number; onlyThere: number; changed: number }>;

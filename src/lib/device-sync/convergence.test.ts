@@ -464,6 +464,7 @@ test("AC-FD-12: the divergence preview says, per section, what only this compute
     const preview = await a.runner.divergencePreview(target);
     assert.equal(preview.peer.snapshotId, target);
     assert.equal(preview.peer.sourceDeviceId, "device-b");
+    assert.equal(preview.peerTips, 1);
     const research = preview.sections.find((s) => s.section === "Research");
     assert.deepEqual(
       { onlyHere: research?.onlyHere, onlyThere: research?.onlyThere, changed: research?.changed },

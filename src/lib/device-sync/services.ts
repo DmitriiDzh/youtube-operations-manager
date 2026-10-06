@@ -943,7 +943,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
    * the other has, and what both have but differently. Read-only: nothing is published or replaced.
    */
   async function divergencePreviewUnlocked(snapshotId: string): Promise<DivergencePreview> {
-    const { config, snapshot, snapshots } = await requireCurrentPeerTip(snapshotId);
+    const { config, snapshot, snapshots, tips } = await requireCurrentPeerTip(snapshotId);
     const lineage = await readLineageState(deps.client);
     const tables = await withStagedPeerCopy(config.folder, snapshotId, (stagedPath) => diffTransferredContent(deps.client, stagedPath));
     const known = ancestryOf(lineage.lastSnapshotId, snapshots, lineage.ancestors ?? []);
@@ -974,6 +974,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         lastExportAt: status.lastExportAt,
         unpublishedChanges: await hasUnpublishedLocalChanges(deps.client),
       },
+      peerTips: tips.length,
       commonBase: base ? { snapshotId: base.snapshotId, createdAt: base.createdAt, sourceDeviceId: base.sourceDeviceId } : null,
       sections: [...sections.entries()].map(([section, totals]) => ({ section, ...totals })),
       tables: tables
