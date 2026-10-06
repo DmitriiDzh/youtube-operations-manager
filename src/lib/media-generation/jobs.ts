@@ -11,9 +11,21 @@ import {
   type MediaJobManifest,
   type MediaJobOutput,
   type MediaJobStatus,
+  type MediaModelReference,
   type MediaTemplateParameter,
+  type MediaTemplateSyncResult,
+  type MediaTemplateSyncTrigger,
   type MediaWorkflowTemplate,
 } from "./contracts";
+import type { MediaControlEvent } from "./models";
+import {
+  checkDeclaredModels,
+  localTemplateModels,
+  parseRegistryIndex,
+  parseRegistryTemplate,
+  registryContentSha256,
+  registryTemplateFileName,
+} from "./template-registry";
 import {
   createJobInputSchema,
   importTemplateInputSchema,
@@ -47,6 +59,10 @@ export type StoredTemplateRow = {
   nodeCount: number | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Schema v61 (BL-132); absent = `owner`. */
+  source?: "owner" | "factory";
+  registrySha256?: string | null;
+  modelsJson?: string | null;
 };
 
 export type StoredJobRow = {
@@ -71,11 +87,13 @@ export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: s
 
 export type MediaJobStore = {
   templates: {
-    insert(row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number }): Promise<StoredTemplateRow>;
-    update(id: string, patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number }): Promise<StoredTemplateRow | null>;
+    insert(row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; modelsJson?: string }): Promise<StoredTemplateRow>;
+    update(id: string, patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number; modelsJson?: string }): Promise<StoredTemplateRow | null>;
     get(id: string): Promise<StoredTemplateRow | null>;
     list(): Promise<StoredTemplateRow[]>;
     delete(id: string): Promise<boolean>;
+    /** BL-132: install/replace a registry template; `null` = the id belongs to an owner-imported (local) template. */
+    upsertFactory(row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string }): Promise<StoredTemplateRow | null>;
   };
   jobs: {
     insert(row: Omit<StoredJobRow, "createdAt"> & { createdAt?: Date }): Promise<StoredJobRow>;
@@ -128,6 +146,12 @@ export type JobServiceDependencies = {
   schedule(run: () => Promise<void>): void;
   timeouts?: { pollMs?: number; maxGenerationMs?: number };
   log?: (line: string) => void;
+  /** BL-132: the factory template registry folder (`adapters/template-registry-fs.ts`); absent = no registry on this device. */
+  registry?: { read(): Promise<{ indexText: string; readTemplateFile(name: string): Promise<string | null> }> };
+  /** BL-132 audit sink. */
+  events?: { record(event: MediaControlEvent): Promise<void> };
+  /** BL-132: where the last sync result is kept (shown in the Web UI and the factory tool). */
+  syncState?: { get(): Promise<string | null>; set(json: string): Promise<void> };
 };
 
 const DEFAULT_POLL_MS = 4_000;
@@ -167,6 +191,53 @@ export function outputNodeIds(graph: Graph): string[] {
     .map(([id]) => id);
 }
 
+/** The structural checks every template passes, imported by hand or installed from the registry. */
+export function validateTemplateShape(graph: Graph, parameters: MediaTemplateParameter[]): void {
+  const problems: string[] = [];
+  for (const p of parameters) {
+    const node = graph[p.nodeId];
+    if (!node) problems.push(`parameter "${p.name}": node ${p.nodeId} is not in the workflow`);
+    else if (!(p.input in node.inputs)) problems.push(`parameter "${p.name}": node ${p.nodeId} has no input "${p.input}"`);
+    // The `<jobId>/` output-folder rewrite is what keeps every output inside the job's own folder (and pullable): a
+    // parameter on `filename_prefix` could undo it (review round 10).
+    if (p.input === "filename_prefix") problems.push(`parameter "${p.name}": filename_prefix is managed by the job (its <jobId>/ prefix) and cannot be a parameter`);
+    if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
+    // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
+    // (blaming the caller's params); refuse it at import instead (review round 8).
+    if (p.default !== null && p.default !== undefined) {
+      const problem = checkParameterValue(p, p.default);
+      if (problem) problems.push(`parameter "${p.name}": its default is invalid -- ${problem}`);
+    }
+  }
+  const names = parameters.map((p) => p.name);
+  if (new Set(names).size !== names.length) problems.push("parameter names must be unique");
+  if (outputNodeIds(graph).length === 0) problems.push("the workflow has no Save node (no input named filename_prefix), so it would produce nothing to pull");
+  // A Save node whose filename_prefix is a link (not a string) could not be rewritten to <jobId>/: its files would land
+  // outside the job's folder, never pulled and never cleaned (review round 11).
+  for (const [id, node] of Object.entries(graph)) {
+    if (node.inputs && "filename_prefix" in node.inputs && typeof node.inputs.filename_prefix !== "string") {
+      problems.push(`node ${id} (${node.class_type}): filename_prefix must be a literal string, not a link, so the job can prefix it with <jobId>/`);
+    }
+  }
+  if (problems.length > 0) throw new DomainError({ code: "media_template_invalid", message: `Invalid workflow template: ${problems.join("; ")}`, details: { problems } });
+}
+
+/**
+ * A factory row's declared models, or a local row's loader-node models -- both recorded when the row is written (schema
+ * v61), so a listing never parses graphs (review round 8). A local row written before v61 is parsed once per call as a
+ * fallback, like the v55 shape fields; one that cannot be parsed reports no models.
+ */
+function templateModels(row: StoredTemplateRow): MediaModelReference[] {
+  if (row.modelsJson) {
+    return (JSON.parse(row.modelsJson) as Array<{ folder: MediaModelReference["folder"]; file: string; sha256?: string | null }>).map((m) => ({ folder: m.folder, file: m.file, sha256: m.sha256 ?? null }));
+  }
+  try {
+    return localTemplateModels(JSON.parse(row.workflowJson) as Graph, JSON.parse(row.parametersJson) as MediaTemplateParameter[]);
+  } catch {
+    return [];
+  }
+}
+
 export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate {
   // The graph is parsed only for a row written before schema v55 recorded these two facts.
   const shape =
@@ -181,6 +252,8 @@ export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate 
     name: row.name,
     version: row.version,
     description: row.description,
+    source: row.source ?? "owner",
+    models: templateModels(row),
     parameters: JSON.parse(row.parametersJson) as MediaTemplateParameter[],
     outputNodeIds: shape.outputNodeIds,
     nodeCount: shape.nodeCount,
@@ -396,34 +469,137 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   const maxGenerationMs = deps.timeouts?.maxGenerationMs ?? DEFAULT_MAX_GENERATION_MS;
   const log = deps.log ?? (() => undefined);
 
-  function validateTemplateShape(graph: Graph, parameters: MediaTemplateParameter[]): void {
-    const problems: string[] = [];
-    for (const p of parameters) {
-      const node = graph[p.nodeId];
-      if (!node) problems.push(`parameter "${p.name}": node ${p.nodeId} is not in the workflow`);
-      else if (!(p.input in node.inputs)) problems.push(`parameter "${p.name}": node ${p.nodeId} has no input "${p.input}"`);
-      // The `<jobId>/` output-folder rewrite is what keeps every output inside the job's own folder (and pullable): a
-      // parameter on `filename_prefix` could undo it (review round 10).
-      if (p.input === "filename_prefix") problems.push(`parameter "${p.name}": filename_prefix is managed by the job (its <jobId>/ prefix) and cannot be a parameter`);
-      if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
-      // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
-      // (blaming the caller's params); refuse it at import instead (review round 8).
-      if (p.default !== null && p.default !== undefined) {
-        const problem = checkParameterValue(p, p.default);
-        if (problem) problems.push(`parameter "${p.name}": its default is invalid -- ${problem}`);
-      }
+  function factoryManaged(templateId: string): DomainError {
+    return new DomainError({
+      code: "media_template_invalid",
+      message: "This template is installed from the factory template registry; change or remove it there (it would be overwritten by the next sync).",
+      details: { templateId, source: "factory" },
+    });
+  }
+
+  async function recordEvent(event: MediaControlEvent): Promise<void> {
+    try {
+      await deps.events?.record(event);
+    } catch (error) {
+      log(`[media] could not record the ${event.action} event for ${event.subject}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const names = parameters.map((p) => p.name);
-    if (new Set(names).size !== names.length) problems.push("parameter names must be unique");
-    if (outputNodeIds(graph).length === 0) problems.push("the workflow has no Save node (no input named filename_prefix), so it would produce nothing to pull");
-    // A Save node whose filename_prefix is a link (not a string) could not be rewritten to <jobId>/: its files would land
-    // outside the job's folder, never pulled and never cleaned (review round 11).
-    for (const [id, node] of Object.entries(graph)) {
-      if (node.inputs && "filename_prefix" in node.inputs && typeof node.inputs.filename_prefix !== "string") {
-        problems.push(`node ${id} (${node.class_type}): filename_prefix must be a literal string, not a link, so the job can prefix it with <jobId>/`);
+  }
+
+  let registrySyncChain: Promise<unknown> = Promise.resolve();
+  /** What the registry read like at the last sync (the 60 s check compares against it). Per process. */
+  let lastRegistryFingerprint: string | null = null;
+
+  async function runRegistrySync(input: { trigger: MediaTemplateSyncTrigger; dryRun?: boolean; onlyIfChanged?: boolean }): Promise<MediaTemplateSyncResult | null> {
+    const dryRun = input.dryRun ?? false;
+    const result: MediaTemplateSyncResult = { at: deps.clock.now().toISOString(), trigger: input.trigger, dryRun, outcome: "ok", error: null, installed: [], updated: [], removed: [], unchanged: [], pending: [], invalid: [] };
+    const actor = input.trigger === "auto" ? "sync" : input.trigger;
+    const finish = async (fingerprint: string): Promise<MediaTemplateSyncResult> => {
+      if (!dryRun) {
+        lastRegistryFingerprint = fingerprint;
+        await deps.syncState?.set(JSON.stringify(result));
       }
+      return result;
+    };
+
+    // 1. Read the registry. Anything that keeps the index from being read means: change nothing.
+    let snapshot: { indexText: string; readTemplateFile(name: string): Promise<string | null> };
+    let index: ReturnType<typeof parseRegistryIndex>;
+    try {
+      if (!deps.registry) throw new DomainError({ code: "media_template_registry_unavailable", message: "No template registry is wired on this device." });
+      snapshot = await deps.registry.read();
+      index = parseRegistryIndex(snapshot.indexText);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fingerprint = `unavailable:${message}`;
+      if (input.onlyIfChanged && fingerprint === lastRegistryFingerprint) return null;
+      result.outcome = "unavailable";
+      result.error = message;
+      return finish(fingerprint);
     }
-    if (problems.length > 0) throw new DomainError({ code: "media_template_invalid", message: `Invalid workflow template: ${problems.join("; ")}`, details: { problems } });
+    const files = new Map<string, string | null>();
+    for (const entry of index.templates) {
+      const name = registryTemplateFileName(entry.templateId, entry.version);
+      files.set(name, await snapshot.readTemplateFile(name).catch(() => null));
+    }
+    const fingerprint = registryContentSha256(JSON.stringify([snapshot.indexText, ...[...files.entries()].map(([name, text]) => [name, text === null ? null : registryContentSha256(text)])]));
+    if (input.onlyIfChanged && fingerprint === lastRegistryFingerprint) return null;
+
+    // 2. Each listed template.
+    const rows = await deps.store.templates.list();
+    for (const entry of index.templates) {
+      const { templateId, version } = entry;
+      const text = files.get(registryTemplateFileName(templateId, version)) ?? null;
+      if (text === null) {
+        result.pending.push({ templateId, version });
+        continue;
+      }
+      const invalid = (reason: string) => result.invalid.push({ templateId, version, reason });
+      const parsed = parseRegistryTemplate(text, entry);
+      if (!parsed.ok) {
+        invalid(parsed.reason);
+        continue;
+      }
+      const parameters = parsed.template.parameters.map(normalizeParameter);
+      try {
+        validateTemplateShape(parsed.template.workflow as Graph, parameters);
+      } catch (error) {
+        invalid(error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      const modelProblems = checkDeclaredModels({ workflow: parsed.template.workflow as Graph, parameters, models: parsed.template.models });
+      if (modelProblems.length > 0) {
+        invalid(`models: ${modelProblems.join("; ")}`);
+        continue;
+      }
+      const sha = registryContentSha256(text);
+      const existing = rows.find((r) => r.id === templateId);
+      if (existing && (existing.source ?? "owner") !== "factory") {
+        invalid("this id belongs to a template imported by hand on this device");
+        continue;
+      }
+      if (existing && existing.version > version) {
+        invalid(`version ${version} is lower than the installed ${existing.version}; a registry never rolls back`);
+        continue;
+      }
+      if (existing && existing.version === version) {
+        if (existing.registrySha256 === sha) result.unchanged.push({ templateId, version });
+        else invalid(`version ${version} is installed with different content; bump the version for a change`);
+        continue;
+      }
+      if (!dryRun) {
+        const written = await deps.store.templates.upsertFactory({
+          id: templateId,
+          name: parsed.template.name,
+          description: parsed.template.description ?? null,
+          version,
+          workflowJson: JSON.stringify(parsed.template.workflow),
+          parametersJson: JSON.stringify(parameters),
+          outputNodeIdsJson: JSON.stringify(outputNodeIds(parsed.template.workflow as Graph)),
+          nodeCount: Object.keys(parsed.template.workflow).length,
+          registrySha256: sha,
+          modelsJson: JSON.stringify(parsed.template.models.map((m) => ({ folder: m.folder, file: m.file, sha256: m.sha256 ?? null }))),
+        });
+        if (!written) {
+          invalid("this id belongs to a template imported by hand on this device");
+          continue;
+        }
+        await recordEvent({ actor, action: existing ? "template_updated" : "template_installed", subject: templateId, details: { version, from: existing?.version ?? null, registrySha256: sha } });
+      }
+      if (existing) result.updated.push({ templateId, from: existing.version, to: version });
+      else result.installed.push({ templateId, version });
+    }
+
+    // 3. Factory templates the (readable) index no longer lists.
+    const listed = new Set(index.templates.map((t) => t.templateId));
+    for (const row of rows) {
+      if (row.source !== "factory" || listed.has(row.id)) continue;
+      if (!dryRun) {
+        await deps.store.templates.delete(row.id);
+        await recordEvent({ actor, action: "template_removed", subject: row.id, details: { version: row.version } });
+      }
+      result.removed.push({ templateId: row.id, version: row.version });
+    }
+    return finish(fingerprint);
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {
@@ -845,6 +1021,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         parametersJson: JSON.stringify(parameters),
         outputNodeIdsJson: JSON.stringify(outputNodeIds(parsed.workflow as Graph)),
         nodeCount: Object.keys(parsed.workflow).length,
+        modelsJson: JSON.stringify(localTemplateModels(parsed.workflow as Graph, parameters)),
       });
       return toPublicTemplate(row);
     },
@@ -852,6 +1029,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async updateWorkflowTemplate(input: unknown): Promise<MediaWorkflowTemplate> {
       const parsed = parseWithSchema(updateTemplateInputSchema, input, "workflow template update");
       const existing = await requireTemplate(parsed.templateId);
+      if (existing.source === "factory") throw factoryManaged(parsed.templateId);
       const graph = (parsed.workflow ?? JSON.parse(existing.workflowJson)) as Graph;
       const parameters = parsed.parameters ? parsed.parameters.map(normalizeParameter) : (JSON.parse(existing.parametersJson) as MediaTemplateParameter[]);
       validateTemplateShape(parseWithSchema(workflowGraphSchema, graph, "workflow") as Graph, parameters);
@@ -861,7 +1039,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         ...(parsed.name !== undefined ? { name: parsed.name } : {}),
         ...(parsed.description !== undefined ? { description: parsed.description ?? null } : {}),
         ...(contentChanged
-          ? { workflowJson: JSON.stringify(graph), parametersJson: JSON.stringify(parameters), outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)), nodeCount: Object.keys(graph).length }
+          ? {
+              workflowJson: JSON.stringify(graph),
+              parametersJson: JSON.stringify(parameters),
+              outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)),
+              nodeCount: Object.keys(graph).length,
+              modelsJson: JSON.stringify(localTemplateModels(graph, parameters)),
+            }
           : {}),
       });
       if (!row) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: parsed.templateId } });
@@ -880,7 +1064,28 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
     async deleteWorkflowTemplate(input: unknown): Promise<{ deleted: boolean }> {
       const { templateId } = parseWithSchema(templateIdInputSchema, input, "template id");
+      const existing = await deps.store.templates.get(templateId);
+      if (existing?.source === "factory") throw factoryManaged(templateId);
       return { deleted: await deps.store.templates.delete(templateId) };
+    },
+
+    /**
+     * BL-132 (plan §2.3): brings this device's `factory` templates in line with the registry folder. Every rule that can
+     * lose a template fails safe: an unreadable index changes nothing; a file not arrived yet, an invalid file, a LOWER
+     * version or the same version with other content keeps what is installed; only an id no longer in a readable index is
+     * removed. Owner-imported (local) templates are never touched. `onlyIfChanged` is the 60 s check: it skips the sync
+     * when the registry's files read exactly as at the last sync.
+     */
+    async syncTemplatesFromRegistry(input: { trigger: MediaTemplateSyncTrigger; dryRun?: boolean; onlyIfChanged?: boolean }): Promise<MediaTemplateSyncResult | null> {
+      const run = registrySyncChain.then(() => runRegistrySync(input));
+      registrySyncChain = run.catch(() => undefined);
+      return run;
+    },
+
+    /** The last (non-dry-run) sync result, or null if none ran on this device. */
+    async getLastTemplateSync(): Promise<MediaTemplateSyncResult | null> {
+      const json = deps.syncState ? await deps.syncState.get() : null;
+      return json ? (JSON.parse(json) as MediaTemplateSyncResult) : null;
     },
 
     // -- jobs ---------------------------------------------------------------------------------

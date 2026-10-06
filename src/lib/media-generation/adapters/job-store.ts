@@ -11,6 +11,7 @@ import {
   markMediaExchangeFileRemoteDeleted,
   transitionMediaJob,
   updateMediaWorkflowTemplate,
+  upsertFactoryMediaWorkflowTemplate,
   upsertMediaExchangeFile,
   type StoredMediaJob,
   type StoredMediaWorkflowTemplate,
@@ -38,7 +39,15 @@ function jobFromDb(row: StoredMediaJob): StoredJobRow {
 }
 
 function templateFromDb(t: StoredMediaWorkflowTemplate): StoredTemplateRow {
-  return { ...t, description: t.description ?? null, outputNodeIdsJson: t.outputNodeIdsJson ?? null, nodeCount: t.nodeCount ?? null };
+  return {
+    ...t,
+    description: t.description ?? null,
+    outputNodeIdsJson: t.outputNodeIdsJson ?? null,
+    nodeCount: t.nodeCount ?? null,
+    source: t.source === "factory" ? "factory" : "owner",
+    registrySha256: t.registrySha256 ?? null,
+    modelsJson: t.modelsJson ?? null,
+  };
 }
 
 export function createMediaJobStore(): MediaJobStore {
@@ -49,6 +58,7 @@ export function createMediaJobStore(): MediaJobStore {
       get: (id) => getMediaWorkflowTemplateById(id).then((t) => (t ? templateFromDb(t) : null)),
       list: () => listMediaWorkflowTemplates().then((rows) => rows.map(templateFromDb)),
       delete: (id) => deleteMediaWorkflowTemplate(id),
+      upsertFactory: (row) => upsertFactoryMediaWorkflowTemplate(row).then((t) => (t ? templateFromDb(t) : null)),
     },
     jobs: {
       insert: (row) => insertMediaJob(row).then(jobFromDb),

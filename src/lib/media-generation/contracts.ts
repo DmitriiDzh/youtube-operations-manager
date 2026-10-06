@@ -166,17 +166,48 @@ export type MediaTemplateParameter = {
   description: string | null;
 };
 
+/** The model folders on the network volume (`models/<folder>/`), the ComfyUI `extra_model_paths.yaml` names. */
+export const MEDIA_MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"] as const;
+export type MediaModelFolder = (typeof MEDIA_MODEL_FOLDERS)[number];
+
+/** A model a template loads (BL-132): declared in a registry template's `models`, derived from a local template's graph. */
+export type MediaModelReference = { folder: MediaModelFolder | null; file: string; sha256: string | null };
+
 export type MediaWorkflowTemplate = {
   templateId: string;
   name: string;
   version: number;
   description: string | null;
+  /** BL-132: `owner` = imported by hand on this device (local), `factory` = installed from the factory template registry. */
+  source: "owner" | "factory";
+  /** BL-132: a factory template's declared models; for a local template, the literal model names its loader nodes use. */
+  models: MediaModelReference[];
   parameters: MediaTemplateParameter[];
   /** Node ids whose `filename_prefix` is rewritten to `<jobId>/...` so outputs land in the job's folder. */
   outputNodeIds: string[];
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
+};
+
+/** BL-132: what started a template-registry sync (`auto` = the 60 s check found a change). */
+export type MediaTemplateSyncTrigger = "auto" | "factory" | "owner";
+
+/** BL-132 (plan §2.3): what a sync did -- or, for a dry run, would do. `unavailable` = the registry could not be read: nothing changed. */
+export type MediaTemplateSyncResult = {
+  at: string;
+  trigger: MediaTemplateSyncTrigger;
+  dryRun: boolean;
+  outcome: "ok" | "unavailable";
+  error: string | null;
+  installed: Array<{ templateId: string; version: number }>;
+  updated: Array<{ templateId: string; from: number; to: number }>;
+  removed: Array<{ templateId: string; version: number }>;
+  unchanged: Array<{ templateId: string; version: number }>;
+  /** Listed in the index, file not there yet (a file sync still copying): the installed version, if any, stays. */
+  pending: Array<{ templateId: string; version: number }>;
+  /** Refused with the reason; the installed version, if any, stays. */
+  invalid: Array<{ templateId: string; version: number; reason: string }>;
 };
 
 export type MediaJobStatus = "queued" | "submitted" | "generating" | "transferring" | "done" | "failed" | "cancelled";

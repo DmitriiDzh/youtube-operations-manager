@@ -10,6 +10,7 @@ import {
   type MediaSession,
   type MediaSessionLimits,
   type MediaSettings,
+  type MediaTemplateSyncResult,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -398,15 +399,35 @@ export function WorkflowTemplatesCard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkflowTemplate | null>(null);
+  const [lastSync, setLastSync] = useState<MediaTemplateSyncResult | null>(null);
 
   const fetchTemplates = useCallback(
     () =>
-      requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates").then(
-        (data) => setTemplates(data.templates),
+      Promise.all([
+        requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
+        requestJson<{ lastSync: MediaTemplateSyncResult | null }>("/api/media-generation/workflow-templates/sync"),
+      ]).then(
+        ([data, sync]) => {
+          setTemplates(data.templates);
+          setLastSync(sync.lastSync);
+        },
         (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load templates")
       ),
     []
   );
+
+  async function syncNow() {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson("/api/media-generation/workflow-templates/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      await fetchTemplates();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sync the templates");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     fetchTemplates();
@@ -458,8 +479,38 @@ export function WorkflowTemplatesCard() {
   return (
     <Card
       title="Workflow templates"
-      help="A template is a ComfyUI workflow exported in API format (ComfyUI → Workflow → Export (API)) plus the parameters a job may set: each parameter names a node id and an input of that node, with a type and optional bounds. Every Save node's filename_prefix is rewritten per job so outputs land in that job's folder. Prompts are job parameters, not template content."
+      help="A template is a ComfyUI workflow exported in API format (ComfyUI → Workflow → Export (API)) plus the parameters a job may set: each parameter names a node id and an input of that node, with a type and optional bounds. Every Save node's filename_prefix is rewritten per job so outputs land in that job's folder. Prompts are job parameters, not template content. Factory templates come from the factory template registry (Settings → logical path media_templates), are checked every minute and are read-only here; templates you import yourself stay local and are never touched by the sync."
     >
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={syncNow} disabled={busy} className={secondaryButton}>
+          Sync templates
+        </button>
+        {lastSync && (
+          <span className="text-xs text-zinc-500">
+            Last sync {new Date(lastSync.at).toLocaleString()} ({lastSync.trigger === "auto" ? "automatic" : lastSync.trigger === "factory" ? "by the Factory Operator" : "by you"}):{" "}
+            {lastSync.outcome === "unavailable"
+              ? `registry unavailable — ${lastSync.error}`
+              : [
+                  `${lastSync.installed.length} installed`,
+                  `${lastSync.updated.length} updated`,
+                  `${lastSync.removed.length} removed`,
+                  lastSync.pending.length ? `${lastSync.pending.length} waiting for files` : null,
+                  lastSync.invalid.length ? `${lastSync.invalid.length} refused` : null,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+          </span>
+        )}
+      </div>
+      {lastSync && lastSync.invalid.length > 0 && (
+        <ul className="space-y-1 text-xs text-amber-400">
+          {lastSync.invalid.map((i) => (
+            <li key={`${i.templateId}.${i.version}`}>
+              {i.templateId} v{i.version}: {i.reason}
+            </li>
+          ))}
+        </ul>
+      )}
       {templates.length === 0 ? (
         <p className="text-xs text-zinc-500">No templates yet.</p>
       ) : (
@@ -467,15 +518,21 @@ export function WorkflowTemplatesCard() {
           {templates.map((t) => (
             <li key={t.templateId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
               <span>
-                <span className="font-medium text-zinc-100">{t.name}</span> <span className="text-xs text-zinc-500">v{t.version} · {t.nodeCount} nodes · {t.outputNodeIds.length} output node(s) · id {t.templateId}</span>
+                <span className="font-medium text-zinc-100">{t.name}</span>{" "}
+                <span className={t.source === "factory" ? "rounded bg-sky-950 px-1.5 text-xs text-sky-300" : "rounded bg-zinc-800 px-1.5 text-xs text-zinc-400"}>{t.source === "factory" ? "factory" : "local"}</span>{" "}
+                <span className="text-xs text-zinc-500">v{t.version} · {t.nodeCount} nodes · {t.outputNodeIds.length} output node(s) · id {t.templateId}</span>
                 <br />
                 <span className="text-xs text-zinc-500">
                   {t.parameters.map((p) => `${p.name}${p.required ? "*" : ""}: ${p.type}`).join(", ") || "no parameters"}
                 </span>
               </span>
-              <button type="button" onClick={() => setDeleteTarget(t)} disabled={busy} className={dangerButton}>
-                Delete
-              </button>
+              {t.source === "factory" ? (
+                <span className="text-xs text-zinc-500">managed by the factory registry</span>
+              ) : (
+                <button type="button" onClick={() => setDeleteTarget(t)} disabled={busy} className={dangerButton}>
+                  Delete
+                </button>
+              )}
             </li>
           ))}
         </ul>

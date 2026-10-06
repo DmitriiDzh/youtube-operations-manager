@@ -3003,7 +3003,9 @@ test("channel_workspaces: per-device, per-channel isolation for get/list/set/cle
 // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md AC-FO-01/AC-FO-03): the
 // migration seeds exactly the two initial names (no values), a new path is just a row, and values
 // are scoped per (device, name).
-test("logical_paths: seeds exactly the two initial names without values; values are per device; new paths need no migration", () =>
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.3) changed the seeded set: schema v61 adds the NAME `media_templates`
+// (factory_only, no value) for the factory template registry -- a third seeded name, still without values.
+test("logical_paths: seeds exactly the initial names without values; values are per device; new paths need no migration", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     assert.equal(await tableExists(client, "logical_paths"), true);
@@ -3015,6 +3017,7 @@ test("logical_paths: seeds exactly the two initial names without values; values 
       [
         ["developer_exchange", "factory_only"],
         ["factory_shared", "all_agents"],
+        ["media_templates", "factory_only"],
       ]
     );
     assert.deepEqual(await listLogicalPathValues("device-a", isolatedDb), []);

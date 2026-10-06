@@ -54,6 +54,14 @@ function memoryStore() {
       async delete(id) {
         return templates.delete(id);
       },
+      // Like db.ts (BL-132): never overwrites an owner-imported row; a factory row is replaced as given (no auto-bump).
+      async upsertFactory(row) {
+        const existing = templates.get(row.id);
+        if (existing && (existing.source ?? "owner") !== "factory") return null;
+        const t = { ...row, source: "factory" as const, createdAt: existing?.createdAt ?? new Date("2026-10-06T00:00:00Z"), updatedAt: new Date("2026-10-06T00:00:00Z") };
+        templates.set(row.id, t);
+        return t;
+      },
     },
     jobs: {
       async insert(row) {

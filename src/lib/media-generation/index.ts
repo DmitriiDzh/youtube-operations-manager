@@ -3,7 +3,8 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths } from "@/lib/db";
+import { appDataPaths, getMediaTemplateSyncLastJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
 import { sleep as sharedSleep } from "@/lib/shared-async";
@@ -12,6 +13,7 @@ import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
+import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError } from "./contracts";
 import { createMediaJobServices } from "./jobs";
@@ -192,6 +194,12 @@ function buildCore(jobScheduling: JobScheduling) {
         ? () => undefined
         : (run) => void run().catch((error) => console.warn(`[media] job processing failed: ${error instanceof Error ? error.message : String(error)}`)),
     log: (line) => console.warn(line),
+    // BL-132: the factory template registry folder (logical path `media_templates`, read for this device only).
+    registry: createTemplateRegistryReader({
+      resolveDir: async () => (await createLogicalPathsCore().readPath({ name: "media_templates" }, "factory")).path,
+    }),
+    events: createMediaControlEventSink(),
+    syncState: { get: () => getMediaTemplateSyncLastJson(), set: (json) => setMediaTemplateSyncLastJson(json) },
   });
   return { ...base, ...sessions, ...jobs, ...models };
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { HuggingFaceFileInfo, RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { sleep } from "@/lib/shared-async";
-import { DomainError, type MediaSettings } from "./contracts";
+import { DomainError, MEDIA_MODEL_FOLDERS, type MediaSettings } from "./contracts";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { parseWithSchema } from "./schemas";
 import type { VolumeLock } from "./volume-lock";
@@ -24,7 +24,7 @@ export const MODELS_PREFIX = "models/";
  */
 export const PULL_STAGING_PREFIX = "ytm-staging/";
 export const PULL_RESULTS_PREFIX = "ytm-pulls/";
-const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"] as const;
+const MODEL_FOLDERS = MEDIA_MODEL_FOLDERS;
 const DEFAULT_PULL_CAP_MS = 6 * 60 * 60_000;
 const TERMINATE_CONFIRM_MS = 60_000;
 const TERMINATE_POLL_MS = 5_000;

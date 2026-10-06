@@ -843,6 +843,8 @@ export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
   source: text("source").notNull().default("owner"),
   /** Schema v61: SHA-256 of the registry file a `factory` row was installed from (same version, other content = refused). */
   registrySha256: text("registry_sha256"),
+  /** Schema v61: a `factory` row's declared models `[{ folder, file, sha256 }]` (the deletion guard and `usedBy` read it). */
+  modelsJson: text("models_json"),
 });
 
 export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
@@ -3294,9 +3296,15 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "remote_deleted_at INTEGER)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS media_exchange_inputs_job_idx ON media_exchange_inputs(job_id)");
+      // The registry folder is a logical path like the two seeded at v59: a NAME only, each device sets its own value.
+      await client.execute(
+        "INSERT OR IGNORE INTO logical_paths (name, audience, description) VALUES " +
+          "('media_templates', 'factory_only', 'Factory media template registry (index.json + <templateId>.v<version>.json)')"
+      );
       for (const statement of [
         "ALTER TABLE media_workflow_templates ADD COLUMN source TEXT NOT NULL DEFAULT 'owner'",
         "ALTER TABLE media_workflow_templates ADD COLUMN registry_sha256 TEXT",
+        "ALTER TABLE media_workflow_templates ADD COLUMN models_json TEXT",
       ]) {
         try {
           await client.execute(statement);
@@ -7878,7 +7886,7 @@ export type NewStoredMediaJob = typeof mediaJobs.$inferInsert;
 export type StoredMediaExchangeFile = typeof mediaExchangeFiles.$inferSelect;
 
 export async function insertMediaWorkflowTemplate(
-  row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson?: string; nodeCount?: number },
+  row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson?: string; nodeCount?: number; modelsJson?: string },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate> {
   const now = new Date();
@@ -7892,7 +7900,7 @@ export async function insertMediaWorkflowTemplate(
 /** Replaces the graph/parameters and bumps `version`; `null` = no such template. */
 export async function updateMediaWorkflowTemplate(
   id: string,
-  patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number },
+  patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number; modelsJson?: string },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const rows = await database
@@ -7911,6 +7919,36 @@ export async function getMediaWorkflowTemplateById(id: string, database: AppDb =
 
 export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<StoredMediaWorkflowTemplate[]> {
   return database.select().from(mediaWorkflowTemplates).orderBy(asc(mediaWorkflowTemplates.name));
+}
+
+/**
+ * BL-132: installs or replaces a template from the factory registry under its registry id and version. Never touches an
+ * owner-imported row with the same id: the upsert's update applies only to a `factory` row, and `null` means the id is
+ * taken by a local template.
+ */
+export async function upsertFactoryMediaWorkflowTemplate(
+  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string },
+  database: AppDb = db
+): Promise<StoredMediaWorkflowTemplate | null> {
+  const now = new Date();
+  const { id, ...rest } = row;
+  const rows = await database
+    .insert(mediaWorkflowTemplates)
+    .values({ ...row, source: "factory", createdAt: now, updatedAt: now })
+    .onConflictDoUpdate({ target: mediaWorkflowTemplates.id, set: { ...rest, updatedAt: now }, where: eq(mediaWorkflowTemplates.source, "factory") })
+    .returning();
+  return rows[0] && rows[0].id === id && rows[0].source === "factory" ? rows[0] : null;
+}
+
+const MEDIA_TEMPLATE_SYNC_LAST_KEY = "media_template_sync_last";
+
+/** BL-132: the last template-registry sync result (JSON), shown in the Web UI and the factory tool. */
+export async function getMediaTemplateSyncLastJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(MEDIA_TEMPLATE_SYNC_LAST_KEY, database);
+}
+
+export async function setMediaTemplateSyncLastJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_TEMPLATE_SYNC_LAST_KEY, json, database);
 }
 
 export async function deleteMediaWorkflowTemplate(id: string, database: AppDb = db): Promise<boolean> {
