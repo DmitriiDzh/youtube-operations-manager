@@ -12,6 +12,7 @@ import {
   LimitsCard,
   ModelsCard,
   ReadinessBanner,
+  OtherDevicesCard,
   SessionsCard,
   VolumeCard,
   WorkflowTemplatesCard,
@@ -48,7 +49,7 @@ export function describeBalance(balance: RunpodAccountBalance): { headline: stri
   };
 }
 
-function BalanceHeader({ configured, limits }: { configured: boolean; limits: MediaSessionLimits | null }) {
+function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured: boolean; limits: MediaSessionLimits | null; activeElsewhere?: number }) {
   const [balance, setBalance] = useState<RunpodAccountBalance | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -97,7 +98,8 @@ function BalanceHeader({ configured, limits }: { configured: boolean; limits: Me
             ${limits.spentTodayUsd.toFixed(2)} <span className="text-sm font-normal text-zinc-500">of ${limits.maxUsdPerDay.toFixed(2)}</span>
           </p>
           <p className="text-xs text-zinc-500">
-            {limits.activeSessionCount} of {limits.maxConcurrentSessions} sessions active · {limits.openSessions.filter((s) => s.status === "pending").length} waiting for approval
+            {limits.activeSessionCount} of {limits.maxConcurrentSessions} sessions active
+            {activeElsewhere > 0 ? ` (+${activeElsewhere} on other devices)` : ""} · {limits.openSessions.filter((s) => s.status === "pending").length} waiting for approval
           </p>
         </div>
       )}
@@ -117,6 +119,7 @@ function BalanceHeader({ configured, limits }: { configured: boolean; limits: Me
 export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: string | null }) {
   const [tab, setTab] = useState<ProductionTab>("sessions");
   const [limits, setLimits] = useState<MediaSessionLimits | null>(null);
+  const [activeElsewhere, setActiveElsewhere] = useState(0);
   const { overview, loadError, gatewayTraffic, refresh } = useMediaOverview();
 
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
@@ -137,7 +140,7 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
   // and an agent's new request stay current whichever tab is open.
   return (
     <div className="max-w-5xl space-y-6">
-      <BalanceHeader configured={overview.credentials.configured} limits={limits} />
+      <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} />
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "work").map(tabButton)}</div>
         <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "setup").map(tabButton)}</div>
@@ -145,6 +148,7 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
       <ReadinessBanner overview={overview} />
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
         <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />
+        <OtherDevicesCard ready={overview.credentials.configured} onActiveElsewhere={setActiveElsewhere} />
       </div>
       <div className={tab === "jobs" ? "space-y-6" : "hidden"}>
         <JobsCard activeChannelId={activeChannelId} />

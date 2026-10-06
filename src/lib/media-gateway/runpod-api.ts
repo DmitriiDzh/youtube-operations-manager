@@ -293,6 +293,19 @@ export function createRunpodApiClient(args: {
      * GraphQL scope, the legacy API retired, a timeout), the v2 billing history's spend instead, tagged `billing`. A bad
      * key (401) is not degraded: it is the same answer every other call would give.
      */
+    /**
+     * BL-138: the RunPod account's id (legacy GraphQL `myself.id`), so devices can tell whether they share one account without
+     * publishing anything derived from a key. `null` when the GraphQL API does not answer it (a key without that scope).
+     */
+    async getAccountId(): Promise<string | null> {
+      try {
+        return asString(asRecord((await graphql("query { myself { id } }")).myself).id);
+      } catch (error) {
+        if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
+        return null;
+      }
+    },
+
     async getAccountBalance(): Promise<RunpodAccountBalance> {
       let balanceError: string;
       try {

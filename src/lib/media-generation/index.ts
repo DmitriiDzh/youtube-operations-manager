@@ -23,6 +23,9 @@ import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
+import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView } from "./cross-device";
+import { podNameFor } from "./sessions";
+import { createMediaSessionsShareCoreForProduction } from "@/lib/sync-gateway";
 
 type JobScheduling = "background" | "detached";
 
@@ -131,6 +134,8 @@ function buildCore(jobScheduling: JobScheduling) {
     sleep,
     volumeLock,
     log: (line) => console.warn(line),
+    // BL-138: devices on the same RunPod account share the limits (late-bound: the helpers are defined below).
+    accountWide: (at, localPodIds, options) => otherDevicesOnAccount(at, localPodIds, options),
   });
   sessionsRef = sessions;
   const workspaces = createChannelWorkspacesCore();
@@ -240,7 +245,87 @@ function buildCore(jobScheduling: JobScheduling) {
       result: row.result as MediaCapacityAttempt["result"],
       detail: row.detail ?? null,
     }));
-  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts };
+  // BL-138: the RunPod account id (a GraphQL read). Kept an hour when known, 5 minutes when it could not be read, and dropped
+  // as soon as the stored credentials change (independent review: a replaced or imported key may be another account).
+  let accountIdCache: { value: string | null; at: number; credentialsAt: string | null } | null = null;
+  const runpodAccountId = async (): Promise<string | null> => {
+    const status = await base.getCredentialsStatus();
+    const credentialsAt = status.configured ? status.updatedAt : null;
+    if (!credentialsAt) return null;
+    const ttl = accountIdCache?.value ? 60 * 60_000 : 5 * 60_000;
+    if (accountIdCache && accountIdCache.credentialsAt === credentialsAt && now().getTime() - accountIdCache.at < ttl) return accountIdCache.value;
+    const value = await base
+      .resolveRunpodClient()
+      .then((client) => client.getAccountId())
+      .catch(() => null);
+    accountIdCache = { value, at: now().getTime(), credentialsAt };
+    return value;
+  };
+  const deviceIdentity = async () => {
+    const config = await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists();
+    let host: string | null = null;
+    try {
+      host = hostname() || null;
+    } catch {
+      host = null;
+    }
+    return { deviceId: config.deviceId, hostname: host };
+  };
+  // One RunPod pod list per 25 s at most for the watcher's checks (one in flight is shared by every session of a tick); the
+  // approve asks for a fresh one.
+  let livePodsCache: { pods: Promise<Array<{ id: string; name: string; status: string }>>; at: number } | null = null;
+  const livePodsForLimits = (at: Date, fresh: boolean) => {
+    if (fresh || !livePodsCache || at.getTime() - livePodsCache.at > 25_000) {
+      const pods = base.resolveRunpodClient().then((client) => client.listPods()).then((list) => list.map((p) => ({ id: p.id, name: p.name, status: p.status })));
+      livePodsCache = { pods, at: at.getTime() };
+      pods.catch(() => {
+        if (livePodsCache?.pods === pods) livePodsCache = null;
+      });
+    }
+    return livePodsCache.pods;
+  };
+  async function otherDevicesOnAccount(at: Date, localPodIds: string[], options: { fresh?: boolean } = {}) {
+    const ownAccountId = await runpodAccountId();
+    if (!ownAccountId) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+    // The pod list failing leaves the reported spend in (it does not need RunPod).
+    const [pods, peers] = await Promise.all([livePodsForLimits(at, options.fresh ?? false).catch(() => null), createMediaSessionsShareCoreForProduction().listPeerReports()]);
+    return accountWideUsage({ peers, ownAccountId, livePods: pods, localPodIds, dayStart: new Date(at.getFullYear(), at.getMonth(), at.getDate()), now: at });
+  }
+  /** BL-138: hands this device's sessions report to the sync-gateway `media-sessions` family (run on every watcher tick). */
+  const publishSessionsShare = async (): Promise<void> => {
+    const [identity, list, limits, accountId] = await Promise.all([deviceIdentity(), sessions.listSessions(200), sessions.getLimits(), runpodAccountId()]);
+    await createMediaSessionsShareCoreForProduction().publishLocalReport(
+      buildSessionsReport({ ...identity, runpodAccountId: accountId, now: now(), sessions: list, spentTodayUsd: limits.spentTodayUsd })
+    );
+  };
+  /** BL-138: the other devices' sessions, checked against RunPod's live pods (one read), plus pods no device reports. */
+  const listOtherDevices = async (): Promise<OtherDevicesView> => {
+    const [peers, local, accountId] = await Promise.all([createMediaSessionsShareCoreForProduction().listPeerReports(), sessions.listSessions(200), runpodAccountId()]);
+    let livePods: Array<{ id: string; name: string; costPerHr: number | null; status: string }> | null = null;
+    let podsError: string | null = null;
+    try {
+      livePods = (await base.listPods()).map((p) => ({ id: p.id, name: p.name, costPerHr: p.costPerHr, status: p.status }));
+    } catch (error) {
+      podsError = error instanceof Error ? error.message : String(error);
+    }
+    return deriveOtherDevices({ peers, ownAccountId: accountId, localPodIds: local.map((s) => s.podId).filter((id): id is string => Boolean(id)), livePods, podsError, now: now() });
+  };
+  /** BL-138 (owner, msg 1739): Stop for a session another device started -- terminates its pod through RunPod directly. */
+  const stopOtherDeviceSession = (input: unknown) =>
+    stopPeerSession(
+      {
+        listPeerReports: () => createMediaSessionsShareCoreForProduction().listPeerReports(),
+        localPodIds: async () => (await sessions.listSessions(200)).map((s) => s.podId).filter((id): id is string => Boolean(id)),
+        ownAccountId: runpodAccountId,
+        runpodClient: () => base.resolveRunpodClient(),
+        podNameFor,
+        clock: { now },
+        sleep,
+        record: (event) => createMediaControlEventSink().record({ actor: "owner", ...event }),
+      },
+      input
+    );
+  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts, publishSessionsShare, listOtherDevices, stopOtherDeviceSession };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

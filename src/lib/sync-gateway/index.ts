@@ -50,4 +50,9 @@ export type { AiConnectionEntry, FieldConflict as AiConnectionFieldConflict } fr
 export { GLOBAL_DOCUMENT_KEY as AI_CONNECTIONS_GLOBAL_DOCUMENT_KEY } from "./ai-connections-catalog";
 export { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";
 
+export { createMediaSessionsShareCoreForProduction } from "./media-sessions";
+export type { MediaSessionsReport, SharedMediaSession } from "./media-sessions";
+export { MEDIA_SESSIONS_REPORT_FORMAT } from "./media-sessions";
+export { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
+
 export { runAllSyncFamiliesOnce } from "./run-all-families";

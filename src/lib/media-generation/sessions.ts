@@ -122,6 +122,12 @@ export type SessionServiceDependencies = {
    */
   volumeLock: VolumeLock;
   log?: (line: string) => void;
+  /**
+   * BL-138 (owner, msg 1739: one RunPod account = shared limits): what the owner's OTHER devices on the same RunPod account use
+   * now -- session pods RunPod has that are not this device's, and the spend those devices reported for today. Counted in
+   * the approve's concurrency and daily-cap checks and in the watcher's daily cap. Absent or failing = 0 (best effort).
+   */
+  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
   /** BL-133 audit (`media_control_events`): factory session starts/stops and limit holds. */
   events?: { record(event: { actor: "owner" | "factory"; action: string; subject: string; details?: Record<string, unknown> }): Promise<void> };
   /** Tests only: let a watcher tick wait for the capacity retry it fires (production fires it in the background). */
@@ -237,6 +243,27 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   async function spentTodayUsd(now: Date): Promise<number> {
     const rows = await deps.store.listBillableSince(startOfLocalDay(now));
     return round2(rows.reduce((sum, row) => sum + (liveUsd(row, now) ?? 0), 0));
+  }
+
+  /** BL-138: the other devices' use of the same RunPod account; never throws (unknown = 0, logged). */
+  async function otherDevicesUsage(now: Date, options: { fresh?: boolean } = {}): Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }> {
+    if (!deps.accountWide) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+    try {
+      // Every pod this device had today, open or just stopped (independent review: a just-stopped session's pod can still be
+      // in RunPod's list and must never count as another device's slot).
+      const rows = [...(await deps.store.listOpen()), ...(await deps.store.listBillableSince(startOfLocalDay(now)))];
+      const localPodIds = [...new Set(rows.map((r) => r.podId).filter((id): id is string => Boolean(id)))];
+      return await deps.accountWide(now, localPodIds, options);
+    } catch (error) {
+      deps.log?.(`[media] other devices' usage unknown, counted as 0: ${error instanceof Error ? error.message : String(error)}`);
+      return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+    }
+  }
+
+  /** The daily cap's figure: this device's spend today plus what the other devices on the same account reported for today. */
+  async function accountSpentTodayUsd(now: Date): Promise<number> {
+    const [local, others] = await Promise.all([spentTodayUsd(now), otherDevicesUsage(now)]);
+    return round2(local + others.otherSpentTodayUsd);
   }
 
   /** Pod creation -> confirmed termination (AC-P14-17); a terminal row keeps the frozen numbers. */
@@ -475,7 +502,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
     }
     const now = deps.clock.now();
-    const [spent, open] = await Promise.all([spentTodayUsd(now), deps.store.listOpen()]);
+    // The approve reads RunPod's pod list fresh (no cache): a slot freed seconds ago must count as free.
+    const [localSpent, open, others] = await Promise.all([spentTodayUsd(now), deps.store.listOpen(), otherDevicesUsage(now, { fresh: true })]);
+    // BL-138: the other devices on the same RunPod account count against the same caps.
+    const spent = round2(localSpent + others.otherSpentTodayUsd);
     // AC-P14-17 with concurrent sessions (§5.2): what is spent today, plus what the OTHER active sessions may still spend
     // up to their own estimate, plus this session's estimate must fit the daily cap. (Not atomic between two approves --
     // the watcher stops every session once the day's total reaches the cap; only the concurrency count is atomic.)
@@ -483,8 +513,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (spent >= settings.maxUsdPerDay || round2(spent + reservedUsd + row.estimateUsd) > settings.maxUsdPerDay) {
       throw new DomainError({
         code: "media_daily_cap_reached",
-        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
-        details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, reservedUsd, estimateUsd: row.estimateUsd },
+        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent${others.otherSpentTodayUsd > 0 ? ` ($${others.otherSpentTodayUsd} of it on your other devices)` : ""}, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
+        details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, otherDevicesSpentTodayUsd: others.otherSpentTodayUsd, reservedUsd, estimateUsd: row.estimateUsd },
       });
     }
     // The request's estimate, cap check and record describe the GPU/datacenter saved when it was made; the pod is built
@@ -507,10 +537,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (exclusive) {
       throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(exclusive.owner), details: { sessionId, holder: exclusive.owner } });
     }
+    // BL-138: session pods of the other devices on this account take slots of the same limit (the guarded UPDATE stays the
+    // one atomic check, against the slots left for this device).
+    const localSlots = Math.max(0, settings.maxConcurrentSessions - others.otherActiveSessions);
     const approved = await deps.store.approve(
       sessionId,
       { approvedAt: now, approvedByUserId: input.approvedByUserId ?? null, approvedBy: input.approvedBy, tokenCiphertext: sealed.ciphertext, tokenIv: sealed.iv, tokenAuthTag: sealed.authTag },
-      settings.maxConcurrentSessions
+      localSlots
     );
     if (!approved) {
       // Say which guard refused: the row moved on (a retried POST / a reject), a lock row appeared, or the limit is full.
@@ -521,8 +554,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const active = (await deps.store.listOpen()).filter(isActive);
       throw new DomainError({
         code: "media_session_conflict",
-        message: `${active.length} of ${settings.maxConcurrentSessions} concurrent sessions are already active (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
-        details: { sessionId, activeSessions: active.map((r) => r.id), maxConcurrentSessions: settings.maxConcurrentSessions },
+        message: `${active.length + others.otherActiveSessions} of ${settings.maxConcurrentSessions} concurrent sessions are already active${others.otherActiveSessions > 0 ? ` (${others.otherActiveSessions} on your other devices)` : ""} (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
+        details: { sessionId, activeSessions: active.map((r) => r.id), otherDevicesActiveSessions: others.otherActiveSessions, maxConcurrentSessions: settings.maxConcurrentSessions },
       });
     }
     const started = startApproved(approved, settings, client, token, onStage);
@@ -957,7 +990,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         const stopped = await stopRow(open, reason);
         return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
       }
-      if ((await spentTodayUsd(now)) >= settings.maxUsdPerDay) {
+      if ((await accountSpentTodayUsd(now)) >= settings.maxUsdPerDay) {
         const reason = `daily cap reached ($${settings.maxUsdPerDay})`;
         const stopped = await stopRow(open, reason);
         return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
@@ -993,7 +1026,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const minutes = open.startedAt ? (now.getTime() - open.startedAt.getTime()) / 60_000 : 0;
     const idleMinutes = (now.getTime() - (open.lastActivityAt ?? open.readyAt ?? open.startedAt ?? now).getTime()) / 60_000;
     const usd = liveUsd(open, now) ?? 0;
-    const spentToday = await spentTodayUsd(now);
+    const spentToday = await accountSpentTodayUsd(now);
     let reason: string | null = null;
     if (minutes >= open.maxMinutes) reason = `max minutes reached (${open.maxMinutes})`;
     else if (open.maxUsd !== null && usd >= open.maxUsd) reason = `max USD reached ($${open.maxUsd})`;

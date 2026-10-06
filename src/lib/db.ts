@@ -5557,9 +5557,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;

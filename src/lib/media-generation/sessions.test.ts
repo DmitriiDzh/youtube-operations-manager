@@ -203,6 +203,7 @@ function fixture(opts: {
   comfy?: ReturnType<typeof fakeComfy>;
   now?: Date;
   jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
+  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
 } = {}) {
   const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
   const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
@@ -238,6 +239,7 @@ function fixture(opts: {
     timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
     volumeLock: lock.lock,
     ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
+    ...(opts.accountWide ? { accountWide: opts.accountWide } : {}),
     capacityLog: { record: async (a) => void capacityLog.push({ gpuTypeId: a.gpuTypeId, result: a.result, detail: a.detail }) },
     events: { record: async (e) => void events.push(e) },
     awaitCapacityRetries: true,
@@ -366,6 +368,76 @@ test("§5.2 daily cap with concurrent sessions: spent + what the other active se
   await f.services.approveAndStartSession({ sessionId: b.sessionId });
   await assert.rejects(f.services.approveAndStartSession({ sessionId: c.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_daily_cap_reached" && /reserved by the other active sessions/.test(e.message));
   assert.equal(f.mem.rows.get(c.sessionId)!.status, "pending");
+});
+
+// BL-138 (owner, msg 1739): devices on one RunPod account share the limits. Expected values by hand from that requirement.
+test("BL-138: other devices' live session pods take slots of the same concurrency limit", async () => {
+  // limit 3, two pods of the other device: one slot here; the second approve is refused naming the other devices.
+  const f = fixture({ settings: { maxConcurrentSessions: 3, maxUsdPerDay: 100 }, accountWide: async () => ({ otherActiveSessions: 2, otherSpentTodayUsd: 0 }) });
+  const a = await f.services.requestSession(operatorRequest);
+  const b = await f.services.requestSession(operatorRequest);
+  assert.equal((await f.services.approveAndStartSession({ sessionId: a.sessionId })).status, "running");
+  await assert.rejects(
+    f.services.approveAndStartSession({ sessionId: b.sessionId }),
+    (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /3 of 3 concurrent sessions/.test(e.message) && /2 on your other devices/.test(e.message)
+  );
+  assert.equal(f.mem.rows.get(b.sessionId)!.status, "pending");
+  // The other device using all slots: nothing can be approved here, and no pod is created.
+  const g = fixture({ settings: { maxConcurrentSessions: 2, maxUsdPerDay: 100 }, accountWide: async () => ({ otherActiveSessions: 2, otherSpentTodayUsd: 0 }) });
+  const c = await g.services.requestSession(operatorRequest);
+  await assert.rejects(g.services.approveAndStartSession({ sessionId: c.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  assert.equal(g.runpod.calls.filter((x) => x === "createPod").length, 0);
+});
+
+test("BL-138: the other devices' spend today counts against the daily cap at approve", async () => {
+  // cap $1.50, other devices spent $1.00 today, this estimate $0.60: 1.00 + 0 + 0.60 = 1.60 > 1.50 -> refused.
+  const f = fixture({ settings: { maxConcurrentSessions: 4, maxUsdPerDay: 1.5 }, accountWide: async () => ({ otherActiveSessions: 0, otherSpentTodayUsd: 1 }) });
+  const a = await f.services.requestSession(operatorRequest);
+  await assert.rejects(
+    f.services.approveAndStartSession({ sessionId: a.sessionId }),
+    (e: unknown) => isDomainError(e) && e.code === "media_daily_cap_reached" && /\$1 of it on your other devices/.test(e.message)
+  );
+  // $0.80 spent elsewhere: 0.80 + 0.60 = 1.40 <= 1.50 -> approved.
+  const g = fixture({ settings: { maxConcurrentSessions: 4, maxUsdPerDay: 1.5 }, accountWide: async () => ({ otherActiveSessions: 0, otherSpentTodayUsd: 0.8 }) });
+  const b = await g.services.requestSession(operatorRequest);
+  assert.equal((await g.services.approveAndStartSession({ sessionId: b.sessionId })).status, "running");
+});
+
+test("BL-138: the watcher stops a running session once this device's plus the other devices' spend reaches the daily cap", async () => {
+  let others = 0;
+  const f = fixture({ settings: { maxConcurrentSessions: 4, maxUsdPerDay: 1.5 }, accountWide: async () => ({ otherActiveSessions: 0, otherSpentTodayUsd: others }) });
+  const s = await startRunning(f);
+  f.advance(60_000);
+  assert.equal((await f.services.watchTick()).find((r) => r.sessionId === s.sessionId)?.action, "none");
+  others = 1.5; // another device on the account used up the day's cap
+  const results = await f.services.watchTick();
+  const mine = results.find((r) => r.sessionId === s.sessionId);
+  assert.match(mine?.reason ?? "", /daily cap reached/);
+});
+
+test("BL-138 review: a pod of a session this device stopped today is passed as this device's own, and the approve asks for a fresh pod list", async () => {
+  const seen: Array<{ localPodIds: string[]; fresh: boolean }> = [];
+  const f = fixture({
+    settings: { maxConcurrentSessions: 1, maxUsdPerDay: 100 },
+    accountWide: async (_now, localPodIds, options) => {
+      seen.push({ localPodIds, fresh: options?.fresh ?? false });
+      return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+    },
+  });
+  const a = await startRunning(f);
+  const podA = f.mem.rows.get(a.sessionId)!.podId!;
+  await f.services.stopSession({ sessionId: a.sessionId });
+  const b = await f.services.requestSession(operatorRequest);
+  seen.length = 0;
+  assert.equal((await f.services.approveAndStartSession({ sessionId: b.sessionId })).status, "running");
+  assert.ok(seen.length > 0 && seen[0].fresh, "the approve's check is fresh");
+  assert.ok(seen[0].localPodIds.includes(podA), "the stopped session's pod is this device's, never another device's slot");
+});
+
+test("BL-138: an unreadable other-devices figure counts as 0 (best effort), never blocks approves", async () => {
+  const f = fixture({ settings: { maxConcurrentSessions: 1, maxUsdPerDay: 100 }, accountWide: async () => { throw new Error("RunPod down"); } });
+  const a = await f.services.requestSession(operatorRequest);
+  assert.equal((await f.services.approveAndStartSession({ sessionId: a.sessionId })).status, "running");
 });
 
 test("AC-P14-23: a model pull cannot take the volume while any session is active, and can once none is", async () => {

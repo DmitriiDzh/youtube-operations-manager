@@ -212,6 +212,12 @@ async function startServerSession() {
       // same as above
     }
     try {
+      // BL-138: this device's sessions for the other devices (sync-gateway `media-sessions`, carried by the sync scheduler).
+      await media.publishSessionsShare();
+    } catch {
+      // no device id / sync folder yet, or RunPod unreachable: the next tick tries again
+    }
+    try {
       // Slice 4: a model pull's CPU pod is terminated as soon as its file is on the volume, even with no browser open.
       await media.pollPulls();
     } catch {
