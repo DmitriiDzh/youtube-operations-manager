@@ -1839,7 +1839,10 @@ capability-discovery-relevant changes only. `getMarketVideosOverview` itself has
 
 **Research tab layout (BL-140, `docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md`, 2026-10-06).** The tab is a summary
 line plus five always-mounted sub-tabs (`src/components/research-tab.tsx`: Inbox, Channels, Videos, Discover, Topics &
-trends); the Overview panel is gone (its counts feed the summary line via `GET /api/market-intelligence/summary`).
+trends); the Overview panel is gone. The summary line (`GET /api/market-intelligence/summary`, polled) reads
+`getResearchSummaryCounts`, which needs no video series. Whether a channel "needs attention" is one rule,
+`classifyCollectionStatus` over `readCollectionState`'s flags, shared by the summary count, the Channels status and
+`getMarketOverview`'s collection warnings, so a count and the list it links to always agree.
 Lists that can grow are bounded on the server: Videos (`videos-overview?page=…`, R2) and Discover candidates
 (`discovery-candidates?page=…&status=…`, R4) return one page; both keep their old unpaged response when `page` is
 absent. Channels reads one row per watchlist channel from `getWatchlistTable` (`GET /api/market-intelligence/
