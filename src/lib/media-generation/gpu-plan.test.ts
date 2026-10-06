@@ -67,3 +67,13 @@ test("AC-FG-04/06: a 400 'could not be placed' is no capacity; 429/5xx/no respon
   assert.equal(classifyCreatePodFailure(new DomainError({ code: "runpod_forbidden", message: "no" })), "fatal");
   assert.equal(classifyCreatePodFailure(new DomainError({ code: "media_credentials_invalid", message: "no" })), "fatal");
 });
+
+test("review: a plan can only TIGHTEN the owner's price cap and VRAM floor, never loosen them; capacity text in the body alone is recognised", () => {
+  const owner = { ...SETTINGS, gpuMaxPricePerHr: 1, gpuMinVramGb: 24 };
+  const loose = resolveGpuCandidates({ plan: { candidates: ["NVIDIA A100 80GB PCIe", "NVIDIA RTX A4000", "NVIDIA GeForce RTX 5090"], minVramGb: 8, maxPricePerHr: 1000 }, settings: owner, catalog: CATALOG });
+  assert.deepEqual(loose.candidates.map((c) => c.gpuTypeId), ["NVIDIA GeForce RTX 5090"]);
+  const tight = resolveGpuCandidates({ plan: { candidates: ["NVIDIA GeForce RTX 5090", "NVIDIA GeForce RTX 4090"], minVramGb: null, maxPricePerHr: 0.8 }, settings: owner, catalog: CATALOG });
+  assert.deepEqual(tight.candidates.map((c) => c.gpuTypeId), ["NVIDIA GeForce RTX 4090"]);
+  const bodyOnly = new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400.", details: { status: 400, body: { error: "This GPU and data center combination could not be placed", status: 400 } } });
+  assert.equal(classifyCreatePodFailure(bodyOnly), "no_capacity");
+});

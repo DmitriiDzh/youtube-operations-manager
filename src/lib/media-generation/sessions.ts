@@ -563,7 +563,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
 
   /** BL-133: what the factory's sessions spent (or still may, up to their USD cap) since `from`; `exclude` = the one being decided. */
   async function factorySpendUsd(from: Date, now: Date, exclude: string): Promise<number> {
-    const rows = (await deps.store.listBillableSince(from)).filter((r) => r.requestedBy === "factory" && r.id !== exclude);
+    // Billed rows AND every open one (independent review): a factory session still being created or waiting for capacity has
+    // no `startedAt` yet, so the billing query misses it -- but it may still spend up to its cap and must be reserved.
+    const [billed, open] = await Promise.all([deps.store.listBillableSince(from), deps.store.listOpen()]);
+    const byId = new Map<string, StoredSessionRow>();
+    for (const r of [...billed, ...open]) byId.set(r.id, r);
+    const rows = [...byId.values()].filter((r) => r.requestedBy === "factory" && r.id !== exclude);
     return round2(
       rows.reduce((sum, r) => {
         const spent = liveUsd(r, now) ?? 0;
@@ -642,8 +647,31 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     let used: GpuCandidate | null = null;
     let startedAt = deps.clock.now();
     const failures: string[] = [];
-    for (const candidate of candidates) {
+    // A pod an EARLIER attempt created behind a failed answer (a timeout) carries this session's name (independent review):
+    // before every createPod after the first -- and before the first of a capacity-retry round -- look for it, so a second pod
+    // is never created next to a first one nobody would ever terminate.
+    const adoptExisting = async (): Promise<RunpodPod | undefined> => {
+      try {
+        return await findLivePodByName(client, podNameFor(sessionId));
+      } catch (lookupError) {
+        const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
+        await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `RunPod could not be asked whether a pod of this session already exists (${detail}); the watcher re-checks` });
+        throw new DomainError({ code: "media_session_start_failed", message: `RunPod could not confirm whether a pod already exists for this session; it stays approved until the watcher can check.`, details: { sessionId, status: "approved" } });
+      }
+    };
+    const candidateOf = (existing: RunpodPod, fallback: GpuCandidate): GpuCandidate => candidates.find((c) => c.gpuTypeId === existing.gpuTypeId) ?? fallback;
+    for (const [index, candidate] of candidates.entries()) {
       startedAt = deps.clock.now();
+      if (index > 0 || (approved.capacityAttempts ?? 0) > 0) {
+        const existing = await adoptExisting();
+        if (existing) {
+          log(`[media] pod ${existing.id} of session ${sessionId} already exists (an earlier attempt); continuing with it`);
+          pod = existing;
+          used = candidateOf(existing, candidate);
+          await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt");
+          break;
+        }
+      }
       try {
         pod = await client.createPod({
           name: podNameFor(sessionId),
@@ -679,9 +707,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         }
         if (orphan) {
           log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
-          await recordAttempt(sessionId, settings, candidate, "placed", `adopted after: ${message}`);
           pod = orphan;
-          used = candidate;
+          used = candidateOf(orphan, candidate);
+          await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`);
           break;
         }
         const kind = classifyCreatePodFailure(error);
@@ -710,7 +738,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const latest = await requireRow(sessionId);
       if (latest.status === "approved" || latest.status === "starting") {
         // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
-        const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
+        const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
         if (terminated.confirmed) {
           await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` }, podFacts);
         } else {
@@ -763,7 +791,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         failure = cause instanceof Error ? cause.message : String(cause);
       }
       const latest = await requireRow(sessionId);
-      const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? latest.costPerHr };
+      const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
       if (!outcome?.confirmed) {
         const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
         log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
@@ -883,10 +911,32 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return { action: "stopped", sessionId: open.id, reason };
       }
       if (open.capacityNextAttemptAt && now.getTime() < open.capacityNextAttemptAt.getTime()) return { action: "none", sessionId: open.id, reason: null };
+      // What the approval was made against must still hold (independent review): the factory switch for a factory session,
+      // and the datacenter (the volume) -- otherwise the wait ends here, at no cost.
+      const voided =
+        open.requestedBy === "factory" && open.approvedBy === "factory" && !settings.factorySessionsEnabled
+          ? "factory sessions were switched off while it waited"
+          : open.datacenterId !== settings.datacenterId
+            ? `the datacenter changed (${open.datacenterId ?? "none"} → ${settings.datacenterId ?? "none"}) while it waited`
+            : null;
+      if (voided) {
+        await finish(open, ["waiting_capacity"], "failed", { error: `capacity wait ended: ${voided}` });
+        return { action: "stopped", sessionId: open.id, reason: voided };
+      }
+      let client: RunpodApiClient;
+      let token: string;
+      try {
+        if (!open.tokenCiphertext || !open.tokenIv || !open.tokenAuthTag) throw new Error("the session's proxy token is missing");
+        client = await deps.base.resolveRunpodClient();
+        token = await deps.base.openSecret({ ciphertext: open.tokenCiphertext, iv: open.tokenIv, authTag: open.tokenAuthTag });
+      } catch (cause) {
+        // Nothing changed yet: the session keeps waiting and the next round tries again (never an `approved` row with no start).
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        await deps.store.transition(open.id, ["waiting_capacity"], { status: "waiting_capacity", capacityNextAttemptAt: new Date(now.getTime() + settings.capacityRetrySeconds * 1000), error: `capacity retry could not start: ${detail}` });
+        return { action: "none", sessionId: open.id, reason: detail };
+      }
       const retry = await deps.store.transition(open.id, ["waiting_capacity"], { status: "approved", approvedAt: now, error: null });
-      if (!retry || !retry.tokenCiphertext || !retry.tokenIv || !retry.tokenAuthTag) return { action: "none", sessionId: open.id, reason: null };
-      const client = await deps.base.resolveRunpodClient();
-      const token = await deps.base.openSecret({ ciphertext: retry.tokenCiphertext, iv: retry.tokenIv, authTag: retry.tokenAuthTag });
+      if (!retry) return { action: "none", sessionId: open.id, reason: null };
       const started = startApproved(retry, settings, client, token, () => undefined);
       started.catch(() => undefined); // every outcome lands on the row
       if (deps.awaitCapacityRetries) await started.catch(() => undefined);
@@ -900,6 +950,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // The pod exists and bills while ComfyUI boots: the day's cap stops it too (§5.2 "every active session", independent
       // review before the dev merge). An `approved` row has no pod yet and cannot be stopped without orphaning one.
       const settings = await deps.base.getSettings();
+      // The session's own USD cap bites while ComfyUI boots too (independent review: a dear fallback GPU could pass it
+      // during an 8-minute start before the running-state check).
+      if (open.maxUsd !== null && (liveUsd(open, now) ?? 0) >= open.maxUsd) {
+        const reason = `max USD reached ($${open.maxUsd}) while starting`;
+        const stopped = await stopRow(open, reason);
+        return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
+      }
       if ((await spentTodayUsd(now)) >= settings.maxUsdPerDay) {
         const reason = `daily cap reached ($${settings.maxUsdPerDay})`;
         const stopped = await stopRow(open, reason);

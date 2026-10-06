@@ -24,8 +24,9 @@ export function resolveGpuCandidates(args: {
   const { plan, settings, catalog } = args;
   const ordered = plan && plan.candidates.length > 0 ? plan.candidates : [settings.gpuTypeId, ...settings.gpuFallbackIds].filter((id): id is string => Boolean(id));
   const ids = [...new Set(ordered)];
-  const minVram = plan?.minVramGb ?? settings.gpuMinVramGb;
-  const maxPrice = plan?.maxPricePerHr ?? settings.gpuMaxPricePerHr;
+  // The owner's floor and cap are HARD bounds (independent review): a plan may only tighten them, never loosen them.
+  const minVram = [plan?.minVramGb ?? null, settings.gpuMinVramGb].reduce<number | null>((acc, v) => (v === null ? acc : acc === null ? v : Math.max(acc, v)), null);
+  const maxPrice = [plan?.maxPricePerHr ?? null, settings.gpuMaxPricePerHr].reduce<number | null>((acc, v) => (v === null ? acc : acc === null ? v : Math.min(acc, v)), null);
   const candidates: GpuCandidate[] = [];
   const skipped: Array<{ gpuTypeId: string; reason: string }> = [];
   for (const id of ids) {
@@ -79,7 +80,8 @@ export function classifyCreatePodFailure(error: unknown): "no_capacity" | "trans
   if (error.code !== "runpod_api_unavailable") return "fatal";
   const status = (error.details as { status?: unknown } | undefined)?.status;
   if (typeof status !== "number") return "transient"; // no response at all
-  if (status === 400) return NO_CAPACITY.test(error.message) ? "no_capacity" : "fatal";
+  // The text may sit in the message (`detail`) or only in the body (`error`): both are read (independent review).
+  if (status === 400) return NO_CAPACITY.test(`${error.message} ${JSON.stringify((error.details as { body?: unknown } | undefined)?.body ?? "")}`) ? "no_capacity" : "fatal";
   if (status === 429 || status >= 500) return "transient";
   return "fatal"; // 402 balance, 404, 409, 422 ...
 }

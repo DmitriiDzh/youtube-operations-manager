@@ -90,7 +90,21 @@ function memorySessionStore(opts: { lockHeld?: () => boolean } = {}) {
 
 type PodState = { status: string; costPerHr: number };
 
-function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; terminateSticks?: boolean; containerNeverStarts?: boolean; capacity?: (input: { gpu?: { id: string } }) => boolean } = {}) {
+function fakeRunpod(
+  opts: {
+    createFails?: boolean;
+    runningAfterPolls?: number;
+    terminateSticks?: boolean;
+    containerNeverStarts?: boolean;
+    capacity?: (input: { gpu?: { id: string } }) => boolean;
+    /** BL-133 review: createPod creates the pod but its answer is lost (a timeout) for these GPUs. */
+    createThenLoseAnswer?: (input: { gpu?: { id: string } }) => boolean;
+    /** BL-133 review: listPods answers [] for the first N calls (RunPod's listing lagging behind a just-created pod), then the truth. */
+    listLagCalls?: number;
+  } = {}
+) {
+  const names = new Map<string, { name: string; gpu: string }>();
+  let listCalls = 0;
   const pods = new Map<string, PodState>();
   const calls: string[] = [];
   let created = 0;
@@ -129,6 +143,8 @@ function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; t
       created++;
       const id = `pod${created}`;
       pods.set(id, { status: "PROVISIONING", costPerHr: 0.69 });
+      names.set(id, { name: (input as { name?: string }).name ?? "ytm", gpu: input.gpu?.id ?? "" });
+      if (opts.createThenLoseAnswer?.(input)) throw new Error("RunPod API request failed: The operation was aborted due to timeout");
       calls.push(`env:${input.env?.COMFY_TOKEN ?? ""}`);
       return pod(id);
     },
@@ -151,7 +167,11 @@ function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; t
       return { terminated: true as const, alreadyGone: !existed };
     },
     async listPods() {
-      return [];
+      listCalls++;
+      if (opts.listLagCalls === undefined || listCalls <= opts.listLagCalls) return [];
+      return [...pods.entries()]
+        .filter(([, st]) => st.status !== "TERMINATED")
+        .map(([id]) => ({ ...pod(id), name: names.get(id)?.name ?? "ytm", gpuTypeId: names.get(id)?.gpu ?? "NVIDIA GeForce RTX 4090" }));
     },
   } as unknown as RunpodApiClient;
   return { client, calls, pods, setStatus: (id: string, status: string) => pods.set(id, { ...(pods.get(id) ?? { costPerHr: 0.69 }), status }) };
@@ -1745,4 +1765,56 @@ test("AC-FG-03/07: getFactorySession sees only sessions the factory started", as
   assert.equal((await f.services.getFactorySession({ sessionId: mine.session.sessionId })).requestedBy, "factory");
   await assert.rejects(f.services.getFactorySession({ sessionId: owners.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_not_found");
   await assert.rejects(f.services.getFactorySession({ sessionId: "nope" }), (e: unknown) => isDomainError(e) && e.code === "media_session_not_found");
+});
+
+// -- BL-133 independent review fixes ------------------------------------------------------------------------------------
+
+test("review (high): the factory's day limit counts its sessions still being created or waiting for capacity (reserved up to their cap)", async () => {
+  const f = fixture({ runpod: fakeRunpod({ capacity: () => true }), settings: { ...FACTORY_ON, factoryMaxUsdPerDay: 3 } });
+  const first = await f.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(first.approved, true);
+  await settle();
+  assert.equal(f.mem.rows.get(first.session.sessionId)?.status, "waiting_capacity", "no pod, no startedAt -- but it may still spend $2");
+  const second = await f.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(second.approved, false);
+  assert.match(second.heldBy ?? "", /factory's day would reach \$4/);
+});
+
+test("review: a pod created behind a lost answer (timeout) is found before the next candidate is tried -- never a second pod", async () => {
+  const runpod = fakeRunpod({ createThenLoseAnswer: (input) => input.gpu?.id === FOUR, listLagCalls: 1 });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const running = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod1", "the first, lost-answer pod is adopted");
+  assert.equal(running.gpuTypeId, FOUR, "recorded as the GPU that pod really has");
+  assert.deepEqual(runpod.calls.filter((c) => c.startsWith("createPod:")), [`createPod:${FOUR}`], "no createPod for the fallback");
+});
+
+test("review: switching factory sessions off ends a waiting factory session at no cost; a datacenter change ends any waiting session", async () => {
+  const settingsRef = { ...FACTORY_ON };
+  const f = fixture({ runpod: fakeRunpod({ capacity: () => true }), settings: settingsRef });
+  const started = await f.services.factoryStartSession({ channelId: "UC1" });
+  await settle();
+  f.settings.factorySessionsEnabled = false;
+  f.advance(31_000);
+  const tick = await tick1(f.services);
+  assert.equal(tick.action, "stopped");
+  const row = f.mem.rows.get(started.session.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /switched off/);
+  assert.equal(row.usdCharged, 0);
+});
+
+test("review: the session's USD cap stops a pod that is still starting (a dear GPU must not overshoot before 'running')", async () => {
+  const runpod = fakeRunpod();
+  const f = fixture({ runpod, settings: { idleMinutes: 1000 } });
+  const requested = await f.services.requestSession({ ...operatorRequest, maxUsd: 0.005 });
+  // A pod that has been booting for 50 s at $0.69/h (~$0.0096 so far), still `starting` (inside this fixture's start window).
+  runpod.pods.set("podX", { status: "RUNNING", costPerHr: 0.69 });
+  const row = f.mem.rows.get(requested.sessionId)!;
+  f.mem.rows.set(requested.sessionId, { ...row, status: "starting", podId: "podX", costPerHr: 0.69, approvedAt: new Date(f.getNow().getTime() - 50_000), startedAt: new Date(f.getNow().getTime() - 50_000) });
+  const tick = await tick1(f.services);
+  assert.match(tick.reason ?? "", /max USD reached \(\$0.005\) while starting/);
+  assert.equal(runpod.pods.has("podX"), false, "terminated");
 });
