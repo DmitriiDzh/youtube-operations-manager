@@ -41,6 +41,7 @@ it gives an agent token actions that cost money and delete data, so the full §A
   - in the Web form, `sha256` defaults to the hash Hugging Face declares for the file (see the pre-check), so every pull, owner or factory, is verified.
 - **Pre-check before any pod (no cost):**
   - a new gateway child `src/lib/media-gateway/huggingface.ts` (the single-gateway rule: a new external API gets its own child under the gateway, behind the same "Media gateway" toggle, with its own traffic counter) reads the Hub's file metadata for `repo@revision` (`paths-info`): size and LFS `sha256`;
+  - the Hub declares a SHA-256 only for LFS files. Model files are LFS; a non-LFS file (no declared hash) skips the pre-check comparison and relies on the on-pod hash alone;
   - the pull is refused at once if:
     - the file does not exist;
     - the repo is gated or private (no HF token in this phase);
@@ -73,10 +74,10 @@ it gives an agent token actions that cost money and delete data, so the full §A
   - the existing S3 listing of `models/` (`.cache/` and `ytm-staging/` excluded), plus `sha256` when a pull record on this device has it (otherwise `null`: the hash of an old file is not recomputed);
   - plus `usedBy`: the registry templates (§2.3) whose declared model list contains this file.
 - **Deletion:**
-  - refused with `media_model_in_use` (listing the template ids) when any **current registry template** declares the file;
   - the guard reads the registry index (§2.3), which is identical on every device, not this device's rows;
-  - registry not configured or unreadable on this device → **refused** (fail closed);
-  - also refused while sessions or a pull hold the volume (a running job may be reading the file).
+  - **Factory tool:** refused with `media_model_in_use` (listing the template ids) when any current registry template declares the file; registry not configured or unreadable on this device → **refused** (fail closed);
+  - **Owner (Web):** shown the same check first: `usedBy`, or "registry not configured — cannot check"; the owner may still delete after confirming. The owner is never locked out of their own storage;
+  - for both, refused while sessions or a pull hold the volume (a running job may be reading the file).
 - **No undo for a deleted model** except pulling it again. The plan says this plainly; the Web UI shows it before the owner deletes.
 
 ### 2.3 Template registry (D3)
@@ -91,7 +92,7 @@ it gives an agent token actions that cost money and delete data, so the full §A
 - **Sync** (one function, `syncTemplatesFromRegistry`):
   - reads `index.json`;
   - for every listed `{ templateId, version }`, takes the matching file;
-  - **validates** it with the existing template rules (graph shape, parameter targets, defaults, no `filename_prefix` parameter), plus the declared models: every literal model name in a known loader node (`CheckpointLoaderSimple.ckpt_name`, `UNETLoader.unet_name`, `VAELoader.vae_name`, `CLIPLoader`/`DualCLIPLoader` `clip_name*`, `LoraLoader.lora_name`, …) and every enum value of a parameter targeting one must be in `models`. A mismatch makes the template invalid;
+  - **validates** it with the existing template rules (graph shape, parameter targets, defaults, no `filename_prefix` parameter), plus the declared models: every literal model name in a known loader node (`CheckpointLoaderSimple.ckpt_name`, `UNETLoader.unet_name`, `VAELoader.vae_name`, `CLIPLoader`/`DualCLIPLoader` `clip_name*`, `LoraLoader.lora_name`, …) and every enum value of a parameter targeting one must be in `models`. A mismatch makes the template invalid. Only known loader class types are checked: for a custom loader (GGUF etc.) the declared `models` list is the factory's responsibility, and the deletion guard is only as good as that list;
   - **installs or replaces** the row `source: "factory"`. Replacing keeps one row per `templateId`, since only the current version is kept; jobs keep their recorded `templateVersion`;
   - **removes** factory rows whose id is no longer in the index.
 - **Safety rules:**
@@ -117,10 +118,10 @@ it gives an agent token actions that cost money and delete data, so the full §A
   - Inputs from the factory workspace are **out of scope** while no factory session exists (D4).
 - **Upload:**
   - before `POST /prompt`, each input is uploaded through the S3 gateway to `exchange/in/<jobId>/<param>-<basename>`;
-  - this needs a **streaming `putObject`** in the gateway (files up to 500 MB are never buffered in memory);
+  - this needs a **streaming `putObject`** in the gateway (files up to 500 MB are never buffered in memory). The SigV4 signing is hand-written (ADR 0023): either `UNSIGNED-PAYLOAD`, if RunPod's S3 accepts it (to verify live), or two passes: hash the file for `x-amz-content-sha256`, then stream the body;
   - the graph input is set to `<jobId>/<param>-<basename>` (a path relative to ComfyUI's input folder);
   - an upload failure fails the job before any GPU work (`media_input_unavailable`).
-- **Must be verified live before anything depends on it:** that `LoadImage` / `LoadAudio` / the video loaders accept a subfolder-relative name. This is a slice-0-style check against a real pod. If it fails, the fallback is a flat unique file name `<jobId>-<param>-<basename>`.
+- **Must be verified live before anything depends on it:** the streaming upload above, and that `LoadImage` / `LoadAudio` / the video loaders accept a subfolder-relative name. This is a slice-0-style check against a real pod. If it fails, the fallback is a flat unique file name `<jobId>-<param>-<basename>`.
 - **Cleanup:**
   - inputs are recorded in a ledger `media_exchange_inputs(job_id, remote_key, bytes, sha256, uploaded_at, deleted_at)`;
   - the janitor deletes `exchange/in/<jobId>/…` of **terminal** jobs **by ledger only** (anything else in `exchange/in/` is still never touched).
@@ -152,6 +153,7 @@ it gives an agent token actions that cost money and delete data, so the full §A
 | `factory_media_list_templates` | READ | id, version, source, name, parameters, models, `modelsMissing` (declared but not on the volume), installed at |
 | `factory_media_sync_templates` | WRITE | §2.3 sync now; `{ dryRun? }` returns what would change |
 
+- `factory_get_capabilities` today reports the token's permissions as READ only; it will report READ and WRITE and list the new tools.
 - Template add, replace and delete happen through the registry files plus sync. No tool takes a graph directly.
 - The factory server keeps its closed allowlist. New names are added deliberately, each with its test. The import allowlist grows by `media-generation`, wired through injected deps from the route as today.
 - The MCP master toggle, the "Media gateway" toggle, loopback, and per-call token re-verification all apply.
@@ -181,7 +183,7 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 | M3 | Logical path `media_templates` (seed row); registry format; `syncTemplatesFromRegistry` with all §2.3 rules; template columns migration; periodic, Web and status; factory rows read-only. |
 | M4 | Factory tools §2.6, Factory API 1.1.0, inventory tests (tool names, imports, no channel/session tools), ADR 0025, RISK entry. |
 | M5 | Input media §2.4: streaming S3 put, parameter types, `Sent to YTM` resolution, upload, ledger, janitor, Agent API 3.5.0. Live check of the subfolder input name first. |
-| M6 | Docs (`interfaces.md`, `AGENT_OPERATIONS_INTERFACE.md` §4q, factory contract, `SYSTEM_MAP`, `ARCHITECTURE`), independent review, live smoke, merge request. |
+| M6 | Docs (`interfaces.md`, `AGENT_OPERATIONS_INTERFACE.md` §4q, factory contract, `AGENT_ISOLATION_SETUP.md`, `SYSTEM_MAP`, `ARCHITECTURE`), independent review, live smoke, merge request. |
 
 **Live smoke needs paid RunPod calls** (a CPU pull of a small public file, and one GPU job with an input image). They are run only after the owner's explicit go-ahead for those calls (`AGENTS.md` §K.4).
 
@@ -194,14 +196,14 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 | AC-FM-03 | During a pull, the final key never exists unverified: the file appears only after the hash matches (staging + rename). |
 | AC-FM-04 | A pull while sessions hold the volume is refused with `media_session_conflict`, and the active count is in the details. A file larger than the free space is refused with `media_volume_full`. |
 | AC-FM-05 | Storage status returns size, used, free and monthly cost. The model list excludes `.cache/` and `ytm-staging/`. |
-| AC-FM-06 | Deleting a model declared by a current registry template is refused with `media_model_in_use` naming the templates. With the registry not configured or unreadable, deletion is refused. |
+| AC-FM-06 | A factory deletion of a model declared by a current registry template is refused with `media_model_in_use` naming the templates; with the registry not configured or unreadable, a factory deletion is refused. The owner's Web deletion shows the same check (or "cannot check") and proceeds only after confirmation. |
 | AC-FM-07 | Sync installs a valid template under its registry `templateId` and version on any device. The same files on two app-data directories give identical ids, versions and parameters. |
 | AC-FM-08 | Sync refuses a lower version and a same-version content change, and keeps the installed one. A missing or unreadable index changes nothing. A listed file not present yet is `pending`, and the installed version stays. |
 | AC-FM-09 | A template removed from the index is removed from this device. Owner-imported templates are never touched by sync. |
 | AC-FM-10 | A template whose loader nodes or parameter enums reference a model not in its declared `models` list is `invalid` and not installed. |
 | AC-FM-11 | A job input path that escapes `Sent to YTM` (`..`, absolute, a symlink out), is not a regular file, has a wrong extension or is too large is refused before any upload or GPU work. |
 | AC-FM-12 | A job with an input uploads it under `exchange/in/<jobId>/`, the graph input names it, and the janitor deletes it only after the job is terminal and only by ledger. The source file in `Sent to YTM` is untouched. |
-| AC-FM-13 | The factory server's tool list equals exactly the four existing tools plus §2.6. No session or job tool and no channel tool is reachable with a factory token. No `factory_*` tool appears in a channel session. |
+| AC-FM-13 | `factory_get_capabilities` reports the WRITE permission and the new tools. The factory server's tool list equals exactly the four existing tools plus §2.6. No session or job tool and no channel tool is reachable with a factory token. No `factory_*` tool appears in a channel session. |
 | AC-FM-14 | Every pull, cancel, delete and template change appears in `media_control_events` with its actor (`owner`, `factory`, `sync`) and is shown in the Web UI. |
 | AC-FM-15 | Factory API is `1.1.0` and Agent API is `3.5.0`. The full existing suite passes unchanged, and existing jobs, sessions and owner-imported templates behave as before. |
 
