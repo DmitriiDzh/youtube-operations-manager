@@ -970,7 +970,6 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   const [maxMinutesText, setMaxMinutesText] = useState<string>("");
   const [maxUsd, setMaxUsd] = useState<string>("");
   // BL-135: on by default -- a session you request stops by itself a minute after its last job.
-  const [releaseWhenDone, setReleaseWhenDone] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1024,7 +1023,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
           channelId: activeChannelId,
           ...(maxMinutes ? { maxMinutes } : {}),
           ...(maxUsd.trim() ? { maxUsd: parsedMaxUsd } : {}),
-          releaseWhenDone,
+          // releaseWhenDone is not sent: the server applies the owner's setting in Production → Setup (msgs 1807/1810).
         }),
       });
       await fetchAll();
@@ -1186,10 +1185,6 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               <button type="button" onClick={request} disabled={requesting} className={secondaryButton}>
                 {requesting ? "Requesting…" : "Request a session for this channel"}
               </button>
-            </div>
-            <div className="flex items-center gap-2 sm:col-span-3">
-              <ToggleSwitch label="Stop by itself when the jobs are done" checked={releaseWhenDone} onChange={setReleaseWhenDone} />
-              <span className="text-xs text-zinc-400">Stop the pod by itself one minute after the session&rsquo;s last job finished (instead of waiting for the idle timeout)</span>
             </div>
           </div>
         )}
@@ -2171,6 +2166,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
     maxConcurrentSessions: String(settings.maxConcurrentSessions),
   });
   const [maxUsdPerDayText, setMaxUsdPerDayText] = useState(String(settings.maxUsdPerDay));
+  const [ownerReleaseWhenDone, setOwnerReleaseWhenDone] = useState(settings.ownerReleaseWhenDone);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -2183,7 +2179,8 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
       maxConcurrentSessions: String(settings.maxConcurrentSessions),
     });
     setMaxUsdPerDayText(String(settings.maxUsdPerDay));
-  }, [settings.maxUsdPerDay, settings.defaultMaxMinutes, settings.idleMinutes, settings.watchIntervalSeconds, settings.maxConcurrentSessions]);
+    setOwnerReleaseWhenDone(settings.ownerReleaseWhenDone);
+  }, [settings.maxUsdPerDay, settings.defaultMaxMinutes, settings.idleMinutes, settings.watchIntervalSeconds, settings.maxConcurrentSessions, settings.ownerReleaseWhenDone]);
 
   async function save() {
     const maxUsdPerDay = parseMoney(maxUsdPerDayText);
@@ -2205,7 +2202,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
     setError(null);
     setNotice(null);
     try {
-      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds, maxConcurrentSessions }) });
+      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds, maxConcurrentSessions, ownerReleaseWhenDone }) });
       setNotice("Saved.");
       await onChanged();
     } catch (err) {
@@ -2236,6 +2233,12 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
         {field("Idle timeout (minutes)", "idleMinutes", { min: 1, max: 1440 })}
         {field("Watch interval (seconds)", "watchIntervalSeconds", { min: 15, max: 3600 })}
         {field("Concurrent sessions (pods at once)", "maxConcurrentSessions", MAX_CONCURRENT_SESSIONS_RANGE)}
+      </div>
+      <div className="flex items-center gap-2">
+        <ToggleSwitch label="Stop by itself when the jobs are done" checked={ownerReleaseWhenDone} onChange={setOwnerReleaseWhenDone} />
+        <span className="text-xs text-zinc-400">
+          Sessions you request in Sessions stop their pod by itself one minute after the last job finished (instead of waiting for the idle timeout). Agents&rsquo; requests decide this themselves.
+        </span>
       </div>
       <button type="button" onClick={save} disabled={busy} className={primaryButton}>
         {busy ? "Saving…" : "Save limits"}

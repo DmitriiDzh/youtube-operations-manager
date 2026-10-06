@@ -55,6 +55,7 @@ export const mediaSettingsSchema = z
     factoryMaxMinutesPerSession: z.number().int().min(1).max(1440),
     factoryMaxUsdPerDay: z.number().gt(0).max(10_000),
     factoryMaxUsdPerMonth: z.number().gt(0).max(100_000),
+    ownerReleaseWhenDone: z.boolean(),
   })
   .strict();
 

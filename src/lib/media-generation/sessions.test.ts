@@ -1665,7 +1665,9 @@ test("BL-135: activity after the last finish (a new job being submitted) restart
   flagged.advance(31_000);
   assert.equal((await tick1(flagged.services)).action, "stopped");
 
-  const plain = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
+  // Owner msgs 1807/1810: the owner's own request without the flag now follows the Setup setting (on by default), so
+  // "without the flag" is checked with that setting off -- the requirement this assertion protects is unchanged.
+  const plain = fixture({ settings: { idleMinutes: 1000, ownerReleaseWhenDone: false }, jobSummary: async () => summary });
   const q = await plain.services.requestSession({ ...operatorRequest, maxMinutes: 600 });
   await (await plain.services.approveSession({ sessionId: q.sessionId })).started;
   plain.advance(10 * 60_000);
@@ -1895,4 +1897,19 @@ test("review: the session's USD cap stops a pod that is still starting (a dear G
 test("owner 2026-10-06 (msg 1683): factory sessions are switched ON by default", async () => {
   const { DEFAULT_MEDIA_SETTINGS: defaults } = await import("./contracts");
   assert.equal(defaults.factorySessionsEnabled, true);
+});
+
+// Owner, Telegram 2026-10-06 (msgs 1807/1810, variant 1): "Stop the pod by itself one minute after the session's last
+// job finished" moves from the Sessions request form to a saved setting in Production → Setup, on by default (the form's
+// default). It applies ONLY to the owner's own requests; an agent's or the factory's request without the flag keeps
+// today's behaviour (no release) -- the operator-facing contract is unchanged.
+test("owner release-when-done setting: the owner's request follows it (default on), an explicit flag wins, agents are unaffected", async () => {
+  const byDefault = fixture({});
+  assert.equal((await byDefault.services.requestSession({ ...operatorRequest })).releaseWhenDone, true, "default: on");
+  const off = fixture({ settings: { ownerReleaseWhenDone: false } });
+  assert.equal((await off.services.requestSession({ ...operatorRequest })).releaseWhenDone, false, "setting off");
+  assert.equal((await off.services.requestSession({ ...operatorRequest, releaseWhenDone: true })).releaseWhenDone, true, "explicit flag wins");
+  const on = fixture({ settings: { ownerReleaseWhenDone: true } });
+  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "agent" })).releaseWhenDone, false, "agent without the flag");
+  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "factory" })).releaseWhenDone, false, "factory without the flag");
 });

@@ -75,6 +75,9 @@ export type MediaSettings = {
   factoryMaxMinutesPerSession: number;
   factoryMaxUsdPerDay: number;
   factoryMaxUsdPerMonth: number;
+  /** Owner, Telegram 2026-10-06 (msgs 1807/1810): the owner's OWN session requests (Production → Sessions) are stopped by
+   * themselves one minute after their last job finished (BL-135 releaseWhenDone). Never applied to agent/factory requests. */
+  ownerReleaseWhenDone: boolean;
 };
 
 export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
@@ -99,6 +102,7 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   factoryMaxMinutesPerSession: 60,
   factoryMaxUsdPerDay: 5,
   factoryMaxUsdPerMonth: 50,
+  ownerReleaseWhenDone: true,
 });
 
 /** Bounds of `maxConcurrentSessions` (slice 6): at least one, at most four pods at a time. */
