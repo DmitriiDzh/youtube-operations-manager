@@ -5027,3 +5027,72 @@ test("collection run: a throw mid-run records the units actually charged and the
   );
   assert.equal(f.store.channels.get(THIRD_VALID_CHANNEL_ID)!.collectionClaimedAt, null, "the unprocessed channel's claim was released");
 });
+
+// BL-140 R3 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.3, AC-R3-1): one row per watchlist channel for the
+// Research → Channels table -- observed values with their dates, how many videos were observed, the latest collection
+// run and a status. Expected rows are written by hand from the fixture; no derived metric is part of a row.
+test("BL-140: getWatchlistTable gives each channel its latest observation, videos observed, latest run and status", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, handleOrUrl: "@current", reason: "current one" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "never collected" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: THIRD_VALID_CHANNEL_ID, reason: "failed one" }, { createdVia: "web_ui" });
+  for (const [id, channelId] of [["snap-1", VALID_CHANNEL_ID], ["snap-3", THIRD_VALID_CHANNEL_ID]] as const) {
+    store.channelSnapshots.push({
+      id,
+      researchChannelId: channelId,
+      observedAt: now,
+      subscriberCount: 1200,
+      viewCount: 34000,
+      videoCount: 40,
+      hiddenSubscriberCount: false,
+      source: "youtube.channels.list",
+      createdVia: "web_ui",
+    });
+  }
+  for (const videoId of ["vA00000000000000000000", "vB00000000000000000000"]) {
+    store.videoSnapshots.push({
+      id: `vs-${videoId}`,
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId,
+      observedAt: now,
+      viewCount: 10,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: now,
+      title: "t",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    });
+  }
+  store.collectionRuns.push(
+    { researchChannelId: VALID_CHANNEL_ID, status: "success", unitsSpent: 3, videosRequested: 2, videosReturned: 2, errorMessage: null, ranAt: now },
+    { researchChannelId: THIRD_VALID_CHANNEL_ID, status: "failed", unitsSpent: 1, videosRequested: null, videosReturned: null, errorMessage: "x", ranAt: now }
+  );
+
+  const { channels } = await services.getWatchlistTable();
+  const byId = new Map(channels.map((c) => [c.channelId, c]));
+
+  const current = byId.get(VALID_CHANNEL_ID);
+  assert.equal(current?.handleOrUrl, "@current");
+  assert.equal(current?.reason, "current one");
+  assert.deepEqual(current?.latestObservation, {
+    observedAt: now.toISOString(),
+    subscriberCount: 1200,
+    hiddenSubscriberCount: false,
+    viewCount: 34000,
+    videoCount: 40,
+  });
+  assert.equal(current?.videosObserved, 2);
+  assert.deepEqual(current?.latestRun, { status: "success", ranAt: now.toISOString() });
+  assert.equal(current?.status, "current");
+
+  const never = byId.get(OTHER_VALID_CHANNEL_ID);
+  assert.equal(never?.latestObservation, null);
+  assert.equal(never?.videosObserved, 0);
+  assert.equal(never?.latestRun, null);
+  assert.equal(never?.status, "never_collected");
+
+  assert.equal(byId.get(THIRD_VALID_CHANNEL_ID)?.status, "failed");
+  assert.equal(channels.length, 3);
+});

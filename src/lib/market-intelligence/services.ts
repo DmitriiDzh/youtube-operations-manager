@@ -1911,6 +1911,69 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     },
 
     /**
+     * BL-140 R3 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.3): one row per watchlist channel for the
+     * Research → Channels table. Only observed values with their observation time (Phase 13, III.E.4.f/h) plus
+     * bookkeeping: how many videos were observed, the latest collection run, and a status read from the same data
+     * quality flags getMarketOverview's collection warnings use. A local read, no YouTube call.
+     */
+    async getWatchlistTable(): Promise<{
+      channels: {
+        channelId: string;
+        handleOrUrl: string | null;
+        reason: string;
+        addedAt: string;
+        latestObservation: { observedAt: string; subscriberCount: number | null; hiddenSubscriberCount: boolean; viewCount: number | null; videoCount: number | null } | null;
+        videosObserved: number;
+        latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
+        dataQualityFlags: DataQualityFlag[];
+        status: "current" | "attention" | "failed" | "never_collected";
+      }[];
+    }> {
+      const { channels } = await services.listWatchlist();
+      const ATTENTION_FLAGS = new Set<DataQualityFlag>(["stale_observation", "quota_limited", "missing_snapshot", "feed_fallback_used"]);
+      const rows = [];
+      for (const channel of channels) {
+        let summary: Awaited<ReturnType<typeof services.getChannelIntelligenceSummary>>;
+        try {
+          summary = await services.getChannelIntelligenceSummary({ channelId: channel.channelId });
+        } catch (error) {
+          // Removed between listWatchlist() and this read -- the same narrow race getMarketOverview skips.
+          if (isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE") continue;
+          throw error;
+        }
+        const latest = summary.channelSnapshots[summary.channelSnapshots.length - 1] ?? null;
+        const run = await deps.getLatestMarketIntelligenceCollectionRunForChannel(channel.channelId);
+        const status = summary.neverObserved
+          ? "never_collected"
+          : run?.status === "failed"
+            ? "failed"
+            : summary.dataQualityFlags.some((flag) => ATTENTION_FLAGS.has(flag))
+              ? "attention"
+              : "current";
+        rows.push({
+          channelId: channel.channelId,
+          handleOrUrl: channel.handleOrUrl,
+          reason: channel.reason,
+          addedAt: channel.addedAt,
+          latestObservation: latest
+            ? {
+                observedAt: latest.observedAt,
+                subscriberCount: latest.subscriberCount,
+                hiddenSubscriberCount: latest.hiddenSubscriberCount,
+                viewCount: latest.viewCount,
+                videoCount: latest.videoCount,
+              }
+            : null,
+          videosObserved: summary.latestSnapshotPerVideo.length,
+          latestRun: run ? { status: run.status, ranAt: run.ranAt ? run.ranAt.toISOString() : null } : null,
+          dataQualityFlags: summary.dataQualityFlags,
+          status: status as "current" | "attention" | "failed" | "never_collected",
+        });
+      }
+      return { channels: rows };
+    },
+
+    /**
      * Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market
      * Overview, aggregating across the WHOLE watchlist. Reuses `getChannelIntelligenceSummary`
      * (part A) once per watchlisted channel -- no new per-channel computation, only aggregation/
