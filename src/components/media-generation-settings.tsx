@@ -9,6 +9,7 @@ import {
   type MediaJob,
   type MediaSession,
   type MediaSessionLimits,
+  type MediaCapacityAttempt,
   type MediaControlEventView,
   type MediaModelEntry,
   type MediaSettings,
@@ -895,6 +896,9 @@ function statusDetail(s: Session, nowMs: number): string {
       return "waiting for your approval";
     case "approved":
       return `creating the pod… ${sinceLabel(s.approvedAt, nowMs)}`;
+    case "waiting_capacity":
+      // BL-133: no GPU could be placed yet -- no pod, nothing billed; retried until the wait ends.
+      return `no free GPU yet (no pod, no cost) · ${s.capacity?.attempts ?? 0} round(s)${s.capacity?.waitUntil ? ` · gives up at ${formatDisplayDateTime(s.capacity.waitUntil)}` : ""}`;
     case "starting":
       return `pod created, waiting for ComfyUI… ${sinceLabel(s.startedAt, nowMs)}`;
     case "running":
@@ -909,6 +913,7 @@ function statusDetail(s: Session, nowMs: number): string {
 const statusTone: Record<string, string> = {
   pending: "text-amber-300",
   approved: "text-sky-300",
+  waiting_capacity: "text-amber-400",
   starting: "text-sky-300",
   running: "text-emerald-400",
   stopping: "text-orange-300",
@@ -1099,7 +1104,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                     {s.error && <div className="text-amber-400">{s.error}</div>}
                   </td>
                   <td className="py-2 pr-3">
-                    {s.requestedBy}
+                    {s.requestedBy === "factory" ? "Factory Operator" : s.requestedBy}
+                    {s.approvedBy === "factory" ? <div className="text-sky-300">approved by the factory (within its limits)</div> : null}
                     {s.reason ? <div className="text-zinc-500">{s.reason}</div> : null}
                   </td>
                   <td className="py-2 pr-3 whitespace-nowrap">
@@ -1111,6 +1117,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                   </td>
                   <td className="py-2 pr-3 font-mono">
                     {s.podId ?? "—"}
+                    {s.gpuTypeId && <div className="font-sans text-zinc-500">{s.gpuTypeId}</div>}
                     {s.costPerHr !== null && <div className="font-sans text-zinc-500">${s.costPerHr}/h</div>}
                   </td>
                   <td className="py-2 pr-3 whitespace-nowrap">{s.startedAt ? `${minutesLabel(s.secondsUsed)} ≈ $${(s.usdCharged ?? 0).toFixed(2)}` : "—"}</td>
@@ -1760,6 +1767,229 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
         {busy ? "Saving…" : "Save limits"}
       </button>
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </Card>
+  );
+}
+
+// BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md §2.1): the owner's limits for sessions the Factory Operator starts
+// itself. Within all of them (and the device limits above) a factory start is approved by the factory; otherwise it waits in
+// the Sessions table for you. Off until you switch it on.
+export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  const initial = () => ({
+    perSessionUsd: String(settings.factoryMaxUsdPerSession),
+    perSessionMinutes: String(settings.factoryMaxMinutesPerSession),
+    perDayUsd: String(settings.factoryMaxUsdPerDay),
+    perMonthUsd: String(settings.factoryMaxUsdPerMonth),
+  });
+  const [draft, setDraft] = useState(initial);
+  const [enabled, setEnabled] = useState(settings.factorySessionsEnabled);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(initial());
+    setEnabled(settings.factorySessionsEnabled);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.factorySessionsEnabled, settings.factoryMaxUsdPerSession, settings.factoryMaxMinutesPerSession, settings.factoryMaxUsdPerDay, settings.factoryMaxUsdPerMonth]);
+
+  async function save(nextEnabled = enabled) {
+    const factoryMaxUsdPerSession = parseMoney(draft.perSessionUsd);
+    const factoryMaxMinutesPerSession = parseInteger(draft.perSessionMinutes, { min: 1, max: 1440 });
+    const factoryMaxUsdPerDay = parseMoney(draft.perDayUsd);
+    const factoryMaxUsdPerMonth = parseMoney(draft.perMonthUsd);
+    if (factoryMaxUsdPerSession === null || factoryMaxUsdPerDay === null || factoryMaxUsdPerMonth === null || factoryMaxMinutesPerSession === null) {
+      setError("USD limits must be positive amounts like 2 or 2.5; minutes a whole number 1–1440");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-generation/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ factorySessionsEnabled: nextEnabled, factoryMaxUsdPerSession, factoryMaxMinutesPerSession, factoryMaxUsdPerDay, factoryMaxUsdPerMonth }),
+      });
+      setNotice("Saved.");
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (label: string, key: keyof typeof draft, mode: "decimal" | "numeric") => (
+    <label className="block text-xs text-zinc-400">
+      {label}
+      <input type="text" inputMode={mode} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} className={inputClass} />
+    </label>
+  );
+
+  return (
+    <Card
+      title="Factory Operator limits"
+      help="Sessions the Factory Operator starts itself (to test models and templates). Within ALL of these limits -- and the device limits above -- its start is approved by the factory and the pod starts without you; above any of them the request waits in Sessions for your approval. The factory can stop only the sessions it started. Day and month are this computer's calendar day and month; a running factory session counts with its full USD cap until it ends."
+    >
+      <div className="flex items-center gap-3">
+        <ToggleSwitch
+          label="Let the Factory Operator start sessions within these limits"
+          checked={enabled}
+          onChange={(next) => {
+            setEnabled(next);
+            void save(next);
+          }}
+          disabled={busy}
+        />
+        <span className="text-sm text-zinc-300">Factory Operator may start sessions within these limits</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {field("Per session, USD", "perSessionUsd", "decimal")}
+        {field("Per session, minutes", "perSessionMinutes", "numeric")}
+        {field("Per day, USD (factory sessions)", "perDayUsd", "decimal")}
+        {field("Per month, USD (factory sessions)", "perMonthUsd", "decimal")}
+      </div>
+      <button type="button" onClick={() => void save()} disabled={busy} className={primaryButton}>
+        {busy ? "Saving…" : "Save factory limits"}
+      </button>
+      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </Card>
+  );
+}
+
+// BL-133 (plan §2.3/§2.4, owner O5): further GPU types tried in order when the chosen one cannot be placed in the volume's
+// datacenter -- for every session, yours too -- and how long a session waits for a free GPU.
+export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  const [fallbackText, setFallbackText] = useState(settings.gpuFallbackIds.join("\n"));
+  const [minVram, setMinVram] = useState(settings.gpuMinVramGb === null ? "" : String(settings.gpuMinVramGb));
+  const [maxPrice, setMaxPrice] = useState(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
+  const [retrySeconds, setRetrySeconds] = useState(String(settings.capacityRetrySeconds));
+  const [waitMinutes, setWaitMinutes] = useState(String(settings.capacityWaitMinutes));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function save() {
+    const gpuFallbackIds = fallbackText
+      .split(/[\n,]/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const gpuMinVramGb = minVram.trim() ? parseInteger(minVram, { min: 1, max: 1024 }) : null;
+    const gpuMaxPricePerHr = maxPrice.trim() ? parseMoney(maxPrice) : null;
+    const capacityRetrySeconds = parseInteger(retrySeconds, { min: 15, max: 3600 });
+    const capacityWaitMinutes = parseInteger(waitMinutes, { min: 1, max: 1440 });
+    if ((minVram.trim() && gpuMinVramGb === null) || (maxPrice.trim() && gpuMaxPricePerHr === null) || capacityRetrySeconds === null || capacityWaitMinutes === null || gpuFallbackIds.length > 10) {
+      setError("Up to 10 GPU types; minimum VRAM whole GB; price cap a positive amount; retry 15–3600 s; wait 1–1440 min");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-generation/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes }),
+      });
+      setNotice("Saved.");
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card
+      title="GPU fallback and capacity wait"
+      help="When the GPU chosen above cannot be placed in the volume's datacenter, these GPU types are tried in order (RunPod catalog ids, one per line, e.g. NVIDIA GeForce RTX 5090). A type under the minimum VRAM, over the price cap or not offered in the datacenter is skipped. When none is free, the session waits with no pod (nothing is billed), is retried every few seconds as set here, and fails with 'no capacity' after the wait. A template from the factory registry may bring its own list."
+    >
+      <label className="block text-xs text-zinc-400">
+        Fallback GPU types, in order
+        <textarea value={fallbackText} onChange={(e) => setFallbackText(e.target.value)} className={`${inputClass} h-24 font-mono text-xs`} placeholder={"NVIDIA GeForce RTX 5090\nNVIDIA L40S"} />
+      </label>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="block text-xs text-zinc-400">
+          Minimum VRAM, GB (optional)
+          <input type="text" inputMode="numeric" value={minVram} onChange={(e) => setMinVram(e.target.value)} className={inputClass} placeholder="no minimum" />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          Price cap, USD per hour (optional)
+          <input type="text" inputMode="decimal" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} className={inputClass} placeholder="no cap" />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          Retry every (seconds, 15–3600)
+          <input type="text" inputMode="numeric" value={retrySeconds} onChange={(e) => setRetrySeconds(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          Give up after (minutes, 1–1440)
+          <input type="text" inputMode="numeric" value={waitMinutes} onChange={(e) => setWaitMinutes(e.target.value)} className={inputClass} />
+        </label>
+      </div>
+      <button type="button" onClick={save} disabled={busy} className={primaryButton}>
+        {busy ? "Saving…" : "Save GPU fallback"}
+      </button>
+      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </Card>
+  );
+}
+
+// BL-133 (plan §2.5): every pod start attempt -- which GPU, where, placed or not. Read on demand.
+export function CapacityLogCard() {
+  const [attempts, setAttempts] = useState<MediaCapacityAttempt[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(
+    () =>
+      requestJson<{ attempts: MediaCapacityAttempt[] }>("/api/media-generation/capacity").then(
+        (data) => {
+          setAttempts(data.attempts);
+          setError(null);
+        },
+        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load the capacity log")
+      ),
+    []
+  );
+  return (
+    <Card title="Pod start attempts" help="Every attempt to create a session's pod in the last 90 days: the GPU type, the datacenter, the price, and whether RunPod placed it. 'no capacity' means no such GPU was free there at that moment.">
+      <button type="button" onClick={load} className={secondaryButton}>
+        {attempts ? "Refresh" : "Load attempts"}
+      </button>
+      {attempts && attempts.length === 0 && <p className="text-xs text-zinc-500">No attempts yet.</p>}
+      {attempts && attempts.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-xs text-zinc-400">
+            <thead>
+              <tr className="text-zinc-500">
+                <th className="py-1 pr-3">When</th>
+                <th className="py-1 pr-3">GPU</th>
+                <th className="py-1 pr-3">Datacenter</th>
+                <th className="py-1 pr-3">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attempts.map((a, i) => (
+                <tr key={`${a.at}-${i}`} className="border-t border-zinc-800 align-top">
+                  <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(a.at)}</td>
+                  <td className="py-1 pr-3">
+                    {a.gpuTypeId}
+                    {a.pricePerHr !== null ? <span className="text-zinc-500"> · ${a.pricePerHr}/h</span> : null}
+                  </td>
+                  <td className="py-1 pr-3">{a.datacenterId ?? "—"}</td>
+                  <td className="py-1 pr-3">
+                    <span className={a.result === "placed" ? "text-emerald-400" : a.result === "no_capacity" ? "text-amber-400" : "text-red-400"}>{a.result.replace("_", " ")}</span>
+                    {a.detail ? <div className="text-zinc-500">{a.detail}</div> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {error && <p className="text-xs text-red-400">{error}</p>}
     </Card>
   );
