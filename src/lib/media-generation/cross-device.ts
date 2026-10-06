@@ -95,26 +95,32 @@ export function deriveOtherDevices(input: {
   podsError?: string | null;
   now: Date;
 }): OtherDevicesView {
-  const live = input.livePods ? new Set(input.livePods.map((p) => p.id)) : null;
-  const liveState = (s: SharedMediaSession): PeerSessionLiveState => {
+  // RunPod can still list a TERMINATED pod for a while (pod-lifecycle's own filter): it is not running and not billed.
+  const livePods = input.livePods ? input.livePods.filter((p) => p.status !== "TERMINATED") : null;
+  const live = livePods ? new Set(livePods.map((p) => p.id)) : null;
+  const liveState = (s: SharedMediaSession, sameAccount: boolean): PeerSessionLiveState => {
     if (isTerminal(s.status as MediaSessionStatus)) return "ended";
     if (!s.podId) return "no_pod_yet";
-    if (!live) return "pod_running"; // unknown: RunPod not readable, keep the peer's word
+    // This account's pod list says nothing about another account's pods (independent review): keep the peer's word.
+    if (!live || !sameAccount) return "pod_running";
     return live.has(s.podId) ? "pod_running" : "pod_gone";
   };
-  const devices = input.peers.map((r) => ({
-    deviceId: r.deviceId,
-    hostname: r.hostname,
-    updatedAt: r.updatedAt,
-    stale: input.now.getTime() - Date.parse(r.updatedAt) > PEER_REPORT_STALE_AFTER_MS,
-    sameAccount: r.runpodAccountId !== null && input.ownAccountId !== null && r.runpodAccountId === input.ownAccountId,
-    spentTodayUsd: r.spentTodayUsd,
-    sessions: r.sessions.map((s) => ({ ...s, live: liveState(s) })),
-  }));
+  const devices = input.peers.map((r) => {
+    const sameAccount = r.runpodAccountId !== null && input.ownAccountId !== null && r.runpodAccountId === input.ownAccountId;
+    return {
+      deviceId: r.deviceId,
+      hostname: r.hostname,
+      updatedAt: r.updatedAt,
+      stale: input.now.getTime() - Date.parse(r.updatedAt) > PEER_REPORT_STALE_AFTER_MS,
+      sameAccount,
+      spentTodayUsd: r.spentTodayUsd,
+      sessions: r.sessions.map((s) => ({ ...s, live: liveState(s, sameAccount) })),
+    };
+  });
   let unknownPods: UnknownPodView[] | null = null;
-  if (input.livePods) {
+  if (livePods) {
     const known = new Set([...input.localPodIds, ...input.peers.flatMap((r) => r.sessions.map((s) => s.podId).filter((id): id is string => Boolean(id)))]);
-    unknownPods = input.livePods.filter((p) => p.name.startsWith(SESSION_POD_PREFIX) && !known.has(p.id)).map((p) => ({ podId: p.id, name: p.name, costPerHr: p.costPerHr, status: p.status }));
+    unknownPods = livePods.filter((p) => p.name.startsWith(SESSION_POD_PREFIX) && !known.has(p.id)).map((p) => ({ podId: p.id, name: p.name, costPerHr: p.costPerHr, status: p.status }));
   }
   return { devices, unknownPods, podsError: input.podsError ?? null };
 }
@@ -127,6 +133,8 @@ const PEER_STOP_POLL_MS = 5_000;
 
 export type PeerStopDeps = {
   listPeerReports(): Promise<MediaSessionsReport[]>;
+  /** Pods of this device's own sessions: a peer report can never direct a Stop at one of them. */
+  localPodIds(): Promise<string[]>;
   ownAccountId(): Promise<string | null>;
   runpodClient(): Promise<RunpodApiClient>;
   podNameFor(sessionId: string): string;
@@ -149,6 +157,9 @@ export async function stopPeerSession(deps: PeerStopDeps, input: unknown): Promi
   if (isTerminal(session.status) || !session.podId) {
     throw new DomainError({ code: "media_session_conflict", message: `The session is ${session.status}${session.podId ? "" : " and has no pod"}; there is nothing to stop.`, details: { deviceId, sessionId } });
   }
+  if ((await deps.localPodIds()).includes(session.podId)) {
+    throw new DomainError({ code: "validation_failed", message: "That pod belongs to a session of this device; stop it in the list above.", details: { deviceId, sessionId, podId: session.podId } });
+  }
   const own = await deps.ownAccountId();
   if (!own || !report.runpodAccountId || own !== report.runpodAccountId) {
     throw new DomainError({
@@ -158,7 +169,7 @@ export async function stopPeerSession(deps: PeerStopDeps, input: unknown): Promi
     });
   }
   const client = await deps.runpodClient();
-  const pod = (await client.listPods()).find((p) => p.id === session.podId);
+  const pod = (await client.listPods()).find((p) => p.id === session.podId && p.status !== "TERMINATED");
   if (!pod) {
     return { podId: session.podId, alreadyGone: true, confirmed: true };
   }
@@ -185,15 +196,18 @@ export async function stopPeerSession(deps: PeerStopDeps, input: unknown): Promi
 export function accountWideUsage(input: {
   peers: MediaSessionsReport[];
   ownAccountId: string | null;
-  livePods: Array<{ id: string; name: string }>;
+  /** null = RunPod's pod list could not be read: no slots counted, the reported spend still is. */
+  livePods: Array<{ id: string; name: string; status?: string }> | null;
   localPodIds: string[];
   dayStart: Date;
+  now: Date;
 }): { otherActiveSessions: number; otherSpentTodayUsd: number } {
   if (!input.ownAccountId) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
   const local = new Set(input.localPodIds);
-  const otherActiveSessions = input.livePods.filter((p) => p.name.startsWith(SESSION_POD_PREFIX) && !local.has(p.id)).length;
+  const otherActiveSessions = (input.livePods ?? []).filter((p) => p.name.startsWith(SESSION_POD_PREFIX) && p.status !== "TERMINATED" && !local.has(p.id)).length;
   const otherSpentTodayUsd = input.peers
-    .filter((r) => r.runpodAccountId === input.ownAccountId && Date.parse(r.updatedAt) >= input.dayStart.getTime())
+    // A future-dated report (a peer clock running fast) is not "today's" spend.
+    .filter((r) => r.runpodAccountId === input.ownAccountId && Date.parse(r.updatedAt) >= input.dayStart.getTime() && Date.parse(r.updatedAt) <= input.now.getTime() + 5 * 60_000)
     .reduce((sum, r) => sum + Math.max(0, r.spentTodayUsd), 0);
   return { otherActiveSessions, otherSpentTodayUsd: Math.round(otherSpentTodayUsd * 100) / 100 };
 }

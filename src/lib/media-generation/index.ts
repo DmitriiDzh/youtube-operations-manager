@@ -135,7 +135,7 @@ function buildCore(jobScheduling: JobScheduling) {
     volumeLock,
     log: (line) => console.warn(line),
     // BL-138: devices on the same RunPod account share the limits (late-bound: the helpers are defined below).
-    accountWide: (at, localPodIds) => otherDevicesOnAccount(at, localPodIds),
+    accountWide: (at, localPodIds, options) => otherDevicesOnAccount(at, localPodIds, options),
   });
   sessionsRef = sessions;
   const workspaces = createChannelWorkspacesCore();
@@ -245,15 +245,20 @@ function buildCore(jobScheduling: JobScheduling) {
       result: row.result as MediaCapacityAttempt["result"],
       detail: row.detail ?? null,
     }));
-  // BL-138: the RunPod account id, read once an hour at most (a GraphQL read; null = could not be read, never shared limits).
-  let accountIdCache: { value: string | null; at: number } | null = null;
+  // BL-138: the RunPod account id (a GraphQL read). Kept an hour when known, 5 minutes when it could not be read, and dropped
+  // as soon as the stored credentials change (independent review: a replaced or imported key may be another account).
+  let accountIdCache: { value: string | null; at: number; credentialsAt: string | null } | null = null;
   const runpodAccountId = async (): Promise<string | null> => {
-    if (accountIdCache && now().getTime() - accountIdCache.at < 60 * 60_000) return accountIdCache.value;
+    const status = await base.getCredentialsStatus();
+    const credentialsAt = status.configured ? status.updatedAt : null;
+    if (!credentialsAt) return null;
+    const ttl = accountIdCache?.value ? 60 * 60_000 : 5 * 60_000;
+    if (accountIdCache && accountIdCache.credentialsAt === credentialsAt && now().getTime() - accountIdCache.at < ttl) return accountIdCache.value;
     const value = await base
       .resolveRunpodClient()
       .then((client) => client.getAccountId())
       .catch(() => null);
-    accountIdCache = { value, at: now().getTime() };
+    accountIdCache = { value, at: now().getTime(), credentialsAt };
     return value;
   };
   const deviceIdentity = async () => {
@@ -266,16 +271,25 @@ function buildCore(jobScheduling: JobScheduling) {
     }
     return { deviceId: config.deviceId, hostname: host };
   };
-  // One RunPod pod list per 20 s at most for the limits (the watcher checks every running session on every tick).
-  let livePodsCache: { pods: Array<{ id: string; name: string }>; at: number } | null = null;
-  async function otherDevicesOnAccount(at: Date, localPodIds: string[]) {
+  // One RunPod pod list per 25 s at most for the watcher's checks (one in flight is shared by every session of a tick); the
+  // approve asks for a fresh one.
+  let livePodsCache: { pods: Promise<Array<{ id: string; name: string; status: string }>>; at: number } | null = null;
+  const livePodsForLimits = (at: Date, fresh: boolean) => {
+    if (fresh || !livePodsCache || at.getTime() - livePodsCache.at > 25_000) {
+      const pods = base.resolveRunpodClient().then((client) => client.listPods()).then((list) => list.map((p) => ({ id: p.id, name: p.name, status: p.status })));
+      livePodsCache = { pods, at: at.getTime() };
+      pods.catch(() => {
+        if (livePodsCache?.pods === pods) livePodsCache = null;
+      });
+    }
+    return livePodsCache.pods;
+  };
+  async function otherDevicesOnAccount(at: Date, localPodIds: string[], options: { fresh?: boolean } = {}) {
     const ownAccountId = await runpodAccountId();
     if (!ownAccountId) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
-    if (!livePodsCache || at.getTime() - livePodsCache.at > 20_000) {
-      livePodsCache = { pods: (await (await base.resolveRunpodClient()).listPods()).map((p) => ({ id: p.id, name: p.name })), at: at.getTime() };
-    }
-    const peers = await createMediaSessionsShareCoreForProduction().listPeerReports();
-    return accountWideUsage({ peers, ownAccountId, livePods: livePodsCache.pods, localPodIds, dayStart: new Date(at.getFullYear(), at.getMonth(), at.getDate()) });
+    // The pod list failing leaves the reported spend in (it does not need RunPod).
+    const [pods, peers] = await Promise.all([livePodsForLimits(at, options.fresh ?? false).catch(() => null), createMediaSessionsShareCoreForProduction().listPeerReports()]);
+    return accountWideUsage({ peers, ownAccountId, livePods: pods, localPodIds, dayStart: new Date(at.getFullYear(), at.getMonth(), at.getDate()), now: at });
   }
   /** BL-138: hands this device's sessions report to the sync-gateway `media-sessions` family (run on every watcher tick). */
   const publishSessionsShare = async (): Promise<void> => {
@@ -301,6 +315,7 @@ function buildCore(jobScheduling: JobScheduling) {
     stopPeerSession(
       {
         listPeerReports: () => createMediaSessionsShareCoreForProduction().listPeerReports(),
+        localPodIds: async () => (await sessions.listSessions(200)).map((s) => s.podId).filter((id): id is string => Boolean(id)),
         ownAccountId: runpodAccountId,
         runpodClient: () => base.resolveRunpodClient(),
         podNameFor,

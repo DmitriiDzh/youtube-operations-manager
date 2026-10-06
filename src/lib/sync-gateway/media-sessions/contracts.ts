@@ -43,8 +43,9 @@ export const mediaSessionsReportSchema = z
     hostname: z.string().max(255).nullable(),
     /** The RunPod account id (GraphQL `myself.id`), or null when it could not be read; never anything derived from a key. */
     runpodAccountId: z.string().max(128).nullable(),
-    updatedAt: z.string().max(40),
-    spentTodayUsd: z.number(),
+    updatedAt: z.string().datetime({ offset: true }),
+    /** Bounded: one bad report must not be able to claim an absurd spend (it counts against this device's daily cap). */
+    spentTodayUsd: z.number().min(0).max(100_000),
     sessions: z.array(sharedSessionSchema).max(200),
   })
   .strict();

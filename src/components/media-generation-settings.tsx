@@ -1254,9 +1254,9 @@ const LIVE_LABEL: Record<OtherDevicesResponse["devices"][number]["sessions"][num
   ended: "ended",
 };
 
-/** Active elsewhere = a peer's session that is not finished and whose pod RunPod still has (or that has no pod yet). */
+/** Active elsewhere = a peer's session with a running pod (like this device's own count, a pending request is not active). */
 export function countActiveElsewhere(view: Pick<OtherDevicesResponse, "devices">): number {
-  return view.devices.reduce((sum, d) => sum + d.sessions.filter((s) => s.live === "pod_running" || s.live === "no_pod_yet").length, 0);
+  return view.devices.reduce((sum, d) => sum + d.sessions.filter((s) => s.live === "pod_running").length, 0);
 }
 
 export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean; onActiveElsewhere?: (count: number) => void }) {

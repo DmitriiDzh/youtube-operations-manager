@@ -15,6 +15,7 @@ export function createMediaSessionsShareCoreForProduction(): MediaSessionsShareC
     holder[PRODUCTION_KEY] = createMediaSessionsShareCore({
       store: createFsMediaSessionsReportStore(paths.mediaSessionsShareDir),
       ownDeviceId: async () => (await bootstrap.ensureExists()).deviceId,
+      clock: { now: () => new Date() },
     });
   }
   return holder[PRODUCTION_KEY];

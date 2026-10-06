@@ -59,7 +59,7 @@ const bytes = (value: unknown) => new TextEncoder().encode(typeof value === "str
 
 function fixture() {
   const store = memoryStore();
-  const core = createMediaSessionsShareCore({ store, ownDeviceId: async () => "me" });
+  const core = createMediaSessionsShareCore({ store, ownDeviceId: async () => "me", clock: { now: () => new Date("2026-10-06T12:00:00.000Z") } });
   return { store, core };
 }
 
@@ -85,17 +85,31 @@ test("a peer's report is kept; a newer one replaces it; an older one does not", 
   assert.equal(peers[0].spentTodayUsd, 1);
 });
 
-test("this device's own report, an invalid report, a report with extra fields and garbage are ignored", async () => {
+// Independent review: an unusable peer file is refused loudly (the runner lists it as skipped, with the reason, in the Merge
+// tab) rather than silently, so a device on a newer app version does not just vanish from the view and the shared limits.
+test("this device's own report is ignored quietly; an invalid, newer-version, extra-field, future-dated or garbage report is refused with a reason", async () => {
   const { core, store } = fixture();
   assert.deepEqual(await core.mergeIncoming(bytes(report("me", "2026-10-06T10:05:00.000Z"))), { accepted: false });
-  assert.deepEqual(await core.mergeIncoming(bytes({ ...report("x", "2026-10-06T10:05:00.000Z"), version: 2 })), { accepted: false });
-  assert.deepEqual(await core.mergeIncoming(bytes({ ...report("x", "2026-10-06T10:05:00.000Z"), comfyUiProxyUrl: "https://secret" })), { accepted: false });
+  const refused = async (value: unknown, reason: RegExp) =>
+    assert.rejects(core.mergeIncoming(bytes(value)), (e: unknown) => (e as { code?: string }).code === "validation_failed" && reason.test((e as Error).message));
+  await refused({ ...report("x", "2026-10-06T10:05:00.000Z"), version: 2 }, /version 2 is newer/);
+  await refused({ ...report("x", "2026-10-06T10:05:00.000Z"), comfyUiProxyUrl: "https://secret" }, /invalid/);
   const withSecretInSession = report("x", "2026-10-06T10:05:00.000Z");
   (withSecretInSession.sessions[0] as Record<string, unknown>).comfyUiProxyUrl = "https://pod-8189.proxy.runpod.net/?token=abc";
-  assert.deepEqual(await core.mergeIncoming(bytes(withSecretInSession)), { accepted: false });
-  assert.deepEqual(await core.mergeIncoming(bytes("{not json")), { accepted: false });
+  await refused(withSecretInSession, /invalid/);
+  await refused(report("x", "yesterday"), /invalid/);
+  await refused(report("x", "2026-10-06T12:10:00.000Z"), /in the future/); // 10 min ahead of the 12:00 clock
+  await refused({ ...report("x", "2026-10-06T10:05:00.000Z"), spentTodayUsd: 1e9 }, /invalid/);
+  await refused("{not json", /unreadable/);
   assert.deepEqual(store.peers, {});
   assert.deepEqual(await core.listPeerReports(), []);
+});
+
+test("a peer silent for more than 7 days is no longer listed", async () => {
+  const { core } = fixture();
+  await core.mergeIncoming(bytes(report("retired", "2026-09-28T12:00:00.000Z")));
+  await core.mergeIncoming(bytes(report("recent", "2026-09-30T12:00:00.000Z")));
+  assert.deepEqual((await core.listPeerReports()).map((r) => r.deviceId), ["recent"]);
 });
 
 test("listPeerReports returns every peer, newest first", async () => {

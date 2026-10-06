@@ -203,7 +203,7 @@ function fixture(opts: {
   comfy?: ReturnType<typeof fakeComfy>;
   now?: Date;
   jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
-  accountWide?: (now: Date, localPodIds: string[]) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
+  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
 } = {}) {
   const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
   const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
@@ -413,6 +413,25 @@ test("BL-138: the watcher stops a running session once this device's plus the ot
   const results = await f.services.watchTick();
   const mine = results.find((r) => r.sessionId === s.sessionId);
   assert.match(mine?.reason ?? "", /daily cap reached/);
+});
+
+test("BL-138 review: a pod of a session this device stopped today is passed as this device's own, and the approve asks for a fresh pod list", async () => {
+  const seen: Array<{ localPodIds: string[]; fresh: boolean }> = [];
+  const f = fixture({
+    settings: { maxConcurrentSessions: 1, maxUsdPerDay: 100 },
+    accountWide: async (_now, localPodIds, options) => {
+      seen.push({ localPodIds, fresh: options?.fresh ?? false });
+      return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+    },
+  });
+  const a = await startRunning(f);
+  const podA = f.mem.rows.get(a.sessionId)!.podId!;
+  await f.services.stopSession({ sessionId: a.sessionId });
+  const b = await f.services.requestSession(operatorRequest);
+  seen.length = 0;
+  assert.equal((await f.services.approveAndStartSession({ sessionId: b.sessionId })).status, "running");
+  assert.ok(seen.length > 0 && seen[0].fresh, "the approve's check is fresh");
+  assert.ok(seen[0].localPodIds.includes(podA), "the stopped session's pod is this device's, never another device's slot");
 });
 
 test("BL-138: an unreadable other-devices figure counts as 0 (best effort), never blocks approves", async () => {

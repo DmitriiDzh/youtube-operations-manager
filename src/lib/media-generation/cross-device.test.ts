@@ -159,14 +159,14 @@ test("a report older than 5 minutes is stale; a different or unknown account id 
 
 // -- BL-138 step 2: Stop a session of another device (owner, msg 1739) ------------------------------------------------------
 
-function stopFixture(opts: { ownAccount?: string | null; peerAccount?: string | null; pods?: Array<{ id: string; name: string }>; status?: string; podId?: string | null } = {}) {
+function stopFixture(opts: { ownAccount?: string | null; peerAccount?: string | null; pods?: Array<{ id: string; name: string; status?: string }>; status?: string; podId?: string | null; localPods?: string[] } = {}) {
   const calls: string[] = [];
   const events: unknown[] = [];
   let gone = false;
   const client = {
     async listPods() {
       calls.push("listPods");
-      return (opts.pods ?? [{ id: "pod-a", name: "ytm-media-aaaaaaaa" }]).map((p) => ({ ...p, status: "RUNNING" }));
+      return (opts.pods ?? [{ id: "pod-a", name: "ytm-media-aaaaaaaa" }]).map((p) => ({ status: "RUNNING", ...p }));
     },
     async terminatePod(id: string) {
       calls.push(`terminate:${id}`);
@@ -178,6 +178,7 @@ function stopFixture(opts: { ownAccount?: string | null; peerAccount?: string | 
     },
   } as unknown as RunpodApiClient;
   const deps: PeerStopDeps = {
+    localPodIds: async () => opts.localPods ?? [],
     listPeerReports: async () => [
       peer(
         "laptop",
@@ -217,6 +218,8 @@ test("stopPeerSession refuses another account, an unknown account, a pod with an
     [stopFixture(), { deviceId: "laptop", sessionId: "unknown" }, "media_session_not_found"],
     [stopFixture(), { deviceId: "desktop", sessionId: "aaaaaaaa-1111" }, "media_session_not_found"],
     [stopFixture(), { deviceId: "laptop" }, "validation_failed"],
+    // Review: a report pointing at a pod of THIS device's own session is refused.
+    [stopFixture({ localPods: ["pod-a"] }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "validation_failed"],
   ];
   for (const [f, input, code] of cases) {
     await assert.rejects(stopPeerSession(f.deps, input), (e: unknown) => (e as { code?: string }).code === code, `${JSON.stringify(input)} -> ${code}`);
@@ -224,10 +227,12 @@ test("stopPeerSession refuses another account, an unknown account, a pod with an
   }
 });
 
-test("a pod RunPod no longer lists counts as already stopped, without a DELETE", async () => {
-  const f = stopFixture({ pods: [] });
-  assert.deepEqual(await stopPeerSession(f.deps, { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }), { podId: "pod-a", alreadyGone: true, confirmed: true });
-  assert.ok(!f.calls.some((c) => c.startsWith("terminate:")));
+test("a pod RunPod no longer lists, or lists as TERMINATED, counts as already stopped, without a DELETE", async () => {
+  for (const pods of [[], [{ id: "pod-a", name: "ytm-media-aaaaaaaa", status: "TERMINATED" }]]) {
+    const f = stopFixture({ pods });
+    assert.deepEqual(await stopPeerSession(f.deps, { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }), { podId: "pod-a", alreadyGone: true, confirmed: true });
+    assert.ok(!f.calls.some((c) => c.startsWith("terminate:")));
+  }
 });
 
 // -- BL-138 step 3: shared limits for devices on one RunPod account (owner, msg 1739) --------------------------------------
@@ -242,8 +247,10 @@ test("accountWideUsage: other active sessions are RunPod's live ytm-media pods t
       { id: "pod-other", name: "ytm-media-22222222" },
       { id: "pod-orphan", name: "ytm-media-33333333" }, // no device reports it: still a running session pod on the account
       { id: "pod-pull", name: "ytm-pull-abc" },
+      { id: "pod-ended", name: "ytm-media-44444444", status: "TERMINATED" }, // still listed by RunPod, not running
     ],
     dayStart: new Date("2026-10-06T00:00:00"),
+    now: new Date("2026-10-06T12:00:00"),
   });
   assert.equal(usage.otherActiveSessions, 2);
 });
@@ -258,18 +265,32 @@ test("accountWideUsage: today's spend of devices on the same account, reported s
       { ...peer("c", at(10), [], "acct-2"), spentTodayUsd: 5 },
       { ...peer("d", at(-2), [], "acct"), spentTodayUsd: 7 }, // yesterday's report: yesterday's spend
       { ...peer("e", at(10), [], null), spentTodayUsd: 3 },
+      { ...peer("f", at(20), [], "acct"), spentTodayUsd: 9 }, // dated 8 h ahead of "now": a fast clock, not today's spend
     ],
     ownAccountId: "acct",
     localPodIds: [],
-    livePods: [],
+    livePods: null, // RunPod unreadable: no slots counted, the reported spend still is
     dayStart,
+    now: new Date(dayStart.getTime() + 12 * 3600_000),
   });
   assert.deepEqual(usage, { otherActiveSessions: 0, otherSpentTodayUsd: 1.35 });
 });
 
 test("accountWideUsage: with this device's account unknown nothing is shared", () => {
   assert.deepEqual(
-    accountWideUsage({ peers: [peer("a", "2026-10-06T09:00:00.000Z", [], "acct")], ownAccountId: null, localPodIds: [], livePods: [{ id: "p", name: "ytm-media-1" }], dayStart: new Date("2026-10-06T00:00:00") }),
+    accountWideUsage({ peers: [peer("a", "2026-10-06T09:00:00.000Z", [], "acct")], ownAccountId: null, localPodIds: [], livePods: [{ id: "p", name: "ytm-media-1" }], dayStart: new Date("2026-10-06T00:00:00"), now: new Date("2026-10-06T12:00:00") }),
     { otherActiveSessions: 0, otherSpentTodayUsd: 0 }
   );
+});
+
+test("review: a session on another RunPod account keeps the peer's word (this account's pod list says nothing about it)", () => {
+  const view = deriveOtherDevices({
+    peers: [peer("other-acct", "2026-10-06T11:59:00.000Z", [toSharedSession(session({ sessionId: "x", podId: "pod-x" }))], "acct-2"), peer("no-acct", "2026-10-06T11:59:00.000Z", [toSharedSession(session({ sessionId: "y", podId: "pod-y" }))], null)],
+    ownAccountId: "acct",
+    localPodIds: [],
+    livePods: [{ id: "pod-ended", name: "ytm-media-55555555", costPerHr: 0.5, status: "TERMINATED" }],
+    now: NOW,
+  });
+  assert.deepEqual(view.devices.map((d) => d.sessions[0].live), ["pod_running", "pod_running"]);
+  assert.deepEqual(view.unknownPods, [], "a TERMINATED pod is not an unknown billed pod");
 });

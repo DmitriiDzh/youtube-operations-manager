@@ -12,9 +12,9 @@
 
 ## Proposal
 
-1. **A new sync-gateway family `media-sessions`**: one global document, a map `deviceId → { hostname, updatedAt, sessions[] }`.
-   Each device writes **only its own entry** (no conflicts by construction) after every session change and on every watcher tick;
-   it reads the others. A session entry carries what the table shows: id, channel, status, GPU, pod id, started/approved/stopped
+1. **A new sync-gateway family `media-sessions`** (as built: per-device JSON reports, not one Automerge document): each device
+   publishes **only its own report** `{ deviceId, hostname, runpodAccountId, updatedAt, spentTodayUsd, sessions[] }` on every
+   watcher tick and keeps the latest report of every peer (no conflicts by construction). A session entry carries what the table shows: id, channel, status, GPU, pod id, started/approved/stopped
    times, cost so far, limits, requested by. Never a token, URL secret or credential (the ComfyUI proxy token stays local).
 2. **Live check against RunPod**: on the Sessions tab each device also lists the account's pods (one read, already used by the
    watcher). A peer's session shown as running whose pod no longer exists is marked "pod gone"; a live `ytm-media-*` pod no device

@@ -127,7 +127,7 @@ export type SessionServiceDependencies = {
    * now -- session pods RunPod has that are not this device's, and the spend those devices reported for today. Counted in
    * the approve's concurrency and daily-cap checks and in the watcher's daily cap. Absent or failing = 0 (best effort).
    */
-  accountWide?: (now: Date, localPodIds: string[]) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
+  accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
   /** BL-133 audit (`media_control_events`): factory session starts/stops and limit holds. */
   events?: { record(event: { actor: "owner" | "factory"; action: string; subject: string; details?: Record<string, unknown> }): Promise<void> };
   /** Tests only: let a watcher tick wait for the capacity retry it fires (production fires it in the background). */
@@ -246,11 +246,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   }
 
   /** BL-138: the other devices' use of the same RunPod account; never throws (unknown = 0, logged). */
-  async function otherDevicesUsage(now: Date): Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }> {
+  async function otherDevicesUsage(now: Date, options: { fresh?: boolean } = {}): Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }> {
     if (!deps.accountWide) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
     try {
-      const localPodIds = (await deps.store.listOpen()).map((r) => r.podId).filter((id): id is string => Boolean(id));
-      return await deps.accountWide(now, localPodIds);
+      // Every pod this device had today, open or just stopped (independent review: a just-stopped session's pod can still be
+      // in RunPod's list and must never count as another device's slot).
+      const rows = [...(await deps.store.listOpen()), ...(await deps.store.listBillableSince(startOfLocalDay(now)))];
+      const localPodIds = [...new Set(rows.map((r) => r.podId).filter((id): id is string => Boolean(id)))];
+      return await deps.accountWide(now, localPodIds, options);
     } catch (error) {
       deps.log?.(`[media] other devices' usage unknown, counted as 0: ${error instanceof Error ? error.message : String(error)}`);
       return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
@@ -499,7 +502,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
     }
     const now = deps.clock.now();
-    const [localSpent, open, others] = await Promise.all([spentTodayUsd(now), deps.store.listOpen(), otherDevicesUsage(now)]);
+    // The approve reads RunPod's pod list fresh (no cache): a slot freed seconds ago must count as free.
+    const [localSpent, open, others] = await Promise.all([spentTodayUsd(now), deps.store.listOpen(), otherDevicesUsage(now, { fresh: true })]);
     // BL-138: the other devices on the same RunPod account count against the same caps.
     const spent = round2(localSpent + others.otherSpentTodayUsd);
     // AC-P14-17 with concurrent sessions (§5.2): what is spent today, plus what the OTHER active sessions may still spend
