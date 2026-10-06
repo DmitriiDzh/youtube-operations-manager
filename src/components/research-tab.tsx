@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
-import { MarketResearchPanel } from "./market-research-panel";
+import { MarketResearchPanel, type WatchlistStatusFilter } from "./market-research-panel";
 import { MarketVideosPanel } from "./market-videos-panel";
 import { MarketDiscoveryPanel } from "./market-discovery-panel";
 import { MarketTopicsPanel } from "./market-topics-panel";
@@ -37,10 +37,12 @@ export type ResearchSummary = {
 const SUMMARY_POLL_MS = 30_000;
 
 /** The summary line's parts, in reading order; a part whose source failed is left out. Exported for its test. */
-export function describeResearchSummary(summary: ResearchSummary): Array<{ text: string; tone: "plain" | "warn"; goTo?: ResearchSubTab }> {
-  const parts: Array<{ text: string; tone: "plain" | "warn"; goTo?: ResearchSubTab }> = [];
+type SummaryPart = { text: string; tone: "plain" | "warn"; goTo?: ResearchSubTab; filter?: WatchlistStatusFilter };
+
+export function describeResearchSummary(summary: ResearchSummary): SummaryPart[] {
+  const parts: SummaryPart[] = [];
   if (summary.watchlistCount !== null) parts.push({ text: `${summary.watchlistCount} channel${summary.watchlistCount === 1 ? "" : "s"} tracked`, tone: "plain", goTo: "channels" });
-  if (summary.warningCount) parts.push({ text: `${summary.warningCount} channel${summary.warningCount === 1 ? " needs" : "s need"} attention`, tone: "warn", goTo: "channels" });
+  if (summary.warningCount) parts.push({ text: `${summary.warningCount} channel${summary.warningCount === 1 ? " needs" : "s need"} attention`, tone: "warn", goTo: "channels", filter: "needs_attention" });
   if (summary.newDiscoveryCount) parts.push({ text: `${summary.newDiscoveryCount} new discover${summary.newDiscoveryCount === 1 ? "y" : "ies"}`, tone: "plain", goTo: "discover" });
   if (summary.collectionBudget) {
     const b = summary.collectionBudget;
@@ -57,6 +59,10 @@ export function describeResearchSummary(summary: ResearchSummary): Array<{ text:
 export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: number) => void }) {
   const [tab, setTab] = useState<ResearchSubTab>("channels");
   const [summary, setSummary] = useState<ResearchSummary | null>(null);
+  // BL-140 R3: cross-sub-tab links -- the summary's warning link opens Channels filtered to the channels it counts,
+  // and a channel's "Show all in Videos" opens Videos filtered to that channel. A new nonce re-applies the same value.
+  const [channelsStatusRequest, setChannelsStatusRequest] = useState<{ status: WatchlistStatusFilter; nonce: number } | null>(null);
+  const [videosChannelFilter, setVideosChannelFilter] = useState<{ channelId: string; nonce: number } | null>(null);
   // The first summary decides the opening sub-tab once (AC-R1-2): Inbox when something waits, otherwise Channels.
   // Later refreshes never move the owner away from what they are looking at.
   const openedOnce = useRef(false);
@@ -104,7 +110,10 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
               <button
                 key={part.text}
                 type="button"
-                onClick={() => setTab(part.goTo as ResearchSubTab)}
+                onClick={() => {
+                  if (part.filter) setChannelsStatusRequest({ status: part.filter, nonce: Date.now() });
+                  setTab(part.goTo as ResearchSubTab);
+                }}
                 className={`border-b border-dotted ${part.tone === "warn" ? "border-amber-700 text-amber-300" : "border-zinc-600"} hover:text-zinc-100`}
               >
                 {part.text}
@@ -147,12 +156,18 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
       </div>
       <div className={tab === "channels" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label="Research — Watchlist">
-          <MarketResearchPanel />
+          <MarketResearchPanel
+            statusFilterRequest={channelsStatusRequest}
+            onShowVideos={(channelId) => {
+              setVideosChannelFilter({ channelId, nonce: Date.now() });
+              setTab("videos");
+            }}
+          />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "videos" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label="Research — Videos">
-          <MarketVideosPanel />
+          <MarketVideosPanel channelFilter={videosChannelFilter?.channelId ?? null} channelFilterNonce={videosChannelFilter?.nonce} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "discover" ? "space-y-6" : "hidden"}>

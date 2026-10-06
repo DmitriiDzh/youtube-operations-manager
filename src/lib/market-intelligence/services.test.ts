@@ -5096,3 +5096,31 @@ test("BL-140: getWatchlistTable gives each channel its latest observation, video
   assert.equal(byId.get(THIRD_VALID_CHANNEL_ID)?.status, "failed");
   assert.equal(channels.length, 3);
 });
+
+// AC-R3-1: a channel whose latest observation is older than the 24-hour stale window, with a successful last run, is
+// "attention" (stale), not "current" -- the same channel getMarketOverview counts as a collection warning.
+test("BL-140: getWatchlistTable marks a channel with a stale observation as attention", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const threeDaysAgo = new Date("2026-09-24T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "stale one" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-stale",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: threeDaysAgo,
+    subscriberCount: null,
+    viewCount: 5,
+    videoCount: 1,
+    hiddenSubscriberCount: true,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({ researchChannelId: VALID_CHANNEL_ID, status: "success", unitsSpent: 1, videosRequested: 0, videosReturned: 0, errorMessage: null, ranAt: threeDaysAgo });
+
+  const [row] = (await services.getWatchlistTable()).channels;
+  assert.equal(row.status, "attention");
+  assert.ok(row.dataQualityFlags.includes("stale_observation"));
+  assert.deepEqual(row.latestObservation, { observedAt: threeDaysAgo.toISOString(), subscriberCount: null, hiddenSubscriberCount: true, viewCount: 5, videoCount: 1 });
+  const overview = await services.getMarketOverview();
+  assert.deepEqual(overview.collectionWarnings.map((w) => w.channelId), [VALID_CHANNEL_ID]);
+});

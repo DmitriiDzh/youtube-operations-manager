@@ -34,7 +34,14 @@ const PAGE_SIZE = 50;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const inputClass = "rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200";
 
-export function MarketVideosPanel({ channelFilter }: { channelFilter?: string | null } = {}) {
+export function MarketVideosPanel({
+  channelFilter,
+  channelFilterNonce,
+}: {
+  channelFilter?: string | null;
+  /** Changes on every request from outside, so asking for the same channel again re-applies it. */
+  channelFilterNonce?: number;
+} = {}) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<"published" | "views">("published");
   const [channelId, setChannelId] = useState(channelFilter ?? "");
@@ -50,8 +57,10 @@ export function MarketVideosPanel({ channelFilter }: { channelFilter?: string | 
   // "Show all in Videos" from a channel's details: a new filter from outside resets to page 1. Adjusted during render
   // (React's "storing information from previous renders" pattern), not in an effect.
   const [lastChannelFilter, setLastChannelFilter] = useState(channelFilter ?? null);
-  if ((channelFilter ?? null) !== lastChannelFilter) {
+  const [lastChannelFilterNonce, setLastChannelFilterNonce] = useState(channelFilterNonce);
+  if ((channelFilter ?? null) !== lastChannelFilter || channelFilterNonce !== lastChannelFilterNonce) {
     setLastChannelFilter(channelFilter ?? null);
+    setLastChannelFilterNonce(channelFilterNonce);
     setChannelId(channelFilter ?? "");
     setPage(1);
   }

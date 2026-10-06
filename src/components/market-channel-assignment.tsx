@@ -46,9 +46,18 @@ function fetchAssignments(recordKind: RecordKind): Promise<Assignment[]> {
  * Phase 12 slice 12.4 (`docs/roadmap/plans/PHASE_12_PLAN.md`, owner decision D1: shared collection,
  * then give each channel what it needs). Per-record chips, one per connected channel: which
  * channels' agents may see this market record. A channel's agent sees only what is toggled on for
- * its channel. Operator-only UI; each toggle saves immediately.
+ * its channel. Operator-only UI; each toggle saves immediately. `onChange` lets a list that shows a
+ * "Visible to: N channels" pill (BL-140 §4.7) update after a save without refetching.
  */
-export function MarketChannelAssignment({ recordKind, recordId }: { recordKind: RecordKind; recordId: string }) {
+export function MarketChannelAssignment({
+  recordKind,
+  recordId,
+  onChange,
+}: {
+  recordKind: RecordKind;
+  recordId: string;
+  onChange?: (channelIds: string[]) => void;
+}) {
   const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
   const [assigned, setAssigned] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -85,6 +94,7 @@ export function MarketChannelAssignment({ recordKind, recordId }: { recordKind: 
         return;
       }
       setAssigned(data.assignment.channelIds);
+      onChange?.(data.assignment.channelIds);
     } catch {
       setError("Failed to save");
     } finally {
