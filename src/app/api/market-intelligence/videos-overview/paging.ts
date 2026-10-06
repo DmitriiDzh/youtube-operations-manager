@@ -42,7 +42,10 @@ export function parseVideosQuery(params: URLSearchParams): VideosQuery | null {
   };
   const day = (name: string) => {
     const value = text(name);
-    return value && DAY_RE.test(value) ? value : null;
+    if (!value || !DAY_RE.test(value)) return null;
+    // A real calendar day only: 2026-13-01 or 2026-02-31 is ignored, never parsed into NaN or rolled into March.
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : null;
   };
   return {
     page: int("page", 1),

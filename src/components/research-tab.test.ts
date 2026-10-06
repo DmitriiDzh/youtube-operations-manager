@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { describeResearchSummary, RESEARCH_TABS, type ResearchSummary } from "./research-tab";
+import { describeResearchSummary, RESEARCH_TABS, shouldOpenInbox, type ResearchSummary } from "./research-tab";
+import { videosQueryParams } from "./market-videos-panel";
+import { isAnotherModalOpen } from "./side-drawer";
 import { filterWatchlistRows } from "./market-research-panel";
 import { CANDIDATE_FILTERS } from "./market-discovery-panel";
 import { describeVisibleTo } from "./market-channel-assignment";
@@ -27,10 +29,12 @@ test("AC-R1-1: every sub-tab stays mounted and is only hidden (switching never r
   for (const t of RESEARCH_TABS) assert.match(source, new RegExp(`tab === "${t.value}" \\? "space-y-6" : "hidden"`), t.value);
 });
 
-test("AC-R1-2: the first summary opens Inbox only when something is pending; later polls never switch the tab", async () => {
-  const source = await readFile(path.join(process.cwd(), "src", "components", "research-tab.tsx"), "utf8");
-  assert.match(source, /useState<ResearchSubTab>\("channels"\)/);
-  assert.match(source, /if \(!openedOnce\.current\) \{\s*openedOnce\.current = true;\s*if \(data\.pending\.total > 0\) setTab\("inbox"\);/);
+// BL-140 review: the old version of this test matched the component's source text (AGENTS.md §L) and so passed while the
+// tab still jumped after the owner had picked one. It now checks the decision itself.
+test("AC-R1-2: only the first decision opens Inbox, only with something pending, and never after the owner picked a tab", () => {
+  assert.equal(shouldOpenInbox({ decided: false, pending: 2 }), true, "first summary, requests waiting: Inbox");
+  assert.equal(shouldOpenInbox({ decided: false, pending: 0 }), false, "first summary, nothing waiting: stay on Channels");
+  assert.equal(shouldOpenInbox({ decided: true, pending: 2 }), false, "a later poll, or the owner already picked a tab: never move");
 });
 
 const full: ResearchSummary = {
@@ -68,10 +72,17 @@ test("the summary line leaves out what is zero or unavailable, and says when aut
   );
 });
 
-test("AC-R2-1/3: the Videos table asks the server for one page and has no derived-metric columns", async () => {
+test("AC-R2-1: the Videos request always asks the server for one page of 50, with only the filters that are set", () => {
+  const base = { page: 2, sort: "published" as const, channelId: "", topicId: "", q: "", publishedAfter: "", publishedBefore: "" };
+  assert.equal(videosQueryParams(base).toString(), "page=2&limit=50&sort=published");
+  assert.equal(
+    videosQueryParams({ ...base, page: 1, sort: "views", channelId: "UCx", q: "rain", publishedAfter: "2026-10-01" }).toString(),
+    "page=1&limit=50&sort=views&channelId=UCx&q=rain&publishedAfter=2026-10-01"
+  );
+});
+
+test("AC-R2-3: the Videos table has no derived-metric columns", async () => {
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-videos-panel.tsx"), "utf8");
-  assert.match(panel, /new URLSearchParams\(\{ page: String\(page\), limit: String\(PAGE_SIZE\), sort \}\)/);
-  assert.match(panel, /const PAGE_SIZE = 50;/);
   const headers = [...panel.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1]);
   assert.deepEqual(headers, ["Title", "Channel", "Published", "Views (as of)", "Topic"]);
   assert.doesNotMatch(panel, /formatFieldVelocity|formatBreakout|\.velocity|\.breakout/);
@@ -135,9 +146,9 @@ test("AC-R3-2: the drawer holds every action, and Fetch public snapshot asks bef
   for (const title of ["Latest observation", "Recent videos", "Evidence", "Collection depth", "Visible to agents of", "Remove"]) {
     assert.match(drawer, new RegExp(`<DrawerSection title=\\{?[\`"]${title}`), title);
   }
-  // The button only opens the confirm; the POST happens in the confirm's handler.
-  assert.match(drawer, /onClick=\{\(\) => setConfirmSnapshot\(true\)\}/);
-  assert.match(panel, /\{confirmSnapshot && \(\s*<ConfirmDialog[\s\S]*?onConfirm=\{handleFetchPublicSnapshot\}/);
+  // The button only opens the confirm, for the channel it was clicked on; the POST happens in the confirm's handler.
+  assert.match(drawer, /onClick=\{\(\) => setConfirmSnapshotChannelId\(selected\.channelId\)\}/);
+  assert.match(panel, /\{confirmSnapshotChannelId && \(\s*<ConfirmDialog[\s\S]*?onConfirm=\{handleFetchPublicSnapshot\}/);
   assert.match(panel, /removeTarget && \(\s*<ConfirmDialog/);
 });
 
@@ -148,8 +159,8 @@ test("§4.3: the policy-withheld blocks are gone from Channels (velocity, cadenc
 
 test("§4.3: 'Show all in Videos' opens Videos filtered to the channel, and the summary's warning link filters Channels", async () => {
   const shell = await readFile(path.join(process.cwd(), "src", "components", "research-tab.tsx"), "utf8");
-  assert.match(shell, /onShowVideos=\{\(channelId\) => \{\s*setVideosChannelFilter\(\{ channelId, nonce: Date\.now\(\) \}\);\s*setTab\("videos"\);/);
-  assert.match(shell, /<MarketVideosPanel channelFilter=\{videosChannelFilter\?\.channelId \?\? null\} channelFilterNonce=\{videosChannelFilter\?\.nonce\} \/>/);
+  assert.match(shell, /onShowVideos=\{\(channelId\) => \{\s*setVideosChannelFilter\(\{ channelId, nonce: Date\.now\(\) \}\);\s*pickTab\("videos"\);/);
+  assert.match(shell, /<MarketVideosPanel active=\{tab === "videos"\} channelFilter=\{videosChannelFilter\?\.channelId \?\? null\} channelFilterNonce=\{videosChannelFilter\?\.nonce\} \/>/);
   assert.match(shell, /statusFilterRequest=\{channelsStatusRequest\}/);
 });
 
@@ -159,7 +170,6 @@ test("AC-R4-1: Discover lists candidates by status, New by default, one server p
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
   assert.deepEqual(CANDIDATE_FILTERS.map((f) => f.label), ["New", "Watching", "Ignored", "Promoted", "Archived"]);
   assert.match(panel, /useState<DiscoveryCandidateStatus>\("new"\)/);
-  assert.match(panel, /new URLSearchParams\(\{ page: String\(page\), limit: String\(PAGE_SIZE\), status: statusFilter \}\)/);
   // The chip editor is only in the drawer; the rows carry the pill.
   assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1);
   const drawer = panel.slice(panel.indexOf("<SideDrawer"), panel.indexOf("</SideDrawer>"));
@@ -231,4 +241,28 @@ test("AC-R5-2: no stale text is left in the Research components (§2.4)", async 
   }
   // The Overview panel is gone entirely, not only unmounted.
   await assert.rejects(readFile(path.join(dir, "market-overview-panel.tsx"), "utf8"));
+});
+
+// BL-140 review (findings 3, 4, 5).
+
+test("the drawer keeps Escape for a dialog opened on top of it, and closes on Escape when it is the only modal", () => {
+  const drawer = { id: "drawer" } as unknown as Element;
+  const confirm = { id: "confirm" } as unknown as Element;
+  const root = (open: Element[]) => ({ querySelectorAll: () => open as unknown as NodeListOf<Element> });
+  assert.equal(isAnotherModalOpen(drawer, root([drawer])), false);
+  assert.equal(isAnotherModalOpen(drawer, root([drawer, confirm])), true);
+});
+
+test("each summary link opens its list showing what it counted, and sub-tabs refresh after changes elsewhere", async () => {
+  const shell = await readFile(path.join(process.cwd(), "src", "components", "research-tab.tsx"), "utf8");
+  // "38 channels tracked" clears the Channels status filter; "N need attention" sets it; "N new discoveries" shows New.
+  assert.match(shell, /if \(part\.goTo === "channels"\) setChannelsStatusRequest\(\{ status: part\.filter \?\? "", nonce: Date\.now\(\) \}\);/);
+  assert.match(shell, /if \(part\.goTo === "discover"\) setDiscoverStatusRequest\(\{ status: "new", nonce: Date\.now\(\) \}\);/);
+  // Inbox, Channels and Discover report changes so the summary line and badges follow at once.
+  for (const panel of ["MarketResearchRequestsPanel", "MarketCollectionRequestsPanel", "MarketResearchPanel", "MarketDiscoveryPanel"]) {
+    assert.match(shell, new RegExp(`<${panel}[^>]*onChanged=\\{onChanged\\}`), panel);
+  }
+  for (const [panel, tab] of [["MarketResearchPanel", "channels"], ["MarketVideosPanel", "videos"], ["MarketDiscoveryPanel", "discover"]]) {
+    assert.match(shell, new RegExp(`<${panel}[^>]*active=\\{tab === "${tab}"\\}`), panel);
+  }
 });

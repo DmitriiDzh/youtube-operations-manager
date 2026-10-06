@@ -92,9 +92,15 @@ function formatCount(value: number | null): string {
 // operator-entered; "Fetch public snapshot" is the one action here that makes a real outbound YouTube API call, and it
 // asks first.
 export function MarketResearchPanel({
+  active = true,
+  onChanged,
   onShowVideos,
   statusFilterRequest,
 }: {
+  /** Whether the Channels sub-tab is showing; becoming active again refetches the table. */
+  active?: boolean;
+  /** Runs after a change that moves the summary line's counts (add, remove, snapshot). */
+  onChanged?: () => void;
   /** "Show all in Videos": open the Videos sub-tab filtered to this channel. */
   onShowVideos?: (channelId: string) => void;
   /** A status filter set from outside (the summary line's warning link); a new nonce re-applies the same status. */
@@ -146,7 +152,8 @@ export function MarketResearchPanel({
   const [newSource, setNewSource] = useState("");
   const [newConfidence, setNewConfidence] = useState("");
   const [recordingEvidence, setRecordingEvidence] = useState(false);
-  const [confirmSnapshot, setConfirmSnapshot] = useState(false);
+  // The channel the confirm was opened for -- not the drawer's current selection, which may have changed since.
+  const [confirmSnapshotChannelId, setConfirmSnapshotChannelId] = useState<string | null>(null);
   const [fetchingSnapshot, setFetchingSnapshot] = useState(false);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<WatchlistRow | null>(null);
@@ -173,6 +180,14 @@ export function MarketResearchPanel({
   useEffect(() => {
     void fetchRows();
   }, [fetchRows]);
+
+  // Every sub-tab stays mounted (BL-140 R1), so a change made in another sub-tab (a promoted candidate, an approved
+  // collection) is picked up when this one is shown again (BL-140 review).
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) void fetchRows();
+    wasActive.current = active;
+  }, [active, fetchRows]);
 
   const visibleRows = useMemo(
     () => filterWatchlistRows(rows, { query, status: statusFilter, visibleTo, assignments }),
@@ -323,6 +338,7 @@ export function MarketResearchPanel({
       setNewReason("");
       closeAddDialog();
       await fetchRows();
+      onChanged?.();
     } finally {
       setAdding(false);
     }
@@ -346,6 +362,7 @@ export function MarketResearchPanel({
         setSelectedChannelId(null);
       }
       await fetchRows();
+      onChanged?.();
     } finally {
       setRemoving(false);
       setRemoveTarget(null);
@@ -353,8 +370,8 @@ export function MarketResearchPanel({
   }
 
   async function handleFetchPublicSnapshot() {
-    setConfirmSnapshot(false);
-    const channelId = selectedChannelId;
+    const channelId = confirmSnapshotChannelId;
+    setConfirmSnapshotChannelId(null);
     if (!channelId) return;
     setSnapshotError(null);
     setFetchingSnapshot(true);
@@ -368,6 +385,7 @@ export function MarketResearchPanel({
         return;
       }
       await Promise.all([fetchRows(), fetchEvidence(channelId)]);
+      onChanged?.();
     } finally {
       setFetchingSnapshot(false);
     }
@@ -543,7 +561,7 @@ export function MarketResearchPanel({
             </div>
             <button
               type="button"
-              onClick={() => setConfirmSnapshot(true)}
+              onClick={() => setConfirmSnapshotChannelId(selected.channelId)}
               disabled={fetchingSnapshot}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
             >
@@ -701,12 +719,12 @@ export function MarketResearchPanel({
         </BlockingDialog>
       )}
 
-      {confirmSnapshot && (
+      {confirmSnapshotChannelId && (
         <ConfirmDialog
           title="Fetch a public snapshot now?"
           description="This makes one YouTube Data API call (channels.list, 1 quota unit) for this channel and records its current public counts."
           confirmLabel="Fetch"
-          onCancel={() => setConfirmSnapshot(false)}
+          onCancel={() => setConfirmSnapshotChannelId(null)}
           onConfirm={handleFetchPublicSnapshot}
         />
       )}

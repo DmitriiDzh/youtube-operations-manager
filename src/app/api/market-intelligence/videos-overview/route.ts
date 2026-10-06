@@ -8,7 +8,7 @@ import { pageMarketVideos, parseVideosQuery } from "./paging";
 
 type VideosOverviewRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createMarketIntelligenceCore>, "getMarketVideosOverview">;
+  core: Pick<ReturnType<typeof createMarketIntelligenceCore>, "getMarketVideosOverview" | "listWatchlist">;
 };
 
 const defaultDeps: VideosOverviewRouteDeps = {
@@ -29,9 +29,20 @@ export function createVideosOverviewGetHandler(deps: VideosOverviewRouteDeps = d
     }
 
     try {
-      const result = await deps.core.getMarketVideosOverview();
       const query = request ? parseVideosQuery(new URL(request.url).searchParams) : null;
-      if (query) return NextResponse.json(pageMarketVideos(result.videos, query));
+      // A channel filter is applied in the service too, so only that channel's series is read (BL-140 review).
+      const result = await deps.core.getMarketVideosOverview(query?.channelId ? { channelId: query.channelId } : {});
+      if (query) {
+        const page = pageMarketVideos(result.videos, query);
+        if (!query.channelId) return NextResponse.json(page);
+        // Narrowed to one channel, the rows no longer list every channel: offer the whole watchlist in the channel
+        // filter instead, so the owner can switch straight to another channel.
+        const { channels } = await deps.core.listWatchlist();
+        const options = channels
+          .map((c) => ({ channelId: c.channelId, label: c.handleOrUrl ?? c.channelId }))
+          .sort((a, b) => a.label.localeCompare(b.label));
+        return NextResponse.json({ ...page, channels: options });
+      }
       return NextResponse.json(result);
     } catch (error) {
       if (error instanceof DomainError) {

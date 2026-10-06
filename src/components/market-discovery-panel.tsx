@@ -2,7 +2,7 @@
 
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DrawerSection, SideDrawer } from "./side-drawer";
 import { LoadingIndicator, OperationOverlay, useOperation } from "./operation-progress";
 import { InfoTooltip } from "./info-tooltip";
@@ -39,11 +39,31 @@ type CandidatesPage = { candidates: DiscoveryCandidate[]; total: number; page: n
 // query box, a styled (never `window.confirm`) cost confirmation, and a candidate list with
 // Watch/Ignore/Archive/Promote actions (BL-140 R4: by status, paged, details and visibility in a drawer). Only ever triggered by an explicit click here (owner
 // decision 4) -- there is no automatic or scheduled discovery anywhere in this app.
-export function MarketDiscoveryPanel() {
+export function MarketDiscoveryPanel({
+  active = true,
+  onChanged,
+  statusFilterRequest,
+}: {
+  /** Whether the Discover sub-tab is showing; becoming active again refetches the list. */
+  active?: boolean;
+  /** Runs after a change that moves the summary line's counts (search, status change, promote). */
+  onChanged?: () => void;
+  /** A status set from outside (the summary's "new discoveries" link); a new nonce re-applies the same status. */
+  statusFilterRequest?: { status: DiscoveryCandidateStatus; nonce: number } | null;
+} = {}) {
   const op = useOperation();
   const { runBlocking } = op;
   const [statusFilter, setStatusFilter] = useState<DiscoveryCandidateStatus>("new");
   const [page, setPage] = useState(1);
+  // A new request from outside replaces the filter. Adjusted during render (the Videos panel's channelFilter pattern).
+  const [lastStatusRequest, setLastStatusRequest] = useState(statusFilterRequest ?? null);
+  if ((statusFilterRequest ?? null) !== lastStatusRequest) {
+    setLastStatusRequest(statusFilterRequest ?? null);
+    if (statusFilterRequest) {
+      setStatusFilter(statusFilterRequest.status);
+      setPage(1);
+    }
+  }
   const [data, setData] = useState<CandidatesPage | null>(null);
   const candidates = data?.candidates ?? [];
   const [loading, setLoading] = useState(true);
@@ -101,6 +121,14 @@ export function MarketDiscoveryPanel() {
     void fetchCandidates();
   }, [fetchCandidates]);
 
+  // Every sub-tab stays mounted (BL-140 R1), so a change made in another sub-tab (a promoted candidate, an approved
+  // collection) is picked up when this one is shown again (BL-140 review).
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) void fetchCandidates();
+    wasActive.current = active;
+  }, [active, fetchCandidates]);
+
   const openCandidate = candidates.find((c) => c.channelId === openChannelId) ?? null;
   const searchesLeft = searchUsage ? Math.max(0, searchUsage.dailyLimit - searchUsage.searchesUsedToday) : null;
 
@@ -131,6 +159,7 @@ export function MarketDiscoveryPanel() {
       setLastResult(data);
       await fetchCandidates();
       void refreshSearchUsage();
+      onChanged?.();
     } catch {
       setSearchError("Discovery failed");
     } finally {
@@ -153,6 +182,7 @@ export function MarketDiscoveryPanel() {
         return;
       }
       await fetchCandidates();
+      onChanged?.();
     } finally {
       setUpdatingChannelId(null);
     }
@@ -175,6 +205,7 @@ export function MarketDiscoveryPanel() {
       setPromotingChannelId(null);
       setPromoteReason("");
       await fetchCandidates();
+      onChanged?.();
     } finally {
       setUpdatingChannelId(null);
     }

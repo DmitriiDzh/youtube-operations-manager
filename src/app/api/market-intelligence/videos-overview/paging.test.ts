@@ -82,3 +82,11 @@ test("AC-R2-3: a paged row carries only observed values with their time, never a
 test("AC-R2-4: without paging parameters the request is not a paged one (the route keeps the old response)", () => {
   assert.equal(parseOrNull(new URLSearchParams("")), null);
 });
+
+test("BL-140 review: an impossible date is ignored, never read as NaN or rolled into the next month", () => {
+  const q = (qs: string) => parseVideosQuery(new URLSearchParams(qs));
+  assert.equal(q("page=1&publishedAfter=2026-13-01").publishedAfter, null);
+  assert.equal(q("page=1&publishedBefore=2026-02-31").publishedBefore, null);
+  assert.equal(q("page=1&publishedBefore=2028-02-29").publishedBefore, "2028-02-29", "a real leap day is kept");
+  assert.equal(q("page=1&publishedAfter=2026-02-28").publishedAfter, "2026-02-28");
+});

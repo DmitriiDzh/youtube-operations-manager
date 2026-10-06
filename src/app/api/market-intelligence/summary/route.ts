@@ -6,7 +6,7 @@ import { unauthorized, type SessionLike } from "../collection-requests/shared";
 
 type Core = Pick<
   ReturnType<typeof createMarketIntelligenceCore>,
-  "getMarketOverview" | "getSearchUsage" | "getCollectionLimits" | "listResearchRequests" | "listCollectionRequests"
+  "getResearchSummaryCounts" | "getSearchUsage" | "getCollectionLimits" | "listResearchRequests" | "listCollectionRequests"
 >;
 
 export type ResearchSummaryDeps = { getSession: () => Promise<SessionLike>; core: Core };
@@ -21,8 +21,8 @@ export function createResearchSummaryHandler(
     const session = await deps.getSession();
     if (!session?.user?.id) return unauthorized();
     const settle = <T,>(p: Promise<T>) => p.then((value) => value, () => null);
-    const [overview, searches, budget, research, collection] = await Promise.all([
-      settle(deps.core.getMarketOverview()),
+    const [counts, searches, budget, research, collection] = await Promise.all([
+      settle(deps.core.getResearchSummaryCounts()),
       settle(deps.core.getSearchUsage()),
       settle(deps.core.getCollectionLimits()),
       settle(deps.core.listResearchRequests()),
@@ -31,9 +31,9 @@ export function createResearchSummaryHandler(
     const pendingResearch = research ? research.requests.filter((r) => r.status === "pending").length : null;
     const pendingCollection = collection ? collection.requests.filter((r) => r.status === "pending").length : null;
     return NextResponse.json({
-      watchlistCount: overview ? overview.watchlistCount : null,
-      warningCount: overview ? overview.collectionWarnings.length : null,
-      newDiscoveryCount: overview ? overview.newDiscoveries.length : null,
+      watchlistCount: counts ? counts.watchlistCount : null,
+      warningCount: counts ? counts.warningCount : null,
+      newDiscoveryCount: counts ? counts.newDiscoveryCount : null,
       searches: searches ? { usedToday: searches.searchesUsedToday, dailyLimit: searches.dailyLimit } : null,
       collectionBudget: budget
         ? { dailyBudgetUnits: budget.dailyBudgetUnits, unitsSpentToday: budget.unitsSpentToday, remainingTodayUnits: budget.remainingTodayUnits }

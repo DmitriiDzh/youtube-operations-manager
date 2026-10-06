@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
-import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { formatDisplayDateTime, parseDisplayDate } from "@/lib/shared-formatting";
 import { LoadingIndicator } from "./operation-progress";
 
 // BL-140 R2 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.4): Research → Videos as a server-paged table. The old
@@ -31,13 +31,34 @@ type VideosPage = {
 };
 
 const PAGE_SIZE = 50;
-const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const inputClass = "rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200";
 
+/** The Videos request for one page: always paged on the server, filters only when set. Exported for its test. */
+export function videosQueryParams(input: {
+  page: number;
+  sort: "published" | "views";
+  channelId: string;
+  topicId: string;
+  q: string;
+  publishedAfter: string;
+  publishedBefore: string;
+}): URLSearchParams {
+  const params = new URLSearchParams({ page: String(input.page), limit: String(PAGE_SIZE), sort: input.sort });
+  if (input.channelId) params.set("channelId", input.channelId);
+  if (input.topicId) params.set("topicId", input.topicId);
+  if (input.q) params.set("q", input.q);
+  if (input.publishedAfter) params.set("publishedAfter", input.publishedAfter);
+  if (input.publishedBefore) params.set("publishedBefore", input.publishedBefore);
+  return params;
+}
+
 export function MarketVideosPanel({
+  active = true,
   channelFilter,
   channelFilterNonce,
 }: {
+  /** Whether the Videos sub-tab is showing; becoming active again reloads the current page (BL-140 review). */
+  active?: boolean;
   channelFilter?: string | null;
   /** Changes on every request from outside, so asking for the same channel again re-applies it. */
   channelFilterNonce?: number;
@@ -56,6 +77,14 @@ export function MarketVideosPanel({
 
   // "Show all in Videos" from a channel's details: a new filter from outside resets to page 1. Adjusted during render
   // (React's "storing information from previous renders" pattern), not in an effect.
+  // Shown again after a change elsewhere (a new channel, a collection): reload the current page. Adjusted during render.
+  const [reloadKey, setReloadKey] = useState(0);
+  const [wasActive, setWasActive] = useState(active);
+  if (active !== wasActive) {
+    setWasActive(active);
+    if (active) setReloadKey((k) => k + 1);
+  }
+
   const [lastChannelFilter, setLastChannelFilter] = useState(channelFilter ?? null);
   const [lastChannelFilterNonce, setLastChannelFilterNonce] = useState(channelFilterNonce);
   if ((channelFilter ?? null) !== lastChannelFilter || channelFilterNonce !== lastChannelFilterNonce) {
@@ -74,17 +103,14 @@ export function MarketVideosPanel({
     return () => clearTimeout(timer);
   }, [qText]);
 
-  const publishedAfter = DAY_RE.test(afterText.trim()) ? afterText.trim() : "";
-  const publishedBefore = DAY_RE.test(beforeText.trim()) ? beforeText.trim() : "";
+  // Typed as DD.MM.YYYY (the app's date format); an impossible date such as 31.02.2026 is rejected, never rolled over.
+  const toDay = (text: string) => parseDisplayDate(text)?.slice(0, 10) ?? "";
+  const publishedAfter = toDay(afterText);
+  const publishedBefore = toDay(beforeText);
 
   useEffect(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort });
-    if (channelId) params.set("channelId", channelId);
-    if (topicId) params.set("topicId", topicId);
-    if (q) params.set("q", q);
-    if (publishedAfter) params.set("publishedAfter", publishedAfter);
-    if (publishedBefore) params.set("publishedBefore", publishedBefore);
+    const params = videosQueryParams({ page, sort, channelId, topicId, q, publishedAfter, publishedBefore });
     void (async () => {
       try {
         const res = await fetch(`/api/market-intelligence/videos-overview?${params.toString()}`);
@@ -105,12 +131,12 @@ export function MarketVideosPanel({
     return () => {
       cancelled = true;
     };
-  }, [page, sort, channelId, topicId, q, publishedAfter, publishedBefore]);
+  }, [page, sort, channelId, topicId, q, publishedAfter, publishedBefore, reloadKey]);
 
   const pages = data ? Math.max(1, Math.ceil(data.total / data.limit)) : 1;
   const first = data && data.total > 0 ? (data.page - 1) * data.limit + 1 : 0;
   const last = data ? Math.min(data.total, data.page * data.limit) : 0;
-  const dateInvalid = (text: string) => text.trim() !== "" && !DAY_RE.test(text.trim());
+  const dateInvalid = (text: string) => text.trim() !== "" && parseDisplayDate(text) === null;
 
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -137,8 +163,8 @@ export function MarketVideosPanel({
             <option key={t.topicId} value={t.topicId}>{t.name}</option>
           ))}
         </select>
-        <input type="text" value={afterText} onChange={(e) => { setAfterText(e.target.value); setPage(1); }} placeholder="From YYYY-MM-DD" aria-label="Published from" className={`${inputClass} w-32 ${dateInvalid(afterText) ? "border-red-700" : ""}`} />
-        <input type="text" value={beforeText} onChange={(e) => { setBeforeText(e.target.value); setPage(1); }} placeholder="To YYYY-MM-DD" aria-label="Published to" className={`${inputClass} w-32 ${dateInvalid(beforeText) ? "border-red-700" : ""}`} />
+        <input type="text" value={afterText} onChange={(e) => { setAfterText(e.target.value); setPage(1); }} placeholder="From DD.MM.YYYY" aria-label="Published from" className={`${inputClass} w-32 ${dateInvalid(afterText) ? "border-red-700" : ""}`} />
+        <input type="text" value={beforeText} onChange={(e) => { setBeforeText(e.target.value); setPage(1); }} placeholder="To DD.MM.YYYY" aria-label="Published to" className={`${inputClass} w-32 ${dateInvalid(beforeText) ? "border-red-700" : ""}`} />
         <select value={sort} onChange={(e) => { setSort(e.target.value as "published" | "views"); setPage(1); }} aria-label="Sort" className={inputClass}>
           <option value="published">Newest first</option>
           <option value="views">Most views (latest observation)</option>

@@ -11,14 +11,8 @@ function deps(overrides: Record<string, unknown> = {}): ResearchSummaryDeps {
   return {
     getSession: session,
     core: {
-      getMarketOverview: async () => ({
-        watchlistCount: 38,
-        newDiscoveries: [{ channelId: "c1" }, { channelId: "c2" }],
-        collectionWarnings: [{ channelId: "c3" }],
-        trendCandidates: [],
-        breakoutVideos: [],
-        emergingChannels: [],
-      }),
+      // BL-140 review: the counts come from getResearchSummaryCounts (getMarketOverview was too heavy to poll).
+      getResearchSummaryCounts: async () => ({ watchlistCount: 38, warningCount: 1, newDiscoveryCount: 2 }),
       getSearchUsage: async () => ({ searchesUsedToday: 3, dailyLimit: 100, quotaDayStartedAt: "2026-10-06T07:00:00.000Z" }),
       getCollectionLimits: async () => ({ dailyBudgetUnits: 500, unitsSpentToday: 120, remainingTodayUnits: 380 }),
       listResearchRequests: async () => ({ requests: [{ status: "pending" }, { status: "executed" }, { status: "pending" }] }),
@@ -49,7 +43,7 @@ test("the summary needs a signed-in session", async () => {
 test("one failing source does not hide the others (each part is optional, AGENTS.md §M)", async () => {
   const res = await createResearchSummaryHandler(
     deps({
-      getMarketOverview: async () => {
+      getResearchSummaryCounts: async () => {
         throw new Error("boom");
       },
     })

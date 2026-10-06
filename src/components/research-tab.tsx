@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketResearchPanel, type WatchlistStatusFilter } from "./market-research-panel";
 import { MarketVideosPanel } from "./market-videos-panel";
@@ -56,22 +56,31 @@ export function describeResearchSummary(summary: ResearchSummary): SummaryPart[]
   return parts;
 }
 
+/** Whether a summary should move the tab to Inbox: only the first decision, and only with something pending. */
+export function shouldOpenInbox(input: { decided: boolean; pending: number }): boolean {
+  return !input.decided && input.pending > 0;
+}
+
 export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: number) => void }) {
   const [tab, setTab] = useState<ResearchSubTab>("channels");
   const [summary, setSummary] = useState<ResearchSummary | null>(null);
   // BL-140 R3: cross-sub-tab links -- the summary's warning link opens Channels filtered to the channels it counts,
   // and a channel's "Show all in Videos" opens Videos filtered to that channel. A new nonce re-applies the same value.
   const [channelsStatusRequest, setChannelsStatusRequest] = useState<{ status: WatchlistStatusFilter; nonce: number } | null>(null);
+  const [discoverStatusRequest, setDiscoverStatusRequest] = useState<{ status: "new"; nonce: number } | null>(null);
   const [videosChannelFilter, setVideosChannelFilter] = useState<{ channelId: string; nonce: number } | null>(null);
-  // The first summary decides the opening sub-tab once (AC-R1-2): Inbox when something waits, otherwise Channels.
-  // Later refreshes never move the owner away from what they are looking at.
-  const openedOnce = useRef(false);
+  // The first successful summary decides the opening sub-tab once (AC-R1-2): Inbox when something waits, otherwise
+  // Channels. Once it has, or once the owner picked a sub-tab themselves, no refresh moves them.
+  const openingDecided = useRef(false);
 
   // The latest callback, read from inside the poll so a new parent function never restarts the interval.
   const onPendingRef = useRef(onPendingChange);
   useEffect(() => {
     onPendingRef.current = onPendingChange;
   }, [onPendingChange]);
+
+  // The poll's own refresh, exposed so a change in a sub-tab (an approval, a new channel) refreshes the line at once.
+  const refreshRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,21 +92,29 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
         if (cancelled) return;
         setSummary(data);
         onPendingRef.current?.(data.pending.total);
-        if (!openedOnce.current) {
-          openedOnce.current = true;
-          if (data.pending.total > 0) setTab("inbox");
-        }
+        if (shouldOpenInbox({ decided: openingDecided.current, pending: data.pending.total })) setTab("inbox");
+        openingDecided.current = true;
       } catch {
         // Non-fatal: the line keeps its last state until the next poll.
       }
     }
+    refreshRef.current = refresh;
     void refresh();
     const id = setInterval(() => void refresh(), SUMMARY_POLL_MS);
     return () => {
       cancelled = true;
+      refreshRef.current = null;
       clearInterval(id);
     };
   }, []);
+
+  // The owner picked a sub-tab (or followed a link): from now on only they move it (AC-R1-2, BL-140 review).
+  function pickTab(next: ResearchSubTab) {
+    openingDecided.current = true;
+    setTab(next);
+  }
+
+  const onChanged = useCallback(() => void refreshRef.current?.(), []);
 
   const pending = summary?.pending.total ?? 0;
 
@@ -111,8 +128,10 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
                 key={part.text}
                 type="button"
                 onClick={() => {
-                  if (part.filter) setChannelsStatusRequest({ status: part.filter, nonce: Date.now() });
-                  setTab(part.goTo as ResearchSubTab);
+                  // Each link opens its list showing exactly what it counted, whatever filter was left there.
+                  if (part.goTo === "channels") setChannelsStatusRequest({ status: part.filter ?? "", nonce: Date.now() });
+                  if (part.goTo === "discover") setDiscoverStatusRequest({ status: "new", nonce: Date.now() });
+                  pickTab(part.goTo as ResearchSubTab);
                 }}
                 className={`border-b border-dotted ${part.tone === "warn" ? "border-amber-700 text-amber-300" : "border-zinc-600"} hover:text-zinc-100`}
               >
@@ -134,7 +153,7 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
             type="button"
             role="tab"
             aria-selected={tab === t.value}
-            onClick={() => setTab(t.value)}
+            onClick={() => pickTab(t.value)}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
           >
             {t.label}
@@ -148,31 +167,33 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
       <div className={tab === "inbox" ? "space-y-6" : "hidden"}>
         <p className="text-sm text-zinc-400">Agents&rsquo; requests that wait for your decision. Approving may spend quota; each request shows its cost.</p>
         <FeatureErrorBoundary label="Research — Requests">
-          <MarketResearchRequestsPanel />
+          <MarketResearchRequestsPanel onChanged={onChanged} />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label="Research — Collection requests">
-          <MarketCollectionRequestsPanel />
+          <MarketCollectionRequestsPanel onChanged={onChanged} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "channels" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label="Research — Watchlist">
           <MarketResearchPanel
+            active={tab === "channels"}
+            onChanged={onChanged}
             statusFilterRequest={channelsStatusRequest}
             onShowVideos={(channelId) => {
               setVideosChannelFilter({ channelId, nonce: Date.now() });
-              setTab("videos");
+              pickTab("videos");
             }}
           />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "videos" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label="Research — Videos">
-          <MarketVideosPanel channelFilter={videosChannelFilter?.channelId ?? null} channelFilterNonce={videosChannelFilter?.nonce} />
+          <MarketVideosPanel active={tab === "videos"} channelFilter={videosChannelFilter?.channelId ?? null} channelFilterNonce={videosChannelFilter?.nonce} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "discover" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label="Research — Discovery">
-          <MarketDiscoveryPanel />
+          <MarketDiscoveryPanel active={tab === "discover"} onChanged={onChanged} statusFilterRequest={discoverStatusRequest} />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label="Research — Music chart">
           <MusicChartPanel />
