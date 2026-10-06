@@ -137,3 +137,51 @@ export function MarketChannelAssignment({
     </div>
   );
 }
+
+/**
+ * BL-140 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.7): one read of every assignment of a kind plus the
+ * connected channels, for lists that show a compact "Visible to" pill per row and edit in the record's drawer. `set`
+ * takes MarketChannelAssignment's `onChange` result so the pill follows an edit without refetching. A failed read
+ * leaves both empty (pills say "No channels", the "visible to" filter has no options) -- never a blocking error.
+ */
+export function useMarketAssignments(recordKind: RecordKind) {
+  const [assignments, setAssignments] = useState<Map<string, string[]>>(new Map());
+  const [connectedChannels, setConnectedChannels] = useState<ConnectedChannel[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([fetchAssignments(recordKind), fetchConnectedChannels()])
+      .then(([all, connected]) => {
+        if (cancelled) return;
+        setAssignments(new Map(all.map((a) => [a.recordId, a.channelIds])));
+        setConnectedChannels(connected);
+      })
+      .catch(() => {
+        // Non-fatal, see above.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [recordKind]);
+
+  const set = useCallback((recordId: string, channelIds: string[]) => {
+    setAssignments((prev) => new Map(prev).set(recordId, channelIds));
+  }, []);
+
+  return { assignments, connectedChannels, set };
+}
+
+/** "No channels", the one channel's title, or "N channels". Exported for its test. */
+export function describeVisibleTo(channelIds: string[], connectedChannels: ConnectedChannel[]): string {
+  if (channelIds.length === 0) return "No channels";
+  if (channelIds.length === 1) return connectedChannels.find((c) => c.channelId === channelIds[0])?.title ?? "1 channel";
+  return `${channelIds.length} channels`;
+}
+
+export function VisibleToPill({ channelIds, connectedChannels }: { channelIds: string[]; connectedChannels: ConnectedChannel[] }) {
+  return (
+    <span className="whitespace-nowrap rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-400" title="Which channels' agents can see this record">
+      {describeVisibleTo(channelIds, connectedChannels)}
+    </span>
+  );
+}

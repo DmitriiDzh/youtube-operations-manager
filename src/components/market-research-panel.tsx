@@ -1,7 +1,7 @@
 "use client";
 
 import { FeatureErrorBoundary } from "./feature-error-boundary";
-import { MarketChannelAssignment } from "./market-channel-assignment";
+import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
 import { MarketChannelCollectionDepth } from "./market-channel-collection-depth";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
@@ -115,8 +115,7 @@ export function MarketResearchPanel({
   }
 
   // "Visible to agents of" -- one read for every row's pill instead of one per row.
-  const [assignments, setAssignments] = useState<Map<string, string[]>>(new Map());
-  const [connectedChannels, setConnectedChannels] = useState<{ channelId: string; title: string }[]>([]);
+  const { assignments, connectedChannels, set: setAssignment } = useMarketAssignments("research_channel");
 
   const [addOpen, setAddOpen] = useState(false);
   const [newChannelId, setNewChannelId] = useState("");
@@ -174,26 +173,6 @@ export function MarketResearchPanel({
   useEffect(() => {
     void fetchRows();
   }, [fetchRows]);
-
-  useEffect(() => {
-    let cancelled = false;
-    // Read-only list (deliberately not useConnectedChannels, which also triggers a sync on every mount).
-    Promise.all([
-      fetch("/api/market-assignments?recordKind=research_channel").then((res) => (res.ok ? res.json() : { assignments: [] })),
-      fetch("/api/channel-connections").then((res) => (res.ok ? res.json() : { channels: [] })),
-    ])
-      .then(([assignmentData, channelData]: [{ assignments: { recordId: string; channelIds: string[] }[] }, { channels: { channelId: string; title: string }[] }]) => {
-        if (cancelled) return;
-        setAssignments(new Map(assignmentData.assignments.map((a) => [a.recordId, a.channelIds])));
-        setConnectedChannels(channelData.channels ?? []);
-      })
-      .catch(() => {
-        // Non-fatal: the pills show "—" and the "visible to" filter has no options.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const visibleRows = useMemo(
     () => filterWatchlistRows(rows, { query, status: statusFilter, visibleTo, assignments }),
@@ -426,13 +405,6 @@ export function MarketResearchPanel({
     }
   }
 
-  function visibleToLabel(channelId: string): string {
-    const ids = assignments.get(channelId) ?? [];
-    if (ids.length === 0) return "No channels";
-    if (ids.length === 1) return connectedChannels.find((c) => c.channelId === ids[0])?.title ?? "1 channel";
-    return `${ids.length} channels`;
-  }
-
   const filtered = query.trim() !== "" || statusFilter !== "" || visibleTo !== "";
 
   return (
@@ -531,7 +503,7 @@ export function MarketResearchPanel({
                     <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 ${STATUS_PILL[row.status]}`}>{CHANNEL_STATUS_LABELS[row.status]}</span>
                   </td>
                   <td className="py-1.5">
-                    <span className="whitespace-nowrap rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-400">{visibleToLabel(row.channelId)}</span>
+                    <VisibleToPill channelIds={assignments.get(row.channelId) ?? []} connectedChannels={connectedChannels} />
                   </td>
                 </tr>
               ))}
@@ -672,7 +644,7 @@ export function MarketResearchPanel({
               <MarketChannelAssignment
                 recordKind="research_channel"
                 recordId={selected.channelId}
-                onChange={(channelIds) => setAssignments((prev) => new Map(prev).set(selected.channelId, channelIds))}
+                onChange={(channelIds) => setAssignment(selected.channelId, channelIds)}
               />
             </FeatureErrorBoundary>
           </DrawerSection>

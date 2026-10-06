@@ -2,31 +2,31 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
-import { DomainError } from "@/lib/market-intelligence/contracts";
-import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
+import { errorResponse, unauthorized, type SessionLike } from "../collection-requests/shared";
+import { pageCandidates, parseCandidatesQuery } from "./paging";
 
-const core = createMarketIntelligenceCore();
+export type DiscoveryCandidatesDeps = {
+  getSession: () => Promise<SessionLike>;
+  core: Pick<ReturnType<typeof createMarketIntelligenceCore>, "listDiscoveryCandidates">;
+};
 
 // Phase 9 slice 9C -- read-only list of discovery candidates, newest lastSeenAt first.
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  try {
-    const result = await core.listDiscoveryCandidates();
-    return NextResponse.json(result);
-  } catch (error) {
-    if (error instanceof DomainError) {
-      return NextResponse.json(
-        { error: error.code, message: error.message, details: error.details },
-        { status: getVideoMetadataErrorStatus(error.code) }
-      );
+// BL-140 R4: with `?page=` the response is one page `{ candidates, total, page, limit, counts }`, optionally narrowed by
+// `status` (paging.ts); without it, the old unpaged `{ candidates }`.
+export function createDiscoveryCandidatesGetHandler(
+  deps: DiscoveryCandidatesDeps = { getSession: () => getServerSession(authOptions), core: createMarketIntelligenceCore() }
+) {
+  return async function GET(request?: Request) {
+    const session = await deps.getSession();
+    if (!session?.user?.id) return unauthorized();
+    try {
+      const result = await deps.core.listDiscoveryCandidates();
+      const query = request ? parseCandidatesQuery(new URL(request.url).searchParams) : null;
+      return NextResponse.json(query ? pageCandidates(result.candidates, query) : result);
+    } catch (error) {
+      return errorResponse(error);
     }
-    return NextResponse.json(
-      { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+  };
 }
+
+export const GET = createDiscoveryCandidatesGetHandler();

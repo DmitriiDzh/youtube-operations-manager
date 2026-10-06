@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { MUSIC_CHART_REGIONS } from "@/lib/market-intelligence/music-chart-regions";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 
 type Entry = { rank: number; videoId: string; title: string; channelTitle: string | null; viewCount: number | null };
 type Chart = { regionCode: string; fetchedAt: string; entries: Entry[] };
@@ -45,14 +46,15 @@ export function MusicChartPanel() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-        YouTube Music chart
+        YouTube Music chart: what is trending in a region
         <InfoTooltip>
           YouTube&apos;s Trending Music chart for a region, as of now. 1 quota unit per region, then cached for 30
-          minutes. Shown only, never stored (YouTube API policy).
+          minutes. Loaded only when you click Show chart. Shown only, never stored (YouTube API policy).
         </InfoTooltip>
       </h3>
       <div className="flex items-center gap-2">
         <select
+          aria-label="Region"
           value={region}
           onChange={(e) => setRegion(e.target.value)}
           className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-200"
@@ -70,7 +72,7 @@ export function MusicChartPanel() {
         >
           {loading ? "Loading..." : "Show chart"}
         </button>
-        {chart && <span className="text-xs text-zinc-500">as of {new Date(chart.fetchedAt).toLocaleString()}</span>}
+        {chart && <span className="text-xs text-zinc-500">as of {formatDisplayDateTime(chart.fetchedAt)}</span>}
       </div>
       {error && <p className="text-xs text-red-400">{error}</p>}
       {chart && (

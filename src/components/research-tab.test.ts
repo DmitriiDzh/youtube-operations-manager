@@ -4,6 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import { describeResearchSummary, RESEARCH_TABS, type ResearchSummary } from "./research-tab";
 import { filterWatchlistRows } from "./market-research-panel";
+import { CANDIDATE_FILTERS } from "./market-discovery-panel";
+import { describeVisibleTo } from "./market-channel-assignment";
 
 // BL-140 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4, §7 R1; owner decisions msg 1827).
 
@@ -149,4 +151,46 @@ test("§4.3: 'Show all in Videos' opens Videos filtered to the channel, and the 
   assert.match(shell, /onShowVideos=\{\(channelId\) => \{\s*setVideosChannelFilter\(\{ channelId, nonce: Date\.now\(\) \}\);\s*setTab\("videos"\);/);
   assert.match(shell, /<MarketVideosPanel channelFilter=\{videosChannelFilter\?\.channelId \?\? null\} channelFilterNonce=\{videosChannelFilter\?\.nonce\} \/>/);
   assert.match(shell, /statusFilterRequest=\{channelsStatusRequest\}/);
+});
+
+// BL-140 R4 (plan §4.5, AC-R4-1..3).
+
+test("AC-R4-1: Discover lists candidates by status, New by default, one server page at a time", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
+  assert.deepEqual(CANDIDATE_FILTERS.map((f) => f.label), ["New", "Watching", "Ignored", "Promoted", "Archived"]);
+  assert.match(panel, /useState<DiscoveryCandidateStatus>\("new"\)/);
+  assert.match(panel, /new URLSearchParams\(\{ page: String\(page\), limit: String\(PAGE_SIZE\), status: statusFilter \}\)/);
+  // The chip editor is only in the drawer; the rows carry the pill.
+  assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1);
+  const drawer = panel.slice(panel.indexOf("<SideDrawer"), panel.indexOf("</SideDrawer>"));
+  assert.match(drawer, /<MarketChannelAssignment/);
+});
+
+test("AC-R4-2: the search counter, confirm and tooltip all speak of the separate 100-searches-per-day limit", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
+  assert.match(panel, /\{searchesLeft\} of \{searchUsage\.dailyLimit\} searches left today/);
+  assert.match(panel, /This uses 1 of YouTube's 100 searches per day \(a separate quota/);
+  assert.match(panel, /uses 1 of YouTube&rsquo;s 100 searches per day, a separate quota from the daily units budget/);
+  // The old, wrong tooltip: searches do not cost 100 units of the same daily budget.
+  assert.doesNotMatch(panel, /Costs 100 YouTube API units|same daily budget/);
+});
+
+test("AC-R4-3: the Music chart is fetched only from the Show chart button", async () => {
+  const panel = await readFile(path.join(process.cwd(), "src", "components", "music-chart-panel.tsx"), "utf8");
+  assert.equal(panel.match(/fetch\(/g)?.length, 1, "one fetch, inside load()");
+  assert.deepEqual([...panel.matchAll(/load\(/g)].length, 1, "load() has exactly one caller");
+  assert.match(panel, /onClick=\{\(\) => void load\(region\)\}/);
+  const effects = [...panel.matchAll(/useEffect\(\(\) => \{([\s\S]*?)\}, \[/g)].map((m) => m[1]);
+  for (const body of effects) assert.doesNotMatch(body, /load|fetch/);
+});
+
+test("§4.7: the 'Visible to' pill names no channel, the one channel, or how many", () => {
+  const connected = [
+    { channelId: "UCa", title: "Lofi Den" },
+    { channelId: "UCb", title: "Jazz Room" },
+  ];
+  assert.equal(describeVisibleTo([], connected), "No channels");
+  assert.equal(describeVisibleTo(["UCb"], connected), "Jazz Room");
+  assert.equal(describeVisibleTo(["UCgone"], connected), "1 channel");
+  assert.equal(describeVisibleTo(["UCa", "UCb"], connected), "2 channels");
 });
