@@ -2,16 +2,25 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
-import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES } from "./factory-server";
+import { createFactoryMcpServer, FACTORY_API_VERSION, FACTORY_TOOL_NAMES, FACTORY_WRITE_TOOL_NAMES } from "./factory-server";
 
 // Mechanical enforcement from docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md §2.5 (AC-FO-07, AC-FO-09,
 // AC-FO-13): the Factory Operator's tool set is closed and separate from the channel agents' tool set.
 
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025): eight media tools join the four 1.0.0 tools.
 const EXPECTED_TOOLS = [
   "factory_get_capabilities",
   "factory_get_logical_path",
   "factory_list_channels",
   "factory_list_logical_paths",
+  "factory_media_cancel_pull",
+  "factory_media_delete_model",
+  "factory_media_get_pull",
+  "factory_media_list_models",
+  "factory_media_list_templates",
+  "factory_media_pull_model",
+  "factory_media_storage_status",
+  "factory_media_sync_templates",
 ];
 
 function registeredNames(): string[] {
@@ -21,6 +30,8 @@ function registeredNames(): string[] {
       async listLogicalPaths() { return []; },
       async listChannels() { return []; },
       async recordOutcome() {},
+      media: {} as never,
+      async assertMutationAllowed() {},
     },
     { connectionEnabled: true, session: { tokenId: "t", async reverify() {} } }
   );
@@ -46,9 +57,15 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
   assert.equal(source.includes("factory-server"), false);
 });
 
-test("AC-FO-09: no factory tool name implies a write, and none is a setter of a path, workspace or token", () => {
+// AC-FO-09 as amended by ADR 0025 (BL-132): the factory role may now write, but ONLY the four media actions named in
+// FACTORY_WRITE_TOOL_NAMES; every other tool is a read, and no tool sets a path, a workspace or a token, or touches
+// sessions/jobs (D4).
+test("AC-FO-09 (amended by ADR 0025): writes are exactly the four media actions; everything else is a read; nothing sets a path, workspace or token", () => {
+  assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), ["factory_media_cancel_pull", "factory_media_delete_model", "factory_media_pull_model", "factory_media_sync_templates"]);
+  const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
-    assert.match(name, /^factory_(get|list)_/, `${name} must be a read`);
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage))_?/, `${name} must be a read`);
+    assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|session|job/, `${name} must not touch paths, workspaces, tokens, sessions or jobs`);
   }
 });
 
@@ -73,6 +90,9 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     "@/lib/factory-mcp-endpoint",
     "@/lib/factory-agent-tokens",
     "@/lib/logical-paths",
+    // BL-132: the media core (models, storage, templates) and the shared device mutation gate for the write tools.
+    "@/lib/media-generation",
+    "@/lib/device-mutation-gate",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -95,8 +115,8 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13: the factory API has its own version constant 1.0.0, separate from the channel agents' version", async () => {
-  assert.equal(FACTORY_API_VERSION, "1.0.0");
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.1.0 since BL-132), separate from the channel agents' version", async () => {
+  assert.equal(FACTORY_API_VERSION, "1.1.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

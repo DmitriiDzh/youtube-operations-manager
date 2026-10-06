@@ -1,9 +1,11 @@
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { getMcpConnectionEnabled, recordGatewayCallOutcome } from "@/lib/db";
+import { getMcpConnectionEnabled, rawSqlClient, recordGatewayCallOutcome } from "@/lib/db";
+import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
+import { createMediaGenerationCore, DomainError } from "@/lib/media-generation";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Factory Operator session.
@@ -37,6 +39,47 @@ function createToolDeps(): FactoryToolDeps {
       });
     },
     recordOutcome: (outcome) => recordGatewayCallOutcome("mcp_tool_calls", outcome),
+    // BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6): the media core of THIS server process (the same instance the watch loop
+    // uses, so pulls stay serialized); every write passes actor `factory`. No session or job action is wired (D4).
+    media: {
+      storageStatus: async () => ({ storage: await createMediaGenerationCore().storageStatus() }),
+      listModels: async () => createMediaGenerationCore().listModelsWithUsage(),
+      pullModel: async (input) => ({ pull: await createMediaGenerationCore().startPull(input, { requestedBy: "factory" }) }),
+      getPull: async ({ pullId }) => {
+        const pulls = await createMediaGenerationCore().listPulls();
+        if (pullId === undefined) return { pulls: [...pulls].reverse().slice(0, 20) };
+        const pull = pulls.find((p) => p.pullId === pullId);
+        if (!pull) throw new DomainError({ code: "media_job_not_found", message: "No model pull with this id", details: { pullId } });
+        return { pull };
+      },
+      cancelPull: async (input) => ({ pull: await createMediaGenerationCore().cancelPull(input, { actor: "factory" }) }),
+      deleteModel: async (input) => createMediaGenerationCore().deleteModel(input, { actor: "factory" }),
+      listTemplates: async () => {
+        const core = createMediaGenerationCore();
+        const [templates, lastSync, onVolume] = await Promise.all([
+          core.listWorkflowTemplates(),
+          core.getLastTemplateSync(),
+          // The volume listing is S3; when it fails the templates are still listed, with modelsMissing unknown (null).
+          core.listModels().then((models) => new Set(models.map((m) => m.key)), () => null),
+        ]);
+        return {
+          templates: templates.map((t) => ({
+            templateId: t.templateId,
+            version: t.version,
+            source: t.source,
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+            models: t.models,
+            modelsMissing: onVolume === null ? null : t.models.filter((m) => m.folder && !onVolume.has(`models/${m.folder}/${m.file}`)),
+            updatedAt: t.updatedAt,
+          })),
+          lastSync,
+        };
+      },
+      syncTemplates: async ({ dryRun }) => ({ result: await createMediaGenerationCore().syncTemplatesFromRegistry({ trigger: "factory", dryRun }) }),
+    },
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };
 }
 

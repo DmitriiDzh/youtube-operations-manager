@@ -13,8 +13,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DomainError } from "@/lib/shared-domain";
 
-/** The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). */
-export const FACTORY_API_VERSION = "1.0.0";
+/**
+ * The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). 1.1.0 (BL-132, ADR 0025): the
+ * media tools below -- additive; the four 1.0.0 tools are unchanged.
+ */
+export const FACTORY_API_VERSION = "1.1.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -22,7 +25,23 @@ export const FACTORY_TOOL_NAMES = [
   "factory_list_logical_paths",
   "factory_get_logical_path",
   "factory_list_channels",
+  // BL-132 (docs/roadmap/plans/FACTORY_MEDIA_CONTROL_PLAN.md §2.6): models, storage and the template registry.
+  "factory_media_storage_status",
+  "factory_media_list_models",
+  "factory_media_pull_model",
+  "factory_media_get_pull",
+  "factory_media_cancel_pull",
+  "factory_media_delete_model",
+  "factory_media_list_templates",
+  "factory_media_sync_templates",
 ] as const;
+
+/**
+ * The tools that change something (owner decision D1: no second approval in the Web UI; each is audited with the actor
+ * `factory` and passes the device mutation gate first). Everything else in the list is a read. No tool sets a logical
+ * path, a workspace or a token, and none starts a session or a job (D4).
+ */
+export const FACTORY_WRITE_TOOL_NAMES = ["factory_media_pull_model", "factory_media_cancel_pull", "factory_media_delete_model", "factory_media_sync_templates"] as const;
 
 export type FactoryChannelEntry = {
   channelId: string;
@@ -40,6 +59,19 @@ export type FactoryToolDeps = {
   listChannels(): Promise<FactoryChannelEntry[]>;
   /** Counts a real tool invocation for the Settings traffic stats (`mcp_tool_calls`). */
   recordOutcome(outcome: "allowed" | "blocked"): Promise<void>;
+  /** BL-132: the media core's factory-facing actions (wired in the route; every write is recorded with actor `factory`). */
+  media: {
+    storageStatus(): Promise<Record<string, unknown>>;
+    listModels(): Promise<Record<string, unknown>>;
+    pullModel(input: { repoId: string; file: string; folder: string; revision?: string; sha256: string }): Promise<Record<string, unknown>>;
+    getPull(input: { pullId?: string }): Promise<Record<string, unknown>>;
+    cancelPull(input: { pullId: string }): Promise<Record<string, unknown>>;
+    deleteModel(input: { key: string }): Promise<Record<string, unknown>>;
+    listTemplates(): Promise<Record<string, unknown>>;
+    syncTemplates(input: { dryRun: boolean }): Promise<Record<string, unknown>>;
+  };
+  /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
+  assertMutationAllowed(): Promise<void>;
 };
 
 export type FactoryServerOptions = {
@@ -68,6 +100,33 @@ function errorResult(error: unknown): ToolResponse {
 
 const emptyInput = z.object({}).strict();
 const getLogicalPathInput = z.object({ name: z.string().min(1).max(64) }).strict();
+// BL-132 inputs. The media core validates them again (repo id, folder, path safety); these keep the contract explicit.
+const pullModelInput = z
+  .object({
+    repoId: z.string().min(3).max(200),
+    file: z.string().min(1).max(500),
+    folder: z.string().min(1).max(64),
+    revision: z.string().min(1).max(200).optional(),
+    /** Required here (owner decision D2): the request carries the expected hash. */
+    sha256: z.string().regex(/^[0-9a-fA-F]{64}$/, "64 hex characters"),
+  })
+  .strict();
+const pullIdInput = z.object({ pullId: z.string().min(1).max(64) }).strict();
+const optionalPullIdInput = z.object({ pullId: z.string().min(1).max(64).optional() }).strict();
+const modelKeyInput = z.object({ key: z.string().min(1).max(1000) }).strict();
+const syncInput = z.object({ dryRun: z.boolean().optional() }).strict();
+
+function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
+  const parsed = schema.safeParse(args ?? {});
+  if (!parsed.success) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: "Invalid MCP tool input",
+      details: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message, code: issue.code })),
+    });
+  }
+  return parsed.data;
+}
 
 export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactoryServerOptions = {}) {
   const connectionEnabled = options.connectionEnabled ?? true;
@@ -104,7 +163,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_get_capabilities",
     {
       description:
-        "Report this endpoint's factory API version, the tools actually callable by the Factory Operator role, and the permission this token holds (READ only). Call this first. A local read; no channel scoping, no YouTube call.",
+        "Report this endpoint's factory API version, the tools actually callable by the Factory Operator role, the permissions this token holds (READ and WRITE) and which tools write. Call this first. A local read; no channel scoping, no YouTube call.",
       inputSchema: emptyInput,
     },
     async () =>
@@ -112,7 +171,8 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         role: "factory_operator",
         factoryApiVersion: FACTORY_API_VERSION,
         tools: [...FACTORY_TOOL_NAMES],
-        permissions: ["READ"],
+        permissions: ["READ", "WRITE"],
+        writeTools: [...FACTORY_WRITE_TOOL_NAMES],
       })
   );
 
@@ -154,6 +214,103 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: emptyInput,
     },
     async () => successResult({ channels: await deps.listChannels() })
+  );
+
+  // -- BL-132: media models, storage and the template registry (FACTORY_MEDIA_CONTROL_PLAN.md §2.6) ------------------
+
+  registerTool(
+    "factory_media_storage_status",
+    {
+      description:
+        "The RunPod network volume that holds the media models: { storage: { volumeId, dataCenterId, sizeGb, usedGb, freeGb, monthlyUsd } } as RunPod reports it (RunPod bills the rented size). Read-only; one RunPod API call.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.media.storageStatus())
+  );
+
+  registerTool(
+    "factory_media_list_models",
+    {
+      description:
+        "List the model files on the network volume: { models: [{ key, folder, name, bytes, lastModified, sha256, usedBy: [{ templateId, version, source }] }], registry, registryError }. sha256 is the hash verified by a pull on this computer (null if unknown). usedBy includes local (owner-imported) templates (source 'owner'). Read-only.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.media.listModels())
+  );
+
+  registerTool(
+    "factory_media_pull_model",
+    {
+      description:
+        "Put one model file from a PUBLIC Hugging Face repository on the network volume: { repoId, file, folder, revision?, sha256 }. sha256 is REQUIRED. Before any pod starts the file is checked on Hugging Face (exists, not gated, its declared SHA-256 equals yours, fits in the free space); then a small CPU pod downloads that exact commit, hashes it and moves it into models/<folder>/ only if the hash matches (otherwise nothing is left). Refused while GPU sessions use the volume (media_session_conflict) or another pull runs; an existing file is never overwritten. Returns { pull } with expectedBytes; track it with factory_media_get_pull. Costs a few cents of CPU time plus storage. Recorded as requested by the Factory Operator.",
+      inputSchema: pullModelInput,
+    },
+    async (args) => {
+      const input = parseInput(pullModelInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.pullModel(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_get_pull",
+    {
+      description:
+        "One model pull by pullId ({ pull }), or the recent pulls ({ pulls }) without it. A pull is running, done (sha256 verified), failed (with the reason, e.g. a hash mismatch) or timeout. Read-only.",
+      inputSchema: optionalPullIdInput,
+    },
+    async (args) => successResult(await deps.media.getPull(parseInput(optionalPullIdInput, args)))
+  );
+
+  registerTool(
+    "factory_media_cancel_pull",
+    {
+      description: "Cancel a running model pull: { pullId }. Its pod is terminated and nothing is left under models/. Recorded as done by the Factory Operator.",
+      inputSchema: pullIdInput,
+    },
+    async (args) => {
+      const input = parseInput(pullIdInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.cancelPull(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_delete_model",
+    {
+      description:
+        "Delete one model file from the network volume: { key } (a models/ key from factory_media_list_models). Refused with media_model_in_use while any template uses it (registry, installed or local), with media_template_registry_unavailable when the template registry cannot be read on this computer, and while sessions or a pull use the volume. There is no undo except pulling it again. Recorded as done by the Factory Operator.",
+      inputSchema: modelKeyInput,
+    },
+    async (args) => {
+      const input = parseInput(modelKeyInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.deleteModel(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_list_templates",
+    {
+      description:
+        "List this computer's media workflow templates: { templates: [{ templateId, version, source ('factory' from the registry, 'owner' = local), name, description, parameters, models, modelsMissing, updatedAt }], lastSync }. modelsMissing = declared models not on the volume (null when the volume could not be listed). Read-only.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.media.listTemplates())
+  );
+
+  registerTool(
+    "factory_media_sync_templates",
+    {
+      description:
+        "Sync this computer's factory templates from the template registry folder (logical path media_templates): { dryRun? }. Returns { result: { outcome, installed, updated, removed, unchanged, pending, invalid } }. A lower version, or the same version with other content, is refused; an unreadable index changes nothing; a listed file not there yet is pending; local templates are never touched. The app also checks the registry by itself every minute. Recorded as done by the Factory Operator.",
+      inputSchema: syncInput,
+    },
+    async (args) => {
+      const input = parseInput(syncInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.media.syncTemplates({ dryRun: input.dryRun ?? false }));
+    }
   );
 
   return server;
