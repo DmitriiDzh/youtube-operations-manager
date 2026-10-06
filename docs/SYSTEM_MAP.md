@@ -594,14 +594,18 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Ответственность:** серверный планировщик поверх §2.16. Раз в 30 с:
   - экспорт при локальных изменениях (не чаще раза в минуту);
   - авто-импорт fast-forward снапшота другого устройства, если локально нечего публиковать;
-  - иначе расхождение: колокольчик в шапке, решение только человеком («keep mine» / «take theirs»).
+  - расхождение с одинаковыми данными на обеих сторонах решается само: голова линии переносится на снимок другого компьютера, данные не меняются (BL-139);
+  - иначе расхождение: колокольчик в шапке ведёт во вкладку Merge, где карточка показывает, что есть только здесь и только там, а решение принимает человек («keep mine» / «take theirs»).
+- Миграции при загрузке не делают синхронное устройство «изменённым». Автосбор Market Intelligence с дашборда сначала даёт синхронизации догнать другой компьютер (BL-139).
 - Черновики `sync-gateway` крутятся тем же планировщиком. ADR 0012, план `docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md`.
 - **Файлы:**
   - `src/lib/device-sync/{contracts,services,index}.ts`;
   - `src/lib/snapshot/adapters/fingerprint.ts`, `lineage.json` в `adapters/filesystem.ts`;
   - `src/instrumentation.ts`;
-  - `src/app/api/device-sync/{status,sync-now,resolve}`;
-  - `src/components/device-sync-bell.tsx`, `device-auto-sync-settings.tsx`;
+  - `src/app/api/device-sync/{status,sync-now,resolve,divergence}`;
+  - `src/lib/snapshot/adapters/content-diff.ts`;
+  - `src/components/device-sync-bell.tsx`, `device-sync-divergence-card.tsx`, `device-auto-sync-settings.tsx`;
+  - `src/app/api/market-intelligence/collect-if-stale/sync-gate.ts`;
   - `src/lib/sync-gateway/run-all-families.ts`.
 - **Схема:** v36 (`snapshot_lineage.content_fingerprint`, `ancestors_json`).
 - **Настройки:** `app_settings` `device_auto_sync_enabled` (по умолчанию вкл) и `device_sync_status`.

@@ -1727,7 +1727,8 @@ defensible method is stated plainly, not hidden: leave-one-out needs `BREAKOUT_M
 
 `RECENT_VIDEO_WINDOW_DAYS` (180, not a narrower window) is itself a considered choice, not an
 arbitrary round number: this application's only collection trigger is a dashboard page load
-(`collect-if-stale`, gated to at most once per 24h per channel, no background scheduler exists) --
+(`collect-if-stale`, gated to at most once per 24h per channel, no background scheduler exists;
+since BL-139 it also waits until device sync has caught up, §23) --
 a video's own day-7 age-normalized point only exists at all if a collection run happened to land
 within `ageNormalizedTolerance(7)` (`max(1, 7*0.25)` = 1.75 days) of its 7-day mark. A monthly-or-
 slower-uploading channel needs a wide `RECENT_VIDEO_WINDOW_DAYS` just to have a realistic chance at
@@ -2202,12 +2203,24 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - One tip that is a fast-forward, with local clean: import.
    - A newer schema: `update_app`.
    - Anything else: divergence.
+4a. **Identical-content divergence (BL-139, owner 2026-10-06).** With one conflicting tip, the tick
+   compares the live content fingerprint with the tip's, staged exactly like an import
+   (checksums, private copy, migration; cached per snapshot id). Equal: under the `export` lock,
+   re-checked inside, the device writes the tip as its lineage head, keeping its own head and
+   ancestors in `ancestors_json`. No row changes, so no import, backup or export, and no marker
+   (two computers would ping-pong markers). Its next export carries both histories, so a peer
+   that adopted this device's branch still fast-forwards. Different content, several tips, or a
+   copy that cannot be compared: divergence as before.
 5. Actions go through the existing `exportHandoff` / `importHandoff`. `assertStillSafe` re-checks
    the gates, and the fingerprint for an import, inside the operation lock, right before anything
    is written. In a divergence, local unpublished changes are still published on their own branch,
    so the other computer sees the conflict too.
 
-**Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
+**Resolution (human only, in the Merge tab → `POST /api/device-sync/resolve`):**
+- The bell only links to the Merge tab. `DeviceSyncDivergenceCard` there shows both computers, the
+  newest common snapshot, and per section (Batches/Audit/Research/Decisions/Other) the rows only
+  here, only there, and changed (same primary key), from `GET /api/device-sync/divergence`
+  (`runner.divergencePreview` → `diffTransferredContent`, read-only ATTACH of the staged copy).
 - Both actions accept only a CURRENT conflicting peer tip.
 - `keep_mine` exports with `supersede` (parent = the named tip; ancestry = every current peer tip
   and its history, plus the local one), so every peer fast-forwards.
@@ -2266,7 +2279,16 @@ state, so these are held per process via `globalThis`:
 - the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
 
 **Boot.** `initializeDatabase` takes the migration lock only when a migration is due
-(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock.
+(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock. Around the
+migrations, `createSyncPreservingMigrationHooks` (BL-139) moves the lineage fingerprint by
+compare-and-set if the device was in sync before them: every computer applies the same migrations,
+so a column added with a non-NULL DEFAULT is not a local change.
+
+**Automatic writes wait for sync (BL-139).** The dashboard's Market Intelligence refresh
+(`collect-if-stale`) first calls `runner.syncBeforeBackgroundWrite()` (one tick, 60 s bound) and
+runs only on `backgroundWriteVerdict` = allowed: sync off/unconfigured, synced/exported/imported,
+or waiting with nothing in transit. A transfer in progress, a conflict, a pause or an unreachable
+folder skips it until the next dashboard load. A device-sync failure never blocks it (§M).
 
 **Stuck operation lock recovery (2026-10-01).** A migration/import killed mid-run leaves its
 `app_operation_locks` row; by decision 2b it is never auto-released (only a dead *export*'s is), so

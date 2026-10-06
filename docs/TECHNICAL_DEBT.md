@@ -1469,15 +1469,28 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     - two computers resolve at the same time, even when they agree.
 
     Nothing is overwritten, and every replaced state has a never-pruned backup
-    (`pre-take-theirs-*`, `pre-superseded-*`). Automatic convergence here would need
-    content-identity tracking, which proved unsafe under concurrent opposite resolutions.
+    (`pre-take-theirs-*`, `pre-superseded-*`). Converging on resolution identity proved unsafe
+    under concurrent opposite resolutions. Since BL-139, when two resolutions happen to leave the
+    SAME data on both computers, plain content equality settles it without a prompt; different
+    data still asks.
     Revisit if re-prompts are reported in practice. The resolution matrix is
     `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
     prompt.
-  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table read as a
-    local change once. The fingerprint ignores added nullable columns and newly transferred empty
-    tables (review round 4). If both computers are upgraded in between, this ends in one conflict
-    prompt. It fails closed, and nothing is lost.
+  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table: RESOLVED
+    2026-10-06 (BL-139). Boot migrations rebaseline the fingerprint by compare-and-set, and two
+    computers that still end up with identical data settle without a prompt. Remaining limit: a
+    migration whose data transform depends on device-local tables is rebaselined too, so its
+    derived rows are published with the next real change.
+  - **False prompts from automatic jobs (BL-139, 2026-10-06).** Both computers running the same
+    automatic job used to fork the history (4 and 5 October). Now identical results settle on their
+    own, and the dashboard's Market Intelligence auto-collection waits until sync has caught up.
+    Remaining limits:
+    - two computers collecting within the same minute still fork, and so do different results
+      (per-device collection depth, or the BL-125 retention sweep with per-device settings);
+    - while the sync folder is unreachable (the external drive unplugged), the auto-collection does
+      not run on that computer; manual collection still works;
+    - an expired-row difference (one side purged under the 30-day rule, the other's snapshot not
+      yet) makes identical data compare as different, which ends in a prompt (fail closed).
   - **Merge-transaction length grows with the Research history.** An import holds the write lock
     for two full fingerprint scans. It measured 8 ms for three scans on the owner's DB on
     2026-10-01. Other writers wait up to their 5 s `busy_timeout`. Revisit if the transferred
