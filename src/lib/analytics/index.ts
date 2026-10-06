@@ -15,8 +15,11 @@ function defaultAuthResolver() {
   };
 }
 
-// BL-142: one in-process backoff for failing background channels, shared by every core instance.
-const backgroundBackoff = createBackgroundFailureBackoff();
+// BL-142: one in-process backoff for failing background channels, shared by every core instance and every module copy
+// Next loads (kept on globalThis, like the operation registry).
+const backgroundBackoff: ReturnType<typeof createBackgroundFailureBackoff> = ((globalThis as unknown as Record<symbol, ReturnType<typeof createBackgroundFailureBackoff> | undefined>)[
+  Symbol.for("youtube-operations-manager.analytics-background-backoff")
+] ??= createBackgroundFailureBackoff());
 const backgroundLogger = createDefaultLogger();
 
 export function createAnalyticsCore() {

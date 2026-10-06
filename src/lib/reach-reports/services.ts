@@ -97,8 +97,14 @@ export type ReachReportsDependencies = {
   clock: { now(): Date };
 };
 
-/** Channels with an automatic (`onlyIfDue`) sync running in this process; shared by every core instance. */
-const inFlightAutoSyncs = new Set<string>();
+/**
+ * Channels with an automatic (`onlyIfDue`) sync running in this process; shared by every core instance. Kept on
+ * `globalThis` (like the operation registry): Next can load a module once per route bundle, and every copy must see
+ * the same set.
+ */
+const inFlightAutoSyncs: Set<string> = ((globalThis as unknown as Record<symbol, Set<string> | undefined>)[
+  Symbol.for("youtube-operations-manager.reach-in-flight-auto-syncs")
+] ??= new Set<string>());
 
 export type SyncAllReachChannelOutcome =
   | { channelId: string; outcome: "synced"; filesImported: number }
