@@ -46,17 +46,20 @@ export type AutoCollectAllResult = {
   catchUps: Array<{ channelId: string; credentialRef: { userId: string } }>;
 };
 
-let allChannelsRunActive = false;
+/** Process-wide (on `globalThis`, like the operation registry): every module copy Next loads must share the flag. */
+const runFlag: { active: boolean } = ((globalThis as unknown as Record<symbol, { active: boolean } | undefined>)[
+  Symbol.for("youtube-operations-manager.analytics-all-channels-run")
+] ??= { active: false });
 
 /** Claims the single all-channels run of this process; false while another one is still going. */
 export function beginAllChannelsRun(): boolean {
-  if (allChannelsRunActive) return false;
-  allChannelsRunActive = true;
+  if (runFlag.active) return false;
+  runFlag.active = true;
   return true;
 }
 
 export function endAllChannelsRun(): void {
-  allChannelsRunActive = false;
+  runFlag.active = false;
 }
 
 /**
