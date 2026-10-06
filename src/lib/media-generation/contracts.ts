@@ -57,6 +57,24 @@ export type MediaSettings = {
   /** The chosen GPU's on-demand $/h as the catalog reported it when the GPU was saved -- the
    * local price a session estimate uses with zero RunPod calls (AC-P14-03). */
   gpuOnDemandPricePerHr: number | null;
+  // -- BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md) ---------------------------------------------------------
+  /** Further GPU types tried in order when the chosen one cannot be placed (also for the owner's own sessions, O5). */
+  gpuFallbackIds: string[];
+  /** A candidate with less VRAM is never tried (null = no minimum). */
+  gpuMinVramGb: number | null;
+  /** A candidate dearer than this is never tried (null = no cap). */
+  gpuMaxPricePerHr: number | null;
+  /** While no candidate can be placed, the start is retried this often (owner: 30 s) ... */
+  capacityRetrySeconds: number;
+  /** ... for at most this long, then the session fails with `media_no_capacity`. */
+  capacityWaitMinutes: number;
+  /** Master switch for sessions the Factory Operator starts itself (off until the owner turns it on). */
+  factorySessionsEnabled: boolean;
+  /** A factory start is approved by itself only within ALL of these (owner defaults, O2); above them it waits for the owner. */
+  factoryMaxUsdPerSession: number;
+  factoryMaxMinutesPerSession: number;
+  factoryMaxUsdPerDay: number;
+  factoryMaxUsdPerMonth: number;
 };
 
 export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
@@ -71,13 +89,23 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   watchIntervalSeconds: 60,
   maxConcurrentSessions: 3,
   gpuOnDemandPricePerHr: null,
+  gpuFallbackIds: [],
+  gpuMinVramGb: null,
+  gpuMaxPricePerHr: null,
+  capacityRetrySeconds: 30,
+  capacityWaitMinutes: 30,
+  factorySessionsEnabled: false,
+  factoryMaxUsdPerSession: 2,
+  factoryMaxMinutesPerSession: 60,
+  factoryMaxUsdPerDay: 5,
+  factoryMaxUsdPerMonth: 50,
 });
 
 /** Bounds of `maxConcurrentSessions` (slice 6): at least one, at most four pods at a time. */
 export const MAX_CONCURRENT_SESSIONS_RANGE = Object.freeze({ min: 1, max: 4 });
 
 /** A session holding (or about to hold) a pod: the statuses `maxConcurrentSessions` counts. */
-export const MEDIA_SESSION_ACTIVE_STATUSES = ["approved", "starting", "running", "stopping"] as const;
+export const MEDIA_SESSION_ACTIVE_STATUSES = ["approved", "waiting_capacity", "starting", "running", "stopping"] as const;
 
 /** Network-volume price used for the Settings estimate only (docs.runpod.io/storage/network-volumes, 2026-10-05). */
 export const NETWORK_VOLUME_USD_PER_GB_MONTH = 0.07;
@@ -95,8 +123,17 @@ export type MediaGenerationOverview = {
 // -- sessions (slice 2, PHASE_14_PLAN.md §2.3) ---------------------------------------------------
 
 /** The ONE list of session statuses and its terminal subset (review round 21): `db.ts` imports these for the column enum and for freeing the open slot. */
-export const MEDIA_SESSION_STATUSES = ["pending", "approved", "starting", "running", "stopping", "done", "failed", "rejected", "interrupted"] as const;
+/**
+ * BL-133: `waiting_capacity` = approved, but no GPU candidate could be placed; no pod exists (nothing is billed), the start is
+ * retried every `capacityRetrySeconds` until `capacityWaitMinutes`, and the session keeps its concurrency slot meanwhile.
+ */
+export const MEDIA_SESSION_STATUSES = ["pending", "approved", "waiting_capacity", "starting", "running", "stopping", "done", "failed", "rejected", "interrupted"] as const;
 export type MediaSessionStatus = (typeof MEDIA_SESSION_STATUSES)[number];
+export type MediaSessionRequester = "operator" | "agent" | "factory";
+/** BL-133: an ordered list of GPU types to try, optionally bounded by VRAM and price (a request's or a template's). */
+export type MediaGpuPlan = { candidates: string[]; minVramGb: number | null; maxPricePerHr: number | null };
+/** BL-133: one createPod attempt as the capacity log records it. */
+export type MediaCapacityAttempt = { at: string; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null };
 export const MEDIA_SESSION_TERMINAL_STATUSES: readonly MediaSessionStatus[] = ["done", "failed", "rejected", "interrupted"];
 export const MEDIA_SESSION_NON_TERMINAL_STATUSES: readonly MediaSessionStatus[] = MEDIA_SESSION_STATUSES.filter((s) => !MEDIA_SESSION_TERMINAL_STATUSES.includes(s));
 
@@ -105,7 +142,14 @@ export type MediaSession = {
   sessionId: string;
   channelId: string;
   status: MediaSessionStatus;
-  requestedBy: "operator" | "agent";
+  /** BL-133: `factory` = started by the Factory Operator through its own endpoint. */
+  requestedBy: MediaSessionRequester;
+  /** BL-133: who approved it -- `owner` (Web) or `factory` (within the owner's factory limits); null while pending. */
+  approvedBy: "owner" | "factory" | null;
+  /** BL-133: the GPU candidates this session was asked to try (null = the device's GPU + its fallback list). */
+  gpuPlan: MediaGpuPlan | null;
+  /** BL-133: while `waiting_capacity` -- when the next start attempt is due and when the wait ends. */
+  capacity: { attempts: number; nextAttemptAt: string | null; waitUntil: string | null } | null;
   reason: string | null;
   maxMinutes: number;
   maxUsd: number | null;

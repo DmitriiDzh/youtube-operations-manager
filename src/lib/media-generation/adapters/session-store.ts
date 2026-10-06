@@ -46,6 +46,11 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     lastSeenAliveAt: row.lastSeenAliveAt ?? null,
     terminateSentAt: row.terminateSentAt ?? null,
     releaseWhenDone: row.releaseWhenDone ?? false,
+    approvedBy: row.approvedBy === "factory" ? "factory" : row.approvedBy === "owner" ? "owner" : null,
+    gpuPlanJson: row.gpuPlanJson ?? null,
+    capacityAttempts: row.capacityAttempts ?? null,
+    capacityNextAttemptAt: row.capacityNextAttemptAt ?? null,
+    capacityWaitUntil: row.capacityWaitUntil ?? null,
   };
 }
 

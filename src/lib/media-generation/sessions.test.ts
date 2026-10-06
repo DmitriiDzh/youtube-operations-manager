@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { encryptSecret, decryptSecret } from "@/lib/shared-crypto";
 import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gateway";
-import { DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
+import { MEDIA_SESSION_ACTIVE_STATUSES, DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
 import { createMediaSessionServices, type MediaSessionStore, type StoredSessionRow } from "./sessions";
 import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
 
@@ -36,7 +36,8 @@ const READY_SETTINGS: MediaSettings = {
 
 const TERMINAL = new Set(["done", "failed", "rejected", "interrupted"]);
 
-const ACTIVE = new Set(["approved", "starting", "running", "stopping"]);
+// The same set the database guard uses (BL-133 added `waiting_capacity`: no pod, but it keeps its concurrency slot).
+const ACTIVE = new Set<string>(MEDIA_SESSION_ACTIVE_STATUSES);
 
 /** `lockHeld` stands in for the approve UPDATE's "no exclusive volume-lock row" guard (slice 6). */
 function memorySessionStore(opts: { lockHeld?: () => boolean } = {}) {
@@ -89,7 +90,7 @@ function memorySessionStore(opts: { lockHeld?: () => boolean } = {}) {
 
 type PodState = { status: string; costPerHr: number };
 
-function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; terminateSticks?: boolean; containerNeverStarts?: boolean } = {}) {
+function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; terminateSticks?: boolean; containerNeverStarts?: boolean; capacity?: (input: { gpu?: { id: string } }) => boolean } = {}) {
   const pods = new Map<string, PodState>();
   const calls: string[] = [];
   let created = 0;
@@ -112,9 +113,19 @@ function fakeRunpod(opts: { createFails?: boolean; runningAfterPolls?: number; t
     raw: {},
   });
   const client = {
-    async createPod(input: { env?: Record<string, string> }) {
+    async createPod(input: { env?: Record<string, string>; gpu?: { id: string } }) {
+      calls.push(`createPod:${input.gpu?.id ?? ""}`);
       calls.push("createPod");
-      if (opts.createFails) throw new Error("RunPod API returned HTTP 500: no capacity");
+      // BL-133 changed what a failed createPod means: "no capacity" and 5xx now WAIT for capacity; only a fatal answer
+      // (balance, permission, a bad request) ends the start at once -- which is what these Phase-14 tests are about.
+      if (opts.createFails) {
+        const { DomainError } = await import("./contracts");
+        throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 422: the request body is not valid", details: { status: 422 } });
+      }
+      if (opts.capacity && opts.capacity(input as { gpu?: { id: string } })) {
+        const { DomainError } = await import("./contracts");
+        throw new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400: This GPU and data center combination could not be placed.", details: { status: 400 } });
+      }
       created++;
       const id = `pod${created}`;
       pods.set(id, { status: "PROVISIONING", costPerHr: 0.69 });
@@ -173,6 +184,7 @@ function fixture(opts: {
   now?: Date;
   jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
 } = {}) {
+  const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
   const settings = { ...READY_SETTINGS, ...opts.settings };
   const runpod = opts.runpod ?? fakeRunpod();
   const comfy = opts.comfy ?? fakeComfy();
@@ -205,6 +217,8 @@ function fixture(opts: {
     timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
     volumeLock: lock.lock,
     ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
+    capacityLog: { record: async (a) => void capacityLog.push({ gpuTypeId: a.gpuTypeId, result: a.result, detail: a.detail }) },
+    awaitCapacityRetries: true,
   });
   /** AC-P14-18 observed directly: can a model pull take the volume right now? (It takes and gives back a probe lock.) */
   const pullCanTakeVolume = async (): Promise<boolean> => {
@@ -216,7 +230,7 @@ function fixture(opts: {
     await lock.lock.release("pull:probe");
     return true;
   };
-  return { services, mem, runpod, comfy, lock: lock.store, volumeLock: lock.lock, pullCanTakeVolume, settings, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
+  return { services, mem, runpod, comfy, lock: lock.store, volumeLock: lock.lock, pullCanTakeVolume, settings, capacityLog, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
 }
 
 /**
@@ -1562,4 +1576,89 @@ test("BL-135: activity after the last finish (a new job being submitted) restart
   await (await plain.services.approveSession({ sessionId: q.sessionId })).started;
   plain.advance(10 * 60_000);
   assert.equal((await tick1(plain.services)).action, "none");
+});
+
+// -- BL-133 (FACTORY_GPU_SESSIONS_PLAN.md §2.3/§2.4, AC-FG-04/05/06; owner answers 2026-10-06: retry every 30 s, wait 30 min) --
+// Expected from the plan: the device GPU then its fallback list are tried in order; "could not be placed" moves on and is
+// logged; nobody placeable = `waiting_capacity` with NO pod, retried by the watcher, failed with media_no_capacity after the
+// wait; a waiting session holds its concurrency slot and can be stopped or released for free.
+
+const FIVE = "NVIDIA GeForce RTX 5090";
+const FOUR = "NVIDIA GeForce RTX 4090";
+
+test("AC-FG-04: the first GPU 'could not be placed' -> the fallback is created; the row records what it got; the log has both attempts", async () => {
+  const runpod = fakeRunpod({ capacity: (input) => input.gpu?.id === FOUR });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const running = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(running.status, "running");
+  assert.equal(running.gpuTypeId, FIVE);
+  assert.deepEqual(f.capacityLog.map((a) => [a.gpuTypeId, a.result]), [[FOUR, "no_capacity"], [FIVE, "placed"]]);
+  assert.deepEqual(runpod.calls.filter((c) => c.startsWith("createPod:")), [`createPod:${FOUR}`, `createPod:${FIVE}`]);
+});
+
+test("AC-FG-05: nobody placeable -> waiting_capacity with no pod; the watcher retries only when due; capacity returns -> running", async () => {
+  let full = true;
+  const runpod = fakeRunpod({ capacity: () => full });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE], capacityRetrySeconds: 30, capacityWaitMinutes: 30, idleMinutes: 1000 } });
+  const requested = await f.services.requestSession(operatorRequest);
+  const waiting = await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.podId, null);
+  assert.equal(waiting.capacity?.attempts, 1);
+  assert.equal(f.runpod.pods.size, 0, "no pod, nothing billed");
+  f.advance(10_000);
+  assert.equal((await tick1(f.services)).action, "none", "not due yet");
+  f.advance(25_000);
+  const retry = await tick1(f.services);
+  assert.equal(retry.action, "retried_start");
+  assert.equal(f.mem.rows.get(requested.sessionId)?.status, "waiting_capacity");
+  assert.equal(f.mem.rows.get(requested.sessionId)?.capacityAttempts, 2);
+  full = false;
+  f.advance(31_000);
+  await tick1(f.services);
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "running");
+  assert.equal(row.error, null);
+});
+
+test("AC-FG-05: after the capacity wait the session fails with media_no_capacity; a stop or a release while waiting ends it for free", async () => {
+  const runpod = fakeRunpod({ capacity: () => true });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, capacityRetrySeconds: 30, capacityWaitMinutes: 2 } });
+  const a = await f.services.requestSession(operatorRequest);
+  await f.services.approveAndStartSession({ sessionId: a.sessionId });
+  f.advance(3 * 60_000);
+  const tick = await tick1(f.services);
+  assert.equal(tick.action, "stopped");
+  const failed = f.mem.rows.get(a.sessionId)!;
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /media_no_capacity/);
+  assert.equal(failed.usdCharged, 0);
+
+  const g = fixture({ runpod: fakeRunpod({ capacity: () => true }), settings: { gpuTypeId: FOUR } });
+  const b = await g.services.requestSession(operatorRequest);
+  await g.services.approveAndStartSession({ sessionId: b.sessionId });
+  assert.equal((await g.services.stopSession({ sessionId: b.sessionId })).status, "done");
+  const c = await g.services.requestSession(operatorRequest);
+  await g.services.approveAndStartSession({ sessionId: c.sessionId });
+  assert.equal((await g.services.releaseSession({ sessionId: c.sessionId, channelId: "UC1" })).status, "done");
+});
+
+test("BL-133: a waiting session holds its concurrency slot; the boot sweep leaves it to the watcher", async () => {
+  const f = fixture({ runpod: fakeRunpod({ capacity: () => true }), settings: { gpuTypeId: FOUR, maxConcurrentSessions: 1 } });
+  const a = await f.services.requestSession(operatorRequest);
+  await f.services.approveAndStartSession({ sessionId: a.sessionId });
+  const b = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveSession({ sessionId: b.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict");
+  await f.services.bootSweep();
+  assert.equal(f.mem.rows.get(a.sessionId)?.status, "waiting_capacity");
+});
+
+test("AC-FG-04: a request's own GPU plan replaces the device list", async () => {
+  const runpod = fakeRunpod();
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const requested = await f.services.requestSession({ ...operatorRequest, gpu: { candidates: ["NVIDIA L40S"] } });
+  assert.deepEqual(requested.gpuPlan, { candidates: ["NVIDIA L40S"], minVramGb: null, maxPricePerHr: null });
+  await f.services.approveAndStartSession({ sessionId: requested.sessionId });
+  assert.deepEqual(runpod.calls.filter((c) => c.startsWith("createPod:")), ["createPod:NVIDIA L40S"]);
 });

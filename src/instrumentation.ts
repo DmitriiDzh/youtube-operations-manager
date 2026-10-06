@@ -219,7 +219,10 @@ async function startServerSession() {
     }
     let intervalMs = 60_000;
     try {
-      intervalMs = Math.max(MEDIA_WATCH_MIN_MS, (await media.getSettings()).watchIntervalSeconds * 1000);
+      const settings = await media.getSettings();
+      // BL-133: a session waiting for capacity is retried every capacityRetrySeconds (owner: 30 s), so the loop ticks at
+      // least that often; with nothing to do a tick makes no outbound call.
+      intervalMs = Math.max(MEDIA_WATCH_MIN_MS, Math.min(settings.watchIntervalSeconds, settings.capacityRetrySeconds) * 1000);
     } catch {
       // keep the default
     }

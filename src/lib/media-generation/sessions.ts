@@ -7,9 +7,12 @@ import {
   MEDIA_SESSION_NON_TERMINAL_STATUSES,
   type MediaSession,
   type MediaSessionLimits,
+  type MediaGpuPlan,
+  type MediaSessionRequester,
   type MediaSessionStatus,
   type MediaSettings,
 } from "./contracts";
+import { classifyCreatePodFailure, resolveGpuCandidates, type GpuCandidate } from "./gpu-plan";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import { describeVolumeLockHolder, type VolumeLock } from "./volume-lock";
 import { round2 } from "@/lib/shared-money";
@@ -28,7 +31,7 @@ export type StoredSessionRow = {
   id: string;
   channelId: string;
   status: MediaSessionStatus;
-  requestedBy: "operator" | "agent";
+  requestedBy: MediaSessionRequester;
   reason: string | null;
   maxMinutes: number;
   maxUsd: number | null;
@@ -57,6 +60,12 @@ export type StoredSessionRow = {
   stoppingOutcome: StoppingOutcome | null;
   /** Schema v63 (BL-135); absent = false. */
   releaseWhenDone?: boolean;
+  // Schema v64 (BL-133); absent on rows written before it.
+  approvedBy?: "owner" | "factory" | null;
+  gpuPlanJson?: string | null;
+  capacityAttempts?: number | null;
+  capacityNextAttemptAt?: Date | null;
+  capacityWaitUntil?: Date | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -113,6 +122,10 @@ export type SessionServiceDependencies = {
    */
   volumeLock: VolumeLock;
   log?: (line: string) => void;
+  /** Tests only: let a watcher tick wait for the capacity retry it fires (production fires it in the background). */
+  awaitCapacityRetries?: boolean;
+  /** BL-133: the capacity log -- one call per createPod attempt (best effort: a failed record never fails a start). */
+  capacityLog?: { record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null }): Promise<void> };
   /** BL-135: the session's jobs, for "release when done" (late-bound to the job services in `index.ts`). */
   jobSummary?(sessionId: string): Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
 };
@@ -136,7 +149,7 @@ const MAX_START_POLL_FAILURES = 5;
 
 const isActive = (row: StoredSessionRow) => (MEDIA_SESSION_ACTIVE_STATUSES as readonly MediaSessionStatus[]).includes(row.status);
 
-export type WatchTickResult = { action: "none" | "stopped" | "interrupted" | "retried_stop"; sessionId: string | null; reason: string | null };
+export type WatchTickResult = { action: "none" | "stopped" | "interrupted" | "retried_stop" | "retried_start"; sessionId: string | null; reason: string | null };
 
 /** The pod's name is deterministic so a pod created before the `starting` write can still be found at boot. */
 export function podNameFor(sessionId: string): string {
@@ -188,6 +201,12 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     stopReason: row.stopReason,
     error: row.error,
     releaseWhenDone: row.releaseWhenDone ?? false,
+    approvedBy: row.approvedBy ?? (row.approvedAt ? "owner" : null),
+    gpuPlan: row.gpuPlanJson ? (JSON.parse(row.gpuPlanJson) as MediaGpuPlan) : null,
+    capacity:
+      row.status === "waiting_capacity" || (row.capacityAttempts ?? 0) > 0
+        ? { attempts: row.capacityAttempts ?? 0, nextAttemptAt: iso(row.capacityNextAttemptAt ?? null), waitUntil: iso(row.capacityWaitUntil ?? null) }
+        : null,
   };
 }
 
@@ -433,6 +452,40 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     return "reconciled";
   }
 
+  /** BL-133: one capacity-log row (best effort). */
+  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: "placed" | "no_capacity" | "error", detail: string | null): Promise<void> {
+    try {
+      await deps.capacityLog?.record({ at: deps.clock.now(), sessionId, datacenterId: settings.datacenterId, gpuTypeId: candidate.gpuTypeId, pricePerHr: candidate.pricePerHr, result, detail: detail ? detail.slice(0, 500) : null });
+    } catch (error) {
+      log(`[media] could not record a capacity attempt: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * BL-133 (plan §2.4): nobody could be placed -- `approved -> waiting_capacity` with no pod (nothing billed). The watcher
+   * retries every `capacityRetrySeconds`; once `capacityWaitMinutes` have passed since the FIRST wait, the session fails with
+   * `media_no_capacity`. A row that moved on meanwhile (stopped, swept) keeps its own outcome.
+   */
+  async function waitForCapacity(row: StoredSessionRow, settings: MediaSettings, failures: string[]): Promise<MediaSession> {
+    const now = deps.clock.now();
+    const waitUntil = row.capacityWaitUntil ?? new Date(now.getTime() + settings.capacityWaitMinutes * 60_000);
+    const attempts = (row.capacityAttempts ?? 0) + 1;
+    const lastFailures = failures.join("; ");
+    if (now.getTime() >= waitUntil.getTime()) {
+      const message = `no capacity: no GPU candidate could be placed in ${settings.datacenterId ?? "the datacenter"} within ${settings.capacityWaitMinutes} min (${attempts} rounds; last: ${lastFailures})`;
+      await finish(row, ["approved"], "failed", { error: `media_no_capacity: ${message}` });
+      throw new DomainError({ code: "media_no_capacity", message: `${message}.`, details: { sessionId: row.id, attempts } });
+    }
+    const waiting = await deps.store.transition(row.id, ["approved"], {
+      status: "waiting_capacity",
+      capacityAttempts: attempts,
+      capacityWaitUntil: waitUntil,
+      capacityNextAttemptAt: new Date(now.getTime() + settings.capacityRetrySeconds * 1000),
+      error: `waiting for capacity: ${lastFailures}`,
+    });
+    return toPublicSession(waiting ?? (await requireRow(row.id)), now);
+  }
+
   /**
    * The background half of an approve: pending -> approved happened; from here approved -> starting (pod created,
    * `startedAt` = now, which is when RunPod starts billing) -> running once ComfyUI answers behind the token proxy. A
@@ -441,44 +494,76 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   async function startApproved(approved: StoredSessionRow, settings: MediaSettings, client: RunpodApiClient, token: string, onStage: (text: string) => void): Promise<MediaSession> {
     const sessionId = approved.id;
     onStage("Creating the pod");
-    let pod: RunpodPod;
-    const startedAt = deps.clock.now();
-    try {
-      pod = await client.createPod({
-        name: podNameFor(sessionId),
-        templateId: settings.templateId ?? undefined,
-        gpu: { id: settings.gpuTypeId as string, count: 1 },
-        cloud: settings.cloudType,
-        dataCenterId: settings.datacenterId ?? undefined,
-        mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
-        ports: [`${COMFY_PROXY_PORT}/http`],
-        env: { COMFY_TOKEN: token },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
-      let orphan: RunpodPod | undefined;
-      try {
-        orphan = await findLivePodByName(client, podNameFor(sessionId));
-      } catch (lookupError) {
-        // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
-        // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
-        // repeats the name search once RunPod answers (review round 9).
-        const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
-        await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
-        throw new DomainError({
-          code: "media_session_start_failed",
-          message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
-          details: { sessionId, status: "approved" },
-        });
-      }
-      if (!orphan) {
-        await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
-        throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
-      }
-      log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
-      pod = orphan;
+    // BL-133 (FACTORY_GPU_SESSIONS_PLAN.md §2.3): the candidates are tried in order -- the session's own plan, else the
+    // device GPU and its fallback list -- filtered by VRAM, price cap and the volume's datacenter. "No capacity" moves on;
+    // a fatal answer ends the start as before; when nobody can be placed the session WAITS (no pod, nothing billed).
+    const plan = approved.gpuPlanJson ? (JSON.parse(approved.gpuPlanJson) as MediaGpuPlan) : null;
+    // An unreadable catalog is not a reason to refuse a start: the listed candidates are then tried as they are.
+    const catalog = await Promise.resolve()
+      .then(() => client.listGpuTypes({ cloud: settings.cloudType }))
+      .catch(() => null);
+    const { candidates, skipped } = resolveGpuCandidates({ plan, settings, catalog });
+    if (candidates.length === 0) {
+      const detail = skipped.map((s) => `${s.gpuTypeId}: ${s.reason}`).join("; ") || "no GPU is configured";
+      await finish(approved, ["approved"], "failed", { error: `no GPU candidate qualifies: ${detail}` });
+      throw new DomainError({ code: "media_session_start_failed", message: `No GPU candidate qualifies: ${detail}.`, details: { sessionId, skipped } });
     }
+    let pod: RunpodPod | null = null;
+    let used: GpuCandidate | null = null;
+    let startedAt = deps.clock.now();
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      startedAt = deps.clock.now();
+      try {
+        pod = await client.createPod({
+          name: podNameFor(sessionId),
+          templateId: settings.templateId ?? undefined,
+          gpu: { id: candidate.gpuTypeId, count: 1 },
+          cloud: settings.cloudType,
+          dataCenterId: settings.datacenterId ?? undefined,
+          mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
+          ports: [`${COMFY_PROXY_PORT}/http`],
+          env: { COMFY_TOKEN: token },
+        });
+        used = candidate;
+        await recordAttempt(sessionId, settings, candidate, "placed", null);
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
+        let orphan: RunpodPod | undefined;
+        try {
+          orphan = await findLivePodByName(client, podNameFor(sessionId));
+        } catch (lookupError) {
+          // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
+          // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
+          // repeats the name search once RunPod answers (review round 9).
+          const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
+          await recordAttempt(sessionId, settings, candidate, "error", message);
+          await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
+          throw new DomainError({
+            code: "media_session_start_failed",
+            message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
+            details: { sessionId, status: "approved" },
+          });
+        }
+        if (orphan) {
+          log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
+          await recordAttempt(sessionId, settings, candidate, "placed", `adopted after: ${message}`);
+          pod = orphan;
+          used = candidate;
+          break;
+        }
+        const kind = classifyCreatePodFailure(error);
+        await recordAttempt(sessionId, settings, candidate, kind === "no_capacity" ? "no_capacity" : "error", message);
+        if (kind === "fatal") {
+          await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
+          throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
+        }
+        failures.push(`${candidate.gpuTypeId}: ${message}`);
+      }
+    }
+    if (!pod || !used) return waitForCapacity(approved, settings, failures);
     // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
     // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
     const abortStart = async (lastDetail: string): Promise<MediaSession> => {
@@ -528,7 +613,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         podId: pod.id,
         comfyUiProxyUrl,
         startedAt,
-        costPerHr: pod.costPerHr ?? approved.costPerHr,
+        // BL-133: what it actually got -- the candidate (its catalog price when the pod does not report one).
+        gpuTypeId: used.gpuTypeId,
+        costPerHr: pod.costPerHr ?? used.pricePerHr ?? approved.costPerHr,
+        capacityNextAttemptAt: null,
       });
     } catch (error) {
       return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
@@ -654,6 +742,26 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   /** One session's watcher step (see `watchTick`). */
   async function watchOne(open: StoredSessionRow): Promise<WatchTickResult> {
     const now = deps.clock.now();
+    if (open.status === "waiting_capacity") {
+      // BL-133: no pod exists. Past the wait -> failed (media_no_capacity); when the next attempt is due -> back to
+      // `approved` (approvedAt restarted, so the abandoned-start clock measures THIS attempt) and the start runs again in the
+      // background -- a start can take minutes and must not hold up the other sessions' tick.
+      const settings = await deps.base.getSettings();
+      if (open.capacityWaitUntil && now.getTime() >= open.capacityWaitUntil.getTime()) {
+        const reason = `no capacity within ${settings.capacityWaitMinutes} min (${open.capacityAttempts ?? 0} rounds)`;
+        await finish(open, ["waiting_capacity"], "failed", { error: `media_no_capacity: ${reason}${open.error ? `; ${open.error}` : ""}` });
+        return { action: "stopped", sessionId: open.id, reason };
+      }
+      if (open.capacityNextAttemptAt && now.getTime() < open.capacityNextAttemptAt.getTime()) return { action: "none", sessionId: open.id, reason: null };
+      const retry = await deps.store.transition(open.id, ["waiting_capacity"], { status: "approved", approvedAt: now, error: null });
+      if (!retry || !retry.tokenCiphertext || !retry.tokenIv || !retry.tokenAuthTag) return { action: "none", sessionId: open.id, reason: null };
+      const client = await deps.base.resolveRunpodClient();
+      const token = await deps.base.openSecret({ ciphertext: retry.tokenCiphertext, iv: retry.tokenIv, authTag: retry.tokenAuthTag });
+      const started = startApproved(retry, settings, client, token, () => undefined);
+      started.catch(() => undefined); // every outcome lands on the row
+      if (deps.awaitCapacityRetries) await started.catch(() => undefined);
+      return { action: "retried_start", sessionId: open.id, reason: "capacity retry" };
+    }
     if (open.status === "stopping") {
       const stopped = await retryStop(open, "stop retried by watcher", "done");
       return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason: open.stopReason };
@@ -804,6 +912,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         lastSeenAliveAt: null,
         terminateSentAt: null,
         releaseWhenDone: parsed.releaseWhenDone ?? false,
+        gpuPlanJson: parsed.gpu ? JSON.stringify({ candidates: parsed.gpu.candidates, minVramGb: parsed.gpu.minVramGb ?? null, maxPricePerHr: parsed.gpu.maxPricePerHr ?? null }) : null,
       });
       return toPublicSession(row, now);
     },
@@ -824,6 +933,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         return toPublicSession(withdrawn, deps.clock.now());
       }
       if (row.status === "stopping") return toPublicSession(row, deps.clock.now());
+      if (row.status === "waiting_capacity") {
+        const ended = await finish(row, ["waiting_capacity"], "done", { stopReason: reason });
+        if (!ended) throw invalidState(row.id, "waiting_capacity", (await requireRow(row.id)).status);
+        return toPublicSession(ended, deps.clock.now());
+      }
       if (row.status === "starting" || row.status === "running") return toPublicSession(await stopRow(row, reason), deps.clock.now());
       throw invalidState(row.id, row.status === "approved" ? "running (the pod is still being created -- try again shortly)" : "pending|starting|running", row.status);
     },
@@ -924,6 +1038,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // A row already `stopping` is resumed with ITS reason and outcome (an aborted start stays `failed`, review round 14);
       // the operator's press only retries the terminate.
       if (row.status === "stopping") return toPublicSession(await retryStop(row, reason, "done"), deps.clock.now());
+      if (row.status === "waiting_capacity") {
+        // BL-133: no pod exists while waiting -- ending it costs nothing and frees the slot.
+        const ended = await finish(row, ["waiting_capacity"], "done", { stopReason: reason });
+        if (!ended) throw invalidState(parsed.sessionId, "waiting_capacity", (await requireRow(row.id)).status);
+        return toPublicSession(ended, deps.clock.now());
+      }
       if (row.status === "approved") {
         // The approve request is gone (it threw: createPod failed and RunPod could not say whether a pod exists -- the row
         // carries its error) or is unmistakably abandoned by age -- the operator's Stop is the manual override the
@@ -990,7 +1110,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     async bootSweep(): Promise<{ swept: string[] }> {
       const swept: string[] = [];
       for (const open of await deps.store.listOpen()) {
-        if (open.status === "pending") continue;
+        // A pending request has no pod; neither has a session waiting for capacity (BL-133) -- the watcher resumes it.
+        if (open.status === "pending" || open.status === "waiting_capacity") continue;
         try {
           await reconcileAbandoned(open, "interrupted by a server restart", "interrupted");
         } catch (cause) {
