@@ -928,6 +928,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   const [limits, setLimits] = useState<SessionLimits | null>(null);
   const [maxMinutesText, setMaxMinutesText] = useState<string>("");
   const [maxUsd, setMaxUsd] = useState<string>("");
+  // BL-135: on by default -- a session you request stops by itself a minute after its last job.
+  const [releaseWhenDone, setReleaseWhenDone] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -981,6 +983,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
           channelId: activeChannelId,
           ...(maxMinutes ? { maxMinutes } : {}),
           ...(maxUsd.trim() ? { maxUsd: parsedMaxUsd } : {}),
+          releaseWhenDone,
         }),
       });
       await fetchAll();
@@ -1140,6 +1143,10 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               <button type="button" onClick={request} disabled={requesting} className={secondaryButton}>
                 {requesting ? "Requesting…" : "Request a session for this channel"}
               </button>
+            </div>
+            <div className="flex items-center gap-2 sm:col-span-3">
+              <ToggleSwitch label="Stop by itself when the jobs are done" checked={releaseWhenDone} onChange={setReleaseWhenDone} />
+              <span className="text-xs text-zinc-400">Stop the pod by itself one minute after the session&rsquo;s last job finished (instead of waiting for the idle timeout)</span>
             </div>
           </div>
         )}

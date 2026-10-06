@@ -199,7 +199,7 @@ const agentGetCollectionLimitsInputSchema = z.object({}).strict();
 // a session is Web-only and deliberately absent from this subset (fenced by session-approval-inventory.test.ts).
 type MediaGenerationCoreSubset = Pick<
   MediaGenerationCore,
-  "requestSession" | "getSession" | "listSessions" | "getLimits" | "listWorkflowTemplates" | "createJob" | "getJob" | "listJobs" | "cancelJob"
+  "requestSession" | "getSession" | "listSessions" | "getLimits" | "listWorkflowTemplates" | "createJob" | "getJob" | "listJobs" | "cancelJob" | "releaseSession"
 >;
 const mediaChannelIdSchema = z.string().min(1).max(64);
 const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
@@ -213,6 +213,8 @@ const agentGetMediaJobInputSchema = z
   .object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() })
   .strict();
 const agentCancelMediaJobInputSchema = z.object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64) }).strict();
+// BL-135: the channel ends its own session (the only session action an agent has -- it only stops spending).
+const agentReleaseMediaSessionInputSchema = z.object({ channelId: mediaChannelIdSchema, sessionId: z.string().min(1).max(64) }).strict();
 
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
 // two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
@@ -326,6 +328,7 @@ type McpToolHandlers = {
   agentCreateMediaJob: (input: unknown) => Promise<ToolResponse>;
   agentGetMediaJob: (input: unknown) => Promise<ToolResponse>;
   agentCancelMediaJob: (input: unknown) => Promise<ToolResponse>;
+  agentReleaseMediaSession: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1395,6 +1398,19 @@ export function createMcpToolHandlers(
       }
     },
 
+    /** BL-135 (ADR 0023 amendment 2): end this channel's own session -- withdraw a pending request or stop its pod. */
+    async agentReleaseMediaSession(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentReleaseMediaSessionInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        return toolSuccessResult({ session: await mediaGenerationCore.releaseSession({ sessionId: parsedInput.data.sessionId, channelId: parsedInput.data.channelId }) });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     /**
      * Research export (ADR 0019). Active-channel scoped like `agentGetChannelWorkspace` (the files go into THAT channel's workspace folder, which
      * the operator set; the caller picks neither folder nor file names -- the input schema is strict). Writes local files, so it passes the
@@ -2287,6 +2303,7 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentCreateMediaJob: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentCreateMediaJob(input),
     agentGetMediaJob: handlers.agentGetMediaJob,
     agentCancelMediaJob: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentCancelMediaJob(input),
+    agentReleaseMediaSession: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentReleaseMediaSession(input),
   };
 }
 
@@ -3057,7 +3074,7 @@ export function createMcpServer(
     "agent_request_media_session",
     {
       description:
-        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Production -> Sessions; you can neither approve, start nor stop it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Production -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human), releaseWhenDone? (true = the pod is stopped by itself one minute after the session's last job finished -- use it when you know your batch of jobs) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Production -> Sessions; you can neither approve, start nor stop it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. When you are done, end the session yourself with agent_release_media_session (or request it with releaseWhenDone) instead of leaving it to the idle timeout. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Production -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentRequestMediaSessionInputSchema,
     },
     (args) => handlers.agentRequestMediaSession(args)
@@ -3111,6 +3128,16 @@ export function createMcpServer(
       inputSchema: agentCancelMediaJobInputSchema,
     },
     (args) => handlers.agentCancelMediaJob(args)
+  );
+
+  registerTool(
+    "agent_release_media_session",
+    {
+      description:
+        "Ends one of THIS channel's generation sessions as soon as you are done with it, so the GPU stops billing: { sessionId }. A pending request is withdrawn; a starting or running session's pod is terminated (the same stop as the owner's, its jobs' delivered files stay); a session already stopping is returned as is. A session whose pod is still being created (approved) is refused with media_session_invalid_state -- try again in a moment. You cannot start, approve or resume a session. Instead of calling this, you can request the session with releaseWhenDone: true, and it is stopped by itself one minute after its last job finished. Requires channelId to be the caller's currently-active channel; another channel's session behaves like one that does not exist (media_session_not_found).",
+      inputSchema: agentReleaseMediaSessionInputSchema,
+    },
+    (args) => handlers.agentReleaseMediaSession(args)
   );
 
   registerTool(

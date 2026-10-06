@@ -128,6 +128,8 @@ export type MediaSession = {
   usdCharged: number | null;
   stopReason: string | null;
   error: string | null;
+  /** BL-135: stop the pod by itself once every job of the session is finished and none followed for a minute. */
+  releaseWhenDone: boolean;
 };
 
 export type MediaSessionLimits = {

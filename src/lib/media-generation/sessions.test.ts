@@ -171,6 +171,7 @@ function fixture(opts: {
   runpod?: ReturnType<typeof fakeRunpod>;
   comfy?: ReturnType<typeof fakeComfy>;
   now?: Date;
+  jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
 } = {}) {
   const settings = { ...READY_SETTINGS, ...opts.settings };
   const runpod = opts.runpod ?? fakeRunpod();
@@ -203,6 +204,7 @@ function fixture(opts: {
     },
     timeouts: { startMs: 60_000, pollMs: 5_000, stopMs: 20_000 },
     volumeLock: lock.lock,
+    ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
   });
   /** AC-P14-18 observed directly: can a model pull take the volume right now? (It takes and gives back a probe lock.) */
   const pullCanTakeVolume = async (): Promise<boolean> => {
@@ -1493,4 +1495,71 @@ test("§5.2: once today's cap is reached the watcher stops a session that is sti
   assert.match(tick.reason ?? "", /daily cap/);
   assert.equal(f.mem.rows.get(requested.sessionId)!.status, "done");
   assert.equal(f.runpod.pods.has("podS"), false);
+});
+
+// -- BL-135 (ADR 0023 amendment 2, owner 2026-10-06): the channel ends its own session; "release when done" ------------
+// Expected from the owner's decision: an agent may only STOP spending -- withdraw its pending request or stop its own
+// running pod -- never another channel's, never approve/start; with releaseWhenDone the watcher stops the pod one minute
+// after the session's last job finished (counted from the last activity too), and never while a job is open.
+
+test("BL-135: releaseSession stops this channel's running session (pod terminated, done) and withdraws a pending one", async () => {
+  const f = fixture({ settings: { idleMinutes: 1000 } });
+  const running = await startRunning(f, { maxMinutes: 60 });
+  const released = await f.services.releaseSession({ sessionId: running.sessionId, channelId: "UC1" });
+  assert.equal(released.status, "done");
+  assert.match(released.stopReason ?? "", /released by the channel agent/);
+  assert.equal(f.runpod.pods.has("pod1"), false);
+  const pending = await f.services.requestSession({ ...operatorRequest, requestedBy: "agent" });
+  const withdrawn = await f.services.releaseSession({ sessionId: pending.sessionId, channelId: "UC1" });
+  assert.equal(withdrawn.status, "rejected");
+  assert.match(withdrawn.stopReason ?? "", /withdrawn/);
+});
+
+test("BL-135: another channel's session is not found, a finished one is refused, and release never starts anything", async () => {
+  const f = fixture({ settings: { idleMinutes: 1000 } });
+  const running = await startRunning(f, { maxMinutes: 60 });
+  await assert.rejects(f.services.releaseSession({ sessionId: running.sessionId, channelId: "UC_OTHER" }), (e: unknown) => isDomainError(e) && e.code === "media_session_not_found");
+  assert.equal(f.mem.rows.get(running.sessionId)?.status, "running", "untouched");
+  await f.services.releaseSession({ sessionId: running.sessionId, channelId: "UC1" });
+  await assert.rejects(f.services.releaseSession({ sessionId: running.sessionId, channelId: "UC1" }), (e: unknown) => isDomainError(e) && e.code === "media_session_invalid_state");
+});
+
+test("BL-135: with releaseWhenDone the watcher stops the pod one minute after the last job finished -- never while a job is open, never without a job", async () => {
+  let summary = { total: 0, open: 0, lastFinishedAt: null as Date | null };
+  const f = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
+  const pending = await f.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
+  assert.equal(pending.releaseWhenDone, true);
+  const { started } = await f.services.approveSession({ sessionId: pending.sessionId });
+  await started;
+  f.advance(5 * 60_000);
+  assert.equal((await tick1(f.services)).action, "none", "no job yet: keep waiting for the first one");
+  summary = { total: 1, open: 1, lastFinishedAt: null };
+  f.advance(5 * 60_000);
+  assert.equal((await tick1(f.services)).action, "none", "a job is running");
+  summary = { total: 1, open: 0, lastFinishedAt: f.getNow() };
+  f.advance(59_000);
+  assert.equal((await tick1(f.services)).action, "none", "inside the minute");
+  f.advance(2_000);
+  const tick = await tick1(f.services);
+  assert.equal(tick.action, "stopped");
+  assert.match(tick.reason ?? "", /all jobs done/);
+  assert.equal(f.runpod.pods.has("pod1"), false);
+});
+
+test("BL-135: activity after the last finish (a new job being submitted) restarts the minute; a session without the flag is not released", async () => {
+  const summary = { total: 2, open: 0, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
+  const flagged = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
+  const p = await flagged.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
+  await (await flagged.services.approveSession({ sessionId: p.sessionId })).started;
+  await flagged.services.touchActivity(p.sessionId);
+  flagged.advance(30_000);
+  assert.equal((await tick1(flagged.services)).action, "none");
+  flagged.advance(31_000);
+  assert.equal((await tick1(flagged.services)).action, "stopped");
+
+  const plain = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
+  const q = await plain.services.requestSession({ ...operatorRequest, maxMinutes: 600 });
+  await (await plain.services.approveSession({ sessionId: q.sessionId })).started;
+  plain.advance(10 * 60_000);
+  assert.equal((await tick1(plain.services)).action, "none");
 });

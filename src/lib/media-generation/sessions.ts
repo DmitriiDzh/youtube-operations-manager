@@ -55,6 +55,8 @@ export type StoredSessionRow = {
   error: string | null;
   /** The terminal status a `stopping` row is heading for (schema v53), so a retried stop reports it truthfully. */
   stoppingOutcome: StoppingOutcome | null;
+  /** Schema v63 (BL-135); absent = false. */
+  releaseWhenDone?: boolean;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -111,7 +113,12 @@ export type SessionServiceDependencies = {
    */
   volumeLock: VolumeLock;
   log?: (line: string) => void;
+  /** BL-135: the session's jobs, for "release when done" (late-bound to the job services in `index.ts`). */
+  jobSummary?(sessionId: string): Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
 };
+
+/** BL-135: how long a `releaseWhenDone` session may sit with every job finished before its pod is stopped. */
+export const RELEASE_WHEN_DONE_GRACE_MS = 60_000;
 
 const DEFAULT_START_TIMEOUT_MS = 8 * 60_000;
 const DEFAULT_POLL_MS = 5_000;
@@ -180,6 +187,7 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     usdCharged: row.usdCharged ?? liveUsd(row, now),
     stopReason: row.stopReason,
     error: row.error,
+    releaseWhenDone: row.releaseWhenDone ?? false,
   };
 }
 
@@ -696,6 +704,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     else if (open.maxUsd !== null && usd >= open.maxUsd) reason = `max USD reached ($${open.maxUsd})`;
     else if (spentToday >= settings.maxUsdPerDay) reason = `daily cap reached ($${settings.maxUsdPerDay})`;
     else if (idleMinutes >= settings.idleMinutes) reason = `idle for ${Math.floor(idleMinutes)} min (limit ${settings.idleMinutes})`;
+    else if (open.releaseWhenDone && open.status === "running" && deps.jobSummary) {
+      // BL-135: every job finished and none followed for a minute (counted from the last finish AND the last activity, so a
+      // job being submitted right now is never cut off).
+      const jobs = await deps.jobSummary(open.id);
+      const quietSince = Math.max(jobs.lastFinishedAt?.getTime() ?? 0, open.lastActivityAt?.getTime() ?? 0);
+      if (jobs.total > 0 && jobs.open === 0 && now.getTime() - quietSince >= RELEASE_WHEN_DONE_GRACE_MS) reason = "all jobs done (release when done)";
+    }
     if (!reason) return { action: "none", sessionId: open.id, reason: null };
     const stopped = await stopRow(open, reason);
     return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
@@ -788,8 +803,29 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         stoppingOutcome: null,
         lastSeenAliveAt: null,
         terminateSentAt: null,
+        releaseWhenDone: parsed.releaseWhenDone ?? false,
       });
       return toPublicSession(row, now);
+    },
+
+    /**
+     * BL-135 (ADR 0023 amendment 2, owner 2026-10-06): the channel that requested a session may END it -- the one session
+     * action an agent gets, because it only ever stops spending. Its own channel's session only (another channel's is
+     * not found). `pending` → withdrawn (rejected), `starting`/`running` → the same stop as the owner's, `stopping` →
+     * nothing to do, `approved` (pod still being created) → refused until it is running, terminal → refused.
+     */
+    async releaseSession(input: { sessionId: string; channelId: string }): Promise<MediaSession> {
+      const row = await deps.store.get(input.sessionId);
+      if (!row || row.channelId !== input.channelId) throw notFound(input.sessionId);
+      const reason = "released by the channel agent";
+      if (row.status === "pending") {
+        const withdrawn = await deps.store.transition(row.id, ["pending"], { status: "rejected", stoppedAt: deps.clock.now(), stopReason: "withdrawn by the channel agent" });
+        if (!withdrawn) throw invalidState(row.id, "pending", (await requireRow(row.id)).status);
+        return toPublicSession(withdrawn, deps.clock.now());
+      }
+      if (row.status === "stopping") return toPublicSession(row, deps.clock.now());
+      if (row.status === "starting" || row.status === "running") return toPublicSession(await stopRow(row, reason), deps.clock.now());
+      throw invalidState(row.id, row.status === "approved" ? "running (the pod is still being created -- try again shortly)" : "pending|starting|running", row.status);
     },
 
     async rejectSession(input: unknown): Promise<MediaSession> {

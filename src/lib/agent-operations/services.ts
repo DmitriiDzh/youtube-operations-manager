@@ -485,6 +485,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Cancels one of this channel's queued or generating jobs (best-effort interrupt of ComfyUI); a transferring or finished job is refused. Never stops the session. Implemented as the `agent_cancel_media_job` MCP tool; gated like agent_create_media_job. Requires channelId to be the caller's currently-active channel.",
   },
+  {
+    id: "media_generation.release_media_session",
+    mcpTools: ["agent_release_media_session"],
+    domain: "media_generation",
+    permission: "DRAFT",
+    description:
+      "Ends one of this channel's own generation sessions (BL-135): a pending request is withdrawn, a starting or running pod is terminated -- it only ever stops spending; starting or approving stays the owner's. Alternatively request the session with releaseWhenDone: true and it stops itself one minute after its last job finished. Implemented as the `agent_release_media_session` MCP tool; gated like agent_create_media_job. Requires channelId to be the caller's currently-active channel.",
+  },
   // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4) -- registered directly as the
   // `agent_list_logical_paths` / `agent_get_logical_path` MCP tools calling `createLogicalPathsCore()`
   // (`src/lib/logical-paths/`), NOT wrapped by this module -- same pattern as channel_workspace above.

@@ -7,6 +7,8 @@ import test from "node:test";
 // generation session is a Web-UI action only. The same mechanical fence as
 // `market-research-request-approval-inventory.test.ts`: none of these symbols may appear in the
 // agent-facing MCP server, the operator CLI, or the agent-operations module.
+// BL-135 (ADR 0023 amendment 2, owner 2026-10-06): `releaseSession` -- the requesting channel ending its OWN session -- is
+// deliberately NOT fenced: it can only withdraw a request or stop a pod (stop spending), never approve, start or resume.
 
 const FENCED_SYMBOLS = ["approveSession", "approveAndStartSession", "stopSession", "rejectSession", "stopForShutdown", "bootSweep", "watchTick"];
 const FENCED_DIRS = [path.join("src", "mcp"), path.join("src", "cli"), path.join("src", "lib", "agent-operations")];
