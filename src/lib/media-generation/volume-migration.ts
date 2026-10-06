@@ -1,6 +1,6 @@
-import type { RunpodApiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
+import type { RunpodApiClient, RunpodPod, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
 import { z } from "zod";
-import { DomainError, parseWithSchema, type MediaSettings } from "./contracts";
+import { DomainError, isDomainError, parseWithSchema, type MediaSettings } from "./contracts";
 
 // BL-136 (owner, Telegram 2026-10-06, msgs 1695/1704/1709; plan docs/roadmap/plans/VOLUME_MIGRATION_PLAN.md): moving the
 // network volume's data to a smaller volume, since RunPod never shrinks one. This file holds step 0 -- the probe that decides
@@ -27,7 +27,8 @@ export const PROBE_LARGE_MIN_BYTES = 500 * 1024 * 1024;
 const REACHABLE_ATTEMPTS = 18;
 const REACHABLE_INTERVAL_MS = 10_000;
 
-export type ProbeCopyResult = { key: string; bytes: number; ok: boolean; copiedBytes: number | null; ms: number; error: string | null };
+/** `timedOut`: the copy got no HTTP answer at all (timeout or dropped connection) -- RunPod may still be copying. */
+export type ProbeCopyResult = { key: string; bytes: number; ok: boolean; copiedBytes: number | null; ms: number; error: string | null; timedOut: boolean };
 export type VolumeCopyProbeReport = {
   sourceVolumeId: string;
   testVolumeId: string | null;
@@ -52,6 +53,20 @@ export function pickProbeObjects(objects: S3ObjectSummary[]): { small: S3ObjectS
 
 export const deleteNetworkVolumeInputSchema = z.object({ volumeId: z.string().trim().min(1).max(64) }).strict();
 
+/**
+ * Whether a pod has (or may have) `volumeId` mounted -- fails closed (independent review): the pod list's mount data has not
+ * been seen in a live response, so a pod whose mounts cannot be read at all counts as "may", unless it runs in another
+ * datacenter (a network volume attaches only there). Also accepts a flat `networkVolumeId` field (the create body's name).
+ */
+export function podMayMountVolume(pod: RunpodPod, volumeId: string, volumeDataCenterId: string | null): "yes" | "unknown" | "no" {
+  if (pod.networkVolumeIds.includes(volumeId) || pod.raw.networkVolumeId === volumeId) return "yes";
+  const mounts = pod.raw.mounts;
+  const hasMountInfo = (mounts && typeof mounts === "object" && "network" in mounts) || "networkVolumeId" in pod.raw;
+  if (hasMountInfo) return "no";
+  if (pod.dataCenterId && volumeDataCenterId && pod.dataCenterId !== volumeDataCenterId) return "no";
+  return "unknown";
+}
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
@@ -64,9 +79,11 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
       const head = await target.headObject(destinationKey);
       const copiedBytes = head?.size ?? null;
       const ok = copiedBytes === object.size;
-      return { key: object.key, bytes: object.size, ok, copiedBytes, ms: deps.clock.now().getTime() - started, error: ok ? null : `the copy has ${copiedBytes ?? "no"} bytes, the source ${object.size}` };
+      return { key: object.key, bytes: object.size, ok, copiedBytes, ms: deps.clock.now().getTime() - started, error: ok ? null : `the copy has ${copiedBytes ?? "no"} bytes, the source ${object.size}`, timedOut: false };
     } catch (error) {
-      return { key: object.key, bytes: object.size, ok: false, copiedBytes: null, ms: deps.clock.now().getTime() - started, error: message(error) };
+      // The S3 client reports an HTTP answer with `details.status`; a request that never got one has none.
+      const timedOut = isDomainError(error) && error.code === "runpod_s3_unavailable" && (error.details as { status?: number } | undefined)?.status === undefined;
+      return { key: object.key, bytes: object.size, ok: false, copiedBytes: null, ms: deps.clock.now().getTime() - started, error: message(error), timedOut };
     }
   }
 
@@ -85,9 +102,18 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
       const client = await deps.base.resolveRunpodClient();
       const volume = await client.getNetworkVolume(volumeId);
       if (!volume) throw new DomainError({ code: "not_found", message: "No network volume with this id on the RunPod account", details: { volumeId } });
-      const mountedBy = (await client.listPods()).filter((pod) => pod.networkVolumeIds.includes(volumeId)).map((pod) => pod.id);
+      const pods = await client.listPods();
+      const mountedBy = pods.filter((pod) => podMayMountVolume(pod, volumeId, volume.dataCenterId) === "yes").map((pod) => pod.id);
       if (mountedBy.length > 0) {
         throw new DomainError({ code: "media_session_conflict", message: `Pod${mountedBy.length === 1 ? "" : "s"} ${mountedBy.join(", ")} still ${mountedBy.length === 1 ? "has" : "have"} this volume mounted; terminate ${mountedBy.length === 1 ? "it" : "them"} first.`, details: { volumeId, pods: mountedBy } });
+      }
+      const unknown = pods.filter((pod) => podMayMountVolume(pod, volumeId, volume.dataCenterId) === "unknown").map((pod) => pod.id);
+      if (unknown.length > 0) {
+        throw new DomainError({ code: "media_session_conflict", message: `RunPod does not say which volume pod${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")} ${unknown.length === 1 ? "has" : "have"} mounted; terminate ${unknown.length === 1 ? "it" : "them"} before deleting a volume.`, details: { volumeId, pods: unknown } });
+      }
+      // A concurrent Setup save may have switched the app to this volume since the check above (independent review).
+      if ((await deps.base.getSettings()).networkVolumeId === volumeId) {
+        throw new DomainError({ code: "validation_failed", message: "This volume has just become the one the app uses; it is not deleted.", details: { volumeId } });
       }
       const outcome = await client.deleteNetworkVolume(volumeId);
       log(`[media] deleted network volume ${volumeId} (${volume.name}, ${volume.sizeGb} GB)`);
@@ -113,7 +139,19 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
       const client = await deps.base.resolveRunpodClient();
       const stamp = deps.clock.now().toISOString().replace(/[-:]/g, "").slice(0, 13);
       const report: VolumeCopyProbeReport = { sourceVolumeId, testVolumeId: null, reachableAfterMs: null, small: null, large: null, testVolumeDeleted: false, deleteError: null, verdict: "inconclusive", notes };
-      const volume = await client.createNetworkVolume({ name: `ytm-copy-probe-${stamp}`, dataCenterId: settings.datacenterId, sizeGb: PROBE_VOLUME_SIZE_GB });
+      const probeName = `ytm-copy-probe-${stamp}`;
+      let volume;
+      try {
+        volume = await client.createNetworkVolume({ name: probeName, dataCenterId: settings.datacenterId, sizeGb: PROBE_VOLUME_SIZE_GB });
+      } catch (error) {
+        // The call can fail AFTER RunPod created the volume (timeout, unreadable answer): find it by its name and delete it.
+        const orphan = (await client.listNetworkVolumes().catch(() => [])).find((v) => v.name === probeName);
+        if (orphan) await client.deleteNetworkVolume(orphan.id).catch(() => undefined);
+        throw new DomainError({
+          code: "runpod_api_unavailable",
+          message: `Could not create the probe's test volume: ${message(error)}${orphan ? ` (a volume ${orphan.id} of that name was found and a delete was sent; check for leftover ${probeName} volumes)` : ""}`,
+        });
+      }
       report.testVolumeId = volume.id;
       log(`[media] BL-136 probe: created test volume ${volume.id}`);
       try {
@@ -136,7 +174,11 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
         }
         report.small = await copyOne(target, sourceVolumeId, small, `ytm-probe/${small.key}`);
         if (large && report.small.ok) report.large = await copyOne(target, sourceVolumeId, large, `ytm-probe/${large.key}`);
-        if (!report.small.ok || (report.large && !report.large.ok)) report.verdict = "pods";
+        // A copy RunPod refused or got wrong means variant B; one that only ran out of time (no HTTP answer) proves nothing.
+        const refused = (r: ProbeCopyResult | null) => r !== null && !r.ok && !r.timedOut;
+        const timedOut = (r: ProbeCopyResult | null) => r !== null && r.timedOut;
+        if (refused(report.small) || refused(report.large)) report.verdict = "pods";
+        else if (timedOut(report.small) || timedOut(report.large)) report.verdict = "inconclusive";
         else if (report.small.ok && report.large?.ok) report.verdict = "server-side";
         return report;
       } finally {

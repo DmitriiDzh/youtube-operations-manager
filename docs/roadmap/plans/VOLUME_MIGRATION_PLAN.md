@@ -1,6 +1,6 @@
 # BL-136 — Migrate the RunPod network volume to a smaller one
 
-**Status:** plan, awaiting the owner's agreement. Assigned by the owner (Telegram 2026-10-06, msg 1704) after asking for it (msg 1695).
+**Status:** plan agreed (msg 1709); step 0 probe built, its run parked by the owner (msg 1720). Assigned by the owner (Telegram 2026-10-06, msg 1704) after asking for it (msg 1695).
 **Why:** RunPod never shrinks a network volume ("Volume size can be increased later but cannot be decreased", network-volumes docs;
 `PATCH` refuses a smaller `size`). The only way to rent less is a new, smaller volume holding the same data.
 
@@ -33,8 +33,10 @@ the largest model up to 18 GB from the current volume to it, `HeadObject` to che
 4. **Verify before switching:** every object present with the same size; SHA-256 equal wherever the app knows it (model registry).
    For B both pods write a manifest that the app compares.
 5. **Switch** `networkVolumeId` through the existing validated settings path.
-6. **Delete the old volume:** a separate button, enabled only after a successful switch, its own confirmation naming the volume
-   and its monthly price; new gateway function `DELETE /v2/network-volumes/{id}`. Never automatic.
+6. **Delete the old volume:** a separate button with its own confirmation naming the volume and its monthly price; new gateway
+   function `DELETE /v2/network-volumes/{id}`. Never automatic. *As built (2026-10-06):* a general "Delete" for every volume the
+   app does not use (Production → Setup → Network volume), refused for the configured volume, an unknown one, and any volume a
+   pod has — or may have, when RunPod's pod list does not say — mounted; the settings are re-read just before the delete.
 7. **Failure:** pods terminated, lock released, the new volume kept and shown with its own delete button; the migration's state is
    stored (`app_settings`) so the card survives a reload or restart.
 

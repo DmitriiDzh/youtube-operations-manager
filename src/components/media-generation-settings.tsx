@@ -201,8 +201,10 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [usage, setUsage] = useState<MediaVolumeUsage | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
 
+  // `withUsage`: the whole-volume listing (BL-136) runs on an explicit Load/Refresh only, never on the pull poll -- it can take
+  // longer than the poll interval on a volume with many files (independent review).
   const load = useCallback(
-    () =>
+    (withUsage = true) =>
       Promise.all([
         requestJson<{ models: ModelFile[]; pulls: ModelPull[]; registry: "ok" | "unavailable"; registryError: string | null; events: MediaControlEventView[] }>("/api/media-generation/models").then(
           (data) => {
@@ -223,16 +225,18 @@ export function ModelsCard({ configured }: { configured: boolean }) {
           (err: unknown) => setStorageError(err instanceof Error ? err.message : "Could not read the volume's size")
         ),
         // BL-136: the whole volume's use (one S3 listing); its failure leaves the bar with the model files only.
-        requestJson<{ usage: MediaVolumeUsage }>("/api/media-generation/storage/usage").then(
-          (data) => {
-            setUsage(data.usage);
-            setUsageError(null);
-          },
-          (err: unknown) => {
-            setUsage(null);
-            setUsageError(err instanceof Error ? err.message : "Could not list the whole volume");
-          }
-        ),
+        withUsage
+          ? requestJson<{ usage: MediaVolumeUsage }>("/api/media-generation/storage/usage").then(
+              (data) => {
+                setUsage(data.usage);
+                setUsageError(null);
+              },
+              (err: unknown) => {
+                setUsage(null);
+                setUsageError(err instanceof Error ? err.message : "Could not list the whole volume");
+              }
+            )
+          : Promise.resolve(),
       ]).then(() => undefined),
     []
   );
@@ -240,7 +244,7 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const pulling = pulls.some((p) => p.status === "running");
   useEffect(() => {
     if (!pulling) return;
-    const timer = setInterval(() => void load(), 15_000);
+    const timer = setInterval(() => void load(false), 15_000);
     return () => clearInterval(timer);
   }, [pulling, load]);
 
@@ -307,7 +311,7 @@ export function ModelsCard({ configured }: { configured: boolean }) {
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={load} disabled={busy} className={secondaryButton}>
+            <button type="button" onClick={() => void load()} disabled={busy} className={secondaryButton}>
               {models ? "Refresh" : "Load models"}
             </button>
             {models && (
@@ -1671,6 +1675,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     try {
       await requestJson("/api/media-generation/network-volumes", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ volumeId: target.id }) });
       setNotice(`Deleted ${target.name} (${target.id}).`);
+      if (selected === target.id) setSelected(settings.networkVolumeId ?? "");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete the volume");

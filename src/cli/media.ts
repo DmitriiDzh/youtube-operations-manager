@@ -97,7 +97,7 @@ export const HELP = [
   "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--revision main] [--sha256 <hex>] [--cpu cpu3c] [--vcpu 2]",
   "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
-  "  volume-copy-probe                               BL-136: creates a 20 GB test volume, copies two files into it over S3, deletes it",
+  "  volume-copy-probe                               BL-136: creates a 20 GB test volume, copies two files into it over S3, deletes it (if interrupted, delete leftover ytm-copy-probe-* volumes in Production → Setup)",
   "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
   "  pod-get <podId>",
   "  pod-create --file <body.json>           RunPod v2 create-pod body (see docs); terminated by you, never stopped",

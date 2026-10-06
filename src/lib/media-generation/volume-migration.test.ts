@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunpodApiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
-import { isDomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { DEFAULT_MEDIA_SETTINGS, type MediaSettings } from "./contracts";
 import { createVolumeMigrationServices, pickProbeObjects } from "./volume-migration";
 
@@ -29,7 +29,7 @@ test("pickProbeObjects: the smallest non-empty file, and the largest file betwee
 });
 
 function fixture(
-  opts: { objects?: S3ObjectSummary[]; copyFails?: (key: string) => string | null; copiedSize?: (key: string, size: number) => number; unreachable?: boolean; deleteFails?: boolean; pods?: Array<{ id: string; networkVolumeIds: string[] }> } = {}
+  opts: { objects?: S3ObjectSummary[]; copyFails?: (key: string) => string | null; copiedSize?: (key: string, size: number) => number; unreachable?: boolean; deleteFails?: boolean; pods?: Array<{ id: string; networkVolumeIds: string[]; dataCenterId?: string | null; raw?: Record<string, unknown> }>; createFailsAfterCreating?: boolean; copyTimesOut?: boolean; switchSettingsTo?: string } = {}
 ) {
   const calls: string[] = [];
   const objects = opts.objects ?? [obj("ytm-pulls/p1.json", 300), obj("models/te/t5.safetensors", 1.1 * GB)];
@@ -39,14 +39,19 @@ function fixture(
   const runpod = {
     async createNetworkVolume(input: { name: string; dataCenterId: string; sizeGb: number }) {
       calls.push(`create:${input.dataCenterId}:${input.sizeGb}`);
+      if (opts.createFailsAfterCreating) throw new Error("timeout");
       return { id: "probe-vol", name: input.name, dataCenterId: input.dataCenterId, sizeGb: input.sizeGb, usedSizeGb: null, createdAt: null };
+    },
+    async listNetworkVolumes() {
+      calls.push("listVolumes");
+      return [{ id: "probe-vol", name: "ytm-copy-probe-20261006T1200", dataCenterId: "EU-RO-1", sizeGb: 20, usedSizeGb: null, createdAt: null }];
     },
     async getNetworkVolume(id: string) {
       return id === "missing" ? null : { id, name: `n-${id}`, dataCenterId: "EU-RO-1", sizeGb: 50, usedSizeGb: null, createdAt: null };
     },
     async listPods() {
       calls.push("listPods");
-      return opts.pods ?? [];
+      return (opts.pods ?? []).map((p) => ({ dataCenterId: null, raw: { mounts: { network: p.networkVolumeIds.map((volumeId) => ({ volumeId })) } }, ...p }));
     },
     async deleteNetworkVolume(id: string) {
       calls.push(`delete:${id}`);
@@ -68,6 +73,7 @@ function fixture(
     },
     async copyObjectFrom(sourceVolumeId: string, sourceKey: string, destinationKey: string) {
       calls.push(`copy:${sourceVolumeId}/${sourceKey}->${destinationKey}`);
+      if (opts.copyTimesOut && sourceKey.endsWith(".safetensors")) throw new DomainError({ code: "runpod_s3_unavailable", message: "RunPod S3 request failed: The operation was aborted due to timeout", details: { method: "PUT", host: "x" } });
       const failure = opts.copyFails?.(sourceKey);
       if (failure) throw new Error(failure);
       copied.set(destinationKey, opts.copiedSize ? opts.copiedSize(sourceKey, sizes.get(sourceKey)!) : sizes.get(sourceKey)!);
@@ -80,7 +86,12 @@ function fixture(
   let now = Date.parse("2026-10-06T12:00:00Z");
   const services = createVolumeMigrationServices({
     base: {
-      getSettings: async () => settings,
+      getSettings: async () => {
+        // switchSettingsTo: a concurrent Setup save lands after the delete's first settings read.
+        const current = { ...settings };
+        if (opts.switchSettingsTo && calls.includes("listPods")) current.networkVolumeId = opts.switchSettingsTo;
+        return current;
+      },
       resolveRunpodClient: async () => runpod,
       s3: async () => source,
       s3ForVolume: async (id) => {
@@ -186,4 +197,38 @@ test("deleteUnusedNetworkVolume refuses the configured volume, an unknown one, a
   await assert.rejects(f.services.deleteUnusedNetworkVolume({}), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(f.services.deleteUnusedNetworkVolume({ volumeId: "old-vol", extra: 1 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   assert.ok(!f.calls.some((c) => c.startsWith("delete:")));
+});
+
+// Independent review: the pod list's mount data has not been seen live, so the guard fails closed.
+test("deleteUnusedNetworkVolume refuses when a pod's mounts cannot be read, accepts a flat networkVolumeId, and skips pods of another datacenter", async () => {
+  const unknown = fixture({ pods: [{ id: "pod-x", networkVolumeIds: [], raw: {} }] });
+  await assert.rejects(unknown.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /pod-x/.test(e.message));
+  const flat = fixture({ pods: [{ id: "pod-f", networkVolumeIds: [], raw: { networkVolumeId: "old-vol" } }] });
+  await assert.rejects(flat.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /pod-f/.test(e.message));
+  const elsewhere = fixture({ pods: [{ id: "pod-us", networkVolumeIds: [], dataCenterId: "US-TX-3", raw: {} }] });
+  assert.equal((await elsewhere.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" })).deleted, "old-vol");
+  const otherVolume = fixture({ pods: [{ id: "pod-o", networkVolumeIds: ["src-vol"] }] });
+  assert.equal((await otherVolume.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" })).deleted, "old-vol");
+  assert.ok(!unknown.calls.includes("delete:old-vol") && !flat.calls.includes("delete:old-vol"));
+});
+
+test("deleteUnusedNetworkVolume re-reads the settings right before deleting: a volume that just became the configured one is kept", async () => {
+  const f = fixture({ switchSettingsTo: "old-vol" });
+  await assert.rejects(f.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  assert.ok(!f.calls.includes("delete:old-vol"));
+});
+
+test("a copy that only timed out (no HTTP answer) makes the probe inconclusive, not 'pods'", async () => {
+  const f = fixture({ copyTimesOut: true });
+  const report = await f.services.probeCrossVolumeCopy();
+  assert.equal(report.small?.ok, true);
+  assert.equal(report.large?.timedOut, true);
+  assert.equal(report.verdict, "inconclusive");
+  assert.equal(report.testVolumeDeleted, true);
+});
+
+test("a create that fails after RunPod made the volume: the volume is found by its name and deleted, and the probe fails", async () => {
+  const f = fixture({ createFailsAfterCreating: true });
+  await assert.rejects(f.services.probeCrossVolumeCopy(), (e: unknown) => isDomainError(e) && /probe-vol/.test(e.message));
+  assert.ok(f.calls.includes("delete:probe-vol"));
 });
