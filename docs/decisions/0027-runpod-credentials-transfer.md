@@ -14,7 +14,7 @@ the snapshot or in sync. Every device therefore needed the three keys typed in b
 ## Decision
 
 1. **Export** (Settings → RunPod → "Export credentials…", `POST /api/media-generation/credentials/export`): the operator types a
-   password (≥ 12 characters, twice); the server derives a key with scrypt (N = 2^17, r = 8, p = 1, random 16-byte salt;
+   password (≥ 12 characters, twice); the server derives a key with scrypt (N = 2^17, r = 8, p = 1, random 16-byte salt; a file may ask for at most 256 MiB, p = 1;
    `src/lib/shared-crypto`) and encrypts the credential set with AES-256-GCM. The browser downloads
    `runpod-credentials-<date>.ytmkeys`: format, version, date, the public hints (key prefix, S3 access key id) and the ciphertext.
    The password is never stored or logged.

@@ -68,8 +68,12 @@ export function decryptSecret(payload: EncryptedPayload, key: Buffer): string {
 export type ScryptParams = { N: number; r: number; p: number };
 /** ~128 MiB of memory per derivation (128 * N * r bytes): slow to brute-force, ~0.3 s for one honest attempt. */
 export const PASSWORD_SCRYPT_PARAMS: ScryptParams = Object.freeze({ N: 2 ** 17, r: 8, p: 1 });
-/** Bounds for a file's own parameters: a crafted file must not make a decrypt allocate gigabytes or spin for minutes. */
-const SCRYPT_LIMITS = { maxN: 2 ** 20, maxR: 16, maxP: 4 };
+/**
+ * Bounds for a file's own parameters: a crafted file must not make a decrypt allocate gigabytes or spin for minutes
+ * (independent review: the first limits allowed 2 GiB per attempt). At most 2x the production cost: 256 MiB, p = 1.
+ */
+export const SCRYPT_MAX_MEMORY_BYTES = 256 * 1024 * 1024;
+const SCRYPT_LIMITS = { maxN: 2 ** 18, maxR: 8, maxP: 1 };
 const SALT_BYTES = 16;
 
 export type PasswordEncryptedPayload = EncryptedPayload & { kdf: "scrypt"; salt: string } & ScryptParams;
@@ -91,7 +95,8 @@ export function scryptParamsWithinLimits(params: ScryptParams): boolean {
     params.r <= SCRYPT_LIMITS.maxR &&
     Number.isInteger(params.p) &&
     params.p >= 1 &&
-    params.p <= SCRYPT_LIMITS.maxP
+    params.p <= SCRYPT_LIMITS.maxP &&
+    128 * params.N * params.r * params.p <= SCRYPT_MAX_MEMORY_BYTES
   );
 }
 

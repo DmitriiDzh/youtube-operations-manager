@@ -1442,8 +1442,11 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
       const link = document.createElement("a");
       link.href = url;
       link.download = credentialsFileName(new Date());
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(url);
+      link.remove();
+      // Some WebKit versions drop the download when the blob URL is revoked in the same tick (review).
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
       reset("idle");
       setNotice(`Downloaded ${link.download}. Move it to the other device and import it there with the same password.`);
     } catch (err) {
@@ -1471,7 +1474,7 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
         body: JSON.stringify({ file: parsed, password }),
       });
       reset("idle");
-      setNotice("Imported, checked with RunPod and saved (encrypted on this device).");
+      setNotice("Imported and saved (encrypted on this device); RunPod accepted the API key. Press Test to check the S3 key pair too.");
       await onImported();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");

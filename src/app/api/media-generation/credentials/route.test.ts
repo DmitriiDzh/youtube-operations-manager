@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { MediaGenerationCore } from "@/lib/media-generation";
+import { DomainError, type MediaGenerationCore } from "@/lib/media-generation";
 import { createKeyFile, type KeyFileAccess } from "@/lib/media-generation/key-file";
 import { createMediaGenerationServices, type MediaGenerationStore, type StoredCredentialsRow } from "@/lib/media-generation/services";
 import type { RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
@@ -15,7 +15,7 @@ import { createOverviewGetHandler } from "../overview/route";
 const RUNPOD_KEY = "rpa_SECRETSECRETSECRETSECRETSECRET";
 const S3_SECRET = "rps_verysecretvalue";
 
-function core(opts: { runpodAccepts?: boolean } = {}): MediaGenerationCore {
+function core(opts: { runpodAccepts?: boolean; verifyError?: DomainError } = {}): MediaGenerationCore {
   let row: StoredCredentialsRow | null = null;
   let keyContent: string | null = null;
   let settings: string | null = null;
@@ -52,7 +52,8 @@ function core(opts: { runpodAccepts?: boolean } = {}): MediaGenerationCore {
       createRunpodClient: () =>
         ({
           async verifyKey() {
-            if (opts.runpodAccepts === false) throw new Error("RunPod rejected the API key (HTTP 401).");
+            if (opts.verifyError) throw opts.verifyError;
+            if (opts.runpodAccepts === false) throw new DomainError({ code: "media_credentials_invalid", message: "RunPod rejected the API key (HTTP 401)." });
             return { ok: true as const };
           },
         }) as unknown as RunpodApiClient,
@@ -208,4 +209,16 @@ test("export needs a session, stored credentials, and a password of at least 12 
   assert.equal(JSON.parse(await short.text()).error, "validation_failed");
   assert.equal((await exportFrom(a, "twelve chars")).status, 200);
   assert.equal((await createCredentialsImportPostHandler({ ...anonymous, core: a })(jsonRequest("POST", { file: {}, password: "x" }))).status, 401);
+});
+
+test("an import that cannot reach RunPod keeps the real reason (not 'key rejected') and stores nothing", async () => {
+  const a = core();
+  await createCredentialsPutHandler({ ...authed, core: a })(jsonRequest("PUT", { runpodApiKey: RUNPOD_KEY }));
+  const { file } = JSON.parse(await (await exportFrom(a)).text());
+  const offline = core({ verifyError: new DomainError({ code: "media_gateway_disabled", message: "The media gateway is switched off." }) });
+  const res = await createCredentialsImportPostHandler({ ...authed, core: offline })(jsonRequest("POST", { file, password: PASSWORD }));
+  const body = JSON.parse(await res.text());
+  assert.equal(body.error, "media_gateway_disabled");
+  assert.ok(!JSON.stringify(body).includes(RUNPOD_KEY));
+  assert.deepEqual(await offline.getCredentialsStatus(), { configured: false, reason: "no_credentials" });
 });

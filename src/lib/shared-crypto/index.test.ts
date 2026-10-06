@@ -91,6 +91,12 @@ test("decryptWithPassword fails on a wrong password, a tampered ciphertext, and 
   await assert.rejects(decryptWithPassword({ ...payload, r: 64 }, "correct horse battery"), /parameters/);
 });
 
-test("the production scrypt parameters are within the accepted limits", () => {
+test("the production scrypt parameters are within the accepted limits; anything costing over 256 MiB is refused", () => {
   assert.ok(scryptParamsWithinLimits(PASSWORD_SCRYPT_PARAMS));
+  // 128 * N * r * p bytes: 2^18 * 8 * 128 = 256 MiB is the most a file may ask for.
+  assert.ok(scryptParamsWithinLimits({ N: 2 ** 18, r: 8, p: 1 }));
+  assert.ok(!scryptParamsWithinLimits({ N: 2 ** 19, r: 8, p: 1 })); // 512 MiB
+  assert.ok(!scryptParamsWithinLimits({ N: 2 ** 18, r: 16, p: 1 })); // 512 MiB
+  assert.ok(!scryptParamsWithinLimits({ N: 2 ** 17, r: 8, p: 2 })); // p > 1 multiplies the CPU cost
+  assert.ok(!scryptParamsWithinLimits({ N: 2 ** 20, r: 16, p: 4 })); // 2 GiB
 });

@@ -286,6 +286,10 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       try {
         await deps.gateway.createRunpodClient(parsed.runpodApiKey).verifyKey();
       } catch (error) {
+        // Only a rejected key is "invalid"; the gateway toggle, a 403 scope, RunPod being down keep their own code (review).
+        if (error instanceof DomainError && error.code !== "media_credentials_invalid") {
+          throw new DomainError({ code: error.code, message: `${error.message} The import was not saved.`, details: error.details });
+        }
         throw new DomainError({
           code: "media_credentials_invalid",
           message: `RunPod did not accept the imported API key (${error instanceof Error ? error.message : String(error)}). Nothing was changed.`,
