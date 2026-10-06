@@ -78,3 +78,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0024](0024-agent-token-import.md) | Agent token import: the same channel / Factory Operator token registered on several devices by operator paste; channel tokens embed their channel id | Accepted |
 | [0026](0026-factory-gpu-sessions.md) | Factory GPU sessions within owner limits (self-approved only inside them), per-session GPU fallback, a no-cost capacity wait and a capacity log | Accepted |
 | [0025](0025-factory-media-control.md) | Factory media control: hash-verified model pulls, a deletion guard, a template registry synced on every device, job input media; the factory role writes through a closed list | Accepted |
+| [0027](0027-runpod-credentials-transfer.md) | RunPod credentials carried to another device as a password-encrypted file (scrypt + AES-256-GCM), checked with RunPod on import; Web UI only | Accepted |

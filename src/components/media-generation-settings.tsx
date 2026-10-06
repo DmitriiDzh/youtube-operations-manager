@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   MAX_CONCURRENT_SESSIONS_RANGE,
   NETWORK_VOLUME_USD_PER_GB_MONTH,
@@ -1371,6 +1371,8 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
         </div>
       )}
 
+      <CredentialsTransfer configured={status.configured} disabled={busy} onImported={onChanged} />
+
       {testResult && (
         <div className="space-y-1 text-xs">
           <p className={testResult.runpod.ok ? "text-emerald-400" : "text-red-400"}>RunPod API: {testResult.runpod.ok ? "OK" : testResult.runpod.message}</p>
@@ -1397,6 +1399,141 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
         />
       )}
     </Card>
+  );
+}
+
+/** The file name an export downloads as: the date keeps several exports apart, `.ytmkeys` says what it is. */
+export function credentialsFileName(now: Date): string {
+  return `runpod-credentials-${now.toISOString().slice(0, 10)}.ytmkeys`;
+}
+
+// BL-137 (owner, Telegram 2026-10-06, variant A): carry the credentials to another device as a file encrypted under a password
+// typed on both ends. The password lives only in these fields; the server never stores it.
+function CredentialsTransfer({ configured, disabled, onImported }: { configured: boolean; disabled: boolean; onImported: () => Promise<void> }) {
+  const [mode, setMode] = useState<"idle" | "export" | "import">("idle");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function reset(next: "idle" | "export" | "import") {
+    setMode(next);
+    setPassword("");
+    setConfirmPassword("");
+    setFile(null);
+    setError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function doExport() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const { file: exported } = await requestJson<{ file: unknown }>("/api/media-generation/credentials/export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const url = URL.createObjectURL(new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = credentialsFileName(new Date());
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Some WebKit versions drop the download when the blob URL is revoked in the same tick (review).
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      reset("idle");
+      setNotice(`Downloaded ${link.download}. Move it to the other device and import it there with the same password.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doImport() {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch {
+        throw new Error("This is not a credentials file exported by YT Manager.");
+      }
+      await requestJson("/api/media-generation/credentials/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file: parsed, password }),
+      });
+      reset("idle");
+      setNotice("Imported and saved (encrypted on this device); RunPod accepted the API key. Press Test to check the S3 key pair too.");
+      await onImported();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tooShort = password.length < 12;
+  return (
+    <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-zinc-400">Another device:</span>
+        {configured && (
+          <button type="button" onClick={() => reset(mode === "export" ? "idle" : "export")} disabled={disabled || busy} className={secondaryButton}>
+            Export credentials…
+          </button>
+        )}
+        <button type="button" onClick={() => reset(mode === "import" ? "idle" : "import")} disabled={disabled || busy} className={secondaryButton}>
+          Import credentials…
+        </button>
+      </div>
+      {mode === "export" && (
+        <div className="space-y-2">
+          <p className="text-xs text-zinc-500">
+            The file is encrypted with this password (scrypt + AES-256-GCM); without it the file is useless. The password is not saved anywhere: remember it.
+            Anyone with the file and the password has your RunPod key.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="password, at least 12 characters" />
+            <input type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputClass} placeholder="repeat the password" />
+          </div>
+          {confirmPassword && confirmPassword !== password && <p className="text-xs text-amber-400">The passwords differ.</p>}
+          <button type="button" onClick={doExport} disabled={busy || tooShort || password !== confirmPassword} className={primaryButton}>
+            {busy ? "Encrypting…" : "Download encrypted file"}
+          </button>
+        </div>
+      )}
+      {mode === "import" && (
+        <div className="space-y-2">
+          <p className="text-xs text-zinc-500">
+            A .ytmkeys file exported on another device. The key is checked with RunPod before it replaces anything stored here.
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".ytmkeys,application/json"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            className="text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-700 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:text-zinc-300"
+          />
+          <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="the password used for the export" />
+          <button type="button" onClick={doImport} disabled={busy || !file || !password} className={primaryButton}>
+            {busy ? "Importing…" : "Import"}
+          </button>
+        </div>
+      )}
+      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
   );
 }
 
