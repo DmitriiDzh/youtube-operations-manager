@@ -181,6 +181,8 @@ const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 const TRANSFER_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 const TRANSFER_BACKOFF_BASE_MS = 15_000;
 const TRANSFER_BACKOFF_CAP_MS = 10 * 60_000;
+/** While inputs upload, the session's activity is refreshed this often (BL-135: a release-when-done grace is one minute). */
+const UPLOAD_HEARTBEAT_MS = 20_000;
 /** A `queued` row younger than this is a `createJob` still submitting, not a leftover. */
 const SUBMIT_GRACE_MS = 5 * 60_000;
 /** While `/history` has no entry, every Nth poll asks `/queue` whether ComfyUI still knows the prompt at all. */
@@ -1250,21 +1252,29 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       // ComfyUI unless every input is on the volume. Each upload counts as session activity (the idle timeout must not stop
       // the pod mid-upload). On any failure the inputs already uploaded are deleted again and no job exists.
       const uploaded: string[] = [];
-      for (const upload of uploads) {
-        try {
-          await deps.sessions.touchActivity(parsed.sessionId);
-          const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name), { maxBytes: upload.maxBytes, expectedIdentity: upload.file.identity });
-          uploaded.push(upload.remoteKey);
-          await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
-        } catch (error) {
-          for (const key of uploaded) {
-            await s3.deleteObject(key).catch((cleanupError) => log(`[media] could not delete the uploaded input ${key}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`));
-            await deps.store.inputs?.markRemoteDeleted(key, deps.clock.now()).catch(() => undefined);
+      // A heartbeat while uploading (BL-135 review): one 500 MB upload can outlast both the idle timeout and a
+      // release-when-done session's one-minute grace; the session must not be stopped under a job being created.
+      const heartbeat = uploads.length > 0 ? setInterval(() => void deps.sessions.touchActivity(parsed.sessionId).catch(() => undefined), UPLOAD_HEARTBEAT_MS) : null;
+      try {
+        for (const upload of uploads) {
+          try {
+            await deps.sessions.touchActivity(parsed.sessionId);
+            const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name), { maxBytes: upload.maxBytes, expectedIdentity: upload.file.identity });
+            uploaded.push(upload.remoteKey);
+            await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
+          } catch (error) {
+            for (const key of uploaded) {
+              await s3.deleteObject(key).catch((cleanupError) => log(`[media] could not delete the uploaded input ${key}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`));
+              await deps.store.inputs?.markRemoteDeleted(key, deps.clock.now()).catch(() => undefined);
+            }
+            const message = `input "${upload.parameter.name}" (${upload.relativePath}) could not be uploaded: ${error instanceof Error ? error.message : String(error)}`;
+            throw new DomainError({ code: "media_input_unavailable", message, details: { parameter: upload.parameter.name } });
           }
-          const message = `input "${upload.parameter.name}" (${upload.relativePath}) could not be uploaded: ${error instanceof Error ? error.message : String(error)}`;
-          throw new DomainError({ code: "media_input_unavailable", message, details: { parameter: upload.parameter.name } });
         }
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
       }
+      if (uploads.length > 0) await deps.sessions.touchActivity(parsed.sessionId);
       const now = deps.clock.now();
       const row = await deps.store.jobs.insert({
         id: jobId,
