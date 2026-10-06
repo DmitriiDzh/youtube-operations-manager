@@ -9,6 +9,7 @@ export {
 export { parseSnapshotManifest, snapshotManifestSchema } from "./schemas";
 export {
   applySnapshotToDatabase,
+  createSyncPreservingMigrationHooks,
   exportSnapshot,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,

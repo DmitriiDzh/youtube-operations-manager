@@ -35,7 +35,7 @@ import {
   computeFileContentFingerprint,
   transferredTablesAreEmpty,
 } from "./adapters/fingerprint";
-import { readLineageState, writeLineageState, type LineageState } from "./adapters/lineage-store";
+import { readLineageState, rebaselineLineageFingerprintIfUnchanged, writeLineageState, type LineageState } from "./adapters/lineage-store";
 
 /** Execution-ledger statuses where a real YouTube write may have been sent but the outcome is
  * not yet certain -- the only ones a device-handoff import must never silently resolve
@@ -206,6 +206,39 @@ export async function hasUnpublishedLocalChanges(
   if (lineage.lastSnapshotId === null) return !(await transferredTablesAreEmpty(client));
   if (!lineage.contentFingerprint) return true;
   return (currentFingerprint ?? (await computeContentFingerprint(client))) !== lineage.contentFingerprint;
+}
+
+/**
+ * False divergences (owner, Telegram 2026-10-06): a schema migration is applied by every computer to
+ * its own data and to every snapshot it imports, so by itself it is not a change to publish -- yet a
+ * column added with a non-NULL DEFAULT changes the content fingerprint (RISK-89). Around a boot's
+ * migrations: if the device was in sync before them (its content equalled the fingerprint recorded
+ * with its lineage head), it stays in sync after them, by compare-and-set, so real unpublished work
+ * still reads as dirty. Same reasoning as the 30-day purge's hooks. Never throws: a failure only
+ * leaves the old fingerprint, i.e. at worst the pre-existing prompt.
+ */
+export function createSyncPreservingMigrationHooks(client: SqlExecutor): {
+  beforeMigrations: () => Promise<void>;
+  afterMigrations: () => Promise<void>;
+} {
+  let before: string | null = null;
+  return {
+    beforeMigrations: async () => {
+      try {
+        before = await computeContentFingerprint(client);
+      } catch {
+        before = null;
+      }
+    },
+    afterMigrations: async () => {
+      if (!before) return;
+      try {
+        await rebaselineLineageFingerprintIfUnchanged(client, before, await computeContentFingerprint(client));
+      } catch {
+        // No lineage table/column yet (a pre-v36 database): nothing to keep in sync.
+      }
+    },
+  };
 }
 
 async function pathExistsChecked(filePath: string): Promise<boolean> {
@@ -426,4 +459,4 @@ export async function listSnapshots(snapshotsDir: string): Promise<string[]> {
 }
 
 export { readLineageState, writeLineageState, type LineageState };
-export { rebaselineLineageFingerprintIfUnchanged } from "./adapters/lineage-store";
+export { rebaselineLineageFingerprintIfUnchanged };
