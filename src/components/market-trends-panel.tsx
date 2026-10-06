@@ -1,7 +1,9 @@
 "use client";
 
 import { FeatureErrorBoundary } from "./feature-error-boundary";
-import { MarketChannelAssignment } from "./market-channel-assignment";
+import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
+import { BlockingDialog } from "./blocking-dialog";
+import { DrawerSection, SideDrawer } from "./side-drawer";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -39,10 +41,14 @@ const EVIDENCE_TYPE_OPTIONS: TrendEvidenceType[] = ["signal", "supporting_channe
 // Phase 9 slice 9E, part B (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md §14) -- manual/structural
 // trend candidates. Creation always requires at least one evidence item, and any status change
 // requires a reason (written as its own evidence row) -- both enforced by the service layer, this
-// component only surfaces the required fields.
+// component only surfaces the required fields. BL-140 R5: a list with a status filter; a candidate's evidence, status
+// change and visibility open in a side panel, and the add form in a dialog.
 export function MarketTrendsPanel() {
   const [trendCandidates, setTrendCandidates] = useState<MarketTrendCandidate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<TrendCandidateStatus | "">("");
+  const [addOpen, setAddOpen] = useState(false);
+  const { assignments: visibility, connectedChannels, set: setVisibility } = useMarketAssignments("trend_candidate");
 
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
@@ -108,16 +114,25 @@ export function MarketTrendsPanel() {
     }
   }, []);
 
-  function handleToggleExpand(trendCandidate: MarketTrendCandidate) {
-    if (expandedTrendId === trendCandidate.trendCandidateId) {
-      setExpandedTrendId(null);
-      return;
-    }
+  const closeTrend = useCallback(() => {
+    setExpandedTrendId(null);
+    // The stale-response guard too, so a late reply for the closed candidate is dropped.
+    evidenceRequestTrendIdRef.current = null;
+  }, []);
+
+  function handleOpen(trendCandidate: MarketTrendCandidate) {
+    setEvidence([]);
+    setIndependentChannelCount(0);
+    setStatusChoice(trendCandidate.status);
+    setStatusReason("");
     setExpandedTrendId(trendCandidate.trendCandidateId);
     setStatusError(null);
     setAddEvidenceError(null);
     void fetchEvidence(trendCandidate.trendCandidateId);
   }
+
+  const visibleTrends = statusFilter ? trendCandidates.filter((t) => t.status === statusFilter) : trendCandidates;
+  const openTrend = trendCandidates.find((t) => t.trendCandidateId === expandedTrendId) ?? null;
 
   async function handleCreate() {
     setCreating(true);
@@ -145,6 +160,7 @@ export function MarketTrendsPanel() {
       setNewDescription("");
       setNewEvidenceRef("");
       setNewEvidenceDescription("");
+      setAddOpen(false);
       await fetchTrendCandidates();
     } finally {
       setCreating(false);
@@ -202,7 +218,7 @@ export function MarketTrendsPanel() {
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <div>
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
           Trend candidates
           <InfoTooltip>
@@ -211,205 +227,256 @@ export function MarketTrendsPanel() {
             a status can never move without an explanation attached to it.
           </InfoTooltip>
         </h3>
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+        >
+          Add trend
+        </button>
       </div>
 
-      <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
-        <input
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="Trend title"
-          className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
-        />
-        <input
-          value={newDescription}
-          onChange={(e) => setNewDescription(e.target.value)}
-          placeholder="Description (optional)"
-          className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={newEvidenceType}
-            onChange={(e) => {
-              // Clearing the stale ref on every type change (not just hiding its input) --
-              // otherwise switching from supporting_channel/video back to "signal" leaves a
-              // non-empty referenceId in state, which the "signal" branch's own strict schema has
-              // no key for at all and rejects outright (found by independent code review).
-              setNewEvidenceType(e.target.value as TrendEvidenceType);
-              setNewEvidenceRef("");
-            }}
-            className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-          >
-            {EVIDENCE_TYPE_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-          {newEvidenceType !== "signal" && (
-            <input
-              value={newEvidenceRef}
-              onChange={(e) => setNewEvidenceRef(e.target.value)}
-              placeholder={newEvidenceType === "supporting_channel" ? "Channel id (UC...)" : "Video id"}
-              className="min-w-40 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-            />
-          )}
-          <input
-            value={newEvidenceDescription}
-            onChange={(e) => setNewEvidenceDescription(e.target.value)}
-            placeholder="Initial evidence description"
-            className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-          />
-          <button
-            onClick={handleCreate}
-            disabled={creating || newTitle.trim().length === 0 || newEvidenceDescription.trim().length === 0}
-            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-          >
-            {creating ? "Adding..." : "Add trend candidate"}
-          </button>
-        </div>
-        {createError && <p className="text-sm text-red-400">{createError}</p>}
+      <div className="flex flex-wrap items-center gap-2" aria-label="Trend filters">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TrendCandidateStatus | "")} aria-label="Status" className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200">
+          <option value="">Any status</option>
+          {STATUS_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option} ({trendCandidates.filter((t) => t.status === option).length})
+            </option>
+          ))}
+        </select>
       </div>
+
+      {addOpen && (
+        <BlockingDialog label="Add a trend candidate" busy={creating}>
+          <p className="text-sm font-medium text-zinc-100">Add a trend candidate</p>
+          <input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Trend title"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
+          />
+          <input
+            value={newDescription}
+            onChange={(e) => setNewDescription(e.target.value)}
+            placeholder="Description (optional)"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={newEvidenceType}
+              onChange={(e) => {
+                // Clearing the stale ref on every type change (not just hiding its input) --
+                // otherwise switching from supporting_channel/video back to "signal" leaves a
+                // non-empty referenceId in state, which the "signal" branch's own strict schema has
+                // no key for at all and rejects outright (found by independent code review).
+                setNewEvidenceType(e.target.value as TrendEvidenceType);
+                setNewEvidenceRef("");
+              }}
+              className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+            >
+              {EVIDENCE_TYPE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            {newEvidenceType !== "signal" && (
+              <input
+                value={newEvidenceRef}
+                onChange={(e) => setNewEvidenceRef(e.target.value)}
+                placeholder={newEvidenceType === "supporting_channel" ? "Channel id (UC...)" : "Video id"}
+                className="min-w-40 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              />
+            )}
+            <input
+              value={newEvidenceDescription}
+              onChange={(e) => setNewEvidenceDescription(e.target.value)}
+              placeholder="Initial evidence description"
+              className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+            />
+          </div>
+          {createError && <p className="text-xs text-red-400">{createError}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setAddOpen(false);
+                setCreateError(null);
+              }}
+              disabled={creating}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreate}
+              disabled={creating || newTitle.trim().length === 0 || newEvidenceDescription.trim().length === 0}
+              className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {creating ? "Adding..." : "Add trend candidate"}
+            </button>
+          </div>
+        </BlockingDialog>
+      )}
 
       {!loading && trendCandidates.length === 0 && <p className="text-sm text-zinc-500">No trend candidates yet.</p>}
+      {!loading && trendCandidates.length > 0 && visibleTrends.length === 0 && <p className="text-sm text-zinc-500">No trend candidates with this status.</p>}
 
-      <div className="space-y-2">
-        {trendCandidates.map((trendCandidate) => (
-          <div key={trendCandidate.trendCandidateId} className="rounded-lg border border-zinc-800 p-3">
-            <div className="mb-2">
-              <FeatureErrorBoundary label="Channel assignment">
-                <MarketChannelAssignment recordKind="trend_candidate" recordId={trendCandidate.trendCandidateId} />
-              </FeatureErrorBoundary>
-            </div>
+      {visibleTrends.length > 0 && (
+        <div className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
+          {visibleTrends.map((trendCandidate) => (
             <button
-              onClick={() => handleToggleExpand(trendCandidate)}
-              className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
+              key={trendCandidate.trendCandidateId}
+              type="button"
+              onClick={() => handleOpen(trendCandidate)}
+              className={`block w-full px-3 py-2 text-left hover:bg-zinc-800/50 ${expandedTrendId === trendCandidate.trendCandidateId ? "bg-zinc-800/50" : ""}`}
             >
-              <span className="text-sm font-medium text-zinc-100">{trendCandidate.title}</span>
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">{trendCandidate.status}</span>
-            </button>
-            {trendCandidate.description && <p className="mt-1 text-xs text-zinc-500">{trendCandidate.description}</p>}
-            <p className="mt-1 flex items-center gap-1.5 text-xs text-zinc-600">
-              First seen {formatDisplayDateTime(trendCandidate.firstObservedAt)} &middot; last observed{" "}
-              {formatDisplayDateTime(trendCandidate.lastObservedAt)}
-              <span
-                className={
-                  trendCandidate.freshness === "fresh"
-                    ? "rounded-full border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-400"
-                    : "rounded-full border border-zinc-700 px-1.5 py-0.5 text-zinc-500"
-                }
-              >
-                {trendCandidate.freshness === "fresh" ? "evidence added recently" : "no recent evidence"}
+              <span className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium text-zinc-100">{trendCandidate.title}</span>
+                <span className="flex items-center gap-2 text-xs">
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-300">{trendCandidate.status}</span>
+                  <VisibleToPill channelIds={visibility.get(trendCandidate.trendCandidateId) ?? []} connectedChannels={connectedChannels} />
+                </span>
               </span>
-            </p>
+              <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-600">
+                Last observed {formatDisplayDateTime(trendCandidate.lastObservedAt)}
+                <span
+                  className={
+                    trendCandidate.freshness === "fresh"
+                      ? "rounded-full border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-400"
+                      : "rounded-full border border-zinc-700 px-1.5 py-0.5 text-zinc-500"
+                  }
+                >
+                  {trendCandidate.freshness === "fresh" ? "evidence added recently" : "no recent evidence"}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
-            {expandedTrendId === trendCandidate.trendCandidateId && (
-              <div className="mt-3 space-y-3 border-t border-zinc-800 pt-3">
-                <div>
-                  <p className="mb-1 text-xs font-medium text-zinc-400">
-                    Evidence {evidence.length > 0 && `(${independentChannelCount} independent channel${independentChannelCount === 1 ? "" : "s"})`}
-                  </p>
-                  {evidenceLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
-                  {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">No evidence yet.</p>}
-                  {!evidenceLoading && evidence.some((row) => row.evidenceType === "supporting_video") && (
-                    <div className="mb-2">
-                      <p className="text-[11px] uppercase tracking-wide text-zinc-500">Representative videos</p>
-                      <div className="space-y-1">
-                        {evidence
-                          .filter((row) => row.evidenceType === "supporting_video")
-                          .map((row) => (
-                            <div key={row.evidenceId} className="text-xs text-zinc-300">
-                              {row.description}
-                              {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
-                              <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
-                            </div>
-                          ))}
-                      </div>
-                    </div>
-                  )}
+      {openTrend && (
+        <SideDrawer
+          title={openTrend.title}
+          subtitle={`${openTrend.status} · first seen ${formatDisplayDateTime(openTrend.firstObservedAt)} · last observed ${formatDisplayDateTime(openTrend.lastObservedAt)}`}
+          onClose={closeTrend}
+        >
+          {openTrend.description && <p className="text-sm text-zinc-400">{openTrend.description}</p>}
+          <DrawerSection title="Evidence and status">
+            <div>
+              <p className="mb-1 text-xs font-medium text-zinc-400">
+                Evidence {evidence.length > 0 && `(${independentChannelCount} independent channel${independentChannelCount === 1 ? "" : "s"})`}
+              </p>
+              {evidenceLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
+              {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">No evidence yet.</p>}
+              {!evidenceLoading && evidence.some((row) => row.evidenceType === "supporting_video") && (
+                <div className="mb-2">
+                  <p className="text-[11px] uppercase tracking-wide text-zinc-500">Representative videos</p>
                   <div className="space-y-1">
                     {evidence
-                      .filter((row) => row.evidenceType !== "supporting_video")
+                      .filter((row) => row.evidenceType === "supporting_video")
                       .map((row) => (
                         <div key={row.evidenceId} className="text-xs text-zinc-300">
-                          <span className="text-zinc-500">[{row.evidenceType}]</span> {row.description}
+                          {row.description}
                           {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
                           <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
                         </div>
                       ))}
                   </div>
                 </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    value={addEvidenceType}
-                    onChange={(e) => {
-                      setAddEvidenceType(e.target.value as TrendEvidenceType);
-                      setAddEvidenceRef("");
-                    }}
-                    className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                  >
-                    {EVIDENCE_TYPE_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                  {addEvidenceType !== "signal" && (
-                    <input
-                      value={addEvidenceRef}
-                      onChange={(e) => setAddEvidenceRef(e.target.value)}
-                      placeholder={addEvidenceType === "supporting_channel" ? "Channel id (UC...)" : "Video id"}
-                      className="min-w-40 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                    />
-                  )}
-                  <input
-                    value={addEvidenceDescription}
-                    onChange={(e) => setAddEvidenceDescription(e.target.value)}
-                    placeholder="Evidence description"
-                    className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                  />
-                  <button
-                    onClick={() => handleAddEvidence(trendCandidate.trendCandidateId)}
-                    disabled={addingEvidence || addEvidenceDescription.trim().length === 0}
-                    className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                  >
-                    Add evidence
-                  </button>
-                </div>
-                {addEvidenceError && <p className="text-xs text-red-400">{addEvidenceError}</p>}
-
-                <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2">
-                  <select
-                    value={statusChoice}
-                    onChange={(e) => setStatusChoice(e.target.value as TrendCandidateStatus)}
-                    className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                  >
-                    {STATUS_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    value={statusReason}
-                    onChange={(e) => setStatusReason(e.target.value)}
-                    placeholder="Reason for this status change"
-                    className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                  />
-                  <button
-                    onClick={() => handleUpdateStatus(trendCandidate.trendCandidateId)}
-                    disabled={updatingStatus || statusReason.trim().length === 0}
-                    className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-                  >
-                    Change status
-                  </button>
-                </div>
-                {statusError && <p className="text-xs text-red-400">{statusError}</p>}
+              )}
+              <div className="space-y-1">
+                {evidence
+                  .filter((row) => row.evidenceType !== "supporting_video")
+                  .map((row) => (
+                    <div key={row.evidenceId} className="text-xs text-zinc-300">
+                      <span className="text-zinc-500">[{row.evidenceType}]</span> {row.description}
+                      {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
+                      <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
+                    </div>
+                  ))}
               </div>
-            )}
-          </div>
-        ))}
-      </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={addEvidenceType}
+                onChange={(e) => {
+                  setAddEvidenceType(e.target.value as TrendEvidenceType);
+                  setAddEvidenceRef("");
+                }}
+                className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              >
+                {EVIDENCE_TYPE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              {addEvidenceType !== "signal" && (
+                <input
+                  value={addEvidenceRef}
+                  onChange={(e) => setAddEvidenceRef(e.target.value)}
+                  placeholder={addEvidenceType === "supporting_channel" ? "Channel id (UC...)" : "Video id"}
+                  className="min-w-40 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                />
+              )}
+              <input
+                value={addEvidenceDescription}
+                onChange={(e) => setAddEvidenceDescription(e.target.value)}
+                placeholder="Evidence description"
+                className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              />
+              <button
+                onClick={() => handleAddEvidence(openTrend.trendCandidateId)}
+                disabled={addingEvidence || addEvidenceDescription.trim().length === 0}
+                className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                Add evidence
+              </button>
+            </div>
+            {addEvidenceError && <p className="text-xs text-red-400">{addEvidenceError}</p>}
+
+            <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2">
+              <select
+                value={statusChoice}
+                onChange={(e) => setStatusChoice(e.target.value as TrendCandidateStatus)}
+                className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              >
+                {STATUS_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={statusReason}
+                onChange={(e) => setStatusReason(e.target.value)}
+                placeholder="Reason for this status change"
+                className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              />
+              <button
+                onClick={() => handleUpdateStatus(openTrend.trendCandidateId)}
+                disabled={updatingStatus || statusReason.trim().length === 0}
+                className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+              >
+                Change status
+              </button>
+            </div>
+            {statusError && <p className="text-xs text-red-400">{statusError}</p>}
+          </DrawerSection>
+          <DrawerSection title="Visible to agents of">
+            <FeatureErrorBoundary label="Channel assignment">
+              <MarketChannelAssignment
+                recordKind="trend_candidate"
+                recordId={openTrend.trendCandidateId}
+                onChange={(channelIds) => setVisibility(openTrend.trendCandidateId, channelIds)}
+              />
+            </FeatureErrorBoundary>
+          </DrawerSection>
+        </SideDrawer>
+      )}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import { FeatureErrorBoundary } from "./feature-error-boundary";
-import { MarketChannelAssignment } from "./market-channel-assignment";
+import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
+import { DrawerSection, SideDrawer } from "./side-drawer";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TopicWikipediaSignals } from "./topic-wikipedia-signals";
 import { InfoTooltip } from "./info-tooltip";
@@ -27,7 +28,8 @@ type MarketTopicAssignment = {
 // Phase 9 slice 9E, part A (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md §7) -- minimal topic-model
 // UI: create/list/delete topics, and manually assign a watchlisted channel or a video id to one.
 // Manual/keyword-based tagging only -- no AI-assisted classification anywhere in this component
-// (owner decision 3's own AI-gating exemption for this exact case).
+// (owner decision 3's own AI-gating exemption for this exact case). BL-140 R5: a compact list; a topic's
+// assignments, Wikipedia interest and visibility open in a side panel.
 export function MarketTopicsPanel() {
   const [topics, setTopics] = useState<MarketTopic[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,6 +40,7 @@ export function MarketTopicsPanel() {
   const [deleting, setDeleting] = useState(false);
 
   const [expandedTopicId, setExpandedTopicId] = useState<string | null>(null);
+  const { assignments: visibility, connectedChannels, set: setVisibility } = useMarketAssignments("topic");
   const [assignments, setAssignments] = useState<MarketTopicAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [newSubjectType, setNewSubjectType] = useState<"channel" | "video">("channel");
@@ -82,15 +85,19 @@ export function MarketTopicsPanel() {
     }
   }, []);
 
-  function handleToggleExpand(topic: MarketTopic) {
-    if (expandedTopicId === topic.topicId) {
-      setExpandedTopicId(null);
-      return;
-    }
+  function handleOpen(topic: MarketTopic) {
+    setAssignments([]);
     setExpandedTopicId(topic.topicId);
     setAssignError(null);
     void fetchAssignments(topic.topicId);
   }
+
+  const openTopic = topics.find((t) => t.topicId === expandedTopicId) ?? null;
+  const closeTopic = useCallback(() => {
+    setExpandedTopicId(null);
+    // The stale-response guard too, so a late reply for the closed topic is dropped.
+    assignmentsRequestTopicIdRef.current = null;
+  }, []);
 
   async function handleCreateTopic() {
     setCreating(true);
@@ -127,7 +134,7 @@ export function MarketTopicsPanel() {
         setError(data.message ?? "Failed to delete topic");
         return;
       }
-      if (expandedTopicId === deleteTarget.topicId) setExpandedTopicId(null);
+      if (expandedTopicId === deleteTarget.topicId) closeTopic();
       setDeleteTarget(null);
       await fetchTopics();
     } finally {
@@ -199,76 +206,93 @@ export function MarketTopicsPanel() {
 
       {!loading && topics.length === 0 && <p className="text-sm text-zinc-500">No topics yet.</p>}
 
-      <div className="space-y-2">
-        {topics.map((topic) => (
-          <div key={topic.topicId} className="rounded-lg border border-zinc-800 p-3">
-            <div className="mb-2">
-              <FeatureErrorBoundary label="Channel assignment">
-                <MarketChannelAssignment recordKind="topic" recordId={topic.topicId} />
-              </FeatureErrorBoundary>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <button onClick={() => handleToggleExpand(topic)} className="text-left text-sm font-medium text-zinc-100 hover:underline">
-                {topic.name}
-              </button>
-              <button
-                onClick={() => setDeleteTarget(topic)}
-                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-red-700 hover:text-red-400"
-              >
-                Delete
-              </button>
-            </div>
+      {topics.length > 0 && (
+        <div className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
+          {topics.map((topic) => (
+            <button
+              key={topic.topicId}
+              type="button"
+              onClick={() => handleOpen(topic)}
+              className={`flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2 text-left hover:bg-zinc-800/50 ${expandedTopicId === topic.topicId ? "bg-zinc-800/50" : ""}`}
+            >
+              <span className="text-sm font-medium text-zinc-100">{topic.name}</span>
+              <span className="flex items-center gap-2 text-xs text-zinc-500">
+                added {formatDisplayDateTime(topic.addedAt)}
+                <VisibleToPill channelIds={visibility.get(topic.topicId) ?? []} connectedChannels={connectedChannels} />
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
-            {expandedTopicId === topic.topicId && (
-              <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
-                <FeatureErrorBoundary label="Research — Wikipedia interest">
-                  <TopicWikipediaSignals topicId={topic.topicId} />
-                </FeatureErrorBoundary>
-                {assignmentsLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
-                {!assignmentsLoading && assignments.length === 0 && <p className="text-xs text-zinc-500">No assignments yet.</p>}
-                {assignments.map((assignment) => (
-                  <div key={assignment.assignmentId} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
-                    <span>
-                      {assignment.subjectType}: {assignment.subjectId} &middot; {formatDisplayDateTime(assignment.assignedAt)}
-                    </span>
-                    <button
-                      onClick={() => handleRemoveAssignment(topic.topicId, assignment.assignmentId)}
-                      className="rounded-md border border-zinc-700 px-2 py-0.5 text-zinc-400 hover:border-red-700 hover:text-red-400"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
+      {openTopic && (
+        <SideDrawer title={openTopic.name} subtitle={`Topic · added ${formatDisplayDateTime(openTopic.addedAt)}`} onClose={closeTopic}>
+          <DrawerSection title="Wikipedia interest">
+            <FeatureErrorBoundary label="Research — Wikipedia interest">
+              <TopicWikipediaSignals topicId={openTopic.topicId} />
+            </FeatureErrorBoundary>
+          </DrawerSection>
 
-                <div className="flex flex-wrap items-center gap-2 pt-2">
-                  <select
-                    value={newSubjectType}
-                    onChange={(e) => setNewSubjectType(e.target.value as "channel" | "video")}
-                    className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                  >
-                    <option value="channel">Channel</option>
-                    <option value="video">Video</option>
-                  </select>
-                  <input
-                    value={newSubjectId}
-                    onChange={(e) => setNewSubjectId(e.target.value)}
-                    placeholder={newSubjectType === "channel" ? "UC..." : "video id"}
-                    className="min-w-48 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
-                  />
-                  <button
-                    onClick={() => handleAssign(topic.topicId)}
-                    disabled={assigning || newSubjectId.trim().length === 0}
-                    className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                  >
-                    Assign
-                  </button>
-                </div>
-                {assignError && <p className="text-xs text-red-400">{assignError}</p>}
+          <DrawerSection title="Tagged channels and videos">
+            {assignmentsLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
+            {!assignmentsLoading && assignments.length === 0 && <p className="text-xs text-zinc-500">Nothing tagged with this topic yet.</p>}
+            {assignments.map((assignment) => (
+              <div key={assignment.assignmentId} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
+                <span>
+                  {assignment.subjectType}: {assignment.subjectId} &middot; {formatDisplayDateTime(assignment.assignedAt)}
+                </span>
+                <button
+                  onClick={() => handleRemoveAssignment(openTopic.topicId, assignment.assignmentId)}
+                  className="rounded-md border border-zinc-700 px-2 py-0.5 text-zinc-400 hover:border-red-700 hover:text-red-400"
+                >
+                  Remove
+                </button>
               </div>
-            )}
-          </div>
-        ))}
-      </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <select
+                value={newSubjectType}
+                onChange={(e) => setNewSubjectType(e.target.value as "channel" | "video")}
+                aria-label="Subject type"
+                className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              >
+                <option value="channel">Channel</option>
+                <option value="video">Video</option>
+              </select>
+              <input
+                value={newSubjectId}
+                onChange={(e) => setNewSubjectId(e.target.value)}
+                placeholder={newSubjectType === "channel" ? "UC..." : "video id"}
+                className="min-w-48 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+              />
+              <button
+                onClick={() => handleAssign(openTopic.topicId)}
+                disabled={assigning || newSubjectId.trim().length === 0}
+                className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                Assign
+              </button>
+            </div>
+            {assignError && <p className="text-xs text-red-400">{assignError}</p>}
+          </DrawerSection>
+
+          <DrawerSection title="Visible to agents of">
+            <FeatureErrorBoundary label="Channel assignment">
+              <MarketChannelAssignment recordKind="topic" recordId={openTopic.topicId} onChange={(channelIds) => setVisibility(openTopic.topicId, channelIds)} />
+            </FeatureErrorBoundary>
+          </DrawerSection>
+
+          <DrawerSection title="Delete">
+            <button
+              onClick={() => setDeleteTarget(openTopic)}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-red-700 hover:text-red-400"
+            >
+              Delete topic
+            </button>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+          </DrawerSection>
+        </SideDrawer>
+      )}
 
       {deleteTarget && (
         <ConfirmDialog

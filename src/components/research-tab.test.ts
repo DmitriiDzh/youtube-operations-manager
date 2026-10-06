@@ -194,3 +194,41 @@ test("§4.7: the 'Visible to' pill names no channel, the one channel, or how man
   assert.equal(describeVisibleTo(["UCgone"], connected), "1 channel");
   assert.equal(describeVisibleTo(["UCa", "UCb"], connected), "2 channels");
 });
+
+// BL-140 R5 (plan §4.6, §2.4, AC-R5-1/2).
+
+test("AC-R5-1: Topics and Trend candidates are compact lists; details, actions and visibility open in a side panel", async () => {
+  for (const file of ["market-topics-panel.tsx", "market-trends-panel.tsx"]) {
+    const panel = await readFile(path.join(process.cwd(), "src", "components", file), "utf8");
+    assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1, file);
+    const drawer = panel.slice(panel.indexOf("<SideDrawer"), panel.indexOf("</SideDrawer>"));
+    assert.match(drawer, /<DrawerSection title="Visible to agents of">[\s\S]*<MarketChannelAssignment/, file);
+    assert.match(panel, /<VisibleToPill /, file);
+  }
+  const topics = await readFile(path.join(process.cwd(), "src", "components", "market-topics-panel.tsx"), "utf8");
+  const topicDrawer = topics.slice(topics.indexOf("<SideDrawer"), topics.indexOf("</SideDrawer>"));
+  for (const action of ["<TopicWikipediaSignals", "handleAssign(", "handleRemoveAssignment(", "setDeleteTarget("]) assert.ok(topicDrawer.includes(action), action);
+  const trends = await readFile(path.join(process.cwd(), "src", "components", "market-trends-panel.tsx"), "utf8");
+  const trendDrawer = trends.slice(trends.indexOf("<SideDrawer"), trends.indexOf("</SideDrawer>"));
+  for (const action of ["handleAddEvidence(", "handleUpdateStatus(", "Reason for this status change"]) assert.ok(trendDrawer.includes(action), action);
+  // Status filter on the list, the add form in a dialog.
+  assert.match(trends, /useState<TrendCandidateStatus \| "">\(""\)/);
+  assert.match(trends, /\{addOpen && \(\s*<BlockingDialog label="Add a trend candidate"/);
+});
+
+test("AC-R5-1: Topics & trends shows the two lists side by side on wide screens", async () => {
+  const shell = await readFile(path.join(process.cwd(), "src", "components", "research-tab.tsx"), "utf8");
+  const topics = shell.slice(shell.indexOf('tab === "topics"'));
+  assert.match(topics, /<div className="grid items-start gap-6 xl:grid-cols-2">\s*<FeatureErrorBoundary label="Research — Topics">/);
+});
+
+test("AC-R5-2: no stale text is left in the Research components (§2.4)", async () => {
+  const dir = path.join(process.cwd(), "src", "components");
+  const files = ["research-tab.tsx", "market-research-panel.tsx", "market-videos-panel.tsx", "market-discovery-panel.tsx", "music-chart-panel.tsx", "market-topics-panel.tsx", "market-trends-panel.tsx", "market-research-requests-panel.tsx", "market-collection-requests-panel.tsx"];
+  for (const file of files) {
+    const source = await readFile(path.join(dir, file), "utf8");
+    assert.doesNotMatch(source, /\bbelow\b|never automatically discovered|Costs 100 YouTube API units|same daily budget/, file);
+  }
+  // The Overview panel is gone entirely, not only unmounted.
+  await assert.rejects(readFile(path.join(dir, "market-overview-panel.tsx"), "utf8"));
+});

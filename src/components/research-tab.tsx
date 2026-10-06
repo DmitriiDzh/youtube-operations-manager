@@ -179,12 +179,15 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "topics" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Research — Topics">
-          <MarketTopicsPanel />
-        </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Research — Trends">
-          <MarketTrendsPanel />
-        </FeatureErrorBoundary>
+        {/* Plan §4.6: the two lists side by side, stacked on narrow screens. */}
+        <div className="grid items-start gap-6 xl:grid-cols-2">
+          <FeatureErrorBoundary label="Research — Topics">
+            <MarketTopicsPanel />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Research — Trends">
+            <MarketTrendsPanel />
+          </FeatureErrorBoundary>
+        </div>
       </div>
     </div>
   );
