@@ -14,5 +14,15 @@ export function createNetworkVolumesPostHandler(deps: MediaRouteDeps = defaultMe
   });
 }
 
+/** Grows a network volume (`{ volumeId, sizeGb }`; RunPod never shrinks one) -- an explicit operator action that raises the monthly bill. */
+export function createNetworkVolumesPatchHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
+  return mediaHandler(deps, async ({ core, request }) => {
+    const body = await readJsonBody(request);
+    if (!body.ok) return body.response;
+    return NextResponse.json({ volume: await core.resizeNetworkVolume(body.body) });
+  });
+}
+
 export const GET = createNetworkVolumesGetHandler();
 export const POST = createNetworkVolumesPostHandler();
+export const PATCH = createNetworkVolumesPatchHandler();

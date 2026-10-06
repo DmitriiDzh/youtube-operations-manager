@@ -161,6 +161,14 @@ export const createNetworkVolumeInputSchema = z
   })
   .strict();
 
+// RunPod's update endpoint takes 10-4096 GB (v2 API reference); 4000 matches the create schema's own ceiling.
+export const resizeNetworkVolumeInputSchema = z
+  .object({
+    volumeId: z.string().trim().min(1).max(64),
+    sizeGb: z.number().int().min(10).max(4000),
+  })
+  .strict();
+
 export const createPodPassthroughSchema = z
   .object({
     name: z.string().trim().min(1).max(191),

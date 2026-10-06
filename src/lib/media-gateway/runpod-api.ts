@@ -361,6 +361,16 @@ export function createRunpodApiClient(args: {
       return toNetworkVolume(body);
     },
 
+    /**
+     * Grows a network volume (`PATCH /network-volumes/{id}` with `{ size }`). RunPod only ever increases a volume's size: "`size`
+     * may only increase; attempts to reduce size will be rejected" (v2 API reference, update a network volume) -- the caller
+     * checks the current size first; a reduction that slips through is RunPod's HTTP 400.
+     */
+    async resizeNetworkVolume(id: string, sizeGb: number): Promise<RunpodNetworkVolume> {
+      const { body } = await request("PATCH", `/network-volumes/${encodeURIComponent(id)}`, { size: sizeGb });
+      return toNetworkVolume(body);
+    },
+
     /** Every pod of the account: v2 lists are paged (`{ items, pagination: { nextCursor, hasNextPage } }`), so the cursor is followed. */
     async listPods(): Promise<RunpodPod[]> {
       const pods: RunpodPod[] = [];
