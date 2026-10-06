@@ -191,6 +191,11 @@ async function startServerSession() {
   const janitorQuietly = () => void media.cleanupExchange({ dryRun: false }).catch(() => undefined);
   setTimeout(janitorQuietly, 10 * 60_000).unref();
   setInterval(janitorQuietly, MEDIA_JANITOR_INTERVAL_MS).unref();
+  // BL-132 (owner answer O1): the factory template registry is checked shortly after start and every 60 s; a sync runs
+  // only when its files read differently from the last sync, so a device with no factory agent stays identical.
+  const syncTemplatesQuietly = () => void media.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true }).catch(() => undefined);
+  setTimeout(syncTemplatesQuietly, 20_000).unref();
+  setInterval(syncTemplatesQuietly, 60_000).unref();
   const MEDIA_WATCH_MIN_MS = 15_000;
   const mediaWatchLoop = async () => {
     await mediaBootSweep; // never rejects; already settled on every tick but the first

@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.4.0"); // 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(payload.agentApiVersion, "3.5.0"); // MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { createExchangeFs } from "./adapters/fs";
-import { resolveFromYtmDir } from "./services";
+import { resolveFromYtmDir, resolveSentToYtmFile } from "./services";
 
 // Behaviour fixed by ADR 0019 (amendment 2026-10-04): the folder is exactly <workspace>/99 Data Exchange/From YTM,
 // created when missing, refused when a symlink or a file sits at any of the three paths; nothing else is touched.
@@ -60,3 +60,63 @@ test("a failed workspace validation is refused before anything is created", () =
     await assert.rejects(resolveFromYtmDir({ ...args(workspace), validateWorkspacePath: async () => ({ ok: false, reason: "path is inside the app-data directory" }) }), /unavailable: path is inside/);
     assert.deepEqual(await readdir(workspace), []);
   }));
+
+// -- BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.4, AC-FM-11): job input files from `99 Data Exchange/Sent to YTM/` ----------
+// Real temp folders: a path that escapes the folder (`..`, absolute, a symlink out), a non-file, or a missing folder is
+// refused; a file inside (also in a subfolder) resolves to its real path and size. Nothing is created or deleted.
+
+test("AC-FM-11: resolveSentToYtmFile resolves a file (or a file in a subfolder) inside Sent to YTM to its real path and size", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const pathMod = await import("node:path");
+  const { createExchangeFs } = await import("./adapters/fs");
+  const { isPathInsideOrEqual } = await import("@/lib/local-path-validation");
+  const ws = await mkdtemp(pathMod.join(tmpdir(), "ytm-ws-"));
+  try {
+    const sent = pathMod.join(ws, "99 Data Exchange", "Sent to YTM");
+    await mkdir(pathMod.join(sent, "refs"), { recursive: true });
+    await writeFile(pathMod.join(sent, "refs", "frame 1.png"), "12345");
+    const resolved = await resolveSentToYtmFile({
+      workspace: ws,
+      relativePath: "refs/frame 1.png",
+      fs: createExchangeFs(),
+      validateWorkspacePath: async () => ({ ok: true }),
+      isPathInsideOrEqual,
+      unavailable: (reason) => new Error(reason),
+    });
+    const { realpath } = await import("node:fs/promises");
+    assert.equal(resolved.path, await realpath(pathMod.join(sent, "refs", "frame 1.png")));
+    assert.equal(resolved.bytes, 5);
+  } finally {
+    await rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("AC-FM-11: a path escaping Sent to YTM (.., absolute, backslash, a symlink out), a folder, a missing file or a missing Sent to YTM folder is refused", async () => {
+  const { mkdtemp, mkdir, writeFile, rm, symlink } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const pathMod = await import("node:path");
+  const { createExchangeFs } = await import("./adapters/fs");
+  const { isPathInsideOrEqual } = await import("@/lib/local-path-validation");
+  const ws = await mkdtemp(pathMod.join(tmpdir(), "ytm-ws-"));
+  const outside = await mkdtemp(pathMod.join(tmpdir(), "ytm-out-"));
+  try {
+    const resolve = (relativePath: string, workspace = ws) =>
+      resolveSentToYtmFile({ workspace, relativePath, fs: createExchangeFs(), validateWorkspacePath: async () => ({ ok: true }), isPathInsideOrEqual, unavailable: (reason) => new Error(reason) });
+    await assert.rejects(resolve("x.png"), /does not exist/, "no Sent to YTM folder yet");
+    const sent = pathMod.join(ws, "99 Data Exchange", "Sent to YTM");
+    await mkdir(pathMod.join(sent, "dir"), { recursive: true });
+    await writeFile(pathMod.join(ws, "secret.txt"), "s");
+    await writeFile(pathMod.join(outside, "elsewhere.png"), "e");
+    await symlink(pathMod.join(outside, "elsewhere.png"), pathMod.join(sent, "link.png"));
+    for (const bad of ["../../secret.txt", "/etc/passwd", "C:/x.png", "refs\\\\x.png", "./x.png", "a//b.png", ""]) {
+      await assert.rejects(resolve(bad), /not a path relative/, bad);
+    }
+    await assert.rejects(resolve("link.png"), /resolves outside/);
+    await assert.rejects(resolve("dir"), /not a regular file/);
+    await assert.rejects(resolve("missing.png"), /is not in/);
+  } finally {
+    await rm(ws, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});

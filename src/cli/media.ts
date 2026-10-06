@@ -92,7 +92,7 @@ export const HELP = [
   "  models                                  models/ on the volume + recorded pulls (read-only)",
   "  models-poll                             advance the pulls once (terminate finished pull pods); the running server does this on every tick",
 
-  "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--cpu cpu3c] [--vcpu 2]",
+  "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--revision main] [--sha256 <hex>] [--cpu cpu3c] [--vcpu 2]",
   "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
   "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
@@ -262,6 +262,8 @@ export async function runMediaCli(args: {
           repoId: requireFlag(parsed.flags, "repo"),
           file: requireFlag(parsed.flags, "file"),
           folder: requireFlag(parsed.flags, "folder"),
+          ...(typeof parsed.flags.revision === "string" ? { revision: parsed.flags.revision } : {}),
+          ...(typeof parsed.flags.sha256 === "string" ? { sha256: parsed.flags.sha256 } : {}),
           ...(typeof parsed.flags.cpu === "string" ? { cpuFlavorId: parsed.flags.cpu } : {}),
           ...(typeof parsed.flags.vcpu === "string" ? { vcpuCount: Number(parsed.flags.vcpu) } : {}),
         });

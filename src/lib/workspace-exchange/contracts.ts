@@ -11,7 +11,7 @@
 export const DATA_EXCHANGE_DIR_NAME = "99 Data Exchange";
 /** Manager -> project scripts (what this product writes). */
 export const FROM_YTM_DIR_NAME = "From YTM";
-/** Project -> Manager (reserved for future inbound material; only the empty folder is created). */
+/** Project -> Manager: job input files a channel passes to media generation (BL-132); read, never written or deleted here. */
 export const SENT_TO_YTM_DIR_NAME = "Sent to YTM";
 
 export type ExchangeFs = {
@@ -19,6 +19,9 @@ export type ExchangeFs = {
   mkdir(p: string): Promise<void>;
   lstat(p: string): Promise<{ isDirectory: boolean; isFile: boolean; isSymbolicLink: boolean } | null>;
 };
+
+/** BL-132: reading an input file also needs `stat` (follows symlinks; the caller has proven the real path is contained). */
+export type ExchangeReadFs = ExchangeFs & { stat(p: string): Promise<{ isFile: boolean; size: number; dev?: number; ino?: number } | null> };
 
 export type ResolveFromYtmDirArgs = {
   /** The operator-set workspace path (already looked up by the caller). */

@@ -150,7 +150,29 @@ export type MediaSessionLimits = {
 
 // -- workflow templates and jobs (slice 3, PHASE_14_PLAN.md §2.4, owner decision D7) ------------------
 
-export type MediaParameterType = "string" | "text" | "number" | "integer" | "boolean" | "enum";
+export type MediaParameterType = "string" | "text" | "number" | "integer" | "boolean" | "enum" | MediaInputParameterType;
+
+/**
+ * BL-132 (plan §2.4): a job INPUT file -- the job value is a path relative to the channel workspace's
+ * `99 Data Exchange/Sent to YTM/`; the file is uploaded for that job and the targeted loader input gets its name.
+ */
+export type MediaInputParameterType = "image" | "audio" | "video";
+export const MEDIA_INPUT_PARAMETER_TYPES: readonly MediaInputParameterType[] = ["image", "audio", "video"];
+/** Owner answer O5: 500 MB per input (the S3 single-PUT limit too). */
+export const MEDIA_INPUT_MAX_BYTES = 500 * 1024 * 1024;
+/** Extensions accepted when a parameter declares no `accept` list. */
+export const MEDIA_INPUT_DEFAULT_ACCEPT: Readonly<Record<MediaInputParameterType, readonly string[]>> = {
+  image: [".png", ".jpg", ".jpeg", ".webp"],
+  audio: [".wav", ".mp3", ".flac", ".ogg", ".m4a"],
+  video: [".mp4", ".webm", ".mov", ".mkv"],
+};
+
+export function isInputParameterType(type: string): type is MediaInputParameterType {
+  return (MEDIA_INPUT_PARAMETER_TYPES as readonly string[]).includes(type);
+}
+
+/** One input file of a job as uploaded to the volume (`exchange/in/<jobId>-<parameter>-<name>`). */
+export type MediaJobInput = { parameter: string; sourcePath: string; remoteKey: string; bytes: number; sha256: string; uploadedAt: string; remoteDeleted: boolean };
 
 /** One value an agent may set on an imported graph: which node input it writes, with its bounds. */
 export type MediaTemplateParameter = {
@@ -164,19 +186,81 @@ export type MediaTemplateParameter = {
   max: number | null;
   enum: string[] | null;
   description: string | null;
+  /** BL-132 input types only: accepted extensions (lower-case, with the dot); absent = the type's default list. */
+  accept?: string[] | null;
+  /** BL-132 input types only: size limit in bytes (≤ 500 MB); absent = 500 MB. */
+  maxBytes?: number | null;
 };
+
+/** The model folders on the network volume (`models/<folder>/`), the ComfyUI `extra_model_paths.yaml` names. */
+export const MEDIA_MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"] as const;
+export type MediaModelFolder = (typeof MEDIA_MODEL_FOLDERS)[number];
+
+/** A model a template loads (BL-132): declared in a registry template's `models`, derived from a local template's graph. */
+export type MediaModelReference = { folder: MediaModelFolder | null; file: string; sha256: string | null };
 
 export type MediaWorkflowTemplate = {
   templateId: string;
   name: string;
   version: number;
   description: string | null;
+  /** BL-132: `owner` = imported by hand on this device (local), `factory` = installed from the factory template registry. */
+  source: "owner" | "factory";
+  /** BL-132: a factory template's declared models; for a local template, the literal model names its loader nodes use. */
+  models: MediaModelReference[];
   parameters: MediaTemplateParameter[];
   /** Node ids whose `filename_prefix` is rewritten to `<jobId>/...` so outputs land in the job's folder. */
   outputNodeIds: string[];
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
+};
+
+/** BL-132 (plan §2.5): one audit row as shown in the Web UI and the factory tools. */
+export type MediaControlEventView = { at: string; actor: "owner" | "factory" | "sync"; action: string; subject: string; details: Record<string, unknown> | null };
+
+/** BL-132 (plan §2.2): the network volume as RunPod reports it. RunPod bills the rented size. */
+export type MediaStorageStatus = { volumeId: string; dataCenterId: string | null; sizeGb: number; usedGb: number | null; freeGb: number | null; monthlyUsd: number };
+
+/**
+ * BL-132 (plan §2.2, owner addition A1): which templates use which model file. `registry` = whether the factory template
+ * registry could be read on this device; when it could not, a factory deletion is refused (fail closed).
+ */
+export type MediaModelUsage = {
+  registry: "ok" | "unavailable";
+  registryError: string | null;
+  users: Array<{ key: string; templateId: string; version: number; source: "factory" | "owner" | "registry" }>;
+};
+
+/** A model file on the volume with its verified hash (when a pull recorded one) and the templates that use it. */
+export type MediaModelEntry = {
+  key: string;
+  folder: string;
+  name: string;
+  bytes: number;
+  lastModified: string | null;
+  sha256: string | null;
+  usedBy: Array<{ templateId: string; version: number; source: "factory" | "owner" | "registry" }>;
+};
+
+/** BL-132: what started a template-registry sync (`auto` = the 60 s check found a change). */
+export type MediaTemplateSyncTrigger = "auto" | "factory" | "owner";
+
+/** BL-132 (plan §2.3): what a sync did -- or, for a dry run, would do. `unavailable` = the registry could not be read: nothing changed. */
+export type MediaTemplateSyncResult = {
+  at: string;
+  trigger: MediaTemplateSyncTrigger;
+  dryRun: boolean;
+  outcome: "ok" | "unavailable";
+  error: string | null;
+  installed: Array<{ templateId: string; version: number }>;
+  updated: Array<{ templateId: string; from: number; to: number }>;
+  removed: Array<{ templateId: string; version: number }>;
+  unchanged: Array<{ templateId: string; version: number }>;
+  /** Listed in the index, file not there yet (a file sync still copying): the installed version, if any, stays. */
+  pending: Array<{ templateId: string; version: number }>;
+  /** Refused with the reason; the installed version, if any, stays. */
+  invalid: Array<{ templateId: string; version: number; reason: string }>;
 };
 
 export type MediaJobStatus = "queued" | "submitted" | "generating" | "transferring" | "done" | "failed" | "cancelled";
@@ -215,6 +299,8 @@ export type MediaJob = {
   createdAt: string;
   submittedAt: string | null;
   finishedAt: string | null;
+  /** BL-132: the job's input files as uploaded to the volume (empty when the template has no input parameter). */
+  inputs?: MediaJobInput[];
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */

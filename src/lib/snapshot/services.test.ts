@@ -838,9 +838,10 @@ test("applySnapshotToDatabase: logical_paths and logical_path_values are device-
     const values = await receiving.execute("SELECT device_id, name, path FROM logical_path_values");
     assert.deepEqual(values.rows, [{ device_id: "device-b", name: "factory_shared", path: "C:\\Factory\\Shared" }]);
     const names = await receiving.execute("SELECT name FROM logical_paths ORDER BY name");
+    // BL-132's v61 seeds the NAME media_templates on every database (the receiving one included); still no values.
     assert.deepEqual(
       names.rows.map((row) => row.name),
-      ["developer_exchange", "factory_shared", "local_only_name"]
+      ["developer_exchange", "factory_shared", "local_only_name", "media_templates"]
     );
 
     source.close();

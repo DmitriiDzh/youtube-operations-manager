@@ -9,8 +9,9 @@ import { defaultMediaRouteDeps, mediaHandler, readJsonBody, type MediaRouteDeps 
 
 export function createModelsGetHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
   return mediaHandler(deps, async ({ core }) => {
-    const [pulls, models] = await Promise.all([core.listPulls(), core.listModels()]);
-    return NextResponse.json({ models, pulls });
+    // BL-132: each file with its verified SHA-256 and the templates using it, plus whether the registry could be read.
+    const [pulls, listed, events] = await Promise.all([core.listPulls(), core.listModelsWithUsage(), core.listControlEvents(30)]);
+    return NextResponse.json({ models: listed.models, registry: listed.registry, registryError: listed.registryError, pulls, events });
   });
 }
 

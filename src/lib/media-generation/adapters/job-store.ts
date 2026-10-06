@@ -1,6 +1,10 @@
 import {
   deleteMediaWorkflowTemplate,
   getMediaExchangeFile,
+  getMediaExchangeInput,
+  insertMediaExchangeInput,
+  listMediaExchangeInputsByJob,
+  markMediaExchangeInputRemoteDeleted,
   getMediaJobById,
   getMediaWorkflowTemplateById,
   insertMediaJob,
@@ -11,6 +15,7 @@ import {
   markMediaExchangeFileRemoteDeleted,
   transitionMediaJob,
   updateMediaWorkflowTemplate,
+  upsertFactoryMediaWorkflowTemplate,
   upsertMediaExchangeFile,
   type StoredMediaJob,
   type StoredMediaWorkflowTemplate,
@@ -38,7 +43,15 @@ function jobFromDb(row: StoredMediaJob): StoredJobRow {
 }
 
 function templateFromDb(t: StoredMediaWorkflowTemplate): StoredTemplateRow {
-  return { ...t, description: t.description ?? null, outputNodeIdsJson: t.outputNodeIdsJson ?? null, nodeCount: t.nodeCount ?? null };
+  return {
+    ...t,
+    description: t.description ?? null,
+    outputNodeIdsJson: t.outputNodeIdsJson ?? null,
+    nodeCount: t.nodeCount ?? null,
+    source: t.source === "factory" ? "factory" : "owner",
+    registrySha256: t.registrySha256 ?? null,
+    modelsJson: t.modelsJson ?? null,
+  };
 }
 
 export function createMediaJobStore(): MediaJobStore {
@@ -49,6 +62,7 @@ export function createMediaJobStore(): MediaJobStore {
       get: (id) => getMediaWorkflowTemplateById(id).then((t) => (t ? templateFromDb(t) : null)),
       list: () => listMediaWorkflowTemplates().then((rows) => rows.map(templateFromDb)),
       delete: (id) => deleteMediaWorkflowTemplate(id),
+      upsertFactory: (row) => upsertFactoryMediaWorkflowTemplate(row).then((t) => (t ? templateFromDb(t) : null)),
     },
     jobs: {
       insert: (row) => insertMediaJob(row).then(jobFromDb),
@@ -61,6 +75,12 @@ export function createMediaJobStore(): MediaJobStore {
       upsert: (row) => upsertMediaExchangeFile(row),
       markRemoteDeleted: (key, at) => markMediaExchangeFileRemoteDeleted(key, at),
       get: (key) => getMediaExchangeFile(key).then((r) => (r ? { ...r, remoteDeletedAt: r.remoteDeletedAt ?? null } : null)),
+    },
+    inputs: {
+      insert: (row) => insertMediaExchangeInput(row),
+      listByJob: (jobId) => listMediaExchangeInputsByJob(jobId).then((rows) => rows.map((r) => ({ ...r, remoteDeletedAt: r.remoteDeletedAt ?? null }))),
+      get: (key) => getMediaExchangeInput(key).then((r) => (r ? { ...r, remoteDeletedAt: r.remoteDeletedAt ?? null } : null)),
+      markRemoteDeleted: (key, at) => markMediaExchangeInputRemoteDeleted(key, at),
     },
   };
 }

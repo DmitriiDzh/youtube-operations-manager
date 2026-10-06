@@ -9,7 +9,11 @@ import {
   type MediaJob,
   type MediaSession,
   type MediaSessionLimits,
+  type MediaControlEventView,
+  type MediaModelEntry,
   type MediaSettings,
+  type MediaStorageStatus,
+  type MediaTemplateSyncResult,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -149,8 +153,24 @@ export function RunpodConnectionSettings() {
   );
 }
 
-type ModelFile = { key: string; folder: string; name: string; bytes: number; lastModified: string | null };
-type ModelPull = { pullId: string; podId: string | null; repoId: string; file: string; expectedKey: string; status: string; startedAt: string; finishedAt: string | null; bytes: number | null; error: string | null };
+type ModelFile = MediaModelEntry;
+type ModelPull = {
+  pullId: string;
+  podId: string | null;
+  repoId: string;
+  file: string;
+  expectedKey: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  bytes: number | null;
+  error: string | null;
+  // BL-132: absent on pulls recorded before it.
+  revision?: string;
+  expectedSha256?: string | null;
+  actualSha256?: string | null;
+  requestedBy?: "owner" | "factory";
+};
 const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"];
 
 function gb(bytes: number): string {
@@ -166,20 +186,38 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [repoId, setRepoId] = useState("");
   const [file, setFile] = useState("");
   const [folder, setFolder] = useState("checkpoints");
+  const [revision, setRevision] = useState("");
+  const [sha256, setSha256] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelFile | null>(null);
+  const [registry, setRegistry] = useState<{ state: "ok" | "unavailable"; error: string | null }>({ state: "ok", error: null });
+  const [events, setEvents] = useState<MediaControlEventView[]>([]);
+  const [storage, setStorage] = useState<MediaStorageStatus | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
 
   const load = useCallback(
     () =>
-      requestJson<{ models: ModelFile[]; pulls: ModelPull[] }>("/api/media-generation/models").then(
-        (data) => {
-          setModels(data.models);
-          setPulls(data.pulls);
-          setError(null);
-        },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to list the volume")
-      ),
+      Promise.all([
+        requestJson<{ models: ModelFile[]; pulls: ModelPull[]; registry: "ok" | "unavailable"; registryError: string | null; events: MediaControlEventView[] }>("/api/media-generation/models").then(
+          (data) => {
+            setModels(data.models);
+            setPulls(data.pulls);
+            setRegistry({ state: data.registry, error: data.registryError });
+            setEvents(data.events);
+            setError(null);
+          },
+          (err: unknown) => setError(err instanceof Error ? err.message : "Failed to list the volume")
+        ),
+        // The volume's size comes from RunPod, not S3: a failure there must not hide the listing.
+        requestJson<{ storage: MediaStorageStatus }>("/api/media-generation/storage").then(
+          (data) => {
+            setStorage(data.storage);
+            setStorageError(null);
+          },
+          (err: unknown) => setStorageError(err instanceof Error ? err.message : "Could not read the volume's size")
+        ),
+      ]).then(() => undefined),
     []
   );
 
@@ -197,7 +235,13 @@ export function ModelsCard({ configured }: { configured: boolean }) {
       await requestJson("/api/media-generation/models/pull", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ repoId: repoId.trim(), file: file.trim(), folder }),
+        body: JSON.stringify({
+          repoId: repoId.trim(),
+          file: file.trim(),
+          folder,
+          ...(revision.trim() ? { revision: revision.trim() } : {}),
+          ...(sha256.trim() ? { sha256: sha256.trim() } : {}),
+        }),
       });
       setFile("");
       await load();
@@ -240,7 +284,7 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   return (
     <Card
       title="Models on the volume"
-      help="The files under models/ on the network volume, read through RunPod's S3 API (no pod needed). 'Pull from Hugging Face' starts a small CPU pod attached to the volume that downloads one file straight into models/<folder>/ and is terminated as soon as the file is there (a few cents per pull); a GPU session cannot start while a pull is writing. ComfyUI finds the folders through extra_model_paths.yaml."
+      help="The files under models/ on the network volume, read through RunPod's S3 API (no pod needed). 'Pull from Hugging Face' first checks the file on Hugging Face (size, SHA-256, free space; public repositories only), then starts a small CPU pod attached to the volume that downloads that exact commit, checks the SHA-256 and only then moves the file into models/<folder>/; a mismatch deletes it and fails the pull. The pod is terminated as soon as it is done (a few cents per pull); a GPU session cannot start while a pull is writing. ComfyUI finds the folders through extra_model_paths.yaml."
     >
       {!configured ? (
         <p className="text-xs text-zinc-500">Save credentials and choose a network volume first.</p>
@@ -256,6 +300,17 @@ export function ModelsCard({ configured }: { configured: boolean }) {
               </span>
             )}
           </div>
+          {storage && (
+            <p className="text-xs text-zinc-400">
+              Volume {storage.volumeId}
+              {storage.dataCenterId ? ` (${storage.dataCenterId})` : ""}: {storage.sizeGb} GB rented
+              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : " · usage not reported"} · ${storage.monthlyUsd.toFixed(2)}/month
+            </p>
+          )}
+          {storageError && <p className="text-xs text-amber-400">Volume size: {storageError}</p>}
+          {models && registry.state === "unavailable" && (
+            <p className="text-xs text-amber-400">The factory template registry cannot be read on this device, so &ldquo;used by&rdquo; shows only this device&rsquo;s templates ({registry.error}).</p>
+          )}
           {models && models.length > 0 && (
             <div className="overflow-x-auto">
               <table className="min-w-[560px] w-full text-left text-xs text-zinc-400">
@@ -264,6 +319,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                     <th className="py-1 pr-3">Folder</th>
                     <th className="py-1 pr-3">File</th>
                     <th className="py-1 pr-3">Size</th>
+                    <th className="py-1 pr-3">SHA-256</th>
+                    <th className="py-1 pr-3">Used by</th>
                     <th className="py-1"></th>
                   </tr>
                 </thead>
@@ -273,6 +330,12 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                       <td className="py-1 pr-3">{m.folder}</td>
                       <td className="py-1 pr-3 font-mono">{m.name}</td>
                       <td className="py-1 pr-3 whitespace-nowrap">{gb(m.bytes)}</td>
+                      <td className="py-1 pr-3 font-mono" title={m.sha256 ?? "not verified by a pull on this device"}>
+                        {m.sha256 ? `${m.sha256.slice(0, 12)}…` : "—"}
+                      </td>
+                      <td className="py-1 pr-3">
+                        {m.usedBy.length === 0 ? "—" : m.usedBy.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")}
+                      </td>
                       <td className="py-1">
                         <button type="button" onClick={() => setDeleteTarget(m)} disabled={busy} className={dangerButton}>
                           Delete
@@ -295,6 +358,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                     {" → "}
                     {p.expectedKey}
                     {p.bytes !== null ? ` · ${gb(p.bytes)}` : ""}
+                    {p.actualSha256 && p.status === "done" ? ` · SHA-256 verified ${p.actualSha256.slice(0, 12)}…` : ""}
+                    {p.requestedBy === "factory" ? " · requested by the Factory Operator" : ""}
                     {p.error ? ` · ${p.error}` : ""}
                     {p.podId ? ` · pod ${p.podId}` : " · reserving a pod…"}
                   </span>
@@ -326,6 +391,14 @@ export function ModelsCard({ configured }: { configured: boolean }) {
                 ))}
               </select>
             </label>
+            <label className="block text-xs text-zinc-400">
+              Revision (optional)
+              <input type="text" value={revision} onChange={(e) => setRevision(e.target.value)} className={inputClass} placeholder="main" />
+            </label>
+            <label className="block text-xs text-zinc-400 sm:col-span-2">
+              Expected SHA-256 (optional: Hugging Face&rsquo;s own hash is used and checked on the pod)
+              <input type="text" value={sha256} onChange={(e) => setSha256(e.target.value)} className={`${inputClass} font-mono`} placeholder="64 hex characters" />
+            </label>
             <div className="flex items-end">
               <button type="button" onClick={startPull} disabled={busy || pulling || !repoId.trim() || !file.trim()} className={primaryButton}>
                 {pulling ? "Pull running…" : "Pull from Hugging Face"}
@@ -333,13 +406,31 @@ export function ModelsCard({ configured }: { configured: boolean }) {
             </div>
           </div>
           <p className="text-xs text-zinc-500">Check each model&rsquo;s licence for your use before pulling it; this app takes no position.</p>
+          {events.length > 0 && (
+            <details className="text-xs text-zinc-400">
+              <summary className="cursor-pointer text-zinc-500">Recent model and template actions ({events.length})</summary>
+              <ul className="mt-1 space-y-0.5">
+                {events.map((e, i) => (
+                  <li key={`${e.at}-${i}`}>
+                    {new Date(e.at).toLocaleString()} · {e.actor === "factory" ? "Factory Operator" : e.actor === "sync" ? "automatic sync" : "you"} · {e.action.replace(/_/g, " ")} · <span className="font-mono">{e.subject}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       )}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {deleteTarget && (
         <ConfirmDialog
           title={`Delete ${deleteTarget.name} from the volume?`}
-          description="The file is removed from the network volume; pull it again if a workflow needs it."
+          description={
+            deleteTarget.usedBy.length > 0
+              ? `Used by ${deleteTarget.usedBy.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")} — jobs of these templates will fail until it is pulled again. There is no undo except pulling it again.`
+              : registry.state === "unavailable"
+                ? "The factory template registry cannot be read here, so it cannot be checked whether a factory template needs this file. There is no undo except pulling it again."
+                : "No template uses this file. It is removed from the network volume; pull it again if a workflow needs it."
+          }
           confirmLabel="Delete"
           confirmVariant="danger"
           onCancel={() => setDeleteTarget(null)}
@@ -364,15 +455,35 @@ export function WorkflowTemplatesCard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkflowTemplate | null>(null);
+  const [lastSync, setLastSync] = useState<MediaTemplateSyncResult | null>(null);
 
   const fetchTemplates = useCallback(
     () =>
-      requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates").then(
-        (data) => setTemplates(data.templates),
+      Promise.all([
+        requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
+        requestJson<{ lastSync: MediaTemplateSyncResult | null }>("/api/media-generation/workflow-templates/sync"),
+      ]).then(
+        ([data, sync]) => {
+          setTemplates(data.templates);
+          setLastSync(sync.lastSync);
+        },
         (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load templates")
       ),
     []
   );
+
+  async function syncNow() {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson("/api/media-generation/workflow-templates/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      await fetchTemplates();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sync the templates");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     fetchTemplates();
@@ -424,8 +535,38 @@ export function WorkflowTemplatesCard() {
   return (
     <Card
       title="Workflow templates"
-      help="A template is a ComfyUI workflow exported in API format (ComfyUI → Workflow → Export (API)) plus the parameters a job may set: each parameter names a node id and an input of that node, with a type and optional bounds. Every Save node's filename_prefix is rewritten per job so outputs land in that job's folder. Prompts are job parameters, not template content."
+      help="A template is a ComfyUI workflow exported in API format (ComfyUI → Workflow → Export (API)) plus the parameters a job may set: each parameter names a node id and an input of that node, with a type and optional bounds. Every Save node's filename_prefix is rewritten per job so outputs land in that job's folder. Prompts are job parameters, not template content. Factory templates come from the factory template registry (Settings → logical path media_templates), are checked every minute and are read-only here; templates you import yourself stay local and are never touched by the sync."
     >
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={syncNow} disabled={busy} className={secondaryButton}>
+          Sync templates
+        </button>
+        {lastSync && (
+          <span className="text-xs text-zinc-500">
+            Last sync {new Date(lastSync.at).toLocaleString()} ({lastSync.trigger === "auto" ? "automatic" : lastSync.trigger === "factory" ? "by the Factory Operator" : "by you"}):{" "}
+            {lastSync.outcome === "unavailable"
+              ? `registry unavailable — ${lastSync.error}`
+              : [
+                  `${lastSync.installed.length} installed`,
+                  `${lastSync.updated.length} updated`,
+                  `${lastSync.removed.length} removed`,
+                  lastSync.pending.length ? `${lastSync.pending.length} waiting for files` : null,
+                  lastSync.invalid.length ? `${lastSync.invalid.length} refused` : null,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+          </span>
+        )}
+      </div>
+      {lastSync && lastSync.invalid.length > 0 && (
+        <ul className="space-y-1 text-xs text-amber-400">
+          {lastSync.invalid.map((i) => (
+            <li key={`${i.templateId}.${i.version}`}>
+              {i.templateId} v{i.version}: {i.reason}
+            </li>
+          ))}
+        </ul>
+      )}
       {templates.length === 0 ? (
         <p className="text-xs text-zinc-500">No templates yet.</p>
       ) : (
@@ -433,15 +574,21 @@ export function WorkflowTemplatesCard() {
           {templates.map((t) => (
             <li key={t.templateId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
               <span>
-                <span className="font-medium text-zinc-100">{t.name}</span> <span className="text-xs text-zinc-500">v{t.version} · {t.nodeCount} nodes · {t.outputNodeIds.length} output node(s) · id {t.templateId}</span>
+                <span className="font-medium text-zinc-100">{t.name}</span>{" "}
+                <span className={t.source === "factory" ? "rounded bg-sky-950 px-1.5 text-xs text-sky-300" : "rounded bg-zinc-800 px-1.5 text-xs text-zinc-400"}>{t.source === "factory" ? "factory" : "local"}</span>{" "}
+                <span className="text-xs text-zinc-500">v{t.version} · {t.nodeCount} nodes · {t.outputNodeIds.length} output node(s) · id {t.templateId}</span>
                 <br />
                 <span className="text-xs text-zinc-500">
                   {t.parameters.map((p) => `${p.name}${p.required ? "*" : ""}: ${p.type}`).join(", ") || "no parameters"}
                 </span>
               </span>
-              <button type="button" onClick={() => setDeleteTarget(t)} disabled={busy} className={dangerButton}>
-                Delete
-              </button>
+              {t.source === "factory" ? (
+                <span className="text-xs text-zinc-500">managed by the factory registry</span>
+              ) : (
+                <button type="button" onClick={() => setDeleteTarget(t)} disabled={busy} className={dangerButton}>
+                  Delete
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -1294,14 +1441,14 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
         left={
           <div className="flex items-center gap-3">
             <ToggleSwitch label="Enable the media gateway" checked={overview.gatewayEnabled} onChange={toggleGateway} />
-            <span className="text-sm text-zinc-300">Media gateway (RunPod API, S3 API, ComfyUI)</span>
+            <span className="text-sm text-zinc-300">Media gateway (RunPod API, S3 API, ComfyUI, Hugging Face Hub)</span>
           </div>
         }
         right={
           <div>
             <GatewayTrafficStats size="lg" window={traffic("runpod_api")} />
             <p className="text-xs text-zinc-500">
-              S3: {traffic("runpod_s3")?.totalAttempts ?? 0} · ComfyUI: {traffic("comfyui_api")?.totalAttempts ?? 0} attempts (24h)
+              S3: {traffic("runpod_s3")?.totalAttempts ?? 0} · ComfyUI: {traffic("comfyui_api")?.totalAttempts ?? 0} · Hugging Face: {traffic("huggingface_api")?.totalAttempts ?? 0} attempts (24h)
             </p>
           </div>
         }

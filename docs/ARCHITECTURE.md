@@ -2380,9 +2380,12 @@ The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTO
 - Channel agents: `POST /api/mcp`, token `ytom_ch_`, `createMcpServer`, `bound` tools inside the channel agent scope (`src/lib/agent-session`).
   Two additive reads were added (`agent_list_logical_paths`, `agent_get_logical_path`); the handler pins the registry to the `channel` scope, so only
   `all_agents` paths are visible and a `factory_only` name fails exactly like an unknown name.
-- Factory Operator: `POST /api/mcp/factory`, token `ytom_fo_`, `createFactoryMcpServer` (`src/mcp/factory-server.ts`), a closed list of four read-only tools. The
+- Factory Operator: `POST /api/mcp/factory`, token `ytom_fo_`, `createFactoryMcpServer` (`src/mcp/factory-server.ts`), a closed list of tools -- four read-only
+  ones (ADR 0022) plus, since BL-132 (ADR 0025, Factory API 1.1.0), eight `factory_media_*` tools: storage status, models, pulls and templates (reads) and
+  pull / cancel / delete a model and sync templates (writes, pinned by `FACTORY_WRITE_TOOL_NAMES`, audited as actor `factory`, each behind the device mutation
+  gate injected as `assertMutationAllowed`; no session or job tool). The
   server file imports only the MCP SDK, zod and shared-domain: everything it can reach arrives through dependencies wired in
-  `src/app/api/mcp/factory/route.ts`, which imports only the allowlisted modules (no YouTube gateway, database access beyond the connection toggle and the traffic
+  `src/app/api/mcp/factory/route.ts`, which imports only the allowlisted modules (since BL-132 also `media-generation` and `device-mutation-gate`; no YouTube gateway, database access beyond the connection toggle and the traffic
   counter, analytics, change sets, batches). The endpoint never enters the channel agent scope, so it cannot read the operator's selected channel. Its
   channel listing returns channel id, title and this device's workspace path only.
 - Shared, unchanged safeguards: loopback guard (extracted to `src/lib/loopback-guard`), the master MCP-connection switch (403 when off, for both
@@ -2723,6 +2726,24 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   job failed/was cancelled; dry run by default (Settings button, CLI `janitor`), real deletes daily from
   `src/instrumentation.ts` and on demand. Jobs left mid-flight by a dead process fail as interrupted at
   boot, right after the session sweep.
+- **Factory media control (BL-132, ADR 0025, schema v61).** *Pulls* (`models.ts`): the Hub pre-check through the gateway
+  child `media-gateway/huggingface.ts` (revision → commit, size, LFS SHA-256; gated/private refused) and a free-space check
+  (`getNetworkVolume`) run before any pod; the CPU pod's script (`buildPullCommand`) downloads the commit into
+  `ytm-staging/<pullId>/`, `sha256sum`s it, `mv`s it into `models/` only on a match and writes `ytm-pulls/<pullId>.json`;
+  `pollPulls` settles a hashed pull ONLY on that verdict (+ S3 showing the verdict's size at the final key), and
+  `finishPull` deletes the pull's staging/verdict keys. Pull records stay the `app_settings` JSON list (now 100 finished);
+  the durable history is `media_control_events` (actor `owner|factory|sync`). *Usage/guard*: `jobs.modelUsage()` = this
+  device's templates (factory: declared `models_json`; local: loader-node literals recorded at import) + every template the
+  registry lists; `models.deleteModel` refuses the factory on any user or an unreadable registry, takes the exclusive
+  volume lock as `delete:<id>` for the delete. *Registry*: `template-registry.ts` (format, pure checks, the known
+  loader→folder map), `adapters/template-registry-fs.ts` (the only read inside a logical path: `media_templates`, direct
+  regular files ≤ 5 MB, real path inside), `jobs.syncTemplatesFromRegistry` (serialized; fingerprint of index + listed
+  files for the 60 s check in `src/instrumentation.ts`; last result in `app_settings`). Factory rows are written by
+  `upsertFactoryMediaWorkflowTemplate`, whose `ON CONFLICT` update only applies to a `source='factory'` row. *Inputs*:
+  parameter types `image|audio|video`; `createJob` resolves every input with `workspace-exchange.resolveSentToYtmFile`
+  before the job row, then streams each with `RunpodS3Client.putObjectFromFile` (two passes: SHA-256, then the body with
+  Content-Length) to `exchange/in/<jobId>-<param>-<name>` before the submit; ledger `media_exchange_inputs`; the janitor
+  deletes such a key only by that ledger and only for a terminal job (other `exchange/in/` files stay "reference input").
 - **Concurrent sessions, Production section, balance (slice 6, ADR 0023 amendment 1, schema v58).** Requests are
   never refused for another open session; `approveSession` runs the preconditions, clears a crash-stale exclusive
   volume lock (`volumeLock.activeHolder`), then `pending → approved` as ONE `UPDATE` guarded by "active sessions <

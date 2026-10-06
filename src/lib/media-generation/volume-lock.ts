@@ -38,7 +38,7 @@ export type VolumeLockStore = {
 };
 
 /** Exclusive owners (a model pull, an operator pod). `session:` survives only as a pre-slice-6 row left by a crash. */
-export type VolumeLockOwner = `session:${string}` | `pull:${string}` | `pod:${string}`;
+export type VolumeLockOwner = `session:${string}` | `pull:${string}` | `pod:${string}` | `delete:${string}`;
 
 export type VolumeLock = {
   /**
@@ -64,6 +64,7 @@ export function describeVolumeLockHolder(holder: string): string {
   if (holder.startsWith("session:")) return `A generation session (${holder.slice("session:".length)}) is open on the network volume; stop it first (Production → Sessions).`;
   if (holder.startsWith("pull:")) return `A model pull (${holder.slice("pull:".length)}) is writing to the network volume; wait for it to finish (Production → Models).`;
   if (holder.startsWith("pod:")) return `An operator pod (${holder.slice("pod:".length)}) has the network volume mounted; terminate it first (media pod-terminate).`;
+  if (holder.startsWith("delete:")) return "A model is being deleted from the network volume; try again in a moment.";
   return `The network volume is busy (${holder}).`;
 }
 

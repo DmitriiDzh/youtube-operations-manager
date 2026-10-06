@@ -1,6 +1,6 @@
 # 0022. Factory Operator access: a second agent role, separate from the channel agents
 
-Status: Accepted
+Status: Accepted (amended by [ADR 0025](0025-factory-media-control.md): the role gains eight media tools, four of them writes; the registry is read inside one named path, `media_templates`)
 
 **Date:** 2026-10-05.
 

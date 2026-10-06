@@ -76,3 +76,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0022](0022-factory-operator-access.md) | Factory Operator access: a logical path registry and a second, read-only agent role with its own token, endpoint and tools | Accepted |
 | [0023](0023-remote-media-generation-sessions.md) | Remote media generation (Phase 14): human-approved RunPod pod sessions, S3-only transport into `99 Data Exchange/From YTM`, per-device key file, single media gateway | Accepted |
 | [0024](0024-agent-token-import.md) | Agent token import: the same channel / Factory Operator token registered on several devices by operator paste; channel tokens embed their channel id | Accepted |
+| [0025](0025-factory-media-control.md) | Factory media control: hash-verified model pulls, a deletion guard, a template registry synced on every device, job input media; the factory role writes through a closed list | Accepted |

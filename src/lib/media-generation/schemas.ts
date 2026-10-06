@@ -70,7 +70,7 @@ const scalarSchema = z.union([z.string().max(20_000), z.number(), z.boolean()]);
 export const templateParameterSchema = z
   .object({
     name: parameterNameSchema,
-    type: z.enum(["string", "text", "number", "integer", "boolean", "enum"]),
+    type: z.enum(["string", "text", "number", "integer", "boolean", "enum", "image", "audio", "video"]),
     nodeId: z.string().min(1).max(64),
     input: z.string().min(1).max(128),
     required: z.boolean().optional(),
@@ -79,6 +79,9 @@ export const templateParameterSchema = z
     max: z.number().nullable().optional(),
     enum: z.array(z.string().min(1).max(500)).min(1).max(200).nullable().optional(),
     description: z.string().max(500).nullable().optional(),
+    // BL-132 input types (image/audio/video) only.
+    accept: z.array(z.string().toLowerCase().regex(/^\.[a-z0-9]{1,10}$/, "an extension like .png")).min(1).max(20).nullable().optional(),
+    maxBytes: z.number().int().min(1).max(500 * 1024 * 1024).nullable().optional(),
   })
   .strict();
 

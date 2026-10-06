@@ -1,6 +1,6 @@
 # Factory Operator control of media models, storage, templates and job inputs — plan
 
-**Status: PLAN, awaiting the owner's acceptance. Nothing implemented.** Backlog item: BL-132. Branch for the implementation:
+**Status: ACCEPTED by the owner 2026-10-06 (relayed in FO-MSG-0006, "Принимаю"); O1–O5 answered (§5a). IMPLEMENTED (slices M1–M5 + docs) on `feature/factory-media-control`; ADR 0025; not merged; live RunPod checks pending the owner's go-ahead (§7).** Backlog item: BL-132. Branch for the implementation:
 `feature/factory-media-control` (all slices on one branch, one merge-approval request, `AGENTS.md` §K.1/§K.2). Safety-critical per §L:
 it gives an agent token actions that cost money and delete data, so the full §A reading list applies.
 
@@ -202,7 +202,7 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 | AC-FM-09 | A template removed from the index is removed from this device. Owner-imported templates are never touched by sync. |
 | AC-FM-10 | A template whose loader nodes or parameter enums reference a model not in its declared `models` list is `invalid` and not installed. |
 | AC-FM-11 | A job input path that escapes `Sent to YTM` (`..`, absolute, a symlink out), is not a regular file, has a wrong extension or is too large is refused before any upload or GPU work. |
-| AC-FM-12 | A job with an input uploads it under `exchange/in/<jobId>/`, the graph input names it, and the janitor deletes it only after the job is terminal and only by ledger. The source file in `Sent to YTM` is untouched. |
+| AC-FM-12 | A job with an input uploads it under `exchange/in/<jobId>-<param>-<name>` (§7) before the job row and the prompt exist, the graph input names it, and the janitor deletes it only after the job is terminal (or, for an input whose job row never appeared, after an hour) and only by ledger. An upload failure creates no job and deletes the inputs already uploaded. The source file in `Sent to YTM` is untouched. |
 | AC-FM-13 | `factory_get_capabilities` reports the WRITE permission and the new tools. The factory server's tool list equals exactly the four existing tools plus §2.6. No session or job tool and no channel tool is reachable with a factory token. No `factory_*` tool appears in a channel session. |
 | AC-FM-14 | Every pull, cancel, delete and template change appears in `media_control_events` with its actor (`owner`, `factory`, `sync`) and is shown in the Web UI. |
 | AC-FM-15 | Factory API is `1.1.0` and Agent API is `3.5.0`. The full existing suite passes unchanged, and existing jobs, sessions and owner-imported templates behave as before. |
@@ -215,6 +215,17 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 - **O4 — daily pull cap for the factory.** Recommended: none for now. Free space, one pull at a time and the audit are enough. Alternatively, N pulls or X GB per day.
 - **O5 — input size cap.** Recommended: 500 MB per input with the streaming upload.
 
+## 5a. Owner answers and additions (FO-MSG-0006, 2026-10-06)
+
+- **O1** automatic sync: yes (start + every 60 s), plus the factory tool and the Web button.
+- **O2** YT Manager never deletes inputs from `Sent to YTM`.
+- **O3** owner-imported templates stay local; sync never touches them.
+- **O4** no daily pull cap; the volume size is the limit.
+- **O5** 500 MB per input.
+- **Addition A1:** the deletion guard also covers **local** (owner-imported) templates. `usedBy` lists them, marked `local`. For a local template the models are the literal loader-node names found in its graph (§2.3's check), since it has no declared list.
+- **Addition A2:** gated Hugging Face repos with the owner's HF token are a later follow-up (BL-134), not part of this build.
+- **Registry folder:** `media_templates` = `<factory_shared>/media_templates/`, set by the owner per device; the factory creates the folder and `index.json`.
+
 ## 6. Out of scope
 
 - Factory-side sessions and jobs; inputs from the factory workspace.
@@ -223,3 +234,27 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 - Template sync for owner-imported templates; channel-specific templates.
 - Deleting files from `Sent to YTM` (unless O2 says so).
 - Any operating instruction for the factory or channels (`AGENTS.md` §B).
+
+## 7. Implementation notes and deviations (2026-10-06)
+
+- **Pull records** stay the existing `app_settings` JSON list (now the last 100 finished + all running) instead of a new `media_model_pulls`
+  table; the durable, append-only history the audit needs (AC-FM-14) is `media_control_events`. Reason: the pull list's atomic
+  read-modify-write and its many review-round guarantees are kept unchanged.
+- **Input names** are flat at the root of ComfyUI's input folder (`exchange/in/<jobId>-<param>-<name>`) instead of a per-job subfolder: a
+  loader then needs no subfolder support at all (the fallback named in §2.4, taken up front).
+- **Owner deletion** is never blocked by the guard on the server; the Web dialog shows `usedBy` (or "registry cannot be read") before the owner
+  confirms. The factory path is enforced server-side.
+- **Model usage** also counts the templates the registry lists but this device has not installed, so a model needed on another device is
+  protected too; a local template's models are its known loader nodes' literal names, recorded at import (schema v61 `models_json`).
+- **Still to verify live** (paid; only after the owner's go-ahead): the pull pod's `hf download --revision` + `sha256sum` + `mv` on
+  `python:3.12-slim`; RunPod S3 accepting the streamed PUT with an explicit Content-Length; ComfyUI `LoadImage`/`LoadAudio` reading the flat
+  input name.
+- **After the independent review (2026-10-06):** inputs are uploaded before the job row exists (a long upload can no longer be failed by
+  the resume pass's 5-minute grace for queued rows) and each upload counts as session activity; the uploader reads ONE descriptor opened
+  with O_NOFOLLOW whose dev/inode must match the checked file and whose size must fit the parameter's `maxBytes`; the registry reader
+  also reads from one O_NOFOLLOW descriptor and never quotes file content in errors; model usage counts a listed-but-unreadable
+  template as "registry unavailable" (the factory deletion is refused) and never throws for the owner; the delete takes the volume lock
+  before checking usage; a cancel after a verified verdict settles the pull as done; a verdict the volume contradicts fails at once; the
+  60 s check's fingerprint includes this device's template rows.
+- **Residual (RISK-109):** the template sync is not under the volume lock; a template added to the index between a deletion's usage
+  check and the delete itself is not seen by that check (a millisecond window).

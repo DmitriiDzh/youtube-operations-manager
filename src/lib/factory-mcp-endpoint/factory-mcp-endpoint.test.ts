@@ -38,6 +38,8 @@ function createMemoryTokenStore() {
 
 function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
   const outcomes: string[] = [];
+  const mediaCalls: string[] = [];
+  const gateClosed = { value: false };
   const deps: FactoryToolDeps = {
     async readLogicalPath(input) {
       const name = (input as { name: string }).name;
@@ -62,9 +64,24 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
     async recordOutcome(outcome) {
       outcomes.push(outcome);
     },
+    // BL-132: the media core is a fake that records what reached it.
+    media: {
+      storageStatus: async () => (mediaCalls.push("storageStatus"), { storage: { volumeId: "v" } }),
+      listModels: async () => (mediaCalls.push("listModels"), { models: [] }),
+      pullModel: async (input) => (mediaCalls.push(`pullModel:${JSON.stringify(input)}`), { pull: { pullId: "p1" } }),
+      getPull: async (input) => (mediaCalls.push(`getPull:${input.pullId ?? ""}`), { pulls: [] }),
+      cancelPull: async (input) => (mediaCalls.push(`cancelPull:${input.pullId}`), { pull: { pullId: input.pullId } }),
+      deleteModel: async (input) => (mediaCalls.push(`deleteModel:${input.key}`), { deleted: input.key }),
+      listTemplates: async () => (mediaCalls.push("listTemplates"), { templates: [] }),
+      syncTemplates: async (input) => (mediaCalls.push(`syncTemplates:${input.dryRun}`), { result: { outcome: "ok" } }),
+    },
+    async assertMutationAllowed() {
+      mediaCalls.push("gate");
+      if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
+    },
     ...overrides,
   };
-  return { deps, outcomes };
+  return { deps, outcomes, mediaCalls, gateClosed };
 }
 
 function setup(initial: { enabled?: boolean; toolDeps?: Partial<FactoryToolDeps> } = {}) {
@@ -80,6 +97,18 @@ function setup(initial: { enabled?: boolean; toolDeps?: Partial<FactoryToolDeps>
     },
   });
   return { endpoint, tokenServices, state, outcomes };
+}
+
+/** `setup` that also hands back the fake tool deps (BL-132 tests inspect what reached the media core). */
+function setupWithDeps() {
+  const tokenServices = createFactoryTokenServices({ store: createMemoryTokenStore(), generateSecret: () => "s1" });
+  const toolDeps = fakeToolDeps();
+  const endpoint = createFactoryMcpEndpoint({
+    isConnectionEnabled: async () => true,
+    verifyToken: (token) => tokenServices.verifyToken(token),
+    createServer: ({ session }) => createFactoryMcpServer(toolDeps.deps, { connectionEnabled: true, session }),
+  });
+  return { endpoint, tokenServices, toolDeps };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -181,7 +210,9 @@ test("a non-token verification failure (database down) is a 503, never a false '
   assert.equal((await errorOf(response)).code, "AGENT_ENDPOINT_UNAVAILABLE");
 });
 
-test("AC-FO-07: tools/list over the real endpoint is exactly the four factory tools", async () => {
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025, AC-FM-13) widened the closed list by eight media tools; the four
+// 1.0.0 tools are unchanged. No session, job or channel tool is added.
+test("AC-FO-07 / AC-FM-13: tools/list over the real endpoint is exactly the four 1.0.0 tools plus the eight media tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
@@ -191,7 +222,16 @@ test("AC-FO-07: tools/list over the real endpoint is exactly the four factory to
     "factory_get_logical_path",
     "factory_list_channels",
     "factory_list_logical_paths",
+    "factory_media_cancel_pull",
+    "factory_media_delete_model",
+    "factory_media_get_pull",
+    "factory_media_list_models",
+    "factory_media_list_templates",
+    "factory_media_pull_model",
+    "factory_media_storage_status",
+    "factory_media_sync_templates",
   ]);
+  assert.equal(names.some((n) => /session|job/.test(n)), false, "no session or job tool for the factory (D4)");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
 });
 
@@ -206,17 +246,80 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
   }
 });
 
-test("factory_get_capabilities reports the factory API version 1.0.0, READ only, and the tool list", async () => {
+// BL-132 (AC-FM-13): the capabilities answer now reports WRITE and names the write tools; version 1.1.0.
+test("factory_get_capabilities reports the factory API version 1.1.0, READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.0.0",
-    tools: ["factory_get_capabilities", "factory_list_logical_paths", "factory_get_logical_path", "factory_list_channels"],
-    permissions: ["READ"],
+    factoryApiVersion: "1.1.0",
+    tools: [
+      "factory_get_capabilities",
+      "factory_list_logical_paths",
+      "factory_get_logical_path",
+      "factory_list_channels",
+      "factory_media_storage_status",
+      "factory_media_list_models",
+      "factory_media_pull_model",
+      "factory_media_get_pull",
+      "factory_media_cancel_pull",
+      "factory_media_delete_model",
+      "factory_media_list_templates",
+      "factory_media_sync_templates",
+    ],
+    permissions: ["READ", "WRITE"],
+    writeTools: ["factory_media_pull_model", "factory_media_cancel_pull", "factory_media_delete_model", "factory_media_sync_templates"],
   });
+});
+
+test("BL-132: every factory write passes the device mutation gate first and reaches nothing when it is closed; reads and a dry-run sync do not need it", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const SHA = "c".repeat(64);
+  const writes: Array<[string, Record<string, unknown>, string]> = [
+    ["factory_media_pull_model", { repoId: "a/b", file: "m.safetensors", folder: "checkpoints", sha256: SHA }, `pullModel:${JSON.stringify({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints", sha256: SHA })}`],
+    ["factory_media_cancel_pull", { pullId: "p1" }, "cancelPull:p1"],
+    ["factory_media_delete_model", { key: "models/vae/x" }, "deleteModel:models/vae/x"],
+    ["factory_media_sync_templates", {}, "syncTemplates:false"],
+  ];
+  for (const [name, args, reached] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate", reached], name);
+  }
+  toolDeps.gateClosed.value = true;
+  for (const [name, args] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    const result = await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))));
+    assert.equal(result.isError, true, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate"], `${name} reached nothing behind a closed gate`);
+  }
+  for (const [name, args, reached] of [
+    ["factory_media_storage_status", {}, "storageStatus"],
+    ["factory_media_list_models", {}, "listModels"],
+    ["factory_media_get_pull", {}, "getPull:"],
+    ["factory_media_list_templates", {}, "listTemplates"],
+    ["factory_media_sync_templates", { dryRun: true }, "syncTemplates:true"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [reached], `${name} is not gated`);
+  }
+});
+
+test("BL-132 (D2): a pull without sha256, or with a malformed one, is refused before the media core is reached", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  for (const args of [{ repoId: "a/b", file: "m", folder: "vae" }, { repoId: "a/b", file: "m", folder: "vae", sha256: "abc" }]) {
+    toolDeps.mediaCalls.length = 0;
+    // The SDK's own schema check answers first (plain text "MCP error ..."), so read the raw JSON-RPC body.
+    const body = await (await endpoint.handle(rpc(call("factory_media_pull_model", args), withToken(token)))).json();
+    assert.equal(body.result?.isError, true);
+    assert.match(String(body.result.content[0].text), /sha256/);
+    assert.deepEqual(toolDeps.mediaCalls, []);
+  }
 });
 
 test("AC-FO-02: the logical path tools return the value, or an explicit error for an unset / unknown name", async () => {

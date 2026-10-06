@@ -3,17 +3,19 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths } from "@/lib/db";
+import { appDataPaths, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
-import { comfyUiProxyBaseUrl, createComfyUiClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
+import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
 import { sleep as sharedSleep } from "@/lib/shared-async";
-import { createExchangeFs, resolveFromYtmDir } from "@/lib/workspace-exchange";
+import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
-import { createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
-import { DomainError } from "./contracts";
+import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
+import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
+import { DomainError, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
@@ -56,6 +58,7 @@ function buildCore(jobScheduling: JobScheduling) {
   let sessionsRef: ReturnType<typeof createMediaSessionServices> | null = null;
   let modelsRef: ReturnType<typeof createMediaModelServices> | null = null;
   let baseRef: ReturnType<typeof createMediaGenerationServices> | null = null;
+  let jobsRef: { modelUsage(): Promise<MediaModelUsage> } | null = null;
   const isHolderActive = async (holder: string): Promise<boolean> => {
     if (holder.startsWith("session:")) return (await sessionsRef?.holdsVolumeLock(holder.slice("session:".length))) ?? false;
     if (holder.startsWith("pull:")) return (await modelsRef?.isPullActive(holder.slice("pull:".length))) ?? false;
@@ -99,6 +102,13 @@ function buildCore(jobScheduling: JobScheduling) {
   baseRef = base;
   const models = createMediaModelServices({
     store: createModelPullStore(),
+    hub: createHuggingFaceClient(),
+    events: createMediaControlEventSink(),
+    // Late-bound: the job services (which own the templates) are built below.
+    modelUsage: async () => {
+      if (!jobsRef) throw new Error("media job services are not ready");
+      return jobsRef.modelUsage();
+    },
     base: { getSettings: () => base.getSettings(), resolveRunpodClient: () => base.resolveRunpodClient(), s3: () => base.s3() },
     generateId: () => randomUUID(),
     clock: { now },
@@ -159,6 +169,13 @@ function buildCore(jobScheduling: JobScheduling) {
       });
     },
     fs: createExchangeLocalFs(),
+    // BL-132 (plan §2.4): job inputs come only from the channel's `99 Data Exchange/Sent to YTM/`, proven contained.
+    async resolveInputFile(channelId, relativePath) {
+      const workspace = await workspaces.getWorkspace({ channelId });
+      const unavailable = (reason: string) => new DomainError({ code: "media_input_unavailable", message: `Job input ${relativePath}: ${reason}`, details: { channelId, relativePath, reason } });
+      if (!workspace.configured) throw unavailable("this channel has no workspace folder on this device (Settings → Channels)");
+      return resolveSentToYtmFile({ workspace: workspace.path, relativePath, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable });
+    },
     // For the manifest only (FO-REQ-0002): read, never created here; an unreadable config is "unknown", never a reason
     // to hold a finished job back.
     device: async () => ({
@@ -190,8 +207,24 @@ function buildCore(jobScheduling: JobScheduling) {
         ? () => undefined
         : (run) => void run().catch((error) => console.warn(`[media] job processing failed: ${error instanceof Error ? error.message : String(error)}`)),
     log: (line) => console.warn(line),
+    // BL-132: the factory template registry folder (logical path `media_templates`, read for this device only).
+    registry: createTemplateRegistryReader({
+      resolveDir: async () => (await createLogicalPathsCore().readPath({ name: "media_templates" }, "factory")).path,
+    }),
+    events: createMediaControlEventSink(),
+    syncState: { get: () => getMediaTemplateSyncLastJson(), set: (json) => setMediaTemplateSyncLastJson(json) },
   });
-  return { ...base, ...sessions, ...jobs, ...models };
+  jobsRef = jobs;
+  /** BL-132 audit (plan §2.5): newest first. */
+  const listControlEvents = async (limit = 50): Promise<MediaControlEventView[]> =>
+    (await listMediaControlEvents(Math.min(Math.max(1, limit), 200))).map((row) => ({
+      at: row.at.toISOString(),
+      actor: row.actor as MediaControlEventView["actor"],
+      action: row.action,
+      subject: row.subject,
+      details: row.detailsJson ? (JSON.parse(row.detailsJson) as Record<string, unknown>) : null,
+    }));
+  return { ...base, ...sessions, ...jobs, ...models, listControlEvents };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

@@ -4,16 +4,33 @@ import {
   DomainError,
   EXCHANGE_INPUT_PREFIX,
   EXCHANGE_PREFIX,
+  isInputParameterType,
+  MEDIA_INPUT_DEFAULT_ACCEPT,
+  MEDIA_INPUT_MAX_BYTES,
   MEDIA_JOB_MANIFEST_FILE,
   MEDIA_JOB_TERMINAL_STATUSES,
   MEDIA_OUTPUT_SUBDIR,
   type MediaJob,
   type MediaJobManifest,
   type MediaJobOutput,
+  type MediaJobInput,
   type MediaJobStatus,
+  type MediaModelReference,
+  type MediaModelUsage,
   type MediaTemplateParameter,
+  type MediaTemplateSyncResult,
+  type MediaTemplateSyncTrigger,
   type MediaWorkflowTemplate,
 } from "./contracts";
+import type { MediaControlEvent } from "./models";
+import {
+  checkDeclaredModels,
+  localTemplateModels,
+  parseRegistryIndex,
+  parseRegistryTemplate,
+  registryContentSha256,
+  registryTemplateFileName,
+} from "./template-registry";
 import {
   createJobInputSchema,
   importTemplateInputSchema,
@@ -47,6 +64,10 @@ export type StoredTemplateRow = {
   nodeCount: number | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Schema v61 (BL-132); absent = `owner`. */
+  source?: "owner" | "factory";
+  registrySha256?: string | null;
+  modelsJson?: string | null;
 };
 
 export type StoredJobRow = {
@@ -71,11 +92,13 @@ export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: s
 
 export type MediaJobStore = {
   templates: {
-    insert(row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number }): Promise<StoredTemplateRow>;
-    update(id: string, patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number }): Promise<StoredTemplateRow | null>;
+    insert(row: { id: string; name: string; description: string | null; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; modelsJson?: string }): Promise<StoredTemplateRow>;
+    update(id: string, patch: { name?: string; description?: string | null; workflowJson?: string; parametersJson?: string; outputNodeIdsJson?: string; nodeCount?: number; modelsJson?: string }): Promise<StoredTemplateRow | null>;
     get(id: string): Promise<StoredTemplateRow | null>;
     list(): Promise<StoredTemplateRow[]>;
     delete(id: string): Promise<boolean>;
+    /** BL-132: install/replace a registry template; `null` = the id belongs to an owner-imported (local) template. */
+    upsertFactory(row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string }): Promise<StoredTemplateRow | null>;
   };
   jobs: {
     insert(row: Omit<StoredJobRow, "createdAt"> & { createdAt?: Date }): Promise<StoredJobRow>;
@@ -89,7 +112,16 @@ export type MediaJobStore = {
     markRemoteDeleted(remoteKey: string, at: Date): Promise<void>;
     get(remoteKey: string): Promise<ExchangeLedgerRow | null>;
   };
+  /** BL-132: job input files uploaded to `exchange/in/` (absent = this store cannot take inputs). */
+  inputs?: {
+    insert(row: Omit<ExchangeInputRow, "remoteDeletedAt">): Promise<void>;
+    listByJob(jobId: string): Promise<ExchangeInputRow[]>;
+    get(remoteKey: string): Promise<ExchangeInputRow | null>;
+    markRemoteDeleted(remoteKey: string, at: Date): Promise<void>;
+  };
 };
+
+export type ExchangeInputRow = { remoteKey: string; jobId: string; parameter: string; sourcePath: string; bytes: number; sha256: string; uploadedAt: Date; remoteDeletedAt: Date | null };
 
 export type JobServiceDependencies = {
   store: MediaJobStore;
@@ -128,6 +160,17 @@ export type JobServiceDependencies = {
   schedule(run: () => Promise<void>): void;
   timeouts?: { pollMs?: number; maxGenerationMs?: number };
   log?: (line: string) => void;
+  /**
+   * BL-132 (plan §2.4): a job input file named relative to the channel workspace's `99 Data Exchange/Sent to YTM/`,
+   * proven contained (`workspace-exchange`); throws `media_input_unavailable`. Absent = inputs are not available here.
+   */
+  resolveInputFile?(channelId: string, relativePath: string): Promise<{ path: string; bytes: number; identity?: { dev: number; ino: number } }>;
+  /** BL-132: the factory template registry folder (`adapters/template-registry-fs.ts`); absent = no registry on this device. */
+  registry?: { read(): Promise<{ indexText: string; readTemplateFile(name: string): Promise<string | null> }> };
+  /** BL-132 audit sink. */
+  events?: { record(event: MediaControlEvent): Promise<void> };
+  /** BL-132: where the last sync result is kept (shown in the Web UI and the factory tool). */
+  syncState?: { get(): Promise<string | null>; set(json: string): Promise<void> };
 };
 
 const DEFAULT_POLL_MS = 4_000;
@@ -157,6 +200,9 @@ function normalizeParameter(p: ReturnType<typeof importTemplateInputSchema.parse
     max: p.max ?? null,
     enum: p.enum ?? null,
     description: p.description ?? null,
+    // BL-132: only input parameters carry these keys (the other types' JSON shape is unchanged); given on another type they
+    // are kept so the template check can refuse them, never silently dropped.
+    ...(isInputParameterType(p.type) || p.accept != null || p.maxBytes != null ? { accept: p.accept ?? null, maxBytes: p.maxBytes ?? null } : {}),
   };
 }
 
@@ -165,6 +211,56 @@ export function outputNodeIds(graph: Graph): string[] {
   return Object.entries(graph)
     .filter(([, node]) => typeof node.inputs?.filename_prefix === "string")
     .map(([id]) => id);
+}
+
+/** The structural checks every template passes, imported by hand or installed from the registry. */
+export function validateTemplateShape(graph: Graph, parameters: MediaTemplateParameter[]): void {
+  const problems: string[] = [];
+  for (const p of parameters) {
+    const node = graph[p.nodeId];
+    if (!node) problems.push(`parameter "${p.name}": node ${p.nodeId} is not in the workflow`);
+    else if (!(p.input in node.inputs)) problems.push(`parameter "${p.name}": node ${p.nodeId} has no input "${p.input}"`);
+    // The `<jobId>/` output-folder rewrite is what keeps every output inside the job's own folder (and pullable): a
+    // parameter on `filename_prefix` could undo it (review round 10).
+    if (p.input === "filename_prefix") problems.push(`parameter "${p.name}": filename_prefix is managed by the job (its <jobId>/ prefix) and cannot be a parameter`);
+    if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
+    // BL-132: an input file is always the job's own (a default path would be the same file for every job).
+    if (isInputParameterType(p.type) && p.default !== null && p.default !== undefined) problems.push(`parameter "${p.name}": an ${p.type} input cannot have a default`);
+    if (!isInputParameterType(p.type) && (p.accept != null || p.maxBytes != null)) problems.push(`parameter "${p.name}": accept/maxBytes apply only to image, audio and video inputs`);
+    // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
+    // (blaming the caller's params); refuse it at import instead (review round 8).
+    if (p.default !== null && p.default !== undefined) {
+      const problem = checkParameterValue(p, p.default);
+      if (problem) problems.push(`parameter "${p.name}": its default is invalid -- ${problem}`);
+    }
+  }
+  const names = parameters.map((p) => p.name);
+  if (new Set(names).size !== names.length) problems.push("parameter names must be unique");
+  if (outputNodeIds(graph).length === 0) problems.push("the workflow has no Save node (no input named filename_prefix), so it would produce nothing to pull");
+  // A Save node whose filename_prefix is a link (not a string) could not be rewritten to <jobId>/: its files would land
+  // outside the job's folder, never pulled and never cleaned (review round 11).
+  for (const [id, node] of Object.entries(graph)) {
+    if (node.inputs && "filename_prefix" in node.inputs && typeof node.inputs.filename_prefix !== "string") {
+      problems.push(`node ${id} (${node.class_type}): filename_prefix must be a literal string, not a link, so the job can prefix it with <jobId>/`);
+    }
+  }
+  if (problems.length > 0) throw new DomainError({ code: "media_template_invalid", message: `Invalid workflow template: ${problems.join("; ")}`, details: { problems } });
+}
+
+/**
+ * A factory row's declared models, or a local row's loader-node models -- both recorded when the row is written (schema
+ * v61), so a listing never parses graphs (review round 8). A local row written before v61 is parsed once per call as a
+ * fallback, like the v55 shape fields; one that cannot be parsed reports no models.
+ */
+function templateModels(row: StoredTemplateRow): MediaModelReference[] {
+  if (row.modelsJson) {
+    return (JSON.parse(row.modelsJson) as Array<{ folder: MediaModelReference["folder"]; file: string; sha256?: string | null }>).map((m) => ({ folder: m.folder, file: m.file, sha256: m.sha256 ?? null }));
+  }
+  try {
+    return localTemplateModels(JSON.parse(row.workflowJson) as Graph, JSON.parse(row.parametersJson) as MediaTemplateParameter[]);
+  } catch {
+    return [];
+  }
 }
 
 export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate {
@@ -181,6 +277,8 @@ export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate 
     name: row.name,
     version: row.version,
     description: row.description,
+    source: row.source ?? "owner",
+    models: templateModels(row),
     parameters: JSON.parse(row.parametersJson) as MediaTemplateParameter[],
     outputNodeIds: shape.outputNodeIds,
     nodeCount: shape.nodeCount,
@@ -234,6 +332,18 @@ export function checkParameterValue(p: MediaTemplateParameter, value: string | n
       return typeof value !== "boolean" ? `"${p.name}" must be true or false` : null;
     case "enum":
       return typeof value !== "string" || !(p.enum ?? []).includes(value) ? `"${p.name}" must be one of ${(p.enum ?? []).join(", ")}` : null;
+    case "image":
+    case "audio":
+    case "video": {
+      // BL-132: a path relative to the channel's `99 Data Exchange/Sent to YTM/` (where it lies is proven at upload).
+      if (typeof value !== "string" || !value) return `"${p.name}" must be a file path relative to 99 Data Exchange/Sent to YTM`;
+      if (value.length > 500 || value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.includes("\\") || value.split("/").some((s) => s === "" || s === "." || s === "..")) {
+        return `"${p.name}" must be a path relative to 99 Data Exchange/Sent to YTM (use / between folders, no .. or absolute paths)`;
+      }
+      const accept = p.accept ?? MEDIA_INPUT_DEFAULT_ACCEPT[p.type];
+      const extension = path.extname(value).toLowerCase();
+      return accept.includes(extension) ? null : `"${p.name}" must be one of ${accept.join(", ")} (got "${extension || "no extension"}")`;
+    }
   }
 }
 
@@ -381,6 +491,31 @@ export function describeComfyRejection(error: unknown): string {
   return full.length > 2000 ? `${full.slice(0, 1997)}...` : full;
 }
 
+/** BL-132: an input's flat name on the volume -- letters, digits, `.`, `-`, `_` only (the extension is kept). */
+function safeInputName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "_");
+  return cleaned.slice(-120) || "input";
+}
+
+function inputContentType(name: string): string {
+  const types: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+  };
+  return types[path.extname(name).toLowerCase()] ?? "application/octet-stream";
+}
+
 function safeFileName(name: string): string | null {
   if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") return null;
   return name;
@@ -396,34 +531,152 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   const maxGenerationMs = deps.timeouts?.maxGenerationMs ?? DEFAULT_MAX_GENERATION_MS;
   const log = deps.log ?? (() => undefined);
 
-  function validateTemplateShape(graph: Graph, parameters: MediaTemplateParameter[]): void {
-    const problems: string[] = [];
-    for (const p of parameters) {
-      const node = graph[p.nodeId];
-      if (!node) problems.push(`parameter "${p.name}": node ${p.nodeId} is not in the workflow`);
-      else if (!(p.input in node.inputs)) problems.push(`parameter "${p.name}": node ${p.nodeId} has no input "${p.input}"`);
-      // The `<jobId>/` output-folder rewrite is what keeps every output inside the job's own folder (and pullable): a
-      // parameter on `filename_prefix` could undo it (review round 10).
-      if (p.input === "filename_prefix") problems.push(`parameter "${p.name}": filename_prefix is managed by the job (its <jobId>/ prefix) and cannot be a parameter`);
-      if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
-      // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
-      // (blaming the caller's params); refuse it at import instead (review round 8).
-      if (p.default !== null && p.default !== undefined) {
-        const problem = checkParameterValue(p, p.default);
-        if (problem) problems.push(`parameter "${p.name}": its default is invalid -- ${problem}`);
-      }
+  /** BL-132: a job's uploaded inputs from the ledger (`[]` when it has none). */
+  async function withInputs(job: MediaJob): Promise<MediaJob> {
+    const rows = deps.store.inputs ? await deps.store.inputs.listByJob(job.jobId) : [];
+    const inputs: MediaJobInput[] = rows.map((r) => ({ parameter: r.parameter, sourcePath: r.sourcePath, remoteKey: r.remoteKey, bytes: r.bytes, sha256: r.sha256, uploadedAt: r.uploadedAt.toISOString(), remoteDeleted: r.remoteDeletedAt !== null }));
+    return { ...job, inputs };
+  }
+
+  function factoryManaged(templateId: string): DomainError {
+    return new DomainError({
+      code: "media_template_invalid",
+      message: "This template is installed from the factory template registry; change or remove it there (it would be overwritten by the next sync).",
+      details: { templateId, source: "factory" },
+    });
+  }
+
+  async function recordEvent(event: MediaControlEvent): Promise<void> {
+    try {
+      await deps.events?.record(event);
+    } catch (error) {
+      log(`[media] could not record the ${event.action} event for ${event.subject}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const names = parameters.map((p) => p.name);
-    if (new Set(names).size !== names.length) problems.push("parameter names must be unique");
-    if (outputNodeIds(graph).length === 0) problems.push("the workflow has no Save node (no input named filename_prefix), so it would produce nothing to pull");
-    // A Save node whose filename_prefix is a link (not a string) could not be rewritten to <jobId>/: its files would land
-    // outside the job's folder, never pulled and never cleaned (review round 11).
-    for (const [id, node] of Object.entries(graph)) {
-      if (node.inputs && "filename_prefix" in node.inputs && typeof node.inputs.filename_prefix !== "string") {
-        problems.push(`node ${id} (${node.class_type}): filename_prefix must be a literal string, not a link, so the job can prefix it with <jobId>/`);
+  }
+
+  let registrySyncChain: Promise<unknown> = Promise.resolve();
+  /** What the registry read like at the last sync (the 60 s check compares against it). Per process. */
+  let lastRegistryFingerprint: string | null = null;
+
+  async function runRegistrySync(input: { trigger: MediaTemplateSyncTrigger; dryRun?: boolean; onlyIfChanged?: boolean }): Promise<MediaTemplateSyncResult | null> {
+    const dryRun = input.dryRun ?? false;
+    const result: MediaTemplateSyncResult = { at: deps.clock.now().toISOString(), trigger: input.trigger, dryRun, outcome: "ok", error: null, installed: [], updated: [], removed: [], unchanged: [], pending: [], invalid: [] };
+    const actor = input.trigger === "auto" ? "sync" : input.trigger;
+    const finish = async (fingerprint: string): Promise<MediaTemplateSyncResult> => {
+      if (!dryRun) {
+        lastRegistryFingerprint = fingerprint;
+        await deps.syncState?.set(JSON.stringify(result));
       }
+      return result;
+    };
+
+    // 1. Read the registry. Anything that keeps the index from being read means: change nothing.
+    let snapshot: { indexText: string; readTemplateFile(name: string): Promise<string | null> };
+    let index: ReturnType<typeof parseRegistryIndex>;
+    try {
+      if (!deps.registry) throw new DomainError({ code: "media_template_registry_unavailable", message: "No template registry is wired on this device." });
+      snapshot = await deps.registry.read();
+      index = parseRegistryIndex(snapshot.indexText);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fingerprint = `unavailable:${message}`;
+      if (input.onlyIfChanged && fingerprint === lastRegistryFingerprint) return null;
+      result.outcome = "unavailable";
+      result.error = message;
+      return finish(fingerprint);
     }
-    if (problems.length > 0) throw new DomainError({ code: "media_template_invalid", message: `Invalid workflow template: ${problems.join("; ")}`, details: { problems } });
+    const files = new Map<string, string | null>();
+    for (const entry of index.templates) {
+      const name = registryTemplateFileName(entry.templateId, entry.version);
+      files.set(name, await snapshot.readTemplateFile(name).catch(() => null));
+    }
+    // 2. Each listed template. The fingerprint covers this device's template rows too (independent review): a change there
+    // (e.g. the owner deleted a local template whose id blocked a registry one) is picked up by the 60 s check as well.
+    const rows = await deps.store.templates.list();
+    const fingerprintOf = (current: StoredTemplateRow[]) =>
+      registryContentSha256(
+        JSON.stringify([
+          snapshot.indexText,
+          ...[...files.entries()].map(([name, text]) => [name, text === null ? null : registryContentSha256(text)]),
+          ...current.map((r) => [r.id, r.version, r.source ?? "owner", r.registrySha256 ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+        ])
+      );
+    if (input.onlyIfChanged && fingerprintOf(rows) === lastRegistryFingerprint) return null;
+    for (const entry of index.templates) {
+      const { templateId, version } = entry;
+      const text = files.get(registryTemplateFileName(templateId, version)) ?? null;
+      if (text === null) {
+        result.pending.push({ templateId, version });
+        continue;
+      }
+      const invalid = (reason: string) => result.invalid.push({ templateId, version, reason });
+      const parsed = parseRegistryTemplate(text, entry);
+      if (!parsed.ok) {
+        invalid(parsed.reason);
+        continue;
+      }
+      const parameters = parsed.template.parameters.map(normalizeParameter);
+      try {
+        validateTemplateShape(parsed.template.workflow as Graph, parameters);
+      } catch (error) {
+        invalid(error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      const modelProblems = checkDeclaredModels({ workflow: parsed.template.workflow as Graph, parameters, models: parsed.template.models });
+      if (modelProblems.length > 0) {
+        invalid(`models: ${modelProblems.join("; ")}`);
+        continue;
+      }
+      const sha = registryContentSha256(text);
+      const existing = rows.find((r) => r.id === templateId);
+      if (existing && (existing.source ?? "owner") !== "factory") {
+        invalid("this id belongs to a template imported by hand on this device");
+        continue;
+      }
+      if (existing && existing.version > version) {
+        invalid(`version ${version} is lower than the installed ${existing.version}; a registry never rolls back`);
+        continue;
+      }
+      if (existing && existing.version === version) {
+        if (existing.registrySha256 === sha) result.unchanged.push({ templateId, version });
+        else invalid(`version ${version} is installed with different content; bump the version for a change`);
+        continue;
+      }
+      if (!dryRun) {
+        const written = await deps.store.templates.upsertFactory({
+          id: templateId,
+          name: parsed.template.name,
+          description: parsed.template.description ?? null,
+          version,
+          workflowJson: JSON.stringify(parsed.template.workflow),
+          parametersJson: JSON.stringify(parameters),
+          outputNodeIdsJson: JSON.stringify(outputNodeIds(parsed.template.workflow as Graph)),
+          nodeCount: Object.keys(parsed.template.workflow).length,
+          registrySha256: sha,
+          modelsJson: JSON.stringify(parsed.template.models.map((m) => ({ folder: m.folder, file: m.file, sha256: m.sha256 ?? null }))),
+        });
+        if (!written) {
+          invalid("this id belongs to a template imported by hand on this device");
+          continue;
+        }
+        await recordEvent({ actor, action: existing ? "template_updated" : "template_installed", subject: templateId, details: { version, from: existing?.version ?? null, registrySha256: sha } });
+      }
+      if (existing) result.updated.push({ templateId, from: existing.version, to: version });
+      else result.installed.push({ templateId, version });
+    }
+
+    // 3. Factory templates the (readable) index no longer lists.
+    const listed = new Set(index.templates.map((t) => t.templateId));
+    for (const row of rows) {
+      if (row.source !== "factory" || listed.has(row.id)) continue;
+      if (!dryRun) {
+        await deps.store.templates.delete(row.id);
+        await recordEvent({ actor, action: "template_removed", subject: row.id, details: { version: row.version } });
+      }
+      result.removed.push({ templateId: row.id, version: row.version });
+    }
+    // Remembered as the state AFTER this sync's own writes, so the next unchanged tick is skipped.
+    return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list()));
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {
@@ -845,6 +1098,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         parametersJson: JSON.stringify(parameters),
         outputNodeIdsJson: JSON.stringify(outputNodeIds(parsed.workflow as Graph)),
         nodeCount: Object.keys(parsed.workflow).length,
+        modelsJson: JSON.stringify(localTemplateModels(parsed.workflow as Graph, parameters)),
       });
       return toPublicTemplate(row);
     },
@@ -852,6 +1106,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async updateWorkflowTemplate(input: unknown): Promise<MediaWorkflowTemplate> {
       const parsed = parseWithSchema(updateTemplateInputSchema, input, "workflow template update");
       const existing = await requireTemplate(parsed.templateId);
+      if (existing.source === "factory") throw factoryManaged(parsed.templateId);
       const graph = (parsed.workflow ?? JSON.parse(existing.workflowJson)) as Graph;
       const parameters = parsed.parameters ? parsed.parameters.map(normalizeParameter) : (JSON.parse(existing.parametersJson) as MediaTemplateParameter[]);
       validateTemplateShape(parseWithSchema(workflowGraphSchema, graph, "workflow") as Graph, parameters);
@@ -861,7 +1116,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         ...(parsed.name !== undefined ? { name: parsed.name } : {}),
         ...(parsed.description !== undefined ? { description: parsed.description ?? null } : {}),
         ...(contentChanged
-          ? { workflowJson: JSON.stringify(graph), parametersJson: JSON.stringify(parameters), outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)), nodeCount: Object.keys(graph).length }
+          ? {
+              workflowJson: JSON.stringify(graph),
+              parametersJson: JSON.stringify(parameters),
+              outputNodeIdsJson: JSON.stringify(outputNodeIds(graph)),
+              nodeCount: Object.keys(graph).length,
+              modelsJson: JSON.stringify(localTemplateModels(graph, parameters)),
+            }
           : {}),
       });
       if (!row) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: parsed.templateId } });
@@ -880,7 +1141,66 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
 
     async deleteWorkflowTemplate(input: unknown): Promise<{ deleted: boolean }> {
       const { templateId } = parseWithSchema(templateIdInputSchema, input, "template id");
+      const existing = await deps.store.templates.get(templateId);
+      if (existing?.source === "factory") throw factoryManaged(templateId);
       return { deleted: await deps.store.templates.delete(templateId) };
+    },
+
+    /**
+     * BL-132 (plan §2.3): brings this device's `factory` templates in line with the registry folder. Every rule that can
+     * lose a template fails safe: an unreadable index changes nothing; a file not arrived yet, an invalid file, a LOWER
+     * version or the same version with other content keeps what is installed; only an id no longer in a readable index is
+     * removed. Owner-imported (local) templates are never touched. `onlyIfChanged` is the 60 s check: it skips the sync
+     * when the registry's files read exactly as at the last sync.
+     */
+    async syncTemplatesFromRegistry(input: { trigger: MediaTemplateSyncTrigger; dryRun?: boolean; onlyIfChanged?: boolean }): Promise<MediaTemplateSyncResult | null> {
+      const run = registrySyncChain.then(() => runRegistrySync(input));
+      registrySyncChain = run.catch(() => undefined);
+      return run;
+    },
+
+    /**
+     * BL-132 (plan §2.2, owner addition A1): every template that uses a model file -- this device's installed templates
+     * (factory and local) plus every template the registry currently lists (identical on every device, so a model a
+     * template on ANOTHER device needs is protected too). Read-only: no sync, no write.
+     */
+    async modelUsage(): Promise<MediaModelUsage> {
+      const users: MediaModelUsage["users"] = [];
+      const add = (templateId: string, version: number, source: MediaModelUsage["users"][number]["source"], models: Array<{ folder: string | null; file: string }>) => {
+        for (const m of models) {
+          if (!m.folder) continue;
+          const key = `models/${m.folder}/${m.file}`;
+          if (!users.some((u) => u.key === key && u.templateId === templateId && u.version === version)) users.push({ key, templateId, version, source });
+        }
+      };
+      for (const row of await deps.store.templates.list()) add(row.id, row.version, row.source ?? "owner", templateModels(row));
+      let registry: MediaModelUsage["registry"] = "ok";
+      let registryError: string | null = null;
+      try {
+        if (!deps.registry) throw new DomainError({ code: "media_template_registry_unavailable", message: "No template registry is wired on this device." });
+        const snapshot = await deps.registry.read();
+        // Every listed template must be readable: one that is not there yet (a file sync still copying), unreadable or
+        // invalid declares models nobody can know, so the registry counts as unavailable -- the factory deletion is then
+        // refused (fail closed, independent review).
+        const unknown: string[] = [];
+        for (const entry of parseRegistryIndex(snapshot.indexText).templates) {
+          const text = await snapshot.readTemplateFile(registryTemplateFileName(entry.templateId, entry.version)).catch(() => null);
+          const parsed = text === null ? null : parseRegistryTemplate(text, entry);
+          if (parsed?.ok) add(entry.templateId, entry.version, "registry", parsed.template.models);
+          else unknown.push(`${entry.templateId} v${entry.version}`);
+        }
+        if (unknown.length > 0) throw new Error(`listed templates that cannot be read: ${unknown.join(", ")}`);
+      } catch (error) {
+        registry = "unavailable";
+        registryError = error instanceof Error ? error.message : String(error);
+      }
+      return { registry, registryError, users };
+    },
+
+    /** The last (non-dry-run) sync result, or null if none ran on this device. */
+    async getLastTemplateSync(): Promise<MediaTemplateSyncResult | null> {
+      const json = deps.syncState ? await deps.syncState.get() : null;
+      return json ? (JSON.parse(json) as MediaTemplateSyncResult) : null;
     },
 
     // -- jobs ---------------------------------------------------------------------------------
@@ -903,9 +1223,48 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       // nothing is submitted (and no GPU minute spent) -- `media_workspace_unavailable` / `media_generation_not_configured`
       // at submit time, as the agent contract promises.
       await deps.resolveOutputRoot(parsed.channelId);
-      await deps.s3();
+      const s3 = await deps.s3();
+      // BL-132 (plan §2.4, AC-FM-11): every input file is found and checked BEFORE anything is written or uploaded.
+      const inputs: Array<{ parameter: MediaTemplateParameter; relativePath: string; maxBytes: number; file: { path: string; bytes: number; identity?: { dev: number; ino: number } } }> = [];
+      for (const p of parameters.filter((q) => isInputParameterType(q.type) && typeof values[q.name] === "string")) {
+        const relativePath = values[p.name] as string;
+        if (!deps.resolveInputFile || !deps.store.inputs) throw new DomainError({ code: "media_input_unavailable", message: "Job input files are not available on this server.", details: { parameter: p.name } });
+        const file = await deps.resolveInputFile(parsed.channelId, relativePath);
+        const limit = Math.min(p.maxBytes ?? MEDIA_INPUT_MAX_BYTES, MEDIA_INPUT_MAX_BYTES);
+        if (file.bytes === 0 || file.bytes > limit) {
+          throw new DomainError({ code: "media_input_unavailable", message: `"${p.name}": ${relativePath} is ${file.bytes} bytes; an input must be 1 byte to ${limit} bytes.`, details: { parameter: p.name, bytes: file.bytes, maxBytes: limit } });
+        }
+        inputs.push({ parameter: p, relativePath, maxBytes: limit, file });
+      }
       const jobId = deps.generateId();
-      const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, values, jobId);
+      // Each input goes to the ROOT of ComfyUI's input folder under a job-unique flat name (`<jobId>-<param>-<name>`), and
+      // the targeted loader input is given that name; the job's params keep the path the caller gave.
+      const uploads = inputs.map((input) => {
+        const name = `${jobId}-${input.parameter.name}-${safeInputName(path.basename(input.relativePath))}`;
+        return { ...input, name, remoteKey: `${EXCHANGE_INPUT_PREFIX}${name}` };
+      });
+      const promptValues = { ...values, ...Object.fromEntries(uploads.map((u) => [u.parameter.name, u.name])) };
+      const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, promptValues, jobId);
+      // BL-132: the inputs are uploaded BEFORE the job row exists (independent review): a long upload (up to 500 MB each)
+      // can then never be failed as "never submitted" by the resume pass's queued-row grace period, and nothing reaches
+      // ComfyUI unless every input is on the volume. Each upload counts as session activity (the idle timeout must not stop
+      // the pod mid-upload). On any failure the inputs already uploaded are deleted again and no job exists.
+      const uploaded: string[] = [];
+      for (const upload of uploads) {
+        try {
+          await deps.sessions.touchActivity(parsed.sessionId);
+          const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name), { maxBytes: upload.maxBytes, expectedIdentity: upload.file.identity });
+          uploaded.push(upload.remoteKey);
+          await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
+        } catch (error) {
+          for (const key of uploaded) {
+            await s3.deleteObject(key).catch((cleanupError) => log(`[media] could not delete the uploaded input ${key}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`));
+            await deps.store.inputs?.markRemoteDeleted(key, deps.clock.now()).catch(() => undefined);
+          }
+          const message = `input "${upload.parameter.name}" (${upload.relativePath}) could not be uploaded: ${error instanceof Error ? error.message : String(error)}`;
+          throw new DomainError({ code: "media_input_unavailable", message, details: { parameter: upload.parameter.name } });
+        }
+      }
       const now = deps.clock.now();
       const row = await deps.store.jobs.insert({
         id: jobId,
@@ -961,19 +1320,19 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         throw new DomainError({ code: "media_job_invalid_state", message: `Job was ${current.status} before the submit completed; the prompt was withdrawn`, details: { jobId, status: current.status } });
       }
       deps.schedule(() => processJob(jobId));
-      return toPublicJob(updated);
+      return withInputs(toPublicJob(updated));
     },
 
     processJob,
 
     async getJob(input: unknown): Promise<MediaJob> {
       const { jobId } = parseWithSchema(jobIdInputSchema, input, "job id");
-      return toPublicJob(await requireJob(jobId));
+      return withInputs(toPublicJob(await requireJob(jobId)));
     },
 
     async listJobs(input: unknown = {}): Promise<MediaJob[]> {
       const filter = parseWithSchema(listJobsInputSchema, input, "list jobs");
-      return (await deps.store.jobs.list(filter)).map(toPublicJob);
+      return Promise.all((await deps.store.jobs.list(filter)).map((row) => withInputs(toPublicJob(row))));
     },
 
     /** queued/submitted/generating -> cancelled; ComfyUI's current execution is interrupted (best effort). */
@@ -1071,7 +1430,32 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           continue;
         }
         if (key.startsWith(EXCHANGE_INPUT_PREFIX)) {
-          kept.push({ key, reason: "reference input" });
+          // BL-132: a job's uploaded input is deleted once its job is terminal -- BY LEDGER ONLY; anything else under
+          // exchange/in/ (the operator's own reference files) is never touched.
+          const input = deps.store.inputs ? await deps.store.inputs.get(key) : null;
+          if (!input) {
+            kept.push({ key, reason: "reference input" });
+            continue;
+          }
+          if (!jobCache.has(input.jobId)) jobCache.set(input.jobId, await deps.store.jobs.get(input.jobId));
+          const owner = jobCache.get(input.jobId) ?? null;
+          if (owner && !MEDIA_JOB_TERMINAL_STATUSES.includes(owner.status)) {
+            kept.push({ key, reason: `input of a ${owner.status} job` });
+            continue;
+          }
+          // No job row: a createJob still uploading (the row is written after the uploads) -- or one that died. Only an
+          // hour-old one is a leftover.
+          if (!owner && deps.clock.now().getTime() - input.uploadedAt.getTime() < 60 * 60_000) {
+            kept.push({ key, reason: "input of a job still being created" });
+            continue;
+          }
+          if (dryRun) {
+            wouldDelete.push(key);
+            continue;
+          }
+          await s3.deleteObject(key);
+          await deps.store.inputs!.markRemoteDeleted(key, deps.clock.now());
+          deleted.push(key);
           continue;
         }
         const jobId = key.slice(EXCHANGE_PREFIX.length).split("/")[0];

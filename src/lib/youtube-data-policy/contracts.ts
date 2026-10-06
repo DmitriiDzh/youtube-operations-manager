@@ -164,6 +164,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   media_workflow_templates: notApiData("operator-imported ComfyUI workflow graphs (Phase 14)"),
   media_jobs: notApiData("generation jobs, parameters and output paths (Phase 14)"),
   media_exchange_files: notApiData("ledger of pulled output files (Phase 14)"),
+  media_control_events: notApiData("audit of model/template actions on this device (BL-132)"),
+  media_exchange_inputs: notApiData("ledger of job input files uploaded to the volume (BL-132)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),

@@ -196,6 +196,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   media_workflow_templates: "operator-imported ComfyUI workflow graphs (Phase 14); device-local in this phase",
   media_jobs: "generation jobs of this device's sessions (Phase 14); outputs land in this device's workspace folder",
   media_exchange_files: "ledger of files this device pulled from the network volume into the workspace (Phase 14); paths are meaningless elsewhere",
+  media_control_events: "audit of model/template actions on this device (BL-132); each device keeps its own log",
+  media_exchange_inputs: "ledger of job input files this device uploaded to the network volume (BL-132); source paths are meaningless elsewhere",
 });
 
 /**
