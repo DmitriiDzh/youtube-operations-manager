@@ -97,13 +97,17 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
     return url;
   }
 
-  async function signedFetch(method: string, url: URL, options: { body?: Uint8Array | string; contentType?: string; timeoutMs?: number } = {}): Promise<Response> {
+  async function signedFetch(
+    method: string,
+    url: URL,
+    options: { body?: Uint8Array | string; contentType?: string; timeoutMs?: number; extraHeaders?: Record<string, string> } = {}
+  ): Promise<Response> {
     await authorize("runpod_s3");
     const payloadHash = options.body === undefined ? EMPTY_PAYLOAD_SHA256 : sha256Hex(options.body);
     const headers = signSigV4({
       method,
       url,
-      headers: options.contentType ? { "content-type": options.contentType } : {},
+      headers: { ...(options.contentType ? { "content-type": options.contentType } : {}), ...(options.extraHeaders ?? {}) },
       payloadHash,
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
@@ -283,6 +287,25 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
         return { bytes: size, sha256: payloadHash };
       } finally {
         await handle.close();
+      }
+    },
+
+    /**
+     * BL-136: server-side copy of `sourceKey` on another network volume of the same datacenter into `destinationKey` on this
+     * client's volume (S3 `CopyObject`: `PUT` with `x-amz-copy-source: <bucket>/<key>`). RunPod lists CopyObject as supported
+     * but does not document a cross-volume source or a size limit -- the BL-136 probe finds out. S3 can answer 200 with an
+     * `<Error>` body for a copy that failed after it started, so the body is checked too.
+     */
+    async copyObjectFrom(sourceVolumeId: string, sourceKey: string, destinationKey: string): Promise<void> {
+      const copySource = `${sourceVolumeId}/${sourceKey.split("/").map(awsUriEncode).join("/")}`;
+      const response = await signedFetch("PUT", objectUrl(destinationKey), { extraHeaders: { "x-amz-copy-source": copySource }, timeoutMs: TRANSFER_TIMEOUT_MS });
+      const text = await response.text();
+      if (!response.ok || /<Error>/.test(text)) {
+        throw new DomainError({
+          code: response.status === 401 || response.status === 403 ? "media_credentials_invalid" : "runpod_s3_unavailable",
+          message: `RunPod S3 could not copy ${sourceVolumeId}/${sourceKey} to ${destinationKey} (HTTP ${response.status}${xmlTag(text, "Code") ? `, ${xmlTag(text, "Code")}` : ""}${xmlTag(text, "Message") ? `: ${xmlTag(text, "Message")}` : ""}).`,
+          details: { method: "PUT", key: destinationKey, copySource, status: response.status },
+        });
       }
     },
 

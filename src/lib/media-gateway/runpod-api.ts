@@ -371,6 +371,20 @@ export function createRunpodApiClient(args: {
       return toNetworkVolume(body);
     },
 
+    /**
+     * Permanently deletes a network volume and everything on it (`DELETE /network-volumes/{id}`, 204 with no body, v2 API
+     * reference). A 404 means it is already gone. Destructive: callers confirm with the operator first.
+     */
+    async deleteNetworkVolume(id: string): Promise<{ deleted: true; alreadyGone: boolean }> {
+      try {
+        await request("DELETE", `/network-volumes/${encodeURIComponent(id)}`);
+        return { deleted: true, alreadyGone: false };
+      } catch (error) {
+        if (error instanceof DomainError && error.code === "runpod_api_unavailable" && asRecord(error.details).status === 404) return { deleted: true, alreadyGone: true };
+        throw error;
+      }
+    },
+
     /** Every pod of the account: v2 lists are paged (`{ items, pagination: { nextCursor, hasNextPage } }`), so the cursor is followed. */
     async listPods(): Promise<RunpodPod[]> {
       const pods: RunpodPod[] = [];

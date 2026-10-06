@@ -15,9 +15,9 @@
 
 ## Step 0 — probe (decides A or B)
 
-An operator CLI command (`npm run media -- volume-copy-probe`) run once, by the owner (it is billable): creates a 10 GB test
-volume in the same datacenter (≈ $0.70/month, deleted at the end — cents in total), `CopyObject` of one small file and then of one
-model ≥ 5 GB from the current volume to it, `HeadObject` to check size, then deletes the test volume. It prints what worked.
+An operator CLI command (`npm run media -- volume-copy-probe`) run once, by the owner (it is billable): creates a 20 GB test
+volume in the same datacenter (≈ $1.40/month, deleted at the end — cents in total), `CopyObject` of the smallest file and then of
+the largest model up to 18 GB from the current volume to it, `HeadObject` to check size, then deletes the test volume. It prints what worked.
 
 - **A — server-side copy works:** the app copies the volume over the S3 API alone (list → `CopyObject` → `HeadObject`), no pods.
 - **B — it does not:** two short-lived CPU pods and rsync over SSH, as RunPod documents. To verify there first: a Secure Cloud CPU

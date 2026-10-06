@@ -191,6 +191,18 @@ test("resizeNetworkVolume surfaces RunPod's 400 for a size decrease as an error,
   await assert.rejects(client.resizeNetworkVolume("vol1", 50));
 });
 
+// RunPod v2 API reference, "Delete a network volume": DELETE /v2/network-volumes/{id}, 204 "Deleted. Response has no body.",
+// 404 "resource not found".
+test("deleteNetworkVolume is DELETE /network-volumes/{id}; 204 deletes, 404 means already gone, other errors throw", async () => {
+  const { fetchImpl, calls } = fakeFetch((call) => ({ status: call.url.endsWith("/gone") ? 404 : call.url.endsWith("/boom") ? 500 : 204 }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  assert.deepEqual(await client.deleteNetworkVolume("vol1"), { deleted: true, alreadyGone: false });
+  assert.equal(calls[0].init.method, "DELETE");
+  assert.equal(new URL(calls[0].url).pathname, "/v2/network-volumes/vol1");
+  assert.deepEqual(await client.deleteNetworkVolume("gone"), { deleted: true, alreadyGone: true });
+  await assert.rejects(client.deleteNetworkVolume("boom"));
+});
+
 test("terminatePod is DELETE /pods/{id}; 404 means already gone; stop is never called", async () => {
   const { fetchImpl, calls } = fakeFetch((call) => ({ status: call.url.endsWith("/gone") ? 404 : 204 }));
   const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });

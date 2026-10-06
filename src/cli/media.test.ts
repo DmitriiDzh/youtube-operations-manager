@@ -53,7 +53,7 @@ test("parseMediaArgs: flags, positionals, unknown command and --help", () => {
 test("exactly the commands that create, delete or upload something are gated", () => {
   const gated = MEDIA_CLI_COMMANDS.filter((c) => classifyMediaCommand(c) === "gated");
   // `credentials-test` is gated too since review round 13: it writes `verified_at` to the local database.
-  assert.deepEqual(gated, ["credentials-test", "credentials-clear", "volume-create", "template-create", "workflow-template-import", "job-create", "janitor", "models-poll", "model-pull", "model-rm", "pod-create", "pod-terminate", "s3-put", "s3-rm"]);
+  assert.deepEqual(gated, ["credentials-test", "credentials-clear", "volume-create", "volume-copy-probe", "template-create", "workflow-template-import", "job-create", "janitor", "models-poll", "model-pull", "model-rm", "pod-create", "pod-terminate", "s3-put", "s3-rm"]);
 });
 
 test("Operator CLI access off -> refused with AGENT_TOKEN_INVALID, exit 1, core untouched", async () => {
