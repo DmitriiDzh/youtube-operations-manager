@@ -71,7 +71,7 @@ Research is global, not scoped to the active channel (Phase 12 D1: «общий 
 что нужно ему»). Its users and jobs, in order of how often they come up:
 
 1. **Decide on agents' requests**: approve or reject an agent's search request or collection request (ADR 0021:
-   approval is Web-only, «Одобряю такие запросы во вкладке Research»). Each approval may spend quota.
+   approval is Web-only; the ADR records the owner's decision as "I approve such requests on the Research tab"). Each approval may spend quota.
 2. **Look after the watchlist**: which competitors are tracked and why, are they collected and current, which
    channel's agents may see each one.
 3. **Look at competitors' videos**: latest observed views, titles, publish dates; find a channel's recent uploads.
@@ -159,6 +159,10 @@ Research   38 channels · collected today 12:05 · quota 120 / 500 units · 2 wa
 Each slice leaves a fully working tab. Acceptance criteria are stated from the requirement (§L).
 
 **R1 — Shell, summary line and Inbox**
+Until R2 ships paging, the Videos sub-tab stays conditionally mounted (rendered only while selected), so the
+4,590-row table is never rendered hidden. The shell starts on Channels and switches to Inbox once the pending
+count arrives non-zero, so the page does not flash. Inbox cards carry the same "Visible to" pill and drawer
+editor as other records (requests are an assignment kind; ownership is recorded when the agent creates one).
 - AC-R1-1: Research shows the summary line and five sub-tabs; switching sub-tabs does not refetch (all mounted).
 - AC-R1-2: with a pending research or collection request, Research opens on Inbox and the sidebar shows the count;
   with none, it opens on Channels and no badge shows.
