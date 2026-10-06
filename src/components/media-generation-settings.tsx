@@ -1219,7 +1219,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
 
 // BL-138 (owner, Telegram 2026-10-06; ADR 0028): the RunPod sessions of the owner's other devices, as each last reported them
 // through the sync folder (about a minute behind), checked against RunPod's live pod list; and live session pods no device
-// reports. Read-only in this slice.
+// reports. Stop works from here too (owner, msg 1739): it terminates the pod through RunPod; approve/reject stay on the owner device.
 type OtherDevicesResponse = {
   devices: Array<{
     deviceId: string;
@@ -1263,6 +1263,37 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
   const [view, setView] = useState<OtherDevicesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [stopTarget, setStopTarget] = useState<{ deviceId: string; hostname: string | null; sessionId: string; channelId: string } | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function stop() {
+    const target = stopTarget;
+    if (!target) return;
+    setStopTarget(null);
+    setStopping(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await requestJson<{ podId: string; alreadyGone: boolean; confirmed: boolean }>("/api/media-generation/sessions/devices/stop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deviceId: target.deviceId, sessionId: target.sessionId }),
+      });
+      setNotice(
+        result.alreadyGone
+          ? `Pod ${result.podId} was already gone.`
+          : result.confirmed
+            ? `Pod ${result.podId} terminated. ${target.hostname ?? "That device"} marks the session interrupted when it next checks.`
+            : `Terminate sent for pod ${result.podId}; RunPod has not confirmed it yet.`
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Stop failed");
+    } finally {
+      setStopping(false);
+    }
+  }
 
   const load = useCallback(
     () =>
@@ -1315,6 +1346,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                     <th className="py-1 pr-3">GPU</th>
                     <th className="py-1 pr-3">Started</th>
                     <th className="py-1 pr-3">Cost</th>
+                    <th className="py-1"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1326,6 +1358,18 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                       <td className="py-1 pr-3">{s.gpuTypeId ?? "—"}</td>
                       <td className="py-1 pr-3">{s.startedAt ? formatDisplayDateTime(s.startedAt) : "—"}</td>
                       <td className="py-1 pr-3">{s.usdCharged !== null ? `$${s.usdCharged.toFixed(2)}` : "—"}</td>
+                      <td className="py-1 text-right">
+                        {s.live === "pod_running" && d.sameAccount && (
+                          <button
+                            type="button"
+                            onClick={() => setStopTarget({ deviceId: d.deviceId, hostname: d.hostname, sessionId: s.sessionId, channelId: s.channelId })}
+                            disabled={stopping}
+                            className={dangerButton}
+                          >
+                            Stop
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1334,6 +1378,17 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
           )}
         </div>
       ))}
+      {notice && <p className="text-xs text-emerald-400">{notice}</p>}
+      {stopTarget && (
+        <ConfirmDialog
+          title={`Stop the session on ${stopTarget.hostname ?? stopTarget.deviceId}?`}
+          description={`The session's pod is terminated through RunPod now (channel ${stopTarget.channelId}); any job still running on it is lost. ${stopTarget.hostname ?? "That device"} marks the session interrupted when it next checks.`}
+          confirmLabel="Stop session"
+          confirmVariant="danger"
+          onCancel={() => setStopTarget(null)}
+          onConfirm={stop}
+        />
+      )}
       {view?.unknownPods && view.unknownPods.length > 0 && (
         <div className="space-y-1">
           <p className="text-xs text-amber-400">Session pods on RunPod that no device reports (they are billed):</p>

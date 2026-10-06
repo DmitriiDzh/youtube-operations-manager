@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { MediaSessionsReport } from "@/lib/sync-gateway";
 import type { MediaSession } from "./contracts";
-import { buildSessionsReport, deriveOtherDevices, toSharedSession } from "./cross-device";
+import type { RunpodApiClient } from "@/lib/media-gateway";
+import { buildSessionsReport, deriveOtherDevices, stopPeerSession, toSharedSession, type PeerStopDeps } from "./cross-device";
 
 // BL-138 (plan docs/roadmap/plans/MEDIA_SESSIONS_CROSS_DEVICE_PLAN.md, ADR 0028). Requirements: another device sees a session's
 // state and cost but never its ComfyUI URL (it carries the proxy token) or RunPod error text; a peer's "running" session whose
@@ -154,4 +155,77 @@ test("a report older than 5 minutes is stale; a different or unknown account id 
   ]);
   const noOwnId = deriveOtherDevices({ peers: [peer("x", "2026-10-06T11:59:00.000Z", [], null)], ownAccountId: null, localPodIds: [], livePods: [], now: NOW });
   assert.equal(noOwnId.devices[0].sameAccount, false);
+});
+
+// -- BL-138 step 2: Stop a session of another device (owner, msg 1739) ------------------------------------------------------
+
+function stopFixture(opts: { ownAccount?: string | null; peerAccount?: string | null; pods?: Array<{ id: string; name: string }>; status?: string; podId?: string | null } = {}) {
+  const calls: string[] = [];
+  const events: unknown[] = [];
+  let gone = false;
+  const client = {
+    async listPods() {
+      calls.push("listPods");
+      return (opts.pods ?? [{ id: "pod-a", name: "ytm-media-aaaaaaaa" }]).map((p) => ({ ...p, status: "RUNNING" }));
+    },
+    async terminatePod(id: string) {
+      calls.push(`terminate:${id}`);
+      gone = true;
+      return { terminated: true as const, alreadyGone: false };
+    },
+    async getPod(id: string) {
+      return gone ? null : { id, status: "RUNNING" };
+    },
+  } as unknown as RunpodApiClient;
+  const deps: PeerStopDeps = {
+    listPeerReports: async () => [
+      peer(
+        "laptop",
+        "2026-10-06T11:59:00.000Z",
+        [toSharedSession(session({ sessionId: "aaaaaaaa-1111", status: (opts.status ?? "running") as MediaSession["status"], podId: opts.podId === undefined ? "pod-a" : opts.podId }))],
+        opts.peerAccount === undefined ? "acct" : opts.peerAccount
+      ),
+    ],
+    ownAccountId: async () => (opts.ownAccount === undefined ? "acct" : opts.ownAccount),
+    runpodClient: async () => client,
+    podNameFor: (id) => `ytm-media-${id.slice(0, 8)}`,
+    clock: { now: () => NOW },
+    sleep: async () => {},
+    record: async (e) => {
+      events.push(e);
+    },
+  };
+  return { deps, calls, events };
+}
+
+test("stopPeerSession terminates the session's own pod on the same account and records it", async () => {
+  const f = stopFixture();
+  const result = await stopPeerSession(f.deps, { deviceId: "laptop", sessionId: "aaaaaaaa-1111" });
+  assert.deepEqual(result, { podId: "pod-a", alreadyGone: false, confirmed: true });
+  assert.deepEqual(f.calls, ["listPods", "terminate:pod-a"]);
+  assert.equal(f.events.length, 1);
+});
+
+test("stopPeerSession refuses another account, an unknown account, a pod with another name, a finished or unknown session -- no DELETE", async () => {
+  const cases: Array<[ReturnType<typeof stopFixture>, unknown, string]> = [
+    [stopFixture({ peerAccount: "acct-2" }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "validation_failed"],
+    [stopFixture({ ownAccount: null }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "validation_failed"],
+    [stopFixture({ peerAccount: null }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "validation_failed"],
+    [stopFixture({ pods: [{ id: "pod-a", name: "my-production-pod" }] }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "validation_failed"],
+    [stopFixture({ status: "done" }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "media_session_conflict"],
+    [stopFixture({ status: "pending", podId: null }), { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }, "media_session_conflict"],
+    [stopFixture(), { deviceId: "laptop", sessionId: "unknown" }, "media_session_not_found"],
+    [stopFixture(), { deviceId: "desktop", sessionId: "aaaaaaaa-1111" }, "media_session_not_found"],
+    [stopFixture(), { deviceId: "laptop" }, "validation_failed"],
+  ];
+  for (const [f, input, code] of cases) {
+    await assert.rejects(stopPeerSession(f.deps, input), (e: unknown) => (e as { code?: string }).code === code, `${JSON.stringify(input)} -> ${code}`);
+    assert.ok(!f.calls.some((c) => c.startsWith("terminate:")));
+  }
+});
+
+test("a pod RunPod no longer lists counts as already stopped, without a DELETE", async () => {
+  const f = stopFixture({ pods: [] });
+  assert.deepEqual(await stopPeerSession(f.deps, { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }), { podId: "pod-a", alreadyGone: true, confirmed: true });
+  assert.ok(!f.calls.some((c) => c.startsWith("terminate:")));
 });

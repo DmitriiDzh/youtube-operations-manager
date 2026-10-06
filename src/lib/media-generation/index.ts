@@ -23,7 +23,8 @@ import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
-import { buildSessionsReport, deriveOtherDevices, type OtherDevicesView } from "./cross-device";
+import { buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView } from "./cross-device";
+import { podNameFor } from "./sessions";
 import { createMediaSessionsShareCoreForProduction } from "@/lib/sync-gateway";
 
 type JobScheduling = "background" | "detached";
@@ -282,7 +283,21 @@ function buildCore(jobScheduling: JobScheduling) {
     }
     return deriveOtherDevices({ peers, ownAccountId: accountId, localPodIds: local.map((s) => s.podId).filter((id): id is string => Boolean(id)), livePods, podsError, now: now() });
   };
-  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts, publishSessionsShare, listOtherDevices };
+  /** BL-138 (owner, msg 1739): Stop for a session another device started -- terminates its pod through RunPod directly. */
+  const stopOtherDeviceSession = (input: unknown) =>
+    stopPeerSession(
+      {
+        listPeerReports: () => createMediaSessionsShareCoreForProduction().listPeerReports(),
+        ownAccountId: runpodAccountId,
+        runpodClient: () => base.resolveRunpodClient(),
+        podNameFor,
+        clock: { now },
+        sleep,
+        record: (event) => createMediaControlEventSink().record({ actor: "owner", ...event }),
+      },
+      input
+    );
+  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts, publishSessionsShare, listOtherDevices, stopOtherDeviceSession };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

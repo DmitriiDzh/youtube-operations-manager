@@ -1,6 +1,9 @@
+import { z } from "zod";
+import type { RunpodApiClient } from "@/lib/media-gateway";
 import type { MediaSessionsReport, SharedMediaSession } from "@/lib/sync-gateway";
 import { MEDIA_SESSIONS_REPORT_FORMAT } from "@/lib/sync-gateway";
-import { MEDIA_SESSION_TERMINAL_STATUSES, type MediaSession, type MediaSessionStatus } from "./contracts";
+import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, parseWithSchema, type MediaSession, type MediaSessionStatus } from "./contracts";
+import { terminateAndConfirm } from "./pod-lifecycle";
 
 // BL-138 (owner, Telegram 2026-10-06, msgs 1706/1735/1739; ADR 0028): this device's sessions published for the other devices
 // (through the sync-gateway `media-sessions` family), and the other devices' reports checked against RunPod's live pod list.
@@ -114,4 +117,59 @@ export function deriveOtherDevices(input: {
     unknownPods = input.livePods.filter((p) => p.name.startsWith(SESSION_POD_PREFIX) && !known.has(p.id)).map((p) => ({ podId: p.id, name: p.name, costPerHr: p.costPerHr, status: p.status }));
   }
   return { devices, unknownPods, podsError: input.podsError ?? null };
+}
+
+// -- Stop a session of another device (owner, msg 1739: "да") -------------------------------------------------------------
+
+export const stopPeerSessionInputSchema = z.object({ deviceId: z.string().min(1).max(128), sessionId: z.string().min(1).max(64) }).strict();
+const PEER_STOP_TIMEOUT_MS = 90_000;
+const PEER_STOP_POLL_MS = 5_000;
+
+export type PeerStopDeps = {
+  listPeerReports(): Promise<MediaSessionsReport[]>;
+  ownAccountId(): Promise<string | null>;
+  runpodClient(): Promise<RunpodApiClient>;
+  podNameFor(sessionId: string): string;
+  clock: { now(): Date };
+  sleep(ms: number): Promise<void>;
+  record(event: { action: string; subject: string; details: Record<string, unknown> }): Promise<void>;
+};
+
+/**
+ * Terminates the pod of a session another device started, through RunPod directly (it works while that device is off; the
+ * device marks the session interrupted, "pod disappeared", when its watcher next runs). Guards, all before any DELETE: the
+ * session must be in that device's latest report and not finished; both devices must report the same RunPod account; and the
+ * live pod must carry the session's own deterministic name -- a report can never point this at an unrelated pod.
+ */
+export async function stopPeerSession(deps: PeerStopDeps, input: unknown): Promise<{ podId: string; alreadyGone: boolean; confirmed: boolean }> {
+  const { deviceId, sessionId } = parseWithSchema(stopPeerSessionInputSchema, input, "stop another device's session");
+  const report = (await deps.listPeerReports()).find((r) => r.deviceId === deviceId);
+  const session = report?.sessions.find((s) => s.sessionId === sessionId);
+  if (!report || !session) throw new DomainError({ code: "media_session_not_found", message: "That device has not reported this session.", details: { deviceId, sessionId } });
+  if (isTerminal(session.status) || !session.podId) {
+    throw new DomainError({ code: "media_session_conflict", message: `The session is ${session.status}${session.podId ? "" : " and has no pod"}; there is nothing to stop.`, details: { deviceId, sessionId } });
+  }
+  const own = await deps.ownAccountId();
+  if (!own || !report.runpodAccountId || own !== report.runpodAccountId) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: "That device uses another RunPod account (or the account could not be read on one side); its pods can only be stopped there.",
+      details: { deviceId, sessionId },
+    });
+  }
+  const client = await deps.runpodClient();
+  const pod = (await client.listPods()).find((p) => p.id === session.podId);
+  if (!pod) {
+    return { podId: session.podId, alreadyGone: true, confirmed: true };
+  }
+  if (pod.name !== deps.podNameFor(sessionId)) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: `Pod ${pod.id} is named ${pod.name}, not ${deps.podNameFor(sessionId)}: it is not this session's pod, so it is not stopped.`,
+      details: { deviceId, sessionId, podId: pod.id },
+    });
+  }
+  const outcome = await terminateAndConfirm(client, pod.id, { now: () => deps.clock.now(), sleep: deps.sleep }, { timeoutMs: PEER_STOP_TIMEOUT_MS, pollMs: PEER_STOP_POLL_MS });
+  await deps.record({ action: "stop_peer_session", subject: sessionId, details: { deviceId, hostname: report.hostname, podId: pod.id, confirmed: outcome.confirmed } }).catch(() => undefined);
+  return { podId: pod.id, alreadyGone: outcome.alreadyGone, confirmed: outcome.confirmed };
 }
