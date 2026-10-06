@@ -1596,6 +1596,21 @@ to `research_channels` itself than to `market_channel_snapshots`. Its own run-lo
 budget (owner decision 2); since Phase 13 slice 13.4 `search.list` has its own bucket (100 calls a day,
 `countMarketDiscoverySearchesSince`) and `getMarketIntelligenceUnitsSpentSince` sums collection only.
 
+**Discover rework (BL-145, 2026-10-07, owner msgs 1900/1904/1905; analysis `docs/roadmap/plans/RESEARCH_DISCOVER_ANALYSIS.md`).**
+Two search modes. *By genre* (default, `discoverChannelsByGenre`, `POST /discover {mode:"genre", publishedWithinDays?}`):
+one `search.list type=video videoCategoryId=10` (1 call of the 100-searches bucket, up to 50 videos, optionally only the
+last 30/90/180/365 days), grouped by channel, most matches first; auto-generated "… - Topic" channels are left out (title
+suffix -- YouTube has no API flag); each channel gets `match` (videos matched, their total views via one `videos.list`,
+the query). *By channel name* is the original `discoverChannels`. Both then record each found channel's public counts
+(`stats`: subscribers or hidden, videos, views, creation date, observed-at) with one `channels.list` per 50 (1 pool unit)
+-- best effort, a failed lookup never fails the search. Schema v65 adds those columns; the 30-day purge blanks them with
+the title. Searches no longer require the daily unit budget (they never spend it); a search is logged in the quota
+history as "Research search" and left out of the 10,000-unit pool total. An agent's research request is limited to 200
+characters like the search; on approval the found candidates are assigned to the requesting channel (approve route).
+Discover offers Track (= promote, reason pre-filled from the query), Ignore and Archive; the old "watching" status is
+no longer offered. Known gap, not fixed here: `videos.batchGetStats` returns no duration, so video durations are empty
+(BL-146).
+
 **Slice 9D (`docs/roadmap/plans/PHASE_9_SLICE_9D_PLAN.md`, 2026-09-27) -- historical intelligence,
 code-complete with no calling code yet (`historical-intelligence.ts`, mirroring 9A's own
 `derived-metrics.ts` at that same stage).** The one architectural point worth recording here: every
