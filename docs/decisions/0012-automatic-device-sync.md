@@ -89,4 +89,3 @@ identical, so the gate below is what addresses that case). Changes:
 - A real divergence is decided in the Merge tab, which shows what each side would lose.
 
 Still one active writer at a time; a real content conflict is still a human decision.
-
