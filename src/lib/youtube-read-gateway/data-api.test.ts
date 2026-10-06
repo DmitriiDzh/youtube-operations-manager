@@ -9,6 +9,7 @@ import {
   getChannelForSync,
   getPublicChannelSnapshot,
   getPublicChannelStats,
+  searchPublicMusicVideos,
   getPublicVideoSnapshots,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
@@ -914,4 +915,31 @@ test("getPublicChannelStats asks for snippet+statistics of up to 50 ids per call
     viewCount: 10,
     publishedAt: "2020-02-03T04:05:06Z",
   });
+});
+
+
+// BL-145 (owner, msg 1904): the genre search asks for VIDEOS in the Music category, not channels.
+test("searchPublicMusicVideos asks search.list for type=video in category 10 (Music), 50 results, with publishedAfter only when given", async () => {
+  const calls: unknown[] = [];
+  const youtube = fakeYoutubeClient({
+    searchList: (async (args: unknown) => {
+      calls.push(args);
+      return {
+        data: {
+          items: [
+            { id: { videoId: "v1" }, snippet: { channelId: "UC_A", channelTitle: "A", title: "Bossa 1", publishedAt: "2026-09-01T00:00:00Z" } },
+            { id: { videoId: "v2" }, snippet: { channelTitle: "no channel id" } },
+            { id: { channelId: "UC_X" }, snippet: { channelId: "UC_X" } },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["search"]["list"],
+  });
+  const found = await searchPublicMusicVideos(youtube, { query: "bossa nova cafe" });
+  await searchPublicMusicVideos(youtube, { query: "q", publishedAfter: "2026-07-01T00:00:00Z" });
+  assert.deepEqual(calls, [
+    { part: ["snippet"], q: "bossa nova cafe", type: ["video"], videoCategoryId: "10", maxResults: 50 },
+    { part: ["snippet"], q: "q", type: ["video"], videoCategoryId: "10", maxResults: 50, publishedAfter: "2026-07-01T00:00:00Z" },
+  ]);
+  assert.deepEqual(found, [{ videoId: "v1", channelId: "UC_A", channelTitle: "A", title: "Bossa 1", publishedAt: "2026-09-01T00:00:00Z" }]);
 });

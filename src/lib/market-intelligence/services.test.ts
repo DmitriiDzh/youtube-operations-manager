@@ -36,6 +36,7 @@ import {
   type DiscoveryCandidateStatus,
   type PublicChannelSearchResult,
   type PublicChannelStats,
+  type PublicVideoSearchResult,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResolvedCredentials,
@@ -593,6 +594,10 @@ function createFakeStore() {
       const row = discoveryCandidates.get(channelId) as Record<string, unknown> | undefined;
       if (row) Object.assign(row, { ...stats, statsObservedAt: stats.observedAt, observedAt: undefined });
     },
+    async setMarketDiscoveryCandidateMatch(channelId: string, match: { query: string; videoCount: number; viewCount: number | null }) {
+      const row = discoveryCandidates.get(channelId) as Record<string, unknown> | undefined;
+      if (row) Object.assign(row, { matchQuery: match.query, matchVideoCount: match.videoCount, matchViewCount: match.viewCount });
+    },
     async setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus) {
       const row = discoveryCandidates.get(channelId);
       if (row) row.status = status;
@@ -926,6 +931,8 @@ function createFixture(overrides?: {
   uploadsPlaylistVideoIds?: string[];
   publicVideoSnapshots?: PublicVideoSnapshot[];
   searchResults?: PublicChannelSearchResult[];
+  /** BL-145: what the genre search (music videos) returns. */
+  musicVideos?: PublicVideoSearchResult[];
   /** BL-145: what channels.list returns for the found channels; a function lets a test fail it. */
   channelStats?: PublicChannelStats[] | (() => Promise<PublicChannelStats[]>);
   searchImpl?: (args: { credentials: ResolvedCredentials; query: string }) => Promise<PublicChannelSearchResult[]>;
@@ -954,6 +961,7 @@ function createFixture(overrides?: {
   const videoSnapshotCalls: unknown[] = [];
   const searchCalls: unknown[] = [];
   const channelStatsCalls: Array<{ channelIds: string[] }> = [];
+  const musicVideoSearchCalls: Array<{ query: string; publishedAfter: string | null }> = [];
   const assertReadsAvailableCalls: undefined[] = [];
   let currentNow = overrides?.now ?? new Date();
   let currentPlaylistPages = overrides?.playlistPages;
@@ -1028,6 +1036,10 @@ function createFixture(overrides?: {
         if (!overrides?.batchStats) throw new Error("batchGetStats unavailable (test default)");
         return overrides.batchStats;
       },
+      async searchPublicMusicVideos(args: { credentials: ResolvedCredentials; query: string; publishedAfter: string | null }) {
+        musicVideoSearchCalls.push({ query: args.query, publishedAfter: args.publishedAfter });
+        return overrides?.musicVideos ?? [];
+      },
       async getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }) {
         channelStatsCalls.push({ channelIds: args.channelIds });
         const configured = overrides?.channelStats;
@@ -1055,6 +1067,7 @@ function createFixture(overrides?: {
     videoSnapshotCalls,
     searchCalls,
     channelStatsCalls,
+    musicVideoSearchCalls,
     assertReadsAvailableCalls,
     feedCalls,
     batchStatsCalls,
@@ -5293,4 +5306,70 @@ test("BL-145: counts, like the title, are not served for a decided candidate las
   } as never);
   const old = (await services.listDiscoveryCandidates()).candidates.find((c) => c.channelId === "UC_OLD0000000000000000000");
   assert.deepEqual([old?.title, old?.stats], ["", null]);
+});
+
+// BL-145 (owner, Telegram 2026-10-07, msg 1904 "3. find by genre"): a genre search looks for music VIDEOS and groups them
+// by channel. Fixture: 6 videos -- 3 from A, 1 from B, 2 from an auto-generated "- Topic" channel. Expected by hand.
+const GENRE_VIDEOS = [
+  { videoId: "a1", channelId: "UC_A00000000000000000000", channelTitle: "Bossa Cafe", title: "Bossa morning", publishedAt: "2026-09-01T00:00:00Z" },
+  { videoId: "t1", channelId: "UC_T00000000000000000000", channelTitle: "Some Artist - Topic", title: "Track", publishedAt: null },
+  { videoId: "b1", channelId: "UC_B00000000000000000000", channelTitle: "Jazz Room", title: "Night bossa", publishedAt: null },
+  { videoId: "a2", channelId: "UC_A00000000000000000000", channelTitle: "Bossa Cafe", title: "Bossa evening", publishedAt: null },
+  { videoId: "t2", channelId: "UC_T00000000000000000000", channelTitle: "Some Artist - Topic", title: "Track 2", publishedAt: null },
+  { videoId: "a3", channelId: "UC_A00000000000000000000", channelTitle: "Bossa Cafe", title: "Bossa rain", publishedAt: null },
+];
+const snap = (videoId: string, viewCount: number) => ({ videoId, title: "", publishedAt: null, viewCount, likeCount: null, commentCount: null });
+
+test("BL-145 genre: videos grouped by channel, most matches first, '- Topic' channels left out, match counts and views stored", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store, musicVideoSearchCalls, channelStatsCalls } = createFixture({
+    now,
+    musicVideos: GENRE_VIDEOS,
+    publicVideoSnapshots: [snap("a1", 100), snap("a2", 200), snap("a3", 300), snap("b1", 50)],
+  });
+  const result = await services.discoverChannelsByGenre({ query: "bossa nova cafe", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(result, {
+    videosFound: 6,
+    candidatesFound: 2,
+    candidatesNew: 2,
+    topicChannelsSkipped: 1,
+    candidateIds: ["UC_A00000000000000000000", "UC_B00000000000000000000"],
+  });
+  assert.deepEqual(musicVideoSearchCalls, [{ query: "bossa nova cafe", publishedAfter: null }]);
+  assert.deepEqual(channelStatsCalls, [{ channelIds: ["UC_A00000000000000000000", "UC_B00000000000000000000"] }]);
+  const byId = new Map((await services.listDiscoveryCandidates()).candidates.map((c) => [c.channelId, c]));
+  assert.deepEqual(byId.get("UC_A00000000000000000000")?.match, { query: "bossa nova cafe", videoCount: 3, viewCount: 600 });
+  assert.deepEqual(byId.get("UC_B00000000000000000000")?.match, { query: "bossa nova cafe", videoCount: 1, viewCount: 50 });
+  assert.equal(byId.get("UC_A00000000000000000000")?.reasonDiscovered, '3 matching videos: "Bossa morning", "Bossa evening", "Bossa rain"');
+  assert.equal(byId.get("UC_A00000000000000000000")?.discoverySource, "youtube.search.list:music_videos");
+  assert.equal(byId.has("UC_T00000000000000000000"), false);
+  assert.deepEqual([store.discoveryRuns.at(-1)?.query, store.discoveryRuns.at(-1)?.status, store.discoveryRuns.at(-1)?.unitsSpent], ["bossa nova cafe [genre]", "success", 1]);
+});
+
+test("BL-145 genre: 'published within 90 days' asks only for videos after now minus 90 days; the run log says so", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store, musicVideoSearchCalls } = createFixture({ now, musicVideos: [] });
+  await services.discoverChannelsByGenre({ query: "lofi", publishedWithinDays: 90, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(musicVideoSearchCalls, [{ query: "lofi", publishedAfter: "2026-07-09T00:00:00.000Z" }]);
+  assert.equal(store.discoveryRuns.at(-1)?.query, "lofi [genre, 90 d]");
+});
+
+test("BL-145 genre: a channel already tracked is not a candidate; unknown views leave the match views empty, not 0", async () => {
+  const { services } = createFixture({ musicVideos: GENRE_VIDEOS, publicVideoSnapshots: [snap("a1", 100)] });
+  await services.addToWatchlist({ channelId: "UC_B00000000000000000000", reason: "r" }, { createdVia: "web_ui" });
+  const result = await services.discoverChannelsByGenre({ query: "bossa", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual([result.candidatesFound, result.candidatesNew, result.candidateIds], [2, 1, ["UC_A00000000000000000000"]]);
+  const a = (await services.listDiscoveryCandidates()).candidates.find((c) => c.channelId === "UC_A00000000000000000000");
+  assert.deepEqual(a?.match, { query: "bossa", videoCount: 3, viewCount: null });
+});
+
+test("BL-145 genre: the same preconditions as a name search -- no call once the 100 searches are used", async () => {
+  const now = new Date("2026-10-07T12:00:00.000Z");
+  const { services, store, musicVideoSearchCalls } = createFixture({ now });
+  for (let i = 0; i < 100; i++) store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: now });
+  await assert.rejects(
+    () => services.discoverChannelsByGenre({ query: "lofi", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
+  );
+  assert.equal(musicVideoSearchCalls.length, 0);
 });

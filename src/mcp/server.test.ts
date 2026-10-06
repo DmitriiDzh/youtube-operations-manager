@@ -5197,6 +5197,7 @@ test("AC-9G-06b: agent_list_market_records with kind:trend_candidates/discovery_
         firstSeenAt: "2026-09-27T00:00:00.000Z",
         lastSeenAt: "2026-09-27T00:00:00.000Z",
         stats: null,
+        match: null,
       },
     ],
   });

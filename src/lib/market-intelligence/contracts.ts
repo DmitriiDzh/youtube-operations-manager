@@ -142,6 +142,20 @@ export type MarketDiscoveryCandidate = {
     channelPublishedAt: string | null;
     observedAt: string;
   } | null;
+  /**
+   * BL-145: what the latest genre search found of this channel -- how many of its music videos matched `query` and their
+   * total views at that time. `null` when never found by a genre search, and after 30 days.
+   */
+  match: { query: string; videoCount: number; viewCount: number | null } | null;
+};
+
+/** BL-145: one music video a genre search returned, as the read gateway gives it. */
+export type PublicVideoSearchResult = {
+  videoId: string;
+  channelId: string;
+  channelTitle: string;
+  title: string;
+  publishedAt: string | null;
 };
 
 /** BL-145: one channel's public counts from `channels.list`, as the read gateway returns them. */

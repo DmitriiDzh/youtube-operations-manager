@@ -30,11 +30,24 @@ export async function POST(request: Request) {
     // intelligence routes -- found by independent code review).
     const bodyRecord = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
 
+    // BL-145: `mode: "genre"` searches music videos and groups them by channel (optionally `publishedWithinDays`);
+    // anything else is the original search by channel name.
+    if (bodyRecord.mode === "genre") {
+      const result = await core.discoverChannelsByGenre(
+        {
+          query: bodyRecord.query,
+          ...(bodyRecord.publishedWithinDays !== undefined && bodyRecord.publishedWithinDays !== null ? { publishedWithinDays: bodyRecord.publishedWithinDays } : {}),
+          credentialRef: { userId: session.user.id },
+        },
+        { createdVia: "web_ui" }
+      );
+      return NextResponse.json({ mode: "genre", ...result });
+    }
     const result = await core.discoverChannels(
       { query: bodyRecord.query, credentialRef: { userId: session.user.id } },
       { createdVia: "web_ui" }
     );
-    return NextResponse.json(result);
+    return NextResponse.json({ mode: "channels", ...result });
   } catch (error) {
     if (error instanceof DomainError) {
       return NextResponse.json(

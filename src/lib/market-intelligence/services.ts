@@ -51,6 +51,7 @@ import {
   type MarketVideoSnapshot,
   type PublicChannelSearchResult,
   type PublicChannelStats,
+  type PublicVideoSearchResult,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResearchChannel,
@@ -78,6 +79,8 @@ import {
   createTrendCandidateInputSchema,
   createTrendCandidateOutputSchema,
   deleteTopicInputSchema,
+  discoverChannelsByGenreInputSchema,
+  discoverChannelsByGenreOutputSchema,
   discoverChannelsInputSchema,
   discoverChannelsOutputSchema,
   fetchPublicSnapshotInputSchema,
@@ -336,6 +339,9 @@ type StoredMarketDiscoveryCandidateForService = {
   viewCount?: number | null;
   channelPublishedAt?: string | null;
   statsObservedAt?: Date | null;
+  matchQuery?: string | null;
+  matchVideoCount?: number | null;
+  matchViewCount?: number | null;
 };
 
 /** Phase 13 (review round 6): a candidate's title/reason come from `search.list` (another channel's
@@ -369,6 +375,10 @@ function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForServic
             channelPublishedAt: row.channelPublishedAt ?? null,
             observedAt: row.statsObservedAt.toISOString(),
           },
+    match:
+      expired || !row.matchQuery || row.matchVideoCount === null || row.matchVideoCount === undefined
+        ? null
+        : { query: row.matchQuery, videoCount: row.matchVideoCount, viewCount: row.matchViewCount ?? null },
   };
 }
 
@@ -596,6 +606,8 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       query: string;
     }): Promise<PublicChannelSearchResult[]>;
+    /** BL-145: a search.list for music VIDEOS (1 call of the 100-searches bucket). */
+    searchPublicMusicVideos(args: { credentials: ResolvedCredentials; query: string; publishedAfter: string | null }): Promise<PublicVideoSearchResult[]>;
     /** BL-145: `channels.list` counts of up to 50 channels per call, 1 pool unit each. */
     getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }): Promise<PublicChannelStats[]>;
     // Found by independent review -- a cheap, upfront, local-only check called BEFORE any channel
@@ -697,6 +709,8 @@ type ServiceDependencies = {
     createdVia: string;
   }): Promise<void>;
   touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null): Promise<void>;
+  /** BL-145: records what the latest genre search found of a candidate. */
+  setMarketDiscoveryCandidateMatch(channelId: string, match: { query: string; videoCount: number; viewCount: number | null }): Promise<void>;
   /** BL-145: records a candidate's public counts as just observed. */
   setMarketDiscoveryCandidateStats(
     channelId: string,
@@ -1517,6 +1531,30 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
    * was ever observed. Reads no video snapshots, so it stays cheap enough for the polled Research summary (BL-140).
    * getWatchlistEntryContext uses it too, so the flags have one source.
    */
+  /**
+   * BL-145 (owner, Telegram 2026-10-07): the found channels' public counts (subscribers, videos, views, creation date)
+   * from one channels.list call per 50 (1 pool unit each), so a result can be judged without opening YouTube. Best
+   * effort: if it fails, the search still counts and the candidates simply show no counts.
+   */
+  async function recordCandidateCounts(credentials: ResolvedCredentials, candidateIds: string[], now: Date): Promise<void> {
+    if (candidateIds.length === 0) return;
+    try {
+      const stats = await deps.youtubeApi.getPublicChannelStats({ credentials, channelIds: candidateIds });
+      for (const st of stats) {
+        await deps.setMarketDiscoveryCandidateStats(st.channelId, {
+          subscriberCount: st.subscriberCount,
+          hiddenSubscriberCount: st.hiddenSubscriberCount,
+          videoCount: st.videoCount,
+          viewCount: st.viewCount,
+          channelPublishedAt: st.publishedAt,
+          observedAt: now,
+        });
+      }
+    } catch {
+      // Counts stay unknown for this search's candidates.
+    }
+  }
+
   async function readCollectionState(channelId: string) {
     const channelSnapshotRows = await deps.listMarketChannelSnapshotsByChannel(channelId);
     const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(channelId);
@@ -2736,26 +2774,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           candidateIds.push(result.channelId);
         }
 
-        // BL-145 (owner, Telegram 2026-10-07): the found channels' public counts (subscribers, videos, views, creation
-        // date) from one channels.list call per 50 (1 pool unit each), so a result can be judged without opening YouTube.
-        // Best effort: if it fails, the search still counts and the candidates simply show no counts.
-        if (candidateIds.length > 0) {
-          try {
-            const stats = await deps.youtubeApi.getPublicChannelStats({ credentials, channelIds: candidateIds });
-            for (const st of stats) {
-              await deps.setMarketDiscoveryCandidateStats(st.channelId, {
-                subscriberCount: st.subscriberCount,
-                hiddenSubscriberCount: st.hiddenSubscriberCount,
-                videoCount: st.videoCount,
-                viewCount: st.viewCount,
-                channelPublishedAt: st.publishedAt,
-                observedAt: now,
-              });
-            }
-          } catch {
-            // Counts stay unknown for this search's candidates.
-          }
-        }
+        await recordCandidateCounts(credentials, candidateIds, now);
 
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
@@ -2778,6 +2797,114 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
           candidatesFound,
           candidatesNew: candidatesNewCount,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          ranAt: now,
+        });
+        throw error;
+      }
+    },
+
+    /**
+     * BL-145 (owner, Telegram 2026-10-07, msg 1904: "searching channel names is not effective; find by genre"): one
+     * search.list for music VIDEOS matching the genre words (1 call of the 100-searches bucket), optionally only recent
+     * ones, grouped by the channel that published them. Auto-generated "… - Topic" channels (YouTube's artist pages, no
+     * API flag -- recognised by the title suffix) are left out. Each channel becomes (or refreshes) a candidate exactly
+     * like a name search, plus `match`: how many of its videos matched and their total views (one videos.list call, 1
+     * pool unit; best effort), then the same counts lookup (1 more pool unit). Same preconditions, same run log.
+     */
+    async discoverChannelsByGenre(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<{ videosFound: number; candidatesFound: number; candidatesNew: number; topicChannelsSkipped: number; candidateIds: string[] }> {
+      const parsedInput = parseWithSchema(discoverChannelsByGenreInputSchema, input, "discover channels by genre input");
+      const now = deps.clock.now();
+      await assertDiscoveryPreconditions(deps, now);
+      const credentials = await deps.authResolver.resolve({ credentialRef: parsedInput.credentialRef, requiredScopes: [YOUTUBE_READ_SCOPE] });
+      const publishedAfter = parsedInput.publishedWithinDays ? new Date(now.getTime() - parsedInput.publishedWithinDays * 86_400_000).toISOString() : null;
+      const runQuery = `${parsedInput.query} [genre${parsedInput.publishedWithinDays ? `, ${parsedInput.publishedWithinDays} d` : ""}]`;
+
+      let candidatesFound: number | null = null;
+      let candidatesNew: number | null = null;
+      try {
+        const videos = await deps.youtubeApi.searchPublicMusicVideos({ credentials, query: parsedInput.query, publishedAfter });
+        const byChannel = new Map<string, { title: string; videoIds: string[]; titles: string[] }>();
+        let topicChannelsSkipped = 0;
+        const skippedTopic = new Set<string>();
+        for (const v of videos) {
+          if (/ - Topic$/.test(v.channelTitle)) {
+            if (!skippedTopic.has(v.channelId)) topicChannelsSkipped += 1;
+            skippedTopic.add(v.channelId);
+            continue;
+          }
+          const entry = byChannel.get(v.channelId) ?? { title: v.channelTitle, videoIds: [], titles: [] };
+          entry.videoIds.push(v.videoId);
+          entry.titles.push(v.title);
+          byChannel.set(v.channelId, entry);
+        }
+
+        // Views of the matching videos (observed now), for "N matching videos, X views on them". Best effort.
+        const viewsByVideo = new Map<string, number | null>();
+        const matchedVideoIds = [...byChannel.values()].flatMap((c) => c.videoIds);
+        if (matchedVideoIds.length > 0) {
+          try {
+            for (const snap of await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds: matchedVideoIds })) viewsByVideo.set(snap.videoId, snap.viewCount);
+          } catch {
+            // Views stay unknown; the match count is still real.
+          }
+        }
+
+        // Most matching videos first, so the list reads in order of relevance to the genre.
+        const channels = [...byChannel.entries()].sort((a, b) => b[1].videoIds.length - a[1].videoIds.length);
+        candidatesFound = channels.length;
+        candidatesNew = 0;
+        const candidateIds: string[] = [];
+        for (const [channelId, c] of channels) {
+          if (await deps.getResearchChannelById(channelId)) continue;
+          const reason = `${c.videoIds.length} matching video${c.videoIds.length === 1 ? "" : "s"}: ${c.titles
+            .slice(0, 3)
+            .map((t) => `"${t}"`)
+            .join(", ")}${c.titles.length > 3 ? ", …" : ""}`;
+          if (await deps.getMarketDiscoveryCandidateById(channelId)) {
+            await deps.touchMarketDiscoveryCandidateLastSeen(channelId, now, c.title, reason);
+          } else {
+            await deps.insertMarketDiscoveryCandidate({
+              id: channelId,
+              title: c.title,
+              discoverySource: "youtube.search.list:music_videos",
+              discoveryQuery: parsedInput.query,
+              reasonDiscovered: reason,
+              createdVia: callOrigin.createdVia,
+            });
+            candidatesNew += 1;
+          }
+          const views = c.videoIds.map((id) => viewsByVideo.get(id));
+          const viewCount = views.every((v) => typeof v === "number") ? (views as number[]).reduce((a, b) => a + b, 0) : null;
+          await deps.setMarketDiscoveryCandidateMatch(channelId, { query: parsedInput.query, videoCount: c.videoIds.length, viewCount });
+          candidateIds.push(channelId);
+        }
+
+        await recordCandidateCounts(credentials, candidateIds, now);
+
+        await deps.insertMarketDiscoveryRun({
+          query: runQuery,
+          status: "success",
+          unitsSpent: SEARCH_LIST_UNIT_COST,
+          candidatesFound,
+          candidatesNew,
+          ranAt: now,
+        });
+        return parseWithSchema(
+          discoverChannelsByGenreOutputSchema,
+          { videosFound: videos.length, candidatesFound, candidatesNew, topicChannelsSkipped, candidateIds },
+          "discover channels by genre output"
+        );
+      } catch (error) {
+        await deps.insertMarketDiscoveryRun({
+          query: runQuery,
+          status: "failed",
+          unitsSpent: SEARCH_LIST_UNIT_COST,
+          candidatesFound,
+          candidatesNew,
           errorMessage: error instanceof Error ? error.message : String(error),
           ranAt: now,
         });

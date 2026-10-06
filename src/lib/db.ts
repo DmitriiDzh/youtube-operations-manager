@@ -1545,6 +1545,11 @@ export const marketDiscoveryCandidates = sqliteTable("market_discovery_candidate
   viewCount: integer("view_count"),
   channelPublishedAt: text("channel_published_at"),
   statsObservedAt: integer("stats_observed_at", { mode: "timestamp" }),
+  // BL-145 genre search (v65): how many of this channel's videos the latest genre search returned, their total views,
+  // and that search's query. Observed values only; blanked after 30 days.
+  matchQuery: text("match_query"),
+  matchVideoCount: integer("match_video_count"),
+  matchViewCount: integer("match_view_count"),
 });
 
 /**
@@ -3416,7 +3421,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 65,
     description:
-      "market_discovery_candidates.subscriber_count/hidden_subscriber_count/video_count/view_count/channel_published_at/stats_observed_at -- BL-145 (owner, Telegram 2026-10-07): each search result's public counts from one channels.list call. Additive nullable columns (existing candidates: unknown); blanked with the title after 30 days",
+      "market_discovery_candidates.subscriber_count/hidden_subscriber_count/video_count/view_count/channel_published_at/stats_observed_at/match_query/match_video_count/match_view_count -- BL-145 (owner, Telegram 2026-10-07): each search result's public counts from one channels.list call. Additive nullable columns (existing candidates: unknown); blanked with the title after 30 days",
     apply: async (client) => {
       for (const statement of [
         "ALTER TABLE market_discovery_candidates ADD COLUMN subscriber_count INTEGER",
@@ -3425,6 +3430,9 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         "ALTER TABLE market_discovery_candidates ADD COLUMN view_count INTEGER",
         "ALTER TABLE market_discovery_candidates ADD COLUMN channel_published_at TEXT",
         "ALTER TABLE market_discovery_candidates ADD COLUMN stats_observed_at INTEGER",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN match_query TEXT",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN match_video_count INTEGER",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN match_view_count INTEGER",
       ]) {
         try {
           await client.execute(statement);
@@ -8828,7 +8836,22 @@ export type StoredMarketDiscoveryCandidate = {
   viewCount?: number | null;
   channelPublishedAt?: string | null;
   statsObservedAt?: Date | null;
+  matchQuery?: string | null;
+  matchVideoCount?: number | null;
+  matchViewCount?: number | null;
 };
+
+/** BL-145: what the latest genre search found of this channel (overwrites the previous one). */
+export async function setMarketDiscoveryCandidateMatch(
+  channelId: string,
+  match: { query: string; videoCount: number; viewCount: number | null },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(marketDiscoveryCandidates)
+    .set({ matchQuery: match.query, matchVideoCount: match.videoCount, matchViewCount: match.viewCount })
+    .where(eq(marketDiscoveryCandidates.id, channelId));
+}
 
 export type MarketDiscoveryCandidateStats = {
   subscriberCount: number | null;

@@ -467,6 +467,51 @@ export async function searchPublicChannels(
   return results;
 }
 
+/** BL-145: one music video a genre search returned. */
+export type PublicVideoSearchResult = {
+  videoId: string;
+  channelId: string;
+  channelTitle: string;
+  title: string;
+  publishedAt: string | null;
+};
+
+/** YouTube's "Music" video category (videoCategories.list, stable id). */
+export const YOUTUBE_MUSIC_CATEGORY_ID = "10";
+
+/**
+ * BL-145 (owner, Telegram 2026-10-07, msg 1904: "searching channel names is not effective, find by genre"): one
+ * `search.list` call for VIDEOS in the Music category matching the genre words (1 call of the 100-searches bucket, up to
+ * 50 results), optionally only those published after a date. The caller groups them by channel.
+ */
+export async function searchPublicMusicVideos(
+  youtube: youtube_v3.Youtube,
+  input: { query: string; publishedAfter?: string | null; maxResults?: number }
+): Promise<PublicVideoSearchResult[]> {
+  const res = await youtube.search.list({
+    part: ["snippet"],
+    q: input.query,
+    type: ["video"],
+    videoCategoryId: YOUTUBE_MUSIC_CATEGORY_ID,
+    maxResults: input.maxResults ?? 50,
+    ...(input.publishedAfter ? { publishedAfter: input.publishedAfter } : {}),
+  });
+  const results: PublicVideoSearchResult[] = [];
+  for (const item of res.data.items ?? []) {
+    const videoId = item.id?.videoId;
+    const channelId = item.snippet?.channelId;
+    if (!videoId || !channelId) continue;
+    results.push({
+      videoId,
+      channelId,
+      channelTitle: item.snippet?.channelTitle ?? "",
+      title: item.snippet?.title ?? "",
+      publishedAt: item.snippet?.publishedAt ?? null,
+    });
+  }
+  return results;
+}
+
 const YOUTUBE_VIDEOS_LIST_BATCH_SIZE = 50;
 
 function chunk<T>(items: T[], size: number): T[][] {

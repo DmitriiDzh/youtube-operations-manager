@@ -62,6 +62,7 @@ import {
   setMarketIntelligenceDailyQuotaBudgetUnits,
   touchMarketDiscoveryCandidateLastSeen,
   setMarketDiscoveryCandidateStats,
+  setMarketDiscoveryCandidateMatch,
   touchMarketTrendCandidateLastObservedAt,
   updateMarketTrendCandidateStatusWithEvidence,
 } from "@/lib/db";
@@ -104,6 +105,7 @@ export function createMarketIntelligenceStoreAdapter() {
     insertMarketDiscoveryCandidate,
     touchMarketDiscoveryCandidateLastSeen,
   setMarketDiscoveryCandidateStats,
+  setMarketDiscoveryCandidateMatch,
     setMarketDiscoveryCandidateStatus,
     insertMarketDiscoveryRun,
     // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.

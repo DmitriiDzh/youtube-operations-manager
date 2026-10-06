@@ -31,7 +31,29 @@ type DiscoveryCandidate = {
   lastSeenAt: string;
   /** BL-145: public counts observed right after the search that found it; null when unknown. */
   stats: CandidateStats | null;
+  /** BL-145: what the latest genre search found of this channel. */
+  match: { query: string; videoCount: number; viewCount: number | null } | null;
 };
+
+export type SearchResult =
+  | { mode: "channels"; candidatesFound: number; candidatesNew: number }
+  | { mode: "genre"; videosFound: number; candidatesFound: number; candidatesNew: number; topicChannelsSkipped: number };
+
+/** BL-145: the line shown after a search. Exported for its test. */
+export function describeSearchResult(r: SearchResult): string {
+  if (r.mode === "genre") {
+    const skipped = r.topicChannelsSkipped > 0 ? ` Left out ${r.topicChannelsSkipped} auto-generated "- Topic" channel${r.topicChannelsSkipped === 1 ? "" : "s"}.` : "";
+    return `Found ${r.videosFound} music video${r.videosFound === 1 ? "" : "s"} from ${r.candidatesFound} channel${r.candidatesFound === 1 ? "" : "s"}, ${r.candidatesNew} new.${skipped}`;
+  }
+  return `Found ${r.candidatesFound}, ${r.candidatesNew} new.`;
+}
+
+/** BL-145: "3 matching videos · 600 views on them" for a channel a genre search found. Exported for its test. */
+export function describeCandidateMatch(match: DiscoveryCandidate["match"]): string | null {
+  if (!match) return null;
+  const videos = `${match.videoCount} matching video${match.videoCount === 1 ? "" : "s"}`;
+  return match.viewCount === null ? videos : `${videos} · ${compact(match.viewCount)} views on them`;
+}
 
 /** 1234 → "1.2K", 4560000 → "4.6M" (display only; the stored value is exact). */
 function compact(n: number): string {
@@ -112,7 +134,10 @@ export function MarketDiscoveryPanel({
   const [confirmingSearch, setConfirmingSearch] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<{ candidatesFound: number; candidatesNew: number } | null>(null);
+  const [lastResult, setLastResult] = useState<SearchResult | null>(null);
+  // BL-145 (owner, msg 1904): searching channel names is not effective, so the genre search (music videos) is the default.
+  const [searchMode, setSearchMode] = useState<"genre" | "channels">("genre");
+  const [withinDays, setWithinDays] = useState<"" | "30" | "90" | "180" | "365">("");
   const [updatingChannelId, setUpdatingChannelId] = useState<string | null>(null);
   const [promotingChannelId, setPromotingChannelId] = useState<string | null>(null);
   const [promoteReason, setPromoteReason] = useState("");
@@ -194,7 +219,9 @@ export function MarketDiscoveryPanel({
           const res = await fetch("/api/market-intelligence/discover", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ query }),
+            body: JSON.stringify(
+              searchMode === "genre" ? { query, mode: "genre", ...(withinDays ? { publishedWithinDays: Number(withinDays) } : {}) } : { query, mode: "channels" }
+            ),
           });
           return { res, data: await res.json() };
         },
@@ -267,7 +294,9 @@ export function MarketDiscoveryPanel({
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
           Discover channels
           <InfoTooltip>
-            A YouTube channel search, run only when you click Search -- never automatic, never scheduled. Each search
+            By genre: searches music videos with these words and shows the channels that published them, with how many of their
+            videos matched (auto-generated &ldquo;- Topic&rdquo; channels are left out, recognised by that name ending). By channel
+            name: matches channel names and descriptions. Run only when you click Search -- never automatic. Each search
             uses 1 of YouTube&rsquo;s 100 searches per day, a separate quota from the daily units budget in Settings →
             API; it resets at midnight Pacific time. A result already on your watchlist is skipped; everything else
             becomes a candidate you can Track (add to the tracked channels that are collected regularly), ignore or archive.
@@ -275,14 +304,43 @@ export function MarketDiscoveryPanel({
         </h3>
       </div>
 
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Search by">
+        {(
+          [
+            ["genre", "By genre (music videos)"],
+            ["channels", "By channel name"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={searchMode === value}
+            onClick={() => setSearchMode(value)}
+            className={`rounded-md px-2.5 py-1 text-xs font-medium ${searchMode === value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-wrap items-center gap-3">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search query, e.g. a topic or niche"
+          placeholder={searchMode === "genre" ? "Genre words, e.g. bossa nova cafe, japanese city pop" : "Words in the channel's name or description"}
           aria-label="Search query"
           className="min-w-64 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
         />
+        {searchMode === "genre" && (
+          <select value={withinDays} onChange={(e) => setWithinDays(e.target.value as typeof withinDays)} aria-label="Published within" className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200">
+            <option value="">Any time</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 3 months</option>
+            <option value="180">Last 6 months</option>
+            <option value="365">Last 12 months</option>
+          </select>
+        )}
         <button
           onClick={() => setConfirmingSearch(true)}
           disabled={searching || query.trim().length === 0 || searchesLeft === 0}
@@ -299,7 +357,7 @@ export function MarketDiscoveryPanel({
 
       {lastResult && (
         <p className="text-xs text-zinc-400">
-          Found {lastResult.candidatesFound}, {lastResult.candidatesNew} new.
+          {describeSearchResult(lastResult)}
         </p>
       )}
       {searchError && <p className="text-sm text-red-400">{searchError}</p>}
@@ -343,6 +401,7 @@ export function MarketDiscoveryPanel({
                     {!candidate.title && <span className="ml-2 text-xs font-normal text-zinc-500">(title expired, see details)</span>}
                   </p>
                   {describeCandidateStats(candidate.stats) && <p className="truncate text-xs text-zinc-300">{describeCandidateStats(candidate.stats)}</p>}
+                  {describeCandidateMatch(candidate.match) && <p className="truncate text-xs text-emerald-300/80">{describeCandidateMatch(candidate.match)}</p>}
                   <p className="truncate text-xs text-zinc-500">
                     query &ldquo;{candidate.discoveryQuery}&rdquo; &middot; last seen {formatDisplayDateTime(candidate.lastSeenAt)}
                   </p>
@@ -488,7 +547,11 @@ export function MarketDiscoveryPanel({
       {confirmingSearch && (
         <ConfirmDialog
           title="Run this search?"
-          description={`This uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) for the query "${query}".`}
+          description={
+            searchMode === "genre"
+              ? `Searches music videos for "${query}"${withinDays ? ` published in the last ${withinDays} days` : ""} and groups them by channel. Uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) plus up to 2 units of the daily 10,000 for video views and channel counts.`
+              : `This uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) for the query "${query}", plus 1 unit of the daily 10,000 for the channels' counts.`
+          }
           confirmLabel="Search"
           onCancel={() => setConfirmingSearch(false)}
           onConfirm={handleConfirmSearch}

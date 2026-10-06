@@ -291,3 +291,16 @@ test("BL-145: a found channel's counts read as one short line; hidden subscriber
   assert.equal(describeCandidateStats({ subscriberCount: 1500, hiddenSubscriberCount: false, videoCount: null, viewCount: null, channelPublishedAt: null, observedAt: at }), "1.5K subscribers");
   assert.equal(describeCandidateStats(null), null);
 });
+
+test("BL-145 genre: the result line and a channel's match line say what was found, in plain words", async () => {
+  const { describeSearchResult, describeCandidateMatch } = await import("./market-discovery-panel");
+  assert.equal(
+    describeSearchResult({ mode: "genre", videosFound: 50, candidatesFound: 31, candidatesNew: 29, topicChannelsSkipped: 4 }),
+    'Found 50 music videos from 31 channels, 29 new. Left out 4 auto-generated "- Topic" channels.'
+  );
+  assert.equal(describeSearchResult({ mode: "genre", videosFound: 1, candidatesFound: 1, candidatesNew: 0, topicChannelsSkipped: 0 }), "Found 1 music video from 1 channel, 0 new.");
+  assert.equal(describeSearchResult({ mode: "channels", candidatesFound: 25, candidatesNew: 24 }), "Found 25, 24 new.");
+  assert.equal(describeCandidateMatch({ query: "q", videoCount: 3, viewCount: 1_234_000 }), "3 matching videos · 1.2M views on them");
+  assert.equal(describeCandidateMatch({ query: "q", videoCount: 1, viewCount: null }), "1 matching video");
+  assert.equal(describeCandidateMatch(null), null);
+});

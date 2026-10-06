@@ -50,6 +50,7 @@ export function createMarketIntelligenceCore() {
     insertMarketDiscoveryCandidate: store.insertMarketDiscoveryCandidate,
     touchMarketDiscoveryCandidateLastSeen: store.touchMarketDiscoveryCandidateLastSeen,
     setMarketDiscoveryCandidateStats: store.setMarketDiscoveryCandidateStats,
+    setMarketDiscoveryCandidateMatch: store.setMarketDiscoveryCandidateMatch,
     setMarketDiscoveryCandidateStatus: store.setMarketDiscoveryCandidateStatus,
     insertMarketDiscoveryRun: store.insertMarketDiscoveryRun,
     // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
@@ -110,6 +111,7 @@ export function createMarketIntelligenceCore() {
     runApprovedCollectionRequest: quotaScoped(services.runApprovedCollectionRequest, context),
     // BL-145 (P7): searches are labelled as such in the quota history, not as collection.
     discoverChannels: quotaScoped(services.discoverChannels, searchContext),
+    discoverChannelsByGenre: quotaScoped(services.discoverChannelsByGenre, searchContext),
     approveMarketResearchRequest: quotaScoped(services.approveMarketResearchRequest, searchContext),
     captureChannelSnapshot: quotaScoped(services.captureChannelSnapshot, context),
     fetchPublicSnapshot: quotaScoped(services.fetchPublicSnapshot, context),

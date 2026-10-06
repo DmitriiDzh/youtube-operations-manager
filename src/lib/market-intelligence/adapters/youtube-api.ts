@@ -4,6 +4,7 @@ import {
   createYoutubeClient,
   getPublicChannelSnapshot,
   getPublicChannelStats,
+  searchPublicMusicVideos,
   getPublicVideoSnapshots,
   getPublicVideoStatsBatch,
   getMostPopularMusicVideos,
@@ -59,6 +60,10 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
       return searchPublicChannels(youtube, args.query);
     },
     // BL-145.
+    async searchPublicMusicVideos(args: { credentials: ResolvedCredentials; query: string; publishedAfter: string | null }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return searchPublicMusicVideos(youtube, { query: args.query, publishedAfter: args.publishedAfter });
+    },
     async getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return getPublicChannelStats(youtube, args.channelIds);

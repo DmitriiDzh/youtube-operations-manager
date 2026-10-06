@@ -305,6 +305,28 @@ export const discoverChannelsInputSchema = z
   })
   .strict();
 
+// BL-145 (owner, Telegram 2026-10-07, msg 1904): find channels by genre -- a search for music VIDEOS, grouped by channel.
+export const GENRE_SEARCH_WINDOWS_DAYS = [30, 90, 180, 365] as const;
+export const discoverChannelsByGenreInputSchema = z
+  .object({
+    query: z.string().trim().min(1, "query is required").max(200),
+    /** Only videos published within this many days; absent = any time. */
+    publishedWithinDays: z.union([z.literal(30), z.literal(90), z.literal(180), z.literal(365)]).optional(),
+    credentialRef: credentialRefSchema,
+  })
+  .strict();
+
+export const discoverChannelsByGenreOutputSchema = z
+  .object({
+    videosFound: nonNegativeIntSchema,
+    candidatesFound: nonNegativeIntSchema,
+    candidatesNew: nonNegativeIntSchema,
+    /** Auto-generated "… - Topic" channels left out (they are YouTube's artist pages, not channels that publish). */
+    topicChannelsSkipped: nonNegativeIntSchema,
+    candidateIds: z.array(z.string().min(1)),
+  })
+  .strict();
+
 export const discoverChannelsOutputSchema = z
   .object({
     candidatesFound: nonNegativeIntSchema,
@@ -333,6 +355,10 @@ export const marketDiscoveryCandidateSchema = z
         channelPublishedAt: z.string().nullable(),
         observedAt: z.string(),
       })
+      .strict()
+      .nullable(),
+    match: z
+      .object({ query: z.string(), videoCount: z.number().int().nonnegative(), viewCount: z.number().int().nonnegative().nullable() })
       .strict()
       .nullable(),
   })

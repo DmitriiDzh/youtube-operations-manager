@@ -98,8 +98,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
       keepDecisionWhere: "status <> 'new'",
       // BL-145: the observed public counts are API data too, blanked with the title.
       blankSet:
-        "title = '', reason_discovered = NULL, subscriber_count = NULL, hidden_subscriber_count = NULL, video_count = NULL, view_count = NULL, channel_published_at = NULL, stats_observed_at = NULL",
-      alreadyBlankWhere: "title = '' AND reason_discovered IS NULL AND subscriber_count IS NULL AND video_count IS NULL AND view_count IS NULL AND channel_published_at IS NULL",
+        "title = '', reason_discovered = NULL, subscriber_count = NULL, hidden_subscriber_count = NULL, video_count = NULL, view_count = NULL, channel_published_at = NULL, stats_observed_at = NULL, match_video_count = NULL, match_view_count = NULL",
+      alreadyBlankWhere: "title = '' AND reason_discovered IS NULL AND subscriber_count IS NULL AND video_count IS NULL AND view_count IS NULL AND channel_published_at IS NULL AND match_video_count IS NULL AND match_view_count IS NULL",
     }
   ),
 
