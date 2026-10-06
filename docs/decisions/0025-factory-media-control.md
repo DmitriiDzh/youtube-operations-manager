@@ -48,6 +48,6 @@ with random ids, no way to pass an input file (reference image, start frame, aud
   the `media_templates` logical-path name. v62 re-applies the last two idempotently: one real database was stamped 61 by an intermediate
   development build (an ad-hoc script imported the app's database module during development) before v61 gained them.
 - A leaked factory token can now spend a little money and delete unused models without a click (RISK-109); the bounds are listed there.
-- Not verified live yet (owner go-ahead needed for paid calls): ComfyUI loaders accepting the flat input name, RunPod S3 accepting the streamed PUT
-  with an explicit Content-Length, the pull pod's `hf download --revision` + `sha256sum` + `mv` on `python:3.12-slim`.
+- Verified live on 2026-10-06 (plan §7): ComfyUI `LoadImage` accepting the flat input name, RunPod S3 accepting the streamed PUT with an explicit
+  Content-Length, the pull pod's `hf download --revision` + `sha256sum` + `mv` on `python:3.12-slim`.
 - This ADR records the interface the Factory Operator consumes; it contains no operating instructions for that role (`AGENTS.md` §B).

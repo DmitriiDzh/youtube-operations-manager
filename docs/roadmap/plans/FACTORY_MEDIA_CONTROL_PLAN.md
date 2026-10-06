@@ -258,3 +258,9 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
   60 s check's fingerprint includes this device's template rows.
 - **Residual (RISK-109):** the template sync is not under the volume lock; a template added to the index between a deletion's usage
   check and the delete itself is not seen by that check (a millisecond window).
+- **Live check (2026-10-06, owner go-ahead msg 1638):** a verified pull of a small public LFS file (`hf-internal-testing/tiny-random-gpt2`
+  `model.safetensors`, 453,864 bytes) settled `done` with the matching SHA-256 in under a minute; the staging folder and the verdict were
+  gone and the pod terminated; a wrong requested hash was refused before any pod; the owner deletion and all three audit rows worked. An
+  img2img job (owner-approved session, Rural Japan Music) uploaded its input by the streamed PUT before the job existed, ComfyUI accepted the
+  flat input name in `LoadImage`, the job ended `done` with `manifest.json`, and the janitor removed the uploaded input while the source in
+  `Sent to YTM` stayed. All three "still to verify live" items above are thereby confirmed.
