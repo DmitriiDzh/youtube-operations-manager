@@ -70,6 +70,10 @@ export type DeviceSyncStatus = {
   lastExportSnapshotId: string | null;
   lastImportAt: string | null;
   lastImportSnapshotId: string | null;
+  /** Last time another computer's branch holding exactly this computer's data was settled without asking (BL-139). */
+  lastIdenticalSettledAt?: string | null;
+  /** Why the last automatic background write (the dashboard's Research refresh) was skipped; null = it ran (BL-139). */
+  backgroundWritesPausedReason?: string | null;
   notices: DeviceSyncNotice[];
   /** snapshotId -> first time it was seen unreadable / not yet fully transferred (ms). */
   pendingSince: Record<string, number>;
@@ -89,11 +93,44 @@ export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
   lastExportSnapshotId: null,
   lastImportAt: null,
   lastImportSnapshotId: null,
+  lastIdenticalSettledAt: null,
+  backgroundWritesPausedReason: null,
   notices: [],
   pendingSince: {},
   busyReason: null,
   unsupportedSnapshotIds: [],
   unsupportedForSchemaVersion: null,
+};
+
+/** Divergence preview (owner, Telegram 2026-10-06): transferred tables grouped the way the bell
+ * names them. A table not listed falls into "Other", so a new transferred table still shows. */
+export const DIVERGENCE_SECTIONS = ["Batches", "Audit", "Research", "Decisions", "Other"] as const;
+export type DivergenceSection = (typeof DIVERGENCE_SECTIONS)[number];
+
+export function divergenceSectionOf(table: string): DivergenceSection {
+  if (table === "batches" || table.startsWith("batch_")) return "Batches";
+  if (table === "audit_events" || table === "video_edit_audit_events") return "Audit";
+  if (
+    table.startsWith("research_") ||
+    table.startsWith("market_") ||
+    table === "channel_record_assignments" ||
+    table === "topic_wikipedia_articles"
+  )
+    return "Research";
+  if (table.startsWith("hypothes") || table.startsWith("experiment")) return "Decisions";
+  return "Other";
+}
+
+export type DivergencePreview = {
+  peer: { snapshotId: string; sourceDeviceId: string; createdAt: string; generation: number };
+  local: { deviceId: string; headSnapshotId: string | null; lastExportAt: string | null; unpublishedChanges: boolean };
+  /** How many conflicting tips there are; the comparison is with `peer` only (review round 1, #6). */
+  peerTips: number;
+  /** The newest snapshot both histories contain, when it is still in the sync folder. */
+  commonBase: { snapshotId: string; createdAt: string; sourceDeviceId: string } | null;
+  sections: Array<{ section: DivergenceSection; onlyHere: number; onlyThere: number; changed: number }>;
+  /** Only the tables that differ. */
+  tables: Array<{ table: string; section: DivergenceSection; onlyHere: number; onlyThere: number; changed: number }>;
 };
 
 /** §3.5 cadence. */

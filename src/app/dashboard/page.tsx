@@ -294,6 +294,7 @@ export default function Dashboard() {
       navItems={navItemsWithBadges}
       activeTab={tab}
       onTabChange={setTab}
+      onReviewDeviceSyncDivergence={() => setTab("merge")}
       channel={channel}
       channelUnavailable={channelUnavailable}
       onSignOut={() => signOut()}

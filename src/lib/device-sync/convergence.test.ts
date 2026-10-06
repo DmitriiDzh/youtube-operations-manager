@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
@@ -246,6 +246,332 @@ test("round 2 #3: the computer that loses a 'keep mine' keeps a never-pruned bac
     assert.deepEqual(await ids(b.client), ["UC-a", "UC1"]);
     const names = await readdir(b.backups);
     assert.ok(names.some((n) => n.startsWith("pre-superseded-")), `expected a pre-superseded backup, got ${names.join(",")}`);
+    a.client.close();
+    b.client.close();
+  }));
+
+// ---------------------------------------------------------------------------------------------
+// False divergences (owner request, Telegram 2026-10-06, msgs 1758/1764): two computers whose data
+// ended up IDENTICAL after a fork (both ran the same automatic job, both applied the same app
+// update) must not ask a human which of two equal copies to keep. Adopting the other computer's
+// snapshot as the lineage head changes no row, so nothing can be lost. Different content must still
+// ask, exactly as before (DEVICE_AUTO_SYNC_PLAN.md §3.6). Expected outcomes below are stated from
+// that requirement, not read off the implementation (AGENTS.md §L).
+// ---------------------------------------------------------------------------------------------
+
+/** The same row on any computer: every column given, so no per-device default (time) differs. */
+async function createSame(device: Device, id: string) {
+  await device.client.execute({
+    sql: "INSERT INTO research_channels (id, reason, created_via, added_at) VALUES (?, 'r', 'web_ui', 1790000000)",
+    args: [id],
+  });
+  device.created.push(id);
+}
+
+/** A and B share S1, then BOTH make the identical change and each publishes it on its own branch. */
+async function identicalFork(root: string) {
+  const a = await makeDevice(root, "a");
+  const b = await makeDevice(root, "b");
+  const syncAll = makeNetwork([a, b]);
+  await createSame(a, "UC1");
+  await tick(a);
+  await syncAll();
+  await tick(b);
+  await createSame(a, "UC-same");
+  await createSame(b, "UC-same");
+  await tick(a);
+  await tick(b);
+  return { a, b, syncAll };
+}
+
+test("AC-FD-01: a fork whose two sides hold identical data settles on both computers without asking or publishing", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    const before = new Set([...(await snapshotDirs(a.folder)), ...(await snapshotDirs(b.folder))]);
+    assert.equal(before.size, 3, "precondition: S1 plus one branch per computer");
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    const after = new Set([...(await snapshotDirs(a.folder)), ...(await snapshotDirs(b.folder))]);
+    assert.deepEqual([...after].sort(), [...before].sort(), "settling an identical fork publishes nothing new");
+    for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-same", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-02: after an identical fork settles, the next real change still fast-forwards both ways", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    await create(a, "UC-after");
+    await settleAndCheck([a, b], syncAll, "change after settling", true);
+    assert.deepEqual(await ids(b.client), ["UC-after", "UC-same", "UC1"]);
+    await create(b, "UC-after-b");
+    await settleAndCheck([a, b], syncAll, "change back the other way", true);
+    assert.deepEqual(await ids(a.client), ["UC-after", "UC-after-b", "UC-same", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-03: a fork whose sides differ still asks a human, on both computers", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    assert.ok(divergenceSnapshot(a), "A must ask");
+    assert.ok(divergenceSnapshot(b), "B must ask");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04: an identical fork where one side changes again settles without asking: the other side takes the change", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // Independent review, round 1 (#1): the first version asked B forever about A's branch -- whose
+    // content equals B's own head -- and "take theirs" there deleted B's new row on both computers.
+    // There is no conflict in this data: A's side holds nothing B does not have.
+    const { a, b, syncAll } = await identicalFork(root);
+    await create(b, "UC-b-extra");
+    await settleAndCheck([a, b], syncAll, "identical fork, then B changed", true);
+    for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-b-extra", "UC-same", "UC1"], d.name);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04: an identical fork where BOTH sides then change differently still asks", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    await create(a, "UC-a-extra");
+    await create(b, "UC-b-extra");
+    for (let round = 0; round < 4; round++) {
+      await syncAll();
+      await tick(a);
+      await tick(b);
+    }
+    assert.ok(divergenceSnapshot(a) || divergenceSnapshot(b), "a real difference must reach a human");
+    await settleAndCheck([a, b], syncAll, "identical fork, then both changed");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04b: after an identical fork settles, each computer's head is still its own snapshot (retention keeps it)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // Review round 1 (#3): retention protects only a device's own head; a head that is the OTHER
+    // computer's snapshot left neither computer protecting the current data in the folder.
+    const { a, b, syncAll } = await identicalFork(root);
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    for (const d of [a, b]) {
+      const head = String((await d.client.execute("SELECT last_snapshot_id FROM snapshot_lineage")).rows[0].last_snapshot_id);
+      const manifest = JSON.parse(await readFile(path.join(d.folder, head, "manifest.json"), "utf8"));
+      assert.equal(manifest.sourceDeviceId, `device-${d.name}`, `${d.name}'s head is its own snapshot`);
+    }
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04c: a third, clean computer that sees two identical branches settles without asking", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // Review round 1 (#2).
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    const syncAll = makeNetwork([a, b, c]);
+    await createSame(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await tick(c);
+    await createSame(a, "UC-same");
+    await createSame(b, "UC-same");
+    await tick(a);
+    await tick(b);
+    await settleAndCheck([a, b, c], syncAll, "three computers, identical fork", true);
+    assert.deepEqual(await ids(c.client), ["UC-same", "UC1"]);
+    for (const d of [a, b, c]) d.client.close();
+  }));
+
+test("AC-FD-04d: 'keep mine' on A and 'take theirs' on B at the same time leave the same data -> settles without asking again", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // RISK-89 used to accept a re-prompt here; both resolutions picked A's data, so there is nothing to ask.
+    const { a, b, syncAll } = await divergedPair(root);
+    const aTarget = divergenceSnapshot(a);
+    const bTarget = divergenceSnapshot(b);
+    await resolve(a, "keep", aTarget, true);
+    await resolve(b, "take", bTarget, true);
+    await settleAndCheck([a, b], syncAll, "keep on A + take on B, simultaneous", true);
+    for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-a", "UC1"], d.name);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-05: settling an identical fork replaces nothing, so it takes no backup and imports nothing", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    const listBackups = async (d: Device) => {
+      try {
+        return (await readdir(d.backups)).filter((n) => n.endsWith(".db")).sort();
+      } catch {
+        return [];
+      }
+    };
+    const before = await Promise.all([a, b].map(listBackups));
+    const importsBefore = [a, b].map((d) => d.status().lastImportSnapshotId);
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    assert.deepEqual(await Promise.all([a, b].map(listBackups)), before, "no new backup on either computer");
+    assert.deepEqual([a, b].map((d) => d.status().lastImportSnapshotId), importsBefore, "no import ran");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-11: 'sync before a background write' takes the other computer's fresh data first, then allows the write", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const syncAll = makeNetwork([a, b]);
+    await create(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await create(a, "UC-fresh");
+    await tick(a);
+    await syncAll();
+    b.clock.t += 5 * 60_000;
+    const verdict = await b.runner.syncBeforeBackgroundWrite();
+    assert.equal(verdict.allowed, true);
+    assert.deepEqual(await ids(b.client), ["UC-fresh", "UC1"], "B holds A's data before writing anything");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-11: with a real conflict open, 'sync before a background write' says wait", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    b.clock.t += 5 * 60_000;
+    const verdict = await b.runner.syncBeforeBackgroundWrite();
+    assert.equal(verdict.allowed, false);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-12: the divergence preview says, per section, what only this computer has, what only the other has, and what differs", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await divergedPair(root);
+    // B also edits a row both computers share: the same id with different content is "changed".
+    await b.client.execute("UPDATE research_channels SET reason = 'edited on b' WHERE id = 'UC1'");
+    await tick(b);
+    await syncAll();
+    await tick(a);
+    const target = divergenceSnapshot(a);
+    assert.ok(target);
+    const lineageBefore = (await a.client.execute("SELECT * FROM snapshot_lineage")).rows;
+    const foldersBefore = [...(await snapshotDirs(a.folder))].sort();
+
+    const preview = await a.runner.divergencePreview(target);
+    assert.equal(preview.peer.snapshotId, target);
+    assert.equal(preview.peer.sourceDeviceId, "device-b");
+    assert.equal(preview.peerTips, 1);
+    const research = preview.sections.find((s) => s.section === "Research");
+    assert.deepEqual(
+      { onlyHere: research?.onlyHere, onlyThere: research?.onlyThere, changed: research?.changed },
+      { onlyHere: 1, onlyThere: 1, changed: 1 },
+      "UC-a only here, UC-b only there, UC1 edited on b"
+    );
+    for (const section of ["Batches", "Audit", "Decisions"]) {
+      const s = preview.sections.find((x) => x.section === section);
+      assert.deepEqual({ onlyHere: s?.onlyHere, onlyThere: s?.onlyThere, changed: s?.changed }, { onlyHere: 0, onlyThere: 0, changed: 0 }, section);
+    }
+    assert.ok(preview.commonBase, "both histories start from S1, which is still in the folder");
+
+    // Read-only: nothing published, lineage untouched.
+    assert.deepEqual([...(await snapshotDirs(a.folder))].sort(), foldersBefore);
+    assert.deepEqual((await a.client.execute("SELECT * FROM snapshot_lineage")).rows, lineageBefore);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-12: the preview refuses a snapshot that is not a current conflict", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    await assert.rejects(() => a.runner.divergencePreview("00000000-0000-4000-8000-000000000000"), /no longer the one in conflict|not in the sync folder/);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-11: a skipped background write is recorded in the status (shown by the bell), and cleared once allowed", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    b.clock.t += 5 * 60_000;
+    assert.equal((await b.runner.syncBeforeBackgroundWrite()).allowed, false);
+    assert.ok(b.status().backgroundWritesPausedReason, "the reason is visible");
+    const solo = await makeDevice(root, "solo");
+    await solo.runner.syncBeforeBackgroundWrite();
+    assert.equal(solo.status().backgroundWritesPausedReason ?? null, null);
+    for (const d of [a, b, solo]) d.client.close();
+  }));
+
+test("AC-FD-13: 'take theirs' after absorbing an identical branch does not ask about that branch again (review round 2, N1)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    const syncAll = makeNetwork([a, b, c]);
+    await createSame(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await tick(c);
+    await createSame(a, "UC-same");
+    await createSame(b, "UC-same");
+    await create(c, "UC-c");
+    for (const d of [a, b, c]) await tick(d);
+    await syncAll();
+    for (let round = 0; round < 3; round++) {
+      await tick(a);
+      await syncAll();
+    }
+    const target = divergenceSnapshot(a);
+    assert.ok(target, "precondition: A asks about C's real change");
+    await resolve(a, "take", target, true);
+    await tick(a);
+    const again = divergenceSnapshot(a);
+    assert.ok(again === null || again === target, `A must not be asked about B's identical branch it already settled (got ${again})`);
+    await settleAndCheck([a, b, c], syncAll, "take theirs after an absorb");
+    for (const d of [a, b, c]) d.client.close();
+  }));
+
+test("AC-FD-14: a clean third computer whose import purged expired rows still settles the other identical branch (review round 2, N2)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    const syncAll = makeNetwork([a, b, c]);
+    await createSame(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await tick(c);
+    // The identical change on A and B is a YouTube API row already past the 30-day limit: C's import
+    // drops it (owner msg 1139), so C's data is no longer byte-equal to the other branch's file.
+    for (const d of [a, b]) {
+      await d.client.execute({
+        sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES ('old-snap', 'UC1', ?, 0, 'youtube.channels.list', 'web_ui')",
+        args: [Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000)],
+      });
+    }
+    await tick(a);
+    await tick(b);
+    for (let round = 0; round < 6; round++) {
+      await syncAll();
+      for (const d of [a, b, c]) await tick(d);
+    }
+    assert.equal(divergenceSnapshot(c), null, "C must not ask about a copy of what it just imported");
+    for (const d of [a, b, c]) d.client.close();
+  }));
+
+test("AC-FD-11: a stale 'refresh is waiting' reason is cleared by the next ordinary tick once nothing blocks (review round 2, N4)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await divergedPair(root);
+    b.clock.t += 5 * 60_000;
+    await b.runner.syncBeforeBackgroundWrite();
+    assert.ok(b.status().backgroundWritesPausedReason);
+    await resolve(b, "take", divergenceSnapshot(b), true);
+    await settleAndCheck([a, b], syncAll, "after resolving");
+    assert.equal(b.status().backgroundWritesPausedReason ?? null, null);
     a.client.close();
     b.client.close();
   }));

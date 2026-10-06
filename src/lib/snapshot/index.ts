@@ -8,7 +8,9 @@ export {
 } from "./contracts";
 export { parseSnapshotManifest, snapshotManifestSchema } from "./schemas";
 export {
+  addLineageAncestorsIfHeadUnchanged,
   applySnapshotToDatabase,
+  createSyncPreservingMigrationHooks,
   exportSnapshot,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
@@ -39,3 +41,4 @@ export {
 export { sha256File } from "./adapters/checksum";
 export { scrubDatabaseCopy } from "./adapters/scrub";
 export { computeContentFingerprint, computeFileContentFingerprint } from "./adapters/fingerprint";
+export { diffTransferredContent, type TransferredTableDiff } from "./adapters/content-diff";

@@ -1191,3 +1191,104 @@ test("the production device-sync runner is wired to the operation registry", asy
   const source = await readFile(path.join(process.cwd(), "src/lib/device-sync/index.ts"), "utf8");
   assert.match(source, /hasActiveLocalOperation:\s*\(\)\s*=>\s*getOperationRegistry\(\)\.hasActive\(\)/);
 });
+
+// False divergences (owner, Telegram 2026-10-06, msgs 1758/1764): RISK-89 recorded that an app update
+// adding a column with a non-NULL DEFAULT to a transferred table read as a local change, so two
+// computers that both updated asked which of two equal copies to keep (4 October). Every computer
+// applies the same migration to its own data and to every snapshot it imports, so a migration alone
+// is not a change to publish -- the same reasoning as the 30-day purge above.
+const ADD_DEFAULTED_COLUMN = "ALTER TABLE research_channels ADD COLUMN fd_test_flag INTEGER NOT NULL DEFAULT 0";
+
+/** What boot does: a consistent pre-migration backup, then the migration, with the hooks around it.
+ * `migrate` stands in for `migrateStagedCopy` (the real migration list) on the hooks' private copy. */
+async function migrateLikeABuildUpdate(
+  root: string,
+  client: Client,
+  options: { hooks?: boolean; writeDuringMigration?: () => Promise<void> } = {}
+) {
+  const { copyDatabaseConsistently } = await import("@/lib/db-backup");
+  const { createSyncPreservingMigrationHooks } = await import("@/lib/snapshot");
+  const backupPath = path.join(root, `pre-migration-${Math.random().toString(36).slice(2)}.db`);
+  await copyDatabaseConsistently(client, backupPath);
+  const hooks = options.hooks
+    ? createSyncPreservingMigrationHooks(client, {
+        migrate: async (file) => {
+          const copy = createClient({ url: `file:${file}` });
+          try {
+            await copy.execute(ADD_DEFAULTED_COLUMN);
+          } finally {
+            copy.close();
+          }
+        },
+      })
+    : null;
+  await hooks?.beforeMigrations(backupPath);
+  await options.writeDuringMigration?.();
+  await client.execute(ADD_DEFAULTED_COLUMN);
+  await hooks?.afterMigrations();
+}
+
+test("AC-FD-06: an in-sync device stays clean through a migration that adds a defaulted column", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { hasUnpublishedLocalChanges } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    assert.equal(await hasUnpublishedLocalChanges(a.client), false, "precondition: in sync");
+    await migrateLikeABuildUpdate(root, a.client, { hooks: true });
+    assert.equal(await hasUnpublishedLocalChanges(a.client), false, "a migration alone is not a local change");
+    a.client.close();
+  }));
+
+test("AC-FD-06 (control): without the hooks the same migration does read as a local change", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { hasUnpublishedLocalChanges } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await migrateLikeABuildUpdate(root, a.client);
+    assert.equal(await hasUnpublishedLocalChanges(a.client), true);
+    a.client.close();
+  }));
+
+test("AC-FD-07: a device with real unpublished changes stays dirty through such a migration", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { hasUnpublishedLocalChanges } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await addResearchChannel(a.client, "UC2");
+    await migrateLikeABuildUpdate(root, a.client, { hooks: true });
+    assert.equal(await hasUnpublishedLocalChanges(a.client), true, "UC2 is still unpublished");
+    a.client.close();
+  }));
+
+test("AC-FD-07: a write by another process during the migration window stays unpublished (review round 1, #4)", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { hasUnpublishedLocalChanges } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await migrateLikeABuildUpdate(root, a.client, { hooks: true, writeDuringMigration: () => addResearchChannel(a.client, "UC-race") });
+    assert.equal(await hasUnpublishedLocalChanges(a.client), true, "UC-race must still be published");
+    a.client.close();
+  }));
+
+test("AC-FD-07: the migration hooks never throw, even on a database with no lineage table", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { createSyncPreservingMigrationHooks } = await import("@/lib/snapshot");
+    const client = createClient({ url: `file:${path.join(root, "bare.db")}` });
+    const hooks = createSyncPreservingMigrationHooks(client);
+    await hooks.beforeMigrations(path.join(root, "does-not-exist.db"));
+    await client.execute("CREATE TABLE unrelated (id TEXT)");
+    await hooks.afterMigrations();
+    client.close();
+  }));
+
+test("AC-FD-07: boot wires the sync-preserving hooks around its migrations, on the pre-migration backup", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(path.join(process.cwd(), "src/lib/db.ts"), "utf8");
+  assert.match(source, /createSyncPreservingMigrationHooks\(rawClient\)/);
+  assert.match(source, /beforeMigrations\(destPath\)/);
+  assert.match(source, /afterMigrations\(\)/);
+});

@@ -71,3 +71,21 @@ tab.
   divergence that a human resolves, never a merge.
 - The manual handoff panel stays as a fallback.
 - Residual risks are tracked in `docs/TECHNICAL_DEBT.md` RISK-89.
+
+## Addendum 2026-10-06 — false divergences (BL-139)
+
+Owner, Telegram msgs 1758/1764. Real conflicts on 4 and 5 October had no human edit behind them:
+on 10-04 both branches held row-for-row identical data (an app update), on 10-05 both computers
+ran the dashboard's automatic Market Intelligence collection (rows with clock times, never
+identical, so the gate below is what addresses that case). Changes:
+
+- Another computer's branch whose content equals this device's head content is recorded as an
+  ancestor of the head (head and data unchanged); a clean device facing several identical tips
+  imports one. An earlier head-switching version was dropped after review (it could leave a
+  stale prompt where "take theirs" lost a row).
+- Boot migrations rebaseline the lineage fingerprint by compare-and-set, as the 30-day purge does.
+- The automatic collection first runs one sync tick and is skipped unless this computer is caught
+  up (`backgroundWriteVerdict`).
+- A real divergence is decided in the Merge tab, which shows what each side would lose.
+
+Still one active writer at a time; a real content conflict is still a human decision.

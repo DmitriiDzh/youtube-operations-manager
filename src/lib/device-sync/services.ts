@@ -1,17 +1,25 @@
 import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { createClient } from "@libsql/client";
+import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
 import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
 import {
+  addLineageAncestorsIfHeadUnchanged,
+  computeFileContentFingerprint,
+  diffTransferredContent,
   hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
   isFastForwardOf,
   listSnapshotIdsStrict,
+  migrateStagedCopy,
   readLineageFile,
   readLineageState,
   readManifestFromDir,
   SnapshotError,
+  verifySnapshotForImport,
   type SqlExecutor,
 } from "@/lib/snapshot";
 import { SchemaVersionError } from "@/lib/schema-versioning";
@@ -22,9 +30,13 @@ import {
   DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS,
   DEVICE_SYNC_TRANSFER_GRACE_MS,
   DeviceSyncError,
+  DIVERGENCE_SECTIONS,
+  divergenceSectionOf,
   EMPTY_DEVICE_SYNC_STATUS,
   TAKE_THEIRS_BACKUP_PREFIX,
   type DecisionInput,
+  type DivergencePreview,
+  type DivergenceSection,
   type DeviceSyncNotice,
   type DeviceSyncStatus,
   type SnapshotEntry,
@@ -189,6 +201,44 @@ export async function pruneAutoImportBackups(dir: string, keep = DEVICE_SYNC_KEE
 }
 
 // ---------------------------------------------------------------------------------------------
+// Background writes (false divergences, owner Telegram 2026-10-06)
+// ---------------------------------------------------------------------------------------------
+
+export type BackgroundWriteVerdict = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Whether an AUTOMATIC write to transferred data (e.g. the dashboard's Market Intelligence
+ * refresh) may run now, given a just-finished tick. It may once this computer has caught up with
+ * the other one (or there is no sync); otherwise its new rows would start a second branch next to
+ * data the other computer already published -- the 5 October conflict. Never applies to an action
+ * a person starts on purpose.
+ */
+export function backgroundWriteVerdict(status: DeviceSyncStatus, nowMs: number): BackgroundWriteVerdict {
+  // Something from another computer is arriving right now. An older pending entry is a stuck
+  // transfer with its own notice, and must not stop the refresh for good (review round 1, #5).
+  const arriving = Object.values(status.pendingSince ?? {}).some((since) => nowMs - since < DEVICE_SYNC_TRANSFER_GRACE_MS);
+  if (arriving) return { allowed: false, reason: "data from another computer is still arriving in the sync folder" };
+  switch (status.state) {
+    case "busy":
+      return { allowed: false, reason: `device sync is paused: ${status.busyReason ?? "another operation is running"}` };
+    case "folder_unreachable":
+      return { allowed: false, reason: "the sync folder is not reachable, so the other computer's data cannot be checked" };
+    case "attention":
+      if (status.notices.some((n) => n.kind === "divergence")) {
+        return { allowed: false, reason: "the two computers' data differs; choose a version in the Merge tab first" };
+      }
+      // The other computer's data cannot be loaded until this app is updated; writing now would
+      // fork as soon as it is (review round 2, N3).
+      if (status.notices.some((n) => n.kind === "update_app")) {
+        return { allowed: false, reason: "the other computer's data needs a newer app version on this computer" };
+      }
+      return { allowed: true };
+    default:
+      return { allowed: true };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------------------------
 
@@ -251,11 +301,13 @@ function transientSnapshotError(error: unknown): boolean {
 function divergenceNotice(snapshot: SnapshotEntry, localDirty: boolean, multipleTips: boolean): DeviceSyncNotice {
   return {
     kind: "divergence",
+    // Owner, Telegram 2026-10-06: the old "does not continue this computer's history" read as if only
+    // the other computer had changed anything; in practice both had (this one had published already).
     message: multipleTips
-      ? "Several other computers published data that conflicts. Choose which data to keep."
+      ? "Several other computers changed Batches/audit/Research/Decisions data differently from this computer. Choose which version to keep."
       : localDirty
-        ? "Both computers changed data since they last synced. Choose which computer's data to keep."
-        : "The other computer published data that does not continue this computer's history. Choose which data to keep.",
+        ? "Both computers changed Batches/audit/Research/Decisions data since they last agreed, and the data differs. Choose which version to keep."
+        : "Both computers changed Batches/audit/Research/Decisions data since they last agreed (this computer's version is already published), and the data differs. Choose which version to keep.",
     snapshotId: snapshot.snapshotId,
     sourceDeviceId: snapshot.sourceDeviceId,
     createdAt: snapshot.createdAt,
@@ -385,6 +437,114 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   }
 
   /**
+   * False divergences (owner, Telegram 2026-10-06, msgs 1758/1764): the content fingerprint of a peer
+   * snapshot as THIS build would import it -- verified, copied and migrated exactly like
+   * `importHandoff` stages it, never ATTACHed in the shared folder. A snapshot never changes, so the
+   * result is kept per id; `null` (cannot be compared: needs a newer schema, unreadable) is kept too,
+   * so a standing divergence does not copy the whole file again every tick. A transient error (still
+   * transferring) is not kept and is retried next tick.
+   */
+  /** Runs `fn` on a private copy of a peer snapshot's data, verified (checksums), copied and
+   * migrated to this build exactly as `importHandoff` stages it -- never ATTACHed in the shared
+   * folder, where Syncthing would pick up any side file. The copy is always removed. */
+  async function withStagedPeerCopy<T>(folder: string, snapshotId: string, fn: (stagedPath: string) => Promise<T>): Promise<T> {
+    const snapshotDir = path.join(folder, snapshotId);
+    await mkdir(deps.workingDir, { recursive: true });
+    const workingCopyPath = path.join(deps.workingDir, `compare-${randomUUID()}.db`);
+    try {
+      await verifySnapshotForImport({
+        snapshotDir,
+        localLineage: await readLineageState(deps.client),
+        acceptDivergentLineage: true,
+      });
+      const snapshotDbClient = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+      try {
+        await copyDatabaseConsistently(snapshotDbClient, workingCopyPath);
+      } finally {
+        snapshotDbClient.close();
+      }
+      await migrateStagedCopy(workingCopyPath);
+      return await fn(workingCopyPath);
+    } finally {
+      for (const suffix of ["", "-wal", "-shm"]) await rm(`${workingCopyPath}${suffix}`, { force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * False divergences (owner, Telegram 2026-10-06, msgs 1758/1764): the content fingerprint of a peer
+   * snapshot as THIS build would import it. A snapshot never changes, so the result is kept per id.
+   * `null` is kept only when this build can never read it (a newer schema); any other failure
+   * (still transferring, a full disk, a busy file) is retried next tick (review round 1, #7).
+   */
+  const stagedFingerprints = new Map<string, string | null>();
+  async function stagedFingerprintOf(folder: string, snapshotId: string): Promise<string | null> {
+    if (stagedFingerprints.has(snapshotId)) return stagedFingerprints.get(snapshotId) ?? null;
+    try {
+      const fingerprint = await withStagedPeerCopy(folder, snapshotId, (stagedPath) =>
+        computeFileContentFingerprint(deps.client, stagedPath)
+      );
+      stagedFingerprints.set(snapshotId, fingerprint);
+      return fingerprint;
+    } catch (error) {
+      if (error instanceof SchemaVersionError) stagedFingerprints.set(snapshotId, null);
+      return null;
+    }
+  }
+
+  /**
+   * False divergences (BL-139, owner Telegram 2026-10-06; reworked after review round 1): another
+   * computer's conflicting branch that holds EXACTLY the content recorded with this device's head
+   * (both computers applied the same update, or two resolutions picked the same data) contains
+   * nothing this device lacks. It is recorded as an ancestor of the head -- head, data and
+   * fingerprint unchanged, so nothing can be lost and every device keeps its OWN snapshot as head
+   * (retention protects it). This device's next export then lists that branch among its ancestors,
+   * so the other computer fast-forwards. Returns whether anything was recorded.
+   */
+  async function absorbIdenticalTips(folder: string, deviceId: string, snapshots: SnapshotEntry[]): Promise<boolean> {
+    const lineage = await readLineageState(deps.client);
+    const head = lineage.lastSnapshotId;
+    if (!head) return false;
+    // The head's content as recorded, and -- for a head that is still in the folder -- as its file
+    // stages: an import purges expired API rows, so a device that imported one of two identical
+    // branches no longer equals the other branch's file byte for byte (review round 2, N2).
+    let headStaged: string | null | undefined;
+    const sameAsHead = async (fingerprint: string) => {
+      if (fingerprint === lineage.contentFingerprint) return true;
+      if (headStaged === undefined) {
+        headStaged = snapshots.some((s) => s.snapshotId === head) ? await stagedFingerprintOf(folder, head) : null;
+      }
+      return headStaged !== null && fingerprint === headStaged;
+    };
+    const extra: string[] = [];
+    for (const tip of await peerTips(deviceId, snapshots)) {
+      if (tip.schemaVersion > deps.currentSchemaVersion) continue;
+      const fingerprint = await stagedFingerprintOf(folder, tip.snapshotId);
+      if (!fingerprint || !(await sameAsHead(fingerprint))) continue;
+      extra.push(tip.snapshotId, ...ancestryOf(tip.snapshotId, snapshots));
+    }
+    if (extra.length === 0) return false;
+    return addLineageAncestorsIfHeadUnchanged(deps.client, head, extra);
+  }
+
+  /**
+   * A clean device that sees SEVERAL conflicting tips which all hold the same data (two other
+   * computers settled an identical fork; review round 1, #2): import the newest one that continues
+   * this device's history, like any fast-forward. The next tick absorbs the others.
+   */
+  async function identicalTipToImport(folder: string, deviceId: string, snapshots: SnapshotEntry[]): Promise<SnapshotEntry | null> {
+    const tips = await peerTips(deviceId, snapshots);
+    if (tips.length < 2 || tips.some((t) => t.schemaVersion > deps.currentSchemaVersion)) return null;
+    const fingerprints = await Promise.all(tips.map((t) => stagedFingerprintOf(folder, t.snapshotId)));
+    if (fingerprints.some((f) => !f || f !== fingerprints[0])) return null;
+    const local = { lastSnapshotId: (await readLineageState(deps.client)).lastSnapshotId };
+    return (
+      tips
+        .filter((t) => isFastForwardOf(t, t.ancestors, local))
+        .sort((x, y) => y.generation - x.generation || x.snapshotId.localeCompare(y.snapshotId))[0] ?? null
+    );
+  }
+
+  /**
    * One scheduler tick (§3.2-§3.4). Never throws: every outcome is recorded in the status.
    * `force` skips only the minimum export interval ("Sync now"); `exportOnly` (the flush before an
    * idle shutdown) acts only if the decision is an export.
@@ -395,6 +555,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     status = { ...status, lastTickAt: new Date(now()).toISOString(), busyReason: null };
 
     const finish = async (next: DeviceSyncStatus) => {
+      // A "refresh is waiting" reason is only set by syncBeforeBackgroundWrite; clear it as soon as
+      // nothing would block any more, so the bell never shows a cause that is gone (round 2, N4).
+      if (next.backgroundWritesPausedReason && backgroundWriteVerdict(next, now()).allowed) {
+        next = { ...next, backgroundWritesPausedReason: null };
+      }
       try {
         await deps.saveStatus(next);
       } catch {
@@ -450,15 +615,32 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       const unsupported = new Set(
         status.unsupportedForSchemaVersion === deps.currentSchemaVersion ? (status.unsupportedSnapshotIds ?? []) : []
       );
-      const decision = decideSyncAction({
-        deviceId: config.deviceId,
-        currentSchemaVersion: deps.currentSchemaVersion,
-        local: { lastSnapshotId: lineage.lastSnapshotId, ancestors: lineage.ancestors ?? [] },
-        localDirty,
-        // A snapshot this build already failed to migrate is reported as "update the app", never
-        // re-imported every tick (plan §3.4).
-        snapshots: snapshots.map((s) => (unsupported.has(s.snapshotId) ? { ...s, schemaVersion: Number.MAX_SAFE_INTEGER } : s)),
-      });
+      const decide = async () => {
+        const current = await readLineageState(deps.client);
+        return decideSyncAction({
+          deviceId: config.deviceId,
+          currentSchemaVersion: deps.currentSchemaVersion,
+          local: { lastSnapshotId: current.lastSnapshotId, ancestors: current.ancestors ?? [] },
+          localDirty,
+          // A snapshot this build already failed to migrate is reported as "update the app", never
+          // re-imported every tick (plan §3.4).
+          snapshots: snapshots.map((s) => (unsupported.has(s.snapshotId) ? { ...s, schemaVersion: Number.MAX_SAFE_INTEGER } : s)),
+        });
+      };
+      let decision = await decide();
+      // BL-139: a "conflict" whose other side holds this head's own data is no conflict; settle it
+      // and decide again (an export or idle follows). Comparison failures fall through to asking.
+      if (decision.kind === "divergence") {
+        const absorbed = await absorbIdenticalTips(folder, config.deviceId, snapshots).catch(() => false);
+        if (absorbed) {
+          status = { ...status, lastIdenticalSettledAt: new Date(now()).toISOString() };
+          decision = await decide();
+        }
+      }
+      if (decision.kind === "divergence" && decision.multipleTips && !localDirty) {
+        const pick = await identicalTipToImport(folder, config.deviceId, snapshots).catch(() => null);
+        if (pick) decision = { kind: "import", snapshot: pick };
+      }
 
       const wouldExport = decision.kind === "export" || (decision.kind === "divergence" && decision.localDirty);
       if (options.exportOnly && !wouldExport) {
@@ -736,6 +918,10 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
     if (await hasUnfinishedBatch(deps.client)) throw new DeviceSyncError("device_sync_busy", BATCH_PAUSES_IMPORT_MESSAGE);
+    // Other computers' branches this device had absorbed as "same data as mine" (BL-139): the
+    // import replaces the recorded ancestry with the adopted snapshot's, so without carrying them
+    // they would become conflicts again right after this choice (review round 2, N1).
+    const ancestorsBefore = (await readLineageState(deps.client)).ancestors ?? [];
     let result: Awaited<ReturnType<typeof importNow>>;
     try {
       result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
@@ -745,9 +931,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     }
 
     const adoptedAncestry = ancestryOf(snapshotId, snapshots);
-    const abandoned = snapshots
-      .filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId))
-      .map((s) => s.snapshotId);
+    const inFolder = new Set(snapshots.map((s) => s.snapshotId));
+    const abandoned = [
+      ...snapshots.filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId)).map((s) => s.snapshotId),
+      ...ancestorsBefore.filter((id) => inFolder.has(id) && id !== snapshotId && !adoptedAncestry.has(id)),
+    ].filter((id, index, all) => all.indexOf(id) === index);
     let markerId: string | null = null;
     if (abandoned.length > 0) {
       try {
@@ -778,6 +966,53 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     return next;
   }
 
+  /**
+   * Divergence preview for the Merge tab (owner, Telegram 2026-10-06, msg 1758: "show between what
+   * and what I am choosing"): the current conflicting peer tip, this computer's position, the newest
+   * snapshot both histories share, and per transferred table what only this computer has, what only
+   * the other has, and what both have but differently. Read-only: nothing is published or replaced.
+   */
+  async function divergencePreviewUnlocked(snapshotId: string): Promise<DivergencePreview> {
+    const { config, snapshot, snapshots, tips } = await requireCurrentPeerTip(snapshotId);
+    const lineage = await readLineageState(deps.client);
+    const tables = await withStagedPeerCopy(config.folder, snapshotId, (stagedPath) => diffTransferredContent(deps.client, stagedPath));
+    const known = ancestryOf(lineage.lastSnapshotId, snapshots, lineage.ancestors ?? []);
+    if (lineage.lastSnapshotId) known.add(lineage.lastSnapshotId);
+    const peerAncestry = ancestryOf(snapshot.snapshotId, snapshots);
+    const base = snapshots
+      .filter((s) => known.has(s.snapshotId) && peerAncestry.has(s.snapshotId))
+      .sort((x, y) => y.generation - x.generation)[0];
+    const sections = new Map<DivergenceSection, { onlyHere: number; onlyThere: number; changed: number }>();
+    for (const section of DIVERGENCE_SECTIONS) sections.set(section, { onlyHere: 0, onlyThere: 0, changed: 0 });
+    for (const t of tables) {
+      const total = sections.get(divergenceSectionOf(t.table)) as { onlyHere: number; onlyThere: number; changed: number };
+      total.onlyHere += t.onlyHere;
+      total.onlyThere += t.onlyThere;
+      total.changed += t.changed;
+    }
+    const status = await loadStatusSafe();
+    return {
+      peer: {
+        snapshotId: snapshot.snapshotId,
+        sourceDeviceId: snapshot.sourceDeviceId,
+        createdAt: snapshot.createdAt,
+        generation: snapshot.generation,
+      },
+      local: {
+        deviceId: config.deviceId,
+        headSnapshotId: lineage.lastSnapshotId,
+        lastExportAt: status.lastExportAt,
+        unpublishedChanges: await hasUnpublishedLocalChanges(deps.client),
+      },
+      peerTips: tips.length,
+      commonBase: base ? { snapshotId: base.snapshotId, createdAt: base.createdAt, sourceDeviceId: base.sourceDeviceId } : null,
+      sections: [...sections.entries()].map(([section, totals]) => ({ section, ...totals })),
+      tables: tables
+        .filter((t) => t.onlyHere + t.onlyThere + t.changed > 0)
+        .map((t) => ({ ...t, section: divergenceSectionOf(t.table) })),
+    };
+  }
+
   // One action at a time per runner (review round 1): a tick and a resolution each load the status
   // at the start and save it at the end, so overlapping ones would overwrite each other's result.
   let queue: Promise<unknown> = Promise.resolve();
@@ -789,8 +1024,21 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   return {
     tick: (options: { force?: boolean; exportOnly?: boolean } = {}) => serialize(() => tick(options)),
+    /** One tick now (it imports the other computer's newer data first, when there is any), then the
+     * verdict for an automatic write. */
+    syncBeforeBackgroundWrite: (): Promise<BackgroundWriteVerdict> =>
+      serialize(async () => {
+        const status = await tick();
+        const verdict = backgroundWriteVerdict(status, now());
+        const backgroundWritesPausedReason = verdict.allowed ? null : verdict.reason;
+        if ((status.backgroundWritesPausedReason ?? null) !== backgroundWritesPausedReason) {
+          await deps.saveStatus({ ...status, backgroundWritesPausedReason }).catch(() => {});
+        }
+        return verdict;
+      }),
     keepMine: (snapshotId: string) => serialize(() => keepMineUnlocked(snapshotId)),
     takeTheirs: (snapshotId: string) => serialize(() => takeTheirsUnlocked(snapshotId)),
+    divergencePreview: (snapshotId: string) => serialize(() => divergencePreviewUnlocked(snapshotId)),
     getStatus: loadStatusSafe,
   };
 }

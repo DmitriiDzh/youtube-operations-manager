@@ -3757,6 +3757,11 @@ async function initializeDatabase() {
   // due and the lock is busy, wait for it (an export takes about a second) instead of failing.
   const lockAcquired = await acquireMigrationLockIfDue(rawClient);
 
+  // False divergences (BL-139): a device in sync before this boot's migrations stays in sync after
+  // them -- every computer applies the same migrations (RISK-89). Both fingerprints come from the
+  // pre-migration backup, never the live DB. Loaded lazily: `@/lib/snapshot` imports this module.
+  // The hooks never throw.
+  let syncHooks: { beforeMigrations: (backupPath: string) => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
   try {
     await initializeDatabaseSchema(rawClient, {
       beforeMigrations: async () => {
@@ -3765,8 +3770,13 @@ async function initializeDatabase() {
           `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
         );
         await copyDatabaseConsistently(rawClient, destPath);
+        syncHooks = await import("@/lib/snapshot")
+          .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
+          .catch(() => null);
+        await syncHooks?.beforeMigrations(destPath);
       },
     });
+    await (syncHooks as { afterMigrations: () => Promise<void> } | null)?.afterMigrations();
   } finally {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }

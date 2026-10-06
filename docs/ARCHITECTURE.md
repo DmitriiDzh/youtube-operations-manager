@@ -1727,7 +1727,8 @@ defensible method is stated plainly, not hidden: leave-one-out needs `BREAKOUT_M
 
 `RECENT_VIDEO_WINDOW_DAYS` (180, not a narrower window) is itself a considered choice, not an
 arbitrary round number: this application's only collection trigger is a dashboard page load
-(`collect-if-stale`, gated to at most once per 24h per channel, no background scheduler exists) --
+(`collect-if-stale`, gated to at most once per 24h per channel, no background scheduler exists;
+since BL-139 it also waits until device sync has caught up, §23) --
 a video's own day-7 age-normalized point only exists at all if a collection run happened to land
 within `ageNormalizedTolerance(7)` (`max(1, 7*0.25)` = 1.75 days) of its 7-day mark. A monthly-or-
 slower-uploading channel needs a wide `RECENT_VIDEO_WINDOW_DAYS` just to have a realistic chance at
@@ -2202,12 +2203,35 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - One tip that is a fast-forward, with local clean: import.
    - A newer schema: `update_app`.
    - Anything else: divergence.
+4a. **Identical-content divergence (BL-139, owner 2026-10-06; reworked after review round 1).**
+   Each conflicting tip is staged exactly like an import (checksums, private copy, migration;
+   fingerprint cached per snapshot id, `null` only for a newer schema).
+   - A tip whose content equals the fingerprint recorded with this device's head holds nothing
+     this device lacks: it and its ancestry are added to `ancestors_json` by compare-and-set on the
+     head (`addLineageAncestorsIfHeadUnchanged`). Head, data and fingerprint stay, so every device
+     keeps its OWN snapshot as head (retention protects it), and the decision is made again
+     (export if dirty, else idle). The export carries that branch as an ancestor, so the peer
+     fast-forwards.
+   - A clean device with several tips that all hold the same data imports the newest one that
+     continues its history (an ordinary import); the next tick absorbs the rest.
+   - "This head's content" is the recorded fingerprint or, when the head is still in the folder,
+     its staged file (an import purges expired API rows, so the file and the live data differ).
+   - "Take theirs" carries absorbed branches into its marker's ancestors and `supersedes`, so they
+     do not come back as conflicts after the choice.
+   - Anything else (different content, a comparison that fails) is a divergence as before.
+   An earlier version switched the head to the peer's snapshot instead; review round 1 showed it
+   left the peer asking about an abandoned branch (where "take theirs" lost a row on both sides),
+   a third device asking forever, and no device protecting the current snapshot.
 5. Actions go through the existing `exportHandoff` / `importHandoff`. `assertStillSafe` re-checks
    the gates, and the fingerprint for an import, inside the operation lock, right before anything
    is written. In a divergence, local unpublished changes are still published on their own branch,
    so the other computer sees the conflict too.
 
-**Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
+**Resolution (human only, in the Merge tab → `POST /api/device-sync/resolve`):**
+- The bell only links to the Merge tab. `DeviceSyncDivergenceCard` there shows both computers, the
+  newest common snapshot, and per section (Batches/Audit/Research/Decisions/Other) the rows only
+  here, only there, and changed (same primary key), from `GET /api/device-sync/divergence`
+  (`runner.divergencePreview` → `diffTransferredContent`, read-only ATTACH of the staged copy).
 - Both actions accept only a CURRENT conflicting peer tip.
 - `keep_mine` exports with `supersede` (parent = the named tip; ancestry = every current peer tip
   and its history, plus the local one), so every peer fast-forwards.
@@ -2266,7 +2290,21 @@ state, so these are held per process via `globalThis`:
 - the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
 
 **Boot.** `initializeDatabase` takes the migration lock only when a migration is due
-(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock.
+(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock. Around the
+migrations, `createSyncPreservingMigrationHooks` (BL-139) moves the lineage fingerprint by
+compare-and-set if the device was in sync before them: every computer applies the same migrations,
+so a column added with a non-NULL DEFAULT is not a local change. Both fingerprints come from the
+pre-migration backup (`after` from a private copy of it, migrated), never the live DB, so a write
+another process makes during the migration window still reads as unpublished.
+
+**Automatic writes wait for sync (BL-139).** The dashboard's Market Intelligence refresh
+(`collect-if-stale`) first calls `runner.syncBeforeBackgroundWrite()` (one tick, 60 s bound) and
+waits only while something from another computer is arriving (a pending entry younger than the
+10-minute grace), while sync is paused (`busy`), while the folder is unreachable, while a
+divergence notice is open, or while `update_app` says the other computer's data cannot be loaded
+yet. A stuck transfer and `error` have their own notices and do not block it; any tick clears a
+reason that no longer applies. A skip is saved as `backgroundWritesPausedReason` and shown in the bell; the next
+dashboard load tries again. A device-sync failure never blocks it (§M).
 
 **Stuck operation lock recovery (2026-10-01).** A migration/import killed mid-run leaves its
 `app_operation_locks` row; by decision 2b it is never auto-released (only a dead *export*'s is), so

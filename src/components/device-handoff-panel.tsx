@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OperationLockControl } from "@/components/operation-lock-control";
+import { DeviceSyncDivergenceCard } from "@/components/device-sync-divergence-card";
 
 type UnresolvedRow = { batchId: string; ledgerRowId: string; videoId: string; status: string };
 
@@ -544,6 +545,8 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       )}
 
       {status?.lock && <OperationLockControl onChanged={() => void refreshStatus()} />}
+
+      <DeviceSyncDivergenceCard />
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="mb-3 flex items-center justify-between">

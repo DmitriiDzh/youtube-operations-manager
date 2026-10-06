@@ -1469,15 +1469,34 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     - two computers resolve at the same time, even when they agree.
 
     Nothing is overwritten, and every replaced state has a never-pruned backup
-    (`pre-take-theirs-*`, `pre-superseded-*`). Automatic convergence here would need
-    content-identity tracking, which proved unsafe under concurrent opposite resolutions.
+    (`pre-take-theirs-*`, `pre-superseded-*`). Converging on resolution identity proved unsafe
+    under concurrent opposite resolutions. Since BL-139, a branch whose content equals this
+    device's head content is absorbed as an ancestor (the head never moves), so two resolutions
+    that leave the SAME data settle without a prompt; different data still asks.
     Revisit if re-prompts are reported in practice. The resolution matrix is
     `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
     prompt.
-  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table read as a
-    local change once. The fingerprint ignores added nullable columns and newly transferred empty
-    tables (review round 4). If both computers are upgraded in between, this ends in one conflict
-    prompt. It fails closed, and nothing is lost.
+  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table: RESOLVED
+    2026-10-06 (BL-139). Boot migrations rebaseline the fingerprint by compare-and-set, and two
+    computers that still end up with identical data settle without a prompt. Remaining limit: a
+    migration whose data transform depends on device-local tables is rebaselined too, so its
+    derived rows are published with the next real change.
+  - **False prompts (BL-139, 2026-10-06).** On 4 October the two branches held identical data
+    (an app update); on 5 October both computers ran the dashboard's Market Intelligence
+    collection. What settles now, and what does not:
+    - another computer's branch holding exactly this device's head content (app updates,
+      identical resolutions, the re-prompt cases above when the data agrees) is absorbed as an
+      ancestor without asking;
+    - collections never produce identical rows (they carry clock times), so for them the
+      protection is the gate: the automatic refresh waits until sync has caught up. The fork
+      window remains from one computer's write until the other has received its snapshot (a
+      30 s tick, the 60 s export interval and the Syncthing transfer), so opening the app on both
+      computers within the same few minutes can still fork. Different results (per-device
+      collection depth, the BL-125 retention sweep with per-device settings) also still fork;
+    - while the sync folder is unreachable (external drive unplugged), the automatic refresh does
+      not run on that computer and the bell says why; manual collection still works;
+    - an expired-row difference (one side purged under the 30-day rule, the other's snapshot not
+      yet) makes identical data compare as different, which ends in a prompt (fail closed).
   - **Merge-transaction length grows with the Research history.** An import holds the write lock
     for two full fingerprint scans. It measured 8 ms for three scans on the owner's DB on
     2026-10-01. Other writers wait up to their 5 s `busy_timeout`. Revisit if the transferred

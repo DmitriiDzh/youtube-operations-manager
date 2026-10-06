@@ -6,6 +6,8 @@ import {
   type UnresolvedExecutionRow,
 } from "@/lib/device-mutation-gate";
 import path from "node:path";
+import { copyFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { initializeDatabaseSchema } from "@/lib/db";
@@ -35,7 +37,13 @@ import {
   computeFileContentFingerprint,
   transferredTablesAreEmpty,
 } from "./adapters/fingerprint";
-import { readLineageState, writeLineageState, type LineageState } from "./adapters/lineage-store";
+import {
+  addLineageAncestorsIfHeadUnchanged,
+  readLineageState,
+  rebaselineLineageFingerprintIfUnchanged,
+  writeLineageState,
+  type LineageState,
+} from "./adapters/lineage-store";
 
 /** Execution-ledger statuses where a real YouTube write may have been sent but the outcome is
  * not yet certain -- the only ones a device-handoff import must never silently resolve
@@ -206,6 +214,54 @@ export async function hasUnpublishedLocalChanges(
   if (lineage.lastSnapshotId === null) return !(await transferredTablesAreEmpty(client));
   if (!lineage.contentFingerprint) return true;
   return (currentFingerprint ?? (await computeContentFingerprint(client))) !== lineage.contentFingerprint;
+}
+
+/**
+ * False divergences (BL-139, owner Telegram 2026-10-06): a schema migration is applied by every
+ * computer to its own data and to every snapshot it imports, so by itself it is not a change to
+ * publish -- yet a column added with a non-NULL DEFAULT changes the content fingerprint (RISK-89).
+ * Boot calls `beforeMigrations` with its consistent pre-migration backup and `afterMigrations` once
+ * the live migrations finished. `before` and `after` both come from that backup -- `after` from a
+ * private copy migrated the same way -- never from the live database, so a write another process
+ * made during the migration window still reads as unpublished (review round 1, #4). If the device
+ * was in sync at the backup, the recorded fingerprint moves from `before` to `after` by
+ * compare-and-set. Never throws: a failure only leaves the old fingerprint (at worst a prompt).
+ */
+export function createSyncPreservingMigrationHooks(
+  client: SqlExecutor,
+  options: { migrate?: (dbPath: string) => Promise<void> } = {}
+): {
+  beforeMigrations: (backupPath: string) => Promise<void>;
+  afterMigrations: () => Promise<void>;
+} {
+  const migrate = options.migrate ?? migrateStagedCopy;
+  let backup: string | null = null;
+  let before: string | null = null;
+  return {
+    beforeMigrations: async (backupPath: string) => {
+      try {
+        before = await computeFileContentFingerprint(client, backupPath);
+        backup = backupPath;
+      } catch {
+        before = null;
+      }
+    },
+    afterMigrations: async () => {
+      if (!before || !backup) return;
+      // In the OS temp folder, never next to the backups: a crash before the cleanup must not leave a
+      // full-size file that looks like a backup (review round 2, N5).
+      const copyPath = path.join(tmpdir(), `ytom-sync-check-${randomUUID()}.db`);
+      try {
+        await copyFile(backup, copyPath);
+        await migrate(copyPath);
+        await rebaselineLineageFingerprintIfUnchanged(client, before, await computeFileContentFingerprint(client, copyPath));
+      } catch {
+        // No lineage table/column yet (a pre-v36 database), or the copy failed: keep the old fingerprint.
+      } finally {
+        for (const suffix of ["", "-wal", "-shm", "-journal"]) await rm(`${copyPath}${suffix}`, { force: true }).catch(() => {});
+      }
+    },
+  };
 }
 
 async function pathExistsChecked(filePath: string): Promise<boolean> {
@@ -426,4 +482,4 @@ export async function listSnapshots(snapshotsDir: string): Promise<string[]> {
 }
 
 export { readLineageState, writeLineageState, type LineageState };
-export { rebaselineLineageFingerprintIfUnchanged } from "./adapters/lineage-store";
+export { addLineageAncestorsIfHeadUnchanged, rebaselineLineageFingerprintIfUnchanged };
