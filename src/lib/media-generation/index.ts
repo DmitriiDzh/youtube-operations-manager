@@ -23,7 +23,7 @@ import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
-import { buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView } from "./cross-device";
+import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView } from "./cross-device";
 import { podNameFor } from "./sessions";
 import { createMediaSessionsShareCoreForProduction } from "@/lib/sync-gateway";
 
@@ -134,6 +134,8 @@ function buildCore(jobScheduling: JobScheduling) {
     sleep,
     volumeLock,
     log: (line) => console.warn(line),
+    // BL-138: devices on the same RunPod account share the limits (late-bound: the helpers are defined below).
+    accountWide: (at, localPodIds) => otherDevicesOnAccount(at, localPodIds),
   });
   sessionsRef = sessions;
   const workspaces = createChannelWorkspacesCore();
@@ -264,6 +266,17 @@ function buildCore(jobScheduling: JobScheduling) {
     }
     return { deviceId: config.deviceId, hostname: host };
   };
+  // One RunPod pod list per 20 s at most for the limits (the watcher checks every running session on every tick).
+  let livePodsCache: { pods: Array<{ id: string; name: string }>; at: number } | null = null;
+  async function otherDevicesOnAccount(at: Date, localPodIds: string[]) {
+    const ownAccountId = await runpodAccountId();
+    if (!ownAccountId) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+    if (!livePodsCache || at.getTime() - livePodsCache.at > 20_000) {
+      livePodsCache = { pods: (await (await base.resolveRunpodClient()).listPods()).map((p) => ({ id: p.id, name: p.name })), at: at.getTime() };
+    }
+    const peers = await createMediaSessionsShareCoreForProduction().listPeerReports();
+    return accountWideUsage({ peers, ownAccountId, livePods: livePodsCache.pods, localPodIds, dayStart: new Date(at.getFullYear(), at.getMonth(), at.getDate()) });
+  }
   /** BL-138: hands this device's sessions report to the sync-gateway `media-sessions` family (run on every watcher tick). */
   const publishSessionsShare = async (): Promise<void> => {
     const [identity, list, limits, accountId] = await Promise.all([deviceIdentity(), sessions.listSessions(200), sessions.getLimits(), runpodAccountId()]);

@@ -173,3 +173,27 @@ export async function stopPeerSession(deps: PeerStopDeps, input: unknown): Promi
   await deps.record({ action: "stop_peer_session", subject: sessionId, details: { deviceId, hostname: report.hostname, podId: pod.id, confirmed: outcome.confirmed } }).catch(() => undefined);
   return { podId: pod.id, alreadyGone: outcome.alreadyGone, confirmed: outcome.confirmed };
 }
+
+// -- Shared limits for devices on one RunPod account (owner, msg 1739) ------------------------------------------------------
+
+/**
+ * What the OTHER devices on this RunPod account use, for this device's limits. Concurrency comes from RunPod itself (live
+ * `ytm-media-*` pods that are not this device's), never from the reports, so it is right even when a device is off or its
+ * report is late. Today's spend comes from the reports of devices on the same account written since `dayStart` (spend is
+ * history: a device that went off at noon still spent its morning). Unknown own account = nothing shared.
+ */
+export function accountWideUsage(input: {
+  peers: MediaSessionsReport[];
+  ownAccountId: string | null;
+  livePods: Array<{ id: string; name: string }>;
+  localPodIds: string[];
+  dayStart: Date;
+}): { otherActiveSessions: number; otherSpentTodayUsd: number } {
+  if (!input.ownAccountId) return { otherActiveSessions: 0, otherSpentTodayUsd: 0 };
+  const local = new Set(input.localPodIds);
+  const otherActiveSessions = input.livePods.filter((p) => p.name.startsWith(SESSION_POD_PREFIX) && !local.has(p.id)).length;
+  const otherSpentTodayUsd = input.peers
+    .filter((r) => r.runpodAccountId === input.ownAccountId && Date.parse(r.updatedAt) >= input.dayStart.getTime())
+    .reduce((sum, r) => sum + Math.max(0, r.spentTodayUsd), 0);
+  return { otherActiveSessions, otherSpentTodayUsd: Math.round(otherSpentTodayUsd * 100) / 100 };
+}

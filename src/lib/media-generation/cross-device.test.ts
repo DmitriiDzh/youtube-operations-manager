@@ -3,7 +3,7 @@ import test from "node:test";
 import type { MediaSessionsReport } from "@/lib/sync-gateway";
 import type { MediaSession } from "./contracts";
 import type { RunpodApiClient } from "@/lib/media-gateway";
-import { buildSessionsReport, deriveOtherDevices, stopPeerSession, toSharedSession, type PeerStopDeps } from "./cross-device";
+import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, toSharedSession, type PeerStopDeps } from "./cross-device";
 
 // BL-138 (plan docs/roadmap/plans/MEDIA_SESSIONS_CROSS_DEVICE_PLAN.md, ADR 0028). Requirements: another device sees a session's
 // state and cost but never its ComfyUI URL (it carries the proxy token) or RunPod error text; a peer's "running" session whose
@@ -228,4 +228,48 @@ test("a pod RunPod no longer lists counts as already stopped, without a DELETE",
   const f = stopFixture({ pods: [] });
   assert.deepEqual(await stopPeerSession(f.deps, { deviceId: "laptop", sessionId: "aaaaaaaa-1111" }), { podId: "pod-a", alreadyGone: true, confirmed: true });
   assert.ok(!f.calls.some((c) => c.startsWith("terminate:")));
+});
+
+// -- BL-138 step 3: shared limits for devices on one RunPod account (owner, msg 1739) --------------------------------------
+
+test("accountWideUsage: other active sessions are RunPod's live ytm-media pods that are not this device's", () => {
+  const usage = accountWideUsage({
+    peers: [],
+    ownAccountId: "acct",
+    localPodIds: ["pod-mine"],
+    livePods: [
+      { id: "pod-mine", name: "ytm-media-11111111" },
+      { id: "pod-other", name: "ytm-media-22222222" },
+      { id: "pod-orphan", name: "ytm-media-33333333" }, // no device reports it: still a running session pod on the account
+      { id: "pod-pull", name: "ytm-pull-abc" },
+    ],
+    dayStart: new Date("2026-10-06T00:00:00"),
+  });
+  assert.equal(usage.otherActiveSessions, 2);
+});
+
+test("accountWideUsage: today's spend of devices on the same account, reported since the day began; other accounts and older reports are not counted", () => {
+  const dayStart = new Date("2026-10-06T00:00:00");
+  const at = (h: number) => new Date(dayStart.getTime() + h * 3600_000).toISOString();
+  const usage = accountWideUsage({
+    peers: [
+      { ...peer("a", at(9), [], "acct"), spentTodayUsd: 1.1 },
+      { ...peer("b", at(1), [], "acct"), spentTodayUsd: 0.25 }, // went off at 1 am: its spend today still counts
+      { ...peer("c", at(10), [], "acct-2"), spentTodayUsd: 5 },
+      { ...peer("d", at(-2), [], "acct"), spentTodayUsd: 7 }, // yesterday's report: yesterday's spend
+      { ...peer("e", at(10), [], null), spentTodayUsd: 3 },
+    ],
+    ownAccountId: "acct",
+    localPodIds: [],
+    livePods: [],
+    dayStart,
+  });
+  assert.deepEqual(usage, { otherActiveSessions: 0, otherSpentTodayUsd: 1.35 });
+});
+
+test("accountWideUsage: with this device's account unknown nothing is shared", () => {
+  assert.deepEqual(
+    accountWideUsage({ peers: [peer("a", "2026-10-06T09:00:00.000Z", [], "acct")], ownAccountId: null, localPodIds: [], livePods: [{ id: "p", name: "ytm-media-1" }], dayStart: new Date("2026-10-06T00:00:00") }),
+    { otherActiveSessions: 0, otherSpentTodayUsd: 0 }
+  );
 });
