@@ -115,8 +115,12 @@ function createFixture(opts: {
       async listFiles() {
         return opts.storedFiles ?? [];
       },
+      listChannelConnections: async () => opts.connections ?? [],
     },
     channelAccess: {
+      async getActiveChannelId(userId: string | null | undefined) {
+        return opts.activeChannelByUser && userId ? (opts.activeChannelByUser[userId] ?? null) : activeChannelId;
+      },
       async assertActiveChannel({ userId, channelId }: { userId: string | null | undefined; channelId: string }) {
         const active = opts.activeChannelByUser && userId ? (opts.activeChannelByUser[userId] ?? null) : activeChannelId;
         if (active !== channelId) {
@@ -125,7 +129,6 @@ function createFixture(opts: {
         return channelId;
       },
     } as never,
-    listChannelConnections: async () => opts.connections ?? [],
     requiredScope: "https://www.googleapis.com/auth/yt-analytics.readonly",
     clock: { now: () => opts.now ?? new Date("2026-10-03T12:00:00Z") },
   };
@@ -509,52 +512,55 @@ test("getChannelReach groupBy video_day is capped at 5000 rows and says so; an u
 
 
 // BL-141 (owner, Telegram 2026-10-06, msgs 1864/1865): on dashboard load, check the Reach reports of EVERY connected
-// channel, not only the active one. Each channel is synced with its own Google user's token, through the same
-// syncReachReports (and its active-channel check), and one channel failing never stops the others (AGENTS.md §M).
-test("syncAllReachReports syncs every connected channel with that channel's own user, and reports each outcome", async () => {
+// channel, not only the active one. The session's active channel uses the session's token (as before); every other
+// channel uses its own Google user's token through the same syncReachReports and its active-channel check. One channel
+// failing never stops the others (AGENTS.md §M). Expected outcomes below are written by hand from that requirement.
+const userIds = (calls: Fixture["calls"]) =>
+  calls.resolveArgs.map((a) => (a as { credentialRef: { userId: string } }).credentialRef.userId).sort();
+
+test("syncAllReachReports: the active channel uses the session's token, every other channel its own user's", async () => {
   const { services, calls } = createFixture({
     connections: [
-      { channelId: "UC_A", connectedUserId: "uA" },
+      { channelId: "UC_A", connectedUserId: "uA-stored" },
       { channelId: "UC_B", connectedUserId: "uB" },
     ],
-    activeChannelByUser: { uA: "UC_A", uB: "UC_B" },
+    activeChannelByUser: { uS: "UC_A", "uA-stored": "UC_A", uB: "UC_B" },
   });
-  const result = await services.syncAllReachReports({ onlyIfDue: false });
-  assert.deepEqual(
-    result.channels.map((c) => [c.channelId, c.outcome]),
-    [
-      ["UC_A", "synced"],
-      ["UC_B", "synced"],
-    ]
-  );
-  // Each channel's credentials were resolved for its own user, never the other's.
-  assert.deepEqual(
-    calls.resolveArgs.map((a) => (a as { credentialRef: { userId: string } }).credentialRef.userId),
-    ["uA", "uB"]
-  );
-  assert.deepEqual(
-    calls.upsertJob.map((j) => (j as { channelId: string }).channelId),
-    ["UC_A", "UC_B"]
-  );
+  const result = await services.syncAllReachReports({ onlyIfDue: false, sessionUserId: "uS" });
+  assert.deepEqual(result.channels, [
+    { channelId: "UC_A", outcome: "synced", filesImported: 0 },
+    { channelId: "UC_B", outcome: "synced", filesImported: 0 },
+  ]);
+  assert.deepEqual(userIds(calls), ["uB", "uS"]);
 });
 
-test("syncAllReachReports skips a channel with no connected user and never calls Google for it", async () => {
+test("syncAllReachReports: the active channel is synced even with no stored connected user", async () => {
+  const { services, calls } = createFixture({
+    connections: [{ channelId: "UC_A", connectedUserId: null }],
+    activeChannelByUser: { uS: "UC_A" },
+  });
+  const result = await services.syncAllReachReports({ onlyIfDue: false, sessionUserId: "uS" });
+  assert.deepEqual(result.channels, [{ channelId: "UC_A", outcome: "synced", filesImported: 0 }]);
+  assert.deepEqual(userIds(calls), ["uS"]);
+});
+
+test("syncAllReachReports: a background channel with no connected user is skipped, with the reason recorded", async () => {
   const { services, calls } = createFixture({
     connections: [
       { channelId: "UC_GONE", connectedUserId: null },
       { channelId: "UC_A", connectedUserId: "uA" },
     ],
-    activeChannelByUser: { uA: "UC_A" },
+    activeChannelByUser: { uS: "UC_A", uA: "UC_A" },
   });
-  const result = await services.syncAllReachReports({ onlyIfDue: false });
-  assert.deepEqual(result.channels, [
-    { channelId: "UC_GONE", outcome: "skipped", reason: "no_connected_user" },
-    { channelId: "UC_A", outcome: "synced", filesImported: 0 },
-  ]);
-  assert.equal(calls.resolve, 1);
+  const result = await services.syncAllReachReports({ onlyIfDue: false, sessionUserId: "uS" });
+  assert.deepEqual(result.channels[0], { channelId: "UC_GONE", outcome: "skipped", reason: "no_connected_user" });
+  assert.deepEqual(userIds(calls), ["uS"]);
+  const gone = calls.attempts.find((a) => a.channelId === "UC_GONE");
+  assert.equal(gone?.outcome, "failed");
+  assert.match(gone?.error ?? "", /no Google account is connected/);
 });
 
-test("syncAllReachReports: a channel whose user now has another channel active fails closed; the rest still sync", async () => {
+test("syncAllReachReports: a channel whose user now has another channel active fails closed, says why, and the rest sync", async () => {
   const { services, calls } = createFixture({
     connections: [
       { channelId: "UC_A", connectedUserId: "uA" },
@@ -563,13 +569,17 @@ test("syncAllReachReports: a channel whose user now has another channel active f
     // uA switched to some other channel: uA's token is no longer UC_A's, so UC_A must not be synced with it.
     activeChannelByUser: { uA: "UC_OTHER", uB: "UC_B" },
   });
-  const result = await services.syncAllReachReports({ onlyIfDue: false });
-  assert.deepEqual(result.channels[0], { channelId: "UC_A", outcome: "failed", error: "CHANNEL_NOT_ACTIVE" });
+  const result = await services.syncAllReachReports({ onlyIfDue: false, sessionUserId: "uB" });
+  assert.equal(result.channels[0].outcome, "failed");
+  assert.equal((result.channels[0] as { code?: string }).code, "CHANNEL_NOT_ACTIVE");
   assert.deepEqual(result.channels[1], { channelId: "UC_B", outcome: "synced", filesImported: 0 });
-  assert.deepEqual(calls.resolveArgs.map((a) => (a as { credentialRef: { userId: string } }).credentialRef.userId), ["uB"]);
+  assert.deepEqual(userIds(calls), ["uB"]);
+  const a = calls.attempts.find((x) => x.channelId === "UC_A");
+  assert.equal(a?.outcome, "failed");
+  assert.match(a?.error ?? "", /another channel selected/);
 });
 
-test("syncAllReachReports: a Google error on one channel is recorded for it and does not stop the next", async () => {
+test("syncAllReachReports: a Google error on one channel keeps its message and does not stop the next", async () => {
   const { services, calls } = createFixture({
     connections: [
       { channelId: "UC_A", connectedUserId: "uA" },
@@ -578,26 +588,66 @@ test("syncAllReachReports: a Google error on one channel is recorded for it and 
     activeChannelByUser: { uA: "UC_A", uB: "UC_B" },
     ensureJobErrorForUser: { uA: new Error("insufficient scope") },
   });
-  const result = await services.syncAllReachReports({ onlyIfDue: false });
+  const result = await services.syncAllReachReports({ onlyIfDue: false, sessionUserId: "uB" });
   assert.deepEqual(result.channels[0], { channelId: "UC_A", outcome: "failed", error: "insufficient scope" });
   assert.equal(result.channels[1].outcome, "synced");
-  assert.deepEqual(
-    calls.attempts.map((a) => [a.channelId, a.outcome]),
-    [
-      ["UC_A", "failed"],
-      ["UC_B", "ok"],
-    ]
-  );
+  assert.deepEqual(calls.attempts.map((a) => [a.channelId, a.outcome]).sort(), [
+    ["UC_A", "failed"],
+    ["UC_B", "ok"],
+  ]);
 });
 
 test("syncAllReachReports passes onlyIfDue through: a channel checked an hour ago is skipped without a Google call", async () => {
   const { services, calls } = createFixture({
     connections: [{ channelId: "UC_A", connectedUserId: "uA" }],
-    activeChannelByUser: { uA: "UC_A" },
+    activeChannelByUser: { uS: "UC_A" },
     storedJob: { jobId: "job-1", jobCreatedAt: null, lastCheckedAt: new Date("2026-10-03T11:00:00Z") },
     now: new Date("2026-10-03T12:00:00Z"),
   });
-  const result = await services.syncAllReachReports({ onlyIfDue: true });
+  const result = await services.syncAllReachReports({ onlyIfDue: true, sessionUserId: "uS" });
   assert.deepEqual(result.channels, [{ channelId: "UC_A", outcome: "skipped", reason: "checked_recently" }]);
   assert.equal(calls.resolve, 0);
+});
+
+test("syncAllReachReports: a failed attempt an hour ago throttles a background channel but not the active one", async () => {
+  const failedAnHourAgo = {
+    attemptedAt: new Date("2026-10-03T11:00:00Z"),
+    outcome: "failed" as const,
+    error: "token revoked",
+    filesListed: 0,
+    filesImported: 0,
+    failures: [],
+  };
+  const background = createFixture({
+    connections: [{ channelId: "UC_B", connectedUserId: "uB" }],
+    activeChannelByUser: { uS: "UC_A", uB: "UC_B" },
+    storedAttempt: failedAnHourAgo,
+    now: new Date("2026-10-03T12:00:00Z"),
+  });
+  assert.deepEqual((await background.services.syncAllReachReports({ onlyIfDue: true, sessionUserId: "uS" })).channels, [
+    { channelId: "UC_B", outcome: "skipped", reason: "checked_recently" },
+  ]);
+  assert.equal(background.calls.resolve, 0);
+
+  const active = createFixture({
+    connections: [{ channelId: "UC_A", connectedUserId: "uA" }],
+    activeChannelByUser: { uS: "UC_A" },
+    storedAttempt: failedAnHourAgo,
+    now: new Date("2026-10-03T12:00:00Z"),
+  });
+  assert.equal((await active.services.syncAllReachReports({ onlyIfDue: true, sessionUserId: "uS" })).channels[0].outcome, "synced");
+  assert.equal(active.calls.resolve, 1);
+});
+
+test("two automatic syncs of the same channel at once: the second is skipped as in progress, Google is called once", async () => {
+  const { services, calls } = createFixture({ activeChannelId: "UC_X" });
+  const [first, second] = await Promise.all([
+    services.syncReachReports({ ...SYNC, onlyIfDue: true }),
+    services.syncReachReports({ ...SYNC, onlyIfDue: true }),
+  ]);
+  assert.equal(first.skipped, false);
+  assert.deepEqual(second, { skipped: true, reason: "in_progress" });
+  assert.equal(calls.ensureJob, 1);
+  // The guard is released afterwards: a later automatic sync runs again.
+  assert.equal((await services.syncReachReports({ ...SYNC, onlyIfDue: true })).skipped, false);
 });

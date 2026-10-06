@@ -1,6 +1,5 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { listStoredChannels } from "@/lib/db";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createReachReportsApiAdapter } from "./adapters/reporting-api";
 import { createReachReportsStoreAdapter } from "./adapters/store";
@@ -15,8 +14,6 @@ export function createReachReportsCore() {
     reportingApi: createReachReportsApiAdapter(),
     store: createReachReportsStoreAdapter(),
     channelAccess: createChannelAccessCore(),
-    listChannelConnections: async () =>
-      (await listStoredChannels()).map((channel) => ({ channelId: channel.channelId, connectedUserId: channel.connectedUserId })),
     requiredScope: YOUTUBE_ANALYTICS_READ_SCOPE,
     clock: { now: () => new Date() },
   });

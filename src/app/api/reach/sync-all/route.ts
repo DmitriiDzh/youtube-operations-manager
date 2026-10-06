@@ -34,7 +34,7 @@ export function createReachSyncAllHandler(
       // No/invalid body: check every channel now.
     }
     try {
-      const { channels } = await deps.core.syncAllReachReports({ onlyIfDue });
+      const { channels } = await deps.core.syncAllReachReports({ onlyIfDue, sessionUserId: session.user.id });
       const activeChannelId = await deps.getActiveChannelId(session.user.id);
       return NextResponse.json({ channels: channels.filter((c) => activeChannelId !== null && c.channelId === activeChannelId) });
     } catch (error) {

@@ -6,7 +6,7 @@ import { createReachSyncAllHandler, type ReachSyncAllDeps } from "./route";
 function setup() {
   const calls: unknown[] = [];
   const core = {
-    syncAllReachReports: async (input: { onlyIfDue: boolean }) => {
+    syncAllReachReports: async (input: { onlyIfDue: boolean; sessionUserId: string }) => {
       calls.push(input);
       return {
         channels: [
@@ -33,7 +33,10 @@ test("BL-141: sync-all passes onlyIfDue from the body (default false); the respo
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { channels: [{ channelId: "UC_A", outcome: "synced", filesImported: 2 }] });
   await handler(new Request("http://x", { method: "POST" }));
-  assert.deepEqual(calls, [{ onlyIfDue: true }, { onlyIfDue: false }]);
+  assert.deepEqual(calls, [
+    { onlyIfDue: true, sessionUserId: "u" },
+    { onlyIfDue: false, sessionUserId: "u" },
+  ]);
 });
 
 test("BL-141: with no active channel the response lists nothing, though every channel was still checked", async () => {

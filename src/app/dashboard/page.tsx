@@ -227,10 +227,11 @@ export default function Dashboard() {
   // auto-collection (AGENTS.md §M: one module failing or being switched off must not affect another). BL-141 (owner,
   // Telegram 2026-10-06): once per dashboard load it checks EVERY connected channel, each with its own token, not only
   // the active one. The server decides whether anything runs: `onlyIfDue` makes it a no-op for a channel checked
-  // within the last 6 hours.
+  // within the last 6 hours. It waits for `channel` (GET /api/youtube/channel-info records the session's active
+  // channel), so on a fresh sign-in or right after switching, the active channel is already the one being synced.
   const reachSyncTriggeredRef = useRef(false);
   useEffect(() => {
-    if (!userId || reachSyncTriggeredRef.current) return;
+    if (!channel?.id || reachSyncTriggeredRef.current) return;
     reachSyncTriggeredRef.current = true;
     fetch("/api/reach/sync-all", {
       method: "POST",
@@ -239,7 +240,7 @@ export default function Dashboard() {
     }).catch(() => {
       // Non-fatal -- the next dashboard load simply tries again.
     });
-  }, [userId]);
+  }, [channel]);
 
   // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
   // sidebar badge (AC-CRDT-08) stays current even while the operator is on an unrelated tab.
