@@ -1790,3 +1790,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **BL-133 extension (2026-10-06, ADR 0026):** the factory token can now also start GPU sessions without a click -- only within the owner's factory limits (per session USD and minutes, per day, per month; master switch on by default, owner msg 1683) and the device's own daily cap and concurrency; above them its start waits for the owner. A running factory session counts with its full USD cap. It can stop only its own sessions.
 - **Re-evaluate:** if the factory limits are raised substantially, or the endpoint ever becomes reachable off-loopback.
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner decisions D1/O4, 2026-10-06).
+
+## RISK-110 — Exported RunPod credentials file is only as strong as its password — OPEN, 2026-10-06
+
+- **What:** BL-137 / ADR 0027: an exported `.ytmkeys` file holds the RunPod API key and S3 key pair encrypted under an operator-chosen password (scrypt N = 2^17, r = 8, p = 1 + AES-256-GCM). Anyone holding the file can try passwords offline; the app enforces only a 12-character minimum. The same key then lives on several devices, so revoking one device means rotating the key everywhere.
+- **Accepted because:** the owner chose this variant over per-device keys (Telegram 2026-10-06, msg 1704); the app only downloads the file, it never uploads or syncs it anywhere.
+- **Re-evaluate:** if exports are ever written to a shared/synced folder automatically, or if managing one RunPod key per device becomes easy.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.

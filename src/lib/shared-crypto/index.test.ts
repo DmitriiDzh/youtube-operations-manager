@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { decryptSecret, encryptSecret, resolveEncryptionKeyFromEnv } from "./index";
+import { decryptSecret, decryptWithPassword, encryptSecret, encryptWithPassword, PASSWORD_SCRYPT_PARAMS, resolveEncryptionKeyFromEnv, scryptParamsWithinLimits } from "./index";
 
 const TEST_ENV_VAR = "SHARED_CRYPTO_TEST_KEY";
 
@@ -62,4 +62,35 @@ test("resolveEncryptionKeyFromEnv returns the exact key for a valid 32-byte base
   } finally {
     delete process.env[TEST_ENV_VAR];
   }
+});
+
+// BL-137: password-based encryption for a credentials file. Low scrypt cost in tests (the production default is 2^17).
+const FAST = { N: 2 ** 10, r: 8, p: 1 };
+
+test("encryptWithPassword round-trips with the same password and carries no plaintext", async () => {
+  const secret = "rpa_THISISASECRETVALUE1234567890";
+  const payload = await encryptWithPassword(secret, "correct horse battery", FAST);
+  assert.equal(payload.kdf, "scrypt");
+  assert.deepEqual([payload.N, payload.r, payload.p], [1024, 8, 1]);
+  assert.ok(!JSON.stringify(payload).includes(secret));
+  assert.equal(await decryptWithPassword(payload, "correct horse battery"), secret);
+  // A fresh salt and IV each time: two exports of the same secret differ.
+  const again = await encryptWithPassword(secret, "correct horse battery", FAST);
+  assert.notEqual(again.salt, payload.salt);
+  assert.notEqual(again.ciphertext, payload.ciphertext);
+});
+
+test("decryptWithPassword fails on a wrong password, a tampered ciphertext, and out-of-bounds scrypt parameters", async () => {
+  const payload = await encryptWithPassword("secret", "correct horse battery", FAST);
+  await assert.rejects(decryptWithPassword(payload, "wrong horse battery"));
+  const flipped = Buffer.from(payload.ciphertext, "base64");
+  flipped[0] ^= 1;
+  await assert.rejects(decryptWithPassword({ ...payload, ciphertext: flipped.toString("base64") }, "correct horse battery"));
+  await assert.rejects(decryptWithPassword({ ...payload, N: 2 ** 22 }, "correct horse battery"), /parameters/);
+  await assert.rejects(decryptWithPassword({ ...payload, N: 1000 }, "correct horse battery"), /parameters/);
+  await assert.rejects(decryptWithPassword({ ...payload, r: 64 }, "correct horse battery"), /parameters/);
+});
+
+test("the production scrypt parameters are within the accepted limits", () => {
+  assert.ok(scryptParamsWithinLimits(PASSWORD_SCRYPT_PARAMS));
 });
