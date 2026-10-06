@@ -1785,6 +1785,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 
 - **What:** Since BL-132 (ADR 0025, owner decision D1) the factory token can, with no Web approval: start a model-pull CPU pod (cents), fill the paid network volume up to its free space, delete a model no template uses, and change templates through the registry folder (whose files anything with file access to it can write).
 - **Bounds:** one pull at a time; refused when larger than the free space or while sessions use the volume; SHA-256 mandatory; deletion refused while any template (registry, installed or local) uses the file or the registry is unreadable; every action audited with its actor (`media_control_events`, shown in Production → Models); loopback-only endpoint; per-call token re-verification; revocation as for RISK-105/108. No session or job tool exists for the factory, so it cannot start a GPU pod.
-- **Possible fix:** a daily pull cap (owner answer O4: none for now); an approval queue like GPU sessions (owner chose direct actions).
+- **Residual:** the template sync does not take the volume lock, so a template added to the registry index in the milliseconds between a deletion's usage check and its `deleteObject` is not seen by that check.
+- **Possible fix:** a daily pull cap (owner answer O4: none for now); an approval queue like GPU sessions (owner chose direct actions); run the delete inside the registry sync's serialization.
 - **Re-evaluate:** if the factory gets session/job tools (FO-REQ-0004 / BL-133), or the endpoint ever becomes reachable off-loopback.
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner decisions D1/O4, 2026-10-06).

@@ -256,3 +256,5 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
   template as "registry unavailable" (the factory deletion is refused) and never throws for the owner; the delete takes the volume lock
   before checking usage; a cancel after a verified verdict settles the pull as done; a verdict the volume contradicts fails at once; the
   60 s check's fingerprint includes this device's template rows.
+- **Residual (RISK-109):** the template sync is not under the volume lock; a template added to the index between a deletion's usage
+  check and the delete itself is not seen by that check (a millisecond window).
