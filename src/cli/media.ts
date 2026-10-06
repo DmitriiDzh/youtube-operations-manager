@@ -36,6 +36,7 @@ export const MEDIA_CLI_COMMANDS = [
   "datacenters",
   "volumes",
   "volume-create",
+  "volume-copy-probe",
   "templates",
   "template-create",
   "cpus",
@@ -66,6 +67,7 @@ const MUTATING_COMMANDS: ReadonlySet<MediaCliCommand> = new Set<MediaCliCommand>
   "credentials-clear", // removes the credentials row (and an unreadable key file, review round 16)
   "models-poll", // advances the pulls: terminates finished pull pods, rewrites the list (review round 15)
   "volume-create",
+  "volume-copy-probe", // creates and deletes a billable test volume (BL-136 step 0)
   "template-create",
   "workflow-template-import",
   "job-create",
@@ -95,6 +97,7 @@ export const HELP = [
   "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--revision main] [--sha256 <hex>] [--cpu cpu3c] [--vcpu 2]",
   "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
+  "  volume-copy-probe                               BL-136: creates a 20 GB test volume, copies two files into it over S3, deletes it (if interrupted, delete leftover ytm-copy-probe-* volumes in Production → Setup)",
   "  template-create --file <body.json>      RunPod v2 template body (name, image, ports, env, disk, ...)",
   "  pod-get <podId>",
   "  pod-create --file <body.json>           RunPod v2 create-pod body (see docs); terminated by you, never stopped",
@@ -277,6 +280,9 @@ export async function runMediaCli(args: {
           datacenterId: requireFlag(parsed.flags, "dc"),
           sizeGb: Number(requireFlag(parsed.flags, "size")),
         });
+        break;
+      case "volume-copy-probe":
+        data = await core.probeCrossVolumeCopy();
         break;
       case "pods":
         data = await core.listPods();

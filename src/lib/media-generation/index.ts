@@ -22,6 +22,7 @@ import { findLivePodByName } from "./pod-lifecycle";
 import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
+import { createVolumeMigrationServices } from "./volume-migration";
 
 type JobScheduling = "background" | "detached";
 
@@ -115,6 +116,7 @@ function buildCore(jobScheduling: JobScheduling) {
     volumeLock,
   });
   modelsRef = models;
+  const migration = createVolumeMigrationServices({ base, clock: { now }, sleep, log: (line) => console.warn(line) });
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     jobSummary: (sessionId) => getMediaSessionJobSummary(sessionId),
@@ -238,7 +240,7 @@ function buildCore(jobScheduling: JobScheduling) {
       result: row.result as MediaCapacityAttempt["result"],
       detail: row.detail ?? null,
     }));
-  return { ...base, ...sessions, ...jobs, ...models, listControlEvents, listCapacityAttempts };
+  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

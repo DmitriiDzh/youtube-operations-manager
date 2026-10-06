@@ -171,6 +171,29 @@ test("listModels lists only models/ (folder + name + size), skipping .keep marke
   assert.deepEqual(f.calls, ["list:models/"]);
 });
 
+// BL-136 (owner, msg 1709): the Models tab shows what occupies the volume; RunPod does not report used space, so it is the sum
+// of every object on the volume, split into models/, exchange/ and the rest (staging, pull verdicts...). Expected sums by hand.
+test("volumeUsage sums the whole volume (one listing from the root) into models / exchange / other", async () => {
+  const f = fixture({
+    objects: new Map([
+      ["models/checkpoints/a.safetensors", 100],
+      ["models/vae/.keep", 1],
+      ["models/.cache/huggingface/x.lock", 2],
+      ["exchange/job/x.png", 5],
+      ["exchange/in/y.wav", 10],
+      ["ytm-staging/p1/partial.bin", 20],
+      ["ytm-pulls/p1.json", 3],
+    ]),
+  });
+  assert.deepEqual(await f.services.volumeUsage(), { totalBytes: 141, modelsBytes: 103, exchangeBytes: 15, otherBytes: 23, objectCount: 7 });
+  assert.deepEqual(f.calls, ["list:"]);
+});
+
+test("volumeUsage of an empty volume is all zeros", async () => {
+  const f = fixture({ objects: new Map() });
+  assert.deepEqual(await f.services.volumeUsage(), { totalBytes: 0, modelsBytes: 0, exchangeBytes: 0, otherBytes: 0, objectCount: 0 });
+});
+
 test("deleteModel accepts only a models/ object key", async () => {
   const f = fixture({ objects: new Map([["models/checkpoints/a.safetensors", 100]]) });
   await assert.rejects(f.services.deleteModel({ key: "exchange/x" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");

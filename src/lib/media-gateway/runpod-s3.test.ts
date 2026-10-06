@@ -267,3 +267,27 @@ test("BL-132 review: putObjectFromFile reads one descriptor -- a file whose iden
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// BL-136: S3 CopyObject (AWS S3 API reference): PUT on the destination key with `x-amz-copy-source: <source-bucket>/<key>` (the
+// key URL-encoded), signed like every request; a 200 response can still carry an <Error> body, which is a failed copy.
+test("copyObjectFrom PUTs the destination key with a signed x-amz-copy-source naming the source volume and key", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => new Response("<CopyObjectResult><ETag>\"e\"</ETag></CopyObjectResult>", { status: 200 }));
+  const client = createRunpodS3Client(CONFIG, { fetchImpl, now: () => new Date("2026-10-06T10:00:00Z"), authorize: noAuth });
+  await client.copyObjectFrom("srcvol", "models/checkpoints/a b.safetensors", "ytm-probe/models/checkpoints/a b.safetensors");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.method, "PUT");
+  assert.equal(calls[0].url.pathname, "/vol123/ytm-probe/models/checkpoints/a%20b.safetensors");
+  const headers = calls[0].init.headers as Record<string, string>;
+  assert.equal(headers["x-amz-copy-source"], "srcvol/models/checkpoints/a%20b.safetensors");
+  assert.match(headers.authorization, /SignedHeaders=[^,]*x-amz-copy-source/);
+  assert.equal(calls[0].init.body, undefined);
+});
+
+test("copyObjectFrom fails on an HTTP error and on a 200 response with an <Error> body", async () => {
+  const failing = createRunpodS3Client(CONFIG, { fetchImpl: fakeFetch(() => new Response("<Error><Code>NoSuchBucket</Code><Message>nope</Message></Error>", { status: 404 })).fetchImpl, authorize: noAuth });
+  await assert.rejects(failing.copyObjectFrom("srcvol", "a", "b"), (e: unknown) => isDomainError(e) && e.code === "runpod_s3_unavailable" && /NoSuchBucket/.test(e.message));
+  const late = createRunpodS3Client(CONFIG, { fetchImpl: fakeFetch(() => new Response("<Error><Code>InternalError</Code></Error>", { status: 200 })).fetchImpl, authorize: noAuth });
+  await assert.rejects(late.copyObjectFrom("srcvol", "a", "b"), (e: unknown) => isDomainError(e) && e.code === "runpod_s3_unavailable");
+  const denied = createRunpodS3Client(CONFIG, { fetchImpl: fakeFetch(() => new Response("", { status: 403 })).fetchImpl, authorize: noAuth });
+  await assert.rejects(denied.copyObjectFrom("srcvol", "a", "b"), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
+});

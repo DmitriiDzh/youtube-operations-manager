@@ -23,6 +23,16 @@ export function createNetworkVolumesPatchHandler(deps: MediaRouteDeps = defaultM
   });
 }
 
+/** BL-136: permanently deletes a network volume that is not the configured one and not mounted by any pod (`{ volumeId }`). */
+export function createNetworkVolumesDeleteHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
+  return mediaHandler(deps, async ({ core, request }) => {
+    const body = await readJsonBody(request);
+    if (!body.ok) return body.response;
+    return NextResponse.json(await core.deleteUnusedNetworkVolume(body.body));
+  });
+}
+
 export const GET = createNetworkVolumesGetHandler();
 export const POST = createNetworkVolumesPostHandler();
 export const PATCH = createNetworkVolumesPatchHandler();
+export const DELETE = createNetworkVolumesDeleteHandler();

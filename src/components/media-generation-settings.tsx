@@ -15,6 +15,7 @@ import {
   type MediaSettings,
   type MediaStorageStatus,
   type MediaTemplateSyncResult,
+  type MediaVolumeUsage,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -23,6 +24,7 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
+import { VolumeUsageBar, volumeUsageBreakdown } from "./volume-usage-bar";
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
 // enters RunPod keys here (stored encrypted per device, never shown again), picks datacenter / GPU /
@@ -196,9 +198,13 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [events, setEvents] = useState<MediaControlEventView[]>([]);
   const [storage, setStorage] = useState<MediaStorageStatus | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<MediaVolumeUsage | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
 
+  // `withUsage`: the whole-volume listing (BL-136) runs on an explicit Load/Refresh only, never on the pull poll -- it can take
+  // longer than the poll interval on a volume with many files (independent review).
   const load = useCallback(
-    () =>
+    (withUsage = true) =>
       Promise.all([
         requestJson<{ models: ModelFile[]; pulls: ModelPull[]; registry: "ok" | "unavailable"; registryError: string | null; events: MediaControlEventView[] }>("/api/media-generation/models").then(
           (data) => {
@@ -218,6 +224,19 @@ export function ModelsCard({ configured }: { configured: boolean }) {
           },
           (err: unknown) => setStorageError(err instanceof Error ? err.message : "Could not read the volume's size")
         ),
+        // BL-136: the whole volume's use (one S3 listing); its failure leaves the bar with the model files only.
+        withUsage
+          ? requestJson<{ usage: MediaVolumeUsage }>("/api/media-generation/storage/usage").then(
+              (data) => {
+                setUsage(data.usage);
+                setUsageError(null);
+              },
+              (err: unknown) => {
+                setUsage(null);
+                setUsageError(err instanceof Error ? err.message : "Could not list the whole volume");
+              }
+            )
+          : Promise.resolve(),
       ]).then(() => undefined),
     []
   );
@@ -225,7 +244,7 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const pulling = pulls.some((p) => p.status === "running");
   useEffect(() => {
     if (!pulling) return;
-    const timer = setInterval(() => void load(), 15_000);
+    const timer = setInterval(() => void load(false), 15_000);
     return () => clearInterval(timer);
   }, [pulling, load]);
 
@@ -292,7 +311,7 @@ export function ModelsCard({ configured }: { configured: boolean }) {
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={load} disabled={busy} className={secondaryButton}>
+            <button type="button" onClick={() => void load()} disabled={busy} className={secondaryButton}>
               {models ? "Refresh" : "Load models"}
             </button>
             {models && (
@@ -301,11 +320,13 @@ export function ModelsCard({ configured }: { configured: boolean }) {
               </span>
             )}
           </div>
+          {storage && models && <VolumeUsageBar breakdown={volumeUsageBreakdown({ rentedGb: storage.sizeGb, models, usage })} />}
+          {usageError && <p className="text-xs text-amber-400">Volume listing: {usageError}</p>}
           {storage && (
             <p className="text-xs text-zinc-400">
               Volume {storage.volumeId}
               {storage.dataCenterId ? ` (${storage.dataCenterId})` : ""}: {storage.sizeGb} GB rented
-              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : " · usage not reported"} · ${storage.monthlyUsd.toFixed(2)}/month
+              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : ""} · ${storage.monthlyUsd.toFixed(2)}/month
             </p>
           )}
           {storageError && <p className="text-xs text-amber-400">Volume size: {storageError}</p>}
@@ -1564,6 +1585,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
   const [confirmCreate, setConfirmCreate] = useState(false);
   const [growSizeText, setGrowSizeText] = useState("");
   const [confirmGrow, setConfirmGrow] = useState(false);
+  const [deleteVolume, setDeleteVolume] = useState<Volume | null>(null);
 
   useEffect(() => {
     setSelected(settings.networkVolumeId ?? "");
@@ -1643,7 +1665,28 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     }
   }
 
+  async function removeVolume() {
+    const target = deleteVolume;
+    if (!target) return;
+    setDeleteVolume(null);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-generation/network-volumes", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ volumeId: target.id }) });
+      setNotice(`Deleted ${target.name} (${target.id}).`);
+      if (selected === target.id) setSelected(settings.networkVolumeId ?? "");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete the volume");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedVolume = volumes?.find((v) => v.id === selected);
+  // BL-136: every volume except the one the app uses can be deleted (the server also refuses one a pod has mounted).
+  const unusedVolumes = (volumes ?? []).filter((v) => v.id !== settings.networkVolumeId);
   const monthly = (gb: number) => (gb * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2);
   // RunPod only grows a network volume (its API refuses a smaller size), so the field accepts current + 1 GB and up.
   const growSize = selectedVolume && selectedVolume.sizeGb < 4000 ? parseInteger(growSizeText, { min: selectedVolume.sizeGb + 1, max: 4000 }) : null;
@@ -1713,6 +1756,23 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
                   </div>
                 </div>
               )}
+              {unusedVolumes.length > 0 && (
+                <div className="mt-3 border-t border-zinc-800 pt-3">
+                  <p className="mb-2 text-xs text-zinc-400">Volumes the app does not use (billed until deleted):</p>
+                  <ul className="space-y-1">
+                    {unusedVolumes.map((v) => (
+                      <li key={v.id} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
+                        <span>
+                          {v.name} · {v.id} · {v.dataCenterId} · {v.sizeGb} GB · ${monthly(v.sizeGb)}/month
+                        </span>
+                        <button type="button" onClick={() => setDeleteVolume(v)} disabled={busy} className={dangerButton}>
+                          Delete
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="mt-3 border-t border-zinc-800 pt-3">
                 <p className="mb-2 text-xs text-zinc-400">Create a new volume in {settings.datacenterId ?? "the chosen datacenter (set it under Compute first)"}:</p>
                 <div className="grid gap-2 sm:grid-cols-3">
@@ -1736,6 +1796,15 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
           confirmLabel="Create volume"
           onCancel={() => setConfirmCreate(false)}
           onConfirm={create}
+        />
+      )}
+      {deleteVolume && (
+        <ConfirmDialog
+          title={`Delete ${deleteVolume.name} (${deleteVolume.sizeGb} GB)?`}
+          description={`RunPod deletes the volume ${deleteVolume.id} and every file on it permanently; it cannot be recovered. Its billing ($${monthly(deleteVolume.sizeGb)}/month) stops.`}
+          confirmLabel="Delete volume"
+          onCancel={() => setDeleteVolume(null)}
+          onConfirm={removeVolume}
         />
       )}
       {confirmGrow && selectedVolume && growSize !== null && (

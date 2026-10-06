@@ -268,6 +268,12 @@ export type MediaWorkflowTemplate = {
 export type MediaControlEventView = { at: string; actor: "owner" | "factory" | "sync"; action: string; subject: string; details: Record<string, unknown> | null };
 
 /** BL-132 (plan §2.2): the network volume as RunPod reports it. RunPod bills the rented size. */
+/**
+ * BL-136 (owner, Telegram 2026-10-06, msg 1709): what occupies the volume, summed from one S3 listing of the whole volume --
+ * RunPod's volume API does not report used space. `modelsBytes` counts every object under `models/` (including the
+ * Hugging Face cache and folder markers: they take space too), `exchangeBytes` everything under `exchange/`.
+ */
+export type MediaVolumeUsage = { totalBytes: number; modelsBytes: number; exchangeBytes: number; otherBytes: number; objectCount: number };
 export type MediaStorageStatus = { volumeId: string; dataCenterId: string | null; sizeGb: number; usedGb: number | null; freeGb: number | null; monthlyUsd: number };
 
 /**

@@ -517,6 +517,18 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
     // -- S3 passthrough (operator CLI; the exchange component is slice 3) ------------------------
 
+    /**
+     * BL-136: an S3 client for ANOTHER network volume of the configured datacenter, with the stored key pair (RunPod's S3 keys
+     * are per account, the bucket is the volume id). Used only by the volume migration and its probe.
+     */
+    async s3ForVolume(volumeId: string): Promise<RunpodS3Client> {
+      const secrets = await requireSecrets();
+      const settings = await readSettings();
+      if (!secrets.s3AccessKeyId || !secrets.s3SecretAccessKey) throw new DomainError({ code: "media_generation_not_configured", message: "S3 access is not available: no S3 key pair is stored." });
+      if (!settings.datacenterId) throw new DomainError({ code: "media_generation_not_configured", message: "S3 access is not available: the datacenter is not set." });
+      return deps.gateway.createS3Client({ datacenterId: settings.datacenterId, volumeId, accessKeyId: secrets.s3AccessKeyId, secretAccessKey: secrets.s3SecretAccessKey });
+    },
+
     async s3(): Promise<RunpodS3Client> {
       const s3Client = await s3ClientIfConfigured();
       if ("skipped" in s3Client) {
