@@ -56,7 +56,11 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
         deps.listCalls({ sinceSeconds, service: args.service }),
         deps.listPeerCalls({ sinceSeconds, service: args.service }),
       ]);
-      return [...local, ...peers].filter((c) => c.occurredAt >= sinceSeconds).reduce((sum, c) => sum + (c.units ?? 0), 0);
+      return [...local, ...peers]
+        .filter((c) => c.occurredAt >= sinceSeconds)
+        // BL-145 (P7): `search.list` has its own bucket (100 calls/day), so it is not part of the 10,000-unit pool total.
+        .filter((c) => !(args.service === "data" && c.method === "search.list"))
+        .reduce((sum, c) => sum + (c.units ?? 0), 0);
     },
 
     async getQuotaHistory(args: { service: QuotaHistoryService; days?: number }): Promise<QuotaHistoryResult> {

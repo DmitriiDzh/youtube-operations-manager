@@ -125,9 +125,20 @@ export function MarketDiscoveryPanel({
   // collection) is picked up when this one is shown again (BL-140 review).
   const wasActive = useRef(active);
   useEffect(() => {
-    if (active && !wasActive.current) void fetchCandidates();
+    if (active && !wasActive.current) {
+      void fetchCandidates();
+      // BL-145 (P3): an Inbox approval or the Pacific-midnight reset changes the count while Discover is hidden.
+      void refreshSearchUsage();
+    }
     wasActive.current = active;
-  }, [active, fetchCandidates]);
+  }, [active, fetchCandidates, refreshSearchUsage]);
+
+  // BL-145 (P3): while Discover is shown, the searches-left counter stays current (midnight reset, other devices).
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => void refreshSearchUsage(), 60_000);
+    return () => clearInterval(timer);
+  }, [active, refreshSearchUsage]);
 
   const openCandidate = candidates.find((c) => c.channelId === openChannelId) ?? null;
   const searchesLeft = searchUsage ? Math.max(0, searchUsage.dailyLimit - searchUsage.searchesUsedToday) : null;

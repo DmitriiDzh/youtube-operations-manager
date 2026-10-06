@@ -131,3 +131,15 @@ test("getLedgerUnits treats calls with unknown cost as 0 and returns 0 for an em
   const { services } = make({ calls: [call("2026-10-03T08:00:00Z", { units: null })] });
   assert.equal(await services.getLedgerUnits({ service: "analytics", window: "since_reset" }), 0);
 });
+
+// BL-145 (P7, owner 2026-10-07): search.list has its own 100-calls bucket, so the 10,000-unit pool total leaves it out.
+test("getLedgerUnits for the data pool leaves out search.list calls (their own bucket): 300 + 200 = 500, the two searches are not added", async () => {
+  const calls = [
+    call("2026-10-03T08:00:00Z", { units: 300 }),
+    call("2026-10-03T08:30:00Z", { method: "search.list", units: 1, contextKind: "research_search", contextLabel: "Research search" }),
+    call("2026-10-03T09:00:00Z", { units: 200 }),
+  ];
+  const peerCalls = [call("2026-10-03T10:00:00Z", { method: "search.list", units: 1 })];
+  const { services } = make({ calls, peerCalls });
+  assert.equal(await services.getLedgerUnits({ service: "data", window: "since_reset" }), 500);
+});

@@ -47,12 +47,12 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
       const youtube = await createAuthorizedClient(args.credentials);
       return getPublicVideoStatsBatch(youtube, args.videoIds);
     },
-    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     // Phase 13 slice 13.9.
     async getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return getMostPopularMusicVideos(youtube, args.regionCode);
     },
+    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return searchPublicChannels(youtube, args.query);

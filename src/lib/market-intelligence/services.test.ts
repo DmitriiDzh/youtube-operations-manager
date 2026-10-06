@@ -2749,16 +2749,28 @@ test("AC-9B-16: if only the mark (not the audit row) fails, exactly one row is w
 // (AGENTS.md §L).
 // ---------------------------------------------------------------------------
 
-test("AC-9C-01: with budget null/unset, discoverChannels makes zero real calls and throws MARKET_INTELLIGENCE_QUOTA_DISABLED", async () => {
-  const { store, services, resolveCalls, searchCalls } = createFixture();
+// REVISED by BL-145 (P2, owner decision, Telegram 2026-10-07 msgs 1904/1905): a search never spends the daily UNIT
+// budget (it has its own bucket since 2026-06-01, see AC-9C-02), so "no unit budget set" (automatic collection off)
+// must no longer block a manual search. The old expectation refused it, which the owner decided is wrong.
+test("AC-9C-01 (BL-145): with the unit budget unset, a search still runs -- it uses only the 100-searches bucket", async () => {
+  const { store, services, searchCalls } = createFixture();
 
+  const result = await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(searchCalls.length, 1);
+  assert.equal(store.discoveryRuns.length, 1);
+  assert.equal(store.discoveryRuns[0].unitsSpent, 1);
+  assert.equal(result.candidatesFound, 0);
+});
+
+test("BL-145 (P6): the query is trimmed before the search, and a blank query is refused before any call", async () => {
+  const { services, searchCalls } = createFixture();
+  await services.discoverChannels({ query: "  cooking  ", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal((searchCalls[0] as { query: string }).query, "cooking");
   await assert.rejects(
-    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
-    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
+    () => services.discoverChannels({ query: "   ", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
   );
-  assert.equal(resolveCalls.length, 0, "must never resolve credentials before the budget check");
-  assert.equal(searchCalls.length, 0);
-  assert.equal(store.discoveryRuns.length, 0);
+  assert.equal(searchCalls.length, 1);
 });
 
 // Phase 13 slice 13.4 -- REVISED: since 2026-06-01 `search.list` has its own quota bucket of 100 calls
@@ -2831,7 +2843,9 @@ test("AC-9C-03/04/05: a result already watchlisted is skipped; a result matching
   });
 
   const result = await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
-  assert.deepEqual(result, { candidatesFound: 3, candidatesNew: 1 });
+  // BL-145 (P4): plus the candidates this search created or found again -- the existing one and the new one, in result
+  // order; never the already-watchlisted channel.
+  assert.deepEqual(result, { candidatesFound: 3, candidatesNew: 1, candidateIds: [OTHER_VALID_CHANNEL_ID, "UC_BRAND_NEW00000000000"] });
 
   assert.equal(store.discoveryCandidates.has(VALID_CHANNEL_ID), false, "a result already on the watchlist must never become a candidate");
 
@@ -3485,22 +3499,13 @@ test("AC-9G-B-05: approve/reject on an unknown id throws RESEARCH_REQUEST_NOT_FO
   );
 });
 
-test("AC-9G-B-05b: a missing/exhausted budget, or disabled Data API reads, leaves the request 'pending' -- never permanently burned into execution_failed", async () => {
+// REVISED by BL-145 (P2, owner 2026-10-07): an unset unit budget no longer blocks a search, so it is no longer one of
+// the preconditions here; the exhausted search bucket and disabled reads still are.
+test("AC-9G-B-05b: an exhausted search bucket, or disabled Data API reads, leaves the request 'pending' -- never permanently burned into execution_failed", async () => {
   const { store, services } = createFixture();
   const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
 
-  // No budget set at all (default null).
-  await assert.rejects(
-    () =>
-      services.approveMarketResearchRequest(
-        { requestId: created.requestId, credentialRef: { userId: "u1" } },
-        { createdVia: "web_ui" }
-      ),
-    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
-  );
-  assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
-
-  // Budget set, but today's search bucket is exhausted (13.4: 100 searches per quota day).
+  // Today's search bucket is exhausted (13.4: 100 searches per quota day).
   store.setQuotaBudget(50);
   for (let i = 0; i < 100; i++) {
     store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: new Date() });
@@ -5185,4 +5190,17 @@ test("BL-140: getMarketVideosOverview({ channelId }) returns only that channel's
   assert.deepEqual(narrowed.videos.map((v) => v.videoId), ["vB00000000000000000000"]);
   const all = await services.getMarketVideosOverview();
   assert.deepEqual(all.videos.map((v) => v.videoId).sort(), ["vA00000000000000000000", "vB00000000000000000000"]);
+});
+
+
+// BL-145 (P1, owner 2026-10-07): an agent's search request has the same 200-character limit as the search itself, so it
+// can no longer be approved and then always fail.
+test("BL-145 (P1): a research request query over 200 characters is refused at creation; 200 is accepted", async () => {
+  const { services } = createFixture();
+  await assert.rejects(
+    () => services.createMarketResearchRequest({ query: "a".repeat(201), rationale: "r" }, { createdVia: "mcp" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  const ok = await services.createMarketResearchRequest({ query: "a".repeat(200), rationale: "r" }, { createdVia: "mcp" });
+  assert.equal(ok.query.length, 200);
 });

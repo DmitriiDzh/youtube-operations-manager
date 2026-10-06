@@ -916,24 +916,15 @@ const startOfQuotaDay = startOfYoutubeQuotaDay;
  * The upfront, zero-cost preconditions a real `search.list` call needs -- extracted so
  * `approveMarketResearchRequest` (Phase 9 slice 9G, part B) can run the SAME checks BEFORE its own
  * atomic `pending -> approved` transition, never duplicated inline. Found necessary by advisor
- * review, before implementation: without this, the first approval on any install where the owner
- * has never set a daily quota budget (the operator-set-only default, no hardcoded value) would
- * unconditionally fail AFTER the transition already happened, permanently landing the request in
- * `execution_failed` with no path back to `pending`. Throwing here, before any state changes,
- * leaves the caller's own state untouched on a precondition failure.
+ * review, before implementation: without this, an approval whose search cannot run (no searches left
+ * today, reads switched off) would fail AFTER the transition already happened, permanently landing the
+ * request in `execution_failed` with no path back to `pending`. Throwing here, before any state
+ * changes, leaves the caller's own state untouched on a precondition failure.
  */
 async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date): Promise<void> {
-  const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
-  if (budget === null) {
-    throw new DomainError({
-      code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
-      message: "Set a daily YouTube API unit budget in Settings before running discovery",
-      details: {},
-    });
-  }
-
-  // The operator's budget still has to be set (it is the switch that enables discovery at all), but
-  // a search no longer spends it: searches have their own bucket of SEARCH_LIST_DAILY_CALL_LIMIT.
+  // BL-145 (P2, owner 2026-10-07): a search no longer needs the daily UNIT budget to be set -- it never spends that
+  // budget (searches have their own bucket of SEARCH_LIST_DAILY_CALL_LIMIT), and "automatic collection is off" must not
+  // silently block a manual search. The search cap and the reads toggle below still apply.
   const searchesToday = await deps.countMarketDiscoverySearchesSince(startOfQuotaDay(now));
   const remaining = SEARCH_LIST_DAILY_CALL_LIMIT - searchesToday;
   if (remaining < 1) {
@@ -2664,14 +2655,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * itself throws** (found by independent/advisor review: an earlier version only wrapped the
      * `search.list` call itself in try/catch -- a throw from the dedup loop afterward, e.g. a
      * `insertMarketDiscoveryCandidate` primary-key violation from an overlapping concurrent
-     * request, propagated uncaught with NO run row written at all. YouTube had already been
-     * charged the real 100 units for the search itself; the ledger would have silently
-     * undercounted them, letting a later collection/discovery call overspend the shared budget).
+     * request, propagated uncaught with NO run row written at all. YouTube had already counted the
+     * search against its 100-searches-per-day bucket; the run log would have silently undercounted
+     * it, letting later searches go past that cap).
      */
     async discoverChannels(
       input: unknown,
       callOrigin: { createdVia: CreatedVia }
-    ): Promise<{ candidatesFound: number; candidatesNew: number }> {
+    ): Promise<{ candidatesFound: number; candidatesNew: number; candidateIds: string[] }> {
       const parsedInput = parseWithSchema(discoverChannelsInputSchema, input, "discover channels input");
 
       const now = deps.clock.now();
@@ -2687,6 +2678,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // count for work that never happened.
       let candidatesFound: number | null = null;
       let candidatesNewCount: number | null = null;
+      // BL-145 (P4): every candidate this search created or found again, so an approved agent request can hand them
+      // to the requesting channel.
+      const candidateIds: string[] = [];
 
       try {
         const results = await deps.youtubeApi.searchPublicChannels({ credentials, query: parsedInput.query });
@@ -2700,6 +2694,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
           if (existingCandidate) {
             await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now, result.title, result.description);
+            candidateIds.push(result.channelId);
             continue;
           }
 
@@ -2712,6 +2707,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             createdVia: callOrigin.createdVia,
           });
           candidatesNewCount += 1;
+          candidateIds.push(result.channelId);
         }
 
         await deps.insertMarketDiscoveryRun({
@@ -2725,7 +2721,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
         return parseWithSchema(
           discoverChannelsOutputSchema,
-          { candidatesFound, candidatesNew: candidatesNewCount },
+          { candidatesFound, candidatesNew: candidatesNewCount, candidateIds },
           "discover channels output"
         );
       } catch (error) {
@@ -3296,7 +3292,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     async approveMarketResearchRequest(
       input: unknown,
       callOrigin: { createdVia: CreatedVia }
-    ): Promise<MarketResearchRequest> {
+    ): Promise<MarketResearchRequest & { candidateIds?: string[] }> {
       const parsedInput = parseWithSchema(approveMarketResearchRequestInputSchema, input, "approve market research request input");
 
       const existing = await deps.getMarketResearchRequestById(parsedInput.requestId);
@@ -3396,7 +3392,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       return parseWithSchema(
         approveMarketResearchRequestOutputSchema,
-        toMarketResearchRequest(executed),
+        // BL-145 (P4): the candidates the search produced, for the route to share with the requesting channel.
+        { ...toMarketResearchRequest(executed), candidateIds: discoveryResult.candidateIds },
         "approve market research request output"
       );
     },

@@ -299,7 +299,8 @@ export const runCollectionIfStaleOutputSchema = z
 
 export const discoverChannelsInputSchema = z
   .object({
-    query: z.string().min(1, "query is required").max(200),
+    // BL-145 (P6): trimmed, so a blank or padded query never spends a search or creates a separate history entry.
+    query: z.string().trim().min(1, "query is required").max(200),
     credentialRef: credentialRefSchema,
   })
   .strict();
@@ -308,6 +309,8 @@ export const discoverChannelsOutputSchema = z
   .object({
     candidatesFound: nonNegativeIntSchema,
     candidatesNew: nonNegativeIntSchema,
+    /** BL-145 (P4): the candidates this search created or found again. */
+    candidateIds: z.array(z.string().min(1)),
   })
   .strict();
 
@@ -713,7 +716,9 @@ export const marketResearchRequestSchema = z
 // and returned, never consulted by any code path that decides whether/when to run anything.
 export const createMarketResearchRequestInputSchema = z
   .object({
-    query: z.string().min(1, "query is required").max(500),
+    // BL-145 (P1): the same 200-character limit the search itself has -- a longer query used to be accepted here,
+    // approved, and then always fail in the search ("execution_failed").
+    query: z.string().trim().min(1, "query is required").max(200),
     rationale: z.string().min(1, "rationale is required").max(2000),
     monitorDurationDays: z.number().int().positive().max(3650).optional(),
   })
@@ -726,7 +731,8 @@ export const getMarketResearchRequestInputSchema = z.object({ requestId: z.strin
 export const approveMarketResearchRequestInputSchema = z
   .object({ requestId: z.string().min(1), credentialRef: credentialRefSchema })
   .strict();
-export const approveMarketResearchRequestOutputSchema = marketResearchRequestSchema;
+// BL-145 (P4): plus the candidates the approved search created or found again (Web route only, never an agent contract).
+export const approveMarketResearchRequestOutputSchema = marketResearchRequestSchema.extend({ candidateIds: z.array(z.string().min(1)).optional() });
 
 export const rejectMarketResearchRequestInputSchema = z
   .object({ requestId: z.string().min(1), reason: z.string().min(1, "reason is required").max(2000) })
