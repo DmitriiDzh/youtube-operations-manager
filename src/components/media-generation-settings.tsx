@@ -1667,7 +1667,14 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
             <div className="space-y-2">
               <label className="block text-xs text-zinc-400">
                 Volume
-                <select value={selected} onChange={(e) => setSelected(e.target.value)} className={inputClass}>
+                <select
+                  value={selected}
+                  onChange={(e) => {
+                    setSelected(e.target.value);
+                    setGrowSizeText("");
+                  }}
+                  className={inputClass}
+                >
                   <option value="">— not set —</option>
                   {volumes.map((v) => (
                     <option key={v.id} value={v.id}>
@@ -1701,7 +1708,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
                       disabled={selectedVolume.sizeGb >= 4000}
                     />
                     <button type="button" onClick={() => setConfirmGrow(true)} disabled={busy || growSize === null} className={secondaryButton}>
-                      Grow ({growSize === null ? `size ${selectedVolume.sizeGb + 1}–4000 GB` : `$${monthly(growSize)}/month`})
+                      {selectedVolume.sizeGb >= 4000 ? "At the 4000 GB maximum" : `Grow (${growSize === null ? `size ${selectedVolume.sizeGb + 1}–4000 GB` : `$${monthly(growSize)}/month`})`}
                     </button>
                   </div>
                 </div>

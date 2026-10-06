@@ -383,6 +383,7 @@ test("resizeNetworkVolume refuses the same or a smaller size, and an unknown vol
   await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 100 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-missing", sizeGb: 200 }), (e: unknown) => isDomainError(e) && e.code === "not_found");
   // Schema bounds: RunPod's 10 GB floor and the app's 4000 GB ceiling; a non-integer size; a missing id.
+  await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 9 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 4001 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 200.5 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   await assert.rejects(services.resizeNetworkVolume({ sizeGb: 200 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
