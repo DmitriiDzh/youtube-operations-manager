@@ -185,6 +185,7 @@ function fixture(opts: {
   jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
 } = {}) {
   const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
+  const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
   const settings = { ...READY_SETTINGS, ...opts.settings };
   const runpod = opts.runpod ?? fakeRunpod();
   const comfy = opts.comfy ?? fakeComfy();
@@ -218,6 +219,7 @@ function fixture(opts: {
     volumeLock: lock.lock,
     ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
     capacityLog: { record: async (a) => void capacityLog.push({ gpuTypeId: a.gpuTypeId, result: a.result, detail: a.detail }) },
+    events: { record: async (e) => void events.push(e) },
     awaitCapacityRetries: true,
   });
   /** AC-P14-18 observed directly: can a model pull take the volume right now? (It takes and gives back a probe lock.) */
@@ -230,7 +232,7 @@ function fixture(opts: {
     await lock.lock.release("pull:probe");
     return true;
   };
-  return { services, mem, runpod, comfy, lock: lock.store, volumeLock: lock.lock, pullCanTakeVolume, settings, capacityLog, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
+  return { services, mem, runpod, comfy, lock: lock.store, volumeLock: lock.lock, pullCanTakeVolume, settings, capacityLog, events, advance: (ms: number) => (now = new Date(now.getTime() + ms)), getNow: () => now };
 }
 
 /**
@@ -1661,4 +1663,77 @@ test("AC-FG-04: a request's own GPU plan replaces the device list", async () => 
   assert.deepEqual(requested.gpuPlan, { candidates: ["NVIDIA L40S"], minVramGb: null, maxPricePerHr: null });
   await f.services.approveAndStartSession({ sessionId: requested.sessionId });
   assert.deepEqual(runpod.calls.filter((c) => c.startsWith("createPod:")), ["createPod:NVIDIA L40S"]);
+});
+
+// -- BL-133 G2 (plan §2.1/§2.2, AC-FG-01/02/03/09; owner defaults O2: $2 + 60 min per session, $5/day, $50/month, switch) ----
+
+const FACTORY_ON = { factorySessionsEnabled: true, factoryMaxUsdPerSession: 2, factoryMaxMinutesPerSession: 60, factoryMaxUsdPerDay: 5, factoryMaxUsdPerMonth: 50 };
+async function settle() {
+  for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("AC-FG-02: with the factory switch off a factory start only creates a pending request for the owner; no pod", async () => {
+  const f = fixture();
+  const result = await f.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(result.approved, false);
+  assert.match(result.heldBy ?? "", /switched off/);
+  assert.equal(result.session.status, "pending");
+  assert.equal(result.session.requestedBy, "factory");
+  assert.equal(f.runpod.pods.size, 0);
+  assert.deepEqual(f.events.map((e) => [e.actor, e.action]), [["factory", "session_held_for_owner"]]);
+});
+
+test("AC-FG-01: within every limit the factory's start is approved BY THE FACTORY and the pod starts with no owner click; caps default to the factory limits", async () => {
+  const f = fixture({ settings: FACTORY_ON });
+  const result = await f.services.factoryStartSession({ channelId: "UC1", releaseWhenDone: true });
+  assert.equal(result.approved, true);
+  await settle();
+  const row = f.mem.rows.get(result.session.sessionId)!;
+  assert.equal(row.approvedBy, "factory");
+  assert.equal(row.requestedBy, "factory");
+  assert.equal(row.maxMinutes, 60);
+  assert.equal(row.maxUsd, 2);
+  assert.equal(row.status, "running");
+  assert.deepEqual(f.events.map((e) => [e.actor, e.action]), [["factory", "session_started"]]);
+});
+
+test("AC-FG-02: over the factory's per-session minutes or USD, its day or its month, the start waits for the owner and names the limit", async () => {
+  const minutes = fixture({ settings: FACTORY_ON });
+  assert.match((await minutes.services.factoryStartSession({ channelId: "UC1", maxMinutes: 90 })).heldBy ?? "", /90 min is over the factory's 60 min/);
+  const usd = fixture({ settings: FACTORY_ON });
+  assert.match((await usd.services.factoryStartSession({ channelId: "UC1", maxUsd: 3 })).heldBy ?? "", /\$3 is over the factory's \$2/);
+
+  const day = fixture({ settings: FACTORY_ON });
+  assert.equal((await day.services.factoryStartSession({ channelId: "UC1" })).approved, true);
+  assert.equal((await day.services.factoryStartSession({ channelId: "UC1" })).approved, true);
+  const third = await day.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(third.approved, false, "2 + 2 reserved + 2 > 5");
+  assert.match(third.heldBy ?? "", /factory's day would reach \$6/);
+  assert.equal(third.session.status, "pending");
+
+  const month = fixture({ settings: { ...FACTORY_ON, factoryMaxUsdPerMonth: 3 } });
+  assert.equal((await month.services.factoryStartSession({ channelId: "UC1" })).approved, true);
+  assert.match((await month.services.factoryStartSession({ channelId: "UC1" })).heldBy ?? "", /factory's month would reach \$4/);
+});
+
+test("AC-FG-02: a DEVICE limit (the owner's daily cap) also holds a factory start for the owner instead of failing it", async () => {
+  const f = fixture({ settings: { ...FACTORY_ON, maxUsdPerDay: 0.1 } });
+  const result = await f.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(result.approved, false);
+  assert.match(result.heldBy ?? "", /spend cap/);
+  assert.equal(result.session.status, "pending");
+  assert.equal(f.runpod.pods.size, 0);
+});
+
+test("AC-FG-03: the factory stops only sessions it started; the owner can still stop them; a held request is withdrawn", async () => {
+  const f = fixture({ settings: FACTORY_ON });
+  const mine = await f.services.factoryStartSession({ channelId: "UC1" });
+  await settle();
+  const owners = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.factoryStopSession({ sessionId: owners.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_not_found");
+  const stopped = await f.services.factoryStopSession({ sessionId: mine.session.sessionId });
+  assert.equal(stopped.status, "done");
+  assert.match(stopped.stopReason ?? "", /Factory Operator/);
+  const held = await f.services.factoryStartSession({ channelId: "UC1", maxMinutes: 600 });
+  assert.equal((await f.services.factoryStopSession({ sessionId: held.session.sessionId })).status, "rejected");
 });

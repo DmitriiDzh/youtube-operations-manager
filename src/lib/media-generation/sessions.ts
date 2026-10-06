@@ -122,6 +122,8 @@ export type SessionServiceDependencies = {
    */
   volumeLock: VolumeLock;
   log?: (line: string) => void;
+  /** BL-133 audit (`media_control_events`): factory session starts/stops and limit holds. */
+  events?: { record(event: { actor: "owner" | "factory"; action: string; subject: string; details?: Record<string, unknown> }): Promise<void> };
   /** Tests only: let a watcher tick wait for the capacity retry it fires (production fires it in the background). */
   awaitCapacityRetries?: boolean;
   /** BL-133: the capacity log -- one call per createPod attempt (best effort: a failed record never fails a start). */
@@ -159,6 +161,11 @@ export function podNameFor(sessionId: string): string {
 /** The cap's day is the operator's machine's local day (this app runs on that machine), not UTC. */
 function startOfLocalDay(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+/** BL-133: the factory's month is the machine's local calendar month, like its day. */
+function startOfLocalMonth(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 
 export function liveSeconds(row: StoredSessionRow, now: Date): number | null {
@@ -450,6 +457,129 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     const gone = alreadyGone ? lastKnownAlive(effective, now) : now;
     await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: alreadyGone ? `${reason}; ${goneNote(effective, gone)}` : reason, stoppedAt: gone }, orphanFacts ?? {});
     return "reconciled";
+  }
+
+  /**
+   * The approve itself (owner: Web route; factory: within its limits, BL-133). Preconditions first, none of which changes
+   * the row; then the guarded `pending -> approved`; the start continues in the background.
+   */
+  async function approveInner(input: { sessionId: unknown; approvedByUserId?: string | null; approvedBy: "owner" | "factory"; onStage?: (text: string) => void }): Promise<{ session: MediaSession; started: Promise<MediaSession> }> {
+    const { sessionId } = parseWithSchema(sessionIdInputSchema, { sessionId: input.sessionId }, "approve session");
+    const onStage = input.onStage ?? (() => undefined);
+    const row = await requireRow(sessionId);
+    if (row.status !== "pending") throw invalidState(sessionId, "pending", row.status);
+
+    // Preconditions, none of which changes the row.
+    const [settings, overview] = await Promise.all([deps.base.getSettings(), deps.base.getOverview()]);
+    if (!overview.ready) {
+      throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
+    }
+    const now = deps.clock.now();
+    const [spent, open] = await Promise.all([spentTodayUsd(now), deps.store.listOpen()]);
+    // AC-P14-17 with concurrent sessions (§5.2): what is spent today, plus what the OTHER active sessions may still spend
+    // up to their own estimate, plus this session's estimate must fit the daily cap. (Not atomic between two approves --
+    // the watcher stops every session once the day's total reaches the cap; only the concurrency count is atomic.)
+    const reservedUsd = round2(open.filter((r) => r.id !== sessionId && isActive(r)).reduce((sum, r) => sum + Math.max(0, r.estimateUsd - (liveUsd(r, now) ?? 0)), 0));
+    if (spent >= settings.maxUsdPerDay || round2(spent + reservedUsd + row.estimateUsd) > settings.maxUsdPerDay) {
+      throw new DomainError({
+        code: "media_daily_cap_reached",
+        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
+        details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, reservedUsd, estimateUsd: row.estimateUsd },
+      });
+    }
+    // The request's estimate, cap check and record describe the GPU/datacenter saved when it was made; the pod is built
+    // from the CURRENT settings. If they diverged, the approval would bill something the record never describes
+    // (review round 11): refuse, the requester asks again against the new settings.
+    if (row.gpuTypeId !== settings.gpuTypeId || row.datacenterId !== settings.datacenterId || row.costPerHr !== settings.gpuOnDemandPricePerHr) {
+      throw new DomainError({
+        code: "media_settings_invalid",
+        message: `Production → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
+        details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
+      });
+    }
+    const client = await deps.base.resolveRunpodClient(); // credentials must resolve
+    const token = deps.generateToken();
+    const sealed = await deps.base.sealSecret(token);
+
+    // AC-P14-18: a model pull / operator pod holding the volume exclusively refuses the approve (a crash-stale lock row
+    // is cleared here first, so a dead pull never blocks sessions); the guarded UPDATE re-checks it atomically.
+    const exclusive = await deps.volumeLock.activeHolder();
+    if (exclusive) {
+      throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(exclusive.owner), details: { sessionId, holder: exclusive.owner } });
+    }
+    const approved = await deps.store.approve(
+      sessionId,
+      { approvedAt: now, approvedByUserId: input.approvedByUserId ?? null, approvedBy: input.approvedBy, tokenCiphertext: sealed.ciphertext, tokenIv: sealed.iv, tokenAuthTag: sealed.authTag },
+      settings.maxConcurrentSessions
+    );
+    if (!approved) {
+      // Say which guard refused: the row moved on (a retried POST / a reject), a lock row appeared, or the limit is full.
+      const latest = await requireRow(sessionId);
+      if (latest.status !== "pending") throw invalidState(sessionId, "pending", latest.status);
+      const holder = await deps.volumeLock.holder();
+      if (holder) throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(holder.owner), details: { sessionId, holder: holder.owner } });
+      const active = (await deps.store.listOpen()).filter(isActive);
+      throw new DomainError({
+        code: "media_session_conflict",
+        message: `${active.length} of ${settings.maxConcurrentSessions} concurrent sessions are already active (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
+        details: { sessionId, activeSessions: active.map((r) => r.id), maxConcurrentSessions: settings.maxConcurrentSessions },
+      });
+    }
+    const started = startApproved(approved, settings, client, token, onStage);
+    started.catch(() => undefined); // the outcome is on the row; a caller that ignores `started` must not crash the process
+    return { session: toPublicSession(approved, now), started };
+  
+  }
+
+  /** The one stop path (owner Stop; the Factory Operator's own sessions, BL-133). */
+  async function stopInner(row: StoredSessionRow, reason: string): Promise<MediaSession> {
+    // A row already `stopping` is resumed with ITS reason and outcome (an aborted start stays `failed`, review round 14);
+    // the operator's press only retries the terminate.
+    if (row.status === "stopping") return toPublicSession(await retryStop(row, reason, "done"), deps.clock.now());
+    if (row.status === "waiting_capacity") {
+      // BL-133: no pod exists while waiting -- ending it costs nothing and frees the slot.
+      const ended = await finish(row, ["waiting_capacity"], "done", { stopReason: reason });
+      if (!ended) throw invalidState(row.id, "waiting_capacity", (await requireRow(row.id)).status);
+      return toPublicSession(ended, deps.clock.now());
+    }
+    if (row.status === "approved") {
+      // The approve request is gone (it threw: createPod failed and RunPod could not say whether a pod exists -- the row
+      // carries its error) or is unmistakably abandoned by age -- the operator's Stop is the manual override the
+      // watcher's abandoned-start path would otherwise reach only later. While the approve request may still be inside
+      // createPod, a Stop would finish the row before the pod exists and orphan it (review round 15): refused.
+      if (!isStartAbandoned(row, deps.clock.now())) {
+        throw new DomainError({ code: "media_session_invalid_state", message: "The approve request is still creating the pod; wait for it to finish (or fail) before stopping.", details: { sessionId: row.id, status: row.status } });
+      }
+      const result = await reconcileAbandoned(row, reason, "failed");
+      if (result === "deferred") {
+        throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod could not be asked whether a pod named ${podNameFor(row.id)} exists; the session stays approved (slot kept) -- try again when RunPod answers.`, details: { sessionId: row.id } });
+      }
+      return toPublicSession(await requireRow(row.id), deps.clock.now());
+    }
+    if (!["starting", "running"].includes(row.status)) throw invalidState(row.id, "approved|starting|running|stopping", row.status);
+    return toPublicSession(await stopRow(row, reason), deps.clock.now());
+  
+  }
+
+  /** BL-133: what the factory's sessions spent (or still may, up to their USD cap) since `from`; `exclude` = the one being decided. */
+  async function factorySpendUsd(from: Date, now: Date, exclude: string): Promise<number> {
+    const rows = (await deps.store.listBillableSince(from)).filter((r) => r.requestedBy === "factory" && r.id !== exclude);
+    return round2(
+      rows.reduce((sum, r) => {
+        const spent = liveUsd(r, now) ?? 0;
+        // An active session may still spend up to its own cap: reserved, so two quick starts cannot both slip under a limit.
+        const reserved = isActive(r) ? Math.max(0, (r.maxUsd ?? r.estimateUsd) - spent) : 0;
+        return sum + spent + reserved;
+      }, 0)
+    );
+  }
+
+  async function recordSessionEvent(event: { actor: "owner" | "factory"; action: string; subject: string; details?: Record<string, unknown> }): Promise<void> {
+    try {
+      await deps.events?.record(event);
+    } catch (error) {
+      log(`[media] could not record the ${event.action} event: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** BL-133: one capacity-log row (best effort). */
@@ -958,70 +1088,80 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
      * wait for `started` still sees the outcome in the sessions table.
      */
     async approveSession(input: { sessionId: unknown; approvedByUserId?: string | null; onStage?: (text: string) => void }): Promise<{ session: MediaSession; started: Promise<MediaSession> }> {
-      const { sessionId } = parseWithSchema(sessionIdInputSchema, { sessionId: input.sessionId }, "approve session");
-      const onStage = input.onStage ?? (() => undefined);
-      const row = await requireRow(sessionId);
-      if (row.status !== "pending") throw invalidState(sessionId, "pending", row.status);
+      return approveInner({ ...input, approvedBy: "owner" });
+    },
 
-      // Preconditions, none of which changes the row.
-      const [settings, overview] = await Promise.all([deps.base.getSettings(), deps.base.getOverview()]);
-      if (!overview.ready) {
-        throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
-      }
+    /**
+     * BL-133 (FACTORY_GPU_SESSIONS_PLAN.md §2.2, AC-FG-01/02): the Factory Operator's own start. The session is requested
+     * (`requestedBy: factory`, the per-session caps defaulting to the owner's factory limits) and approved BY THE FACTORY only
+     * when it fits every factory limit -- the switch, per-session USD/minutes, the factory's day and month -- and then every
+     * device limit the owner's approve also checks. Otherwise it stays `pending` for the owner, with the limit named.
+     */
+    async factoryStartSession(input: {
+      channelId: string;
+      maxMinutes?: number;
+      maxUsd?: number;
+      gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null };
+      releaseWhenDone?: boolean;
+    }): Promise<{ session: MediaSession; approved: boolean; heldBy: string | null }> {
+      const settings = await deps.base.getSettings();
+      const pending = await services.requestSession({
+        channelId: input.channelId,
+        maxMinutes: input.maxMinutes ?? settings.factoryMaxMinutesPerSession,
+        maxUsd: input.maxUsd ?? settings.factoryMaxUsdPerSession,
+        reason: "started by the Factory Operator",
+        ...(input.releaseWhenDone !== undefined ? { releaseWhenDone: input.releaseWhenDone } : {}),
+        ...(input.gpu ? { gpu: input.gpu } : {}),
+        requestedBy: "factory",
+      });
+      const row = await requireRow(pending.sessionId);
       const now = deps.clock.now();
-      const [spent, open] = await Promise.all([spentTodayUsd(now), deps.store.listOpen()]);
-      // AC-P14-17 with concurrent sessions (§5.2): what is spent today, plus what the OTHER active sessions may still spend
-      // up to their own estimate, plus this session's estimate must fit the daily cap. (Not atomic between two approves --
-      // the watcher stops every session once the day's total reaches the cap; only the concurrency count is atomic.)
-      const reservedUsd = round2(open.filter((r) => r.id !== sessionId && isActive(r)).reduce((sum, r) => sum + Math.max(0, r.estimateUsd - (liveUsd(r, now) ?? 0)), 0));
-      if (spent >= settings.maxUsdPerDay || round2(spent + reservedUsd + row.estimateUsd) > settings.maxUsdPerDay) {
-        throw new DomainError({
-          code: "media_daily_cap_reached",
-          message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
-          details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, reservedUsd, estimateUsd: row.estimateUsd },
-        });
+      // The worst case a factory session can spend is its own USD cap (the watcher stops it there whatever GPU it gets).
+      const worst = row.maxUsd ?? row.estimateUsd;
+      const [today, month] = await Promise.all([factorySpendUsd(startOfLocalDay(now), now, row.id), factorySpendUsd(startOfLocalMonth(now), now, row.id)]);
+      const held = !settings.factorySessionsEnabled
+        ? "Factory sessions are switched off (Production → Setup)"
+        : row.maxMinutes > settings.factoryMaxMinutesPerSession
+          ? `${row.maxMinutes} min is over the factory's ${settings.factoryMaxMinutesPerSession} min per session`
+          : worst > settings.factoryMaxUsdPerSession
+            ? `$${worst} is over the factory's $${settings.factoryMaxUsdPerSession} per session`
+            : round2(today + worst) > settings.factoryMaxUsdPerDay
+              ? `the factory's day would reach $${round2(today + worst)} (limit $${settings.factoryMaxUsdPerDay}; spent or reserved $${today})`
+              : round2(month + worst) > settings.factoryMaxUsdPerMonth
+                ? `the factory's month would reach $${round2(month + worst)} (limit $${settings.factoryMaxUsdPerMonth}; spent or reserved $${month})`
+                : null;
+      if (held) {
+        await recordSessionEvent({ actor: "factory", action: "session_held_for_owner", subject: row.id, details: { reason: held } });
+        const kept = await deps.store.transition(row.id, ["pending"], { status: "pending", reason: `started by the Factory Operator; waits for the owner: ${held}` });
+        return { session: toPublicSession(kept ?? row, now), approved: false, heldBy: held };
       }
-      // The request's estimate, cap check and record describe the GPU/datacenter saved when it was made; the pod is built
-      // from the CURRENT settings. If they diverged, the approval would bill something the record never describes
-      // (review round 11): refuse, the requester asks again against the new settings.
-      if (row.gpuTypeId !== settings.gpuTypeId || row.datacenterId !== settings.datacenterId || row.costPerHr !== settings.gpuOnDemandPricePerHr) {
-        throw new DomainError({
-          code: "media_settings_invalid",
-          message: `Production → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
-          details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
-        });
+      try {
+        const { session } = await approveInner({ sessionId: row.id, approvedBy: "factory" });
+        await recordSessionEvent({ actor: "factory", action: "session_started", subject: row.id, details: { maxMinutes: row.maxMinutes, maxUsd: row.maxUsd } });
+        return { session, approved: true, heldBy: null };
+      } catch (error) {
+        // A DEVICE limit (daily cap, concurrency, a pull on the volume, settings changed): the request stays pending.
+        const reason = error instanceof Error ? error.message : String(error);
+        await recordSessionEvent({ actor: "factory", action: "session_held_for_owner", subject: row.id, details: { reason } });
+        const latest = await requireRow(row.id);
+        if (latest.status !== "pending") throw error;
+        return { session: toPublicSession(latest, deps.clock.now()), approved: false, heldBy: reason };
       }
-      const client = await deps.base.resolveRunpodClient(); // credentials must resolve
-      const token = deps.generateToken();
-      const sealed = await deps.base.sealSecret(token);
+    },
 
-      // AC-P14-18: a model pull / operator pod holding the volume exclusively refuses the approve (a crash-stale lock row
-      // is cleared here first, so a dead pull never blocks sessions); the guarded UPDATE re-checks it atomically.
-      const exclusive = await deps.volumeLock.activeHolder();
-      if (exclusive) {
-        throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(exclusive.owner), details: { sessionId, holder: exclusive.owner } });
+    /** BL-133: the factory ends a session IT started (AC-FG-03); another session behaves like one that does not exist. */
+    async factoryStopSession(input: { sessionId: string }): Promise<MediaSession> {
+      const row = await deps.store.get(input.sessionId);
+      if (!row || row.requestedBy !== "factory") throw notFound(input.sessionId);
+      if (row.status === "pending") {
+        const withdrawn = await deps.store.transition(row.id, ["pending"], { status: "rejected", stoppedAt: deps.clock.now(), stopReason: "withdrawn by the Factory Operator" });
+        if (!withdrawn) throw invalidState(row.id, "pending", (await requireRow(row.id)).status);
+        await recordSessionEvent({ actor: "factory", action: "session_stopped", subject: row.id, details: { from: "pending" } });
+        return toPublicSession(withdrawn, deps.clock.now());
       }
-      const approved = await deps.store.approve(
-        sessionId,
-        { approvedAt: now, approvedByUserId: input.approvedByUserId ?? null, tokenCiphertext: sealed.ciphertext, tokenIv: sealed.iv, tokenAuthTag: sealed.authTag },
-        settings.maxConcurrentSessions
-      );
-      if (!approved) {
-        // Say which guard refused: the row moved on (a retried POST / a reject), a lock row appeared, or the limit is full.
-        const latest = await requireRow(sessionId);
-        if (latest.status !== "pending") throw invalidState(sessionId, "pending", latest.status);
-        const holder = await deps.volumeLock.holder();
-        if (holder) throw new DomainError({ code: "media_session_conflict", message: describeVolumeLockHolder(holder.owner), details: { sessionId, holder: holder.owner } });
-        const active = (await deps.store.listOpen()).filter(isActive);
-        throw new DomainError({
-          code: "media_session_conflict",
-          message: `${active.length} of ${settings.maxConcurrentSessions} concurrent sessions are already active (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
-          details: { sessionId, activeSessions: active.map((r) => r.id), maxConcurrentSessions: settings.maxConcurrentSessions },
-        });
-      }
-      const started = startApproved(approved, settings, client, token, onStage);
-      started.catch(() => undefined); // the outcome is on the row; a caller that ignores `started` must not crash the process
-      return { session: toPublicSession(approved, now), started };
+      const stopped = await stopInner(row, "stopped by the Factory Operator");
+      await recordSessionEvent({ actor: "factory", action: "session_stopped", subject: row.id, details: { from: row.status } });
+      return stopped;
     },
 
     /** Approve and wait for the start to finish (the operator CLI and tests); the Web route uses `approveSession`. */
@@ -1033,33 +1173,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     /** Web-only (fenced): running|starting|stopping -> terminate -> done. */
     async stopSession(input: unknown): Promise<MediaSession> {
       const parsed = parseWithSchema(stopSessionInputSchema, input, "stop session");
-      const row = await requireRow(parsed.sessionId);
-      const reason = parsed.reason ?? "stopped by operator";
-      // A row already `stopping` is resumed with ITS reason and outcome (an aborted start stays `failed`, review round 14);
-      // the operator's press only retries the terminate.
-      if (row.status === "stopping") return toPublicSession(await retryStop(row, reason, "done"), deps.clock.now());
-      if (row.status === "waiting_capacity") {
-        // BL-133: no pod exists while waiting -- ending it costs nothing and frees the slot.
-        const ended = await finish(row, ["waiting_capacity"], "done", { stopReason: reason });
-        if (!ended) throw invalidState(parsed.sessionId, "waiting_capacity", (await requireRow(row.id)).status);
-        return toPublicSession(ended, deps.clock.now());
-      }
-      if (row.status === "approved") {
-        // The approve request is gone (it threw: createPod failed and RunPod could not say whether a pod exists -- the row
-        // carries its error) or is unmistakably abandoned by age -- the operator's Stop is the manual override the
-        // watcher's abandoned-start path would otherwise reach only later. While the approve request may still be inside
-        // createPod, a Stop would finish the row before the pod exists and orphan it (review round 15): refused.
-        if (!isStartAbandoned(row, deps.clock.now())) {
-          throw new DomainError({ code: "media_session_invalid_state", message: "The approve request is still creating the pod; wait for it to finish (or fail) before stopping.", details: { sessionId: row.id, status: row.status } });
-        }
-        const result = await reconcileAbandoned(row, reason, "failed");
-        if (result === "deferred") {
-          throw new DomainError({ code: "runpod_api_unavailable", message: `RunPod could not be asked whether a pod named ${podNameFor(row.id)} exists; the session stays approved (slot kept) -- try again when RunPod answers.`, details: { sessionId: row.id } });
-        }
-        return toPublicSession(await requireRow(row.id), deps.clock.now());
-      }
-      if (!["starting", "running"].includes(row.status)) throw invalidState(parsed.sessionId, "approved|starting|running|stopping", row.status);
-      return toPublicSession(await stopRow(row, reason), deps.clock.now());
+      return stopInner(await requireRow(parsed.sessionId), parsed.reason ?? "stopped by operator");
     },
 
     /** Jobs (slice 3) call this on every submit/poll so the idle clock restarts. */

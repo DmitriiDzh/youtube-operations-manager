@@ -119,6 +119,7 @@ function buildCore(jobScheduling: JobScheduling) {
     store: createMediaSessionStore(),
     jobSummary: (sessionId) => getMediaSessionJobSummary(sessionId),
     capacityLog: { record: (attempt) => insertMediaCapacityAttempt(attempt) },
+    events: createMediaControlEventSink(),
     base,
     createComfyClient: ({ baseUrl, token }) => createComfyUiClient({ baseUrl, token }),
     comfyUiProxyBaseUrl,
