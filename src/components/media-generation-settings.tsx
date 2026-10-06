@@ -1581,6 +1581,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
   const [confirmCreate, setConfirmCreate] = useState(false);
   const [growSizeText, setGrowSizeText] = useState("");
   const [confirmGrow, setConfirmGrow] = useState(false);
+  const [deleteVolume, setDeleteVolume] = useState<Volume | null>(null);
 
   useEffect(() => {
     setSelected(settings.networkVolumeId ?? "");
@@ -1660,7 +1661,27 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     }
   }
 
+  async function removeVolume() {
+    const target = deleteVolume;
+    if (!target) return;
+    setDeleteVolume(null);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestJson("/api/media-generation/network-volumes", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ volumeId: target.id }) });
+      setNotice(`Deleted ${target.name} (${target.id}).`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete the volume");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedVolume = volumes?.find((v) => v.id === selected);
+  // BL-136: every volume except the one the app uses can be deleted (the server also refuses one a pod has mounted).
+  const unusedVolumes = (volumes ?? []).filter((v) => v.id !== settings.networkVolumeId);
   const monthly = (gb: number) => (gb * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2);
   // RunPod only grows a network volume (its API refuses a smaller size), so the field accepts current + 1 GB and up.
   const growSize = selectedVolume && selectedVolume.sizeGb < 4000 ? parseInteger(growSizeText, { min: selectedVolume.sizeGb + 1, max: 4000 }) : null;
@@ -1730,6 +1751,23 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
                   </div>
                 </div>
               )}
+              {unusedVolumes.length > 0 && (
+                <div className="mt-3 border-t border-zinc-800 pt-3">
+                  <p className="mb-2 text-xs text-zinc-400">Volumes the app does not use (billed until deleted):</p>
+                  <ul className="space-y-1">
+                    {unusedVolumes.map((v) => (
+                      <li key={v.id} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
+                        <span>
+                          {v.name} · {v.id} · {v.dataCenterId} · {v.sizeGb} GB · ${monthly(v.sizeGb)}/month
+                        </span>
+                        <button type="button" onClick={() => setDeleteVolume(v)} disabled={busy} className={dangerButton}>
+                          Delete
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="mt-3 border-t border-zinc-800 pt-3">
                 <p className="mb-2 text-xs text-zinc-400">Create a new volume in {settings.datacenterId ?? "the chosen datacenter (set it under Compute first)"}:</p>
                 <div className="grid gap-2 sm:grid-cols-3">
@@ -1753,6 +1791,15 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
           confirmLabel="Create volume"
           onCancel={() => setConfirmCreate(false)}
           onConfirm={create}
+        />
+      )}
+      {deleteVolume && (
+        <ConfirmDialog
+          title={`Delete ${deleteVolume.name} (${deleteVolume.sizeGb} GB)?`}
+          description={`RunPod deletes the volume ${deleteVolume.id} and every file on it permanently; it cannot be recovered. Its billing ($${monthly(deleteVolume.sizeGb)}/month) stops.`}
+          confirmLabel="Delete volume"
+          onCancel={() => setDeleteVolume(null)}
+          onConfirm={removeVolume}
         />
       )}
       {confirmGrow && selectedVolume && growSize !== null && (

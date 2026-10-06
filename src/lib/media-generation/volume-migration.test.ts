@@ -28,7 +28,9 @@ test("pickProbeObjects: the smallest non-empty file, and the largest file betwee
   assert.deepEqual(pickProbeObjects([obj("a/.keep", 0)]), { small: null, large: null });
 });
 
-function fixture(opts: { objects?: S3ObjectSummary[]; copyFails?: (key: string) => string | null; copiedSize?: (key: string, size: number) => number; unreachable?: boolean; deleteFails?: boolean } = {}) {
+function fixture(
+  opts: { objects?: S3ObjectSummary[]; copyFails?: (key: string) => string | null; copiedSize?: (key: string, size: number) => number; unreachable?: boolean; deleteFails?: boolean; pods?: Array<{ id: string; networkVolumeIds: string[] }> } = {}
+) {
   const calls: string[] = [];
   const objects = opts.objects ?? [obj("ytm-pulls/p1.json", 300), obj("models/te/t5.safetensors", 1.1 * GB)];
   const sizes = new Map(objects.map((o) => [o.key, o.size]));
@@ -38,6 +40,13 @@ function fixture(opts: { objects?: S3ObjectSummary[]; copyFails?: (key: string) 
     async createNetworkVolume(input: { name: string; dataCenterId: string; sizeGb: number }) {
       calls.push(`create:${input.dataCenterId}:${input.sizeGb}`);
       return { id: "probe-vol", name: input.name, dataCenterId: input.dataCenterId, sizeGb: input.sizeGb, usedSizeGb: null, createdAt: null };
+    },
+    async getNetworkVolume(id: string) {
+      return id === "missing" ? null : { id, name: `n-${id}`, dataCenterId: "EU-RO-1", sizeGb: 50, usedSizeGb: null, createdAt: null };
+    },
+    async listPods() {
+      calls.push("listPods");
+      return opts.pods ?? [];
     },
     async deleteNetworkVolume(id: string) {
       calls.push(`delete:${id}`);
@@ -159,4 +168,22 @@ test("without a configured volume, or with nothing on it, the probe refuses befo
   g.settings.networkVolumeId = null;
   await assert.rejects(g.services.probeCrossVolumeCopy(), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
   assert.deepEqual(g.calls, []);
+});
+
+// BL-136 step 6 / failed-migration cleanup: deleting a volume is permanent, so it is refused for the configured volume, an
+// unknown volume, and a volume any pod still has mounted (RunPod does not document deleting one under a pod).
+test("deleteUnusedNetworkVolume deletes a volume that is neither configured nor mounted", async () => {
+  const f = fixture();
+  assert.deepEqual(await f.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" }), { deleted: "old-vol", alreadyGone: false });
+  assert.deepEqual(f.calls, ["listPods", "delete:old-vol"]);
+});
+
+test("deleteUnusedNetworkVolume refuses the configured volume, an unknown one, a mounted one and a malformed input, deleting nothing", async () => {
+  const f = fixture({ pods: [{ id: "pod1", networkVolumeIds: ["old-vol"] }] });
+  await assert.rejects(f.services.deleteUnusedNetworkVolume({ volumeId: "src-vol" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(f.services.deleteUnusedNetworkVolume({ volumeId: "missing" }), (e: unknown) => isDomainError(e) && e.code === "not_found");
+  await assert.rejects(f.services.deleteUnusedNetworkVolume({ volumeId: "old-vol" }), (e: unknown) => isDomainError(e) && e.code === "media_session_conflict" && /pod1/.test(e.message));
+  await assert.rejects(f.services.deleteUnusedNetworkVolume({}), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(f.services.deleteUnusedNetworkVolume({ volumeId: "old-vol", extra: 1 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  assert.ok(!f.calls.some((c) => c.startsWith("delete:")));
 });

@@ -1,5 +1,6 @@
 import type { RunpodApiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
-import { DomainError, type MediaSettings } from "./contracts";
+import { z } from "zod";
+import { DomainError, parseWithSchema, type MediaSettings } from "./contracts";
 
 // BL-136 (owner, Telegram 2026-10-06, msgs 1695/1704/1709; plan docs/roadmap/plans/VOLUME_MIGRATION_PLAN.md): moving the
 // network volume's data to a smaller volume, since RunPod never shrinks one. This file holds step 0 -- the probe that decides
@@ -49,6 +50,8 @@ export function pickProbeObjects(objects: S3ObjectSummary[]): { small: S3ObjectS
   return { small, large };
 }
 
+export const deleteNetworkVolumeInputSchema = z.object({ volumeId: z.string().trim().min(1).max(64) }).strict();
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
@@ -68,6 +71,29 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
   }
 
   return {
+    /**
+     * BL-136 step 6 (and the cleanup of a failed migration's new volume): permanently deletes a network volume. Refused for
+     * the volume the app is configured to use, for an unknown volume, and while any pod of the account has it mounted (a
+     * deletion under a running pod is undocumented). Destructive: the Web UI confirms with the operator first.
+     */
+    async deleteUnusedNetworkVolume(input: unknown): Promise<{ deleted: string; alreadyGone: boolean }> {
+      const { volumeId } = parseWithSchema(deleteNetworkVolumeInputSchema, input, "delete network volume");
+      const settings = await deps.base.getSettings();
+      if (settings.networkVolumeId === volumeId) {
+        throw new DomainError({ code: "validation_failed", message: "This is the volume the app uses; switch to another volume first (Production → Setup).", details: { volumeId } });
+      }
+      const client = await deps.base.resolveRunpodClient();
+      const volume = await client.getNetworkVolume(volumeId);
+      if (!volume) throw new DomainError({ code: "not_found", message: "No network volume with this id on the RunPod account", details: { volumeId } });
+      const mountedBy = (await client.listPods()).filter((pod) => pod.networkVolumeIds.includes(volumeId)).map((pod) => pod.id);
+      if (mountedBy.length > 0) {
+        throw new DomainError({ code: "media_session_conflict", message: `Pod${mountedBy.length === 1 ? "" : "s"} ${mountedBy.join(", ")} still ${mountedBy.length === 1 ? "has" : "have"} this volume mounted; terminate ${mountedBy.length === 1 ? "it" : "them"} first.`, details: { volumeId, pods: mountedBy } });
+      }
+      const outcome = await client.deleteNetworkVolume(volumeId);
+      log(`[media] deleted network volume ${volumeId} (${volume.name}, ${volume.sizeGb} GB)`);
+      return { deleted: volumeId, alreadyGone: outcome.alreadyGone };
+    },
+
     /**
      * Step 0 of BL-136, run by the operator from the CLI (billable: a 20 GB volume for a few minutes). Creates a test volume in
      * the configured datacenter, copies the smallest file and the largest file of 0.5-18 GB from the current volume into it with
