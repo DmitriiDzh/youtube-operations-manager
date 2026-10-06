@@ -1562,6 +1562,8 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
   const [newSizeText, setNewSizeText] = useState("150");
   const newSize = parseInteger(newSizeText, { min: 10, max: 4000 });
   const [confirmCreate, setConfirmCreate] = useState(false);
+  const [growSizeText, setGrowSizeText] = useState("");
+  const [confirmGrow, setConfirmGrow] = useState(false);
 
   useEffect(() => {
     setSelected(settings.networkVolumeId ?? "");
@@ -1619,8 +1621,32 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     }
   }
 
+  async function grow() {
+    if (!selectedVolume || growSize === null) return;
+    setConfirmGrow(false);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const { volume } = await requestJson<{ volume: Volume }>("/api/media-generation/network-volumes", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ volumeId: selectedVolume.id, sizeGb: growSize }),
+      });
+      setNotice(`${volume.name} is now ${volume.sizeGb} GB.`);
+      setGrowSizeText("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to resize the volume");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedVolume = volumes?.find((v) => v.id === selected);
   const monthly = (gb: number) => (gb * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2);
+  // RunPod only grows a network volume (its API refuses a smaller size), so the field accepts current + 1 GB and up.
+  const growSize = selectedVolume && selectedVolume.sizeGb < 4000 ? parseInteger(growSizeText, { min: selectedVolume.sizeGb + 1, max: 4000 }) : null;
 
   return (
     <Card
@@ -1658,6 +1684,28 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
               <button type="button" onClick={saveSelection} disabled={busy} className={primaryButton}>
                 {busy ? "Saving…" : "Save volume"}
               </button>
+              {selectedVolume && (
+                <div className="mt-3 border-t border-zinc-800 pt-3">
+                  <p className="mb-2 text-xs text-zinc-400">
+                    Grow {selectedVolume.name}: now {selectedVolume.sizeGb} GB{selectedVolume.usedSizeGb !== null ? ` (${selectedVolume.usedSizeGb} used)` : ""} · ${monthly(selectedVolume.sizeGb)}/month. RunPod can only make a
+                    network volume larger, never smaller.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={growSizeText}
+                      onChange={(e) => setGrowSizeText(e.target.value)}
+                      className={inputClass}
+                      placeholder={selectedVolume.sizeGb < 4000 ? `new size, ${selectedVolume.sizeGb + 1}–4000 GB` : "already at 4000 GB"}
+                      disabled={selectedVolume.sizeGb >= 4000}
+                    />
+                    <button type="button" onClick={() => setConfirmGrow(true)} disabled={busy || growSize === null} className={secondaryButton}>
+                      Grow ({growSize === null ? `size ${selectedVolume.sizeGb + 1}–4000 GB` : `$${monthly(growSize)}/month`})
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="mt-3 border-t border-zinc-800 pt-3">
                 <p className="mb-2 text-xs text-zinc-400">Create a new volume in {settings.datacenterId ?? "the chosen datacenter (set it under Compute first)"}:</p>
                 <div className="grid gap-2 sm:grid-cols-3">
@@ -1681,6 +1729,15 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
           confirmLabel="Create volume"
           onCancel={() => setConfirmCreate(false)}
           onConfirm={create}
+        />
+      )}
+      {confirmGrow && selectedVolume && growSize !== null && (
+        <ConfirmDialog
+          title={`Grow ${selectedVolume.name} from ${selectedVolume.sizeGb} GB to ${growSize} GB?`}
+          description={`RunPod bills about $${monthly(growSize)} per month for it from now on (+$${monthly(growSize - selectedVolume.sizeGb)}). This cannot be undone: RunPod never shrinks a network volume.`}
+          confirmLabel="Grow volume"
+          onCancel={() => setConfirmGrow(false)}
+          onConfirm={grow}
         />
       )}
     </Card>

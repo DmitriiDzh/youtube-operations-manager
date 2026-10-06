@@ -102,6 +102,10 @@ function fakeRunpod(options: { verifyFails?: boolean } = {}): { factory: (apiKey
       calls.push("createNetworkVolume");
       return { id: "vol-new", name: input.name, dataCenterId: input.dataCenterId, sizeGb: input.sizeGb, usedSizeGb: 0, createdAt: null };
     },
+    async resizeNetworkVolume(id: string, sizeGb: number) {
+      calls.push(`resizeNetworkVolume:${id}:${sizeGb}`);
+      return { id, name: "models", dataCenterId: "EU-RO-1", sizeGb, usedSizeGb: 10, createdAt: null };
+    },
     async listPods() {
       calls.push("listPods");
       return [];
@@ -360,6 +364,29 @@ test("createNetworkVolume validates its input and passes name/datacenter/size th
   assert.equal(volume.id, "vol-new");
   assert.equal(volume.sizeGb, 150);
   assert.ok(runpod.calls.includes("createNetworkVolume"));
+});
+
+// Owner request (Telegram 2026-10-06) + RunPod's update endpoint: a network volume can only grow. vol-eu is 150 GB in the fake.
+test("resizeNetworkVolume grows a volume to a larger size", async () => {
+  const { services, runpod } = fixture();
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  const volume = await services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 151 });
+  assert.equal(volume.sizeGb, 151);
+  assert.ok(runpod.calls.includes("getNetworkVolume:vol-eu"));
+  assert.ok(runpod.calls.includes("resizeNetworkVolume:vol-eu:151"));
+});
+
+test("resizeNetworkVolume refuses the same or a smaller size, and an unknown volume, without calling RunPod's update", async () => {
+  const { services, runpod } = fixture();
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 150 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 100 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-missing", sizeGb: 200 }), (e: unknown) => isDomainError(e) && e.code === "not_found");
+  // Schema bounds: RunPod's 10 GB floor and the app's 4000 GB ceiling; a non-integer size; a missing id.
+  await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 4001 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(services.resizeNetworkVolume({ volumeId: "vol-eu", sizeGb: 200.5 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(services.resizeNetworkVolume({ sizeGb: 200 }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  assert.ok(!runpod.calls.some((c) => c.startsWith("resizeNetworkVolume")));
 });
 
 test("s3() needs the pair, the datacenter and the volume", async () => {

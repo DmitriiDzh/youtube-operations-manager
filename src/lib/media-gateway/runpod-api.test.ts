@@ -170,6 +170,27 @@ test("createNetworkVolume posts name/dataCenter/size (the live API's field names
   assert.equal(volume.dataCenterId, "EU-RO-1");
 });
 
+// RunPod v2 API reference, "Update a network volume": PATCH /v2/network-volumes/{id}, body example {"size": 200}; the 200 response
+// is the NetworkVolume ({ id, name, size, dataCenter, type }); "size may only increase; attempts to reduce size will be rejected" (400).
+test("resizeNetworkVolume is PATCH /network-volumes/{id} with only { size }; the response maps size -> sizeGb", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { id: "2q9m7x4c", name: "training-dataset", size: 200, dataCenter: "US-KS-2", type: "HIGH_PERFORMANCE" } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  const volume = await client.resizeNetworkVolume("2q9m7x4c", 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.method, "PATCH");
+  assert.equal(new URL(calls[0].url).pathname, "/v2/network-volumes/2q9m7x4c");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { size: 200 });
+  assert.equal(volume.id, "2q9m7x4c");
+  assert.equal(volume.sizeGb, 200);
+  assert.equal(volume.dataCenterId, "US-KS-2");
+});
+
+test("resizeNetworkVolume surfaces RunPod's 400 for a size decrease as an error, not a volume", async () => {
+  const { fetchImpl } = fakeFetch(() => ({ status: 400, body: { title: "Bad Request", status: 400, detail: "size can only be increased" } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  await assert.rejects(client.resizeNetworkVolume("vol1", 50));
+});
+
 test("terminatePod is DELETE /pods/{id}; 404 means already gone; stop is never called", async () => {
   const { fetchImpl, calls } = fakeFetch((call) => ({ status: call.url.endsWith("/gone") ? 404 : 204 }));
   const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });

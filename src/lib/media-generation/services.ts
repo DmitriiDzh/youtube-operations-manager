@@ -20,6 +20,7 @@ const PASSTHROUGH_STOP_TIMEOUT_MS = 90_000;
 const PASSTHROUGH_STOP_POLL_MS = 5_000;
 import {
   createNetworkVolumeInputSchema,
+  resizeNetworkVolumeInputSchema,
   createPodPassthroughSchema,
   createTemplatePassthroughSchema,
   mediaSettingsSchema,
@@ -421,6 +422,25 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
     async createNetworkVolume(input: unknown): Promise<RunpodNetworkVolume> {
       const parsed = parseWithSchema(createNetworkVolumeInputSchema, input, "create network volume");
       return (await runpodClient()).createNetworkVolume({ name: parsed.name, dataCenterId: parsed.datacenterId, sizeGb: parsed.sizeGb });
+    },
+
+    /**
+     * Grows a network volume (owner request, Telegram 2026-10-06). RunPod never shrinks a volume, so a size that is not larger
+     * than the volume's current size -- read live from RunPod, not from a cached list -- is refused before any write.
+     */
+    async resizeNetworkVolume(input: unknown): Promise<RunpodNetworkVolume> {
+      const parsed = parseWithSchema(resizeNetworkVolumeInputSchema, input, "resize network volume");
+      const client = await runpodClient();
+      const current = await client.getNetworkVolume(parsed.volumeId);
+      if (!current) throw new DomainError({ code: "not_found", message: "No network volume with this id on the RunPod account", details: { volumeId: parsed.volumeId } });
+      if (parsed.sizeGb <= current.sizeGb) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `RunPod can only grow a network volume: the new size must be larger than its current ${current.sizeGb} GB`,
+          details: { volumeId: parsed.volumeId, currentSizeGb: current.sizeGb, requestedSizeGb: parsed.sizeGb },
+        });
+      }
+      return client.resizeNetworkVolume(parsed.volumeId, parsed.sizeGb);
     },
 
     async listTemplates() {
