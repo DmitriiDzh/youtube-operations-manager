@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
@@ -291,18 +291,18 @@ test("AC-FD-01: a fork whose two sides hold identical data settles on both compu
     assert.equal(before.size, 3, "precondition: S1 plus one branch per computer");
     await settleAndCheck([a, b], syncAll, "identical fork", true);
     const after = new Set([...(await snapshotDirs(a.folder)), ...(await snapshotDirs(b.folder))]);
-    assert.deepEqual([...after].sort(), [...before].sort(), "adopting an identical copy publishes nothing new");
+    assert.deepEqual([...after].sort(), [...before].sort(), "settling an identical fork publishes nothing new");
     for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-same", "UC1"]);
     a.client.close();
     b.client.close();
   }));
 
-test("AC-FD-02: after both computers adopted each other's identical copy, the next real change still fast-forwards", () =>
+test("AC-FD-02: after an identical fork settles, the next real change still fast-forwards both ways", () =>
   withTempDir("device-sync-conv-", async (root) => {
     const { a, b, syncAll } = await identicalFork(root);
     await settleAndCheck([a, b], syncAll, "identical fork", true);
     await create(a, "UC-after");
-    await settleAndCheck([a, b], syncAll, "change after adoption", true);
+    await settleAndCheck([a, b], syncAll, "change after settling", true);
     assert.deepEqual(await ids(b.client), ["UC-after", "UC-same", "UC1"]);
     await create(b, "UC-after-b");
     await settleAndCheck([a, b], syncAll, "change back the other way", true);
@@ -320,20 +320,86 @@ test("AC-FD-03: a fork whose sides differ still asks a human, on both computers"
     b.client.close();
   }));
 
-test("AC-FD-04: an identical fork where one side changes again before it looks still asks", () =>
+test("AC-FD-04: an identical fork where one side changes again settles without asking: the other side takes the change", () =>
   withTempDir("device-sync-conv-", async (root) => {
+    // Independent review, round 1 (#1): the first version asked B forever about A's branch -- whose
+    // content equals B's own head -- and "take theirs" there deleted B's new row on both computers.
+    // There is no conflict in this data: A's side holds nothing B does not have.
     const { a, b, syncAll } = await identicalFork(root);
     await create(b, "UC-b-extra");
-    await syncAll();
-    await tick(a);
-    await tick(b);
-    assert.ok(divergenceSnapshot(b), "B's data now differs from A's branch: B must ask");
-    await settleAndCheck([a, b], syncAll, "identical fork, then B changed");
+    await settleAndCheck([a, b], syncAll, "identical fork, then B changed", true);
+    for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-b-extra", "UC-same", "UC1"], d.name);
     a.client.close();
     b.client.close();
   }));
 
-test("AC-FD-05: adopting an identical copy replaces nothing, so it takes no backup and imports nothing", () =>
+test("AC-FD-04: an identical fork where BOTH sides then change differently still asks", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await identicalFork(root);
+    await create(a, "UC-a-extra");
+    await create(b, "UC-b-extra");
+    for (let round = 0; round < 4; round++) {
+      await syncAll();
+      await tick(a);
+      await tick(b);
+    }
+    assert.ok(divergenceSnapshot(a) || divergenceSnapshot(b), "a real difference must reach a human");
+    await settleAndCheck([a, b], syncAll, "identical fork, then both changed");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04b: after an identical fork settles, each computer's head is still its own snapshot (retention keeps it)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // Review round 1 (#3): retention protects only a device's own head; a head that is the OTHER
+    // computer's snapshot left neither computer protecting the current data in the folder.
+    const { a, b, syncAll } = await identicalFork(root);
+    await settleAndCheck([a, b], syncAll, "identical fork", true);
+    for (const d of [a, b]) {
+      const head = String((await d.client.execute("SELECT last_snapshot_id FROM snapshot_lineage")).rows[0].last_snapshot_id);
+      const manifest = JSON.parse(await readFile(path.join(d.folder, head, "manifest.json"), "utf8"));
+      assert.equal(manifest.sourceDeviceId, `device-${d.name}`, `${d.name}'s head is its own snapshot`);
+    }
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-04c: a third, clean computer that sees two identical branches settles without asking", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // Review round 1 (#2).
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    const syncAll = makeNetwork([a, b, c]);
+    await createSame(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await tick(c);
+    await createSame(a, "UC-same");
+    await createSame(b, "UC-same");
+    await tick(a);
+    await tick(b);
+    await settleAndCheck([a, b, c], syncAll, "three computers, identical fork", true);
+    assert.deepEqual(await ids(c.client), ["UC-same", "UC1"]);
+    for (const d of [a, b, c]) d.client.close();
+  }));
+
+test("AC-FD-04d: 'keep mine' on A and 'take theirs' on B at the same time leave the same data -> settles without asking again", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    // RISK-89 used to accept a re-prompt here; both resolutions picked A's data, so there is nothing to ask.
+    const { a, b, syncAll } = await divergedPair(root);
+    const aTarget = divergenceSnapshot(a);
+    const bTarget = divergenceSnapshot(b);
+    await resolve(a, "keep", aTarget, true);
+    await resolve(b, "take", bTarget, true);
+    await settleAndCheck([a, b], syncAll, "keep on A + take on B, simultaneous", true);
+    for (const d of [a, b]) assert.deepEqual(await ids(d.client), ["UC-a", "UC1"], d.name);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-FD-05: settling an identical fork replaces nothing, so it takes no backup and imports nothing", () =>
   withTempDir("device-sync-conv-", async (root) => {
     const { a, b, syncAll } = await identicalFork(root);
     const listBackups = async (d: Device) => {

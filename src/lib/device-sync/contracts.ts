@@ -70,9 +70,8 @@ export type DeviceSyncStatus = {
   lastExportSnapshotId: string | null;
   lastImportAt: string | null;
   lastImportSnapshotId: string | null;
-  /** A divergence settled automatically because both sides held identical data (no row changed). */
-  lastAdoptedAt?: string | null;
-  lastAdoptedSnapshotId?: string | null;
+  /** Last time another computer's branch holding exactly this computer's data was settled without asking (BL-139). */
+  lastIdenticalSettledAt?: string | null;
   notices: DeviceSyncNotice[];
   /** snapshotId -> first time it was seen unreadable / not yet fully transferred (ms). */
   pendingSince: Record<string, number>;
@@ -92,8 +91,7 @@ export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
   lastExportSnapshotId: null,
   lastImportAt: null,
   lastImportSnapshotId: null,
-  lastAdoptedAt: null,
-  lastAdoptedSnapshotId: null,
+  lastIdenticalSettledAt: null,
   notices: [],
   pendingSince: {},
   busyReason: null,

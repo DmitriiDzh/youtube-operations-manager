@@ -104,3 +104,22 @@ export async function rebaselineLineageFingerprintIfUnchanged(client: SqlExecuto
   })) as { rowsAffected?: number };
   return Number(result.rowsAffected ?? 0) > 0;
 }
+
+/**
+ * False divergences (BL-139): records other snapshots as already contained in this device's head
+ * (another computer's branch holding exactly the content of this head), so they stop counting as
+ * newer. Head, generation and fingerprint are untouched. Compare-and-set on the head: if an export
+ * or import moved it meanwhile, nothing is written (the next tick decides again).
+ */
+export async function addLineageAncestorsIfHeadUnchanged(client: SqlExecutor, headSnapshotId: string, extra: string[]): Promise<boolean> {
+  const current = await readLineageState(client);
+  if (current.lastSnapshotId !== headSnapshotId) return false;
+  const merged = [...(current.ancestors ?? []), ...extra].filter(
+    (id, index, all) => id !== headSnapshotId && all.indexOf(id) === index
+  );
+  const result = (await client.execute({
+    sql: "UPDATE snapshot_lineage SET ancestors_json = ? WHERE id = ? AND last_snapshot_id = ?",
+    args: [JSON.stringify(merged), ROW_ID, headSnapshotId],
+  })) as { rowsAffected?: number };
+  return Number(result.rowsAffected ?? 0) > 0;
+}

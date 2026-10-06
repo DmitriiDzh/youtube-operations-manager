@@ -8,6 +8,7 @@ export {
 } from "./contracts";
 export { parseSnapshotManifest, snapshotManifestSchema } from "./schemas";
 export {
+  addLineageAncestorsIfHeadUnchanged,
   applySnapshotToDatabase,
   createSyncPreservingMigrationHooks,
   exportSnapshot,

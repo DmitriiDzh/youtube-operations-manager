@@ -5,9 +5,9 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { createClient } from "@libsql/client";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
-import { getOperationLock, OperationLockError, releaseStaleExportLock, withOperationLock } from "@/lib/operation-lock";
+import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
 import {
-  computeContentFingerprint,
+  addLineageAncestorsIfHeadUnchanged,
   computeFileContentFingerprint,
   diffTransferredContent,
   hasUnfinishedBatch,
@@ -20,7 +20,6 @@ import {
   readManifestFromDir,
   SnapshotError,
   verifySnapshotForImport,
-  writeLineageState,
   type SqlExecutor,
 } from "@/lib/snapshot";
 import { SchemaVersionError } from "@/lib/schema-versioning";
@@ -469,10 +468,9 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   /**
    * False divergences (owner, Telegram 2026-10-06, msgs 1758/1764): the content fingerprint of a peer
-   * snapshot as THIS build would import it. A snapshot never changes, so the result is kept per id;
-   * `null` (cannot be compared: needs a newer schema, unreadable) is kept too, so a standing
-   * divergence does not copy the whole file again every tick. A transient error (still
-   * transferring) is not kept and is retried next tick.
+   * snapshot as THIS build would import it. A snapshot never changes, so the result is kept per id.
+   * `null` is kept only when this build can never read it (a newer schema); any other failure
+   * (still transferring, a full disk, a busy file) is retried next tick (review round 1, #7).
    */
   const stagedFingerprints = new Map<string, string | null>();
   async function stagedFingerprintOf(folder: string, snapshotId: string): Promise<string | null> {
@@ -484,39 +482,49 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       stagedFingerprints.set(snapshotId, fingerprint);
       return fingerprint;
     } catch (error) {
-      if (!transientSnapshotError(error)) stagedFingerprints.set(snapshotId, null);
+      if (error instanceof SchemaVersionError) stagedFingerprints.set(snapshotId, null);
       return null;
     }
   }
 
   /**
-   * A divergence whose two sides hold the SAME transferred data (both computers ran the same
-   * automatic job, or applied the same app update): this device takes the peer tip as its lineage
-   * head. No row changes, so nothing can be lost and no backup or import is needed. Its own branch
-   * stays in its ancestry, so the next export continues both histories and the peer -- whose head
-   * may be that branch -- fast-forwards to it. Publishes nothing: a marker here would ping-pong
-   * between two computers doing the same. Under the `export` lock (it changes no application data,
-   * and a dead holder's lock is auto-released), with the content re-checked inside it.
+   * False divergences (BL-139, owner Telegram 2026-10-06; reworked after review round 1): another
+   * computer's conflicting branch that holds EXACTLY the content recorded with this device's head
+   * (both computers applied the same update, or two resolutions picked the same data) contains
+   * nothing this device lacks. It is recorded as an ancestor of the head -- head, data and
+   * fingerprint unchanged, so nothing can be lost and every device keeps its OWN snapshot as head
+   * (retention protects it). This device's next export then lists that branch among its ancestors,
+   * so the other computer fast-forwards. Returns whether anything was recorded.
    */
-  async function adoptIfIdentical(folder: string, tip: SnapshotEntry): Promise<boolean> {
-    const peerFingerprint = await stagedFingerprintOf(folder, tip.snapshotId);
-    if (!peerFingerprint) return false;
-    if ((await computeContentFingerprint(deps.client)) !== peerFingerprint) return false;
-    return withOperationLock(deps.client, "export", async () => {
-      const live = await computeContentFingerprint(deps.client);
-      if (live !== peerFingerprint) return false;
-      const lineage = await readLineageState(deps.client);
-      const ancestors = [tip.parentSnapshotId, ...(tip.ancestors ?? []), lineage.lastSnapshotId, ...(lineage.ancestors ?? [])].filter(
-        (id, index, all): id is string => id !== null && id !== tip.snapshotId && all.indexOf(id) === index
-      );
-      await writeLineageState(deps.client, {
-        lastSnapshotId: tip.snapshotId,
-        lastGeneration: Math.max(tip.generation, lineage.lastGeneration),
-        contentFingerprint: live,
-        ancestors,
-      });
-      return true;
-    });
+  async function absorbIdenticalTips(folder: string, deviceId: string, snapshots: SnapshotEntry[]): Promise<boolean> {
+    const lineage = await readLineageState(deps.client);
+    if (!lineage.lastSnapshotId || !lineage.contentFingerprint) return false;
+    const extra: string[] = [];
+    for (const tip of await peerTips(deviceId, snapshots)) {
+      if (tip.schemaVersion > deps.currentSchemaVersion) continue;
+      if ((await stagedFingerprintOf(folder, tip.snapshotId)) !== lineage.contentFingerprint) continue;
+      extra.push(tip.snapshotId, ...ancestryOf(tip.snapshotId, snapshots));
+    }
+    if (extra.length === 0) return false;
+    return addLineageAncestorsIfHeadUnchanged(deps.client, lineage.lastSnapshotId, extra);
+  }
+
+  /**
+   * A clean device that sees SEVERAL conflicting tips which all hold the same data (two other
+   * computers settled an identical fork; review round 1, #2): import the newest one that continues
+   * this device's history, like any fast-forward. The next tick absorbs the others.
+   */
+  async function identicalTipToImport(folder: string, deviceId: string, snapshots: SnapshotEntry[]): Promise<SnapshotEntry | null> {
+    const tips = await peerTips(deviceId, snapshots);
+    if (tips.length < 2 || tips.some((t) => t.schemaVersion > deps.currentSchemaVersion)) return null;
+    const fingerprints = await Promise.all(tips.map((t) => stagedFingerprintOf(folder, t.snapshotId)));
+    if (fingerprints.some((f) => !f || f !== fingerprints[0])) return null;
+    const local = { lastSnapshotId: (await readLineageState(deps.client)).lastSnapshotId };
+    return (
+      tips
+        .filter((t) => isFastForwardOf(t, t.ancestors, local))
+        .sort((x, y) => y.generation - x.generation || x.snapshotId.localeCompare(y.snapshotId))[0] ?? null
+    );
   }
 
   /**
@@ -585,15 +593,32 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       const unsupported = new Set(
         status.unsupportedForSchemaVersion === deps.currentSchemaVersion ? (status.unsupportedSnapshotIds ?? []) : []
       );
-      const decision = decideSyncAction({
-        deviceId: config.deviceId,
-        currentSchemaVersion: deps.currentSchemaVersion,
-        local: { lastSnapshotId: lineage.lastSnapshotId, ancestors: lineage.ancestors ?? [] },
-        localDirty,
-        // A snapshot this build already failed to migrate is reported as "update the app", never
-        // re-imported every tick (plan §3.4).
-        snapshots: snapshots.map((s) => (unsupported.has(s.snapshotId) ? { ...s, schemaVersion: Number.MAX_SAFE_INTEGER } : s)),
-      });
+      const decide = async () => {
+        const current = await readLineageState(deps.client);
+        return decideSyncAction({
+          deviceId: config.deviceId,
+          currentSchemaVersion: deps.currentSchemaVersion,
+          local: { lastSnapshotId: current.lastSnapshotId, ancestors: current.ancestors ?? [] },
+          localDirty,
+          // A snapshot this build already failed to migrate is reported as "update the app", never
+          // re-imported every tick (plan §3.4).
+          snapshots: snapshots.map((s) => (unsupported.has(s.snapshotId) ? { ...s, schemaVersion: Number.MAX_SAFE_INTEGER } : s)),
+        });
+      };
+      let decision = await decide();
+      // BL-139: a "conflict" whose other side holds this head's own data is no conflict; settle it
+      // and decide again (an export or idle follows). Comparison failures fall through to asking.
+      if (decision.kind === "divergence") {
+        const absorbed = await absorbIdenticalTips(folder, config.deviceId, snapshots).catch(() => false);
+        if (absorbed) {
+          status = { ...status, lastIdenticalSettledAt: new Date(now()).toISOString() };
+          decision = await decide();
+        }
+      }
+      if (decision.kind === "divergence" && decision.multipleTips && !localDirty) {
+        const pick = await identicalTipToImport(folder, config.deviceId, snapshots).catch(() => null);
+        if (pick) decision = { kind: "import", snapshot: pick };
+      }
 
       const wouldExport = decision.kind === "export" || (decision.kind === "divergence" && decision.localDirty);
       if (options.exportOnly && !wouldExport) {
@@ -620,24 +645,6 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
           });
 
         case "divergence": {
-          if (!decision.multipleTips && decision.snapshot.schemaVersion <= deps.currentSchemaVersion) {
-            let adopted = false;
-            try {
-              adopted = await adoptIfIdentical(folder, decision.snapshot);
-            } catch (error) {
-              if (error instanceof OperationLockError) throw error;
-              // Could not compare: fall through to asking a human (fail closed).
-            }
-            if (adopted) {
-              return finish({
-                ...status,
-                state: "synced",
-                lastAdoptedAt: new Date(now()).toISOString(),
-                lastAdoptedSnapshotId: decision.snapshot.snapshotId,
-                notices: stuckNotice(status),
-              });
-            }
-          }
           let next: DeviceSyncStatus = {
             ...status,
             state: "attention",

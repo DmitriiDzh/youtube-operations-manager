@@ -35,7 +35,13 @@ import {
   computeFileContentFingerprint,
   transferredTablesAreEmpty,
 } from "./adapters/fingerprint";
-import { readLineageState, rebaselineLineageFingerprintIfUnchanged, writeLineageState, type LineageState } from "./adapters/lineage-store";
+import {
+  addLineageAncestorsIfHeadUnchanged,
+  readLineageState,
+  rebaselineLineageFingerprintIfUnchanged,
+  writeLineageState,
+  type LineageState,
+} from "./adapters/lineage-store";
 
 /** Execution-ledger statuses where a real YouTube write may have been sent but the outcome is
  * not yet certain -- the only ones a device-handoff import must never silently resolve
@@ -459,4 +465,4 @@ export async function listSnapshots(snapshotsDir: string): Promise<string[]> {
 }
 
 export { readLineageState, writeLineageState, type LineageState };
-export { rebaselineLineageFingerprintIfUnchanged };
+export { addLineageAncestorsIfHeadUnchanged, rebaselineLineageFingerprintIfUnchanged };
