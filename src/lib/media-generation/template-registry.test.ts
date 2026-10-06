@@ -316,3 +316,13 @@ test("review: the 60 s check also notices a change in this device's templates (a
   const after = await h.services.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true });
   assert.deepEqual(after?.installed, [{ templateId: local.templateId, version: 1 }]);
 });
+
+test("BL-133: a registry template may declare its GPU plan; it is installed with the template and listed", async () => {
+  const h = harness();
+  h.publish([{ templateId: "with-gpu", version: 1, overrides: { gpu: { candidates: ["NVIDIA GeForce RTX 4090", "NVIDIA L40S"], minVramGb: 24 } } }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.deepEqual((await h.services.listWorkflowTemplates())[0].gpu, { candidates: ["NVIDIA GeForce RTX 4090", "NVIDIA L40S"], minVramGb: 24, maxPricePerHr: null });
+  h.publish([{ templateId: "bad-gpu", version: 1, overrides: { gpu: { candidates: [] } } }]);
+  const result = await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.equal(result?.invalid.some((i) => i.templateId === "bad-gpu"), true, "an empty candidate list is invalid");
+});

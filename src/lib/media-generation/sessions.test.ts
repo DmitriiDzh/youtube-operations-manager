@@ -1737,3 +1737,12 @@ test("AC-FG-03: the factory stops only sessions it started; the owner can still 
   const held = await f.services.factoryStartSession({ channelId: "UC1", maxMinutes: 600 });
   assert.equal((await f.services.factoryStopSession({ sessionId: held.session.sessionId })).status, "rejected");
 });
+
+test("AC-FG-03/07: getFactorySession sees only sessions the factory started", async () => {
+  const f = fixture({ settings: FACTORY_ON });
+  const mine = await f.services.factoryStartSession({ channelId: "UC1" });
+  const owners = await f.services.requestSession(operatorRequest);
+  assert.equal((await f.services.getFactorySession({ sessionId: mine.session.sessionId })).requestedBy, "factory");
+  await assert.rejects(f.services.getFactorySession({ sessionId: owners.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_not_found");
+  await assert.rejects(f.services.getFactorySession({ sessionId: "nope" }), (e: unknown) => isDomainError(e) && e.code === "media_session_not_found");
+});

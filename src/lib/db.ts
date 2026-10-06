@@ -875,7 +875,7 @@ export const mediaJobs = sqliteTable(
     templateVersion: integer("template_version").notNull(),
     paramsJson: text("params_json").notNull(),
     status: text("status", { enum: MEDIA_JOB_STATUSES }).notNull().default("queued"),
-    createdBy: text("created_by", { enum: ["operator", "agent"] }).notNull(),
+    createdBy: text("created_by", { enum: ["operator", "agent", "factory"] }).notNull(),
     promptId: text("prompt_id"),
     outputsJson: text("outputs_json"),
     assetIdsJson: text("asset_ids_json"),
@@ -8037,7 +8037,7 @@ export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<
  * taken by a local template.
  */
 export async function upsertFactoryMediaWorkflowTemplate(
-  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string },
+  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const now = new Date();

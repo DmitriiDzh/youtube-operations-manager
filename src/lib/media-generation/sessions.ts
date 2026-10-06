@@ -1149,6 +1149,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       }
     },
 
+    /** BL-133: a session the Factory Operator started -- any other one is reported as not found (AC-FG-03/07). */
+    async getFactorySession(input: { sessionId: string }): Promise<MediaSession> {
+      const row = await deps.store.get(input.sessionId);
+      if (!row || row.requestedBy !== "factory") throw notFound(input.sessionId);
+      return toPublicSession(row, deps.clock.now());
+    },
+
     /** BL-133: the factory ends a session IT started (AC-FG-03); another session behaves like one that does not exist. */
     async factoryStopSession(input: { sessionId: string }): Promise<MediaSession> {
       const row = await deps.store.get(input.sessionId);

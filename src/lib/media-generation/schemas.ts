@@ -141,7 +141,7 @@ export const createJobInputSchema = z
     channelId: z.string().min(1).max(64),
     templateId: z.string().min(1).max(64),
     params: z.record(parameterNameSchema, scalarSchema).default({}),
-    createdBy: z.enum(["operator", "agent"]),
+    createdBy: z.enum(["operator", "agent", "factory"]),
   })
   .strict();
 

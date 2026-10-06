@@ -254,6 +254,8 @@ export type MediaWorkflowTemplate = {
   source: "owner" | "factory";
   /** BL-132: a factory template's declared models; for a local template, the literal model names its loader nodes use. */
   models: MediaModelReference[];
+  /** BL-133: the GPUs a registry template asks for (null = none declared). */
+  gpu: MediaGpuPlan | null;
   parameters: MediaTemplateParameter[];
   /** Node ids whose `filename_prefix` is rewritten to `<jobId>/...` so outputs land in the job's folder. */
   outputNodeIds: string[];
@@ -337,7 +339,7 @@ export type MediaJob = {
   templateVersion: number;
   params: Record<string, string | number | boolean>;
   status: MediaJobStatus;
-  createdBy: "operator" | "agent";
+  createdBy: "operator" | "agent" | "factory";
   promptId: string | null;
   outputs: MediaJobOutput[];
   assetIds: string[];
@@ -368,7 +370,7 @@ export type MediaJobManifest = {
   error: string | null;
   template: { templateId: string; templateVersion: number; name: string | null };
   params: Record<string, string | number | boolean>;
-  createdBy: "operator" | "agent";
+  createdBy: "operator" | "agent" | "factory";
   createdAt: string;
   submittedAt: string | null;
   finishedAt: string;

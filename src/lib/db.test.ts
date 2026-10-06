@@ -3370,7 +3370,7 @@ test("BL-132 upsertFactoryMediaWorkflowTemplate: installs and replaces factory r
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
-    const factoryRow = (version: number, name: string) => ({ id: "flux-tpl", name, description: null, version, workflowJson: "{}", parametersJson: "[]", outputNodeIdsJson: "[]", nodeCount: 1, registrySha256: `sha-${version}`, modelsJson: "[]" });
+    const factoryRow = (version: number, name: string) => ({ id: "flux-tpl", name, description: null, version, workflowJson: "{}", parametersJson: "[]", outputNodeIdsJson: "[]", nodeCount: 1, registrySha256: `sha-${version}`, modelsJson: "[]", gpuJson: null });
     const installed = await upsertFactoryMediaWorkflowTemplate(factoryRow(3, "v3"), isolatedDb);
     assert.deepEqual([installed?.id, installed?.version, installed?.source, installed?.registrySha256], ["flux-tpl", 3, "factory", "sha-3"]);
     const replaced = await upsertFactoryMediaWorkflowTemplate(factoryRow(4, "v4"), isolatedDb);
