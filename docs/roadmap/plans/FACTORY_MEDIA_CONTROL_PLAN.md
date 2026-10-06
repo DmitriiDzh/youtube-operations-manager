@@ -1,6 +1,6 @@
 # Factory Operator control of media models, storage, templates and job inputs — plan
 
-**Status: PLAN, awaiting the owner's acceptance. Nothing implemented.** Backlog item: BL-132. Branch for the implementation:
+**Status: ACCEPTED by the owner 2026-10-06 (relayed in FO-MSG-0006, "Принимаю"); O1–O5 answered (§5); implementation on `feature/factory-media-control`.** Backlog item: BL-132. Branch for the implementation:
 `feature/factory-media-control` (all slices on one branch, one merge-approval request, `AGENTS.md` §K.1/§K.2). Safety-critical per §L:
 it gives an agent token actions that cost money and delete data, so the full §A reading list applies.
 
@@ -214,6 +214,17 @@ The same residual limit as RISK-105 applies: a process running as the same OS us
 - **O3 — owner-imported templates and the current FLUX test template.** Recommended: keep the Web import as a "local" tool for you. They stay until the factory publishes a replacement, and you remove them yourself.
 - **O4 — daily pull cap for the factory.** Recommended: none for now. Free space, one pull at a time and the audit are enough. Alternatively, N pulls or X GB per day.
 - **O5 — input size cap.** Recommended: 500 MB per input with the streaming upload.
+
+## 5a. Owner answers and additions (FO-MSG-0006, 2026-10-06)
+
+- **O1** automatic sync: yes (start + every 60 s), plus the factory tool and the Web button.
+- **O2** YT Manager never deletes inputs from `Sent to YTM`.
+- **O3** owner-imported templates stay local; sync never touches them.
+- **O4** no daily pull cap; the volume size is the limit.
+- **O5** 500 MB per input.
+- **Addition A1:** the deletion guard also covers **local** (owner-imported) templates. `usedBy` lists them, marked `local`. For a local template the models are the literal loader-node names found in its graph (§2.3's check), since it has no declared list.
+- **Addition A2:** gated Hugging Face repos with the owner's HF token are a later follow-up (BL-134), not part of this build.
+- **Registry folder:** `media_templates` = `<factory_shared>/media_templates/`, set by the owner per device; the factory creates the folder and `index.json`.
 
 ## 6. Out of scope
 
