@@ -33,3 +33,4 @@ export type {
   SyncReachReportsResult,
   SyncReachReportsSkipped,
 } from "./contracts";
+export type { SyncAllReachChannelOutcome } from "./services";

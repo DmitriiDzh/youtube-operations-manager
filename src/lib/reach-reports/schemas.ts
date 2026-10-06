@@ -12,6 +12,11 @@ export const syncReachReportsInputSchema = z
     channelId: z.string().min(1),
     /** The automatic trigger sets this so a frequent caller does not hammer Google; a manual sync omits it. */
     onlyIfDue: z.boolean().optional(),
+    /**
+     * BL-141: with `onlyIfDue`, a FAILED attempt also throttles. Set for background (non-active) channels, whose
+     * failure the operator is not looking at, so a channel with broken auth is not retried on every dashboard load.
+     */
+    throttleFailed: z.boolean().optional(),
   })
   .strict();
 

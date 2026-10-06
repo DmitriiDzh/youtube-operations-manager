@@ -203,22 +203,6 @@ export default function Dashboard() {
       });
   }, [channel]);
 
-  // BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md) -- the Reporting API's Reach report
-  // (impressions/CTR). Its own independent fire-and-forget call, deliberately NOT chained to the Analytics
-  // calls above (AGENTS.md §M: one module failing or being switched off must not affect another). The server
-  // decides whether anything runs: `onlyIfDue` makes it a no-op within 6 hours of the last check.
-  const reachSyncTriggeredRef = useRef(false);
-  useEffect(() => {
-    if (!channel?.id || reachSyncTriggeredRef.current) return;
-    reachSyncTriggeredRef.current = true;
-    fetch(`/api/channels/${encodeURIComponent(channel.id)}/reach/sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ onlyIfDue: true }),
-    }).catch(() => {
-      // Non-fatal -- the next dashboard load simply tries again.
-    });
-  }, [channel]);
 
   const refreshConflictSummary = useCallback(async () => {
     try {
@@ -237,6 +221,26 @@ export default function Dashboard() {
   // and recreate both intervals (firing an immediate extra sync cycle) every time the operator
   // merely switches back to this browser tab, silently defeating the 60s pacing chosen below.
   const userId = session?.user?.id;
+
+  // BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md) -- the Reporting API's Reach report
+  // (impressions/CTR). Its own independent fire-and-forget call, deliberately NOT chained to the Analytics
+  // auto-collection (AGENTS.md §M: one module failing or being switched off must not affect another). BL-141 (owner,
+  // Telegram 2026-10-06): once per dashboard load it checks EVERY connected channel, each with its own token, not only
+  // the active one. The server decides whether anything runs: `onlyIfDue` makes it a no-op for a channel checked
+  // within the last 6 hours. It waits for `channel` (GET /api/youtube/channel-info records the session's active
+  // channel), so on a fresh sign-in or right after switching, the active channel is already the one being synced.
+  const reachSyncTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!channel?.id || reachSyncTriggeredRef.current) return;
+    reachSyncTriggeredRef.current = true;
+    fetch("/api/reach/sync-all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ onlyIfDue: true }),
+    }).catch(() => {
+      // Non-fatal -- the next dashboard load simply tries again.
+    });
+  }, [channel]);
 
   // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
   // sidebar badge (AC-CRDT-08) stays current even while the operator is on an unrelated tab.

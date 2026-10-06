@@ -46,7 +46,10 @@ export type SyncReachReportsResult = {
 };
 
 /** `onlyIfDue` and the job was checked less than `MIN_SYNC_INTERVAL_HOURS` ago: nothing was called. */
-export type SyncReachReportsSkipped = { skipped: true; reason: "checked_recently"; lastCheckedAt: string };
+export type SyncReachReportsSkipped =
+  | { skipped: true; reason: "checked_recently"; lastCheckedAt: string }
+  /** BL-141: an automatic sync of the same channel is already running in this process. */
+  | { skipped: true; reason: "in_progress" };
 
 /** The automatic (dashboard-mount) sync calls Google at most this often per channel. */
 export const MIN_SYNC_INTERVAL_HOURS = 6;

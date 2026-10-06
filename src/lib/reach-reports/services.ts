@@ -82,6 +82,8 @@ export type ReachReportsDependencies = {
       filesImported: number;
       failures: SyncReachFailure[];
     } | null>;
+    /** BL-141: every stored channel and the Google user whose token belongs to it (`channels.connected_user_id`). */
+    listChannelConnections(): Promise<Array<{ channelId: string; connectedUserId: string | null }>>;
     listFiles(
       channelId: string,
       reportTypeId: string,
@@ -93,6 +95,19 @@ export type ReachReportsDependencies = {
   requiredScope: string;
   clock: { now(): Date };
 };
+
+/** Channels with an automatic (`onlyIfDue`) sync running in this process; shared by every core instance. */
+const inFlightAutoSyncs = new Set<string>();
+
+export type SyncAllReachChannelOutcome =
+  | { channelId: string; outcome: "synced"; filesImported: number }
+  | { channelId: string; outcome: "skipped"; reason: "no_connected_user" | "checked_recently" | "in_progress" }
+  | { channelId: string; outcome: "failed"; error: string; code?: string };
+
+function errorCodeOf(error: unknown): string | undefined {
+  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : undefined;
+}
 
 function getCredentialUserId(credentialRef: unknown): string | null {
   return credentialRef !== null &&
@@ -109,7 +124,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
     await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId });
   }
 
-  return {
+  const services = {
     /**
      * Makes sure the channel's Reach job exists (reusing an existing one) and imports every report file not
      * seen before. Safe to call repeatedly: a file is downloaded and imported once. One bad file does not
@@ -126,7 +141,10 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         ]);
         // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
         // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
-        const lastChecked = [known?.lastCheckedAt ?? null, attempt && attempt.outcome !== "failed" ? attempt.attemptedAt : null]
+        const lastChecked = [
+          known?.lastCheckedAt ?? null,
+          attempt && (attempt.outcome !== "failed" || parsed.throttleFailed) ? attempt.attemptedAt : null,
+        ]
           .filter((d): d is Date => d !== null)
           .sort((a, b) => b.getTime() - a.getTime())[0];
         if (lastChecked) {
@@ -137,6 +155,12 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         }
       }
 
+      // BL-141: two automatic syncs of one channel (two tabs, two dashboards) must not run side by side -- both would
+      // pass the due check above, create the job twice on a first run and import the same files twice.
+      if (parsed.onlyIfDue) {
+        if (inFlightAutoSyncs.has(parsed.channelId)) return { skipped: true, reason: "in_progress" };
+        inFlightAutoSyncs.add(parsed.channelId);
+      }
       try {
         const credentials = await deps.authResolver.resolve({
           credentialRef: parsed.credentialRef,
@@ -233,6 +257,8 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
           // Recording is informational; never mask the original error.
         }
         throw error;
+      } finally {
+        if (parsed.onlyIfDue) inFlightAutoSyncs.delete(parsed.channelId);
       }
     },
 
@@ -306,6 +332,81 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         importedFiles: coverage.importedFiles,
         files: files.map((f) => ({ ...f, importedAt: f.importedAt.toISOString() })),
       };
+    },
+  };
+
+  return {
+    ...services,
+
+    /**
+     * BL-141 (owner, Telegram 2026-10-06, msgs 1864/1865): the dashboard's automatic check, for EVERY connected channel,
+     * not only the active one. The session's own active channel is synced with the session's credentials, exactly as
+     * the single-channel automatic call always was. Every other channel goes through the same syncReachReports with
+     * its OWN Google user's credentials (`connectedUserId`), so its active-channel check still applies: a user who has
+     * since switched to another channel fails closed for this one rather than syncing it with a token that is no
+     * longer its own. No extra live identity call -- the same posture as the single-channel path; a file whose rows
+     * carry another channel's id is still rejected whole (reach-csv.ts). For those background channels a failed
+     * attempt also throttles (6 h), so broken auth is not retried on every load, and a "not synced" reason is
+     * recorded in the channel's own attempt row, so its Analytics status block says why. Channels run concurrently;
+     * one failing never stops the others (AGENTS.md §M).
+     */
+    async syncAllReachReports(input: { onlyIfDue: boolean; sessionUserId: string }): Promise<{ channels: SyncAllReachChannelOutcome[] }> {
+      const [connections, activeChannelId] = await Promise.all([
+        deps.store.listChannelConnections(),
+        deps.channelAccess.getActiveChannelId(input.sessionUserId),
+      ]);
+
+      async function recordNotSynced(channelId: string, error: string) {
+        try {
+          await deps.store.recordAttempt({
+            channelId,
+            reportTypeId: REACH_BASIC_REPORT_TYPE_ID,
+            outcome: "failed",
+            error,
+            filesListed: 0,
+            filesImported: 0,
+            failures: [],
+          });
+        } catch {
+          // Informational only.
+        }
+      }
+
+      async function syncOne({ channelId, connectedUserId }: { channelId: string; connectedUserId: string | null }): Promise<SyncAllReachChannelOutcome> {
+        const isActive = channelId === activeChannelId;
+        const userId = isActive ? input.sessionUserId : connectedUserId;
+        if (!userId) {
+          await recordNotSynced(channelId, "Not checked automatically: no Google account is connected for this channel.");
+          return { channelId, outcome: "skipped", reason: "no_connected_user" };
+        }
+        try {
+          const result = await services.syncReachReports({
+            credentialRef: { userId },
+            channelId,
+            ...(input.onlyIfDue ? { onlyIfDue: true, throttleFailed: !isActive } : {}),
+          });
+          return result.skipped
+            ? { channelId, outcome: "skipped", reason: result.reason }
+            : { channelId, outcome: "synced", filesImported: result.filesImported };
+        } catch (error) {
+          const code = errorCodeOf(error);
+          // Thrown by the active-channel check, before syncReachReports records anything itself.
+          if (code === "CHANNEL_NOT_ACTIVE") {
+            await recordNotSynced(
+              channelId,
+              "Not checked automatically: this channel's Google account now has another channel selected. Open the dashboard with this channel to update its reports."
+            );
+          }
+          return {
+            channelId,
+            outcome: "failed",
+            error: error instanceof Error ? error.message : String(error),
+            ...(code ? { code } : {}),
+          };
+        }
+      }
+
+      return { channels: await Promise.all(connections.map(syncOne)) };
     },
   };
 }
