@@ -2214,6 +2214,10 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
      fast-forwards.
    - A clean device with several tips that all hold the same data imports the newest one that
      continues its history (an ordinary import); the next tick absorbs the rest.
+   - "This head's content" is the recorded fingerprint or, when the head is still in the folder,
+     its staged file (an import purges expired API rows, so the file and the live data differ).
+   - "Take theirs" carries absorbed branches into its marker's ancestors and `supersedes`, so they
+     do not come back as conflicts after the choice.
    - Anything else (different content, a comparison that fails) is a divergence as before.
    An earlier version switched the head to the peer's snapshot instead; review round 1 showed it
    left the peer asking about an abandoned branch (where "take theirs" lost a row on both sides),
@@ -2296,9 +2300,10 @@ another process makes during the migration window still reads as unpublished.
 **Automatic writes wait for sync (BL-139).** The dashboard's Market Intelligence refresh
 (`collect-if-stale`) first calls `runner.syncBeforeBackgroundWrite()` (one tick, 60 s bound) and
 waits only while something from another computer is arriving (a pending entry younger than the
-10-minute grace), while sync is paused (`busy`), while the folder is unreachable, or while a
-divergence notice is open. A stuck transfer, `update_app` and `error` have their own notices and do
-not block it. A skip is saved as `backgroundWritesPausedReason` and shown in the bell; the next
+10-minute grace), while sync is paused (`busy`), while the folder is unreachable, while a
+divergence notice is open, or while `update_app` says the other computer's data cannot be loaded
+yet. A stuck transfer and `error` have their own notices and do not block it; any tick clears a
+reason that no longer applies. A skip is saved as `backgroundWritesPausedReason` and shown in the bell; the next
 dashboard load tries again. A device-sync failure never blocks it (§M).
 
 **Stuck operation lock recovery (2026-10-01).** A migration/import killed mid-run leaves its

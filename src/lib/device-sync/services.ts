@@ -224,9 +224,15 @@ export function backgroundWriteVerdict(status: DeviceSyncStatus, nowMs: number):
     case "folder_unreachable":
       return { allowed: false, reason: "the sync folder is not reachable, so the other computer's data cannot be checked" };
     case "attention":
-      return status.notices.some((n) => n.kind === "divergence")
-        ? { allowed: false, reason: "the two computers' data differs; choose a version in the Merge tab first" }
-        : { allowed: true };
+      if (status.notices.some((n) => n.kind === "divergence")) {
+        return { allowed: false, reason: "the two computers' data differs; choose a version in the Merge tab first" };
+      }
+      // The other computer's data cannot be loaded until this app is updated; writing now would
+      // fork as soon as it is (review round 2, N3).
+      if (status.notices.some((n) => n.kind === "update_app")) {
+        return { allowed: false, reason: "the other computer's data needs a newer app version on this computer" };
+      }
+      return { allowed: true };
     default:
       return { allowed: true };
   }
@@ -496,15 +502,28 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
    */
   async function absorbIdenticalTips(folder: string, deviceId: string, snapshots: SnapshotEntry[]): Promise<boolean> {
     const lineage = await readLineageState(deps.client);
-    if (!lineage.lastSnapshotId || !lineage.contentFingerprint) return false;
+    const head = lineage.lastSnapshotId;
+    if (!head) return false;
+    // The head's content as recorded, and -- for a head that is still in the folder -- as its file
+    // stages: an import purges expired API rows, so a device that imported one of two identical
+    // branches no longer equals the other branch's file byte for byte (review round 2, N2).
+    let headStaged: string | null | undefined;
+    const sameAsHead = async (fingerprint: string) => {
+      if (fingerprint === lineage.contentFingerprint) return true;
+      if (headStaged === undefined) {
+        headStaged = snapshots.some((s) => s.snapshotId === head) ? await stagedFingerprintOf(folder, head) : null;
+      }
+      return headStaged !== null && fingerprint === headStaged;
+    };
     const extra: string[] = [];
     for (const tip of await peerTips(deviceId, snapshots)) {
       if (tip.schemaVersion > deps.currentSchemaVersion) continue;
-      if ((await stagedFingerprintOf(folder, tip.snapshotId)) !== lineage.contentFingerprint) continue;
+      const fingerprint = await stagedFingerprintOf(folder, tip.snapshotId);
+      if (!fingerprint || !(await sameAsHead(fingerprint))) continue;
       extra.push(tip.snapshotId, ...ancestryOf(tip.snapshotId, snapshots));
     }
     if (extra.length === 0) return false;
-    return addLineageAncestorsIfHeadUnchanged(deps.client, lineage.lastSnapshotId, extra);
+    return addLineageAncestorsIfHeadUnchanged(deps.client, head, extra);
   }
 
   /**
@@ -536,6 +555,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     status = { ...status, lastTickAt: new Date(now()).toISOString(), busyReason: null };
 
     const finish = async (next: DeviceSyncStatus) => {
+      // A "refresh is waiting" reason is only set by syncBeforeBackgroundWrite; clear it as soon as
+      // nothing would block any more, so the bell never shows a cause that is gone (round 2, N4).
+      if (next.backgroundWritesPausedReason && backgroundWriteVerdict(next, now()).allowed) {
+        next = { ...next, backgroundWritesPausedReason: null };
+      }
       try {
         await deps.saveStatus(next);
       } catch {
@@ -894,6 +918,10 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
     if (await hasUnfinishedBatch(deps.client)) throw new DeviceSyncError("device_sync_busy", BATCH_PAUSES_IMPORT_MESSAGE);
+    // Other computers' branches this device had absorbed as "same data as mine" (BL-139): the
+    // import replaces the recorded ancestry with the adopted snapshot's, so without carrying them
+    // they would become conflicts again right after this choice (review round 2, N1).
+    const ancestorsBefore = (await readLineageState(deps.client)).ancestors ?? [];
     let result: Awaited<ReturnType<typeof importNow>>;
     try {
       result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
@@ -903,9 +931,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     }
 
     const adoptedAncestry = ancestryOf(snapshotId, snapshots);
-    const abandoned = snapshots
-      .filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId))
-      .map((s) => s.snapshotId);
+    const inFolder = new Set(snapshots.map((s) => s.snapshotId));
+    const abandoned = [
+      ...snapshots.filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId)).map((s) => s.snapshotId),
+      ...ancestorsBefore.filter((id) => inFolder.has(id) && id !== snapshotId && !adoptedAncestry.has(id)),
+    ].filter((id, index, all) => all.indexOf(id) === index);
     let markerId: string | null = null;
     if (abandoned.length > 0) {
       try {

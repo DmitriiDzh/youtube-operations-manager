@@ -7,6 +7,7 @@ import {
 } from "@/lib/device-mutation-gate";
 import path from "node:path";
 import { copyFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { initializeDatabaseSchema } from "@/lib/db";
@@ -247,7 +248,9 @@ export function createSyncPreservingMigrationHooks(
     },
     afterMigrations: async () => {
       if (!before || !backup) return;
-      const copyPath = `${backup}.sync-check-${randomUUID().slice(0, 8)}.db`;
+      // In the OS temp folder, never next to the backups: a crash before the cleanup must not leave a
+      // full-size file that looks like a backup (review round 2, N5).
+      const copyPath = path.join(tmpdir(), `ytom-sync-check-${randomUUID()}.db`);
       try {
         await copyFile(backup, copyPath);
         await migrate(copyPath);

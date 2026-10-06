@@ -32,9 +32,13 @@ test("AC-FD-08: a snapshot stuck past the grace period (it has its own notice) d
   }
 });
 
-test("AC-FD-08: 'update the app' or an error notice does not block the refresh", () => {
-  const notices = [{ kind: "update_app" as const, message: "m" }, { kind: "error" as const, message: "m" }];
-  assert.equal(backgroundWriteVerdict(status("attention", { notices }), NOW).allowed, true);
+test("AC-FD-08: an error notice does not block the refresh", () => {
+  assert.equal(backgroundWriteVerdict(status("attention", { notices: [{ kind: "error", message: "m" }] }), NOW).allowed, true);
+});
+
+test("AC-FD-09: 'update the app' blocks it -- the other computer's newer data is not loaded yet (review round 2, N3)", () => {
+  const verdict = backgroundWriteVerdict(status("attention", { notices: [{ kind: "update_app", message: "m" }] }), NOW);
+  assert.equal(verdict.allowed, false);
 });
 
 test("AC-FD-09: another computer's snapshot arriving right now -> wait, in any state (the 5 October shape)", () => {

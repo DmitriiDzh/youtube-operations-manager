@@ -503,3 +503,75 @@ test("AC-FD-11: a skipped background write is recorded in the status (shown by t
     assert.equal(solo.status().backgroundWritesPausedReason ?? null, null);
     for (const d of [a, b, solo]) d.client.close();
   }));
+
+test("AC-FD-13: 'take theirs' after absorbing an identical branch does not ask about that branch again (review round 2, N1)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    const syncAll = makeNetwork([a, b, c]);
+    await createSame(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await tick(c);
+    await createSame(a, "UC-same");
+    await createSame(b, "UC-same");
+    await create(c, "UC-c");
+    for (const d of [a, b, c]) await tick(d);
+    await syncAll();
+    for (let round = 0; round < 3; round++) {
+      await tick(a);
+      await syncAll();
+    }
+    const target = divergenceSnapshot(a);
+    assert.ok(target, "precondition: A asks about C's real change");
+    await resolve(a, "take", target, true);
+    await tick(a);
+    const again = divergenceSnapshot(a);
+    assert.ok(again === null || again === target, `A must not be asked about B's identical branch it already settled (got ${again})`);
+    await settleAndCheck([a, b, c], syncAll, "take theirs after an absorb");
+    for (const d of [a, b, c]) d.client.close();
+  }));
+
+test("AC-FD-14: a clean third computer whose import purged expired rows still settles the other identical branch (review round 2, N2)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    const syncAll = makeNetwork([a, b, c]);
+    await createSame(a, "UC1");
+    await tick(a);
+    await syncAll();
+    await tick(b);
+    await tick(c);
+    // The identical change on A and B is a YouTube API row already past the 30-day limit: C's import
+    // drops it (owner msg 1139), so C's data is no longer byte-equal to the other branch's file.
+    for (const d of [a, b]) {
+      await d.client.execute({
+        sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES ('old-snap', 'UC1', ?, 0, 'youtube.channels.list', 'web_ui')",
+        args: [Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000)],
+      });
+    }
+    await tick(a);
+    await tick(b);
+    for (let round = 0; round < 6; round++) {
+      await syncAll();
+      for (const d of [a, b, c]) await tick(d);
+    }
+    assert.equal(divergenceSnapshot(c), null, "C must not ask about a copy of what it just imported");
+    for (const d of [a, b, c]) d.client.close();
+  }));
+
+test("AC-FD-11: a stale 'refresh is waiting' reason is cleared by the next ordinary tick once nothing blocks (review round 2, N4)", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b, syncAll } = await divergedPair(root);
+    b.clock.t += 5 * 60_000;
+    await b.runner.syncBeforeBackgroundWrite();
+    assert.ok(b.status().backgroundWritesPausedReason);
+    await resolve(b, "take", divergenceSnapshot(b), true);
+    await settleAndCheck([a, b], syncAll, "after resolving");
+    assert.equal(b.status().backgroundWritesPausedReason ?? null, null);
+    a.client.close();
+    b.client.close();
+  }));
