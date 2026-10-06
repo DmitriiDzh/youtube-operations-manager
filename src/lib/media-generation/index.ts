@@ -8,7 +8,7 @@ import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
 import { sleep as sharedSleep } from "@/lib/shared-async";
-import { createExchangeFs, resolveFromYtmDir } from "@/lib/workspace-exchange";
+import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createExchangeLocalFs } from "./adapters/exchange-fs";
 import { createMediaJobStore } from "./adapters/job-store";
 import { createFsKeyFile } from "./adapters/key-file-fs";
@@ -169,6 +169,13 @@ function buildCore(jobScheduling: JobScheduling) {
       });
     },
     fs: createExchangeLocalFs(),
+    // BL-132 (plan §2.4): job inputs come only from the channel's `99 Data Exchange/Sent to YTM/`, proven contained.
+    async resolveInputFile(channelId, relativePath) {
+      const workspace = await workspaces.getWorkspace({ channelId });
+      const unavailable = (reason: string) => new DomainError({ code: "media_input_unavailable", message: `Job input ${relativePath}: ${reason}`, details: { channelId, relativePath, reason } });
+      if (!workspace.configured) throw unavailable("this channel has no workspace folder on this device (Settings → Channels)");
+      return resolveSentToYtmFile({ workspace: workspace.path, relativePath, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable });
+    },
     // For the manifest only (FO-REQ-0002): read, never created here; an unreadable config is "unknown", never a reason
     // to hold a finished job back.
     device: async () => ({

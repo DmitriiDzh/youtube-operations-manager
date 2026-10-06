@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type { ComfyHistoryEntry, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
 import { isDomainError, type MediaTemplateParameter } from "./contracts";
-import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeLedgerRow, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
+import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeInputRow, type ExchangeLedgerRow, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
 
 // Expected behaviour from docs/roadmap/plans/PHASE_14_PLAN.md §2.4 and §4 (AC-P14-10..15), written
 // before this module. Hashes are computed with node:crypto over fixed byte strings, independently of
@@ -28,6 +28,7 @@ function memoryStore() {
   const templates = new Map<string, StoredTemplateRow>();
   const jobs = new Map<string, StoredJobRow>();
   const ledger = new Map<string, ExchangeLedgerRow>();
+  const inputs = new Map<string, ExchangeInputRow>();
   let templateCounter = 0;
   const store: MediaJobStore = {
     templates: {
@@ -98,15 +99,30 @@ function memoryStore() {
         return ledger.get(key) ?? null;
       },
     },
+    inputs: {
+      async insert(row) {
+        inputs.set(row.remoteKey, { ...row, remoteDeletedAt: null });
+      },
+      async listByJob(jobId) {
+        return [...inputs.values()].filter((r) => r.jobId === jobId);
+      },
+      async get(key) {
+        return inputs.get(key) ?? null;
+      },
+      async markRemoteDeleted(key, at) {
+        const r = inputs.get(key);
+        if (r) inputs.set(key, { ...r, remoteDeletedAt: at });
+      },
+    },
   };
-  return { store, templates, jobs, ledger, templateCount: () => templateCounter };
+  return { store, templates, jobs, ledger, inputs, templateCount: () => templateCounter };
 }
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boolean } = {}) {
+function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boolean; putFails?: boolean } = {}) {
   const calls: string[] = [];
   /** Shared, ordered log of what reached the workspace (final file names, manifests) and of status changes (FO-REQ-0002 AC2). */
   const events: string[] = [];
@@ -133,6 +149,15 @@ function fakeS3(objects: Map<string, Uint8Array>, options: { deleteFails?: boole
       calls.push(`delete:${key}`);
       if (options.deleteFails) throw new Error("delete refused");
       objects.delete(key);
+    },
+    // BL-132: job inputs are streamed from disk; the fake records the key and the local path and "stores" fixed bytes.
+    async putObjectFromFile(key: string, filePath: string, contentType: string) {
+      calls.push(`put:${key}<-${filePath}:${contentType}`);
+      events.push(`put:${key}`);
+      if (options.putFails) throw new Error("RunPod S3 returned HTTP 500 for PUT");
+      const bytes = new TextEncoder().encode(`contents of ${filePath}`);
+      objects.set(key, bytes);
+      return { bytes: bytes.byteLength, sha256: sha256(bytes) };
     },
   } as unknown as RunpodS3Client;
   return { client, calls, files, events };
@@ -179,8 +204,9 @@ function completed(outputs: Array<{ nodeId: string; kind: string; filename: stri
   return { promptId: "prompt-1", status: "completed", statusMessages: ["execution_success"], outputs: outputs.map((o) => ({ ...o, type: "output" })), raw: {} };
 }
 
-function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean } = {}) {
+function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }> } = {}) {
   const mem = memoryStore();
+  const resolvedInputs: string[] = [];
   const comfy = opts.comfy ?? fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
   const s3 = opts.s3 ?? fakeS3(new Map([["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9])]]));
   const registered: Array<Record<string, unknown>> = [];
@@ -247,6 +273,17 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
       const index = registered.findIndex((r) => r.referenceValue === localPath);
       return index === -1 ? null : { assetId: `asset-${index + 1}` };
     },
+    // BL-132: "Sent to YTM" as a map of relative path -> file; anything else is media_input_unavailable (the real
+    // containment proofs are tested in workspace-exchange).
+    resolveInputFile: async (channelId, relativePath) => {
+      resolvedInputs.push(`${channelId}:${relativePath}`);
+      const file = opts.sentToYtm?.get(relativePath);
+      if (!file) {
+        const { DomainError } = await import("./contracts");
+        throw new DomainError({ code: "media_input_unavailable", message: `${relativePath} is not in 99 Data Exchange/Sent to YTM` });
+      }
+      return file;
+    },
     // The first id goes to the imported template, the second to the first job ("job-1").
     generateId: () => {
       ids++;
@@ -268,7 +305,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     registered.push(input);
     return { assetId: `asset-${registered.length}` };
   };
-  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
+  return { services, mem, comfy, s3, registered, removed, activity, runScheduled, registerAsset, manifests, resolvedInputs, setManifestWriteFails: (v: boolean) => void (manifestWriteFails = v), setS3Fails: (v: boolean) => void (s3Fails = v), setOutputRoot: (v: string) => void (outputRoot = v), setWorkspaceFails: (v: boolean) => void (workspaceFails = v), advance: (ms: number) => void (now = new Date(now.getTime() + ms)) };
 }
 
 async function importDefault(services: ReturnType<typeof fixture>["services"]) {
@@ -1637,4 +1674,105 @@ test("review: a Save subfolder named like the manifest (any case) is reserved to
   const manifest = JSON.parse(f.manifests.get(MANIFEST_PATH)!);
   assert.deepEqual(manifest.outputs.map((o: { path: string }) => o.path), ["ok.png"]);
   assert.match(manifest.missing[0].note, /reserved/);
+});
+
+// -- BL-132 M5: job input media (FACTORY_MEDIA_CONTROL_PLAN.md §2.4, AC-FM-11/12; owner answers O2/O5) ---------------------
+// Expected from the plan: an input parameter's value is a path relative to Sent to YTM; it is checked before anything is
+// written; the file is uploaded under a job-unique flat name in exchange/in/ BEFORE ComfyUI gets the prompt, whose loader
+// input is set to that name; the job's params keep the caller's path; the janitor deletes the upload by ledger once the
+// job is terminal and never touches other exchange/in/ files; the source file is never deleted (O2).
+
+const IMG2IMG = {
+  ...GRAPH,
+  "10": { class_type: "LoadImage", inputs: { image: "placeholder.png" } },
+};
+const IMG_PARAMS = [...PARAMETERS, { name: "ref", type: "image", nodeId: "10", input: "image", required: true, accept: [".png", ".jpg"], maxBytes: 1_000_000 }] as const;
+
+async function importImg2Img(services: ReturnType<typeof fixture>["services"]) {
+  return services.importWorkflowTemplate({ name: "img2img", workflow: IMG2IMG, parameters: IMG_PARAMS });
+}
+
+test("AC-FM-12: an image input is uploaded to exchange/in/<jobId>-<param>-<name> before the prompt is submitted; the loader gets that name; the job keeps the caller's path and lists the input", async () => {
+  const sentToYtm = new Map([["refs/frame 1.png", { path: "/ws/99 Data Exchange/Sent to YTM/refs/frame 1.png", bytes: 2048 }]]);
+  const f = fixture({ sentToYtm });
+  const t = await importImg2Img(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat", ref: "refs/frame 1.png" }, createdBy: "agent" });
+  assert.equal(job.status, "submitted");
+  assert.deepEqual(f.resolvedInputs, ["UC1:refs/frame 1.png"]);
+  assert.ok(f.s3.calls.includes("put:exchange/in/job-1-ref-frame_1.png<-/ws/99 Data Exchange/Sent to YTM/refs/frame 1.png:image/png"));
+  const submitted = f.comfy.submits[0] as Record<string, { inputs: Record<string, unknown> }>;
+  assert.equal(submitted["10"].inputs.image, "job-1-ref-frame_1.png");
+  assert.equal(job.params.ref, "refs/frame 1.png");
+  assert.deepEqual(job.inputs?.map((i) => [i.parameter, i.sourcePath, i.remoteKey, i.remoteDeleted]), [["ref", "refs/frame 1.png", "exchange/in/job-1-ref-frame_1.png", false]]);
+  // Upload strictly before the prompt reached ComfyUI (the job row is still queued while uploading).
+  assert.equal(f.s3.events.indexOf("put:exchange/in/job-1-ref-frame_1.png") < f.s3.events.indexOf("status:submitted"), true);
+});
+
+test("AC-FM-11: a wrong extension, a path with .., or an absolute path is refused as invalid params before any job, upload or prompt", async () => {
+  const f = fixture({ sentToYtm: new Map([["a.gif", { path: "/x/a.gif", bytes: 10 }]]) });
+  const t = await importImg2Img(f.services);
+  for (const ref of ["a.gif", "../secret.png", "/etc/x.png", "refs\\x.png"]) {
+    await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", ref }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_job_params_invalid", ref);
+  }
+  assert.equal(f.mem.jobs.size, 0);
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0);
+  assert.equal(f.comfy.submits.length, 0);
+});
+
+test("AC-FM-11: a file that is not in Sent to YTM, or is over the parameter's size limit (or empty), is media_input_unavailable before any job or upload", async () => {
+  const f = fixture({ sentToYtm: new Map([["big.png", { path: "/x/big.png", bytes: 1_000_001 }], ["empty.png", { path: "/x/empty.png", bytes: 0 }]]) });
+  const t = await importImg2Img(f.services);
+  for (const ref of ["missing.png", "big.png", "empty.png"]) {
+    await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", ref }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_input_unavailable", ref);
+  }
+  assert.equal(f.mem.jobs.size, 0);
+  assert.equal(f.s3.calls.filter((c) => c.startsWith("put:")).length, 0);
+});
+
+test("AC-FM-12: an upload failure fails the job before ComfyUI gets the prompt", async () => {
+  const s3 = fakeS3(new Map(), { putFails: true });
+  const f = fixture({ s3, sentToYtm: new Map([["a.png", { path: "/x/a.png", bytes: 10 }]]) });
+  const t = await importImg2Img(f.services);
+  await assert.rejects(f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", ref: "a.png" }, createdBy: "agent" }), (e: unknown) => isDomainError(e) && e.code === "media_input_unavailable");
+  assert.equal(f.comfy.submits.length, 0);
+  const [row] = [...f.mem.jobs.values()];
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /input "ref"/);
+});
+
+test("AC-FM-12: the janitor deletes a job's uploaded input only once the job is terminal, by ledger; the operator's own exchange/in/ files are never touched", async () => {
+  const objects = new Map<string, Uint8Array>([
+    ["exchange/job-1/ComfyUI_00001_.png", new Uint8Array([9, 9, 9])],
+    ["exchange/in/manual-reference.png", new Uint8Array([1])],
+  ]);
+  const s3 = fakeS3(objects);
+  const f = fixture({ s3, sentToYtm: new Map([["a.png", { path: "/x/a.png", bytes: 10 }]]) });
+  const t = await importImg2Img(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x", ref: "a.png" }, createdBy: "agent" });
+  const early = await f.services.cleanupExchange({ dryRun: false });
+  assert.ok(early.kept.some((k) => k.key === "exchange/in/job-1-ref-a.png" && /submitted/.test(k.reason)));
+  await f.runScheduled();
+  assert.equal((await f.services.getJob({ jobId: "job-1" })).status, "done");
+  const report = await f.services.cleanupExchange({ dryRun: false });
+  assert.ok(report.deleted.includes("exchange/in/job-1-ref-a.png"));
+  assert.ok(report.kept.some((k) => k.key === "exchange/in/manual-reference.png" && k.reason === "reference input"));
+  assert.ok(objects.has("exchange/in/manual-reference.png"));
+  const job = await f.services.getJob({ jobId: "job-1" });
+  assert.equal(job.inputs?.[0].remoteDeleted, true);
+});
+
+test("BL-132: an input parameter cannot have a default, and accept/maxBytes are refused on other types", async () => {
+  const f = fixture();
+  await assert.rejects(
+    f.services.importWorkflowTemplate({ name: "bad", workflow: IMG2IMG, parameters: [...PARAMETERS, { name: "ref", type: "image", nodeId: "10", input: "image", default: "a.png" }] }),
+    (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /cannot have a default/.test(e.message)
+  );
+  await assert.rejects(
+    f.services.importWorkflowTemplate({ name: "bad2", workflow: GRAPH, parameters: [{ name: "prompt", type: "text", nodeId: "6", input: "text", required: true, accept: [".png"] }] }),
+    (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /accept\/maxBytes/.test(e.message)
+  );
+  // Without an accept list the type's default extensions apply.
+  const t = await f.services.importWorkflowTemplate({ name: "ok", workflow: IMG2IMG, parameters: [...PARAMETERS, { name: "ref", type: "image", nodeId: "10", input: "image" }] });
+  const ref = t.parameters.find((p) => p.name === "ref");
+  assert.deepEqual([ref?.required, ref?.accept, ref?.maxBytes], [true, null, null]);
 });

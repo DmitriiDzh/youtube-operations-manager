@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -218,6 +218,54 @@ export function createRunpodS3Client(config: RunpodS3Config, deps: { fetchImpl?:
       }
       const response = await signedFetch("PUT", objectUrl(key), { body, contentType, timeoutMs: TRANSFER_TIMEOUT_MS });
       if (!response.ok) throw failure(response, "PUT", key);
+    },
+
+    /**
+     * BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.4): uploads a local file by STREAMING it -- never buffered whole in memory.
+     * SigV4 signs the payload hash, so the file is read twice: once to hash it, once as the body (with its exact
+     * Content-Length; a file that changes between the passes fails S3's own hash check). Same 500 MB single-PUT limit.
+     */
+    async putObjectFromFile(key: string, filePath: string, contentType = "application/octet-stream"): Promise<{ bytes: number; sha256: string }> {
+      const { size } = await stat(filePath);
+      if (size > RUNPOD_S3_MAX_SINGLE_PUT_BYTES) {
+        throw new DomainError({
+          code: "runpod_s3_unavailable",
+          message: "Objects over 500 MB need a multipart upload, which this client does not implement.",
+          details: { key, size },
+        });
+      }
+      const hash = createHash("sha256");
+      for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer);
+      const payloadHash = hash.digest("hex");
+      await authorize("runpod_s3");
+      const url = objectUrl(key);
+      const headers = signSigV4({
+        method: "PUT",
+        url,
+        headers: { "content-type": contentType },
+        payloadHash,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        region: config.datacenterId,
+        service: "s3",
+        now: now(),
+        includeContentSha256Header: true,
+      });
+      let response: Response;
+      try {
+        response = await fetchImpl(url, {
+          method: "PUT",
+          headers: { ...headers, "content-length": String(size) },
+          body: Readable.toWeb(createReadStream(filePath)) as unknown as BodyInit,
+          // Node's fetch needs this for a streamed request body.
+          duplex: "half",
+          signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
+        } as RequestInit & { duplex: "half" });
+      } catch (error) {
+        throw new DomainError({ code: "runpod_s3_unavailable", message: `RunPod S3 request failed: ${error instanceof Error ? error.message : String(error)}`, details: { method: "PUT", host: url.host } });
+      }
+      if (!response.ok) throw failure(response, "PUT", key);
+      return { bytes: size, sha256: payloadHash };
     },
 
     /** Idempotent: a 404 counts as deleted. */

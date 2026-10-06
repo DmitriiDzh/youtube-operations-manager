@@ -8007,6 +8007,29 @@ export async function markMediaExchangeFileRemoteDeleted(remoteKey: string, at: 
   await database.update(mediaExchangeFiles).set({ remoteDeletedAt: at }).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
 }
 
+export type StoredMediaExchangeInput = typeof mediaExchangeInputs.$inferSelect;
+
+/** BL-132: one job input file uploaded to the volume (the janitor deletes it by this ledger once the job is terminal). */
+export async function insertMediaExchangeInput(
+  row: { remoteKey: string; jobId: string; parameter: string; sourcePath: string; bytes: number; sha256: string; uploadedAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(mediaExchangeInputs).values({ ...row, remoteDeletedAt: null }).onConflictDoNothing();
+}
+
+export async function listMediaExchangeInputsByJob(jobId: string, database: AppDb = db): Promise<StoredMediaExchangeInput[]> {
+  return database.select().from(mediaExchangeInputs).where(eq(mediaExchangeInputs.jobId, jobId)).orderBy(asc(mediaExchangeInputs.parameter));
+}
+
+export async function getMediaExchangeInput(remoteKey: string, database: AppDb = db): Promise<StoredMediaExchangeInput | null> {
+  const [row] = await database.select().from(mediaExchangeInputs).where(eq(mediaExchangeInputs.remoteKey, remoteKey));
+  return row ?? null;
+}
+
+export async function markMediaExchangeInputRemoteDeleted(remoteKey: string, at: Date, database: AppDb = db): Promise<void> {
+  await database.update(mediaExchangeInputs).set({ remoteDeletedAt: at }).where(eq(mediaExchangeInputs.remoteKey, remoteKey));
+}
+
 export async function getMediaExchangeFile(remoteKey: string, database: AppDb = db): Promise<StoredMediaExchangeFile | null> {
   const [row] = await database.select().from(mediaExchangeFiles).where(eq(mediaExchangeFiles.remoteKey, remoteKey));
   return row ?? null;

@@ -150,7 +150,29 @@ export type MediaSessionLimits = {
 
 // -- workflow templates and jobs (slice 3, PHASE_14_PLAN.md §2.4, owner decision D7) ------------------
 
-export type MediaParameterType = "string" | "text" | "number" | "integer" | "boolean" | "enum";
+export type MediaParameterType = "string" | "text" | "number" | "integer" | "boolean" | "enum" | MediaInputParameterType;
+
+/**
+ * BL-132 (plan §2.4): a job INPUT file -- the job value is a path relative to the channel workspace's
+ * `99 Data Exchange/Sent to YTM/`; the file is uploaded for that job and the targeted loader input gets its name.
+ */
+export type MediaInputParameterType = "image" | "audio" | "video";
+export const MEDIA_INPUT_PARAMETER_TYPES: readonly MediaInputParameterType[] = ["image", "audio", "video"];
+/** Owner answer O5: 500 MB per input (the S3 single-PUT limit too). */
+export const MEDIA_INPUT_MAX_BYTES = 500 * 1024 * 1024;
+/** Extensions accepted when a parameter declares no `accept` list. */
+export const MEDIA_INPUT_DEFAULT_ACCEPT: Readonly<Record<MediaInputParameterType, readonly string[]>> = {
+  image: [".png", ".jpg", ".jpeg", ".webp"],
+  audio: [".wav", ".mp3", ".flac", ".ogg", ".m4a"],
+  video: [".mp4", ".webm", ".mov", ".mkv"],
+};
+
+export function isInputParameterType(type: string): type is MediaInputParameterType {
+  return (MEDIA_INPUT_PARAMETER_TYPES as readonly string[]).includes(type);
+}
+
+/** One input file of a job as uploaded to the volume (`exchange/in/<jobId>-<parameter>-<name>`). */
+export type MediaJobInput = { parameter: string; sourcePath: string; remoteKey: string; bytes: number; sha256: string; uploadedAt: string; remoteDeleted: boolean };
 
 /** One value an agent may set on an imported graph: which node input it writes, with its bounds. */
 export type MediaTemplateParameter = {
@@ -164,6 +186,10 @@ export type MediaTemplateParameter = {
   max: number | null;
   enum: string[] | null;
   description: string | null;
+  /** BL-132 input types only: accepted extensions (lower-case, with the dot); absent = the type's default list. */
+  accept?: string[] | null;
+  /** BL-132 input types only: size limit in bytes (≤ 500 MB); absent = 500 MB. */
+  maxBytes?: number | null;
 };
 
 /** The model folders on the network volume (`models/<folder>/`), the ComfyUI `extra_model_paths.yaml` names. */
@@ -273,6 +299,8 @@ export type MediaJob = {
   createdAt: string;
   submittedAt: string | null;
   finishedAt: string | null;
+  /** BL-132: the job's input files as uploaded to the volume (empty when the template has no input parameter). */
+  inputs?: MediaJobInput[];
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */

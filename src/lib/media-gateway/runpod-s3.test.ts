@@ -180,3 +180,66 @@ test("review 8: query values are encoded by the SigV4 encoder too (a space is %2
   assert.ok(!calls[0].url.search.includes("+"));
   assert.equal(calls[0].url.searchParams.get("prefix"), "exchange/my job/~x");
 });
+
+// BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.4): a job input file is uploaded by streaming it from disk -- never buffered
+// whole in memory -- in two passes: the file's SHA-256 is computed first and signed as x-amz-content-sha256 (SigV4 needs
+// the payload hash before the body is sent), then the body is streamed with its exact Content-Length.
+test("putObjectFromFile streams the file with its SHA-256 signed and its Content-Length set; returns bytes and hash", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ytm-s3-put-"));
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const { createHash } = await import("node:crypto");
+    const file = path.join(dir, "ref image.png");
+    const content = Buffer.from("PNG-bytes-".repeat(1000));
+    await writeFile(file, content);
+    const expectedSha = createHash("sha256").update(content).digest("hex");
+    let received = Buffer.alloc(0);
+    const { fetchImpl, calls } = fakeFetch(() => new Response(null, { status: 200 }));
+    const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body as ReadableStream<Uint8Array> | undefined;
+      if (body && typeof (body as ReadableStream).getReader === "function") {
+        const reader = body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received = Buffer.concat([received, Buffer.from(value)]);
+        }
+      }
+      return fetchImpl(input, init);
+    }) as typeof fetch;
+    const client = createRunpodS3Client(CONFIG, { fetchImpl: wrapped, authorize: noAuth, now: () => new Date("2026-10-06T10:00:00Z") });
+    const result = await client.putObjectFromFile("exchange/in/job-1/image-ref image.png", file, "image/png");
+    assert.deepEqual(result, { bytes: content.length, sha256: expectedSha });
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(calls[0].init.method, "PUT");
+    assert.equal(calls[0].url.pathname, "/vol123/exchange/in/job-1/image-ref%20image.png");
+    assert.equal(headers["x-amz-content-sha256"], expectedSha);
+    assert.equal(headers["content-length"], String(content.length));
+    assert.equal(headers["content-type"], "image/png");
+    assert.match(headers.authorization, /SignedHeaders=[^,]*x-amz-content-sha256/);
+    assert.ok(received.equals(content), "the body on the wire is the file");
+    assert.equal((calls[0].init as { duplex?: string }).duplex, "half");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("putObjectFromFile refuses a file over the single-PUT limit without calling the network; an S3 error is runpod_s3_unavailable", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ytm-s3-put-"));
+  try {
+    const { writeFile, truncate } = await import("node:fs/promises");
+    const big = path.join(dir, "big.mp4");
+    await writeFile(big, "");
+    await truncate(big, 500 * 1024 * 1024 + 1);
+    const { fetchImpl, calls } = fakeFetch(() => new Response(null, { status: 200 }));
+    const client = createRunpodS3Client(CONFIG, { fetchImpl, authorize: noAuth });
+    await assert.rejects(client.putObjectFromFile("exchange/in/j/big.mp4", big), (e: unknown) => isDomainError(e) && e.code === "runpod_s3_unavailable");
+    assert.equal(calls.length, 0);
+    const small = path.join(dir, "s.wav");
+    await writeFile(small, "abc");
+    const failing = createRunpodS3Client(CONFIG, { fetchImpl: fakeFetch(() => new Response("nope", { status: 500 })).fetchImpl, authorize: noAuth });
+    await assert.rejects(failing.putObjectFromFile("exchange/in/j/s.wav", small), (e: unknown) => isDomainError(e) && e.code === "runpod_s3_unavailable");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -4,12 +4,16 @@ import {
   DomainError,
   EXCHANGE_INPUT_PREFIX,
   EXCHANGE_PREFIX,
+  isInputParameterType,
+  MEDIA_INPUT_DEFAULT_ACCEPT,
+  MEDIA_INPUT_MAX_BYTES,
   MEDIA_JOB_MANIFEST_FILE,
   MEDIA_JOB_TERMINAL_STATUSES,
   MEDIA_OUTPUT_SUBDIR,
   type MediaJob,
   type MediaJobManifest,
   type MediaJobOutput,
+  type MediaJobInput,
   type MediaJobStatus,
   type MediaModelReference,
   type MediaModelUsage,
@@ -108,7 +112,16 @@ export type MediaJobStore = {
     markRemoteDeleted(remoteKey: string, at: Date): Promise<void>;
     get(remoteKey: string): Promise<ExchangeLedgerRow | null>;
   };
+  /** BL-132: job input files uploaded to `exchange/in/` (absent = this store cannot take inputs). */
+  inputs?: {
+    insert(row: Omit<ExchangeInputRow, "remoteDeletedAt">): Promise<void>;
+    listByJob(jobId: string): Promise<ExchangeInputRow[]>;
+    get(remoteKey: string): Promise<ExchangeInputRow | null>;
+    markRemoteDeleted(remoteKey: string, at: Date): Promise<void>;
+  };
 };
+
+export type ExchangeInputRow = { remoteKey: string; jobId: string; parameter: string; sourcePath: string; bytes: number; sha256: string; uploadedAt: Date; remoteDeletedAt: Date | null };
 
 export type JobServiceDependencies = {
   store: MediaJobStore;
@@ -147,6 +160,11 @@ export type JobServiceDependencies = {
   schedule(run: () => Promise<void>): void;
   timeouts?: { pollMs?: number; maxGenerationMs?: number };
   log?: (line: string) => void;
+  /**
+   * BL-132 (plan §2.4): a job input file named relative to the channel workspace's `99 Data Exchange/Sent to YTM/`,
+   * proven contained (`workspace-exchange`); throws `media_input_unavailable`. Absent = inputs are not available here.
+   */
+  resolveInputFile?(channelId: string, relativePath: string): Promise<{ path: string; bytes: number }>;
   /** BL-132: the factory template registry folder (`adapters/template-registry-fs.ts`); absent = no registry on this device. */
   registry?: { read(): Promise<{ indexText: string; readTemplateFile(name: string): Promise<string | null> }> };
   /** BL-132 audit sink. */
@@ -182,6 +200,9 @@ function normalizeParameter(p: ReturnType<typeof importTemplateInputSchema.parse
     max: p.max ?? null,
     enum: p.enum ?? null,
     description: p.description ?? null,
+    // BL-132: only input parameters carry these keys (the other types' JSON shape is unchanged); given on another type they
+    // are kept so the template check can refuse them, never silently dropped.
+    ...(isInputParameterType(p.type) || p.accept != null || p.maxBytes != null ? { accept: p.accept ?? null, maxBytes: p.maxBytes ?? null } : {}),
   };
 }
 
@@ -203,6 +224,9 @@ export function validateTemplateShape(graph: Graph, parameters: MediaTemplatePar
     // parameter on `filename_prefix` could undo it (review round 10).
     if (p.input === "filename_prefix") problems.push(`parameter "${p.name}": filename_prefix is managed by the job (its <jobId>/ prefix) and cannot be a parameter`);
     if (p.type === "enum" && (!p.enum || p.enum.length === 0)) problems.push(`parameter "${p.name}": an enum needs values`);
+    // BL-132: an input file is always the job's own (a default path would be the same file for every job).
+    if (isInputParameterType(p.type) && p.default !== null && p.default !== undefined) problems.push(`parameter "${p.name}": an ${p.type} input cannot have a default`);
+    if (!isInputParameterType(p.type) && (p.accept != null || p.maxBytes != null)) problems.push(`parameter "${p.name}": accept/maxBytes apply only to image, audio and video inputs`);
     // A default that cannot pass the parameter's own type/bounds/enum would fail every job that omits the parameter
     // (blaming the caller's params); refuse it at import instead (review round 8).
     if (p.default !== null && p.default !== undefined) {
@@ -308,6 +332,18 @@ export function checkParameterValue(p: MediaTemplateParameter, value: string | n
       return typeof value !== "boolean" ? `"${p.name}" must be true or false` : null;
     case "enum":
       return typeof value !== "string" || !(p.enum ?? []).includes(value) ? `"${p.name}" must be one of ${(p.enum ?? []).join(", ")}` : null;
+    case "image":
+    case "audio":
+    case "video": {
+      // BL-132: a path relative to the channel's `99 Data Exchange/Sent to YTM/` (where it lies is proven at upload).
+      if (typeof value !== "string" || !value) return `"${p.name}" must be a file path relative to 99 Data Exchange/Sent to YTM`;
+      if (value.length > 500 || value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.includes("\\") || value.split("/").some((s) => s === "" || s === "." || s === "..")) {
+        return `"${p.name}" must be a path relative to 99 Data Exchange/Sent to YTM (use / between folders, no .. or absolute paths)`;
+      }
+      const accept = p.accept ?? MEDIA_INPUT_DEFAULT_ACCEPT[p.type];
+      const extension = path.extname(value).toLowerCase();
+      return accept.includes(extension) ? null : `"${p.name}" must be one of ${accept.join(", ")} (got "${extension || "no extension"}")`;
+    }
   }
 }
 
@@ -455,6 +491,31 @@ export function describeComfyRejection(error: unknown): string {
   return full.length > 2000 ? `${full.slice(0, 1997)}...` : full;
 }
 
+/** BL-132: an input's flat name on the volume -- letters, digits, `.`, `-`, `_` only (the extension is kept). */
+function safeInputName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "_");
+  return cleaned.slice(-120) || "input";
+}
+
+function inputContentType(name: string): string {
+  const types: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+  };
+  return types[path.extname(name).toLowerCase()] ?? "application/octet-stream";
+}
+
 function safeFileName(name: string): string | null {
   if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") return null;
   return name;
@@ -469,6 +530,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   const pollMs = deps.timeouts?.pollMs ?? DEFAULT_POLL_MS;
   const maxGenerationMs = deps.timeouts?.maxGenerationMs ?? DEFAULT_MAX_GENERATION_MS;
   const log = deps.log ?? (() => undefined);
+
+  /** BL-132: a job's uploaded inputs from the ledger (`[]` when it has none). */
+  async function withInputs(job: MediaJob): Promise<MediaJob> {
+    const rows = deps.store.inputs ? await deps.store.inputs.listByJob(job.jobId) : [];
+    const inputs: MediaJobInput[] = rows.map((r) => ({ parameter: r.parameter, sourcePath: r.sourcePath, remoteKey: r.remoteKey, bytes: r.bytes, sha256: r.sha256, uploadedAt: r.uploadedAt.toISOString(), remoteDeleted: r.remoteDeletedAt !== null }));
+    return { ...job, inputs };
+  }
 
   function factoryManaged(templateId: string): DomainError {
     return new DomainError({
@@ -1142,9 +1210,28 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       // nothing is submitted (and no GPU minute spent) -- `media_workspace_unavailable` / `media_generation_not_configured`
       // at submit time, as the agent contract promises.
       await deps.resolveOutputRoot(parsed.channelId);
-      await deps.s3();
+      const s3 = await deps.s3();
+      // BL-132 (plan §2.4, AC-FM-11): every input file is found and checked BEFORE anything is written or uploaded.
+      const inputs: Array<{ parameter: MediaTemplateParameter; relativePath: string; file: { path: string; bytes: number } }> = [];
+      for (const p of parameters.filter((q) => isInputParameterType(q.type) && typeof values[q.name] === "string")) {
+        const relativePath = values[p.name] as string;
+        if (!deps.resolveInputFile || !deps.store.inputs) throw new DomainError({ code: "media_input_unavailable", message: "Job input files are not available on this server.", details: { parameter: p.name } });
+        const file = await deps.resolveInputFile(parsed.channelId, relativePath);
+        const limit = Math.min(p.maxBytes ?? MEDIA_INPUT_MAX_BYTES, MEDIA_INPUT_MAX_BYTES);
+        if (file.bytes === 0 || file.bytes > limit) {
+          throw new DomainError({ code: "media_input_unavailable", message: `"${p.name}": ${relativePath} is ${file.bytes} bytes; an input must be 1 byte to ${limit} bytes.`, details: { parameter: p.name, bytes: file.bytes, maxBytes: limit } });
+        }
+        inputs.push({ parameter: p, relativePath, file });
+      }
       const jobId = deps.generateId();
-      const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, values, jobId);
+      // Each input goes to the ROOT of ComfyUI's input folder under a job-unique flat name (`<jobId>-<param>-<name>`), and
+      // the targeted loader input is given that name; the job's params keep the path the caller gave.
+      const uploads = inputs.map((input) => {
+        const name = `${jobId}-${input.parameter.name}-${safeInputName(path.basename(input.relativePath))}`;
+        return { ...input, name, remoteKey: `${EXCHANGE_INPUT_PREFIX}${name}` };
+      });
+      const promptValues = { ...values, ...Object.fromEntries(uploads.map((u) => [u.parameter.name, u.name])) };
+      const prompt = buildPrompt(JSON.parse(template.workflowJson) as Graph, parameters, promptValues, jobId);
       const now = deps.clock.now();
       const row = await deps.store.jobs.insert({
         id: jobId,
@@ -1163,6 +1250,17 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         submittedAt: null,
         finishedAt: null,
       });
+      // BL-132: upload the inputs before ComfyUI sees the prompt; a failure fails the job before any GPU work.
+      for (const upload of uploads) {
+        try {
+          const sent = await s3.putObjectFromFile(upload.remoteKey, upload.file.path, inputContentType(upload.name));
+          await deps.store.inputs!.insert({ remoteKey: upload.remoteKey, jobId, parameter: upload.parameter.name, sourcePath: upload.relativePath, bytes: sent.bytes, sha256: sent.sha256, uploadedAt: deps.clock.now() });
+        } catch (error) {
+          const message = `input "${upload.parameter.name}" (${upload.relativePath}) could not be uploaded: ${error instanceof Error ? error.message : String(error)}`;
+          await failJob(row, message);
+          throw new DomainError({ code: "media_input_unavailable", message, details: { jobId, parameter: upload.parameter.name } });
+        }
+      }
       let comfy: ComfyUiClient;
       try {
         comfy = await deps.sessions.comfyClientForSession(parsed.sessionId);
@@ -1200,19 +1298,19 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         throw new DomainError({ code: "media_job_invalid_state", message: `Job was ${current.status} before the submit completed; the prompt was withdrawn`, details: { jobId, status: current.status } });
       }
       deps.schedule(() => processJob(jobId));
-      return toPublicJob(updated);
+      return withInputs(toPublicJob(updated));
     },
 
     processJob,
 
     async getJob(input: unknown): Promise<MediaJob> {
       const { jobId } = parseWithSchema(jobIdInputSchema, input, "job id");
-      return toPublicJob(await requireJob(jobId));
+      return withInputs(toPublicJob(await requireJob(jobId)));
     },
 
     async listJobs(input: unknown = {}): Promise<MediaJob[]> {
       const filter = parseWithSchema(listJobsInputSchema, input, "list jobs");
-      return (await deps.store.jobs.list(filter)).map(toPublicJob);
+      return Promise.all((await deps.store.jobs.list(filter)).map((row) => withInputs(toPublicJob(row))));
     },
 
     /** queued/submitted/generating -> cancelled; ComfyUI's current execution is interrupted (best effort). */
@@ -1310,7 +1408,26 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           continue;
         }
         if (key.startsWith(EXCHANGE_INPUT_PREFIX)) {
-          kept.push({ key, reason: "reference input" });
+          // BL-132: a job's uploaded input is deleted once its job is terminal -- BY LEDGER ONLY; anything else under
+          // exchange/in/ (the operator's own reference files) is never touched.
+          const input = deps.store.inputs ? await deps.store.inputs.get(key) : null;
+          if (!input) {
+            kept.push({ key, reason: "reference input" });
+            continue;
+          }
+          if (!jobCache.has(input.jobId)) jobCache.set(input.jobId, await deps.store.jobs.get(input.jobId));
+          const owner = jobCache.get(input.jobId) ?? null;
+          if (owner && !MEDIA_JOB_TERMINAL_STATUSES.includes(owner.status)) {
+            kept.push({ key, reason: `input of a ${owner.status} job` });
+            continue;
+          }
+          if (dryRun) {
+            wouldDelete.push(key);
+            continue;
+          }
+          await s3.deleteObject(key);
+          await deps.store.inputs!.markRemoteDeleted(key, deps.clock.now());
+          deleted.push(key);
           continue;
         }
         const jobId = key.slice(EXCHANGE_PREFIX.length).split("/")[0];

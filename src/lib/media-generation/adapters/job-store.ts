@@ -1,6 +1,10 @@
 import {
   deleteMediaWorkflowTemplate,
   getMediaExchangeFile,
+  getMediaExchangeInput,
+  insertMediaExchangeInput,
+  listMediaExchangeInputsByJob,
+  markMediaExchangeInputRemoteDeleted,
   getMediaJobById,
   getMediaWorkflowTemplateById,
   insertMediaJob,
@@ -71,6 +75,12 @@ export function createMediaJobStore(): MediaJobStore {
       upsert: (row) => upsertMediaExchangeFile(row),
       markRemoteDeleted: (key, at) => markMediaExchangeFileRemoteDeleted(key, at),
       get: (key) => getMediaExchangeFile(key).then((r) => (r ? { ...r, remoteDeletedAt: r.remoteDeletedAt ?? null } : null)),
+    },
+    inputs: {
+      insert: (row) => insertMediaExchangeInput(row),
+      listByJob: (jobId) => listMediaExchangeInputsByJob(jobId).then((rows) => rows.map((r) => ({ ...r, remoteDeletedAt: r.remoteDeletedAt ?? null }))),
+      get: (key) => getMediaExchangeInput(key).then((r) => (r ? { ...r, remoteDeletedAt: r.remoteDeletedAt ?? null } : null)),
+      markRemoteDeleted: (key, at) => markMediaExchangeInputRemoteDeleted(key, at),
     },
   };
 }
