@@ -1,4 +1,5 @@
 import type { ChannelAccessService } from "@/lib/channel-access";
+import { credentialUserIdFor, errorCodeOf } from "@/lib/channel-fanout/policy";
 import type { ReportingJob, ReportingReport } from "@/lib/youtube-read-gateway";
 import type { ParsedReportingCsv } from "@/lib/youtube-read-gateway";
 import {
@@ -103,11 +104,6 @@ export type SyncAllReachChannelOutcome =
   | { channelId: string; outcome: "synced"; filesImported: number }
   | { channelId: string; outcome: "skipped"; reason: "no_connected_user" | "checked_recently" | "in_progress" }
   | { channelId: string; outcome: "failed"; error: string; code?: string };
-
-function errorCodeOf(error: unknown): string | undefined {
-  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
-  return typeof code === "string" ? code : undefined;
-}
 
 function getCredentialUserId(credentialRef: unknown): string | null {
   return credentialRef !== null &&
@@ -374,7 +370,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
 
       async function syncOne({ channelId, connectedUserId }: { channelId: string; connectedUserId: string | null }): Promise<SyncAllReachChannelOutcome> {
         const isActive = channelId === activeChannelId;
-        const userId = isActive ? input.sessionUserId : connectedUserId;
+        const userId = credentialUserIdFor({ channelId, connectedUserId }, { activeChannelId, sessionUserId: input.sessionUserId });
         if (!userId) {
           await recordNotSynced(channelId, "Not checked automatically: no Google account is connected for this channel.");
           return { channelId, outcome: "skipped", reason: "no_connected_user" };

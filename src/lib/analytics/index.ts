@@ -6,13 +6,18 @@ import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { quotaScoped } from "@/lib/youtube-quota";
 import { createAnalyticsServices } from "./services";
-import { runAutoCollectionForAllChannels } from "./auto-collect-all";
+import { runAutoCollectionForChannels } from "./auto-collect-all";
+import { createBackgroundFailureBackoff, listChannelConnections } from "@/lib/channel-fanout";
 
 function defaultAuthResolver() {
   return {
     resolve: resolveGoogleCredentials,
   };
 }
+
+// BL-142: one in-process backoff for failing background channels, shared by every core instance.
+const backgroundBackoff = createBackgroundFailureBackoff();
+const backgroundLogger = createDefaultLogger();
 
 export function createAnalyticsCore() {
   const store = createAnalyticsStoreAdapter();
@@ -53,19 +58,20 @@ export function createAnalyticsCore() {
       return services.runAutoCollectionIfStale(input);
     }, context),
   };
-  const channelAccess = createChannelAccessCore();
   return {
     ...core,
-    // BL-142: the dashboard's automatic collection for every connected channel. It is handed the quota-guarded
-    // functions above, never the raw services, so background channels keep the same reserve and quota attribution.
-    runAutoCollectionForAllChannels: (input: { sessionUserId: string }) =>
-      runAutoCollectionForAllChannels(
+    // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the
+    // quota-guarded functions above, never the raw services, so background channels keep the same reserve and quota
+    // attribution.
+    runAutoCollectionForChannels: (input: { sessionUserId: string; activeChannelId: string | null; which: "active" | "background" }) =>
+      runAutoCollectionForChannels(
         {
-          listChannelConnections: () => store.channelStore.listChannelConnections(),
-          getActiveChannelId: (userId) => channelAccess.getActiveChannelId(userId),
+          listChannelConnections,
           runAutoCollectionIfStale: core.runAutoCollectionIfStale,
           runWeeklyReportIfDue: core.runWeeklyReportIfDue,
           getHistoryCatchUpPlan: core.getHistoryCatchUpPlan,
+          backoff: backgroundBackoff,
+          onBackgroundIssue: (channelId, message) => backgroundLogger.info({ event: "analytics.auto_collect_all.background", context: { channelId, message } }),
         },
         input
       ),
@@ -74,6 +80,7 @@ export function createAnalyticsCore() {
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
 export type { AutoCollectAllResult, AutoCollectChannelOutcome } from "./auto-collect-all";
+export { beginAllChannelsRun, endAllChannelsRun } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";
 export { buildChannelOverviewView } from "./overview-view";

@@ -8,12 +8,12 @@ import {
   listChannelReachDaily,
   listSeenReportingReportIds,
   upsertReportingJob,
-  listStoredChannels,
 } from "@/lib/db";
+import { listChannelConnections } from "@/lib/channel-fanout";
 import type { ReachReportsDependencies } from "../services";
 
 // Deliberately thin: only the Reporting/Reach persistence functions. Never touches `videos` or anything in
-// youtube-write-gateway; from `channels` it only reads each channel's id and connected Google user (BL-141).
+// youtube-write-gateway; each channel's connected Google user comes from the shared channel-fanout module (BL-141).
 export function createReachReportsStoreAdapter(): ReachReportsDependencies["store"] {
   return {
     upsertJob: (args) => upsertReportingJob(args),
@@ -29,9 +29,7 @@ export function createReachReportsStoreAdapter(): ReachReportsDependencies["stor
     },
     getCoverage: (channelId) => getChannelReachCoverage(channelId),
     recordAttempt: (args) => recordReportingSyncAttempt(args),
-    async listChannelConnections() {
-      return (await listStoredChannels()).map((channel) => ({ channelId: channel.channelId, connectedUserId: channel.connectedUserId }));
-    },
+    listChannelConnections,
     getAttempt: (channelId, reportTypeId) => getReportingSyncAttempt(channelId, reportTypeId),
     listFiles: (channelId, reportTypeId, limit) => listReportingReportFiles(channelId, reportTypeId, limit),
   };
