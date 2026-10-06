@@ -2203,14 +2203,21 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - One tip that is a fast-forward, with local clean: import.
    - A newer schema: `update_app`.
    - Anything else: divergence.
-4a. **Identical-content divergence (BL-139, owner 2026-10-06).** With one conflicting tip, the tick
-   compares the live content fingerprint with the tip's, staged exactly like an import
-   (checksums, private copy, migration; cached per snapshot id). Equal: under the `export` lock,
-   re-checked inside, the device writes the tip as its lineage head, keeping its own head and
-   ancestors in `ancestors_json`. No row changes, so no import, backup or export, and no marker
-   (two computers would ping-pong markers). Its next export carries both histories, so a peer
-   that adopted this device's branch still fast-forwards. Different content, several tips, or a
-   copy that cannot be compared: divergence as before.
+4a. **Identical-content divergence (BL-139, owner 2026-10-06; reworked after review round 1).**
+   Each conflicting tip is staged exactly like an import (checksums, private copy, migration;
+   fingerprint cached per snapshot id, `null` only for a newer schema).
+   - A tip whose content equals the fingerprint recorded with this device's head holds nothing
+     this device lacks: it and its ancestry are added to `ancestors_json` by compare-and-set on the
+     head (`addLineageAncestorsIfHeadUnchanged`). Head, data and fingerprint stay, so every device
+     keeps its OWN snapshot as head (retention protects it), and the decision is made again
+     (export if dirty, else idle). The export carries that branch as an ancestor, so the peer
+     fast-forwards.
+   - A clean device with several tips that all hold the same data imports the newest one that
+     continues its history (an ordinary import); the next tick absorbs the rest.
+   - Anything else (different content, a comparison that fails) is a divergence as before.
+   An earlier version switched the head to the peer's snapshot instead; review round 1 showed it
+   left the peer asking about an abandoned branch (where "take theirs" lost a row on both sides),
+   a third device asking forever, and no device protecting the current snapshot.
 5. Actions go through the existing `exportHandoff` / `importHandoff`. `assertStillSafe` re-checks
    the gates, and the fingerprint for an import, inside the operation lock, right before anything
    is written. In a divergence, local unpublished changes are still published on their own branch,
@@ -2282,13 +2289,17 @@ state, so these are held per process via `globalThis`:
 (`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock. Around the
 migrations, `createSyncPreservingMigrationHooks` (BL-139) moves the lineage fingerprint by
 compare-and-set if the device was in sync before them: every computer applies the same migrations,
-so a column added with a non-NULL DEFAULT is not a local change.
+so a column added with a non-NULL DEFAULT is not a local change. Both fingerprints come from the
+pre-migration backup (`after` from a private copy of it, migrated), never the live DB, so a write
+another process makes during the migration window still reads as unpublished.
 
 **Automatic writes wait for sync (BL-139).** The dashboard's Market Intelligence refresh
 (`collect-if-stale`) first calls `runner.syncBeforeBackgroundWrite()` (one tick, 60 s bound) and
-runs only on `backgroundWriteVerdict` = allowed: sync off/unconfigured, synced/exported/imported,
-or waiting with nothing in transit. A transfer in progress, a conflict, a pause or an unreachable
-folder skips it until the next dashboard load. A device-sync failure never blocks it (§M).
+waits only while something from another computer is arriving (a pending entry younger than the
+10-minute grace), while sync is paused (`busy`), while the folder is unreachable, or while a
+divergence notice is open. A stuck transfer, `update_app` and `error` have their own notices and do
+not block it. A skip is saved as `backgroundWritesPausedReason` and shown in the bell; the next
+dashboard load tries again. A device-sync failure never blocks it (§M).
 
 **Stuck operation lock recovery (2026-10-01).** A migration/import killed mid-run leaves its
 `app_operation_locks` row; by decision 2b it is never auto-released (only a dead *export*'s is), so

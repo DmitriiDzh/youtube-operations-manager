@@ -1470,9 +1470,9 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
     Nothing is overwritten, and every replaced state has a never-pruned backup
     (`pre-take-theirs-*`, `pre-superseded-*`). Converging on resolution identity proved unsafe
-    under concurrent opposite resolutions. Since BL-139, when two resolutions happen to leave the
-    SAME data on both computers, plain content equality settles it without a prompt; different
-    data still asks.
+    under concurrent opposite resolutions. Since BL-139, a branch whose content equals this
+    device's head content is absorbed as an ancestor (the head never moves), so two resolutions
+    that leave the SAME data settle without a prompt; different data still asks.
     Revisit if re-prompts are reported in practice. The resolution matrix is
     `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
     prompt.
@@ -1481,14 +1481,20 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     computers that still end up with identical data settle without a prompt. Remaining limit: a
     migration whose data transform depends on device-local tables is rebaselined too, so its
     derived rows are published with the next real change.
-  - **False prompts from automatic jobs (BL-139, 2026-10-06).** Both computers running the same
-    automatic job used to fork the history (4 and 5 October). Now identical results settle on their
-    own, and the dashboard's Market Intelligence auto-collection waits until sync has caught up.
-    Remaining limits:
-    - two computers collecting within the same minute still fork, and so do different results
-      (per-device collection depth, or the BL-125 retention sweep with per-device settings);
-    - while the sync folder is unreachable (the external drive unplugged), the auto-collection does
-      not run on that computer; manual collection still works;
+  - **False prompts (BL-139, 2026-10-06).** On 4 October the two branches held identical data
+    (an app update); on 5 October both computers ran the dashboard's Market Intelligence
+    collection. What settles now, and what does not:
+    - another computer's branch holding exactly this device's head content (app updates,
+      identical resolutions, the re-prompt cases above when the data agrees) is absorbed as an
+      ancestor without asking;
+    - collections never produce identical rows (they carry clock times), so for them the
+      protection is the gate: the automatic refresh waits until sync has caught up. The fork
+      window remains from one computer's write until the other has received its snapshot (a
+      30 s tick, the 60 s export interval and the Syncthing transfer), so opening the app on both
+      computers within the same few minutes can still fork. Different results (per-device
+      collection depth, the BL-125 retention sweep with per-device settings) also still fork;
+    - while the sync folder is unreachable (external drive unplugged), the automatic refresh does
+      not run on that computer and the bell says why; manual collection still works;
     - an expired-row difference (one side purged under the 30-day rule, the other's snapshot not
       yet) makes identical data compare as different, which ends in a prompt (fail closed).
   - **Merge-transaction length grows with the Research history.** An import holds the write lock

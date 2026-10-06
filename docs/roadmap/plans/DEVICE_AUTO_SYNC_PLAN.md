@@ -140,9 +140,9 @@ root also holds `change-drafts/`, `editorial-profile/`, and similar folders, whi
 ### 3.6 Resolving a divergence (explicit human choice, never automatic)
 
 **Amendment 2026-10-06 (owner, Telegram msgs 1758/1764, BL-139).** A divergence whose two sides
-hold *identical* transferred data is no longer shown: the device takes the peer tip as its lineage
-head (no row changes, no import, no backup, nothing published) and keeps its own branch in its
-ancestry. Only a real content difference reaches a human, with the two choices below, now made in
+hold *identical* transferred data is no longer shown: a peer branch holding exactly this
+device's head content is recorded as an ancestor of the head (no row changes, no import, no
+backup); a clean device facing several identical tips imports one. Only a real content difference reaches a human, with the two choices below, now made in
 the Merge tab, which shows what differs (`GET /api/device-sync/divergence`). See ARCHITECTURE §23.
 
 

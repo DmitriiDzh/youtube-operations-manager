@@ -76,10 +76,13 @@ tab.
 
 Owner, Telegram msgs 1758/1764. Real conflicts on 4 and 5 October had no human edit behind them:
 on 10-04 both branches held row-for-row identical data (an app update), on 10-05 both computers
-ran the dashboard's automatic Market Intelligence collection. Changes:
+ran the dashboard's automatic Market Intelligence collection (rows with clock times, never
+identical, so the gate below is what addresses that case). Changes:
 
-- A divergence with identical content on both sides settles without a prompt: the device adopts
-  the peer tip as its head (no data change, no marker, so two computers never ping-pong).
+- Another computer's branch whose content equals this device's head content is recorded as an
+  ancestor of the head (head and data unchanged); a clean device facing several identical tips
+  imports one. An earlier head-switching version was dropped after review (it could leave a
+  stale prompt where "take theirs" lost a row).
 - Boot migrations rebaseline the lineage fingerprint by compare-and-set, as the 30-day purge does.
 - The automatic collection first runs one sync tick and is skipped unless this computer is caught
   up (`backgroundWriteVerdict`).
