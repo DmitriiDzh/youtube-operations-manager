@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { HuggingFaceFileInfo, RunpodApiClient, RunpodS3Client } from "@/lib/media-gateway";
 import { sleep } from "@/lib/shared-async";
-import { DomainError, MEDIA_MODEL_FOLDERS, NETWORK_VOLUME_USD_PER_GB_MONTH, type MediaModelEntry, type MediaModelUsage, type MediaSettings, type MediaStorageStatus } from "./contracts";
+import { DomainError, EXCHANGE_PREFIX, MEDIA_MODEL_FOLDERS, NETWORK_VOLUME_USD_PER_GB_MONTH, type MediaModelEntry, type MediaModelUsage, type MediaSettings, type MediaStorageStatus, type MediaVolumeUsage } from "./contracts";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import { parseWithSchema } from "./schemas";
 import type { VolumeLock } from "./volume-lock";
@@ -351,6 +351,19 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         freeGb: usedGb === null ? null : Math.max(0, volume.sizeGb - usedGb),
         monthlyUsd: Math.round(volume.sizeGb * NETWORK_VOLUME_USD_PER_GB_MONTH * 100) / 100,
       };
+    },
+
+    /** BL-136: the bytes on the whole volume by area, from one S3 listing (RunPod does not report a volume's used space). */
+    async volumeUsage(): Promise<MediaVolumeUsage> {
+      const objects = await (await deps.base.s3()).listAllObjects("");
+      const usage: MediaVolumeUsage = { totalBytes: 0, modelsBytes: 0, exchangeBytes: 0, otherBytes: 0, objectCount: objects.length };
+      for (const o of objects) {
+        usage.totalBytes += o.size;
+        if (o.key.startsWith(MODELS_PREFIX)) usage.modelsBytes += o.size;
+        else if (o.key.startsWith(EXCHANGE_PREFIX)) usage.exchangeBytes += o.size;
+        else usage.otherBytes += o.size;
+      }
+      return usage;
     },
 
     /** BL-132: the model list with each file's verified SHA-256 (from this device's pulls) and the templates using it. */

@@ -15,6 +15,7 @@ import {
   type MediaSettings,
   type MediaStorageStatus,
   type MediaTemplateSyncResult,
+  type MediaVolumeUsage,
   type MediaWorkflowTemplate,
 } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -23,6 +24,7 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
+import { VolumeUsageBar, volumeUsageBreakdown } from "./volume-usage-bar";
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
 // enters RunPod keys here (stored encrypted per device, never shown again), picks datacenter / GPU /
@@ -196,6 +198,8 @@ export function ModelsCard({ configured }: { configured: boolean }) {
   const [events, setEvents] = useState<MediaControlEventView[]>([]);
   const [storage, setStorage] = useState<MediaStorageStatus | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<MediaVolumeUsage | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
 
   const load = useCallback(
     () =>
@@ -217,6 +221,17 @@ export function ModelsCard({ configured }: { configured: boolean }) {
             setStorageError(null);
           },
           (err: unknown) => setStorageError(err instanceof Error ? err.message : "Could not read the volume's size")
+        ),
+        // BL-136: the whole volume's use (one S3 listing); its failure leaves the bar with the model files only.
+        requestJson<{ usage: MediaVolumeUsage }>("/api/media-generation/storage/usage").then(
+          (data) => {
+            setUsage(data.usage);
+            setUsageError(null);
+          },
+          (err: unknown) => {
+            setUsage(null);
+            setUsageError(err instanceof Error ? err.message : "Could not list the whole volume");
+          }
         ),
       ]).then(() => undefined),
     []
@@ -301,11 +316,13 @@ export function ModelsCard({ configured }: { configured: boolean }) {
               </span>
             )}
           </div>
+          {storage && models && <VolumeUsageBar breakdown={volumeUsageBreakdown({ rentedGb: storage.sizeGb, models, usage })} />}
+          {usageError && <p className="text-xs text-amber-400">Volume listing: {usageError}</p>}
           {storage && (
             <p className="text-xs text-zinc-400">
               Volume {storage.volumeId}
               {storage.dataCenterId ? ` (${storage.dataCenterId})` : ""}: {storage.sizeGb} GB rented
-              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : " · usage not reported"} · ${storage.monthlyUsd.toFixed(2)}/month
+              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : ""} · ${storage.monthlyUsd.toFixed(2)}/month
             </p>
           )}
           {storageError && <p className="text-xs text-amber-400">Volume size: {storageError}</p>}
