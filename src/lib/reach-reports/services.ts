@@ -89,10 +89,21 @@ export type ReachReportsDependencies = {
     ): Promise<Array<{ reportId: string; startTime: string; endTime: string; createTime: string; rowCount: number; status: string; importedAt: Date }>>;
   };
   channelAccess: ChannelAccessService;
+  /** BL-141: every stored channel and the Google user whose token belongs to it (`channels.connected_user_id`). */
+  listChannelConnections(): Promise<Array<{ channelId: string; connectedUserId: string | null }>>;
   /** The scope the Reporting API needs (`yt-analytics.readonly`). */
   requiredScope: string;
   clock: { now(): Date };
 };
+
+export type SyncAllReachChannelOutcome =
+  | { channelId: string; outcome: "synced"; filesImported: number }
+  | { channelId: string; outcome: "skipped"; reason: "no_connected_user" | "checked_recently" }
+  | { channelId: string; outcome: "failed"; error: string };
+
+function hasErrorCode(error: unknown): error is { code: string } {
+  return error instanceof Error && typeof (error as { code?: unknown }).code === "string";
+}
 
 function getCredentialUserId(credentialRef: unknown): string | null {
   return credentialRef !== null &&
@@ -109,7 +120,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
     await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId });
   }
 
-  return {
+  const services = {
     /**
      * Makes sure the channel's Reach job exists (reusing an existing one) and imports every report file not
      * seen before. Safe to call repeatedly: a file is downloaded and imported once. One bad file does not
@@ -306,6 +317,49 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         importedFiles: coverage.importedFiles,
         files: files.map((f) => ({ ...f, importedAt: f.importedAt.toISOString() })),
       };
+    },
+  };
+
+  return {
+    ...services,
+
+    /**
+     * BL-141 (owner, Telegram 2026-10-06, msgs 1864/1865): the dashboard's automatic check, for EVERY connected channel,
+     * not only the active one. Each channel goes through syncReachReports with its OWN Google user's credentials
+     * (`connectedUserId`), so its active-channel check still applies: a user who has since switched to another channel
+     * fails closed for this one rather than syncing it with a token that is no longer its own. The same posture as the
+     * single-channel path -- no extra live identity call; a file whose rows carry another channel's id is still
+     * rejected whole (reach-csv.ts). One channel failing is recorded for it and never stops the others (AGENTS.md §M).
+     */
+    async syncAllReachReports(input: { onlyIfDue: boolean }): Promise<{ channels: SyncAllReachChannelOutcome[] }> {
+      const connections = await deps.listChannelConnections();
+      const channels: SyncAllReachChannelOutcome[] = [];
+      for (const { channelId, connectedUserId } of connections) {
+        if (!connectedUserId) {
+          channels.push({ channelId, outcome: "skipped", reason: "no_connected_user" });
+          continue;
+        }
+        try {
+          const result = await services.syncReachReports({
+            credentialRef: { userId: connectedUserId },
+            channelId,
+            ...(input.onlyIfDue ? { onlyIfDue: true } : {}),
+          });
+          channels.push(
+            result.skipped
+              ? { channelId, outcome: "skipped", reason: result.reason }
+              : { channelId, outcome: "synced", filesImported: result.filesImported }
+          );
+        } catch (error) {
+          channels.push({
+            channelId,
+            outcome: "failed",
+            // A domain error is reported by its code (e.g. CHANNEL_NOT_ACTIVE, from channel-access's own error class).
+            error: hasErrorCode(error) ? error.code : error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return { channels };
     },
   };
 }
