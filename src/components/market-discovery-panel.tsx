@@ -25,13 +25,21 @@ type DiscoveryCandidate = {
 // Phase 13 slice 13.4: one search.list call = 1 of YouTube's 100 daily searches (its own quota bucket).
 
 // BL-140 R4 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.5): candidates by status, New first, paged on the server.
+// BL-145 (owner, Telegram 2026-10-07, msg 1904): "Watch" now means what it sounds like -- the channel joins the tracked
+// list that is collected regularly (the promote action, now called Track). The old "watching" status is no longer
+// offered; it appears as a filter only while some candidate still has it (older data).
 export const CANDIDATE_FILTERS: { value: DiscoveryCandidateStatus; label: string }[] = [
   { value: "new", label: "New" },
-  { value: "watching", label: "Watching" },
+  { value: "promoted", label: "Tracked" },
   { value: "ignored", label: "Ignored" },
-  { value: "promoted", label: "Promoted" },
   { value: "archived", label: "Archived" },
+  { value: "watching", label: "Shortlisted (old)" },
 ];
+
+/** The reason a Track pre-fills, editable before saving. Exported for its test. */
+export function defaultTrackReason(candidate: { discoveryQuery: string }): string {
+  return `Found by the search "${candidate.discoveryQuery}"`;
+}
 const PAGE_SIZE = 25;
 type CandidatesPage = { candidates: DiscoveryCandidate[]; total: number; page: number; limit: number; counts: Record<DiscoveryCandidateStatus, number> };
 
@@ -178,7 +186,7 @@ export function MarketDiscoveryPanel({
     }
   }
 
-  async function handleUpdateStatus(channelId: string, status: "watching" | "ignored" | "archived") {
+  async function handleUpdateStatus(channelId: string, status: "ignored" | "archived") {
     setUpdatingChannelId(channelId);
     setActionError(null);
     try {
@@ -232,7 +240,7 @@ export function MarketDiscoveryPanel({
             A YouTube channel search, run only when you click Search -- never automatic, never scheduled. Each search
             uses 1 of YouTube&rsquo;s 100 searches per day, a separate quota from the daily units budget in Settings →
             API; it resets at midnight Pacific time. A result already on your watchlist is skipped; everything else
-            becomes a candidate you can watch, ignore, archive, or promote into the watchlist.
+            becomes a candidate you can Track (add to the tracked channels that are collected regularly), ignore or archive.
           </InfoTooltip>
         </h3>
       </div>
@@ -268,7 +276,7 @@ export function MarketDiscoveryPanel({
       {actionError && <p className="text-sm text-red-400">{actionError}</p>}
 
       <div className="flex flex-wrap gap-1" role="tablist" aria-label="Candidate status">
-        {CANDIDATE_FILTERS.map((f) => (
+        {CANDIDATE_FILTERS.filter((f) => f.value !== "watching" || (data?.counts.watching ?? 0) > 0 || statusFilter === "watching").map((f) => (
           <button
             key={f.value}
             type="button"
@@ -290,7 +298,7 @@ export function MarketDiscoveryPanel({
       {loadError && <p className="text-sm text-red-400">{loadError}</p>}
       {data && data.total === 0 && (
         <p className="text-sm text-zinc-500">
-          {statusFilter === "new" ? "No new candidates. Run a search to find channels." : `No ${statusFilter} candidates.`}
+          {statusFilter === "new" ? "No new candidates. Run a search to find channels." : `No ${(CANDIDATE_FILTERS.find((f) => f.value === statusFilter)?.label ?? statusFilter).toLowerCase()} candidates.`}
         </p>
       )}
 
@@ -313,15 +321,6 @@ export function MarketDiscoveryPanel({
                 </span>
                 {candidate.status !== "promoted" && (
                   <div className="flex flex-wrap gap-2">
-                    {candidate.status !== "watching" && (
-                      <button
-                        onClick={() => handleUpdateStatus(candidate.channelId, "watching")}
-                        disabled={updatingChannelId === candidate.channelId}
-                        className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-                      >
-                        Watch
-                      </button>
-                    )}
                     {candidate.status !== "ignored" && (
                       <button
                         onClick={() => handleUpdateStatus(candidate.channelId, "ignored")}
@@ -343,12 +342,13 @@ export function MarketDiscoveryPanel({
                     <button
                       onClick={() => {
                         setPromotingChannelId(candidate.channelId);
-                        setPromoteReason("");
+                        setPromoteReason(defaultTrackReason(candidate));
                       }}
                       disabled={updatingChannelId === candidate.channelId}
+                      title="Add to the tracked channels that are collected regularly"
                       className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                     >
-                      Promote
+                      Track
                     </button>
                   </div>
                 )}
@@ -360,14 +360,15 @@ export function MarketDiscoveryPanel({
                     value={promoteReason}
                     onChange={(e) => setPromoteReason(e.target.value)}
                     placeholder="Reason for tracking this channel"
-                    className="min-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                    aria-label="Reason for tracking"
+                    className="min-w-72 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
                   />
                   <button
                     onClick={() => handleConfirmPromote(candidate.channelId)}
                     disabled={updatingChannelId === candidate.channelId || promoteReason.trim().length === 0}
                     className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                   >
-                    Confirm promote
+                    Track channel
                   </button>
                   <button
                     onClick={() => setPromotingChannelId(null)}
