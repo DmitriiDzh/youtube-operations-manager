@@ -12,6 +12,7 @@ import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
 import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
+import { ResearchTab } from "@/components/research-tab";
 import { MarketIntelligenceCollectionDepthSettings } from "@/components/market-intelligence-collection-depth-settings";
 import { QuotaReserveSettings } from "@/components/quota-reserve-settings";
 import { RetentionSettings } from "@/components/retention-settings";
@@ -21,15 +22,6 @@ import { OperationsWorkspaceSettings } from "@/components/operations-workspace-s
 import { LogicalPathsSettings } from "@/components/logical-paths-settings";
 import { FactoryAgentTokenSettings } from "@/components/factory-agent-token-settings";
 import { OperatorCliSettings } from "@/components/operator-cli-settings";
-import { MarketOverviewPanel } from "@/components/market-overview-panel";
-import { MarketResearchPanel } from "@/components/market-research-panel";
-import { MarketVideosPanel } from "@/components/market-videos-panel";
-import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
-import { MarketTopicsPanel } from "@/components/market-topics-panel";
-import { MusicChartPanel } from "@/components/music-chart-panel";
-import { MarketTrendsPanel } from "@/components/market-trends-panel";
-import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
-import { MarketCollectionRequestsPanel } from "@/components/market-collection-requests-panel";
 import { DecisionsManager } from "@/components/decisions-manager";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
@@ -108,6 +100,8 @@ const NAV_ITEMS = [
 // open, but polling it as rarely as correctness allows is still the cheaper default.
 const CONFLICT_SUMMARY_POLL_MS = 20_000;
 const SYNC_CYCLE_POLL_MS = 60_000;
+// BL-140 R1: how often the sidebar re-reads the pending agent requests in Research (a local read).
+const RESEARCH_PENDING_POLL_MS = 60_000;
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
@@ -139,6 +133,8 @@ export default function Dashboard() {
   const connectionHealth = useConnectionHealth(Boolean(session));
   const refetchConnectionHealth = connectionHealth.refetch;
   const [conflictCount, setConflictCount] = useState(0);
+  // BL-140 R1: agents' requests waiting in Research → Inbox, shown on the sidebar like Merge's conflicts.
+  const [researchPending, setResearchPending] = useState(0);
 
   const fetchChannel = useCallback(async () => {
     try {
@@ -273,8 +269,26 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [userId, refreshConflictSummary]);
 
+  // BL-140 R1 (AC-R1-2): the sidebar shows the pending agent requests whichever tab is open. A local read, no YouTube call.
+  useEffect(() => {
+    if (!userId) return;
+    async function refreshResearchPending() {
+      try {
+        const res = await fetch("/api/market-intelligence/summary");
+        if (!res.ok) return;
+        const data = (await res.json()) as { pending?: { total?: number } };
+        setResearchPending(data.pending?.total ?? 0);
+      } catch {
+        // Non-fatal -- the next poll tries again.
+      }
+    }
+    void refreshResearchPending();
+    const id = setInterval(() => void refreshResearchPending(), RESEARCH_PENDING_POLL_MS);
+    return () => clearInterval(id);
+  }, [userId]);
+
   const navItemsWithBadges = NAV_ITEMS.map((item) =>
-    item.value === "merge" ? { ...item, badge: conflictCount } : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item
   );
 
   if (status === "loading") {
@@ -394,40 +408,7 @@ export default function Dashboard() {
 
       {tab === "research" && (
         <FeatureErrorBoundary label="Research">
-          <div className="space-y-6">
-            <p className="text-sm text-zinc-400">
-              A watchlist of channels for competitive/market context &mdash; discovery only ever
-              runs on your own explicit request below, never automatically, and this is never a
-              source of private analytics for a channel you don&rsquo;t own.
-            </p>
-            <FeatureErrorBoundary label="Research — Overview">
-              <MarketOverviewPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Watchlist">
-              <MarketResearchPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Videos">
-              <MarketVideosPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Discovery">
-              <MarketDiscoveryPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Topics">
-              <MarketTopicsPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Trends">
-              <MarketTrendsPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Music chart">
-              <MusicChartPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Requests">
-              <MarketResearchRequestsPanel />
-            </FeatureErrorBoundary>
-            <FeatureErrorBoundary label="Research — Collection requests">
-              <MarketCollectionRequestsPanel />
-            </FeatureErrorBoundary>
-          </div>
+          <ResearchTab onPendingChange={setResearchPending} />
         </FeatureErrorBoundary>
       )}
 

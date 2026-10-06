@@ -1294,6 +1294,10 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   one.
 - **Gate(s):** none yet -- revisit if watchlist channels accumulate enough real collection history for
   a single request's payload size to become a practical (not just theoretical) problem.
+- **Update (BL-140, 2026-10-06):** the Web UI no longer receives these series in full -- Research → Videos and
+  Discover page on the server, Channels reads one summary row per channel, and a channel's drawer asks for 20 videos.
+  The service reads behind them still load every row, and `getWatchlistEntryContext`'s agent contract is unchanged,
+  so the query-level remediation above is still open.
 - **Status:** OPEN, 2026-09-27.
 
 ## RISK-79 — three lower-severity findings from 9H part A's own independent code review, not fixed in that pass — OPEN, 2026-09-27

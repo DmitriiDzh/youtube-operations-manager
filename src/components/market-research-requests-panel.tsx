@@ -38,7 +38,8 @@ const STATUS_LABELS: Record<MarketResearchRequestStatus, string> = {
 // 1 of YouTube's 100 daily searches) -- the approve action sits behind ConfirmDialog (never window.confirm, per
 // this app's own standing UI convention) and states the cost explicitly before the operator
 // commits.
-export function MarketResearchRequestsPanel() {
+/** `onChanged` runs after an approve or reject, so the summary line and badges follow at once (BL-140 review). */
+export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => void } = {}) {
   const [requests, setRequests] = useState<MarketResearchRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +81,7 @@ export function MarketResearchRequestsPanel() {
       }
       setApproveTarget(null);
       await fetchRequests();
+      onChanged?.();
     } finally {
       setApproving(false);
     }
@@ -103,6 +105,7 @@ export function MarketResearchRequestsPanel() {
       setRejectTarget(null);
       setRejectReason("");
       await fetchRequests();
+      onChanged?.();
     } finally {
       setRejecting(false);
     }

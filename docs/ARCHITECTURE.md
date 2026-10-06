@@ -1837,6 +1837,21 @@ that constant explicitly excludes exactly this shape of change ("a new optional 
 an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
 capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.
 
+**Research tab layout (BL-140, `docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md`, 2026-10-06).** The tab is a summary
+line plus five always-mounted sub-tabs (`src/components/research-tab.tsx`: Inbox, Channels, Videos, Discover, Topics &
+trends); the Overview panel is gone. The summary line (`GET /api/market-intelligence/summary`, polled) reads
+`getResearchSummaryCounts`, which needs no video series. Whether a channel "needs attention" is one rule,
+`classifyCollectionStatus` over `readCollectionState`'s flags, shared by the summary count, the Channels status and
+`getMarketOverview`'s collection warnings, so a count and the list it links to always agree.
+Lists that can grow are bounded on the server: Videos (`videos-overview?page=…`, R2) and Discover candidates
+(`discovery-candidates?page=…&status=…`, R4) return one page; both keep their old unpaged response when `page` is
+absent. Channels reads one row per watchlist channel from `getWatchlistTable` (`GET /api/market-intelligence/
+watchlist-table`, R3) -- only observed values with their dates, a status from the same data-quality flags
+`getMarketOverview` counts as warnings, no derived metric. Record details open in the shared `side-drawer.tsx`; the
+per-record "visible to agents" chip editor lives only in a drawer, lists show a pill (`useMarketAssignments`/
+`VisibleToPill` in `market-channel-assignment.tsx`, one read per record kind). Web routes only: no MCP tool, schema
+or agent contract changed.
+
 ## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-5
 
 Owner instruction, Telegram 2026-09-29: an explicit assignment to plan and implement Phase 10

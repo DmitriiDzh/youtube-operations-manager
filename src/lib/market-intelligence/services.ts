@@ -86,6 +86,7 @@ import {
   getChannelVideoSnapshotHistoryInputSchema,
   getChannelVideoSnapshotHistoryOutputSchema,
   getMarketOverviewOutputSchema,
+  getWatchlistTableOutputSchema,
   collectionLimitsSchema,
   collectionChannelResultSchema,
   getCollectionRequestInputSchema,
@@ -950,6 +951,34 @@ async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date
 
 export const MUSIC_CHART_CACHE_MS = 30 * 60 * 1000;
 
+/**
+ * The data-quality flags that make a watchlist channel a collection warning (plan 9H part B §3a). `hidden_subscriber_count`
+ * is a channel property, not a collection problem, so it is not one of them.
+ */
+export const COLLECTION_WARNING_FLAGS: ReadonlySet<DataQualityFlag> = new Set<DataQualityFlag>([
+  "stale_observation",
+  "quota_limited",
+  "missing_snapshot",
+  "feed_fallback_used",
+]);
+
+export type CollectionStatus = "current" | "attention" | "failed" | "never_collected";
+
+/**
+ * BL-140: one rule for "does this channel need attention", shared by getMarketOverview's collection warnings (the
+ * summary line's count) and getWatchlistTable's status (the Channels filter that count links to), so the two can never
+ * disagree. Anything but "current" is a warning.
+ */
+export function classifyCollectionStatus(input: {
+  neverObserved: boolean;
+  latestRunStatus: "success" | "skipped_quota_limited" | "failed" | null;
+  dataQualityFlags: readonly DataQualityFlag[];
+}): CollectionStatus {
+  if (input.neverObserved) return "never_collected";
+  if (input.latestRunStatus === "failed") return "failed";
+  return input.dataQualityFlags.some((flag) => COLLECTION_WARNING_FLAGS.has(flag)) ? "attention" : "current";
+}
+
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
   // Per services instance (one per process in production); current-only, never persisted (13.9).
   const musicChartCache = new Map<string, { fetchedAt: Date; entries: MusicChartEntry[] }>();
@@ -1466,6 +1495,53 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
   // entire existing pipeline (precondition check, credential resolution, search/dedup/insert,
   // audit-row/partial-failure handling) rather than duplicating any of it -- valid because no
   // method here actually RUNS until after this function has already returned `services` in full.
+  /**
+   * The collection state of one watchlist channel: its latest channel snapshot, the data-quality flags and whether it
+   * was ever observed. Reads no video snapshots, so it stays cheap enough for the polled Research summary (BL-140).
+   * getWatchlistEntryContext uses it too, so the flags have one source.
+   */
+  async function readCollectionState(channelId: string) {
+    const channelSnapshotRows = await deps.listMarketChannelSnapshotsByChannel(channelId);
+    const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(channelId);
+    // `listMarketChannelSnapshotsByChannel` orders ascending by observedAt (db.ts's own
+    // contract) -- the last element is always the most recent.
+    const latestChannelSnapshot = channelSnapshotRows[channelSnapshotRows.length - 1] as
+      | StoredMarketChannelSnapshotForService
+      | undefined;
+    const dataQualityFlags: DataQualityFlag[] = [];
+    // Phase 13 (review rounds 9/11): API snapshots expire after 30 days, so an empty visible series can
+    // mean "collected long ago, since expired" rather than "never collected". The latter is
+    // `neverObserved`; the former is stale by definition (the policy window is shorter than the stale window).
+    const everCollectedSuccessfully =
+      channelSnapshotRows.length === 0 && (await deps.hasSuccessfulMarketIntelligenceCollectionRun(channelId));
+    const freshnessFlag = everCollectedSuccessfully
+      ? "stale_observation"
+      : assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
+    if (freshnessFlag) dataQualityFlags.push(freshnessFlag);
+    if (latestChannelSnapshot) {
+      const hiddenFlag = toHiddenSubscriberCountFlag(latestChannelSnapshot.hiddenSubscriberCount);
+      if (hiddenFlag) dataQualityFlags.push(hiddenFlag);
+    }
+    if (latestRun) {
+      const completenessFlag = assessSnapshotCompleteness(latestRun.videosRequested, latestRun.videosReturned);
+      if (completenessFlag) dataQualityFlags.push(completenessFlag);
+      if (latestRun.status === "skipped_quota_limited") dataQualityFlags.push("quota_limited");
+      // Operator request 2026-10-04: the newest run got only the ~15-video RSS feed, not a normal page.
+      if (latestRun.feedFallback) dataQualityFlags.push("feed_fallback_used");
+    }
+    return {
+      channelSnapshotRows,
+      latestChannelSnapshot,
+      latestRun,
+      dataQualityFlags,
+      // Found by independent review (2026-09-29): `assessObservationFreshness`/`assessSnapshotCompleteness` both
+      // deliberately leave "never observed at all" to their caller (see their own doc comments) -- this is that check.
+      // Phase 13 (review round 9): API snapshots expire after 30 days (III.E.4.d), so an empty
+      // visible series alone no longer means "never observed" -- a past successful collection does.
+      neverObserved: channelSnapshotRows.length === 0 && !everCollectedSuccessfully,
+    };
+  }
+
   const services = {
     /**
      * Adds a channel the operator does not (necessarily) own to the research watchlist
@@ -1712,37 +1788,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       const evidenceRows = await deps.listResearchEvidenceByChannel(parsedInput.channelId);
-      const channelSnapshotRows = await deps.listMarketChannelSnapshotsByChannel(parsedInput.channelId);
       const videoSnapshotRows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.channelId);
       const topicAssignmentRows = await deps.listTopicsForSubject("channel", parsedInput.channelId);
-      const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(parsedInput.channelId);
-
-      // `listMarketChannelSnapshotsByChannel` orders ascending by observedAt (db.ts's own
-      // contract) -- the last element is always the most recent.
-      const latestChannelSnapshot = channelSnapshotRows[channelSnapshotRows.length - 1] as
-        | StoredMarketChannelSnapshotForService
-        | undefined;
-      const dataQualityFlags: DataQualityFlag[] = [];
-      // Phase 13 (review rounds 9/11): API snapshots expire after 30 days, so an empty visible series can
-      // mean "collected long ago, since expired" rather than "never collected". The latter is
-      // `neverObserved`; the former is stale by definition (the policy window is shorter than the stale window).
-      const everCollectedSuccessfully =
-        channelSnapshotRows.length === 0 && (await deps.hasSuccessfulMarketIntelligenceCollectionRun(parsedInput.channelId));
-      const freshnessFlag = everCollectedSuccessfully
-        ? "stale_observation"
-        : assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
-      if (freshnessFlag) dataQualityFlags.push(freshnessFlag);
-      if (latestChannelSnapshot) {
-        const hiddenFlag = toHiddenSubscriberCountFlag(latestChannelSnapshot.hiddenSubscriberCount);
-        if (hiddenFlag) dataQualityFlags.push(hiddenFlag);
-      }
-      if (latestRun) {
-        const completenessFlag = assessSnapshotCompleteness(latestRun.videosRequested, latestRun.videosReturned);
-        if (completenessFlag) dataQualityFlags.push(completenessFlag);
-        if (latestRun.status === "skipped_quota_limited") dataQualityFlags.push("quota_limited");
-        // Operator request 2026-10-04: the newest run got only the ~15-video RSS feed, not a normal page.
-        if (latestRun.feedFallback) dataQualityFlags.push("feed_fallback_used");
-      }
+      const { channelSnapshotRows, dataQualityFlags, neverObserved } = await readCollectionState(parsedInput.channelId);
 
       const collectionProgress = buildCollectionProgress(
         channelRow,
@@ -1760,13 +1808,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           topicAssignments: topicAssignmentRows.map(toMarketTopicAssignment),
           dataQualityFlags,
           collectionProgress,
-          // Found by independent review (2026-09-29): `assessObservationFreshness`/
-          // `assessSnapshotCompleteness` both deliberately leave "never observed at all" to their
-          // caller (see their own doc comments) -- this is that check, matching the one
-          // `getMarketOverview` below already reinvented independently rather than reading from here.
-          // Phase 13 (review round 9): API snapshots expire after 30 days (III.E.4.d), so an empty
-          // visible series alone no longer means "never observed" -- a past successful collection does.
-          neverObserved: channelSnapshotRows.length === 0 && !everCollectedSuccessfully,
+          // readCollectionState holds the "never observed" rule (Phase 13: expired snapshots are not "never").
+          neverObserved,
           uniqueVideoCount: new Set(videoSnapshotRows.map((row) => row.videoId)).size,
           latestVideoSnapshotAt: videoSnapshotRows.reduce<Date | null>((latest, row) => (latest === null || row.observedAt > latest ? row.observedAt : latest), null)?.toISOString() ?? null,
         },
@@ -1911,6 +1954,83 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     },
 
     /**
+     * BL-140 (review): the counts behind the Research summary line, which the dashboard polls. The same numbers
+     * getMarketOverview gives (watchlist size, collection warnings, new discoveries) without its per-channel video reads
+     * and derived assessments. A local read, no YouTube call.
+     */
+    async getResearchSummaryCounts(): Promise<{ watchlistCount: number; warningCount: number; newDiscoveryCount: number }> {
+      const { channels } = await services.listWatchlist();
+      let warningCount = 0;
+      for (const channel of channels) {
+        const state = await readCollectionState(channel.channelId);
+        const status = classifyCollectionStatus({
+          neverObserved: state.neverObserved,
+          latestRunStatus: state.latestRun?.status ?? null,
+          dataQualityFlags: state.dataQualityFlags,
+        });
+        if (status !== "current") warningCount += 1;
+      }
+      const { candidates } = await services.listDiscoveryCandidates();
+      return { watchlistCount: channels.length, warningCount, newDiscoveryCount: candidates.filter((c) => c.status === "new").length };
+    },
+
+    /**
+     * BL-140 R3 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4.3): one row per watchlist channel for the
+     * Research → Channels table. Only observed values with their observation time (Phase 13, III.E.4.f/h) plus
+     * bookkeeping: how many videos were observed, the latest collection run, and a status read from the same data
+     * quality flags getMarketOverview's collection warnings use. A local read, no YouTube call.
+     */
+    async getWatchlistTable(): Promise<{
+      channels: {
+        channelId: string;
+        handleOrUrl: string | null;
+        reason: string;
+        addedAt: string;
+        latestObservation: { observedAt: string; subscriberCount: number | null; hiddenSubscriberCount: boolean; viewCount: number | null; videoCount: number | null } | null;
+        videosObserved: number;
+        latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
+        dataQualityFlags: DataQualityFlag[];
+        status: "current" | "attention" | "failed" | "never_collected";
+      }[];
+    }> {
+      const { channels } = await services.listWatchlist();
+      const rows = [];
+      for (const channel of channels) {
+        // No derived metric is computed here (unlike getChannelIntelligenceSummary), only the collection state and a
+        // video count. These reads never throw for a channel removed after listWatchlist(); its row shows until the
+        // next refresh.
+        const state = await readCollectionState(channel.channelId);
+        const videoSnapshotRows = await deps.listMarketVideoSnapshotsByChannel(channel.channelId);
+        const latest = state.latestChannelSnapshot ? toMarketChannelSnapshot(state.latestChannelSnapshot) : null;
+        const run = state.latestRun;
+        rows.push({
+          channelId: channel.channelId,
+          handleOrUrl: channel.handleOrUrl,
+          reason: channel.reason,
+          addedAt: channel.addedAt,
+          latestObservation: latest
+            ? {
+                observedAt: latest.observedAt,
+                subscriberCount: latest.subscriberCount,
+                hiddenSubscriberCount: latest.hiddenSubscriberCount,
+                viewCount: latest.viewCount,
+                videoCount: latest.videoCount,
+              }
+            : null,
+          videosObserved: new Set(videoSnapshotRows.map((row) => row.videoId)).size,
+          latestRun: run ? { status: run.status, ranAt: run.ranAt ? run.ranAt.toISOString() : null } : null,
+          dataQualityFlags: state.dataQualityFlags,
+          status: classifyCollectionStatus({
+            neverObserved: state.neverObserved,
+            latestRunStatus: run?.status ?? null,
+            dataQualityFlags: state.dataQualityFlags,
+          }),
+        });
+      }
+      return parseWithSchema(getWatchlistTableOutputSchema, { channels: rows }, "get watchlist table output");
+    },
+
+    /**
      * Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market
      * Overview, aggregating across the WHOLE watchlist. Reuses `getChannelIntelligenceSummary`
      * (part A) once per watchlisted channel -- no new per-channel computation, only aggregation/
@@ -1934,7 +2054,6 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       // Narrowed per plan §3a -- hidden_subscriber_count (a channel property, not a collection
       // problem) and every other value outside these three is deliberately excluded here.
-      const COLLECTION_WARNING_FLAGS = new Set<DataQualityFlag>(["stale_observation", "quota_limited", "missing_snapshot", "feed_fallback_used"]);
 
       const breakoutVideos: (BreakoutAssessment & { channelId: string })[] = [];
       const emergingChannels: EmergingChannelAssessment[] = [];
@@ -1974,7 +2093,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         // Read from the shared source (getWatchlistEntryContext, via getChannelIntelligenceSummary)
         // instead of re-deriving it here -- found by independent review, 2026-09-29: this line used
         // to independently recompute `channelSnapshots.length === 0` itself.
-        if (narrowedFlags.length > 0 || latestRun?.status === "failed" || summary.neverObserved) {
+        // The same rule getWatchlistTable's status uses (BL-140), so the summary's count matches the Channels filter.
+        if (
+          classifyCollectionStatus({ neverObserved: summary.neverObserved, latestRunStatus: latestRun?.status ?? null, dataQualityFlags: narrowedFlags }) !==
+          "current"
+        ) {
           collectionWarnings.push({
             channelId: channel.channelId,
             dataQualityFlags: narrowedFlags,
@@ -2065,7 +2188,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       };
     },
 
-    async getMarketVideosOverview(): Promise<{
+    // BL-140 review: `channelId` narrows the read to one watchlist channel (a channel drawer's recent videos, or Videos
+    // filtered to a channel), so it no longer loads every channel's video series to keep one channel's rows.
+    async getMarketVideosOverview(options: { channelId?: string } = {}): Promise<{
       videos: {
         videoId: string;
         channelId: string;
@@ -2088,7 +2213,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         baselineDayOffset: number;
       };
     }> {
-      const { channels } = await services.listWatchlist();
+      const { channels: watchlist } = await services.listWatchlist();
+      const channels = options.channelId ? watchlist.filter((c) => c.channelId === options.channelId) : watchlist;
 
       const { topics } = await services.listTopics();
       const topicNameById = new Map(topics.map((t) => [t.topicId, t.name]));

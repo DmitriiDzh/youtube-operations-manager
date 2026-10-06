@@ -62,7 +62,8 @@ const STATUS_LABELS: Record<CollectionRequestStatus, string> = {
 // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md) -- the ONLY place one is approved or rejected. Approving runs the
 // regular collection (24 h stale window, 24 h pause after a failure, daily budget) for the request's channels only and BLOCKS behind the shared
 // progress pop-up until it returns (like "Send to YouTube"). It spends real YouTube Data API quota units, so the confirm dialog states the cost first.
-export function MarketCollectionRequestsPanel() {
+/** `onChanged` runs after an approve or reject, so the summary line and badges follow at once (BL-140 review). */
+export function MarketCollectionRequestsPanel({ onChanged }: { onChanged?: () => void } = {}) {
   const [requests, setRequests] = useState<CollectionRequest[]>([]);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [loading, setLoading] = useState(true);
@@ -112,6 +113,7 @@ export function MarketCollectionRequestsPanel() {
       setError(e instanceof Error ? e.message : "Failed to run the collection request");
     } finally {
       await fetchAll();
+      onChanged?.();
     }
   }
 
@@ -133,6 +135,7 @@ export function MarketCollectionRequestsPanel() {
       setRejectTarget(null);
       setRejectReason("");
       await fetchAll();
+      onChanged?.();
     } finally {
       setRejecting(false);
     }
