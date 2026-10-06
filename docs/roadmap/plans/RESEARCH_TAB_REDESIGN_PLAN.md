@@ -202,6 +202,9 @@ merge request. Independent review once, before the merge (owner rule).
 paged), `docs/roadmap/BACKLOG.md` BL-140, `docs/ROADMAP_STATUS.md` after the merge.
 
 ## 9. Decisions for the owner
+
+**Resolved 2026-10-06 (Telegram msg 1827): all five accepted as recommended.**
+
 1. **Default sub-tab**: Inbox when something is pending, otherwise Channels. *Recommended.*
 2. **Remove the policy-withheld UI** (breakout, emerging, velocity, relative performance) rather than keep it
    greyed out. The agent API keeps the fields. *Recommended.*
