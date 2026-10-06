@@ -3757,10 +3757,11 @@ async function initializeDatabase() {
   // due and the lock is busy, wait for it (an export takes about a second) instead of failing.
   const lockAcquired = await acquireMigrationLockIfDue(rawClient);
 
-  // False divergences (owner, Telegram 2026-10-06): a device in sync before this boot's migrations
-  // stays in sync after them -- every computer applies the same migrations (RISK-89). Loaded lazily:
-  // `@/lib/snapshot` imports this module. Its hooks never throw.
-  let syncHooks: { beforeMigrations: () => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
+  // False divergences (BL-139): a device in sync before this boot's migrations stays in sync after
+  // them -- every computer applies the same migrations (RISK-89). Both fingerprints come from the
+  // pre-migration backup, never the live DB. Loaded lazily: `@/lib/snapshot` imports this module.
+  // The hooks never throw.
+  let syncHooks: { beforeMigrations: (backupPath: string) => Promise<void>; afterMigrations: () => Promise<void> } | null = null;
   try {
     await initializeDatabaseSchema(rawClient, {
       beforeMigrations: async () => {
@@ -3772,7 +3773,7 @@ async function initializeDatabase() {
         syncHooks = await import("@/lib/snapshot")
           .then(({ createSyncPreservingMigrationHooks }) => createSyncPreservingMigrationHooks(rawClient))
           .catch(() => null);
-        await syncHooks?.beforeMigrations();
+        await syncHooks?.beforeMigrations(destPath);
       },
     });
     await (syncHooks as { afterMigrations: () => Promise<void> } | null)?.afterMigrations();

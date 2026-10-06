@@ -6,6 +6,7 @@ import {
   type UnresolvedExecutionRow,
 } from "@/lib/device-mutation-gate";
 import path from "node:path";
+import { copyFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { initializeDatabaseSchema } from "@/lib/db";
@@ -215,33 +216,46 @@ export async function hasUnpublishedLocalChanges(
 }
 
 /**
- * False divergences (owner, Telegram 2026-10-06): a schema migration is applied by every computer to
- * its own data and to every snapshot it imports, so by itself it is not a change to publish -- yet a
- * column added with a non-NULL DEFAULT changes the content fingerprint (RISK-89). Around a boot's
- * migrations: if the device was in sync before them (its content equalled the fingerprint recorded
- * with its lineage head), it stays in sync after them, by compare-and-set, so real unpublished work
- * still reads as dirty. Same reasoning as the 30-day purge's hooks. Never throws: a failure only
- * leaves the old fingerprint, i.e. at worst the pre-existing prompt.
+ * False divergences (BL-139, owner Telegram 2026-10-06): a schema migration is applied by every
+ * computer to its own data and to every snapshot it imports, so by itself it is not a change to
+ * publish -- yet a column added with a non-NULL DEFAULT changes the content fingerprint (RISK-89).
+ * Boot calls `beforeMigrations` with its consistent pre-migration backup and `afterMigrations` once
+ * the live migrations finished. `before` and `after` both come from that backup -- `after` from a
+ * private copy migrated the same way -- never from the live database, so a write another process
+ * made during the migration window still reads as unpublished (review round 1, #4). If the device
+ * was in sync at the backup, the recorded fingerprint moves from `before` to `after` by
+ * compare-and-set. Never throws: a failure only leaves the old fingerprint (at worst a prompt).
  */
-export function createSyncPreservingMigrationHooks(client: SqlExecutor): {
-  beforeMigrations: () => Promise<void>;
+export function createSyncPreservingMigrationHooks(
+  client: SqlExecutor,
+  options: { migrate?: (dbPath: string) => Promise<void> } = {}
+): {
+  beforeMigrations: (backupPath: string) => Promise<void>;
   afterMigrations: () => Promise<void>;
 } {
+  const migrate = options.migrate ?? migrateStagedCopy;
+  let backup: string | null = null;
   let before: string | null = null;
   return {
-    beforeMigrations: async () => {
+    beforeMigrations: async (backupPath: string) => {
       try {
-        before = await computeContentFingerprint(client);
+        before = await computeFileContentFingerprint(client, backupPath);
+        backup = backupPath;
       } catch {
         before = null;
       }
     },
     afterMigrations: async () => {
-      if (!before) return;
+      if (!before || !backup) return;
+      const copyPath = `${backup}.sync-check-${randomUUID().slice(0, 8)}.db`;
       try {
-        await rebaselineLineageFingerprintIfUnchanged(client, before, await computeContentFingerprint(client));
+        await copyFile(backup, copyPath);
+        await migrate(copyPath);
+        await rebaselineLineageFingerprintIfUnchanged(client, before, await computeFileContentFingerprint(client, copyPath));
       } catch {
-        // No lineage table/column yet (a pre-v36 database): nothing to keep in sync.
+        // No lineage table/column yet (a pre-v36 database), or the copy failed: keep the old fingerprint.
+      } finally {
+        for (const suffix of ["", "-wal", "-shm", "-journal"]) await rm(`${copyPath}${suffix}`, { force: true }).catch(() => {});
       }
     },
   };
