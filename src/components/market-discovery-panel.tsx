@@ -11,6 +11,15 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 
 type DiscoveryCandidateStatus = "new" | "watching" | "ignored" | "archived" | "promoted";
 
+type CandidateStats = {
+  subscriberCount: number | null;
+  hiddenSubscriberCount: boolean;
+  videoCount: number | null;
+  viewCount: number | null;
+  channelPublishedAt: string | null;
+  observedAt: string;
+};
+
 type DiscoveryCandidate = {
   channelId: string;
   title: string;
@@ -20,7 +29,28 @@ type DiscoveryCandidate = {
   reasonDiscovered: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  /** BL-145: public counts observed right after the search that found it; null when unknown. */
+  stats: CandidateStats | null;
 };
+
+/** 1234 → "1.2K", 4560000 → "4.6M" (display only; the stored value is exact). */
+function compact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "")}K`;
+  return String(n);
+}
+
+/** BL-145: one line of a found channel's observed counts, e.g. "12.3K subscribers · 42 videos · 456K views · since 2019". Exported for its test. */
+export function describeCandidateStats(stats: CandidateStats | null): string | null {
+  if (!stats) return null;
+  const parts = [
+    stats.hiddenSubscriberCount ? "subscribers hidden" : stats.subscriberCount !== null ? `${compact(stats.subscriberCount)} subscribers` : null,
+    stats.videoCount !== null ? `${compact(stats.videoCount)} video${stats.videoCount === 1 ? "" : "s"}` : null,
+    stats.viewCount !== null ? `${compact(stats.viewCount)} views` : null,
+    stats.channelPublishedAt ? `since ${stats.channelPublishedAt.slice(0, 4)}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
 
 // Phase 13 slice 13.4: one search.list call = 1 of YouTube's 100 daily searches (its own quota bucket).
 
@@ -312,6 +342,7 @@ export function MarketDiscoveryPanel({
                     {candidate.title || candidate.channelId}
                     {!candidate.title && <span className="ml-2 text-xs font-normal text-zinc-500">(title expired, see details)</span>}
                   </p>
+                  {describeCandidateStats(candidate.stats) && <p className="truncate text-xs text-zinc-300">{describeCandidateStats(candidate.stats)}</p>}
                   <p className="truncate text-xs text-zinc-500">
                     query &ldquo;{candidate.discoveryQuery}&rdquo; &middot; last seen {formatDisplayDateTime(candidate.lastSeenAt)}
                   </p>
@@ -409,6 +440,24 @@ export function MarketDiscoveryPanel({
 
       {openCandidate && (
         <SideDrawer title={openCandidate.title || openCandidate.channelId} subtitle={`${openCandidate.channelId} · ${openCandidate.status}`} onClose={() => setOpenChannelId(null)}>
+          <DrawerSection title="Channel">
+            <div className="space-y-1 text-xs text-zinc-400">
+              {openCandidate.stats ? (
+                <>
+                  <p>
+                    Subscribers:{" "}
+                    {openCandidate.stats.hiddenSubscriberCount ? "hidden by the channel" : (openCandidate.stats.subscriberCount?.toLocaleString("en-US") ?? "—")}
+                    {" "}&middot; videos: {openCandidate.stats.videoCount?.toLocaleString("en-US") ?? "—"} &middot; views:{" "}
+                    {openCandidate.stats.viewCount?.toLocaleString("en-US") ?? "—"}
+                  </p>
+                  {openCandidate.stats.channelPublishedAt && <p>Created {formatDisplayDateTime(openCandidate.stats.channelPublishedAt)}</p>}
+                  <p className="text-zinc-500">As of {formatDisplayDateTime(openCandidate.stats.observedAt)}</p>
+                </>
+              ) : (
+                <p>No counts observed for this channel.</p>
+              )}
+            </div>
+          </DrawerSection>
           <DrawerSection title="How it was found">
             <div className="space-y-1 text-xs text-zinc-400">
               <p>

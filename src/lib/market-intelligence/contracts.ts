@@ -130,6 +130,28 @@ export type MarketDiscoveryCandidate = {
   reasonDiscovered: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  /**
+   * BL-145: the channel's public counts as observed right after the search that found it (`observedAt`); `null` when
+   * not observed (or the lookup failed), and after 30 days (API data retention). Observed values only.
+   */
+  stats: {
+    subscriberCount: number | null;
+    hiddenSubscriberCount: boolean;
+    videoCount: number | null;
+    viewCount: number | null;
+    channelPublishedAt: string | null;
+    observedAt: string;
+  } | null;
+};
+
+/** BL-145: one channel's public counts from `channels.list`, as the read gateway returns them. */
+export type PublicChannelStats = {
+  channelId: string;
+  subscriberCount: number | null;
+  hiddenSubscriberCount: boolean;
+  videoCount: number | null;
+  viewCount: number | null;
+  publishedAt: string | null;
 };
 
 /**

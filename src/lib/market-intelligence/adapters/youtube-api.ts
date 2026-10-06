@@ -3,6 +3,7 @@ import {
   assertDataApiReadsAuthorized,
   createYoutubeClient,
   getPublicChannelSnapshot,
+  getPublicChannelStats,
   getPublicVideoSnapshots,
   getPublicVideoStatsBatch,
   getMostPopularMusicVideos,
@@ -56,6 +57,11 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
     async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return searchPublicChannels(youtube, args.query);
+    },
+    // BL-145.
+    async getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return getPublicChannelStats(youtube, args.channelIds);
     },
     // Phase 9 slices 9B/9C (found by independent review): an upfront, cheap check the orchestrator
     // calls BEFORE claiming any channel or charging any quota unit -- without it, a client

@@ -1537,6 +1537,14 @@ export const marketDiscoveryCandidates = sqliteTable("market_discovery_candidate
     .notNull()
     .$defaultFn(() => new Date()),
   createdVia: text("created_via").notNull(),
+  // BL-145 (v65): the channel's public counts as observed right after the search that found it (channels.list).
+  // Observed values with their time only; blanked with the title after 30 days (youtube-data-policy).
+  subscriberCount: integer("subscriber_count"),
+  hiddenSubscriberCount: integer("hidden_subscriber_count", { mode: "boolean" }),
+  videoCount: integer("video_count"),
+  viewCount: integer("view_count"),
+  channelPublishedAt: text("channel_published_at"),
+  statsObservedAt: integer("stats_observed_at", { mode: "timestamp" }),
 });
 
 /**
@@ -3403,6 +3411,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "detail TEXT)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS media_capacity_attempts_at_idx ON media_capacity_attempts(at)");
+    },
+  },
+  {
+    version: 65,
+    description:
+      "market_discovery_candidates.subscriber_count/hidden_subscriber_count/video_count/view_count/channel_published_at/stats_observed_at -- BL-145 (owner, Telegram 2026-10-07): each search result's public counts from one channels.list call. Additive nullable columns (existing candidates: unknown); blanked with the title after 30 days",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE market_discovery_candidates ADD COLUMN subscriber_count INTEGER",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN hidden_subscriber_count INTEGER",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN video_count INTEGER",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN view_count INTEGER",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN channel_published_at TEXT",
+        "ALTER TABLE market_discovery_candidates ADD COLUMN stats_observed_at INTEGER",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -8793,7 +8822,37 @@ export type StoredMarketDiscoveryCandidate = {
   firstSeenAt: Date;
   lastSeenAt: Date;
   createdVia: string;
+  subscriberCount?: number | null;
+  hiddenSubscriberCount?: boolean | null;
+  videoCount?: number | null;
+  viewCount?: number | null;
+  channelPublishedAt?: string | null;
+  statsObservedAt?: Date | null;
 };
+
+export type MarketDiscoveryCandidateStats = {
+  subscriberCount: number | null;
+  hiddenSubscriberCount: boolean;
+  videoCount: number | null;
+  viewCount: number | null;
+  channelPublishedAt: string | null;
+  observedAt: Date;
+};
+
+/** BL-145: records a candidate's public counts as just observed (overwrites the previous observation). */
+export async function setMarketDiscoveryCandidateStats(channelId: string, stats: MarketDiscoveryCandidateStats, database: AppDb = db): Promise<void> {
+  await database
+    .update(marketDiscoveryCandidates)
+    .set({
+      subscriberCount: stats.subscriberCount,
+      hiddenSubscriberCount: stats.hiddenSubscriberCount,
+      videoCount: stats.videoCount,
+      viewCount: stats.viewCount,
+      channelPublishedAt: stats.channelPublishedAt,
+      statsObservedAt: stats.observedAt,
+    })
+    .where(eq(marketDiscoveryCandidates.id, channelId));
+}
 
 export async function getMarketDiscoveryCandidateById(
   channelId: string,

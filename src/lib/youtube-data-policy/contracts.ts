@@ -89,15 +89,17 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   ),
   market_discovery_candidates: nonAuthorized(
     "last_seen_at",
-    "channel ids/titles/descriptions returned by search.list; refreshed (title and description too) when a later search returns them again",
+    "channel ids/titles/descriptions returned by search.list, and their public counts from channels.list (BL-145); refreshed when a later search returns them again",
     {
       assignmentRecordKind: "discovery_candidate",
       // The operator's decision (watching / ignored / promoted / archived) is kept with the channel
       // id and the operator's own query; the API-sourced title/reason are blanked. Keeping the id as
       // the key of that decision is a judgment call recorded in RISK-92.
       keepDecisionWhere: "status <> 'new'",
-      blankSet: "title = '', reason_discovered = NULL",
-      alreadyBlankWhere: "title = '' AND reason_discovered IS NULL",
+      // BL-145: the observed public counts are API data too, blanked with the title.
+      blankSet:
+        "title = '', reason_discovered = NULL, subscriber_count = NULL, hidden_subscriber_count = NULL, video_count = NULL, view_count = NULL, channel_published_at = NULL, stats_observed_at = NULL",
+      alreadyBlankWhere: "title = '' AND reason_discovered IS NULL AND subscriber_count IS NULL AND video_count IS NULL AND view_count IS NULL AND channel_published_at IS NULL",
     }
   ),
 

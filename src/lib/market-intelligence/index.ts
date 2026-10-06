@@ -49,6 +49,7 @@ export function createMarketIntelligenceCore() {
     listMarketDiscoveryCandidates: store.listMarketDiscoveryCandidates,
     insertMarketDiscoveryCandidate: store.insertMarketDiscoveryCandidate,
     touchMarketDiscoveryCandidateLastSeen: store.touchMarketDiscoveryCandidateLastSeen,
+    setMarketDiscoveryCandidateStats: store.setMarketDiscoveryCandidateStats,
     setMarketDiscoveryCandidateStatus: store.setMarketDiscoveryCandidateStatus,
     insertMarketDiscoveryRun: store.insertMarketDiscoveryRun,
     // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.

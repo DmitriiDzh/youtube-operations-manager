@@ -50,6 +50,7 @@ import {
   type MarketTrendEvidence,
   type MarketVideoSnapshot,
   type PublicChannelSearchResult,
+  type PublicChannelStats,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResearchChannel,
@@ -329,6 +330,12 @@ type StoredMarketDiscoveryCandidateForService = {
   firstSeenAt: Date;
   lastSeenAt: Date;
   createdVia: string;
+  subscriberCount?: number | null;
+  hiddenSubscriberCount?: boolean | null;
+  videoCount?: number | null;
+  viewCount?: number | null;
+  channelPublishedAt?: string | null;
+  statsObservedAt?: Date | null;
 };
 
 /** Phase 13 (review round 6): a candidate's title/reason come from `search.list` (another channel's
@@ -350,6 +357,18 @@ function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForServic
     reasonDiscovered: expired ? null : row.reasonDiscovered,
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
+    // BL-145: API data like the title -- never served past the 30 days.
+    stats:
+      expired || !row.statsObservedAt
+        ? null
+        : {
+            subscriberCount: row.subscriberCount ?? null,
+            hiddenSubscriberCount: row.hiddenSubscriberCount === true,
+            videoCount: row.videoCount ?? null,
+            viewCount: row.viewCount ?? null,
+            channelPublishedAt: row.channelPublishedAt ?? null,
+            observedAt: row.statsObservedAt.toISOString(),
+          },
   };
 }
 
@@ -577,6 +596,8 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       query: string;
     }): Promise<PublicChannelSearchResult[]>;
+    /** BL-145: `channels.list` counts of up to 50 channels per call, 1 pool unit each. */
+    getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }): Promise<PublicChannelStats[]>;
     // Found by independent review -- a cheap, upfront, local-only check called BEFORE any channel
     // is claimed or any budget spent, so a disabled toggle never gets mischarged as if it were a
     // real, failed network call.
@@ -676,6 +697,11 @@ type ServiceDependencies = {
     createdVia: string;
   }): Promise<void>;
   touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null): Promise<void>;
+  /** BL-145: records a candidate's public counts as just observed. */
+  setMarketDiscoveryCandidateStats(
+    channelId: string,
+    stats: { subscriberCount: number | null; hiddenSubscriberCount: boolean; videoCount: number | null; viewCount: number | null; channelPublishedAt: string | null; observedAt: Date }
+  ): Promise<void>;
   setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus): Promise<void>;
   insertMarketDiscoveryRun(input: {
     query: string;
@@ -2708,6 +2734,27 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           });
           candidatesNewCount += 1;
           candidateIds.push(result.channelId);
+        }
+
+        // BL-145 (owner, Telegram 2026-10-07): the found channels' public counts (subscribers, videos, views, creation
+        // date) from one channels.list call per 50 (1 pool unit each), so a result can be judged without opening YouTube.
+        // Best effort: if it fails, the search still counts and the candidates simply show no counts.
+        if (candidateIds.length > 0) {
+          try {
+            const stats = await deps.youtubeApi.getPublicChannelStats({ credentials, channelIds: candidateIds });
+            for (const st of stats) {
+              await deps.setMarketDiscoveryCandidateStats(st.channelId, {
+                subscriberCount: st.subscriberCount,
+                hiddenSubscriberCount: st.hiddenSubscriberCount,
+                videoCount: st.videoCount,
+                viewCount: st.viewCount,
+                channelPublishedAt: st.publishedAt,
+                observedAt: now,
+              });
+            }
+          } catch {
+            // Counts stay unknown for this search's candidates.
+          }
         }
 
         await deps.insertMarketDiscoveryRun({

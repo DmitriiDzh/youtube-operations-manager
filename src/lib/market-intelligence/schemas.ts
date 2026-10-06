@@ -324,6 +324,17 @@ export const marketDiscoveryCandidateSchema = z
     reasonDiscovered: z.string().nullable(),
     firstSeenAt: z.string(),
     lastSeenAt: z.string(),
+    stats: z
+      .object({
+        subscriberCount: z.number().int().nullable(),
+        hiddenSubscriberCount: z.boolean(),
+        videoCount: z.number().int().nullable(),
+        viewCount: z.number().int().nullable(),
+        channelPublishedAt: z.string().nullable(),
+        observedAt: z.string(),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 

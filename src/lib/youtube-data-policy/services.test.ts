@@ -63,7 +63,7 @@ async function seed(client: Client) {
   await cand("UC-old-cand", 31);
   await cand("UC-fresh-cand", 2);
   await cand("UC-old-ignored", 31);
-  await client.execute("UPDATE market_discovery_candidates SET status = 'ignored', reason_discovered = 'r' WHERE id = 'UC-old-ignored'");
+  await client.execute("UPDATE market_discovery_candidates SET status = 'ignored', reason_discovered = 'r', subscriber_count = 1200, hidden_subscriber_count = 0, video_count = 40, view_count = 5000, channel_published_at = '2019-01-01T00:00:00Z', stats_observed_at = 1 WHERE id = 'UC-old-ignored'");
   await client.execute({
     sql: "INSERT INTO research_evidence (id, research_channel_id, observation, source, confidence, created_via, collected_at) VALUES ('ev-ai', 'UCx', 'AI summary of views', 'ai_assisted', 'low', 'web_ui', ?), ('ev-manual', 'UCx', 'my note', 'manual', 'low', 'web_ui', ?), ('ev-api', 'UCx', 'Subscribers: 1000, views: 5000', 'youtube.channels.list', 'high', 'web_ui', ?)",
     args: [nowS - 40 * DAY, nowS - 400 * DAY, nowS - 31 * DAY],
@@ -87,8 +87,13 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
     assert.deepEqual(await ids("SELECT id FROM market_video_snapshots"), []);
     // An undecided candidate is deleted; an operator's decision is kept, its API title/reason blanked.
     assert.deepEqual(await ids("SELECT id FROM market_discovery_candidates"), ["UC-fresh-cand", "UC-old-ignored"]);
-    const kept = (await client.execute("SELECT status, title, reason_discovered FROM market_discovery_candidates WHERE id = 'UC-old-ignored'")).rows[0];
+    const kept = (await client.execute("SELECT status, title, reason_discovered, subscriber_count, hidden_subscriber_count, video_count, view_count, channel_published_at, stats_observed_at FROM market_discovery_candidates WHERE id = 'UC-old-ignored'")).rows[0];
     assert.deepEqual([kept.status, kept.title, kept.reason_discovered], ["ignored", "", null]);
+    // BL-145: the observed public counts are blanked with the title.
+    assert.deepEqual(
+      [kept.subscriber_count, kept.hidden_subscriber_count, kept.video_count, kept.view_count, kept.channel_published_at, kept.stats_observed_at],
+      [null, null, null, null, null, null]
+    );
     assert.deepEqual(await ids("SELECT record_id FROM channel_record_assignments"), ["UC-fresh-cand"]);
     // Evidence written by "Fetch public snapshot" (source youtube.channels.list, the real writer)
     // expires. Every other source is operator-typed free text -- kept, even one that happens to read

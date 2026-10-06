@@ -260,6 +260,42 @@ export async function getPublicChannelSnapshot(
   };
 }
 
+/** BL-145: one channel's public counts as `channels.list` reports them right now. */
+export type PublicChannelStats = {
+  channelId: string;
+  subscriberCount: number | null;
+  hiddenSubscriberCount: boolean;
+  videoCount: number | null;
+  viewCount: number | null;
+  /** The channel's creation time (RFC 3339), as YouTube reports it. */
+  publishedAt: string | null;
+};
+
+/**
+ * BL-145 (owner, Telegram 2026-10-07): the public counts of up to 50 channels per `channels.list` call (1 unit of the
+ * 10,000-unit pool per call), for the channels a search just found. A hidden subscriber count is `null`, never YouTube's
+ * placeholder 0. A channel YouTube does not return (deleted, terminated) is simply absent from the result.
+ */
+export async function getPublicChannelStats(youtube: youtube_v3.Youtube, channelIds: string[]): Promise<PublicChannelStats[]> {
+  const results: PublicChannelStats[] = [];
+  for (const batch of chunk([...new Set(channelIds)], YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.channels.list({ part: ["snippet", "statistics"], id: batch, maxResults: batch.length });
+    for (const channel of res.data.items ?? []) {
+      if (!channel.id) continue;
+      const hidden = channel.statistics?.hiddenSubscriberCount === true;
+      results.push({
+        channelId: channel.id,
+        subscriberCount: hidden ? null : parseStatCount(channel.statistics?.subscriberCount),
+        hiddenSubscriberCount: hidden,
+        videoCount: parseStatCount(channel.statistics?.videoCount),
+        viewCount: parseStatCount(channel.statistics?.viewCount),
+        publishedAt: channel.snippet?.publishedAt ?? null,
+      });
+    }
+  }
+  return results;
+}
+
 export async function listUploadsPlaylistVideoIds(
   youtube: youtube_v3.Youtube,
   uploadsPlaylistId: string,

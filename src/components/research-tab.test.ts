@@ -276,3 +276,18 @@ test("BL-145: Track pre-fills the reason from the search query; no Watch button 
   assert.doesNotMatch(panel, />\s*Watch\s*</);
   assert.doesNotMatch(panel, /handleUpdateStatus\([^)]*"watching"\)/);
 });
+
+test("BL-145: a found channel's counts read as one short line; hidden subscribers say so; nothing known shows nothing", async () => {
+  const { describeCandidateStats } = await import("./market-discovery-panel");
+  const at = "2026-10-07T01:00:00.000Z";
+  assert.equal(
+    describeCandidateStats({ subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 4_560_000, channelPublishedAt: "2019-05-01T00:00:00Z", observedAt: at }),
+    "12K subscribers · 42 videos · 4.6M views · since 2019"
+  );
+  assert.equal(
+    describeCandidateStats({ subscriberCount: null, hiddenSubscriberCount: true, videoCount: 1, viewCount: 950, channelPublishedAt: null, observedAt: at }),
+    "subscribers hidden · 1 video · 950 views"
+  );
+  assert.equal(describeCandidateStats({ subscriberCount: 1500, hiddenSubscriberCount: false, videoCount: null, viewCount: null, channelPublishedAt: null, observedAt: at }), "1.5K subscribers");
+  assert.equal(describeCandidateStats(null), null);
+});

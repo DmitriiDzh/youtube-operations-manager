@@ -35,6 +35,7 @@ import {
   isDomainError,
   type DiscoveryCandidateStatus,
   type PublicChannelSearchResult,
+  type PublicChannelStats,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResolvedCredentials,
@@ -585,6 +586,13 @@ function createFakeStore() {
         row.reasonDiscovered = reasonDiscovered;
       }
     },
+    async setMarketDiscoveryCandidateStats(
+      channelId: string,
+      stats: { subscriberCount: number | null; hiddenSubscriberCount: boolean; videoCount: number | null; viewCount: number | null; channelPublishedAt: string | null; observedAt: Date }
+    ) {
+      const row = discoveryCandidates.get(channelId) as Record<string, unknown> | undefined;
+      if (row) Object.assign(row, { ...stats, statsObservedAt: stats.observedAt, observedAt: undefined });
+    },
     async setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus) {
       const row = discoveryCandidates.get(channelId);
       if (row) row.status = status;
@@ -918,6 +926,8 @@ function createFixture(overrides?: {
   uploadsPlaylistVideoIds?: string[];
   publicVideoSnapshots?: PublicVideoSnapshot[];
   searchResults?: PublicChannelSearchResult[];
+  /** BL-145: what channels.list returns for the found channels; a function lets a test fail it. */
+  channelStats?: PublicChannelStats[] | (() => Promise<PublicChannelStats[]>);
   searchImpl?: (args: { credentials: ResolvedCredentials; query: string }) => Promise<PublicChannelSearchResult[]>;
   dataApiReadsDisabled?: boolean;
   /** Phase 13 slices 13.5/13.6. Unset = the RSS feed / batchGetStats are unavailable (they throw), so
@@ -943,6 +953,7 @@ function createFixture(overrides?: {
   const playlistCalls: unknown[] = [];
   const videoSnapshotCalls: unknown[] = [];
   const searchCalls: unknown[] = [];
+  const channelStatsCalls: Array<{ channelIds: string[] }> = [];
   const assertReadsAvailableCalls: undefined[] = [];
   let currentNow = overrides?.now ?? new Date();
   let currentPlaylistPages = overrides?.playlistPages;
@@ -1017,6 +1028,11 @@ function createFixture(overrides?: {
         if (!overrides?.batchStats) throw new Error("batchGetStats unavailable (test default)");
         return overrides.batchStats;
       },
+      async getPublicChannelStats(args: { credentials: ResolvedCredentials; channelIds: string[] }) {
+        channelStatsCalls.push({ channelIds: args.channelIds });
+        const configured = overrides?.channelStats;
+        return typeof configured === "function" ? configured() : (configured ?? []);
+      },
       async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
         searchCalls.push(args);
         if (overrides?.searchImpl) return overrides.searchImpl(args);
@@ -1038,6 +1054,7 @@ function createFixture(overrides?: {
     playlistCalls,
     videoSnapshotCalls,
     searchCalls,
+    channelStatsCalls,
     assertReadsAvailableCalls,
     feedCalls,
     batchStatsCalls,
@@ -5203,4 +5220,77 @@ test("BL-145 (P1): a research request query over 200 characters is refused at cr
   );
   const ok = await services.createMarketResearchRequest({ query: "a".repeat(200), rationale: "r" }, { createdVia: "mcp" });
   assert.equal(ok.query.length, 200);
+});
+
+// BL-145 (owner, Telegram 2026-10-07, msg 1904 "1. Да"): each found channel shows its public counts, from one channels.list
+// call for the whole search; observed values with their time, never served after 30 days. Expected values by hand.
+test("BL-145: a search records each found channel's counts from one channels.list call and serves them with the candidate", async () => {
+  const now = new Date("2026-10-07T01:00:00.000Z");
+  const { services, channelStatsCalls } = createFixture({
+    now,
+    searchResults: [
+      { channelId: "UC_A00000000000000000000", title: "A", description: null },
+      { channelId: "UC_B00000000000000000000", title: "B", description: null },
+    ],
+    channelStats: [
+      { channelId: "UC_A00000000000000000000", subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 456000, publishedAt: "2019-01-01T00:00:00Z" },
+      { channelId: "UC_B00000000000000000000", subscriberCount: null, hiddenSubscriberCount: true, videoCount: 3, viewCount: 90, publishedAt: null },
+    ],
+  });
+  await services.discoverChannels({ query: "bossa nova", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(channelStatsCalls, [{ channelIds: ["UC_A00000000000000000000", "UC_B00000000000000000000"] }]);
+  const byId = new Map((await services.listDiscoveryCandidates()).candidates.map((c) => [c.channelId, c]));
+  assert.deepEqual(byId.get("UC_A00000000000000000000")?.stats, {
+    subscriberCount: 12300,
+    hiddenSubscriberCount: false,
+    videoCount: 42,
+    viewCount: 456000,
+    channelPublishedAt: "2019-01-01T00:00:00Z",
+    observedAt: now.toISOString(),
+  });
+  assert.deepEqual(byId.get("UC_B00000000000000000000")?.stats, {
+    subscriberCount: null,
+    hiddenSubscriberCount: true,
+    videoCount: 3,
+    viewCount: 90,
+    channelPublishedAt: null,
+    observedAt: now.toISOString(),
+  });
+});
+
+test("BL-145: when the counts lookup fails, the search still succeeds and the candidates simply have no counts", async () => {
+  const { services, store } = createFixture({
+    searchResults: [{ channelId: "UC_A00000000000000000000", title: "A", description: null }],
+    channelStats: async () => {
+      throw new Error("quota exceeded");
+    },
+  });
+  const result = await services.discoverChannels({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(result.candidatesNew, 1);
+  assert.equal(store.discoveryRuns.at(-1)?.status, "success");
+  assert.equal((await services.listDiscoveryCandidates()).candidates[0].stats, null);
+});
+
+test("BL-145: counts, like the title, are not served for a decided candidate last seen more than 30 days ago", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  store.discoveryCandidates.set("UC_OLD0000000000000000000", {
+    id: "UC_OLD0000000000000000000",
+    title: "Old",
+    status: "ignored",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "q",
+    reasonDiscovered: "d",
+    firstSeenAt: new Date("2026-08-01T00:00:00.000Z"),
+    lastSeenAt: new Date("2026-08-01T00:00:00.000Z"),
+    createdVia: "web_ui",
+    subscriberCount: 5,
+    hiddenSubscriberCount: false,
+    videoCount: 1,
+    viewCount: 1,
+    channelPublishedAt: null,
+    statsObservedAt: new Date("2026-08-01T00:00:00.000Z"),
+  } as never);
+  const old = (await services.listDiscoveryCandidates()).candidates.find((c) => c.channelId === "UC_OLD0000000000000000000");
+  assert.deepEqual([old?.title, old?.stats], ["", null]);
 });
