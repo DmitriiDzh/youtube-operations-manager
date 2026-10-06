@@ -2744,6 +2744,15 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   before the job row, then streams each with `RunpodS3Client.putObjectFromFile` (two passes: SHA-256, then the body with
   Content-Length) to `exchange/in/<jobId>-<param>-<name>` before the submit; ledger `media_exchange_inputs`; the janitor
   deletes such a key only by that ledger and only for a terminal job (other `exchange/in/` files stay "reference input").
+- **Factory GPU sessions, fallback, capacity wait (BL-133, ADR 0026, schema v64).** `gpu-plan.ts` resolves the candidates (session plan,
+  else device GPU + `gpuFallbackIds`; filtered by VRAM, price cap and the volume's datacenter via the catalog) and classifies a failed
+  createPod (400 "could not be placed" = no capacity; 429/5xx/none = transient; else fatal). `startApproved` loops over them, keeping the
+  orphan-name search per attempt and recording each attempt in `media_capacity_attempts`; none placed → `waitForCapacity` (`approved →
+  waiting_capacity`, no pod). `watchOne` retries a due waiting session in the background (`waiting_capacity → approved` with `approvedAt`
+  restarted) and fails it after the wait; the loop ticks at least every `capacityRetrySeconds`. `approveInner` is shared by the owner's
+  approve and `factoryStartSession`, which first checks the factory limits (`factorySpendUsd`: spend plus the remaining caps of active factory
+  sessions, per local day and month); `stopInner` is shared by the owner's Stop and `factoryStopSession`; `getFactorySession` hides every
+  non-factory session from the factory route.
 - **Concurrent sessions, Production section, balance (slice 6, ADR 0023 amendment 1, schema v58).** Requests are
   never refused for another open session; `approveSession` runs the preconditions, clears a crash-stale exclusive
   volume lock (`volumeLock.activeHolder`), then `pending → approved` as ONE `UPDATE` guarded by "active sessions <

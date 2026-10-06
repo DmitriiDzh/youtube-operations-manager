@@ -1,6 +1,6 @@
 # Factory GPU sessions within owner limits, GPU fallback, capacity wait and log — plan
 
-**Status: PLAN, awaiting the owner's acceptance and answers to O1–O5. Nothing implemented.** Backlog item: BL-133 (FO-REQ-0004,
+**Status: ACCEPTED by the owner 2026-10-06 (msgs 1660–1663: O1 yes -- the factory runs jobs in its own sessions with its own token; O2 defaults accepted; O3 no job queue; O4 retry every 30 s (free), wait 30 min; O5 yes). IMPLEMENTED (G1–G4) on `feature/factory-gpu-sessions`; ADR 0026; not merged.** Backlog item: BL-133 (FO-REQ-0004,
 approved as a request by the owner 2026-10-06). Branch for the implementation: `feature/factory-gpu-sessions` (one branch, one merge
 approval). Safety-critical per `AGENTS.md` §L: an agent token starts paid GPU pods.
 
@@ -157,3 +157,12 @@ ADR 0023 with amendments 1–2; ADR 0025; research of 2026-10-06 (below).
 - Serverless.
 - Changing RunPod datacenters automatically.
 - Any operating instruction for the factory (`AGENTS.md` §B).
+
+## 7. Implementation notes (2026-10-06)
+
+- The waiting state is a new session status `waiting_capacity` (active: holds the concurrency slot and the volume shared; no pod). A retry
+  moves it back to `approved` with `approvedAt` restarted, so the abandoned-start clock measures that attempt; the start runs in the
+  background so a slow start never holds up the other sessions' watcher tick.
+- A factory start's worst case is its own USD cap (the watcher stops it there whatever GPU it gets), so the factory limits are checked
+  against the cap, and active factory sessions reserve their remaining cap.
+- The factory route's dependency for stopping is named `endSession` so the channel-side fence on `stopSession` stays a plain text check.
