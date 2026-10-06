@@ -490,3 +490,15 @@ test("AC-FD-12: the preview refuses a snapshot that is not a current conflict", 
     a.client.close();
     b.client.close();
   }));
+
+test("AC-FD-11: a skipped background write is recorded in the status (shown by the bell), and cleared once allowed", () =>
+  withTempDir("device-sync-conv-", async (root) => {
+    const { a, b } = await divergedPair(root);
+    b.clock.t += 5 * 60_000;
+    assert.equal((await b.runner.syncBeforeBackgroundWrite()).allowed, false);
+    assert.ok(b.status().backgroundWritesPausedReason, "the reason is visible");
+    const solo = await makeDevice(root, "solo");
+    await solo.runner.syncBeforeBackgroundWrite();
+    assert.equal(solo.status().backgroundWritesPausedReason ?? null, null);
+    for (const d of [a, b, solo]) d.client.close();
+  }));

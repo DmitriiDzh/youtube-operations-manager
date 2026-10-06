@@ -72,6 +72,8 @@ export type DeviceSyncStatus = {
   lastImportSnapshotId: string | null;
   /** Last time another computer's branch holding exactly this computer's data was settled without asking (BL-139). */
   lastIdenticalSettledAt?: string | null;
+  /** Why the last automatic background write (the dashboard's Research refresh) was skipped; null = it ran (BL-139). */
+  backgroundWritesPausedReason?: string | null;
   notices: DeviceSyncNotice[];
   /** snapshotId -> first time it was seen unreadable / not yet fully transferred (ms). */
   pendingSince: Record<string, number>;
@@ -92,6 +94,7 @@ export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
   lastImportAt: null,
   lastImportSnapshotId: null,
   lastIdenticalSettledAt: null,
+  backgroundWritesPausedReason: null,
   notices: [],
   pendingSince: {},
   busyReason: null,

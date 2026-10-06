@@ -213,24 +213,22 @@ export type BackgroundWriteVerdict = { allowed: true } | { allowed: false; reaso
  * data the other computer already published -- the 5 October conflict. Never applies to an action
  * a person starts on purpose.
  */
-export function backgroundWriteVerdict(status: DeviceSyncStatus): BackgroundWriteVerdict {
+export function backgroundWriteVerdict(status: DeviceSyncStatus, nowMs: number): BackgroundWriteVerdict {
+  // Something from another computer is arriving right now. An older pending entry is a stuck
+  // transfer with its own notice, and must not stop the refresh for good (review round 1, #5).
+  const arriving = Object.values(status.pendingSince ?? {}).some((since) => nowMs - since < DEVICE_SYNC_TRANSFER_GRACE_MS);
+  if (arriving) return { allowed: false, reason: "data from another computer is still arriving in the sync folder" };
   switch (status.state) {
-    case "disabled":
-    case "not_configured":
-    case "synced":
-    case "exported":
-    case "imported":
-      return { allowed: true };
-    case "waiting":
-      return Object.keys(status.pendingSince ?? {}).length === 0
-        ? { allowed: true }
-        : { allowed: false, reason: "data from another computer is still arriving in the sync folder" };
-    case "attention":
-      return { allowed: false, reason: "device sync needs your attention (see the bell)" };
     case "busy":
       return { allowed: false, reason: `device sync is paused: ${status.busyReason ?? "another operation is running"}` };
     case "folder_unreachable":
       return { allowed: false, reason: "the sync folder is not reachable, so the other computer's data cannot be checked" };
+    case "attention":
+      return status.notices.some((n) => n.kind === "divergence")
+        ? { allowed: false, reason: "the two computers' data differs; choose a version in the Merge tab first" }
+        : { allowed: true };
+    default:
+      return { allowed: true };
   }
 }
 
@@ -997,8 +995,16 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     tick: (options: { force?: boolean; exportOnly?: boolean } = {}) => serialize(() => tick(options)),
     /** One tick now (it imports the other computer's newer data first, when there is any), then the
      * verdict for an automatic write. */
-    syncBeforeBackgroundWrite: async (): Promise<BackgroundWriteVerdict> =>
-      backgroundWriteVerdict(await serialize(() => tick())),
+    syncBeforeBackgroundWrite: (): Promise<BackgroundWriteVerdict> =>
+      serialize(async () => {
+        const status = await tick();
+        const verdict = backgroundWriteVerdict(status, now());
+        const backgroundWritesPausedReason = verdict.allowed ? null : verdict.reason;
+        if ((status.backgroundWritesPausedReason ?? null) !== backgroundWritesPausedReason) {
+          await deps.saveStatus({ ...status, backgroundWritesPausedReason }).catch(() => {});
+        }
+        return verdict;
+      }),
     keepMine: (snapshotId: string) => serialize(() => keepMineUnlocked(snapshotId)),
     takeTheirs: (snapshotId: string) => serialize(() => takeTheirsUnlocked(snapshotId)),
     divergencePreview: (snapshotId: string) => serialize(() => divergencePreviewUnlocked(snapshotId)),

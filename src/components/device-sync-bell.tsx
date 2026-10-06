@@ -26,6 +26,7 @@ type SyncStatus = {
   lastImportAt: string | null;
   notices: Notice[];
   busyReason: string | null;
+  backgroundWritesPausedReason?: string | null;
 };
 
 const POLL_MS = 30_000;
@@ -138,6 +139,11 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
             <p className="mt-1 text-xs text-zinc-500">
               Last published: {formatTime(status?.lastExportAt ?? null)} · Last loaded: {formatTime(status?.lastImportAt ?? null)}
             </p>
+            {status?.backgroundWritesPausedReason && (
+              <p className="mt-1 text-xs text-amber-300">
+                Automatic Research refresh is waiting: {status.backgroundWritesPausedReason}.
+              </p>
+            )}
           </div>
 
           {notices.map((notice, index) => (
