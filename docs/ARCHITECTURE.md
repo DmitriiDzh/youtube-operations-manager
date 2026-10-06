@@ -2864,3 +2864,24 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   (device-local; every mutation is one write transaction merged per pull, review round 6). A GPU
   session's approve is refused while a pull is running (shared volume, AC-P14-18); the CLI mirrors the
   panel (`models`, `model-pull`, `model-rm`).
+
+**Live job progress (BL-144, 2026-10-06, owner msg 1887: real information, not estimates).** `jobs.ts` opens
+ComfyUI's websocket **before** submitting a prompt (ComfyUI only sends events to sockets already connected with that
+client id; the submit waits up to 5 s for it), keeps it through the unchanged `/history` polling loop, reopens a dropped
+one at most every 15 s, and opens one late for a job picked up after a restart (ComfyUI re-sends its current node on
+connect, without a prompt id). The socket goes through the media gateway (`comfyui-api.ts` `openProgressStream`: `wss://<pod>-<port>.proxy.runpod.net/ws?clientId=ytm-<jobId>`, the
+per-session bearer token in the upgrade request's header, the same "Media gateway" toggle and traffic counter; an open
+socket re-checks the toggle every 15 s and closes when it is off). The node count and names come from the template's
+graph only while the template is at the job's version. ComfyUI
+sends a prompt's execution events only to the client id it was submitted with, so the socket sees exactly that job.
+`media-gateway/comfyui-progress.ts` parses `execution_start`, `execution_cached`, `executing`, `progress`, `executed`,
+`progress_state`, `execution_success`, `execution_error`, `execution_interrupted`; `media-generation/job-progress.ts`
+reduces them into `JobLiveProgress` (current node and its class type from the template graph, the node's steps, nodes done
+and cached, a percent from nodes and steps that reaches 100 only on success). It lives in memory in the media core (one
+per process on `globalThis`) and is attached to job reads as the optional `progress`. The stream never changes a job's
+status: when it cannot open or drops, progress is `unavailable` and the job continues exactly as before (§M). Shown in
+Production → Jobs (a bar per generating job, refreshed every 2 s) and Sessions ("Now" under each running session: the
+current job, its progress, how many wait). **Live-verified 2026-10-07** on an RTX 4090 pod through RunPod's proxy with the
+ACE-Step 1.5 2B turbo template: `execution_start`, `execution_cached`, `executing` per node, `progress_state` and the
+KSampler's `progress` (8 of 8) all arrived, node 1 included (the socket connected before the submit). ComfyUI sends
+nothing while a node works before its first step, so such a stretch shows only the node name.

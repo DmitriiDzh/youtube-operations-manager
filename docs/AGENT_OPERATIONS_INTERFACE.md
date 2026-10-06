@@ -1100,7 +1100,7 @@ from a human's approve (the concurrency limit, or a model pull holding the volum
 
 Seven capabilities in the new `media_generation` domain (`src/lib/media-generation/`, registered directly in
 `src/mcp/server.ts`, AGENTS.md §M). READ: `agent_list_media_templates`, `agent_get_media_session`, `agent_get_media_limits`,
-`agent_get_media_job`. DRAFT (channel-bound, mutation-gated): `agent_request_media_session`, `agent_create_media_job`,
+`agent_get_media_job` (BL-144: plus an optional live `progress` from ComfyUI's own execution events while this device watches a generating job -- node N of M, steps, percent, never estimated). DRAFT (channel-bound, mutation-gated): `agent_request_media_session`, `agent_create_media_job`,
 `agent_cancel_media_job`. Model: the agent REQUESTS a session (one RunPod GPU pod running ComfyUI, caps `maxMinutes`/`maxUsd`; a local
 estimate = saved GPU price × minutes / 60, no RunPod call); a human approves/starts/stops it in Production → Sessions (Web-only, fenced by
 `session-approval-inventory.test.ts` from `src/mcp`, `src/cli`, `src/lib/agent-operations`); while it is `running` the agent submits jobs

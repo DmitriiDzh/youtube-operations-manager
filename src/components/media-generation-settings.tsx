@@ -24,6 +24,7 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
+import { JobProgress } from "./media-job-progress";
 import { VolumeUsageBar, volumeUsageBreakdown } from "./volume-usage-bar";
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
@@ -722,15 +723,17 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
   }, [fetchAll]);
 
   const hasActive = jobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
+  // BL-144: while a job generates, its live ComfyUI progress is refreshed every 2 s; otherwise every 5 s as before.
+  const generating = jobs.some((j) => j.status === "generating" || j.status === "submitted");
   useEffect(() => {
     if (!hasActive) return;
-    const jobsTimer = setInterval(() => void fetchJobs(), 5_000);
+    const jobsTimer = setInterval(() => void fetchJobs(), generating ? 2_000 : 5_000);
     const contextTimer = setInterval(() => void fetchContext(), 60_000);
     return () => {
       clearInterval(jobsTimer);
       clearInterval(contextTimer);
     };
-  }, [hasActive, fetchJobs, fetchContext]);
+  }, [hasActive, generating, fetchJobs, fetchContext]);
 
   async function run() {
     if (!activeChannelId || !targetSession) return;
@@ -861,7 +864,10 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
               {jobs.slice(0, 12).map((j) => (
                 <tr key={j.jobId} className="border-t border-zinc-800 align-top">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(j.createdAt)}</td>
-                  <td className="py-1 pr-3">{j.status}</td>
+                  <td className="py-1 pr-3">
+                    {j.status}
+                    {j.progress && <JobProgress progress={j.progress} />}
+                  </td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
                   <td className="py-1 pr-3 font-mono">
                     {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split(/[\\/]/).slice(-2).join("/") : `${o.filename} (${o.note ?? "pending"})`)).join(", ")}
@@ -964,6 +970,23 @@ const statusTone: Record<string, string> = {
 // are listed in one table with live statuses and per-row Approve / Reject / Stop. Approving answers at once; the pod
 // start runs in the background and the row's status tells the rest -- no blocking pop-up. Every action that spends or
 // ends a pod asks for a confirmation IN the row (no modal, no native dialog).
+/**
+ * BL-144: a running session's current job and how many wait behind it, from ComfyUI's own reports where available: the
+ * job whose progress says it is running (or just finished/failed) is current; other submitted/generating jobs of the
+ * session are waiting in ComfyUI's queue (the app marks every submitted job "generating" after its first poll, so the
+ * status alone cannot tell). Without progress, the oldest transferring/generating/submitted job is shown as current.
+ */
+export function nowRunningOn(sessionId: string, jobs: MediaJob[]): { current: MediaJob | null; waiting: number } {
+  const mine = jobs.filter((j) => j.sessionId === sessionId);
+  const byAge = (a: MediaJob, b: MediaJob) => Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  const inComfy = mine.filter((j) => j.status === "submitted" || j.status === "generating").sort(byAge);
+  const reportedActive = inComfy.find((j) => j.progress && ["running", "finished", "error", "interrupted"].includes(j.progress.state)) ?? null;
+  const transferring = mine.filter((j) => j.status === "transferring").sort(byAge)[0] ?? null;
+  const current = reportedActive ?? transferring ?? inComfy[0] ?? null;
+  const waiting = mine.filter((j) => j.status === "queued").length + inComfy.filter((j) => j.jobId !== current?.jobId).length;
+  return { current, waiting };
+}
+
 export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: boolean; activeChannelId: string | null; onLimits?: (limits: SessionLimits) => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [limits, setLimits] = useState<SessionLimits | null>(null);
@@ -1000,6 +1023,50 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     const timer = setInterval(() => void fetchAll(), fast ? SESSIONS_FAST_POLL_MS : SESSIONS_SLOW_POLL_MS);
     return () => clearInterval(timer);
   }, [fast, fetchAll]);
+
+  // BL-144: what each running pod is doing right now -- its current job with ComfyUI's live progress, and how many
+  // jobs wait behind it. Read only while a session runs.
+  // Polled per running session (its own jobs only); every 2 s while one of them is in flight, otherwise every 15 s.
+  const runningIds = openSessions.filter((s) => s.status === "running").map((s) => s.sessionId).sort().join(",");
+  const [liveJobs, setLiveJobs] = useState<MediaJob[]>([]);
+  const [templateNames, setTemplateNames] = useState<Map<string, string>>(new Map());
+  const jobsInFlight = liveJobs.some((j) => !["done", "failed", "cancelled"].includes(j.status));
+  useEffect(() => {
+    if (!runningIds) return;
+    let cancelled = false;
+    const load = () =>
+      Promise.all(
+        runningIds.split(",").map((sessionId) => requestJson<{ jobs: MediaJob[] }>(`/api/media-generation/jobs?sessionId=${encodeURIComponent(sessionId)}`).then((j) => j.jobs))
+      ).then(
+        (lists) => {
+          if (!cancelled) setLiveJobs(lists.flat());
+        },
+        () => {
+          // Non-fatal: the block keeps its last state.
+        }
+      );
+    void load();
+    const timer = setInterval(() => void load(), jobsInFlight ? 2_000 : 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [runningIds, jobsInFlight]);
+  // Template names for the "Now" line; fetched again when a job names a template not seen yet.
+  const missingTemplate = liveJobs.some((j) => !templateNames.has(j.templateId));
+  useEffect(() => {
+    if (!runningIds || !missingTemplate) return;
+    let cancelled = false;
+    requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates").then(
+      (t) => {
+        if (!cancelled) setTemplateNames(new Map(t.templates.map((x) => [x.templateId, `${x.name} v${x.version}`])));
+      },
+      () => {}
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [runningIds, missingTemplate]);
 
   async function request() {
     if (!activeChannelId) return;
@@ -1158,7 +1225,35 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                   <td className="py-2 pr-3 whitespace-nowrap">{s.startedAt ? `${minutesLabel(s.secondsUsed)} ≈ $${(s.usdCharged ?? 0).toFixed(2)}` : "—"}</td>
                   <td className="py-2">{actions(s)}</td>
                 </tr>
-              ))}
+              )).flatMap((row, index) => {
+                const s = openSessions[index];
+                if (s.status !== "running") return [row];
+                const now = nowRunningOn(s.sessionId, liveJobs);
+                return [
+                  row,
+                  <tr key={`${s.sessionId}-now`} className="align-top">
+                    <td colSpan={8} className="pb-3 pl-4 pr-3">
+                      <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-3 py-2">
+                        <span className="text-zinc-500">Now: </span>
+                        {now.current ? (
+                          <>
+                            <span className="text-zinc-200">{templateNames.get(now.current.templateId) ?? now.current.templateId}</span>
+                            <span className="text-zinc-500">
+                              {" "}
+                              · job {now.current.jobId.slice(0, 8)} · {now.current.status}
+                              {now.current.submittedAt ? ` since ${formatDisplayDateTime(now.current.submittedAt)}` : ""}
+                            </span>
+                            {now.current.progress && <JobProgress progress={now.current.progress} />}
+                          </>
+                        ) : (
+                          <span className="text-zinc-400">no job running</span>
+                        )}
+                        {now.waiting > 0 && <div className="mt-1 text-zinc-400">{now.waiting} more job{now.waiting === 1 ? "" : "s"} waiting</div>}
+                      </div>
+                    </td>
+                  </tr>,
+                ];
+              })}
             </tbody>
           </table>
         </div>

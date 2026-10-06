@@ -1,5 +1,6 @@
 import path from "node:path";
-import type { ComfyUiClient, RunpodS3Client } from "@/lib/media-gateway";
+import type { JobProgressRegistry } from "./job-progress";
+import type { ComfyUiClient, ProgressStream, RunpodS3Client } from "@/lib/media-gateway";
 import {
   DomainError,
   EXCHANGE_INPUT_PREFIX,
@@ -128,6 +129,8 @@ export type ExchangeInputRow = { remoteKey: string; jobId: string; parameter: st
 
 export type JobServiceDependencies = {
   store: MediaJobStore;
+  /** BL-144: live progress from ComfyUI's websocket while a job generates; absent = not watched (tests, CLI). */
+  progress?: JobProgressRegistry;
   sessions: {
     getRunningSession(sessionId: string): Promise<{ sessionId: string; channelId: string; podId: string | null; gpuTypeId: string | null; costPerHr: number | null } | null>;
     comfyClientForSession(sessionId: string): Promise<ComfyUiClient>;
@@ -180,6 +183,9 @@ const DEFAULT_POLL_MS = 4_000;
 const DEFAULT_MAX_GENERATION_MS = 2 * 60 * 60_000;
 /** Consecutive `/history` failures (proxy 502, 30 s timeout) tolerated while the session still runs. */
 const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+/** BL-144: how long a submit waits for the progress socket to connect, and how often a dropped one is reopened. */
+const PROGRESS_OPEN_WAIT_MS = 5_000;
+const PROGRESS_RECONNECT_MS = 15_000;
 /** How long a `transferring` job keeps being retried when its outputs cannot be received yet. */
 const TRANSFER_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 const TRANSFER_BACKOFF_BASE_MS = 15_000;
@@ -541,7 +547,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   async function withInputs(job: MediaJob): Promise<MediaJob> {
     const rows = deps.store.inputs ? await deps.store.inputs.listByJob(job.jobId) : [];
     const inputs: MediaJobInput[] = rows.map((r) => ({ parameter: r.parameter, sourcePath: r.sourcePath, remoteKey: r.remoteKey, bytes: r.bytes, sha256: r.sha256, uploadedAt: r.uploadedAt.toISOString(), remoteDeleted: r.remoteDeletedAt !== null }));
-    return { ...job, inputs };
+    // BL-144: live ComfyUI progress while this device watches the job's generation (absent otherwise).
+    const progress = deps.progress?.get(job.jobId) ?? null;
+    return { ...job, inputs, ...(progress ? { progress } : {}) };
   }
 
   function factoryManaged(templateId: string): DomainError {
@@ -834,7 +842,91 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
   }
 
+  /**
+   * BL-144: ComfyUI's own execution events for a job, read from its websocket into the in-memory progress registry.
+   * ComfyUI sends them only to sockets already connected with the prompt's client id, so the socket is opened BEFORE the
+   * prompt is submitted (createJob) and kept for the whole generation; a job picked up later (restart, CLI) connects
+   * late and relies on ComfyUI re-sending its current node. A dropped stream is reopened at most every
+   * PROGRESS_RECONNECT_MS. All of it is independent of the /history polling, which alone decides the job's status: a
+   * stream that cannot open or drops only makes the progress "unavailable" (§M).
+   */
+  const progressStreams = new Map<string, { stream: ProgressStream | null; lastAttemptAt: number }>();
+
+  /** The job's graph, only when the template is still at the version the job was built from (else no node count). */
+  async function graphFor(templateId: string, templateVersion: number): Promise<string | null> {
+    try {
+      const template = await deps.store.templates.get(templateId);
+      return template && template.version === templateVersion ? template.workflowJson : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function openProgress(jobId: string, comfy: ComfyUiClient, input: { promptId: string | null; workflowJson: string | null; waitForOpenMs?: number }): Promise<void> {
+    const registry = deps.progress;
+    if (!registry) return;
+    const now = deps.clock.now();
+    if (registry.has(jobId)) registry.reconnecting(jobId, now);
+    else registry.begin(jobId, { promptId: input.promptId, workflowJson: input.workflowJson }, now);
+    const entry: { stream: ProgressStream | null; lastAttemptAt: number } = { stream: null, lastAttemptAt: now.getTime() };
+    progressStreams.set(jobId, entry);
+    let settle: () => void = () => {};
+    const settled = new Promise<void>((resolve) => (settle = resolve));
+    try {
+      entry.stream = await comfy.openProgressStream({
+        clientId: `ytm-${jobId}`,
+        onOpened: () => {
+          registry.connected(jobId, deps.clock.now());
+          settle();
+        },
+        onEvent: (event) => registry.apply(jobId, event, deps.clock.now()),
+        onClosed: (reason) => {
+          entry.stream = null;
+          registry.unavailable(jobId, reason, deps.clock.now());
+          settle();
+        },
+      });
+    } catch (error) {
+      registry.unavailable(jobId, error instanceof Error ? error.message : String(error), deps.clock.now());
+      return;
+    }
+    if (input.waitForOpenMs) {
+      // Before a submit: give the socket a moment to connect so ComfyUI's first events are not lost. Never blocks the
+      // submit for longer than this.
+      await Promise.race([
+        settled,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, input.waitForOpenMs);
+          (timer as { unref?: () => void }).unref?.();
+        }),
+      ]);
+    }
+  }
+
+  /** Called on every poll: opens the stream of a job picked up without one, or reopens a dropped one (throttled). */
+  async function keepProgress(job: { id: string; promptId: string | null; templateId: string; templateVersion: number }, comfy: ComfyUiClient): Promise<void> {
+    if (!deps.progress) return;
+    const entry = progressStreams.get(job.id);
+    if (entry && (entry.stream || deps.clock.now().getTime() - entry.lastAttemptAt < PROGRESS_RECONNECT_MS)) return;
+    await openProgress(job.id, comfy, { promptId: job.promptId, workflowJson: entry ? null : await graphFor(job.templateId, job.templateVersion) });
+  }
+
+  function closeProgress(jobId: string): void {
+    const entry = progressStreams.get(jobId);
+    progressStreams.delete(jobId);
+    entry?.stream?.close();
+    deps.progress?.end(jobId);
+  }
+
   async function processJobInner(jobId: string): Promise<void> {
+    try {
+      await pollJob(jobId);
+    } finally {
+      closeProgress(jobId);
+    }
+  }
+
+  async function pollJob(jobId: string): Promise<void> {
     const job = await deps.store.jobs.get(jobId);
     if (!job || !job.promptId) return;
     if (job.status === "transferring" && job.outputsJson) {
@@ -867,6 +959,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     for (;;) {
       const current = await deps.store.jobs.get(jobId);
       if (!current || (current.status !== "submitted" && current.status !== "generating")) return; // cancelled or swept meanwhile
+      await keepProgress(current, comfy);
       let history;
       try {
         history = await comfy.getHistory(job.promptId);
@@ -1305,11 +1398,14 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         await failJob(row, `no ComfyUI client: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
       }
+      // BL-144: the progress socket is connected first, so ComfyUI's first execution events reach it.
+      await openProgress(jobId, comfy, { promptId: null, workflowJson: template.workflowJson, waitForOpenMs: PROGRESS_OPEN_WAIT_MS });
       let submitted: { promptId: string };
       try {
         submitted = await comfy.submitPrompt({ prompt, clientId: `ytm-${jobId}` });
       } catch (error) {
         if (error instanceof DomainError && error.code === "comfyui_rejected") {
+          closeProgress(jobId);
           await failJob(row, `ComfyUI rejected the prompt: ${describeComfyRejection(error)}`);
           throw error;
         }
@@ -1320,15 +1416,18 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           .then((queue) => queue.entries.find((e) => e.clientId === `ytm-${jobId}`) ?? null)
           .catch(() => null);
         if (!adopted) {
+          closeProgress(jobId);
           await failJob(row, `the prompt could not be submitted (ComfyUI unreachable: ${error instanceof Error ? error.message : String(error)}); it is not in ComfyUI's queue`);
           throw error;
         }
         log(`[media] submit response lost for job ${jobId}, but ComfyUI queued it as ${adopted.promptId}; adopting`);
         submitted = { promptId: adopted.promptId };
       }
+      deps.progress?.setPrompt(jobId, submitted.promptId);
       await deps.sessions.touchActivity(parsed.sessionId);
       const updated = await deps.store.jobs.transition(jobId, ["queued"], { status: "submitted", promptId: submitted.promptId, submittedAt: deps.clock.now() });
       if (!updated) {
+        closeProgress(jobId);
         // Cancelled or swept while the submit was in flight: the prompt must not run unowned.
         await withdrawPrompt(comfy, submitted.promptId);
         const current = await requireJob(jobId);

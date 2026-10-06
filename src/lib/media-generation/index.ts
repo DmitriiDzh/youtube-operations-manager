@@ -16,6 +16,7 @@ import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
 import { DomainError, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
+import { createJobProgressRegistry } from "./job-progress";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
@@ -142,6 +143,8 @@ function buildCore(jobScheduling: JobScheduling) {
   const assets = createAssetCatalogCore();
   const jobs = createMediaJobServices({
     store: createMediaJobStore(),
+    // BL-144: live ComfyUI progress of the jobs this core watches (the core itself is one per process, on globalThis).
+    progress: createJobProgressRegistry(),
     sessions: {
       async getRunningSession(sessionId) {
         // Contracted as "null when not running"; an unknown id is "not running", never a throw out of a resume loop.

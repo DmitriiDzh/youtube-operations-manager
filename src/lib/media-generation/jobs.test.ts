@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import type { ComfyHistoryEntry, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
+import type { ComfyHistoryEntry, ComfyProgressEvent, ComfyUiClient, RunpodS3Client, S3ObjectSummary } from "@/lib/media-gateway";
+import { createJobProgressRegistry, type JobProgressRegistry } from "./job-progress";
 import { isDomainError, type MediaTemplateParameter } from "./contracts";
 import { buildPrompt, createMediaJobServices, describeComfyRejection, outputNodeIds, resolveParams, type ExchangeInputRow, type ExchangeLedgerRow, type MediaJobStore, type StoredJobRow, type StoredTemplateRow } from "./jobs";
 
@@ -204,7 +205,7 @@ function completed(outputs: Array<{ nodeId: string; kind: string; filename: stri
   return { promptId: "prompt-1", status: "completed", statusMessages: ["execution_success"], outputs: outputs.map((o) => ({ ...o, type: "output" })), raw: {} };
 }
 
-function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }> } = {}) {
+function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry } = {}) {
   const mem = memoryStore();
   const resolvedInputs: string[] = [];
   const comfy = opts.comfy ?? fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
@@ -230,6 +231,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
   const scheduled: Array<() => Promise<void>> = [];
   const services = createMediaJobServices({
     store: mem.store,
+    ...(opts.progress ? { progress: opts.progress } : {}),
     sessions: {
       getRunningSession: async (sessionId) => (opts.sessionRunning === false ? null : { sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69 }),
       comfyClientForSession: async () => comfy.client,
@@ -1801,4 +1803,119 @@ test("BL-132: an input parameter cannot have a default, and accept/maxBytes are 
   const t = await f.services.importWorkflowTemplate({ name: "ok", workflow: IMG2IMG, parameters: [...PARAMETERS, { name: "ref", type: "image", nodeId: "10", input: "image" }] });
   const ref = t.parameters.find((p) => p.name === "ref");
   assert.deepEqual([ref?.required, ref?.accept, ref?.maxBytes], [true, null, null]);
+});
+
+// BL-144 (owner, Telegram 2026-10-06, msg 1887): while a job generates, ComfyUI's own execution events show as its live
+// progress; the job's status still comes only from /history, and a stream that cannot open changes nothing for the job.
+test("BL-144: a generating job shows ComfyUI's live progress; it is gone once the job is done and the stream is closed", async () => {
+  const progress = createJobProgressRegistry();
+  const comfy = fakeComfy([null, null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  let emit: ((e: ComfyProgressEvent) => void) | null = null;
+  let opened: { clientId: string } | null = null;
+  let closed = 0;
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async (input: { clientId: string; onEvent: (e: ComfyProgressEvent) => void; onOpened?: () => void }) => {
+    opened = { clientId: input.clientId };
+    emit = input.onEvent;
+    input.onOpened?.();
+    return { close: () => void closed++ };
+  };
+  const seen: unknown[] = [];
+  const getHistory = client.getHistory as () => Promise<unknown>;
+  client.getHistory = async () => {
+    if (emit && seen.length === 0) {
+      emit({ type: "execution_start", promptId: "prompt-1" });
+      emit({ type: "executing", promptId: "prompt-1", nodeId: "3" });
+      emit({ type: "progress", promptId: "prompt-1", nodeId: "3", value: 5, max: 20 });
+      seen.push(progress.get("job-1"));
+    }
+    return getHistory();
+  };
+  const f = fixture({ comfy, progress });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+
+  assert.deepEqual(opened, { clientId: "ytm-job-1" });
+  const during = seen[0] as { state: string; currentNode: { id: string; type: string | null }; step: unknown; nodesTotal: number };
+  assert.equal(during.state, "running");
+  assert.deepEqual(during.step, { value: 5, max: 20 });
+  assert.equal(during.currentNode.id, "3");
+  assert.equal(during.nodesTotal, 4, "the template graph has 4 nodes");
+  const done = await f.services.getJob({ jobId: job.jobId });
+  assert.equal(done.status, "done");
+  assert.equal(done.progress, undefined);
+  assert.equal(closed, 1);
+});
+
+test("BL-144: when the progress stream cannot open, the job still runs to done exactly as before", async () => {
+  const progress = createJobProgressRegistry();
+  const comfy = fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async () => {
+    throw new Error("websocket refused");
+  };
+  const seen: unknown[] = [];
+  const getHistory = client.getHistory as () => Promise<unknown>;
+  client.getHistory = async () => {
+    seen.push(progress.get("job-1"));
+    return getHistory();
+  };
+  const f = fixture({ comfy, progress });
+  const t = await importDefault(f.services);
+  const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.deepEqual([(seen[0] as { state: string }).state, (seen[0] as { detail: string }).detail], ["unavailable", "websocket refused"]);
+  assert.equal((await f.services.getJob({ jobId: job.jobId })).status, "done");
+});
+
+test("BL-144 review: the progress socket is opened before the prompt is submitted, so ComfyUI's first events reach it", async () => {
+  const progress = createJobProgressRegistry();
+  const comfy = fakeComfy([completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  const order: string[] = [];
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async (input: { onOpened?: () => void }) => {
+    order.push("open");
+    input.onOpened?.();
+    return { close: () => {} };
+  };
+  const submit = client.submitPrompt as (i: unknown) => Promise<unknown>;
+  client.submitPrompt = async (i: unknown) => {
+    order.push("submit");
+    return submit(i);
+  };
+  const f = fixture({ comfy, progress });
+  const t = await importDefault(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  assert.deepEqual(order, ["open", "submit"]);
+  await f.runScheduled();
+  assert.deepEqual(order, ["open", "submit"], "the open stream is reused while polling, not opened again");
+});
+
+test("BL-144 review: a dropped stream shows unavailable and is not reopened sooner than every 15 s", async () => {
+  const progress = createJobProgressRegistry();
+  // Five empty polls (1 s apart in the fixture's clock), then the result.
+  const comfy = fakeComfy([null, null, null, null, null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
+  let opens = 0;
+  let drop: ((reason: string) => void) | null = null;
+  const client = comfy.client as unknown as Record<string, unknown>;
+  client.openProgressStream = async (input: { onOpened?: () => void; onClosed: (r: string) => void }) => {
+    opens++;
+    drop = input.onClosed;
+    input.onOpened?.();
+    return { close: () => {} };
+  };
+  const seen: string[] = [];
+  const getHistory = client.getHistory as () => Promise<unknown>;
+  client.getHistory = async () => {
+    if (drop && seen.length === 0) drop("closed (1006)");
+    seen.push(progress.get("job-1")?.state ?? "none");
+    return getHistory();
+  };
+  const f = fixture({ comfy, progress });
+  const t = await importDefault(f.services);
+  await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+  await f.runScheduled();
+  assert.equal(seen[0], "unavailable");
+  assert.equal(opens, 1, "within 15 s of the drop no new connection is attempted");
 });

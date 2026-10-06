@@ -23,3 +23,8 @@ export async function assertMediaGatewayAuthorized(category: MediaGatewayCategor
 }
 
 export type Authorize = (category: MediaGatewayCategory) => Promise<void>;
+
+/** BL-144: the toggle's state without recording a traffic event, for re-checking an open stream. */
+export async function isMediaGatewayEnabled(): Promise<boolean> {
+  return getMediaGatewayEnabled();
+}
