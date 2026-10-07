@@ -8116,6 +8116,17 @@ export async function setMediaTemplateSyncLastJson(json: string, database: AppDb
   await setAppSetting(MEDIA_TEMPLATE_SYNC_LAST_KEY, json, database);
 }
 
+/** FO-REQ-0005: local templates the Factory Operator is taking over into the registry (`parseTemplateAdoptions`). */
+const MEDIA_TEMPLATE_ADOPTIONS_KEY = "media_template_adoptions";
+
+export async function getMediaTemplateAdoptionsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(MEDIA_TEMPLATE_ADOPTIONS_KEY, database);
+}
+
+export async function setMediaTemplateAdoptionsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(MEDIA_TEMPLATE_ADOPTIONS_KEY, json, database);
+}
+
 export async function deleteMediaWorkflowTemplate(id: string, database: AppDb = db): Promise<boolean> {
   const rows = await database.delete(mediaWorkflowTemplates).where(eq(mediaWorkflowTemplates.id, id)).returning({ id: mediaWorkflowTemplates.id });
   return rows.length > 0;

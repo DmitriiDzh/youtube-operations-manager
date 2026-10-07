@@ -87,6 +87,7 @@ function fixture(
     podWritesVerdict?: boolean;
     usage?: MediaModelUsage;
     lockHeldBy?: string;
+    volumeLock?: ModelServiceDependencies["volumeLock"];
   } = {}
 ) {
   const objects = opts.objects ?? new Map<string, number>();
@@ -153,7 +154,7 @@ function fixture(
       generateId: () => `id-${++ids}`,
       clock: { now: () => now },
       pullCapMs: 60 * 60_000,
-      volumeLock: testLock({ heldBy: opts.lockHeldBy }).lock,
+      volumeLock: opts.volumeLock ?? testLock({ heldBy: opts.lockHeldBy }).lock,
       ...(opts.usage ? { modelUsage: async () => opts.usage! } : {}),
     },
     { verdicts, podWritesVerdict: opts.podWritesVerdict }
@@ -203,6 +204,8 @@ test("deleteModel accepts only a models/ object key", async () => {
   assert.equal(f.objects.size, 0);
 });
 
+// FO-REQ-0005 item 3 (owner decision 2026-10-07, msg 1915: base name by default, optional targetName) changed where the
+// file is MOVED to: models/<folder>/<base name> instead of models/<folder>/<repo path>; and never over an existing file.
 test("BL-132 buildPullCommand: downloads the exact commit into the pull's staging folder, hashes it there, moves it into models/ only on a match, writes the verdict via .part + rename; arguments are quoted", () => {
   const cmd = buildPullCommand({ pullId: "p1", repoId: "Comfy-Org/flux1-schnell", file: "split_files/flux1-schnell-fp8.safetensors", folder: "checkpoints", commitSha: "abc123", expectedSha256: "e".repeat(64) });
   const lines = cmd.split("\n");
@@ -211,8 +214,8 @@ test("BL-132 buildPullCommand: downloads the exact commit into the pull's stagin
   assert.ok(lines.includes("trap 'rm -rf /workspace/ytm-staging/p1' EXIT"), "staging removed on any exit");
   assert.ok(cmd.includes("hf download 'Comfy-Org/flux1-schnell' 'split_files/flux1-schnell-fp8.safetensors' --revision 'abc123' --local-dir /workspace/ytm-staging/p1"));
   assert.ok(cmd.includes("sha256sum /workspace/ytm-staging/p1/'split_files/flux1-schnell-fp8.safetensors'"));
-  assert.ok(cmd.includes(`if [ "$ACTUAL" = '${"e".repeat(64)}' ]; then`));
-  assert.ok(cmd.includes("mv /workspace/ytm-staging/p1/'split_files/flux1-schnell-fp8.safetensors' /workspace/models/checkpoints/'split_files/flux1-schnell-fp8.safetensors'; OK=true; else OK=false; fi"));
+  assert.ok(cmd.includes(`if [ "$ACTUAL" = '${"e".repeat(64)}' ] && [ ! -e /workspace/'models/checkpoints/flux1-schnell-fp8.safetensors' ]; then`));
+  assert.ok(cmd.includes("mv /workspace/ytm-staging/p1/'split_files/flux1-schnell-fp8.safetensors' /workspace/'models/checkpoints/flux1-schnell-fp8.safetensors'; OK=true; else OK=false; fi"));
   // Order: download -> hash -> conditional move -> staging gone -> verdict written last, atomically.
   assert.ok(at("hf download") < at("sha256sum") && at("sha256sum") < at("then mkdir") && at("then mkdir") < lines.indexOf("rm -rf /workspace/ytm-staging/p1") && lines.indexOf("rm -rf /workspace/ytm-staging/p1") < at("> /workspace/ytm-pulls/p1.json.part"));
   assert.ok(lines.includes("mv /workspace/ytm-pulls/p1.json.part /workspace/ytm-pulls/p1.json"));
@@ -220,6 +223,9 @@ test("BL-132 buildPullCommand: downloads the exact commit into the pull's stagin
   assert.ok(!cmd.includes("/workspace/models/checkpoints --local-dir") && !/--local-dir \/workspace\/models/.test(cmd), "never downloads straight into models/");
   assert.equal(modelFileName("split_files/x.safetensors"), "x.safetensors");
   assert.ok(buildPullCommand({ pullId: "p", repoId: "a/b", file: "it's.bin", folder: "vae", commitSha: "c", expectedSha256: "f".repeat(64) }).includes("'it'\\''s.bin'"));
+  // A targetName replaces the base name; the staged path still keeps the repo path (that is where hf puts it).
+  const named = buildPullCommand({ pullId: "p2", repoId: "a/b", file: "unet/model.safetensors", folder: "diffusion_models", targetName: "wan-unet.safetensors", commitSha: "c", expectedSha256: "f".repeat(64) });
+  assert.ok(named.includes("mv /workspace/ytm-staging/p2/'unet/model.safetensors' /workspace/'models/diffusion_models/wan-unet.safetensors'; OK=true"));
 });
 
 test("AC-P14-18: startPull creates a CPU pod on the volume; pollPulls terminates it once the file is on the volume and reports done", async () => {
@@ -291,12 +297,36 @@ test("cancelPull terminates a running pull and refuses a finished one", async ()
 
 // -- review round 1 (2026-10-05) ------------------------------------------------------------------
 
-test("review: a nested repo file lands under models/<folder>/<repo path> (hf download keeps the path), so that is the key waited for", async () => {
+// FO-REQ-0005 item 3 replaced the earlier rule (the repo path was kept): the base name is the default key now, so a
+// Comfy-Org `split_files/<folder>/x` lands where the official example workflows expect it.
+test("FO-REQ-0005: a nested repo file lands under models/<folder>/<base name> by default, so that is the key waited for", async () => {
   const f = fixture();
   const pull = await f.services.startPull({ repoId: "Comfy-Org/Wan_2.2", file: "split_files/vae/wan2.2_vae.safetensors", folder: "vae" });
-  assert.equal(pull.expectedKey, "models/vae/split_files/vae/wan2.2_vae.safetensors");
-  f.objects.set("models/vae/split_files/vae/wan2.2_vae.safetensors", 10);
+  assert.equal(pull.expectedKey, "models/vae/wan2.2_vae.safetensors");
+  assert.equal(pull.file, "split_files/vae/wan2.2_vae.safetensors", "the repo path is still what is downloaded");
+  f.objects.set("models/vae/wan2.2_vae.safetensors", 10);
   assert.equal((await f.services.pollPulls())[0].status, "done");
+});
+
+test("FO-REQ-0005: targetName names the file on the volume; a taken base name is refused (never overwritten) and a targetName resolves it", async () => {
+  const f = fixture({ objects: new Map([["models/text_encoders/model.safetensors", 500]]) });
+  await assert.rejects(
+    f.services.startPull({ repoId: "org/encoder-b", file: "text_encoder/model.safetensors", folder: "text_encoders" }),
+    (e: unknown) => isDomainError(e) && e.code === "validation_failed" && /models\/text_encoders\/model\.safetensors already exists/.test(e.message)
+  );
+  assert.ok(!f.calls.some((c) => c.startsWith("createPod")), "refused before any pod");
+  const pull = await f.services.startPull({ repoId: "org/encoder-b", file: "text_encoder/model.safetensors", folder: "text_encoders", targetName: "encoder-b.safetensors" });
+  assert.equal(pull.expectedKey, "models/text_encoders/encoder-b.safetensors");
+  assert.equal(pull.targetName, "encoder-b.safetensors");
+  assert.equal(f.events.find((e) => e.action === "model_pull_started")?.details?.targetName, "encoder-b.safetensors");
+});
+
+test("FO-REQ-0005: a targetName must be one plain file name -- no folder, no '..', not hidden, not blank", async () => {
+  for (const targetName of ["sub/x.safetensors", "..", "../x.bin", ".hidden", "", "   ", "a\\b.bin", "x".repeat(201)]) {
+    const f = fixture();
+    await assert.rejects(f.services.startPull({ repoId: "a/b", file: "c.bin", folder: "vae", targetName }), (e: unknown) => isDomainError(e) && e.code === "validation_failed", JSON.stringify(targetName));
+    assert.ok(!f.calls.some((c) => c.startsWith("createPod")));
+  }
 });
 
 test("review: a pull is never recorded done while its pod could not be terminated -- it stays running and the next poll retries", async () => {
@@ -967,6 +997,24 @@ test("AC-FM-06: the owner is never locked out -- a used model, or an unreadable 
   const f = fixture({ objects: new Map([[KEY, 100]]), usage: inUse("registry") });
   assert.deepEqual(await f.services.deleteModel({ key: KEY }, { actor: "owner" }), { deleted: KEY });
   assert.deepEqual(f.events.at(-1)?.details, { usedBy: inUse("registry").users, registry: "ok" });
+});
+
+// FO-REQ-0005 item 1: the factory got `internal_error` instead of `media_model_in_use`. Whatever goes wrong while the
+// volume lock is released afterwards must not replace the answer.
+test("FO-REQ-0005: a failing lock release never replaces media_model_in_use (or the deletion's own result)", async () => {
+  const { lock } = testLock();
+  const flakyRelease: ModelServiceDependencies["volumeLock"] = { ...lock, release: async () => { throw new Error("SQLITE_BUSY: database is locked"); } };
+  const originalWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    const used = fixture({ objects: new Map([[KEY, 100]]), usage: inUse("owner"), volumeLock: flakyRelease });
+    await assert.rejects(used.services.deleteModel({ key: KEY }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_model_in_use" && (e.details as { usedBy: unknown[] }).usedBy.length === 1);
+    assert.ok(used.objects.has(KEY));
+    const free = fixture({ objects: new Map([[KEY, 100]]), usage: { registry: "ok", registryError: null, users: [] }, volumeLock: flakyRelease });
+    assert.deepEqual(await free.services.deleteModel({ key: KEY }, { actor: "factory" }), { deleted: KEY });
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("plan §2.2: a deletion is refused while a pull or a session holds the volume (a running job may be reading the file)", async () => {

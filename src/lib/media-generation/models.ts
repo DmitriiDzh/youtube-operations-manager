@@ -36,6 +36,9 @@ export function pullPodNameFor(pullId: string): string {
   return `ytm-models-pull-${pullId.slice(0, 8)}`;
 }
 
+/** A model's file name on the volume: one path segment, never hidden, never `..`. */
+export const MODEL_TARGET_NAME_PATTERN = /^[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,199}$/;
+
 export const startModelPullInputSchema = z
   .object({
     /** Hugging Face repo id, e.g. "Comfy-Org/flux1-schnell". */
@@ -47,6 +50,12 @@ export const startModelPullInputSchema = z
     revision: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._/-]+$/, "a branch, tag or commit").refine((v) => !v.includes(".."), "a branch, tag or commit").optional(),
     /** Expected SHA-256 of the file. Optional here (the Hub's declared hash is used); the factory tool requires it. */
     sha256: z.string().trim().toLowerCase().regex(/^[0-9a-f]{64}$/, "64 hex characters").optional(),
+    /**
+     * FO-REQ-0005 item 3: the file's name in `models/<folder>/`. Default: the base name of `file` (a repo's
+     * `split_files/<folder>/x.safetensors` lands as `models/<folder>/x.safetensors`). Give it when two repos ship files of
+     * the same base name (`model.safetensors`): an existing key is never overwritten.
+     */
+    targetName: z.string().trim().regex(MODEL_TARGET_NAME_PATTERN, "a file name: letters, digits, '.', '_', '+' or '-', not starting with '.'").optional(),
     cpuFlavorId: z.string().trim().min(1).max(64).optional(),
     vcpuCount: z.number().int().min(1).max(32).optional(),
   })
@@ -62,6 +71,8 @@ export type ModelPull = {
   podId: string | null;
   repoId: string;
   file: string;
+  /** FO-REQ-0005: the file name under `models/<folder>/` (absent on pulls recorded before it, which kept the repo path). */
+  targetName?: string;
   expectedKey: string;
   status: "running" | "done" | "failed" | "timeout";
   startedAt: string;
@@ -121,6 +132,11 @@ export function modelFileName(file: string): string {
   return file.split("/").filter(Boolean).pop() ?? file;
 }
 
+/** FO-REQ-0005 item 3: where a pull lands -- `models/<folder>/<targetName, or the base name of the repo file>`. */
+export function pullTargetKey(args: { folder: string; file: string; targetName?: string }): string {
+  return `${MODELS_PREFIX}${args.folder}/${args.targetName ?? modelFileName(args.file)}`;
+}
+
 /**
  * The shell the CPU pod runs (BL-132): download one file at an exact commit into the pull's staging folder, hash it,
  * MOVE it into `models/<folder>/` only when the hash matches (else it is deleted with the staging folder), write the
@@ -128,12 +144,13 @@ export function modelFileName(file: string): string {
  * The final key therefore never exists unverified (AC-FM-03). The HF CLI's cache lives inside the staging folder and
  * goes with it (review round 14's concern); `set -e` + the trap mean any failure leaves no staging litter and no verdict.
  */
-export function buildPullCommand(args: { pullId: string; repoId: string; file: string; folder: string; commitSha: string; expectedSha256: string }): string {
+export function buildPullCommand(args: { pullId: string; repoId: string; file: string; folder: string; targetName?: string; commitSha: string; expectedSha256: string }): string {
   const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
   const stage = `/workspace/${PULL_STAGING_PREFIX}${args.pullId}`;
   const result = `/workspace/${PULL_RESULTS_PREFIX}${args.pullId}.json`;
   const staged = `${stage}/${q(args.file)}`;
-  const final = `/workspace/${MODELS_PREFIX}${args.folder}/${q(args.file)}`;
+  // `hf download --local-dir` keeps the repo-relative path in the staging folder; the final name drops it (FO-REQ-0005).
+  const final = `/workspace/${q(pullTargetKey(args))}`;
   return [
     "set -e",
     `trap 'rm -rf ${stage}' EXIT`,
@@ -142,7 +159,8 @@ export function buildPullCommand(args: { pullId: string; repoId: string; file: s
     `hf download ${q(args.repoId)} ${q(args.file)} --revision ${q(args.commitSha)} --local-dir ${stage}`,
     `ACTUAL=$(sha256sum ${staged} | cut -d' ' -f1)`,
     `BYTES=$(stat -c %s ${staged})`,
-    `if [ "$ACTUAL" = ${q(args.expectedSha256)} ]; then mkdir -p "$(dirname ${final})"; mv ${staged} ${final}; OK=true; else OK=false; fi`,
+    // Never over an existing file (the start refuses an existing key; this covers one that appeared meanwhile).
+    `if [ "$ACTUAL" = ${q(args.expectedSha256)} ] && [ ! -e ${final} ]; then mkdir -p "$(dirname ${final})"; mv ${staged} ${final}; OK=true; else OK=false; fi`,
     `rm -rf ${stage}`,
     `printf '{"ok":%s,"sha256":"%s","bytes":%s}\\n' "$OK" "$ACTUAL" "$BYTES" > ${result}.part`,
     `mv ${result}.part ${result}`,
@@ -330,7 +348,11 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         const s3 = await deps.base.s3();
         await s3.deleteObject(key);
       } finally {
-        await deps.volumeLock.release(owner);
+        // A failed release must not replace the answer being thrown (FO-REQ-0005: `media_model_in_use` must reach the
+        // caller); the row is then left to the lock's staleness rule (an inactive `delete:` holder ages out).
+        await deps.volumeLock.release(owner).catch((error: unknown) => {
+          console.warn(`[media] could not release the volume lock ${owner}: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
       await audit({ actor, action: "model_deleted", subject: key, details: users.length > 0 || usage.registry === "unavailable" ? { usedBy: users, registry: usage.registry } : undefined });
       return { deleted: key };
@@ -488,8 +510,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         });
       }
     }
-    // `hf download <repo> <file> --local-dir DIR` keeps the file's repo-relative path under DIR.
-    const expectedKey = `${MODELS_PREFIX}${parsed.folder}/${parsed.file}`;
+    const expectedKey = pullTargetKey(parsed);
     // The poll declares the pull done when the key has a size: a key that already exists would be "done" on the
     // first tick while the pod still downloads (review round 7). Re-pulling means deleting the old copy first.
     const existing = await (await deps.base.s3()).headObject(expectedKey);
@@ -510,6 +531,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       podId: null,
       repoId: parsed.repoId,
       file: parsed.file,
+      ...(parsed.targetName !== undefined ? { targetName: parsed.targetName } : {}),
       expectedKey,
       status: "running",
       startedAt: deps.clock.now().toISOString(),
@@ -533,7 +555,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         cloud: "SECURE",
         dataCenterId: settings.datacenterId,
         mounts: { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] },
-        cmd: ["bash", "-lc", buildPullCommand({ pullId, repoId: parsed.repoId, file: parsed.file, folder: parsed.folder, commitSha: hub.commitSha, expectedSha256 })],
+        cmd: ["bash", "-lc", buildPullCommand({ pullId, repoId: parsed.repoId, file: parsed.file, folder: parsed.folder, targetName: parsed.targetName, commitSha: hub.commitSha, expectedSha256 })],
         startSsh: false,
       });
     } catch (error) {
@@ -579,7 +601,7 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
       actor: requestedBy,
       action: "model_pull_started",
       subject: expectedKey,
-      details: { pullId, repoId: parsed.repoId, file: parsed.file, revision: hub.revision, commitSha: hub.commitSha, expectedSha256, bytes: hub.bytes, podId: pod.id },
+      details: { pullId, repoId: parsed.repoId, file: parsed.file, targetName: parsed.targetName ?? null, revision: hub.revision, commitSha: hub.commitSha, expectedSha256, bytes: hub.bytes, podId: pod.id },
     });
     return pull;
   }

@@ -4,6 +4,8 @@ import { getAgentSession } from "@/lib/agent-session";
 import { createFactoryTokenServices, type FactoryTokenStore } from "@/lib/factory-agent-tokens/services";
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
+import { OperationLockError } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { createFactoryMcpServer, FACTORY_TOOL_NAMES, type FactoryToolDeps } from "@/mcp/factory-server";
 import { createFactoryMcpEndpoint } from "./index";
 
@@ -81,6 +83,9 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       getJob: async (input) => (mediaCalls.push(`getJob:${input.jobId ?? ""}`), { job: { jobId: "j1" } }),
       cancelJob: async (input) => (mediaCalls.push(`cancelJob:${input.jobId}`), { job: { jobId: input.jobId } }),
       capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
+      deleteTemplate: async (input) => (mediaCalls.push(`deleteTemplate:${input.templateId}`), { deleted: true }),
+      adoptTemplate: async (input) => (mediaCalls.push(`adoptTemplate:${input.templateId}>${input.newTemplateId}`), { status: "pending" }),
+      getSettings: async () => (mediaCalls.push("getSettings"), { settings: {} }),
     },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
@@ -220,7 +225,7 @@ test("a non-token verification failure (database down) is a 503, never a false '
 // BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025, AC-FM-13) widened the closed list by eight media tools; BL-133
 // (FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5, ADR 0026, owner 2026-10-06) by seven more: the factory's own sessions, its jobs in
 // them and the capacity log. No channel tool, and no tool that approves a session for anyone else, is added.
-test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exactly the four 1.0.0 tools, the eight 1.1.0 media tools and the seven 1.2.0 tools", async () => {
+test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exactly the four 1.0.0 tools, the eight 1.1.0 media tools, the seven 1.2.0 tools and the three 1.3.0 tools (FO-REQ-0005)", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
@@ -230,14 +235,17 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_get_logical_path",
     "factory_list_channels",
     "factory_list_logical_paths",
+    "factory_media_adopt_template",
     "factory_media_cancel_job",
     "factory_media_cancel_pull",
     "factory_media_capacity_log",
     "factory_media_create_job",
     "factory_media_delete_model",
+    "factory_media_delete_template",
     "factory_media_get_job",
     "factory_media_get_pull",
     "factory_media_get_session",
+    "factory_media_get_settings",
     "factory_media_list_models",
     "factory_media_list_templates",
     "factory_media_pull_model",
@@ -263,14 +271,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 
 // BL-132 (AC-FM-13): the capabilities answer now reports WRITE and names the write tools; version 1.1.0.
 // BL-133: version 1.2.0 and the seven session/job/capacity tools (four of them writes).
-test("factory_get_capabilities reports the factory API version 1.2.0, READ and WRITE, the tool list and the write tools", async () => {
+// FO-REQ-0005: version 1.3.0, delete/adopt a local template (writes) and the settings read.
+test("factory_get_capabilities reports the factory API version 1.3.0, READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.2.0",
+    factoryApiVersion: "1.3.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -284,6 +293,9 @@ test("factory_get_capabilities reports the factory API version 1.2.0, READ and W
       "factory_media_delete_model",
       "factory_media_list_templates",
       "factory_media_sync_templates",
+      "factory_media_delete_template",
+      "factory_media_adopt_template",
+      "factory_media_get_settings",
       "factory_media_start_session",
       "factory_media_get_session",
       "factory_media_stop_session",
@@ -298,6 +310,8 @@ test("factory_get_capabilities reports the factory API version 1.2.0, READ and W
       "factory_media_cancel_pull",
       "factory_media_delete_model",
       "factory_media_sync_templates",
+      "factory_media_delete_template",
+      "factory_media_adopt_template",
       "factory_media_start_session",
       "factory_media_stop_session",
       "factory_media_create_job",
@@ -521,5 +535,66 @@ test("BL-133 (AC-FG-08): the session and job writes pass the device mutation gat
     toolDeps.mediaCalls.length = 0;
     assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
     assert.deepEqual(toolDeps.mediaCalls, [reached], name);
+  }
+});
+
+// FO-REQ-0005 item 2/4: the two local-template writes pass the device mutation gate first and reach nothing behind a closed
+// one; the settings read does not need it.
+test("FO-REQ-0005: delete/adopt template pass the device mutation gate first; get_settings is a read", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const writes: Array<[string, Record<string, unknown>, string]> = [
+    ["factory_media_delete_template", { templateId: "local-1" }, "deleteTemplate:local-1"],
+    ["factory_media_adopt_template", { templateId: "local-1", newTemplateId: "lofi-piano" }, "adoptTemplate:local-1>lofi-piano"],
+  ];
+  for (const [name, args, reached] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate", reached], name);
+  }
+  toolDeps.gateClosed.value = true;
+  for (const [name, args] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, true, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate"], name);
+  }
+  toolDeps.mediaCalls.length = 0;
+  const settings = await toolResult(await endpoint.handle(rpc(call("factory_media_get_settings", {}), withToken(token))));
+  assert.equal(settings.isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["getSettings"]);
+});
+
+// FO-REQ-0005 item 1: the device mutation gate throws OperationLockError / RecoveryModeError (not DomainErrors; their
+// codes are documented in docs/interfaces.md). The role must get that code, never `internal_error`; anything else unknown
+// stays `internal_error` with no internal detail echoed.
+test("FO-REQ-0005: a write refused by the operation lock or recovery mode reports that code, not internal_error", async () => {
+  for (const [thrown, expected] of [
+    [new OperationLockError({ heldBy: { id: "singleton", operationType: "export", holderPid: 1, acquiredAt: "2026-10-07T00:00:00.000Z" }, stale: false }), "operation_lock_held"],
+    [new RecoveryModeError([{ batchId: "b", ledgerRowId: "r", videoId: "v", status: "UNKNOWN" }]), "device_in_recovery_mode"],
+    [Object.assign(new Error("SQLITE_BUSY: database is locked"), { code: "SQLITE_BUSY" }), "internal_error"],
+    [new Error("boom"), "internal_error"],
+  ] as const) {
+    const { endpoint, tokenServices } = setup({
+      toolDeps: {
+        async assertMutationAllowed() {
+          throw thrown;
+        },
+      },
+    });
+    const { token } = await tokenServices.issueToken({});
+    const originalError = console.error;
+    console.error = () => undefined;
+    let result;
+    try {
+      result = await toolResult(await endpoint.handle(rpc(call("factory_media_delete_model", { key: "models/checkpoints/a.safetensors" }), withToken(token))));
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(result.isError, true);
+    const error = (result.payload as { error: { code: string; message: string } }).error;
+    // Exactly what the device mutation gate threw -- the same shape the channel server reports for these two.
+    assert.equal(error.code, expected, thrown.message);
+    if (expected === "internal_error") assert.equal(error.message, "internal error", "no internal detail is echoed");
+    else assert.equal(error.message, thrown.message);
   }
 });

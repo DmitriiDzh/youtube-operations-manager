@@ -64,6 +64,29 @@ const templateFileSchema = z
   })
   .strict();
 
+/**
+ * FO-REQ-0005 item 2: the factory takes a LOCAL template over into the registry under `newTemplateId` (version 1). The
+ * local copy stays until a sync has installed `newTemplateId` from the registry, then it is removed.
+ */
+export const adoptTemplateInputSchema = z.object({ templateId: z.string().min(1).max(64), newTemplateId: templateIdSchema }).strict();
+
+/** A pending adoption (`media_template_adoptions` app setting): this local template becomes registry template `templateId`. */
+export type TemplateAdoption = { localTemplateId: string; templateId: string; requestedAt: string };
+
+export function parseTemplateAdoptions(json: string | null): TemplateAdoption[] {
+  if (!json) return [];
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (a): a is TemplateAdoption =>
+        typeof a === "object" && a !== null && typeof (a as TemplateAdoption).localTemplateId === "string" && typeof (a as TemplateAdoption).templateId === "string" && typeof (a as TemplateAdoption).requestedAt === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
 export type RegistryIndex = { templates: Array<{ templateId: string; version: number }> };
 export type RegistryTemplate = z.infer<typeof templateFileSchema>;
 

@@ -181,6 +181,21 @@ export type MediaSession = {
   releaseWhenDone: boolean;
 };
 
+/**
+ * FO-REQ-0005 item 4: the owner's factory settings as the Factory Operator may read them (`factory_media_get_settings`).
+ * Limits, spend and GPU choices only -- no key, token or credential is part of `MediaSettings` or of this view.
+ */
+export type MediaFactorySettingsView = {
+  factorySessionsEnabled: boolean;
+  limits: { maxUsdPerSession: number; maxMinutesPerSession: number; maxUsdPerDay: number; maxUsdPerMonth: number };
+  /** What the factory's sessions spent, plus what its open ones may still spend up to their caps -- the numbers a start is checked against. */
+  spentOrReservedUsd: { today: number; thisMonth: number };
+  /** The device-wide limits every session (owner's and factory's) is also held to. */
+  device: { maxUsdPerDay: number; spentTodayUsd: number; maxConcurrentSessions: number; idleMinutes: number };
+  gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType };
+  capacity: { retrySeconds: number; waitMinutes: number };
+};
+
 export type MediaSessionLimits = {
   maxUsdPerDay: number;
   spentTodayUsd: number;

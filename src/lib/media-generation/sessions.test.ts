@@ -1913,3 +1913,33 @@ test("owner release-when-done setting: the owner's request follows it (default o
   assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "agent" })).releaseWhenDone, false, "agent without the flag");
   assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "factory" })).releaseWhenDone, false, "factory without the flag");
 });
+
+// -- FO-REQ-0005 item 4: the owner's factory settings, readable by the factory without a session ---------------------------
+// Expected values are the settings given to the fixture and the factory's own reservation rule (an open factory session
+// counts with its full USD cap -- the same number a start is checked against, AC-FG-02).
+
+test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choices and the factory's spent-or-reserved day/month; no secret", async () => {
+  const f = fixture({
+    runpod: fakeRunpod({ capacity: () => true }),
+    settings: { ...FACTORY_ON, gpuTypeId: FOUR, gpuFallbackIds: [FIVE], gpuMinVramGb: 24, gpuMaxPricePerHr: 1.2, capacityRetrySeconds: 30, capacityWaitMinutes: 20, maxUsdPerDay: 10, maxConcurrentSessions: 3, idleMinutes: 10 },
+  });
+  const before = await f.services.getFactorySettings();
+  assert.equal(before.factorySessionsEnabled, true);
+  assert.deepEqual(before.limits, { maxUsdPerSession: 2, maxMinutesPerSession: 60, maxUsdPerDay: 5, maxUsdPerMonth: 50 });
+  assert.deepEqual(before.spentOrReservedUsd, { today: 0, thisMonth: 0 });
+  assert.deepEqual(before.gpu.fallbackIds, [FIVE]);
+  assert.equal(before.gpu.gpuTypeId, FOUR);
+  assert.equal(before.gpu.minVramGb, 24);
+  assert.equal(before.gpu.maxPricePerHr, 1.2);
+  assert.deepEqual(before.capacity, { retrySeconds: 30, waitMinutes: 20 });
+  assert.deepEqual({ maxUsdPerDay: before.device.maxUsdPerDay, maxConcurrentSessions: before.device.maxConcurrentSessions, idleMinutes: before.device.idleMinutes }, { maxUsdPerDay: 10, maxConcurrentSessions: 3, idleMinutes: 10 });
+
+  // One factory start waiting for capacity reserves its $2 cap; an owner request is not the factory's spend.
+  const started = await f.services.factoryStartSession({ channelId: "UC1" });
+  assert.equal(started.approved, true);
+  await settle();
+  await f.services.requestSession(operatorRequest);
+  const after = await f.services.getFactorySettings();
+  assert.deepEqual(after.spentOrReservedUsd, { today: 2, thisMonth: 2 });
+  assert.doesNotMatch(JSON.stringify(after), /apiKey|secret|token|password/i);
+});

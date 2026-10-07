@@ -33,6 +33,8 @@ function harness() {
   let unreadable: string | null = null;
   const events: MediaControlEvent[] = [];
   let lastSync: string | null = null;
+  let adoptions: string | null = null;
+  let ids = 0;
   const store = {
     templates: {
       async insert(row: Omit<StoredTemplateRow, "version" | "createdAt" | "updatedAt">) {
@@ -73,7 +75,7 @@ function harness() {
     device: async () => ({ deviceId: null, hostname: null }),
     registerAsset: unused,
     findAssetByLocalPath: async () => null,
-    generateId: () => "uuid-owner-1",
+    generateId: () => `uuid-owner-${++ids}`,
     clock: { now: () => new Date("2026-10-06T12:00:00Z") },
     sleep: async () => {},
     schedule: () => {},
@@ -93,12 +95,13 @@ function harness() {
     },
     events: { record: async (e) => void events.push(e) },
     syncState: { get: async () => lastSync, set: async (json) => void (lastSync = json) },
+    adoptions: { get: async () => adoptions, set: async (json) => void (adoptions = json) },
   });
   const publish = (entries: Array<{ templateId: string; version: number; overrides?: Record<string, unknown> }>) => {
     folder.set("index.json", indexFile(entries.map(({ templateId, version }) => ({ templateId, version }))));
     for (const e of entries) folder.set(registryTemplateFileName(e.templateId, e.version), templateFile(e.templateId, e.version, e.overrides));
   };
-  return { services, templates, folder, events, publish, setUnreadable: (m: string | null) => void (unreadable = m), lastSync: () => lastSync };
+  return { services, templates, folder, events, publish, setUnreadable: (m: string | null) => void (unreadable = m), lastSync: () => lastSync, adoptions: () => adoptions };
 }
 
 test("AC-FM-07: a valid registry template is installed under its registry id and version, as a factory template with its declared models", async () => {
@@ -325,4 +328,118 @@ test("BL-133: a registry template may declare its GPU plan; it is installed with
   h.publish([{ templateId: "bad-gpu", version: 1, overrides: { gpu: { candidates: [] } } }]);
   const result = await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
   assert.equal(result?.invalid.some((i) => i.templateId === "bad-gpu"), true, "an empty candidate list is invalid");
+});
+
+// -- FO-REQ-0005 item 2 (owner decision 2026-10-07, msg 1915: both tools) -------------------------------------------------
+// Expected outcomes from FO-REQ-0005's acceptance criterion: after the call the model is no longer `usedBy` the local
+// template and can be deleted; the action is in the audit log as done by the factory. Sync never touches a local template
+// on its own (O3) -- only one the factory asked to adopt, and only once the registry copy is installed.
+
+async function importLocal(h: ReturnType<typeof harness>, overrides: { workflow?: unknown; parameters?: unknown[] } = {}) {
+  return h.services.importWorkflowTemplate({ name: "Owner test FLUX", description: "imported by hand", workflow: overrides.workflow ?? GRAPH, parameters: overrides.parameters ?? PARAMS });
+}
+
+const FLUX_KEY = "models/checkpoints/flux1-schnell-fp8.safetensors";
+
+test("FO-REQ-0005: the factory deletes a LOCAL template -- its model is no longer used by it, the audit says the factory did it", async () => {
+  const h = harness();
+  h.publish([]);
+  const local = await importLocal(h);
+  assert.deepEqual((await h.services.modelUsage()).users.map((u) => [u.key, u.templateId, u.source]), [[FLUX_KEY, local.templateId, "owner"]]);
+  assert.deepEqual(await h.services.deleteWorkflowTemplate({ templateId: local.templateId }, { actor: "factory" }), { deleted: true });
+  assert.deepEqual((await h.services.modelUsage()).users, []);
+  assert.deepEqual(h.events.map((e) => [e.actor, e.action, e.subject]), [["factory", "template_deleted", local.templateId]]);
+});
+
+test("FO-REQ-0005: the factory cannot delete a registry template (it goes via the index) or an unknown one", async () => {
+  const h = harness();
+  h.publish([{ templateId: "flux-schnell", version: 1 }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "factory" });
+  await assert.rejects(h.services.deleteWorkflowTemplate({ templateId: "flux-schnell" }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid");
+  assert.ok(h.templates.has("flux-schnell"));
+  await assert.rejects(h.services.deleteWorkflowTemplate({ templateId: "nope" }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_template_not_found");
+});
+
+test("FO-REQ-0005: adopt returns a registry file that a sync accepts as it is; the local copy stays until that file is installed, then it goes", async () => {
+  const h = harness();
+  h.publish([]);
+  const local = await importLocal(h);
+  const adoption = await h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: "flux-schnell-owner" });
+  assert.equal(adoption.status, "pending");
+  assert.equal(adoption.fileName, "flux-schnell-owner.v1.json");
+  assert.deepEqual(adoption.indexEntry, { templateId: "flux-schnell-owner", version: 1 });
+  assert.equal(adoption.template.templateId, "flux-schnell-owner");
+  assert.equal(adoption.template.version, 1);
+  assert.equal(adoption.template.name, "Owner test FLUX");
+  assert.deepEqual(adoption.template.workflow, GRAPH);
+  assert.deepEqual(adoption.template.models, [{ folder: "checkpoints", file: "flux1-schnell-fp8.safetensors" }]);
+  // Nothing written to the registry, the local copy is still there and still protects its model.
+  assert.equal(h.folder.get("flux-schnell-owner.v1.json"), undefined);
+  assert.ok(h.templates.has(local.templateId));
+  assert.deepEqual(h.events.map((e) => [e.actor, e.action, e.subject]), [["factory", "template_adoption_requested", local.templateId]]);
+
+  // The factory writes exactly what it got; the next sync installs it and removes the local copy.
+  h.folder.set(adoption.fileName, JSON.stringify(adoption.template));
+  h.folder.set("index.json", indexFile([adoption.indexEntry]));
+  const dry = await h.services.syncTemplatesFromRegistry({ trigger: "factory", dryRun: true });
+  assert.deepEqual(dry?.installed, [{ templateId: "flux-schnell-owner", version: 1 }]);
+  assert.ok(h.templates.has(local.templateId), "a dry run removes nothing");
+  const result = await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.deepEqual(result?.installed, [{ templateId: "flux-schnell-owner", version: 1 }]);
+  assert.deepEqual(result?.invalid, []);
+  assert.equal(h.templates.has(local.templateId), false);
+  assert.ok((await h.services.modelUsage()).users.every((u) => u.templateId === "flux-schnell-owner"), "no longer used by the local template");
+  assert.deepEqual(h.events.filter((e) => e.action === "template_adopted").map((e) => [e.actor, e.subject, e.details?.templateId]), [["factory", local.templateId, "flux-schnell-owner"]]);
+  assert.deepEqual(JSON.parse(h.adoptions() ?? "[]"), []);
+});
+
+test("FO-REQ-0005: adopting into an id already installed from the registry removes the local copy at once", async () => {
+  const h = harness();
+  h.publish([{ templateId: "flux-schnell", version: 1 }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "factory" });
+  const local = await importLocal(h);
+  const adoption = await h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: "flux-schnell" });
+  assert.equal(adoption.status, "adopted");
+  assert.equal(h.templates.has(local.templateId), false);
+  assert.ok(h.templates.has("flux-schnell"));
+  assert.equal(h.events.at(-1)?.action, "template_adopted");
+  assert.equal(h.events.at(-1)?.actor, "factory");
+});
+
+test("FO-REQ-0005: adopt refuses a registry template, an id taken by another local template or another adoption, and a template the registry would reject -- nothing changes", async () => {
+  const h = harness();
+  h.publish([{ templateId: "flux-schnell", version: 1 }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "factory" });
+  const a = await importLocal(h);
+  const b = await importLocal(h);
+  const refused = (code: string) => (e: unknown) => isDomainError(e) && e.code === code;
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: "flux-schnell", newTemplateId: "other-id" }), refused("media_template_invalid"));
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: a.templateId, newTemplateId: b.templateId }), refused("media_template_invalid"));
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: a.templateId, newTemplateId: "Bad_Id" }), refused("validation_failed"));
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: "missing", newTemplateId: "x-1" }), refused("media_template_not_found"));
+  await h.services.adoptWorkflowTemplate({ templateId: a.templateId, newTemplateId: "taken-target" });
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: b.templateId, newTemplateId: "taken-target" }), refused("media_template_invalid"));
+  // A free-text parameter on a loader input: a registry sync would refuse it, so adopt does too, and says why.
+  const freeText = await importLocal(h, { parameters: [...PARAMS, { name: "model", type: "text", nodeId: "4", input: "ckpt_name", required: false }] });
+  await assert.rejects(
+    h.services.adoptWorkflowTemplate({ templateId: freeText.templateId, newTemplateId: "free-text" }),
+    (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && Array.isArray((e.details as { problems: unknown[] }).problems) && /must be an enum/.test(e.message)
+  );
+  assert.ok(h.templates.has(a.templateId) && h.templates.has(b.templateId) && h.templates.has(freeText.templateId));
+  assert.deepEqual(JSON.parse(h.adoptions() ?? "[]").map((x: { templateId: string }) => x.templateId), ["taken-target"]);
+});
+
+test("FO-REQ-0005: a pending adoption of a template the owner then deletes is forgotten; a sync without the registry copy keeps the local one", async () => {
+  const h = harness();
+  h.publish([]);
+  const kept = await importLocal(h);
+  const dropped = await importLocal(h);
+  await h.services.adoptWorkflowTemplate({ templateId: kept.templateId, newTemplateId: "kept-one" });
+  await h.services.adoptWorkflowTemplate({ templateId: dropped.templateId, newTemplateId: "dropped-one" });
+  await h.services.deleteWorkflowTemplate({ templateId: dropped.templateId });
+  assert.deepEqual(JSON.parse(h.adoptions() ?? "[]").map((x: { localTemplateId: string }) => x.localTemplateId), [kept.templateId]);
+  assert.equal(h.events.at(-1)?.actor, "owner");
+  assert.equal(h.events.at(-1)?.action, "template_deleted");
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.ok(h.templates.has(kept.templateId), "the registry does not have kept-one yet");
 });

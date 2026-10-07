@@ -15,10 +15,11 @@ import { DomainError } from "@/lib/shared-domain";
 
 /**
  * The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). 1.1.0 (BL-132, ADR 0025): the
- * media tools; 1.2.0 (BL-133, ADR 0026): GPU sessions within the owner's factory limits, jobs in them, the capacity log.
- * Additive; the earlier tools are unchanged.
+ * media tools; 1.2.0 (BL-133, ADR 0026): GPU sessions within the owner's factory limits, jobs in them, the capacity log;
+ * 1.3.0 (FO-REQ-0005): delete/adopt a local template, read the factory settings, `targetName` on a pull -- and a pull now
+ * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are.
  */
-export const FACTORY_API_VERSION = "1.2.0";
+export const FACTORY_API_VERSION = "1.3.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -35,6 +36,10 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_delete_model",
   "factory_media_list_templates",
   "factory_media_sync_templates",
+  // FO-REQ-0005: local templates the factory may remove or take over, and a read of the owner's factory settings.
+  "factory_media_delete_template",
+  "factory_media_adopt_template",
+  "factory_media_get_settings",
   // BL-133 (docs/roadmap/plans/FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5): sessions it starts itself, jobs in them, the capacity log.
   "factory_media_start_session",
   "factory_media_get_session",
@@ -56,6 +61,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_media_cancel_pull",
   "factory_media_delete_model",
   "factory_media_sync_templates",
+  "factory_media_delete_template",
+  "factory_media_adopt_template",
   "factory_media_start_session",
   "factory_media_stop_session",
   "factory_media_create_job",
@@ -82,12 +89,16 @@ export type FactoryToolDeps = {
   media: {
     storageStatus(): Promise<Record<string, unknown>>;
     listModels(): Promise<Record<string, unknown>>;
-    pullModel(input: { repoId: string; file: string; folder: string; revision?: string; sha256: string }): Promise<Record<string, unknown>>;
+    pullModel(input: { repoId: string; file: string; folder: string; revision?: string; sha256: string; targetName?: string }): Promise<Record<string, unknown>>;
     getPull(input: { pullId?: string }): Promise<Record<string, unknown>>;
     cancelPull(input: { pullId: string }): Promise<Record<string, unknown>>;
     deleteModel(input: { key: string }): Promise<Record<string, unknown>>;
     listTemplates(): Promise<Record<string, unknown>>;
     syncTemplates(input: { dryRun: boolean }): Promise<Record<string, unknown>>;
+    // FO-REQ-0005.
+    deleteTemplate(input: { templateId: string }): Promise<Record<string, unknown>>;
+    adoptTemplate(input: { templateId: string; newTemplateId: string }): Promise<Record<string, unknown>>;
+    getSettings(): Promise<Record<string, unknown>>;
     // BL-133.
     startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean }): Promise<Record<string, unknown>>;
     getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
@@ -117,11 +128,26 @@ function successResult(payload: Record<string, unknown>): ToolResponse {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
 }
 
-function errorResult(error: unknown): ToolResponse {
-  const shape =
-    error instanceof DomainError
-      ? { code: error.code, message: error.message, details: error.details }
-      : { code: "internal_error", message: "internal error" };
+/**
+ * FO-REQ-0005 item 1: the device mutation gate every write tool passes first throws `OperationLockError` /
+ * `RecoveryModeError` -- deliberately not DomainErrors (`src/mcp/server.ts` maps the same two). This file may not import
+ * them (§2.5(3) allowlist), so they are recognised by exactly their two documented codes on an `Error` -- never "any
+ * object with a string code", which would also echo a raw driver error (SQLITE_BUSY) as if it were a stable code.
+ */
+const MUTATION_GATE_CODES = new Set(["operation_lock_held", "device_in_recovery_mode"]);
+
+function mutationGateShape(error: unknown): { code: string; message: string; details: unknown } | null {
+  if (!(error instanceof Error)) return null;
+  const { code, details } = error as Error & { code?: unknown; details?: unknown };
+  return typeof code === "string" && MUTATION_GATE_CODES.has(code) ? { code, message: error.message, details } : null;
+}
+
+function errorResult(error: unknown, toolName?: string): ToolResponse {
+  const known = error instanceof DomainError ? { code: error.code, message: error.message, details: error.details } : mutationGateShape(error);
+  // An unexpected error is still reported to the role only as `internal_error`, but logged here so it can be diagnosed
+  // (FO-REQ-0005: one such answer left no trace at all).
+  if (!known) console.error(`[factory-mcp] ${toolName ?? "tool"} failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  const shape = known ?? { code: "internal_error", message: "internal error" };
   return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: shape }) }], isError: true };
 }
 
@@ -134,6 +160,8 @@ const pullModelInput = z
     file: z.string().min(1).max(500),
     folder: z.string().min(1).max(64),
     revision: z.string().min(1).max(200).optional(),
+    /** FO-REQ-0005: the file name under models/<folder>/ (default: the base name of `file`). */
+    targetName: z.string().min(1).max(200).optional(),
     /** Required here (owner decision D2): the request carries the expected hash. */
     sha256: z.string().regex(/^[0-9a-fA-F]{64}$/, "64 hex characters"),
   })
@@ -142,6 +170,8 @@ const pullIdInput = z.object({ pullId: z.string().min(1).max(64) }).strict();
 const optionalPullIdInput = z.object({ pullId: z.string().min(1).max(64).optional() }).strict();
 const modelKeyInput = z.object({ key: z.string().min(1).max(1000) }).strict();
 const syncInput = z.object({ dryRun: z.boolean().optional() }).strict();
+const templateIdInput = z.object({ templateId: z.string().min(1).max(64) }).strict();
+const adoptTemplateInput = z.object({ templateId: z.string().min(1).max(64), newTemplateId: z.string().min(2).max(63) }).strict();
 // BL-133 inputs (the media core validates again).
 const gpuPlanInput = z
   .object({
@@ -212,7 +242,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       try {
         return await handler(args);
       } catch (error) {
-        return errorResult(error);
+        return errorResult(error, name);
       }
     };
     server.registerTool(name, config as never, counted as never);
@@ -301,7 +331,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_pull_model",
     {
       description:
-        "Put one model file from a PUBLIC Hugging Face repository on the network volume: { repoId, file, folder, revision?, sha256 }. sha256 is REQUIRED. Before any pod starts the file is checked on Hugging Face (exists, not gated, its declared SHA-256 equals yours, fits in the free space); then a small CPU pod downloads that exact commit, hashes it and moves it into models/<folder>/ only if the hash matches (otherwise nothing is left). Refused while GPU sessions use the volume (media_session_conflict) or another pull runs; an existing file is never overwritten. Returns { pull } with expectedBytes; track it with factory_media_get_pull. Costs a few cents of CPU time plus storage. Recorded as requested by the Factory Operator.",
+        "Put one model file from a PUBLIC Hugging Face repository on the network volume: { repoId, file, folder, revision?, sha256, targetName? }. sha256 is REQUIRED. The file lands at models/<folder>/<targetName>; targetName defaults to the base name of file (the repo's sub-folders are dropped: file 'split_files/vae/x.safetensors' with folder 'vae' -> models/vae/x.safetensors). Give targetName (one file name: letters, digits, '.', '_', '+', '-') when that key is taken, e.g. two repos' model.safetensors. Before any pod starts the file is checked on Hugging Face (exists, not gated, its declared SHA-256 equals yours, fits in the free space); then a small CPU pod downloads that exact commit, hashes it and moves it into place only if the hash matches (otherwise nothing is left). Refused while GPU sessions use the volume (media_session_conflict) or another pull runs; an existing file is never overwritten. Returns { pull } with expectedBytes; track it with factory_media_get_pull. Costs a few cents of CPU time plus storage. Recorded as requested by the Factory Operator.",
       inputSchema: pullModelInput,
     },
     async (args) => {
@@ -362,7 +392,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_sync_templates",
     {
       description:
-        "Sync this computer's factory templates from the template registry folder (logical path media_templates): { dryRun? }. Returns { result: { outcome, installed, updated, removed, unchanged, pending, invalid } }. A lower version, or the same version with other content, is refused; an unreadable index changes nothing; a listed file not there yet is pending; local templates are never touched. The app also checks the registry by itself every minute. Recorded as done by the Factory Operator.",
+        "Sync this computer's factory templates from the template registry folder (logical path media_templates): { dryRun? }. Returns { result: { outcome, installed, updated, removed, unchanged, pending, invalid } }. A lower version, or the same version with other content, is refused; an unreadable index changes nothing; a listed file not there yet is pending; local templates are never touched, except one you adopted (factory_media_adopt_template), which is removed once its registry template is installed. The app also checks the registry by itself every minute. Recorded as done by the Factory Operator.",
       inputSchema: syncInput,
     },
     async (args) => {
@@ -370,6 +400,46 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       if (!input.dryRun) await deps.assertMutationAllowed();
       return successResult(await deps.media.syncTemplates({ dryRun: input.dryRun ?? false }));
     }
+  );
+
+  // -- FO-REQ-0005: local (owner-imported) templates, and the owner's factory settings ----------------------------------
+
+  registerTool(
+    "factory_media_delete_template",
+    {
+      description:
+        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Production → Models, recent actions).",
+      inputSchema: templateIdInput,
+    },
+    async (args) => {
+      const input = parseInput(templateIdInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.deleteTemplate(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_adopt_template",
+    {
+      description:
+        "Take a LOCAL template over into the template registry: { templateId (the local one), newTemplateId (registry id: 2-63 lower-case letters, digits, '-') } -> { localTemplateId, templateId, fileName, indexEntry, template, status }. Nothing is written to the registry by the app: write `template` exactly as <registry>/<fileName> (version 1; models declared from the graph's loader nodes, sha256 not set -- add it if you want it checked) and add indexEntry to index.json. status 'pending': the local copy stays (and keeps protecting its models) until a sync installs newTemplateId, then it is removed. status 'adopted': newTemplateId was already installed, the local copy is removed now. A template that would not pass the registry checks as it is (e.g. a free-text model parameter) is refused with media_template_invalid, details.problems and details.template. Calling it again returns the same file. Agree it with the owner first; recorded as done by the Factory Operator.",
+      inputSchema: adoptTemplateInput,
+    },
+    async (args) => {
+      const input = parseInput(adoptTemplateInput, args);
+      await deps.assertMutationAllowed();
+      return successResult(await deps.media.adoptTemplate(input));
+    }
+  );
+
+  registerTool(
+    "factory_media_get_settings",
+    {
+      description:
+        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd, maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.media.getSettings())
   );
 
   // -- BL-133: GPU sessions within the owner's factory limits, jobs in them, the capacity log ---------------------------

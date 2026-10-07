@@ -193,6 +193,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
   const [folder, setFolder] = useState("checkpoints");
   const [revision, setRevision] = useState("");
   const [sha256, setSha256] = useState("");
+  const [targetName, setTargetName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelFile | null>(null);
@@ -277,9 +278,11 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
           folder,
           ...(revision.trim() ? { revision: revision.trim() } : {}),
           ...(sha256.trim() ? { sha256: sha256.trim() } : {}),
+          ...(targetName.trim() ? { targetName: targetName.trim() } : {}),
         }),
       });
       setFile("");
+      setTargetName("");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the pull");
@@ -436,6 +439,10 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
             <label className="block text-xs text-zinc-400 sm:col-span-2">
               Expected SHA-256 (optional: Hugging Face&rsquo;s own hash is used and checked on the pod)
               <input type="text" value={sha256} onChange={(e) => setSha256(e.target.value)} className={`${inputClass} font-mono`} placeholder="64 hex characters" />
+            </label>
+            <label className="block text-xs text-zinc-400">
+              File name on the volume (optional)
+              <input type="text" value={targetName} onChange={(e) => setTargetName(e.target.value)} className={`${inputClass} font-mono`} placeholder={file.trim() ? (file.trim().split("/").filter(Boolean).pop() ?? "") : "the file's own name"} />
             </label>
             <div className="flex items-end">
               <button type="button" onClick={startPull} disabled={busy || pulling || !repoId.trim() || !file.trim()} className={primaryButton}>
