@@ -26,22 +26,30 @@ function highPass(fs: number): Biquad {
   return { b0: 1, b1: -2, b2: 1, a1: (2 * (k * k - 1)) / a0, a2: (1 - k / q + k * k) / a0 };
 }
 
-function filter(input: Float32Array, f: Biquad): Float64Array {
-  const out = new Float64Array(input.length);
-  let x1 = 0;
-  let x2 = 0;
-  let y1 = 0;
-  let y2 = 0;
-  for (let i = 0; i < input.length; i++) {
+/**
+ * Both K-weighting stages in one pass over a channel, summing the squared output per 100 ms sub-block -- no copy of the audio
+ * (independent review: a 48 kHz hour must not need gigabytes). Returns the sub-block sums.
+ */
+function weightedSubBlockSums(input: Float32Array, shelf: Biquad, pass: Biquad, subBlock: number): Float64Array {
+  const sums = new Float64Array(Math.floor(input.length / subBlock));
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0; // stage 1 state
+  let u1 = 0, u2 = 0, v1 = 0, v2 = 0; // stage 2 state
+  const limit = sums.length * subBlock;
+  for (let i = 0; i < limit; i++) {
     const x0 = input[i];
-    const y0 = f.b0 * x0 + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2;
-    out[i] = y0;
+    const y0 = shelf.b0 * x0 + shelf.b1 * x1 + shelf.b2 * x2 - shelf.a1 * y1 - shelf.a2 * y2;
     x2 = x1;
     x1 = x0;
     y2 = y1;
     y1 = y0;
+    const v0 = pass.b0 * y0 + pass.b1 * u1 + pass.b2 * u2 - pass.a1 * v1 - pass.a2 * v2;
+    u2 = u1;
+    u1 = y0;
+    v2 = v1;
+    v1 = v0;
+    sums[(i / subBlock) | 0] += v0 * v0;
   }
-  return out;
+  return sums;
 }
 
 const blockLoudness = (sumOfMeanSquares: number) => -0.691 + 10 * Math.log10(sumOfMeanSquares);
@@ -51,32 +59,24 @@ export function integratedLoudness(channels: Float32Array[], sampleRate: number)
   if (channels.length === 0 || sampleRate <= 0) return null;
   const shelf = highShelf(sampleRate);
   const pass = highPass(sampleRate);
-  const weighted = channels.slice(0, 2).map((c) => {
-    const once = filter(c, shelf);
-    return filter(Float32Array.from(once), pass);
-  });
-  const length = Math.min(...weighted.map((c) => c.length));
-  const block = Math.round(0.4 * sampleRate);
-  const step = Math.round(0.1 * sampleRate);
-  if (length < block) return null;
-  // Running sums of squares per channel, so each block is O(1).
-  const prefix = weighted.map((c) => {
-    const p = new Float64Array(length + 1);
-    for (let i = 0; i < length; i++) p[i + 1] = p[i] + c[i] * c[i];
-    return p;
-  });
+  // 400 ms blocks with a 100 ms step = four consecutive 100 ms sub-blocks.
+  const subBlock = Math.round(0.1 * sampleRate);
+  const sums = channels.slice(0, 2).map((c) => weightedSubBlockSums(c, shelf, pass, subBlock));
+  const subCount = Math.min(...sums.map((s) => s.length));
+  if (subCount < 4) return null;
+  const blockLength = 4 * subBlock;
   const powers: number[] = [];
-  for (let start = 0; start + block <= length; start += step) {
+  for (let b = 0; b + 4 <= subCount; b++) {
     let z = 0;
-    for (const p of prefix) z += (p[start + block] - p[start]) / block;
+    for (const s of sums) z += (s[b] + s[b + 1] + s[b + 2] + s[b + 3]) / blockLength;
     powers.push(z);
   }
   const aboveAbsolute = powers.filter((z) => z > 0 && blockLoudness(z) > -70);
   if (aboveAbsolute.length === 0) return null;
-  const relativeGate = blockLoudness(aboveAbsolute.reduce((s, z) => s + z, 0) / aboveAbsolute.length) - 10;
+  const relativeGate = blockLoudness(aboveAbsolute.reduce((acc, z) => acc + z, 0) / aboveAbsolute.length) - 10;
   const gated = aboveAbsolute.filter((z) => blockLoudness(z) > relativeGate);
   if (gated.length === 0) return null;
-  return blockLoudness(gated.reduce((s, z) => s + z, 0) / gated.length);
+  return blockLoudness(gated.reduce((acc, z) => acc + z, 0) / gated.length);
 }
 
 /** The loudness-matched volume (0..1): loud tracks are turned down to the target, none is boosted beyond its own level. */

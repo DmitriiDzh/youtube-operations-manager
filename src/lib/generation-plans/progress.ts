@@ -183,7 +183,7 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
       const capLeft = item.maxAttempts === null ? Infinity : Math.max(0, item.maxAttempts - own.length);
       missing = Math.min(Math.max(0, item.targetCount - accepted - pending), capLeft);
     }
-    return { itemKey: item.itemKey, groupId: item.groupId, targetCount: item.targetCount, mode: item.mode, attempts: own.length, generated, accepted, rejected, open, waitingReview, missing };
+    return { itemKey: item.itemKey, groupId: item.groupId, targetCount: item.targetCount, mode: item.mode, attempts: own.length, generated, accepted, rejected, open, waitingReview, pending, missing };
   });
   return { attempts, byStageResults, items, waiting };
 }
@@ -252,8 +252,14 @@ function noticesOf(plan: GenerationPlan, stages: Array<PlanStage & { counts: Pla
   }
   if (warnings.includes("100")) notices.push({ kind: "budget_100" });
   else if (warnings.includes("80")) notices.push({ kind: "budget_80" });
+  // Complete only when every item reached its target AND nothing is still on its way (independent review: generated attempts
+  // the validator or the owner have not judged yet are not "done"). An until_accepted item that used up its attempts below
+  // its target is "exhausted", never complete.
   const open = d.attempts.some((a) => a.state === "queued" || a.state === "running");
-  if (plan.items.length > 0 && !open && d.waiting.length === 0 && d.items.every((i) => i.missing === 0)) notices.push({ kind: "plan_complete" });
+  const exhausted = d.items.filter((i) => i.mode === "until_accepted" && i.missing === 0 && i.accepted < i.targetCount && i.pending === 0 && i.open === 0).length;
+  const reached = d.items.every((i) => (i.mode === "until_accepted" ? i.accepted >= i.targetCount : i.missing === 0) && i.pending === 0);
+  if (plan.items.length > 0 && !open && d.waiting.length === 0 && reached) notices.push({ kind: "plan_complete" });
+  if (exhausted > 0) notices.push({ kind: "attempts_exhausted", count: exhausted });
   if (d.waiting.length > 0) notices.push({ kind: "review_waiting", count: d.waiting.length });
   return notices;
 }

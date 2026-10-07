@@ -74,12 +74,12 @@ export const sharedPlanSchema = z
     groups: z.array(z.object({ groupId: z.string().max(40), title: z.string().max(200), dependsOn: z.string().max(40).nullable(), note: z.string().max(2000).nullable() }).strict()).max(200),
     /** Items without their job params (the progress is what other devices show). */
     items: z.array(z.object({ itemKey: z.string().max(120), groupId: z.string().max(40).nullable(), templateLabel: z.string().max(200).nullable(), targetCount: z.number(), mode: z.enum(["fixed", "until_accepted"]) }).strict()).max(1000),
-    /** The job params of the items that have review entries, once per item (the review screen's generation details). */
     /** BL-143 phase 3: the plan's reference tracks for A/B (files relative to the channel's Sent to YTM). */
     references: z
       .array(z.object({ id: z.string().max(64), label: z.string().max(200), file: relativePathSchema, lufs: z.number().nullable(), lra: z.number().nullable(), truePeak: z.number().nullable() }).strict())
       .max(50)
       .default([]),
+    /** The job params of the items that have review entries, once per item (the review screen's generation details). */
     itemParams: z.record(z.string().max(120), z.record(z.string().max(64), z.union([z.string().max(20_000), z.number(), z.boolean()]))).default({}),
     /** The plan's derived progress as the owning device computed it (shown, never recomputed elsewhere). */
     progress: looseRecord,

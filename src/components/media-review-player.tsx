@@ -20,6 +20,8 @@ export type ReviewPlayerHandle = {
 /** BL-143 phase 3 (FO-MSG-0009 §4): a frequency the validator flagged (a ringing tone, a held note), drawn on the spectrogram. */
 export type FrequencyMark = { hz: number; label: string };
 export const SPECTROGRAM_MAX_HZ = 16_000;
+/** The decoding rate: the full audible band (the default 8 kHz would cut everything above 4 kHz). */
+export const DECODE_SAMPLE_RATE = 44_100;
 const SPECTROGRAM_HEIGHT = 128;
 
 /** "1:51.2" -- minutes, seconds and a tenth. Exported for its test. */
@@ -66,9 +68,11 @@ export type MediaReviewPlayerProps = {
   onDecoded?: (audio: { channels: Float32Array[]; sampleRate: number }) => void;
   /** Frequencies to mark on the spectrogram (only drawn while it is shown). */
   frequencyMarks?: FrequencyMark[];
+  /** Called when this track starts playing (A/B: the reference must stop then). */
+  onPlayStart?: () => void;
 };
 
-export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [] }, ref) {
+export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart }, ref) {
   const container = useRef<HTMLDivElement | null>(null);
   const spectrogramContainer = useRef<HTMLDivElement | null>(null);
   const wave = useRef<WaveSurferLike | null>(null);
@@ -78,9 +82,11 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
   const [loop, setLoop] = useState(false);
   const loopRef = useRef(false);
   const onDecodedRef = useRef(onDecoded);
+  const onPlayStartRef = useRef(onPlayStart);
   useEffect(() => {
     loopRef.current = loop;
     onDecodedRef.current = onDecoded;
+    onPlayStartRef.current = onPlayStart;
   });
 
   useImperativeHandle(ref, () => ({
@@ -108,14 +114,9 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
     let cancelled = false;
     let instance: WaveSurferLike | null = null;
     void (async () => {
-      const [{ default: WaveSurfer }, { default: RegionsPlugin }, spectro] = await Promise.all([
-        import("wavesurfer.js"),
-        import("wavesurfer.js/plugins/regions"),
-        spectrogram ? import("wavesurfer.js/plugins/spectrogram") : Promise.resolve(null),
-      ]);
+      const [{ default: WaveSurfer }, { default: RegionsPlugin }] = await Promise.all([import("wavesurfer.js"), import("wavesurfer.js/plugins/regions")]);
       if (cancelled || !container.current) return;
       const plugin = RegionsPlugin.create();
-      const extra = spectro && spectrogramContainer.current ? [spectro.default.create({ container: spectrogramContainer.current, height: SPECTROGRAM_HEIGHT, labels: true, frequencyMax: SPECTROGRAM_MAX_HZ })] : [];
       instance = WaveSurfer.create({
         container: container.current,
         url: src,
@@ -124,13 +125,17 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
         progressColor: "#818cf8",
         cursorColor: "#e4e4e7",
         normalize: true,
-        plugins: [plugin, ...extra],
+        // Independent review: wavesurfer decodes at 8 kHz by default -- the spectrogram and the loudness measurement need
+        // the full band (content up to 22 kHz).
+        sampleRate: DECODE_SAMPLE_RATE,
+        plugins: [plugin],
       }) as unknown as WaveSurferLike;
       wave.current = instance;
       regions.current = plugin as unknown as RegionsLike;
-      // A new player (another file, or the spectrogram toggled) starts with no selection.
+      // A new file starts with no selection and not ready.
       setSelection(null);
       setLoop(false);
+      setState({ time: 0, duration: 0, playing: false, error: null, ready: false });
       instance.on("ready", () => {
         setState((s) => ({ ...s, ready: true, duration: instance?.getDuration() ?? 0 }));
         const audio = instance?.getDecodedData();
@@ -156,7 +161,10 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
         if (loopRef.current && (region.id === SELECTION_ID || region.id.startsWith(SELECTION_ID))) region.play();
       });
       instance.on("timeupdate", () => setState((s) => ({ ...s, time: instance?.getCurrentTime() ?? 0 })));
-      instance.on("play", () => setState((s) => ({ ...s, playing: true })));
+      instance.on("play", () => {
+        setState((s) => ({ ...s, playing: true }));
+        onPlayStartRef.current?.();
+      });
       instance.on("pause", () => setState((s) => ({ ...s, playing: false })));
       instance.on("finish", () => setState((s) => ({ ...s, playing: false })));
       instance.on("error", (error) => setState((s) => ({ ...s, error: error instanceof Error ? error.message : "The file could not be played" })));
@@ -169,8 +177,26 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       wave.current = null;
       regions.current = null;
     };
-    // The spectrogram is a plugin of the instance: toggling it rebuilds the player (the file is cached by the browser).
-  }, [src, spectrogram]);
+  }, [src]);
+
+  // AC-GP3-05: the spectrogram is a plugin registered on the SAME player while shown (toggling never rebuilds the player, so
+  // volume, markers and the selection stay). Linear scale, so the frequency marks below line up.
+  useEffect(() => {
+    if (!spectrogram || !state.ready || !wave.current || !spectrogramContainer.current) return;
+    let cancelled = false;
+    let registered: { destroy(): void } | null = null;
+    const instance = wave.current as unknown as { registerPlugin<T>(plugin: T): T };
+    void import("wavesurfer.js/plugins/spectrogram").then(({ default: SpectrogramPlugin }) => {
+      if (cancelled || !spectrogramContainer.current) return;
+      registered = instance.registerPlugin(
+        SpectrogramPlugin.create({ container: spectrogramContainer.current, height: SPECTROGRAM_HEIGHT, labels: true, frequencyMax: SPECTROGRAM_MAX_HZ, scale: "linear" })
+      ) as unknown as { destroy(): void };
+    });
+    return () => {
+      cancelled = true;
+      registered?.destroy();
+    };
+  }, [spectrogram, state.ready]);
 
   useEffect(() => {
     wave.current?.setVolume(Math.max(0, Math.min(1, volume)));

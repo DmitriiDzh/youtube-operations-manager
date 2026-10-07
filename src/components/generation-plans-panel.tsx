@@ -89,6 +89,8 @@ export function describeNotice(notice: PlanNotice): { text: string; tone: "ok" |
       return { text: "Everything planned is done", tone: "ok" };
     case "review_waiting":
       return { text: `${notice.count} waiting for your verdict`, tone: "info" };
+    case "attempts_exhausted":
+      return { text: `${notice.count} item(s) used up their attempts below target`, tone: "warn" };
   }
 }
 

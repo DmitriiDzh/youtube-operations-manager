@@ -116,7 +116,8 @@ export const closePlanInputSchema = z.object({ planId: planIdSchema, status: z.e
 
 export const listPlansInputSchema = z.object({ status: z.enum(PLAN_STATUSES).optional(), channelId: z.string().min(1).max(64).optional() }).strict();
 
-export const getPlanInputSchema = z.object({ planId: planIdSchema, since: z.string().datetime().optional() }).strict();
+/** `latest`: the newest events instead of the oldest page from `since` (a reader that wants "what happened lately"). */
+export const getPlanInputSchema = z.object({ planId: planIdSchema, since: z.string().datetime().optional(), latest: z.boolean().optional() }).strict();
 
 const auditionFileSchema = z
   .string()
@@ -242,6 +243,7 @@ export const importFileSchema = z
     status: z.enum(PLAN_STATUSES).optional(),
     note: noteSchema.nullable().optional(),
     stages: z.array(stageSchema).min(1).max(PLAN_LIMITS.stages),
+    references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
     items: z
       .array(
         z

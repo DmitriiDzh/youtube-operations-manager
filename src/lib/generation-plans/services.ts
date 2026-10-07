@@ -33,6 +33,7 @@ import {
   listPlansInputSchema,
   ownerVerdictInputSchema,
   parseWithSchema,
+  PLAN_LIMITS,
   peerVerdictInputSchema,
   reportInputSchema,
   rerunRequestInputSchema,
@@ -243,6 +244,7 @@ export function validateDefinition(definition: PlanDefinition): void {
   }
   for (const id of dup(definition.items.map((i) => i.itemKey))) problems.push(`item ${id} appears twice`);
   for (const id of dup((definition.references ?? []).map((r) => r.id))) problems.push(`reference ${id} appears twice`);
+  if ((definition.references ?? []).length > PLAN_LIMITS.references) problems.push(`more than ${PLAN_LIMITS.references} references`);
   for (const item of definition.items) {
     if (item.groupId !== null && !groupIds.has(item.groupId)) problems.push(`item ${item.itemKey} is in unknown group ${item.groupId}`);
     if (new Set(item.seeds).size !== item.seeds.length) problems.push(`item ${item.itemKey} lists a seed twice`);
@@ -479,6 +481,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const definition: PlanDefinition = {
         stages: file.stages as PlanStage[],
         groups: groupIds.map((groupId) => normalizeGroup({ groupId })),
+        references: (file.references ?? []).map(normalizeReference),
         items: file.items.map((i) =>
           normalizeItem({ itemKey: i.itemKey, groupId: i.group ?? null, templateLabel: i.templateId ?? null, variant: i.variant, targetCount: i.targetCount, mode: i.mode, maxAttempts: i.maxAttempts, params: i.params, seeds: i.seeds })
         ),
@@ -590,7 +593,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const [jobs, results, sessions, recorded] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id)]);
       const plan = toPublicPlan(row);
       const at = now();
-      const page = planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null);
+      const page = parsed.latest
+        ? { events: planEvents(jobs, sessions, results, recorded, null, 1_000_000).events.slice(-500), more: false, cursor: null }
+        : planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null);
       return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: page.events, more: page.more, cursor: page.cursor ?? new Date(secondFloor(at).getTime() - EVENT_CURSOR_LOOKBACK_MS).toISOString() };
     },
 

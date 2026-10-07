@@ -6,8 +6,7 @@
 - msg 1939: the FO-MSG-0008 additions;
 - msg 1962: the scope below.
 
-**A/B against a reference track** waits for the Factory Operator's answer to DEV-MSG-0003 (where references live, how many, their
-LUFS). It is not in this branch until then.
+**A/B against a reference track** was added after the Factory Operator answered DEV-MSG-0003 (FO-MSG-0009); see AC-GP3-07.
 
 The budget stays a warning only (Q2), so there is no hard stop.
 

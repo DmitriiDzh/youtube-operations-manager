@@ -86,10 +86,14 @@ export function frequencyMarksOf(entry: Pick<PlanReviewEntry, "stages">): Freque
   const marks: FrequencyMark[] = [];
   for (const stage of entry.stages) {
     for (const check of stage.checks) {
-      if (!/ring/i.test(check.id) || !check.detail) continue;
-      for (const m of check.detail.matchAll(/(\d+(?:\.\d+)?)/g)) {
-        const hz = Number(m[1]);
-        if (hz >= 20 && hz <= 24_000) marks.push({ hz, label: "ringing" });
+      // A failed ringing check (ring_db, ringing...): only the numbers of its "... Hz" / "... kHz" list are frequencies.
+      if (check.pass || !/(^|_)ring/i.test(check.id) || !check.detail) continue;
+      for (const list of check.detail.matchAll(/((?:\d+(?:\.\d+)?\s*,\s*)*\d+(?:\.\d+)?)\s*(k?Hz)\b/gi)) {
+        const factor = list[2].toLowerCase() === "khz" ? 1000 : 1;
+        for (const n of list[1].split(",")) {
+          const hz = Number(n.trim()) * factor;
+          if (hz >= 20 && hz <= 24_000) marks.push({ hz, label: "ringing" });
+        }
       }
     }
     const held = stage.metrics.held_hz;
@@ -292,10 +296,19 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       if (action === "play" && target?.closest("button, [role=switch], a")) return;
       if (event.repeat && (action === "accept" || action === "reject" || action === "next" || action === "previous")) return;
       event.preventDefault();
+      const b = onB ? referenceAudio.current : null;
       if (typeof action === "object") setDraft((d) => ({ ...d, rating: action.rating }));
-      else if (action === "play") player.current?.togglePlay();
-      else if (action === "back") player.current?.seekBy(-5);
-      else if (action === "forward") player.current?.seekBy(5);
+      // While the reference (B) plays, play/seek act on it -- A and B never sound together.
+      else if (action === "play") {
+        if (b) void (b.paused ? b.play() : Promise.resolve(b.pause()));
+        else player.current?.togglePlay();
+      } else if (action === "back") {
+        if (b) b.currentTime = Math.max(0, b.currentTime - 5);
+        else player.current?.seekBy(-5);
+      } else if (action === "forward") {
+        if (b) b.currentTime = Math.min(b.duration || b.currentTime + 5, b.currentTime + 5);
+        else player.current?.seekBy(5);
+      }
       else if (action === "accept") void submit("accepted");
       else if (action === "reject") void submit("rejected");
       else if (action === "next") go(index + 1);
@@ -305,7 +318,13 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, index, mark, submit, toggleAB]);
+  }, [go, index, mark, submit, toggleAB, onB]);
+
+  // The reference's volume follows the loudness switch while it plays.
+  useEffect(() => {
+    const audio = referenceAudio.current;
+    if (audio && chosen) audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
+  }, [matchLoudness, chosen, onB]);
 
   const markers = useMemo<ReviewMarker[]>(() => {
     if (!entry) return [];
@@ -366,6 +385,11 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 src={src}
                 markers={markers}
                 spectrogram={showSpectrogram}
+                onPlayStart={() => {
+                  // Starting A (its own Play button) stops B.
+                  if (referenceAudio.current && !referenceAudio.current.paused) referenceAudio.current.pause();
+                  setOnB(false);
+                }}
                 frequencyMarks={hideFindings ? [] : frequencyMarksOf(entry)}
                 volume={matchLoudness ? matchedVolume(lufsOf) : 1}
                 onDecoded={(audio) => {
@@ -399,7 +423,19 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                     {onB ? `B: ${chosen.label} -- back to A (B)` : "A/B (B)"}
                   </button>
                   {offered.some((r) => r.nearest) && <span className="text-zinc-500">★ = nearest library track by the validator</span>}
-                  <audio ref={referenceAudio} src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`} preload="metadata" onEnded={() => setOnB(false)} className="hidden" />
+                  {matchLoudness && chosen.lufs === null && <span className="text-amber-300">this reference has no LUFS: it plays unmatched</span>}
+                  <audio
+                    ref={referenceAudio}
+                    src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
+                    preload="metadata"
+                    onEnded={() => {
+                      // The reference ran out: back to A where it would be.
+                      const t = referenceAudio.current?.currentTime ?? 0;
+                      setOnB(false);
+                      player.current?.playFrom(t);
+                    }}
+                    className="hidden"
+                  />
                 </div>
               )}
             </>

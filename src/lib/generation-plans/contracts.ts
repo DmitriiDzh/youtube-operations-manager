@@ -133,6 +133,8 @@ export type PlanItemProgress = {
   rejected: number;
   open: number;
   waitingReview: number;
+  /** Generated attempts still on their way through the later stages (no final verdict, not rejected). */
+  pending: number;
   /** How many more attempts the item still needs (0 when complete). */
   missing: number;
 };
@@ -172,6 +174,8 @@ export type PlanNotice =
   | { kind: "stage_complete"; stageId: string; title: string }
   | { kind: "budget_80" | "budget_100" }
   | { kind: "plan_complete" }
+  /** until_accepted items that used up maxAttempts below their target. */
+  | { kind: "attempts_exhausted"; count: number }
   | { kind: "review_waiting"; count: number };
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };

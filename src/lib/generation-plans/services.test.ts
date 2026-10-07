@@ -800,3 +800,13 @@ test("AC-GP3-07: plan references are kept as given; a report may name only exist
   await s.services.updatePlan({ planId: "R-0001-S1-music", removeReferenceIds: ["koto-01"] });
   assert.deepEqual((await s.services.getPlan({ planId: "R-0001-S1-music" })).plan.references?.map((r) => r.id), ["piano-02"]);
 });
+
+test("phase 3 review: references come in with an import, and more than 50 are refused (a report must stay valid)", async () => {
+  const s = setup();
+  const file = { ...planFile([]), references: [{ id: "koto-01", label: "Koto", file: "reference/koto-01.mp3", lufs: -13 }] };
+  const imported = await s.services.importPlan({ plan: file });
+  assert.deepEqual(imported.plan.references?.map((r) => r.id), ["koto-01"]);
+  const many = Array.from({ length: 30 }, (_, i) => ({ id: `r${i}`, label: `R${i}`, file: `reference/r${i}.mp3` }));
+  await s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: many });
+  await assert.rejects(s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: many.map((r) => ({ ...r, id: `x${r.id}` })) }), refused("plan_invalid"));
+});
