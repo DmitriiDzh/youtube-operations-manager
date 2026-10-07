@@ -145,7 +145,14 @@ function waitingCount(view: PlanView): number {
   return view.progress.items.reduce((sum, i) => sum + i.waitingReview, 0);
 }
 
-export function PlansPanel({ active }: { active: boolean }) {
+export function PlansPanel({
+  active,
+  onReview,
+}: {
+  active: boolean;
+  /** BL-149: open the review screen at its own address (`/production/plans/<id>/review`); absent = in place, as before. */
+  onReview?: (planId: string, source?: PeerReviewSource) => void;
+}) {
   const [filter, setFilter] = useState<"active" | "history">("active");
   const [plans, setPlans] = useState<PlanView[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -255,8 +262,8 @@ export function PlansPanel({ active }: { active: boolean }) {
         </ul>
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
-      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={(planId) => setReviewing({ planId })} />}
-      {peers.some((d) => d.plans.length > 0) && <PeerPlansCard devices={peers} outgoing={outgoing} onReview={(planId, source) => setReviewing({ planId, source })} />}
+      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={(planId) => (onReview ? onReview(planId) : setReviewing({ planId }))} />}
+      {peers.some((d) => d.plans.length > 0) && <PeerPlansCard devices={peers} outgoing={outgoing} onReview={(planId, source) => (onReview ? onReview(planId, source) : setReviewing({ planId, source }))} />}
       {selected && !detail && <p className="text-xs text-zinc-500">Loading the plan…</p>}
     </div>
   );

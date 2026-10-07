@@ -1,5 +1,6 @@
 "use client";
 
+import type { PeerReviewSource } from "./plan-review-screen";
 import { useCallback, useEffect, useState } from "react";
 import type { RunpodAccountBalance } from "@/lib/media-gateway";
 import type { MediaSessionLimits } from "@/lib/media-generation/contracts";
@@ -123,11 +124,14 @@ export function ProductionPanel({
   activeChannelId = null,
   tab: routeTab,
   onTabChange,
+  onReviewPlan,
 }: {
   activeChannelId?: string | null;
   /** BL-149: the sub-tab from the address (`/production/<tab>`), with navigation on a click; absent = local state. */
   tab?: ProductionTab;
   onTabChange?: (tab: ProductionTab) => void;
+  /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
+  onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
 }) {
   const [ownTab, setOwnTab] = useState<ProductionTab>("sessions");
   const tab = routeTab ?? ownTab;
@@ -167,7 +171,7 @@ export function ProductionPanel({
         <JobsCard activeChannelId={activeChannelId} />
       </div>
       <div className={tab === "plans" ? "space-y-6" : "hidden"}>
-        <PlansPanel active={tab === "plans"} />
+        <PlansPanel active={tab === "plans"} onReview={onReviewPlan} />
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
         <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />

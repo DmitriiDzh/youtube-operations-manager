@@ -164,7 +164,7 @@ Entry point: `src/cli/video-metadata.ts`. Current namespaces: `metadata` (defaul
 
 ## 6.9 Adding Web UI features
 
-Reference: `src/components/{content-manager,languages-manager,change-set-review}.tsx`, wired into `src/app/dashboard/page.tsx`.
+Reference: `src/components/{content-manager,languages-manager,change-set-review}.tsx`, wired into a section page under `src/app/(app)/` (BL-149: one route per section, the shared shell and polls in `src/app/(app)/layout.tsx`; a section with sub-tabs renders its component from its own `layout.tsx` so sub-tabs stay mounted).
 
 1. **Read the local Next.js documentation before writing any code** — this project pins a Next.js version with breaking changes from training-data assumptions (`node_modules/next/dist/docs/`). This requirement is preserved verbatim from `AGENTS.md`'s Next.js agent-warning block — do not skip it.
 2. **Server/client boundary:** dashboard tab components are `"use client"` components that call API routes via `fetch` — there is currently no use of Server Components/Server Actions for data fetching in this app; stay consistent with that unless there is a documented reason to introduce them.

@@ -1261,6 +1261,8 @@ Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `aut
    `cloud_connection` row. Always redirects back to `/dashboard` with a `?cloudConnection=
    connected|error` query param the Settings card reads client-side (via
    `window.location.search`, not `useSearchParams()` — `/dashboard` is statically prerendered, and
+   (BL-149: the callback now redirects to `/settings/api`; the section pages live under `src/app/(app)/`, see
+   `docs/roadmap/plans/APP_ROUTES_PLAN.md` — the `dashboard/page.tsx` references in this document predate that)
    `useSearchParams()` would force a Suspense boundary just for this one-time banner). **Catches
    every error from `completeConnect`, not only `DomainError`** — a full-page OAuth redirect has
    no JS error handling available to the browser either way, so an unexpected error is logged

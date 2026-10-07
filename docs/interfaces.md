@@ -10,7 +10,7 @@ Use this as the operational reference after setup: covers channel workflows acro
 
 1. Open home page.
 2. Click **Sign in with Google**.
-3. On success, app redirects to `/dashboard`.
+3. On success, app redirects to `/home` (BL-149; `/dashboard` itself now redirects to `/home`).
 
 ### Dashboard tabs
 
@@ -1115,7 +1115,7 @@ instead, not a route here.
   broader `cloud-platform` once the Cloud Quotas API that justified it turned out to be
   unnecessary); sets a short-lived httpOnly `state` cookie
 - `GET /api/cloud-connection/callback` — exchanges the authorization code, persists the encrypted
-  grant, redirects back to `/dashboard?cloudConnection=connected|error`
+  grant, redirects back to `/settings/api?cloudConnection=connected|error` (BL-149; before: `/dashboard`)
 - `GET /api/cloud-connection/status` — `{ "connected": false }` or `{ "connected": true,
   "connectedEmail": "...", "scope": "...", "connectedAt": "..." }` — never includes a token
 - `POST /api/cloud-connection/disconnect` — revokes the token with Google, clears the stored grant
