@@ -10,6 +10,20 @@ import { AppShell } from "@/components/app-shell";
 import { OperationLockControl } from "@/components/operation-lock-control";
 import { AppChannelProvider, type ChannelInfo } from "@/components/app-channel";
 import { rememberablePath, sectionHref } from "@/components/section-tabs";
+import { LoadingOverlay } from "@/components/loading-overlay";
+import {
+  INITIAL_STARTUP,
+  STARTUP_STEPS,
+  analyticsOutcome,
+  channelUnavailable as startupWithoutChannel,
+  reachOutcome,
+  researchOutcome,
+  startupInProgress,
+  type StartupProgress,
+  type StartupStepKey,
+  type StepStatus,
+} from "@/components/startup-progress";
+import { CHANNEL_SWITCH_EVENT, type ChannelSwitchEventDetail } from "@/components/use-connected-channels";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -98,12 +112,18 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // BL-140 R1: agents' requests waiting in Research → Inbox, shown on the sidebar like Merge's conflicts.
   const [researchPending, setResearchPending] = useState(0);
   const [plansWaiting, setPlansWaiting] = useState(0);
+  // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
+  const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
+  const [startupDismissed, setStartupDismissed] = useState(false);
+  const setStep = useCallback((key: StartupStepKey, status: StepStatus) => setStartup((prev) => ({ ...prev, [key]: status })), []);
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
 
   const fetchChannel = useCallback(async () => {
     try {
       const res = await fetch("/api/youtube/channel-info");
       if (!res.ok) {
         setChannelUnavailable(true);
+        setStartup((prev) => (prev.channel.state === "running" ? startupWithoutChannel(prev) : prev));
         // Re-check the stored grants for real now (bypassing the short cache): the popup names which account to sign in with.
         void refetchConnectionHealth({ force: true });
         return;
@@ -111,6 +131,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       const data = await res.json();
       setChannelUnavailable(false);
       setChannel(data.channel);
+      setStartup((prev) => (prev.channel.state === "running" ? { ...prev, channel: { state: "done", detail: data.channel?.title ?? null } } : prev));
     } catch {
       // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
       // right after activating a different stored channel connection, docs/decisions/0010), since
@@ -141,19 +162,25 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     // active one with this session's), and per channel runs the weekly report right after its collection, so a Monday
     // load's weekly snapshot sees that load's own data (advisor review, 2026-09-23; src/lib/analytics/weekly-report.ts).
     // Waits for `channel`, so the session's active channel is already recorded.
+    setStep("analytics", { state: "running", detail: null });
     fetch("/api/analytics/auto-collect-all", { method: "POST" })
-      .catch(() => {
+      .then(
+        async (res) => setStep("analytics", analyticsOutcome(res.ok, await res.json().catch(() => null))),
         // Non-fatal -- the staleness check means the next dashboard load simply tries again.
-      })
+        () => setStep("analytics", { state: "failed", detail: null })
+      )
       .finally(() => {
         // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §7) -- chained after the Analytics collection
         // (never in parallel, same rationale). Channel-agnostic (market intelligence's own watchlist is global) -- the
         // server's own budget/staleness checks decide whether anything actually runs.
-        fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).catch(() => {
+        setStep("research", { state: "running", detail: null });
+        fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).then(
+          async (res) => setStep("research", researchOutcome(res.ok, await res.json().catch(() => null))),
           // Non-fatal -- the staleness/budget check means the next dashboard load simply tries again.
-        });
+          () => setStep("research", { state: "failed", detail: null })
+        );
       });
-  }, [channel]);
+  }, [channel, setStep]);
 
 
   const refreshConflictSummary = useCallback(async () => {
@@ -185,14 +212,34 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!channel?.id || reachSyncTriggeredRef.current) return;
     reachSyncTriggeredRef.current = true;
+    setStep("reach", { state: "running", detail: null });
     fetch("/api/reach/sync-all", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ onlyIfDue: true }),
-    }).catch(() => {
+    }).then(
+      (res) => setStep("reach", reachOutcome(res.ok)),
       // Non-fatal -- the next dashboard load simply tries again.
-    });
-  }, [channel]);
+      () => setStep("reach", reachOutcome(false))
+    );
+  }, [channel, setStep]);
+
+  // A channel switch (topbar or Settings → Channels): the loading window until the new channel has been read.
+  useEffect(() => {
+    function onSwitch(event: Event) {
+      const detail = (event as CustomEvent<ChannelSwitchEventDetail>).detail;
+      setSwitchingTo(detail.phase === "start" ? detail.channelId : detail.phase === "failed" ? null : (current) => current);
+    }
+    window.addEventListener(CHANNEL_SWITCH_EVENT, onSwitch);
+    return () => window.removeEventListener(CHANNEL_SWITCH_EVENT, onSwitch);
+  }, []);
+  useEffect(() => {
+    if (!switchingTo) return;
+    // Safety net: never keep the screen blurred if the new channel never arrives.
+    const timer = setTimeout(() => setSwitchingTo(null), 30_000);
+    return () => clearTimeout(timer);
+  }, [switchingTo]);
+  const switching = switchingTo !== null && channel?.id !== switchingTo;
 
   // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
   // sidebar badge (AC-CRDT-08) stays current even while the operator is on an unrelated tab.
@@ -289,6 +336,20 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       onSignOut={() => signOut()}
     >
       <ConnectionHealthDialog health={connectionHealth.health} />
+      {startupInProgress(startup) && !startupDismissed && (
+        <LoadingOverlay
+          title="Loading your data…"
+          steps={STARTUP_STEPS.map((step) => ({ ...step, status: startup[step.key] }))}
+          onDismiss={() => setStartupDismissed(true)}
+        />
+      )}
+      {switching && (!startupInProgress(startup) || startupDismissed) && (
+        <LoadingOverlay
+          title="Switching channel…"
+          steps={[{ key: "switch", label: "Loading the channel's data", status: { state: "running", detail: null } }]}
+          onDismiss={() => setSwitchingTo(null)}
+        />
+      )}
       {/* Visible on every page, only while a migration/import holds (or left behind) the device lock. */}
       <OperationLockControl quiet />
       <AppChannelProvider value={{ channel, channelUnavailable, setResearchPending }}>{children}</AppChannelProvider>
