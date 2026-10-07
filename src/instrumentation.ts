@@ -170,6 +170,16 @@ async function startServerSession() {
   setTimeout(publishQuotaLedgerQuietly, 45_000).unref();
   setInterval(publishQuotaLedgerQuietly, 120_000).unref();
 
+  // BL-151 (docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md): this device's analytics and reach rows out (its own day files
+  // only), the other devices' in -- so a channel one computer collected today is current on the other too. Quiet on failure.
+  const { getAnalyticsDataSync } = await import("@/lib/analytics-data-sync");
+  const shareAnalyticsQuietly = () => {
+    const sync = getAnalyticsDataSync();
+    void sync.importPeers().then(() => sync.publishLocal()).catch((error: unknown) => console.warn(`[analytics-data] ${error instanceof Error ? error.message : String(error)}`));
+  };
+  setTimeout(shareAnalyticsQuietly, 20_000).unref();
+  setInterval(shareAnalyticsQuietly, 120_000).unref();
+
   // Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3): generation sessions = RunPod pods that
   // must never outlive this process. Boot sweep first (a pod left by a dead process is terminated and
   // its session marked interrupted; AC-P14-08), then the watcher at the operator-set interval

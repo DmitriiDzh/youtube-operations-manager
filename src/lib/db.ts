@@ -10458,3 +10458,154 @@ export async function getHypothesisGenerationProvenanceByHypothesis(
     .limit(1);
   return rows[0] ?? null;
 }
+
+// -- BL-151 (docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md): analytics and reach rows shared between devices -------------
+// The rows this device collected (or imported) in a time window, and their idempotent import from another device. Merge rule:
+// a row present on both keeps the one collected later (YouTube revises recent days; these are its numbers, not the owner's).
+
+export type AnalyticsShareTables = {
+  /** [channelId, videoId, metricDate, metricName, metricValue, collectedAt (unix s)] */
+  videoMetrics: Array<[string, string, string, string, number, number]>;
+  /** [channelId, metricDate, metricName, metricValue, collectedAt] */
+  channelMetrics: Array<[string, string, string, number, number]>;
+  /** [videoId, channelId, historyThrough, updatedAt] */
+  videoHistory: Array<[string, string, string, number]>;
+  collectionRuns: Array<{ channelId: string; start: string; end: string; videoCount: number; upserts: number; skippedJson: string; ranAt: number; channelLevel: number | null }>;
+  /** [channelId, analytics_last_auto_collected_at (unix s)] */
+  channelStamps: Array<[string, number]>;
+  reportFiles: Array<{ reportId: string; channelId: string; reportTypeId: string; jobId: string; startTime: string; endTime: string; createTime: string; rowCount: number; status: string; importedAt: number }>;
+  /** [channelId, date, videoId, impressions, ctr, sourceReportId] */
+  reachRows: Array<[string, string, string, number, number | null, string]>;
+  /** Outcome only: no error text leaves the device. */
+  syncAttempts: Array<{ channelId: string; reportTypeId: string; attemptedAt: number; outcome: string; filesListed: number; filesImported: number }>;
+  jobs: Array<{ channelId: string; reportTypeId: string; jobId: string; jobName: string; jobCreatedAt: string | null; lastCheckedAt: number | null }>;
+};
+
+export async function exportAnalyticsShareRows(fromSec: number, toSec: number, database: AppDb = db): Promise<AnalyticsShareTables> {
+  type R = Record<string, unknown>;
+  const all = (q: ReturnType<typeof sql>) => database.all<R>(q);
+  const n = (v: unknown) => Number(v);
+  const [vm, cm, vh, runs, stamps, files, attempts, jobs] = await Promise.all([
+    all(sql`SELECT channel_id, video_id, metric_date, metric_name, metric_value, collected_at FROM video_metrics_daily WHERE collected_at >= ${fromSec} AND collected_at < ${toSec}`),
+    all(sql`SELECT channel_id, metric_date, metric_name, metric_value, collected_at FROM channel_metrics_daily WHERE collected_at >= ${fromSec} AND collected_at < ${toSec}`),
+    all(sql`SELECT video_id, channel_id, history_through, updated_at FROM analytics_video_history WHERE updated_at >= ${fromSec} AND updated_at < ${toSec}`),
+    all(sql`SELECT channel_id, requested_start_date, requested_end_date, video_count, upserts_issued, skipped_video_ids_json, ran_at, channel_level FROM analytics_collection_runs WHERE ran_at >= ${fromSec} AND ran_at < ${toSec}`),
+    all(sql`SELECT id AS channel_id, analytics_last_auto_collected_at AS at FROM channels WHERE analytics_last_auto_collected_at >= ${fromSec} AND analytics_last_auto_collected_at < ${toSec}`),
+    all(sql`SELECT report_id, channel_id, report_type_id, job_id, start_time, end_time, create_time, row_count, status, imported_at FROM reporting_report_files WHERE imported_at >= ${fromSec} AND imported_at < ${toSec}`),
+    all(sql`SELECT channel_id, report_type_id, attempted_at, outcome, files_listed, files_imported FROM reporting_sync_attempts WHERE attempted_at >= ${fromSec} AND attempted_at < ${toSec}`),
+    all(sql`SELECT channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at FROM reporting_jobs WHERE last_checked_at >= ${fromSec} AND last_checked_at < ${toSec}`),
+  ]);
+  const reportIds = files.map((f) => String(f.report_id));
+  const reach = reportIds.length > 0 ? await all(sql`SELECT channel_id, date, video_id, impressions, ctr, source_report_id FROM channel_reach_daily WHERE source_report_id IN ${reportIds}`) : [];
+  return {
+    videoMetrics: vm.map((r) => [String(r.channel_id), String(r.video_id), String(r.metric_date), String(r.metric_name), n(r.metric_value), n(r.collected_at)]),
+    channelMetrics: cm.map((r) => [String(r.channel_id), String(r.metric_date), String(r.metric_name), n(r.metric_value), n(r.collected_at)]),
+    videoHistory: vh.map((r) => [String(r.video_id), String(r.channel_id), String(r.history_through), n(r.updated_at)]),
+    collectionRuns: runs.map((r) => ({
+      channelId: String(r.channel_id),
+      start: String(r.requested_start_date),
+      end: String(r.requested_end_date),
+      videoCount: n(r.video_count),
+      upserts: n(r.upserts_issued),
+      skippedJson: String(r.skipped_video_ids_json),
+      ranAt: n(r.ran_at),
+      channelLevel: r.channel_level === null ? null : n(r.channel_level),
+    })),
+    channelStamps: stamps.map((r) => [String(r.channel_id), n(r.at)]),
+    reportFiles: files.map((r) => ({
+      reportId: String(r.report_id),
+      channelId: String(r.channel_id),
+      reportTypeId: String(r.report_type_id),
+      jobId: String(r.job_id),
+      startTime: String(r.start_time),
+      endTime: String(r.end_time),
+      createTime: String(r.create_time),
+      rowCount: n(r.row_count),
+      status: String(r.status),
+      importedAt: n(r.imported_at),
+    })),
+    reachRows: reach.map((r) => [String(r.channel_id), String(r.date), String(r.video_id), n(r.impressions), r.ctr === null ? null : n(r.ctr), String(r.source_report_id)]),
+    syncAttempts: attempts.map((r) => ({ channelId: String(r.channel_id), reportTypeId: String(r.report_type_id), attemptedAt: n(r.attempted_at), outcome: String(r.outcome), filesListed: n(r.files_listed), filesImported: n(r.files_imported) })),
+    jobs: jobs.map((r) => ({
+      channelId: String(r.channel_id),
+      reportTypeId: String(r.report_type_id),
+      jobId: String(r.job_id),
+      jobName: String(r.job_name),
+      jobCreatedAt: r.job_created_at === null ? null : String(r.job_created_at),
+      lastCheckedAt: r.last_checked_at === null ? null : n(r.last_checked_at),
+    })),
+  };
+}
+
+/**
+ * Applies another device's rows (one transaction). Never deletes; a row already here is replaced only by one collected later;
+ * a stamp or check time only moves forward; a collection run is added once. Report files are added before their reach rows.
+ */
+export async function importAnalyticsShareRows(t: AnalyticsShareTables, database: AppDb = db): Promise<void> {
+  await database.transaction(async (tx) => {
+    for (const [channelId, videoId, date, name, value, at] of t.videoMetrics) {
+      // Only for a video this device knows (`video_metrics_daily.video_id` references `videos` on a fresh schema): a video it
+      // has not synced yet is skipped, never failing the whole import; its own channel sync adds the video later.
+      await tx.run(
+        sql`INSERT INTO video_metrics_daily (channel_id, video_id, metric_date, metric_name, metric_value, collected_at)
+            SELECT ${channelId}, ${videoId}, ${date}, ${name}, ${value}, ${at} WHERE EXISTS (SELECT 1 FROM videos WHERE id = ${videoId})
+            ON CONFLICT (video_id, metric_date, metric_name) DO UPDATE SET metric_value = excluded.metric_value, collected_at = excluded.collected_at, channel_id = excluded.channel_id
+            WHERE excluded.collected_at > video_metrics_daily.collected_at`
+      );
+    }
+    for (const [channelId, date, name, value, at] of t.channelMetrics) {
+      await tx.run(
+        sql`INSERT INTO channel_metrics_daily (channel_id, metric_date, metric_name, metric_value, collected_at) VALUES (${channelId}, ${date}, ${name}, ${value}, ${at})
+            ON CONFLICT (channel_id, metric_date, metric_name) DO UPDATE SET metric_value = excluded.metric_value, collected_at = excluded.collected_at
+            WHERE excluded.collected_at > channel_metrics_daily.collected_at`
+      );
+    }
+    for (const [videoId, channelId, through, at] of t.videoHistory) {
+      await tx.run(
+        sql`INSERT INTO analytics_video_history (video_id, channel_id, history_through, updated_at) VALUES (${videoId}, ${channelId}, ${through}, ${at})
+            ON CONFLICT (video_id) DO UPDATE SET history_through = excluded.history_through, updated_at = excluded.updated_at, channel_id = excluded.channel_id
+            WHERE excluded.updated_at > analytics_video_history.updated_at`
+      );
+    }
+    for (const r of t.collectionRuns) {
+      await tx.run(
+        sql`INSERT INTO analytics_collection_runs (channel_id, requested_start_date, requested_end_date, video_count, upserts_issued, skipped_video_ids_json, ran_at, channel_level)
+            SELECT ${r.channelId}, ${r.start}, ${r.end}, ${r.videoCount}, ${r.upserts}, ${r.skippedJson}, ${r.ranAt}, ${r.channelLevel}
+            WHERE NOT EXISTS (SELECT 1 FROM analytics_collection_runs WHERE channel_id = ${r.channelId} AND requested_start_date = ${r.start} AND requested_end_date = ${r.end} AND ran_at = ${r.ranAt})`
+      );
+    }
+    for (const [channelId, at] of t.channelStamps) {
+      await tx.run(sql`UPDATE channels SET analytics_last_auto_collected_at = ${at} WHERE id = ${channelId} AND (analytics_last_auto_collected_at IS NULL OR analytics_last_auto_collected_at < ${at})`);
+    }
+    for (const f of t.reportFiles) {
+      await tx.run(
+        sql`INSERT INTO reporting_report_files (report_id, channel_id, report_type_id, job_id, start_time, end_time, create_time, row_count, status, imported_at)
+            VALUES (${f.reportId}, ${f.channelId}, ${f.reportTypeId}, ${f.jobId}, ${f.startTime}, ${f.endTime}, ${f.createTime}, ${f.rowCount}, ${f.status}, ${f.importedAt})
+            ON CONFLICT (report_id) DO NOTHING`
+      );
+    }
+    for (const [channelId, date, videoId, impressions, ctr, reportId] of t.reachRows) {
+      // A day's row is replaced only by one from a report YouTube created later (a restated report).
+      await tx.run(
+        sql`INSERT INTO channel_reach_daily (channel_id, date, video_id, impressions, ctr, source_report_id) VALUES (${channelId}, ${date}, ${videoId}, ${impressions}, ${ctr}, ${reportId})
+            ON CONFLICT (channel_id, date, video_id) DO UPDATE SET impressions = excluded.impressions, ctr = excluded.ctr, source_report_id = excluded.source_report_id
+            WHERE (SELECT create_time FROM reporting_report_files WHERE report_id = excluded.source_report_id) > COALESCE((SELECT create_time FROM reporting_report_files WHERE report_id = channel_reach_daily.source_report_id), '')`
+      );
+    }
+    for (const a of t.syncAttempts) {
+      await tx.run(
+        sql`INSERT INTO reporting_sync_attempts (channel_id, report_type_id, attempted_at, outcome, error, files_listed, files_imported, failures_json)
+            VALUES (${a.channelId}, ${a.reportTypeId}, ${a.attemptedAt}, ${a.outcome}, NULL, ${a.filesListed}, ${a.filesImported}, NULL)
+            ON CONFLICT (channel_id, report_type_id) DO UPDATE SET attempted_at = excluded.attempted_at, outcome = excluded.outcome, error = NULL, files_listed = excluded.files_listed, files_imported = excluded.files_imported, failures_json = NULL
+            WHERE excluded.attempted_at > reporting_sync_attempts.attempted_at`
+      );
+    }
+    for (const j of t.jobs) {
+      await tx.run(
+        sql`INSERT INTO reporting_jobs (channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at) VALUES (${j.channelId}, ${j.reportTypeId}, ${j.jobId}, ${j.jobName}, ${j.jobCreatedAt}, ${j.lastCheckedAt})
+            ON CONFLICT (channel_id, report_type_id) DO UPDATE SET last_checked_at = excluded.last_checked_at
+            WHERE excluded.job_id = reporting_jobs.job_id AND (reporting_jobs.last_checked_at IS NULL OR excluded.last_checked_at > reporting_jobs.last_checked_at)`
+      );
+    }
+  });
+}

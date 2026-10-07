@@ -6,6 +6,7 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { DomainError } from "@/lib/analytics/contracts";
 import { getOperationRegistry, runTrackedOperation } from "@/lib/operation-progress";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
+import { getAnalyticsDataSync, importPeersFirst } from "@/lib/analytics-data-sync";
 
 export type AutoCollectAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -16,6 +17,10 @@ export type AutoCollectAllDeps = {
   /** The process-wide single all-channels run (analytics/auto-collect-all.ts); injectable for tests. */
   beginRun: () => boolean;
   endRun: () => void;
+  /** BL-151: import the other devices' rows before deciding what is stale; returns the number of files imported. */
+  importPeers?: () => Promise<number>;
+  /** BL-151: publish this device's new rows once the background collection is done. */
+  publishLocal?: () => Promise<unknown>;
 };
 
 // BL-142 (owner, Telegram 2026-10-06, msgs 1867/1868/1874): the dashboard's automatic Analytics collection, once per
@@ -35,6 +40,8 @@ export function createAutoCollectAllHandler(
     runAfter: (work) => after(work),
     beginRun: beginAllChannelsRun,
     endRun: endAllChannelsRun,
+    importPeers: importPeersFirst,
+    publishLocal: () => getAnalyticsDataSync().publishLocal(),
   }
 ) {
   return async function POST() {
@@ -45,6 +52,7 @@ export function createAutoCollectAllHandler(
     if (!deps.beginRun()) return NextResponse.json({ channels: [], catchUpScheduled: false, inProgress: true });
     let handedOff = false;
     try {
+      const importedFromPeers = deps.importPeers ? await deps.importPeers() : 0;
       const activeChannelId = await deps.getActiveChannelId(sessionUserId);
       const active = await deps.core.runAutoCollectionForChannels({ sessionUserId, activeChannelId, which: "active" });
 
@@ -70,11 +78,12 @@ export function createAutoCollectAllHandler(
           // Background work is best-effort; the next dashboard load tries again.
         } finally {
           deps.endRun();
+          await deps.publishLocal?.().catch(() => undefined);
         }
       });
       handedOff = true;
 
-      return NextResponse.json({ channels: active.channels, catchUpScheduled: active.catchUps.length > 0 });
+      return NextResponse.json({ channels: active.channels, catchUpScheduled: active.catchUps.length > 0, importedFromPeers });
     } catch (error) {
       if (error instanceof DomainError) {
         return NextResponse.json(

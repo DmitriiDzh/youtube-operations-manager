@@ -35,10 +35,12 @@ export function channelUnavailable(progress: StartupProgress): StartupProgress {
 /** `POST /api/analytics/auto-collect-all` → its step (the active channel is collected before the response; the rest continue in the background). */
 export function analyticsOutcome(ok: boolean, body: unknown): StepStatus {
   if (!ok) return { state: "failed", detail: null };
-  const b = (body ?? {}) as { channels?: Array<{ collection?: string }>; inProgress?: boolean };
+  const b = (body ?? {}) as { channels?: Array<{ collection?: string }>; inProgress?: boolean; importedFromPeers?: number };
   if (b.inProgress) return { state: "done", detail: "already running" };
   const collected = (b.channels ?? []).some((c) => c.collection === "collected");
-  return { state: "done", detail: collected ? "updated; other channels continue in the background" : "up to date" };
+  if (collected) return { state: "done", detail: "updated; other channels continue in the background" };
+  // BL-151 (AC-AD-06): the other computer's rows arrived first and made today's collection unnecessary.
+  return { state: "done", detail: (b.importedFromPeers ?? 0) > 0 ? "up to date — collected on the other computer" : "up to date" };
 }
 
 /** `POST /api/market-intelligence/collect-if-stale` → its step (it first syncs with the other computer, then collects if due). */

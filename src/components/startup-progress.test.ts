@@ -23,6 +23,8 @@ test("each collection's answer becomes its line: updated / up to date / skipped 
   assert.deepEqual(analyticsOutcome(true, { channels: [{ collection: "collected" }] }), { state: "done", detail: "updated; other channels continue in the background" });
   assert.deepEqual(analyticsOutcome(true, { channels: [{ collection: "current" }] }), { state: "done", detail: "up to date" });
   assert.deepEqual(analyticsOutcome(true, { channels: [], inProgress: true }), { state: "done", detail: "already running" });
+  // BL-151 AC-AD-06: the other computer's rows made the collection unnecessary.
+  assert.deepEqual(analyticsOutcome(true, { channels: [{ collection: "current" }], importedFromPeers: 2 }), { state: "done", detail: "up to date — collected on the other computer" });
   assert.equal(analyticsOutcome(false, null).state, "failed");
   assert.deepEqual(researchOutcome(true, { skipped: true, reason: "the other computer's data is still arriving" }), { state: "skipped", detail: "the other computer's data is still arriving" });
   assert.equal(researchOutcome(true, { collected: 2 }).state, "done");

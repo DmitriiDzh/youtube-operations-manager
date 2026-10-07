@@ -33,6 +33,7 @@ Skipping a collection because "the other device did it" would leave this device 
   - `auto-collect-all` and `reach/sync-all` first import whatever peer files have arrived. The same rule as Research's sync-before-collect applies: an import still running means the collection waits for the next load.
   - The device that collects writes its file at once, so the other device sees it on its next sync.
   - Two devices opening at the same minute can still both collect. That is rare, and the result is identical rows.
+- **Unknown videos.** A video metrics row for a video this device has not synced yet is skipped. `video_metrics_daily` references `videos` on a fresh schema, and one unknown video must not fail the whole import. The device's own channel sync adds the video; its metrics for those days then come from that device's own collection.
 - **Retention.** A device prunes its own files older than 45 days, the same window as the quota ledger. Older history stays in each device's database.
 
 ## Acceptance criteria (written before the code)

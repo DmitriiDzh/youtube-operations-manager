@@ -52,7 +52,8 @@ test("BL-142: auto-collect-all needs a session", async () => {
 test("BL-142: the active channel is collected before the answer, which shows only it; the rest runs after it", async () => {
   const { calls, deferred, deps, isRunning } = setup({ activeCatchUp: true, backgroundCatchUp: true });
   const res = await createAutoCollectAllHandler(deps)();
-  assert.deepEqual(await res.json(), { channels: [{ channelId: "UC_A", collection: "collected" }], catchUpScheduled: true });
+  // BL-151 added `importedFromPeers` to the answer (how many of the other computer's files were imported first).
+  assert.deepEqual(await res.json(), { channels: [{ channelId: "UC_A", collection: "collected" }], catchUpScheduled: true, importedFromPeers: 0 });
   assert.deepEqual(calls, [["active", "uS", "UC_A"]], "nothing else before the response");
   assert.equal(isRunning(), true, "the run is held until the background part finishes");
   await deferred[0]();
@@ -79,4 +80,22 @@ test("BL-142: a domain error keeps its own status and code, and the run is relea
   assert.notEqual(res.status, 500);
   assert.equal((await res.json()).error, "unauthorized");
   assert.equal(isRunning(), false);
+});
+
+// BL-151 (ANALYTICS_DATA_SHARING_PLAN.md, AC-AD-01): the other computer's rows are imported BEFORE anything is judged stale,
+// and this computer's new rows are published once the background collection is done.
+test("BL-151: peers' rows are imported before collecting; this device's rows are published after the background part", async () => {
+  const { calls, deferred, deps } = setup();
+  const res = await createAutoCollectAllHandler({
+    ...deps,
+    importPeers: async () => {
+      calls.push(["importPeers"]);
+      return 2;
+    },
+    publishLocal: async () => void calls.push(["publishLocal"]),
+  })();
+  assert.equal(((await res.json()) as { importedFromPeers: number }).importedFromPeers, 2);
+  assert.deepEqual(calls, [["importPeers"], ["active", "uS", "UC_A"]]);
+  await deferred[0]();
+  assert.deepEqual(calls.slice(2), [["background", "uS", "UC_A"], ["publishLocal"]]);
 });
