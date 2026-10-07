@@ -48,7 +48,8 @@ Telegram. Each wave needed 8–14 hand-built job calls. The owner gave listening
 ## Consequences
 
 - **Schema v66** (additive, device-local):
-  - five `generation_plan*` tables;
+  - `generation_plans` (the definition as one JSON document, compare-and-swap on `revision`), `generation_plan_results` and
+    `generation_plan_events`;
   - columns on `media_jobs` and `media_sessions`.
 - **RISK-109 grows:** one factory call can create several jobs. The bounds stay the session caps and the factory limits.
 - **Not changed:** agent tools (phase 3), cross-device visibility (phase 2), and the YouTube write and read paths.

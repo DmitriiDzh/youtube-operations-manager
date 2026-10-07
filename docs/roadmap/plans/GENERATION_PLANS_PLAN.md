@@ -20,6 +20,9 @@ ADR: `docs/decisions/0029-generation-plans.md`. Review tools: `MEDIA_REVIEW_TOOL
 
 Everything here lives on one device and is device-local: snapshot device-local list, `notApiData`. Schema v66, additive.
 
+As built: the plan, stages, groups and items are stored as one JSON definition in `generation_plans`, changed by a
+compare-and-swap. Results and events have tables of their own.
+
 - **Plan** (`generation_plans`):
   - `planId` is chosen by the caller (the operator names plans, e.g. `R-0001-S1-music`) and follows the pattern
     `^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$`; it is unique on the device.
