@@ -77,7 +77,8 @@ export type MediaSettings = {
   factoryMaxUsdPerDay: number;
   factoryMaxUsdPerMonth: number;
   /** Owner, Telegram 2026-10-06 (msgs 1807/1810): the owner's OWN session requests (Production → Sessions) are stopped by
-   * themselves one minute after their last job finished (BL-135 releaseWhenDone). Never applied to agent/factory requests. */
+   * themselves one minute after their last job finished (BL-135 releaseWhenDone). Since DEV-MSG-0001 (owner 2026-10-07 msg 1939)
+   * it is the default of EVERY request that omits the flag -- agents' and the factory's too; an explicit flag wins. */
   ownerReleaseWhenDone: boolean;
 };
 
