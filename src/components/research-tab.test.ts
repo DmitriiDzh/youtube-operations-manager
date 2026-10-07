@@ -18,9 +18,9 @@ test("AC-R1-1: Research has five sub-tabs in this order: Inbox, Channels, Videos
 test("AC-R1-1/R1-4: the dashboard renders the ResearchTab shell; the stacked Overview panel is gone", async () => {
   // BL-149: Research is its own page and the sidebar lives in the (app) layout (the single dashboard page is gone; the
   // requirement this test checks is unchanged).
-  const research = await readFile(path.join(process.cwd(), "src", "app", "(app)", "research", "page.tsx"), "utf8");
+  const research = await readFile(path.join(process.cwd(), "src", "app", "(app)", "research", "layout.tsx"), "utf8");
   const layout = await readFile(path.join(process.cwd(), "src", "app", "(app)", "layout.tsx"), "utf8");
-  assert.match(research, /<ResearchTab /);
+  assert.match(research, /<ResearchTab\b/);
   assert.doesNotMatch(research + layout, /MarketOverviewPanel/);
   // AC-R1-2: the sidebar's Research item carries the pending count.
   assert.match(layout, /item\.value === "research" \? \{ \.\.\.item, badge: researchPending \}/);

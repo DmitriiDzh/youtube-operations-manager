@@ -119,8 +119,19 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
   );
 }
 
-export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: string | null }) {
-  const [tab, setTab] = useState<ProductionTab>("sessions");
+export function ProductionPanel({
+  activeChannelId = null,
+  tab: routeTab,
+  onTabChange,
+}: {
+  activeChannelId?: string | null;
+  /** BL-149: the sub-tab from the address (`/production/<tab>`), with navigation on a click; absent = local state. */
+  tab?: ProductionTab;
+  onTabChange?: (tab: ProductionTab) => void;
+}) {
+  const [ownTab, setOwnTab] = useState<ProductionTab>("sessions");
+  const tab = routeTab ?? ownTab;
+  const setTab = onTabChange ?? setOwnTab;
   const [limits, setLimits] = useState<MediaSessionLimits | null>(null);
   const [activeElsewhere, setActiveElsewhere] = useState(0);
   const { overview, loadError, gatewayTraffic, refresh } = useMediaOverview();

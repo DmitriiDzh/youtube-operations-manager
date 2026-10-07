@@ -51,9 +51,9 @@ Languages' status filter (In progress / Approved / …) is a list filter, not a 
   - The `page.tsx` files under it render nothing.
   - Clicking a sub-tab navigates (`router.push`) instead of setting state.
 - **Channel switch.** Content, Production, Analytics, Languages and Home still remount on a channel change (`key={channel.id}`), so each re-reads the active channel.
-- **Settings preload.** Settings is currently mounted, hidden, from the first load, so its cards are ready when opened (owner request). Being on its own page, Settings now mounts on first open. The trade-off is decided by the owner, msg TBD:
-  - (a) keep it as today: mount it hidden in the shared layout, which also keeps the Cloud Monitoring call on every load;
-  - (b) mount on first visit: a short loading moment on the first open of Settings only.
+- **Settings preload.** Until now Settings was mounted, hidden, from the first load, so its cards were ready when opened.
+  The owner chose (msg 2004, option b) to mount it on its first open instead. The first visit shows a short loading
+  moment, sub-tab switches inside Settings stay instant, and no Cloud Monitoring call is made on every app load.
 - **Components change minimally.**
   - `ProductionPanel`, `ResearchTab`, `AnalyticsTab` and `PlansPanel` get the active sub-tab (and the plan under review) as props, plus a callback to navigate, instead of owning them as state.
   - Their content is unchanged.

@@ -1,0 +1,30 @@
+"use client";
+
+import { notFound, useRouter, useSelectedLayoutSegment } from "next/navigation";
+import type { ReactNode } from "react";
+import { useAppChannel } from "@/components/app-channel";
+import { PRODUCTION_TABS, ProductionPanel } from "@/components/production-panel";
+import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
+
+// BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): Production at `/production/<sub-tab>`. The panel lives in this layout, which
+// persists while only the sub-tab changes, so its sub-tabs stay mounted and are only hidden, as before.
+export default function ProductionLayout({ children }: { children: ReactNode }) {
+  const { channel } = useAppChannel();
+  const router = useRouter();
+  const segment = useSelectedLayoutSegment();
+  const tab = PRODUCTION_TABS.find((t) => t.value === segment)?.value;
+  // `/production` itself redirects (page.tsx); any other unknown sub-path is not a page.
+  if (segment !== null && !tab) notFound();
+  return (
+    <>
+      {tab && (
+        <FeatureErrorBoundary label="Production">
+          <div key={channel?.id ?? "no-channel"}>
+            <ProductionPanel activeChannelId={channel?.id ?? null} tab={tab} onTabChange={(next) => router.push(`/production/${next}`)} />
+          </div>
+        </FeatureErrorBoundary>
+      )}
+      {children}
+    </>
+  );
+}
