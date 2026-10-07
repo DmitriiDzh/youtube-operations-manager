@@ -185,7 +185,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
     if (!spectrogram || !state.ready || !wave.current || !spectrogramContainer.current) return;
     let cancelled = false;
     let registered: { destroy(): void } | null = null;
-    const instance = wave.current as unknown as { registerPlugin<T>(plugin: T): T };
+    const instance = wave.current as unknown as { registerPlugin<T>(plugin: T): T; unregisterPlugin(plugin: unknown): void };
     void import("wavesurfer.js/plugins/spectrogram").then(({ default: SpectrogramPlugin }) => {
       if (cancelled || !spectrogramContainer.current) return;
       registered = instance.registerPlugin(
@@ -194,7 +194,8 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
     });
     return () => {
       cancelled = true;
-      registered?.destroy();
+      // unregisterPlugin removes it from the player's list too (destroy alone would leave it there).
+      if (registered) instance.unregisterPlugin(registered);
     };
   }, [spectrogram, state.ready]);
 

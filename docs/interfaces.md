@@ -894,7 +894,7 @@ A second agent role, separate from the channel agents. Technical contract only (
       - `plan_complete` means every item reached its target and nothing is waiting for a later stage.
 
     Reads:
-    - `factory_plan_get` `{ planId, since? }` → `{ plan, progress, events, more, cursor }`. Events are returned oldest first, at or after `since`. Times have one-second resolution, and a complete page's cursor looks back 60 s (some events are stamped just before they are written), so events repeat across calls; dedupe them. `more` means call again with `cursor`. More than 500 events in one second: the excess of that second is skipped;
+    - `factory_plan_get` `{ planId, since?, latest? }` → `{ plan, progress, events, more, cursor }`. Events are returned oldest first, at or after `since`. Times have one-second resolution, and a complete page's cursor looks back 60 s (some events are stamped just before they are written), so events repeat across calls; dedupe them. `more` means call again with `cursor`. More than 500 events in one second: the excess of that second is skipped;
     - `factory_plan_list` `{ status?, channelId? }` → `{ plans }`;
     - `factory_plan_todo` `{ planId }` → `{ short, waitingReview, rerun }`.
 

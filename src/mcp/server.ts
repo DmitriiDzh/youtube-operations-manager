@@ -230,6 +230,16 @@ function agentPlanView(view: { plan: GenerationPlan; progress: unknown }) {
   };
 }
 
+/**
+ * Error texts at ANY depth (re-review: a stage run's `stoppedAt.error.message` carries ComfyUI/RunPod text and can name local
+ * paths): every `error`, `message` and `stopReason` key is dropped for agents.
+ */
+function withoutErrorTexts(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutErrorTexts);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => k !== "error" && k !== "message" && k !== "stopReason").map(([k, v]) => [k, withoutErrorTexts(v)]));
+}
+
 /** The spend sessions without their stop reason (a failed start's reason carries RunPod error text). */
 function withoutStopReasons(progress: unknown): unknown {
   if (!progress || typeof progress !== "object") return progress;
@@ -1404,7 +1414,7 @@ export function createMcpToolHandlers(
         // Another channel's plan behaves like one that does not exist.
         if (view.plan.channelId !== parsedInput.data.channelId) return notFound();
         // Error texts (a job's error, a session's failure reason) can name local paths: left out for agents.
-        const events = view.events.map((e) => ({ ...e, details: Object.fromEntries(Object.entries(e.details).filter(([k]) => k !== "error" && k !== "stopReason")) }));
+        const events = view.events.map((e) => ({ ...e, details: withoutErrorTexts(e.details) as Record<string, unknown> }));
         return toolSuccessResult({ plan: agentPlanView(view), events, more: view.more, cursor: view.cursor });
       } catch (error) {
         return toolErrorResult(error);

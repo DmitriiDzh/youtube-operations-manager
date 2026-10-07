@@ -274,8 +274,13 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       player.current?.pause();
       audio.currentTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(t, audio.duration) : t;
       audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
-      void audio.play().catch(() => setMessage({ tone: "error", text: "The reference could not be played on this device" }));
       setOnB(true);
+      audio.play().catch((error: unknown) => {
+        // A quick B-then-A pauses before play() settled (AbortError): not a failure.
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setOnB(false);
+        setMessage({ tone: "error", text: "The reference could not be played on this device" });
+      });
     } else {
       const t = audio.currentTime;
       audio.pause();
@@ -300,7 +305,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       if (typeof action === "object") setDraft((d) => ({ ...d, rating: action.rating }));
       // While the reference (B) plays, play/seek act on it -- A and B never sound together.
       else if (action === "play") {
-        if (b) void (b.paused ? b.play() : Promise.resolve(b.pause()));
+        if (b) {
+          if (b.paused) b.play().catch(() => undefined);
+          else b.pause();
+        }
         else player.current?.togglePlay();
       } else if (action === "back") {
         if (b) b.currentTime = Math.max(0, b.currentTime - 5);

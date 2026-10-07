@@ -810,3 +810,13 @@ test("phase 3 review: references come in with an import, and more than 50 are re
   await s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: many });
   await assert.rejects(s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: many.map((r) => ({ ...r, id: `x${r.id}` })) }), refused("plan_invalid"));
 });
+
+test("re-review: exactly 50 references are accepted; getPlan latest returns the newest events", async () => {
+  const s = setup();
+  const fifty = Array.from({ length: 50 }, (_, i) => ({ id: `r${i}`, label: `R${i}`, file: `reference/r${i}.mp3` }));
+  await s.services.createPlan({ ...basePlan(), references: fifty });
+  for (let i = 0; i < 3; i++) await s.services.requestRerun({ planId: "R-0001-S1-music", itemKey: "C1/F1", note: `n${i}` });
+  const latest = await s.services.getPlan({ planId: "R-0001-S1-music", latest: true });
+  assert.equal(latest.plan.references?.length, 50);
+  assert.equal(latest.events.at(-1)?.details.note, "n2", "the newest event is last");
+});

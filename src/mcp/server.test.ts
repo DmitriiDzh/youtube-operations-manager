@@ -6249,3 +6249,32 @@ test("AC-GP3-03: agent_list/get_generation_plan(s) show only this channel's plan
   assert.equal(MCP_TOOL_CLASSIFICATION.agent_list_generation_plans, "bound");
   assert.equal(MCP_TOOL_CLASSIFICATION.agent_get_generation_plan, "bound");
 });
+
+test("re-review: the agent's plan view drops error texts at any depth and passes since/latest through", async () => {
+  const seen: unknown[] = [];
+  const view = {
+    plan: { planId: "mine", title: "T", channelId: "UC_1", owner: "factory", status: "active", budget: { usd: null, gpuMinutes: null }, note: null, revision: 1, createdAt: "", updatedAt: "", closedAt: null, stages: [], groups: [], items: [] },
+    progress: { notices: [], spend: { usd: 0.1, gpuMinutes: 1, sessions: [{ sessionId: "s", status: "failed", usd: 0.1, final: true, stopReason: "start failed: RunPod said /Volumes/x" }] } },
+    events: [
+      { at: "2026-10-07T09:05:00.000Z", kind: "stage_run", actor: "factory", details: { created: 1, stoppedAt: { itemKey: "C1/F1", seed: 2, error: { code: "media_input_unavailable", message: "/Volumes/SSD/ws/missing.png" } } } },
+      { at: "2026-10-07T09:06:00.000Z", kind: "session_stopped", actor: "app", details: { sessionId: "s", stopReason: "start failed: boom" } },
+    ],
+    more: true,
+    cursor: "2026-10-07T09:06:00.000Z",
+  };
+  const plans = { listPlans: async () => [view], getPlan: async (input: unknown) => (seen.push(input), view) };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, plans as never
+  );
+  const out = parseToolJson(await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine" }));
+  const text = JSON.stringify(out);
+  assert.ok(!text.includes("/Volumes") && !text.includes("boom") && !text.includes("RunPod said"), text);
+  assert.deepEqual(out.events[0].details.stoppedAt, { itemKey: "C1/F1", seed: 2 });
+  assert.equal(out.more, true);
+  assert.equal(out.cursor, "2026-10-07T09:06:00.000Z");
+  await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine", since: "2026-10-07T09:00:00.000Z" });
+  assert.deepEqual(seen, [{ planId: "mine", latest: true }, { planId: "mine", since: "2026-10-07T09:00:00.000Z" }]);
+  const listed = JSON.stringify(parseToolJson(await handlers.agentListGenerationPlans({ channelId: "UC_1" })));
+  assert.ok(!listed.includes("RunPod said"), "spend sessions carry no stop reason");
+});
