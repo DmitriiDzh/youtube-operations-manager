@@ -25,8 +25,8 @@ export function createMediaSessionsSyncRunnerForProduction(): SyncRunner {
       listChannelIds: async () => [GLOBAL_DOCUMENT_KEY],
       family: {
         exportBytes: () => share.exportBytes(),
-        async mergeIncoming(_key, incomingBytes) {
-          await share.mergeIncoming(incomingBytes);
+        async mergeIncoming(_key, incomingBytes, peerDeviceId) {
+          await share.mergeIncoming(incomingBytes, peerDeviceId);
           return { newConflictsCount: 0 };
         },
         async discardLocalAndAdoptPeer() {

@@ -53,6 +53,13 @@ Plan: `docs/roadmap/plans/GENERATION_PLANS_PHASE_2_PLAN.md`; scope decided by th
     the same one twice changes nothing.
 - **The audio plays from the receiving device's own copy of the channel workspace,** through the same checks.
 - **Deferred:** jobs of one plan run on several devices. Only one Factory Operator runs at a time (msg 1952).
+- **Trust:** a device in the owner's Syncthing folder is trusted like a local plan.
+  - A device's report must name the device its file is named after.
+  - A peer report chooses the channel of its plans, so a peer can make this device play an allowlisted file from that
+    channel's `Sent to YTM` or `From YTM/media/*`. That plays only to a browser on this computer, and the folders are the same
+    ones a local plan may use.
+  - Peer verdicts are applied once per `verdictId`. A verdict dated more than 5 minutes ahead is not taken.
+  - Outgoing verdicts are not part of a device snapshot: a handoff drops the ones not yet applied.
 
 ## Alternatives rejected
 

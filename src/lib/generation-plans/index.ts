@@ -58,7 +58,8 @@ export async function publishGenerationPlansShare(): Promise<void> {
   }
   const core = createGenerationPlansCore();
   // First take in the verdicts other devices gave on this device's plans, so this report already shows them applied.
-  await core.applyPeerVerdicts();
+  // Its own failure never stops this device's report from going out (independent review).
+  await core.applyPeerVerdicts().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' verdicts: ${error instanceof Error ? error.message : String(error)}`));
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
     version: 1,

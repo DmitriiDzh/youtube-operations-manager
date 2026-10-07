@@ -73,6 +73,8 @@ export const sharedPlanSchema = z
     groups: z.array(z.object({ groupId: z.string().max(40), title: z.string().max(200), dependsOn: z.string().max(40).nullable(), note: z.string().max(2000).nullable() }).strict()).max(200),
     /** Items without their job params (the progress is what other devices show). */
     items: z.array(z.object({ itemKey: z.string().max(120), groupId: z.string().max(40).nullable(), templateLabel: z.string().max(200).nullable(), targetCount: z.number(), mode: z.enum(["fixed", "until_accepted"]) }).strict()).max(1000),
+    /** The job params of the items that have review entries, once per item (the review screen's generation details). */
+    itemParams: z.record(z.string().max(120), z.record(z.string().max(64), z.union([z.string().max(20_000), z.number(), z.boolean()]))),
     /** The plan's derived progress as the owning device computed it (shown, never recomputed elsewhere). */
     progress: looseRecord,
     events: z.array(z.object({ at: isoSchema, kind: z.string().max(40), actor: z.string().max(16), details: looseRecord }).strict()).max(50),
@@ -91,7 +93,9 @@ export const sharedVerdictSchema = z
     result: z.enum(["accepted", "rejected"]),
     rating: z.number().int().min(1).max(10).nullable(),
     reasons: z.array(z.string().max(60)).max(20),
-    markers: z.array(z.object({ start: z.number().min(0), end: z.number().min(0).nullable(), note: z.string().max(200).nullable() }).strict()).max(50),
+    markers: z
+      .array(z.object({ start: z.number().min(0).max(86_400), end: z.number().min(0).max(86_400).nullable(), note: z.string().max(200).nullable() }).strict().refine((m) => m.end === null || m.end >= m.start, "end >= start"))
+      .max(50),
     note: z.string().max(2000).nullable(),
     at: z.string().datetime({ offset: true }),
   })

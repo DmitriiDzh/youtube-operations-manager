@@ -35,6 +35,16 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
   const decoder = new TextDecoder();
   const now = () => (deps.clock ?? { now: () => new Date() }).now();
 
+  // Peer reports are re-read often (every Plans poll, every audio request): parse each text once.
+  const parsedCache = new Map<string, { text: string; report: R | null }>();
+  function parseCached(key: string, text: string): R | null {
+    const hit = parsedCache.get(key);
+    if (hit && hit.text === text) return hit.report;
+    const report = parseReport(text);
+    parsedCache.set(key, { text, report });
+    return report;
+  }
+
   function parseReport(text: string): R | null {
     try {
       const parsed = deps.schema.safeParse(JSON.parse(text));
@@ -79,10 +89,15 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
      * is older than the one already kept. An invalid report is thrown (the runner lists the peer as skipped with the reason);
      * this device's own report is ignored.
      */
-    async mergeIncoming(bytes: Uint8Array): Promise<{ accepted: boolean }> {
+    async mergeIncoming(bytes: Uint8Array, fileDeviceId?: string): Promise<{ accepted: boolean }> {
       const text = decoder.decode(bytes);
       const report = parseReport(text);
       if (!report) throw new DomainError({ code: "validation_failed", message: describeInvalid(text) });
+      // A device may speak only for itself (independent review, BL-143 phase 2): the report must name the device its file is
+      // named after, so one synced device cannot replace another's report or send verdicts in its name.
+      if (fileDeviceId !== undefined && report.deviceId !== fileDeviceId) {
+        throw new DomainError({ code: "validation_failed", message: `${deps.label} in ${fileDeviceId}'s file claims to be from ${report.deviceId}` });
+      }
       if (report.deviceId === (await deps.ownDeviceId())) return { accepted: false };
       if (Date.parse(report.updatedAt) > now().getTime() + MAX_FUTURE_SKEW_MS) {
         throw new DomainError({ code: "validation_failed", message: `${deps.label} dated ${report.updatedAt}, in the future: that device's clock is ahead` });
@@ -98,8 +113,8 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
     async listPeerReports(): Promise<R[]> {
       const own = await deps.ownDeviceId();
       const cutoff = now().getTime() - PEER_FORGET_AFTER_MS;
-      return Object.values(await deps.store.readPeers())
-        .map(parseReport)
+      return Object.entries(await deps.store.readPeers())
+        .map(([key, text]) => parseCached(key, text))
         .filter((r): r is R => r !== null && r.deviceId !== own && Date.parse(r.updatedAt) >= cutoff)
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
     },

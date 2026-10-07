@@ -683,7 +683,9 @@ test("AC-GP2-03/04: a verdict given on Windows for a Mac plan travels in Windows
   assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 1, skipped: 0 });
   const row = [...d.macBase.results.values()].find((r) => r.stageId === "owner_review")!;
   assert.deepEqual([row.reportedBy, row.result, row.rating, row.reasons, row.note], ["owner", "rejected", 4, ["thin / sparse"], "too thin (from Windows PC)"]);
-  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 0, skipped: 1 }, "the same verdict again changes nothing");
+  // Idempotent per verdictId (independent review): the same verdict again is passed over, nothing changes.
+  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 0, skipped: 0 }, "the same verdict again changes nothing");
+  assert.equal(d.macBase.events.filter((e) => e.kind === "peer_verdict").length, 1);
 });
 
 test("AC-GP2-04: the Mac skips a peer verdict older than its own stored verdict, and ones for unknown attempts or closed plans", async () => {
@@ -734,4 +736,36 @@ test("AC-GP2-05 (service): another device's attempt plays its latest reported au
   assert.deepEqual(await d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), { channelId: CHANNEL, kind: "sent", relativePath: "R-0001/C1/final.mp3" });
   await assert.rejects(d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j2" }), refused("plan_mismatch"));
   await assert.rejects(d.win.resolvePeerAudition({ deviceId: "linux", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), refused("plan_not_found"));
+});
+
+test("phase 2 review: a 2000-character peer note still gives a publishable report; verdicts for another device, from the future, or a fake sender are not applied", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", note: "n".repeat(2000) });
+  await d.publish("win", d.win);
+  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 1, skipped: 0 });
+  const stored = [...d.macBase.results.values()].find((r) => r.stageId === "owner_review")!;
+  assert.ok(stored.note!.length <= 2000 && stored.note!.endsWith("(from Windows PC)"));
+  const { generationPlansReportSchema } = await import("@/lib/sync-gateway");
+  await d.publish("mac", d.mac);
+  assert.equal(generationPlansReportSchema.safeParse(d.reports.mac).success, true, "the owning device's report stays valid");
+  // Addressed to another device, or dated in the future: not applied.
+  d.reports.win.verdicts.push({ ...d.reports.win.verdicts[0], verdictId: "for-linux", ownerDeviceId: "linux", at: new Date(clockMs + 1000).toISOString() });
+  d.reports.win.verdicts.push({ ...d.reports.win.verdicts[0], verdictId: "future", result: "accepted", at: new Date(clockMs + 3_600_000).toISOString() });
+  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 0, skipped: 1 });
+  assert.equal([...d.macBase.results.values()].find((r) => r.stageId === "owner_review")?.result, "rejected");
+});
+
+test("phase 2 review: a later verdict in the same second as the stored one is still applied (ids differ)", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  const first = await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" });
+  await d.publish("win", d.win);
+  d.reports.win.verdicts.push({ ...first, verdictId: "second-same-second", result: "accepted", at: new Date(Date.parse(first.at) + 300).toISOString() });
+  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 2, skipped: 0 });
+  assert.equal([...d.macBase.results.values()].find((r) => r.stageId === "owner_review")?.result, "accepted", "applied oldest first, so the later one stands");
 });

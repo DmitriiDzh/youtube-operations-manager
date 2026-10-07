@@ -86,7 +86,7 @@ const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [
 export type PeerReviewSource = { deviceId: string; hostname: string | null };
 
 type PeerQueueResponse = {
-  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[] }> }>;
+  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]> }> }>;
   outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
 };
 
@@ -98,10 +98,12 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
   const plan = data.devices.find((d) => d.deviceId === source.deviceId)?.plans.find((p) => p.planId === planId);
   if (!plan) return [];
   const device = source.hostname ?? source.deviceId;
-  return plan.review.map((entry) => {
-    if (entry.verdict) return entry;
+  return plan.review.map((raw) => {
+    // The params travel once per item (the report's itemParams), not per entry.
+    const entry = { ...raw, params: plan.itemParams?.[raw.itemKey] ?? raw.params };
     const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.itemKey === entry.itemKey && v.attemptRef === entry.attemptRef).at(-1);
-    if (!sent) return entry;
+    // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
+    if (!sent || (entry.verdict && Date.parse(entry.verdict.at) >= Date.parse(sent.at))) return entry;
     return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `sent, waiting for ${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
   });
 }

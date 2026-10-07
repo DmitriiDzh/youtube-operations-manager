@@ -134,6 +134,10 @@ const SHARE_CLOSED_FOR_MS = 30 * 24 * 60 * 60_000;
 const SHARE_MAX_PLANS = 50;
 const SHARE_MAX_EVENTS = 50;
 const SHARE_MAX_REVIEW = 500;
+/** The longest note a result row (and so a report) carries. */
+const PLAN_NOTE_MAX = 2000;
+/** A report larger than this drops its oldest plans (closed ones first) until it fits (independent review: bounded). */
+export const SHARE_MAX_BYTES = 4_000_000;
 /**
  * Re-review 1: some events are stamped before their row is written (a job's `finishedAt` is taken before its manifest is
  * written to the workspace drive). A cursor that is "now" could pass such an event, so a complete page's cursor looks back
@@ -800,44 +804,69 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     async applyPeerVerdicts(): Promise<{ applied: number; skipped: number }> {
       if (!deps.peers) return { applied: 0, skipped: 0 };
       const own = await deps.peers.ownDeviceId();
+      const at = now().getTime();
+      // Grouped by plan (independent review): each plan is loaded once per tick, and a verdict already applied (its id is in
+      // the plan's peer_verdict events) is passed over without touching anything.
+      const byPlan = new Map<string, Array<{ verdict: SharedVerdict; from: string }>>();
+      for (const report of await deps.peers.listPeerReports()) {
+        for (const verdict of report.verdicts) {
+          if (verdict.ownerDeviceId !== own) continue;
+          const list = byPlan.get(verdict.planId) ?? [];
+          list.push({ verdict, from: report.hostname ?? report.deviceId });
+          byPlan.set(verdict.planId, list);
+        }
+      }
       let applied = 0;
       let skipped = 0;
-      for (const report of await deps.peers.listPeerReports()) {
-        for (const verdict of report.verdicts.filter((v) => v.ownerDeviceId === own)) {
-          const done = await serializedPerPlan(verdict.planId, async () => {
-            const row = await deps.store.getPlan(verdict.planId);
-            const review = row?.definition.stages.find((s) => s.kind === "owner_review");
-            if (!row || row.status !== "active" || !review) return false;
-            const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-            const known = inAppAttempts(row.definition, jobs, results).some((a) => a.itemKey === verdict.itemKey && a.attemptRef === verdict.attemptRef) || results.some((r) => r.itemKey === verdict.itemKey && r.attemptRef === verdict.attemptRef);
-            if (!known) return false;
-            const current = results.find((r) => r.stageId === review.stageId && r.itemKey === verdict.itemKey && r.attemptRef === verdict.attemptRef && r.reportedBy === "owner");
-            // Stored times are whole seconds: a verdict in the same second as the stored one is the same or an older one.
-            if (current && Math.floor(Date.parse(current.at) / 1000) >= Math.floor(Date.parse(verdict.at) / 1000)) return false;
-            const from = `(from ${report.hostname ?? report.deviceId})`;
-            await deps.store.upsertResults(row.id, [
-              {
-                stageId: review.stageId,
-                itemKey: verdict.itemKey,
-                attemptRef: verdict.attemptRef,
-                result: verdict.result,
-                reportedBy: "owner",
-                note: verdict.note ? `${verdict.note} ${from}` : from,
-                rating: verdict.rating,
-                reasons: verdict.reasons,
-                markers: verdict.markers,
-                auditionFile: null,
-                checks: [],
-                metrics: {},
-                at: verdict.at,
-              },
-            ]);
-            await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: report.hostname ?? report.deviceId, itemKey: verdict.itemKey, result: verdict.result });
-            return true;
-          });
-          if (done) applied++;
-          else skipped++;
-        }
+      for (const [planId, incoming] of byPlan) {
+        const done = await serializedPerPlan(planId, async () => {
+          const row = await deps.store.getPlan(planId);
+          const review = row?.definition.stages.find((s) => s.kind === "owner_review");
+          if (!row || row.status !== "active" || !review) return { applied: 0, skipped: incoming.length };
+          const [jobs, results, events] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listEvents(row.id)]);
+          const appliedIds = new Set(events.filter((e) => e.kind === "peer_verdict" && typeof e.details.verdictId === "string").map((e) => e.details.verdictId as string));
+          const attempts = inAppAttempts(row.definition, jobs, results);
+          const current = new Map(results.filter((r) => r.stageId === review.stageId && r.reportedBy === "owner").map((r) => [`${r.itemKey}\u0000${r.attemptRef}`, r]));
+          let a = 0;
+          let k = 0;
+          for (const { verdict, from } of [...incoming].sort((x, y) => Date.parse(x.verdict.at) - Date.parse(y.verdict.at))) {
+            if (appliedIds.has(verdict.verdictId)) continue;
+            // A verdict dated in the future (a fast clock) is not taken: it would block every newer one on that attempt.
+            const known = attempts.some((x) => x.itemKey === verdict.itemKey && x.attemptRef === verdict.attemptRef) || results.some((r) => r.itemKey === verdict.itemKey && r.attemptRef === verdict.attemptRef);
+            const key = `${verdict.itemKey}\u0000${verdict.attemptRef}`;
+            const stored = current.get(key);
+            // Newest wins; stored times are whole seconds, so a verdict of the same second as the stored one is taken (ids differ).
+            const older = stored !== undefined && Math.floor(Date.parse(verdict.at) / 1000) < Math.floor(Date.parse(stored.at) / 1000);
+            if (!known || older || Date.parse(verdict.at) > at + 5 * 60_000) {
+              k++;
+              continue;
+            }
+            const label = ` (from ${from})`.slice(0, 200);
+            const note = verdict.note ? `${verdict.note.slice(0, PLAN_NOTE_MAX - label.length)}${label}` : label.trim();
+            const row2: PlanResultRow = {
+              stageId: review.stageId,
+              itemKey: verdict.itemKey,
+              attemptRef: verdict.attemptRef,
+              result: verdict.result,
+              reportedBy: "owner",
+              note,
+              rating: verdict.rating,
+              reasons: verdict.reasons,
+              markers: verdict.markers,
+              auditionFile: null,
+              checks: [],
+              metrics: {},
+              at: verdict.at,
+            };
+            await deps.store.upsertResults(row.id, [row2]);
+            current.set(key, row2);
+            await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: from, itemKey: verdict.itemKey, result: verdict.result });
+            a++;
+          }
+          return { applied: a, skipped: k };
+        });
+        applied += done.applied;
+        skipped += done.skipped;
       }
       return { applied, skipped };
     },
@@ -858,7 +887,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         const plan = toPublicPlan(row);
         const [jobs, results, sessions, recorded] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id)]);
         const progress = planProgress(plan, jobs, results, sessions, now());
-        const events = planEvents(jobs, sessions, results, recorded, null, 100_000).events.slice(-SHARE_MAX_EVENTS);
+        // A job's error text can name local paths: other devices get the event without it (independent review, AC-GP2-01).
+        const events = planEvents(jobs, sessions, results, recorded, null, 100_000)
+          .events.slice(-SHARE_MAX_EVENTS)
+          .map((e) => (e.kind.startsWith("job_") && "error" in e.details ? { ...e, details: Object.fromEntries(Object.entries(e.details).filter(([k]) => k !== "error")) } : e));
         const queue = (await more.reviewQueueOf(row, jobs, results)).slice(0, SHARE_MAX_REVIEW);
         const review: SharedPlanView["review"] = [];
         for (const entry of queue) {
@@ -868,8 +900,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
             const name = output?.localPath ? output.localPath.split(/[\\/]/).pop() : undefined;
             if (name && /^[^/\\]{1,200}$/.test(name) && name !== "." && name !== ".." && /^[A-Za-z0-9_-]{1,64}$/.test(entry.jobId)) jobOutput = `media/${entry.jobId}/${name}`;
           }
-          review.push({ ...entry, jobOutput });
+          review.push({ ...entry, params: {}, jobOutput });
         }
+        const itemParams: Record<string, PlanItem["params"]> = {};
+        for (const entry of queue) itemParams[entry.itemKey] ??= entry.params;
         out.push({
           planId: plan.planId,
           title: plan.title,
@@ -885,9 +919,16 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           groups: plan.groups,
           items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateLabel: i.templateLabel ?? i.templateId, targetCount: i.targetCount, mode: i.mode })),
           progress: progress as unknown as Record<string, unknown>,
+          itemParams,
           events,
           review,
         });
+      }
+      // Bounded (independent review): the oldest plans -- closed ones first -- are left out until the report fits.
+      const size = (plans: SharedPlanView[]) => new TextEncoder().encode(JSON.stringify(plans)).length;
+      while (out.length > 1 && size(out) > SHARE_MAX_BYTES) {
+        const closed = out.map((p, i) => ({ p, i })).filter(({ p }) => p.status !== "active").at(-1);
+        out.splice(closed ? closed.i : out.length - 1, 1);
       }
       return out;
     },

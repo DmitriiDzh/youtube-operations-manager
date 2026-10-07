@@ -22,8 +22,9 @@ type PeerDevicePlans = {
   hostname: string | null;
   updatedAt: string;
   stale: boolean;
-  plans: Array<{ planId: string; title: string; status: string; channelId: string; progress: { stages?: Array<{ stageId: string; title: string; kind: PlanStageKind; counts: PlanStageCounts }>; spend?: { usd: number }; items?: Array<{ waitingReview: number }> }; review: Array<{ verdict: unknown }>; groups: Array<{ groupId: string; title: string; note: string | null }> }>;
+  plans: Array<{ planId: string; title: string; status: string; channelId: string; progress: { stages?: Array<{ stageId: string; title: string; kind: PlanStageKind; counts: PlanStageCounts }>; spend?: { usd: number }; items?: Array<{ waitingReview: number }> }; review: Array<{ itemKey: string; attemptRef: string; verdict: unknown }>; groups: Array<{ groupId: string; title: string; note: string | null }> }>;
 };
+type OutgoingVerdict = { ownerDeviceId: string; planId: string; itemKey: string; attemptRef: string };
 
 /** "2 min ago" / "1 h ago" for a report's age. Exported for its test. */
 export function describeAge(updatedAt: string, now: number): string {
@@ -98,6 +99,8 @@ export function describeEvent(event: PlanEvent): string {
       return `${String(d.stageId)}${item}: ${String(d.result)} (Factory Operator)`;
     case "rerun_requested":
       return `re-run asked${item}`;
+    case "peer_verdict":
+      return `verdict from ${String(d.fromDevice)}${item}: ${String(d.result)}`;
     case "group_note":
       return `note on ${String(d.groupId)}`;
     case "stage_run":
@@ -128,6 +131,7 @@ export function PlansPanel({ active }: { active: boolean }) {
   const selectedRef = useRef<string | null>(null);
   const [reviewing, setReviewing] = useState<{ planId: string; source?: PeerReviewSource } | null>(null);
   const [peers, setPeers] = useState<PeerDevicePlans[]>([]);
+  const [outgoing, setOutgoing] = useState<OutgoingVerdict[]>([]);
 
   const load = useCallback(() => {
     void requestJson<{ plans: PlanView[] }>("/api/generation-plans").then(
@@ -138,8 +142,11 @@ export function PlansPanel({ active }: { active: boolean }) {
       (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load the plans")
     );
     // BL-143 phase 2: the other devices' plans; a failure here never hides this device's own plans.
-    void requestJson<{ devices: PeerDevicePlans[] }>("/api/generation-plans/peers").then(
-      (data) => setPeers(data.devices),
+    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdict[] }>("/api/generation-plans/peers").then(
+      (data) => {
+        setPeers(data.devices);
+        setOutgoing(data.outgoing);
+      },
       () => setPeers([])
     );
     const planId = selectedRef.current;
@@ -226,7 +233,7 @@ export function PlansPanel({ active }: { active: boolean }) {
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
       {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={(planId) => setReviewing({ planId })} />}
-      {peers.some((d) => d.plans.length > 0) && <PeerPlansCard devices={peers} onReview={(planId, source) => setReviewing({ planId, source })} />}
+      {peers.some((d) => d.plans.length > 0) && <PeerPlansCard devices={peers} outgoing={outgoing} onReview={(planId, source) => setReviewing({ planId, source })} />}
       {selected && !detail && <p className="text-xs text-zinc-500">Loading the plan…</p>}
     </div>
   );
@@ -484,8 +491,10 @@ function GroupRow({
 }
 
 /** BL-143 phase 2 (AC-GP2-06): the other devices' plans, read-only -- progress as that device reported it, and listening. */
-function PeerPlansCard({ devices, onReview }: { devices: PeerDevicePlans[]; onReview: (planId: string, source: PeerReviewSource) => void }) {
-  const [now] = useState(() => Date.now());
+function PeerPlansCard({ devices, outgoing, onReview }: { devices: PeerDevicePlans[]; outgoing: OutgoingVerdict[]; onReview: (planId: string, source: PeerReviewSource) => void }) {
+  // Re-rendered by the panel's poll every 10 s, so the age is measured from now each time.
+  // eslint-disable-next-line react-hooks/purity -- the age is meant to move with the clock
+  const now = Date.now();
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
@@ -504,7 +513,9 @@ function PeerPlansCard({ devices, onReview }: { devices: PeerDevicePlans[]; onRe
               {d.plans.map((p) => {
                 const generate = p.progress.stages?.find((s) => s.kind === "in_app");
                 const bar = generate ? describeStage(generate.kind, generate.counts) : null;
-                const waiting = p.review.filter((e) => e.verdict === null).length;
+                // Verdicts already sent from here count as given (they wait for that device to apply them).
+                const sent = new Set(outgoing.filter((v) => v.ownerDeviceId === d.deviceId && v.planId === p.planId).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
+                const waiting = p.review.filter((e) => e.verdict === null && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`)).length;
                 return (
                   <li key={p.planId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
                     <div className="flex flex-wrap items-baseline gap-2 text-sm">
