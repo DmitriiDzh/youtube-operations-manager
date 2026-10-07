@@ -97,3 +97,37 @@ test("review A1: events are paged oldest first from the since second (inclusive)
   const second = planEvents([], [], [], recorded, new Date(first.cursor as string), 2);
   assert.deepEqual(second.events.map((e) => e.details.n), [2, 3], "event 2 repeats; nothing is lost");
 });
+
+// AC-GP3-01 (GENERATION_PLANS_PHASE_3_PLAN.md): notices follow the counts.
+test("AC-GP3-01: a stage is complete when its count reaches the target; the plan is complete when nothing is missing or open", async () => {
+  const { planProgress } = await import("./progress");
+  const small: GenerationPlan = { ...plan, budget: { usd: 1, gpuMinutes: null }, items: [{ ...plan.items[0], targetCount: 2 }] };
+  const now = t("2026-10-07T10:00:00Z");
+  const running: PlanJobRow = { ...job("a", "s", 90), status: "generating", finishedAt: null };
+  const kinds = (jobs: PlanJobRow[], sessions: PlanSessionRow[] = []) => planProgress(small, jobs, [], sessions, now).notices.map((n) => n.kind);
+  assert.deepEqual(kinds([running]), []);
+  assert.deepEqual(kinds([job("a", "s", 90), running]), []);
+  assert.deepEqual(kinds([job("a", "s", 90), job("b", "s", 90)]), ["stage_complete", "plan_complete"]);
+  assert.deepEqual(kinds([job("a", "s", 90), job("b", "s", 90)], [session({ id: "s", usdCharged: 0.85 })]), ["stage_complete", "budget_80", "plan_complete"]);
+});
+
+test("phase 3 review: plan_complete waits for the later stages; an until_accepted item that used up its attempts is 'exhausted', not complete", async () => {
+  const { planProgress } = await import("./progress");
+  const staged: GenerationPlan = {
+    ...plan,
+    budget: { usd: null, gpuMinutes: null },
+    stages: [{ stageId: "generate", title: "G", kind: "in_app" }, { stageId: "validate", title: "V", kind: "external" }, { stageId: "owner_review", title: "R", kind: "owner_review" }],
+    items: [{ ...plan.items[0], targetCount: 2 }],
+  };
+  const now = t("2026-10-07T10:00:00Z");
+  const kinds = (p: GenerationPlan, jobs: PlanJobRow[], results: Parameters<typeof planProgress>[2] = []) => planProgress(p, jobs, results, [], now).notices.map((n) => n.kind);
+  const row = (attemptRef: string, stageId: string, result: "accepted" | "rejected") => ({ stageId, itemKey: "A/1", attemptRef, result, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: "2026-10-07T09:10:00.000Z" });
+  const jobs = [job("a", "s", 90), job("b", "s", 90)];
+  assert.ok(!kinds(staged, jobs).includes("plan_complete"), "generated but not validated yet");
+  assert.ok(!kinds(staged, jobs, [row("job:a", "validate", "accepted"), row("job:b", "validate", "accepted")]).includes("plan_complete"), "waiting for the owner");
+  assert.ok(kinds(staged, jobs, [row("job:a", "validate", "accepted"), row("job:b", "validate", "accepted"), row("job:a", "owner_review", "accepted"), row("job:b", "owner_review", "rejected")]).includes("plan_complete"));
+  const until: GenerationPlan = { ...staged, items: [{ ...staged.items[0], mode: "until_accepted", targetCount: 2, maxAttempts: 2 }] };
+  const both = [row("job:a", "validate", "rejected"), row("job:b", "validate", "rejected")];
+  const k = kinds(until, jobs, both);
+  assert.ok(k.includes("attempts_exhausted") && !k.includes("plan_complete"), k.join(","));
+});

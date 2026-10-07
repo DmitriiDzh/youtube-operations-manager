@@ -975,6 +975,8 @@ export const generationPlanResults = sqliteTable(
     auditionFile: text("audition_file"),
     checksJson: text("checks_json"),
     metricsJson: text("metrics_json"),
+    /** Schema v68 (BL-143 phase 3): the plan references nearest to this attempt (A/B listening). */
+    referenceIdsJson: text("reference_ids_json"),
     at: integer("at", { mode: "timestamp" }).notNull(),
   },
   (table) => [primaryKey({ columns: [table.planId, table.stageId, table.itemKey, table.attemptRef] }), index("generation_plan_results_at_idx").on(table.planId, table.at)]
@@ -3622,6 +3624,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         at TEXT NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_verdicts_at_idx ON generation_plan_peer_verdicts (at)");
+    },
+  },
+  {
+    version: 68,
+    description:
+      "generation_plan_results.reference_ids_json -- BL-143 phase 3 (FO-MSG-0009): the plan references (validator's nearest library tracks) of an attempt, for A/B listening. Additive nullable column",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE generation_plan_results ADD COLUMN reference_ids_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -8411,6 +8425,7 @@ export async function upsertGenerationPlanResults(rows: Array<typeof generationP
         auditionFile: row.auditionFile ?? null,
         checksJson: row.checksJson ?? null,
         metricsJson: row.metricsJson ?? null,
+        referenceIdsJson: row.referenceIdsJson ?? null,
         at: row.at,
       };
       await tx

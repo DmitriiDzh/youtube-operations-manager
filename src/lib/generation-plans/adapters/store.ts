@@ -61,6 +61,7 @@ function resultFromDb(row: StoredGenerationPlanResult): PlanResultRow {
     auditionFile: row.auditionFile ?? null,
     checks: parseJson(row.checksJson, []),
     metrics: parseJson(row.metricsJson, {}),
+    referenceIds: parseJson<string[]>(row.referenceIdsJson, []),
     at: row.at.toISOString(),
   };
 }
@@ -111,6 +112,7 @@ export function createPlanStore(): PlanStore {
           auditionFile: r.auditionFile,
           checksJson: r.checks.length > 0 ? JSON.stringify(r.checks) : null,
           metricsJson: Object.keys(r.metrics).length > 0 ? JSON.stringify(r.metrics) : null,
+          referenceIdsJson: r.referenceIds && r.referenceIds.length > 0 ? JSON.stringify(r.referenceIds) : null,
           at: new Date(r.at),
         }))
       ),

@@ -769,3 +769,54 @@ test("phase 2 review: a later verdict in the same second as the stored one is st
   assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 2, skipped: 0 });
   assert.equal([...d.macBase.results.values()].find((r) => r.stageId === "owner_review")?.result, "accepted", "applied oldest first, so the later one stands");
 });
+
+test("AC-GP3-02: the waiting count is this device's active plans plus other devices' active plans, minus verdicts already sent", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  assert.deepEqual(await d.mac.summary(), { waitingReview: 1, local: 1, otherDevices: 0 });
+  await d.publish("mac", d.mac);
+  assert.deepEqual(await d.win.summary(), { waitingReview: 1, local: 0, otherDevices: 1 });
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" });
+  assert.deepEqual(await d.win.summary(), { waitingReview: 0, local: 0, otherDevices: 0 }, "sent from here: no longer waiting");
+});
+
+// -- phase 3, A/B references (FO-MSG-0009, GENERATION_PLANS_PHASE_3_PLAN.md AC-GP3-07) ----------------------------------
+
+test("AC-GP3-07: plan references are kept as given; a report may name only existing ones; a reference resolves to its Sent to YTM file", async () => {
+  const s = setup();
+  const ref = { id: "koto-01", label: "Koto-led, slow", file: "reference/koto-01.mp3", lufs: -13.2 };
+  await s.services.createPlan({ ...basePlan(), references: [ref] });
+  const got = await s.services.getPlan({ planId: "R-0001-S1-music" });
+  assert.deepEqual(got.plan.references, [{ ...ref, lra: null, truePeak: null }]);
+  await assert.rejects(s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:a", result: "accepted", referenceIds: ["piano-02"] }] }), refused("plan_mismatch"));
+  await s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: [{ id: "piano-02", label: "Felt piano", file: "reference/piano-02.mp3" }] });
+  await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:a", result: "accepted", referenceIds: ["piano-02"] }] });
+  assert.deepEqual([...s.results.values()][0].referenceIds, ["piano-02"]);
+  assert.deepEqual(await s.services.resolveReference({ planId: "R-0001-S1-music", id: "koto-01" }), { channelId: CHANNEL, kind: "sent", relativePath: "reference/koto-01.mp3" });
+  await assert.rejects(s.services.resolveReference({ planId: "R-0001-S1-music", id: "nope" }), refused("plan_mismatch"));
+  await assert.rejects(s.services.createPlan({ ...basePlan(), planId: "p2", references: [{ id: "x", label: "x", file: "../escape.mp3" }] }), refused("validation_failed"));
+  await assert.rejects(s.services.createPlan({ ...basePlan(), planId: "p3", references: [ref, ref] }), refused("plan_invalid"), "duplicate id");
+  await s.services.updatePlan({ planId: "R-0001-S1-music", removeReferenceIds: ["koto-01"] });
+  assert.deepEqual((await s.services.getPlan({ planId: "R-0001-S1-music" })).plan.references?.map((r) => r.id), ["piano-02"]);
+});
+
+test("phase 3 review: references come in with an import, and more than 50 are refused (a report must stay valid)", async () => {
+  const s = setup();
+  const file = { ...planFile([]), references: [{ id: "koto-01", label: "Koto", file: "reference/koto-01.mp3", lufs: -13 }] };
+  const imported = await s.services.importPlan({ plan: file });
+  assert.deepEqual(imported.plan.references?.map((r) => r.id), ["koto-01"]);
+  const many = Array.from({ length: 30 }, (_, i) => ({ id: `r${i}`, label: `R${i}`, file: `reference/r${i}.mp3` }));
+  await s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: many });
+  await assert.rejects(s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: many.map((r) => ({ ...r, id: `x${r.id}` })) }), refused("plan_invalid"));
+});
+
+test("re-review: exactly 50 references are accepted; getPlan latest returns the newest events", async () => {
+  const s = setup();
+  const fifty = Array.from({ length: 50 }, (_, i) => ({ id: `r${i}`, label: `R${i}`, file: `reference/r${i}.mp3` }));
+  await s.services.createPlan({ ...basePlan(), references: fifty });
+  for (let i = 0; i < 3; i++) await s.services.requestRerun({ planId: "R-0001-S1-music", itemKey: "C1/F1", note: `n${i}` });
+  const latest = await s.services.getPlan({ planId: "R-0001-S1-music", latest: true });
+  assert.equal(latest.plan.references?.length, 50);
+  assert.equal(latest.events.at(-1)?.details.note, "n2", "the newest event is last");
+});

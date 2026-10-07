@@ -43,7 +43,9 @@ export type PlanItem = {
   /** One job per seed (`fixed`), or the seeds tried in order (`until_accepted`). */
   seeds: number[];
 };
-export type PlanDefinition = { stages: PlanStage[]; groups: PlanGroup[]; items: PlanItem[] };
+/** BL-143 phase 3 (FO-MSG-0009): a reference track for A/B listening, copied by the factory into the channel's Sent to YTM. */
+export type PlanReference = { id: string; label: string; file: string; lufs: number | null; lra: number | null; truePeak: number | null };
+export type PlanDefinition = { stages: PlanStage[]; groups: PlanGroup[]; items: PlanItem[]; references?: PlanReference[] };
 
 export type GenerationPlan = {
   planId: string;
@@ -86,6 +88,8 @@ export type PlanResultRow = {
   auditionFile: string | null;
   checks: PlanCheck[];
   metrics: Record<string, number | string | boolean | null>;
+  /** BL-143 phase 3: plan references nearest to this attempt (the validator's nearest library tracks), for A/B. */
+  referenceIds?: string[];
   at: string;
 };
 
@@ -129,6 +133,8 @@ export type PlanItemProgress = {
   rejected: number;
   open: number;
   waitingReview: number;
+  /** Generated attempts still on their way through the later stages (no final verdict, not rejected). */
+  pending: number;
   /** How many more attempts the item still needs (0 when complete). */
   missing: number;
 };
@@ -160,7 +166,17 @@ export type PlanProgress = {
   budget: { usd: number | null; usedShare: number | null; warnings: Array<"80" | "100"> };
   /** Mean finished-job duration on the same GPU type × attempts still missing; null below 3 finished samples. */
   eta: { seconds: number | null; gpuTypeId: string | null; samples: number };
+  /** BL-143 phase 3 (AC-GP3-01): what the owner and the factory should notice now, derived like everything else. */
+  notices: PlanNotice[];
 };
+
+export type PlanNotice =
+  | { kind: "stage_complete"; stageId: string; title: string }
+  | { kind: "budget_80" | "budget_100" }
+  | { kind: "plan_complete" }
+  /** until_accepted items that used up maxAttempts below their target. */
+  | { kind: "attempts_exhausted"; count: number }
+  | { kind: "review_waiting"; count: number };
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
 

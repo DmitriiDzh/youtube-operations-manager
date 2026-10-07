@@ -589,8 +589,8 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   const loose = z.array(z.object({}).passthrough());
   planWrite(
     "factory_plan_create",
-    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds? }] } -> { plan, progress }. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group), validation_failed.",
-    z.object({ planId: z.string(), title: z.string(), channelId: z.string(), budget: z.object({}).passthrough().optional(), note: z.string().nullable().optional(), stages: loose, groups: loose.optional(), items: loose.optional() }).strict(),
+    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds? }], references?: [{ id, label, file (relative to the channel's '99 Data Exchange/Sent to YTM/', e.g. 'reference/koto-01.mp3'), lufs?, lra?, truePeak? }] (reference tracks for the owner's A/B listening, up to 50) } -> { plan, progress }. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group), validation_failed.",
+    z.object({ planId: z.string(), title: z.string(), channelId: z.string(), budget: z.object({}).passthrough().optional(), note: z.string().nullable().optional(), stages: loose, groups: loose.optional(), items: loose.optional(), references: loose.optional() }).strict(),
     (input) => deps.plans.create(input)
   );
   planWrite(
@@ -601,7 +601,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_update",
-    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys? } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
+    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys?, upsertReferences? (an existing id is replaced), removeReferenceIds? } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
     z
       .object({
         planId: z.string(),
@@ -614,6 +614,8 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         removeStageIds: z.array(z.string()).optional(),
         removeGroupIds: z.array(z.string()).optional(),
         removeItemKeys: z.array(z.string()).optional(),
+        upsertReferences: loose.optional(),
+        removeReferenceIds: z.array(z.string()).optional(),
       })
       .strict(),
     (input) => deps.plans.update(input)
@@ -644,7 +646,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_report",
-    "Report results of external stages (post-process, validator) or a verdict you relay from chat, in bulk: { planId, rows: [{ stageId (not the in_app stage), itemKey, attemptRef ('job:<jobId>' of the generate job), result: done | failed | accepted | rejected, note? (<= 2000), auditionFile? (the file the owner should hear: a path relative to the channel workspace's '99 Data Exchange/Sent to YTM/'), checks?: [{ id, label?, value?, unit?, threshold?, pass, severity: info | warn | fail, atSeconds?: [start, end], detail? (<= 200) }] (<= 50), metrics? (<= 50 keys), rating? (1-10), reasons?, markers?: [{ start, end?, note? }] }] (<= 200 rows) } -> { stored }. One row per (plan, stage, item, attempt): a repeat replaces it -- except the owner's own verdict, which a relayed owner_review row never replaces (plan_mismatch). All rows are checked first; one bad row stores nothing (plan_mismatch / validation_failed). Each row is recorded as reported by the factory.",
+    "Report results of external stages (post-process, validator) or a verdict you relay from chat, in bulk: { planId, rows: [{ stageId (not the in_app stage), itemKey, attemptRef ('job:<jobId>' of the generate job), result: done | failed | accepted | rejected, note? (<= 2000), auditionFile? (the file the owner should hear: a path relative to the channel workspace's '99 Data Exchange/Sent to YTM/'), checks?: [{ id, label?, value?, unit?, threshold?, pass, severity: info | warn | fail, atSeconds?: [start, end], detail? (<= 200) }] (<= 50), metrics? (<= 50 keys), rating? (1-10), reasons?, markers?: [{ start, end?, note? }], referenceIds? (<= 5 ids of the plan's references nearest to this attempt, e.g. your nearest library tracks: the owner's A/B offers them first) }] (<= 200 rows) } -> { stored }. One row per (plan, stage, item, attempt): a repeat replaces it -- except the owner's own verdict, which a relayed owner_review row never replaces (plan_mismatch). All rows are checked first; one bad row stores nothing (plan_mismatch / validation_failed). Each row is recorded as reported by the factory.",
     z.object({ planId: z.string(), rows: loose }).strict(),
     (input) => deps.plans.report(input)
   );

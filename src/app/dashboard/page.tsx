@@ -102,6 +102,8 @@ const CONFLICT_SUMMARY_POLL_MS = 20_000;
 const SYNC_CYCLE_POLL_MS = 60_000;
 // BL-140 R1: how often the sidebar re-reads the pending agent requests in Research (a local read).
 const RESEARCH_PENDING_POLL_MS = 60_000;
+// BL-143 phase 3 (AC-GP3-02): how often the sidebar re-reads the generation plan attempts waiting for the owner (a local read).
+const PLANS_REVIEW_POLL_MS = 60_000;
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
@@ -135,6 +137,7 @@ export default function Dashboard() {
   const [conflictCount, setConflictCount] = useState(0);
   // BL-140 R1: agents' requests waiting in Research → Inbox, shown on the sidebar like Merge's conflicts.
   const [researchPending, setResearchPending] = useState(0);
+  const [plansWaiting, setPlansWaiting] = useState(0);
 
   const fetchChannel = useCallback(async () => {
     try {
@@ -280,8 +283,26 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [userId]);
 
+  // BL-143 phase 3 (AC-GP3-02): Production shows how many generated tracks wait for the owner's verdict.
+  useEffect(() => {
+    if (!userId) return;
+    async function refreshPlansWaiting() {
+      try {
+        const res = await fetch("/api/generation-plans/summary");
+        if (!res.ok) return;
+        const data = (await res.json()) as { waitingReview?: number };
+        setPlansWaiting(data.waitingReview ?? 0);
+      } catch {
+        // Non-fatal -- the next poll tries again.
+      }
+    }
+    void refreshPlansWaiting();
+    const id = setInterval(() => void refreshPlansWaiting(), PLANS_REVIEW_POLL_MS);
+    return () => clearInterval(id);
+  }, [userId]);
+
   const navItemsWithBadges = NAV_ITEMS.map((item) =>
-    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "production" ? { ...item, badge: plansWaiting } : item
   );
 
   if (status === "loading") {

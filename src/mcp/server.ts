@@ -70,6 +70,7 @@ import {
 import { labelAgeGender, labelContentFormat, labelCountry, labelDeviceType, labelSubscribedStatus, labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createMediaGenerationCore, type MediaGenerationCore } from "@/lib/media-generation";
+import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServices } from "@/lib/generation-plans";
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
@@ -202,6 +203,50 @@ type MediaGenerationCoreSubset = Pick<
   "requestSession" | "getSession" | "listSessions" | "getLimits" | "listWorkflowTemplates" | "createJob" | "getJob" | "listJobs" | "cancelJob" | "releaseSession"
 >;
 const mediaChannelIdSchema = z.string().min(1).max(64);
+// BL-143 phase 3 (AC-GP3-03): read-only generation plan tools, the session's active channel only.
+const agentListGenerationPlansInputSchema = z.object({ channelId: mediaChannelIdSchema, status: z.enum(["active", "completed", "cancelled"]).optional() }).strict();
+const agentGetGenerationPlanInputSchema = z.object({ channelId: mediaChannelIdSchema, planId: z.string().min(2).max(80), since: z.string().datetime().optional() }).strict();
+
+/**
+ * What a channel agent may see of a plan (AC-GP3-03): header, stages, groups, items WITHOUT job params, the derived progress
+ * and, for one plan, its events WITHOUT error text (a job error can name local paths). Never review audio or file paths.
+ */
+function agentPlanView(view: { plan: GenerationPlan; progress: unknown }) {
+  const { plan } = view;
+  return {
+    planId: plan.planId,
+    title: plan.title,
+    channelId: plan.channelId,
+    status: plan.status,
+    budget: plan.budget,
+    note: plan.note,
+    createdAt: plan.createdAt,
+    updatedAt: plan.updatedAt,
+    closedAt: plan.closedAt,
+    stages: plan.stages,
+    groups: plan.groups,
+    items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateId: i.templateId, templateLabel: i.templateLabel, targetCount: i.targetCount, mode: i.mode, maxAttempts: i.maxAttempts })),
+    progress: withoutStopReasons(view.progress),
+  };
+}
+
+/**
+ * Error texts at ANY depth (re-review: a stage run's `stoppedAt.error.message` carries ComfyUI/RunPod text and can name local
+ * paths): every `error`, `message` and `stopReason` key is dropped for agents.
+ */
+function withoutErrorTexts(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutErrorTexts);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => k !== "error" && k !== "message" && k !== "stopReason").map(([k, v]) => [k, withoutErrorTexts(v)]));
+}
+
+/** The spend sessions without their stop reason (a failed start's reason carries RunPod error text). */
+function withoutStopReasons(progress: unknown): unknown {
+  if (!progress || typeof progress !== "object") return progress;
+  const p = progress as { spend?: { sessions?: Array<Record<string, unknown>> } };
+  if (!p.spend?.sessions) return progress;
+  return { ...p, spend: { ...p.spend, sessions: p.spend.sessions.map((s) => Object.fromEntries(Object.entries(s).filter(([k]) => k !== "stopReason"))) } };
+}
 const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
 // Derived from the core's own schemas (review round 21): the bounds an agent sees are exactly the ones the core enforces;
 // only the caller-identity field (`requestedBy`/`createdBy`) is the server's to set, never the agent's.
@@ -329,6 +374,8 @@ type McpToolHandlers = {
   agentGetMediaJob: (input: unknown) => Promise<ToolResponse>;
   agentCancelMediaJob: (input: unknown) => Promise<ToolResponse>;
   agentReleaseMediaSession: (input: unknown) => Promise<ToolResponse>;
+  agentListGenerationPlans: (input: unknown) => Promise<ToolResponse>;
+  agentGetGenerationPlan: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -583,7 +630,10 @@ export function createMcpToolHandlers(
   // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4) -- the logical path registry, registered directly
   // here (not through `agentOperationsCore`, AGENTS.md §M). Read-only subset, fixed to the `channel` scope: a channel agent can only
   // ever see `all_agents` paths. Creating, changing or deleting a path is operator-only (`/api/logical-paths`).
-  logicalPathsCore: Pick<LogicalPathsCore, "readPath" | "listReadable"> = createLogicalPathsCore()
+  logicalPathsCore: Pick<LogicalPathsCore, "readPath" | "listReadable"> = createLogicalPathsCore(),
+  // BL-143 phase 3 (ADR 0029) -- generation plans, registered directly here (AGENTS.md §M). Read-only subset: plans are created
+  // and run by the Factory Operator; a channel agent only reads its own channel's.
+  generationPlansCore: Pick<GenerationPlanServices, "listPlans" | "getPlan"> = createGenerationPlansCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1328,6 +1378,44 @@ export function createMcpToolHandlers(
         // The channel filter runs in the query (not over a capped page), so a channel's sessions never vanish behind another channel's.
         const sessions = await mediaGenerationCore.listSessions(20, parsedInput.data.channelId);
         return toolSuccessResult({ sessions });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentListGenerationPlans(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentListGenerationPlansInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        const views = await generationPlansCore.listPlans({ channelId: parsedInput.data.channelId, ...(parsedInput.data.status ? { status: parsedInput.data.status } : {}) });
+        return toolSuccessResult({ plans: views.filter((v) => v.plan.channelId === parsedInput.data.channelId).map(agentPlanView) });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentGetGenerationPlan(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentGetGenerationPlanInputSchema.safeParse(input);
+      if (!parsedInput.success) return mapValidationErrorResult(parsedInput.error);
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({ userId: getCredentialUserId(credentialRef), channelId: parsedInput.data.channelId });
+        const notFound = () => toolErrorResult(new DomainError({ code: "plan_not_found", message: `No generation plan ${parsedInput.data.planId} for this channel`, details: { planId: parsedInput.data.planId } }));
+        let view;
+        try {
+          // Without `since`: the newest events (the latest verdicts); with it: the page after it, with `more` and `cursor`.
+          view = await generationPlansCore.getPlan(parsedInput.data.since ? { planId: parsedInput.data.planId, since: parsedInput.data.since } : { planId: parsedInput.data.planId, latest: true });
+        } catch (error) {
+          if (isDomainError(error) && error.code === "plan_not_found") return notFound();
+          throw error;
+        }
+        // Another channel's plan behaves like one that does not exist.
+        if (view.plan.channelId !== parsedInput.data.channelId) return notFound();
+        // Error texts (a job's error, a session's failure reason) can name local paths: left out for agents.
+        const events = view.events.map((e) => ({ ...e, details: withoutErrorTexts(e.details) as Record<string, unknown> }));
+        return toolSuccessResult({ plan: agentPlanView(view), events, more: view.more, cursor: view.cursor });
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -2304,6 +2392,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetMediaJob: handlers.agentGetMediaJob,
     agentCancelMediaJob: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentCancelMediaJob(input),
     agentReleaseMediaSession: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentReleaseMediaSession(input),
+    // BL-143 phase 3 -- pure local reads, ungated like agentGetMediaJob.
+    agentListGenerationPlans: handlers.agentListGenerationPlans,
+    agentGetGenerationPlan: handlers.agentGetGenerationPlan,
   };
 }
 
@@ -3138,6 +3229,26 @@ export function createMcpServer(
       inputSchema: agentReleaseMediaSessionInputSchema,
     },
     (args) => handlers.agentReleaseMediaSession(args)
+  );
+
+  registerTool(
+    "agent_list_generation_plans",
+    {
+      description:
+        "BL-143: this channel's media generation plans (made and run by the Factory Operator), read-only: { status?: active|completed|cancelled } -> { plans: [{ planId, title, status, budget, note, stages, groups (waves, with the owner's notes), items (itemKey, groupId, templateId/templateLabel, targetCount, mode, maxAttempts; no job params), progress: { stages (counts), groups, items (attempts, generated, accepted, rejected, waitingReview, missing), spend, budget (warnings 80/100), eta, notices } }] }. Local read only. Requires channelId to be the caller's currently-active channel; other channels' plans are never listed.",
+      inputSchema: agentListGenerationPlansInputSchema,
+    },
+    (args) => handlers.agentListGenerationPlans(args)
+  );
+
+  registerTool(
+    "agent_get_generation_plan",
+    {
+      description:
+        "BL-143: one of this channel's generation plans with its events, read-only: { planId, since? } -> { plan (as agent_list_generation_plans), events: [{ at, kind, actor, details }], more, cursor }. Without since: the newest 500 events; with since: the oldest page at or after it (call again with cursor while more). Job error texts and session stop reasons are left out. Use it to see what the owner accepted or rejected and why (owner_verdict: rating out of 10, reasons, markers, note). Local read only. A plan of another channel behaves like one that does not exist (plan_not_found). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: agentGetGenerationPlanInputSchema,
+    },
+    (args) => handlers.agentGetGenerationPlan(args)
   );
 
   registerTool(

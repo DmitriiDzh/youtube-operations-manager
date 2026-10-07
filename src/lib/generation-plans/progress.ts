@@ -183,7 +183,7 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
       const capLeft = item.maxAttempts === null ? Infinity : Math.max(0, item.maxAttempts - own.length);
       missing = Math.min(Math.max(0, item.targetCount - accepted - pending), capLeft);
     }
-    return { itemKey: item.itemKey, groupId: item.groupId, targetCount: item.targetCount, mode: item.mode, attempts: own.length, generated, accepted, rejected, open, waitingReview, missing };
+    return { itemKey: item.itemKey, groupId: item.groupId, targetCount: item.targetCount, mode: item.mode, attempts: own.length, generated, accepted, rejected, open, waitingReview, pending, missing };
   });
   return { attempts, byStageResults, items, waiting };
 }
@@ -239,7 +239,29 @@ export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: 
     spend: { usd, gpuMinutes, sessions: sessionViews.map((s) => ({ sessionId: s.sessionId, status: s.status, gpuTypeId: s.gpuTypeId, usd: s.usd, final: s.final, stopReason: s.stopReason })) },
     budget: { usd: plan.budget.usd, usedShare: usedShare === null ? null : Math.round(usedShare * 1000) / 1000, warnings },
     eta: estimate(plan, d, jobs, sessions),
+    notices: noticesOf(plan, stages, d, warnings),
   };
+}
+
+/** AC-GP3-01: stage complete (its done/accepted count reached the plan's target), budget, plan complete, reviews waiting. */
+function noticesOf(plan: GenerationPlan, stages: Array<PlanStage & { counts: PlanStageCounts }>, d: Derived, warnings: Array<"80" | "100">): PlanProgress["notices"] {
+  const notices: PlanProgress["notices"] = [];
+  for (const s of stages) {
+    const reached = s.kind === "in_app" ? s.counts.done : s.counts.accepted + s.counts.done;
+    if (s.counts.planned > 0 && reached >= s.counts.planned) notices.push({ kind: "stage_complete", stageId: s.stageId, title: s.title });
+  }
+  if (warnings.includes("100")) notices.push({ kind: "budget_100" });
+  else if (warnings.includes("80")) notices.push({ kind: "budget_80" });
+  // Complete only when every item reached its target AND nothing is still on its way (independent review: generated attempts
+  // the validator or the owner have not judged yet are not "done"). An until_accepted item that used up its attempts below
+  // its target is "exhausted", never complete.
+  const open = d.attempts.some((a) => a.state === "queued" || a.state === "running");
+  const exhausted = d.items.filter((i) => i.mode === "until_accepted" && i.missing === 0 && i.accepted < i.targetCount && i.pending === 0 && i.open === 0).length;
+  const reached = d.items.every((i) => (i.mode === "until_accepted" ? i.accepted >= i.targetCount : i.missing === 0) && i.pending === 0);
+  if (plan.items.length > 0 && !open && d.waiting.length === 0 && reached) notices.push({ kind: "plan_complete" });
+  if (exhausted > 0) notices.push({ kind: "attempts_exhausted", count: exhausted });
+  if (d.waiting.length > 0) notices.push({ kind: "review_waiting", count: d.waiting.length });
+  return notices;
 }
 
 /** ETA (owner/FO-MSG-0008 §8): only finished jobs on the GPU type of the plan's current (or latest) session count. */

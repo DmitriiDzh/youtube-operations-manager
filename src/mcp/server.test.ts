@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.7.0"); // MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(payload.agentApiVersion, "3.8.0"); // MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -6204,4 +6204,77 @@ test("BL-135 MCP agent_release_media_session passes the caller's channel to the 
   assert.equal(parseToolJson(refused).error.code, "CHANNEL_NOT_AUTHORIZED");
   const extra = await handlers.agentReleaseMediaSession({ channelId: "UC_1", sessionId: "ms-1", force: true });
   assert.equal(extra.isError, true, "strict input");
+});
+
+// BL-143 phase 3 (GENERATION_PLANS_PHASE_3_PLAN.md AC-GP3-03): read-only plan tools, the session's active channel only, never
+// item params or job error texts.
+function makePlanHandlers(access = makeChannelAccessCoreStub()) {
+  const view = (channelId: string, planId: string) => ({
+    plan: {
+      planId,
+      title: "Waves",
+      channelId,
+      owner: "factory",
+      status: "active",
+      budget: { usd: 2, gpuMinutes: null },
+      note: null,
+      revision: 1,
+      createdAt: "2026-10-07T09:00:00.000Z",
+      updatedAt: "2026-10-07T09:00:00.000Z",
+      closedAt: null,
+      stages: [{ stageId: "generate", title: "Generate", kind: "in_app" }],
+      groups: [],
+      items: [{ itemKey: "C1/F1", groupId: null, templateLabel: null, templateId: "tpl", variant: null, targetCount: 2, mode: "fixed", maxAttempts: null, params: { prompt: "secret prompt" }, seeds: [1] }],
+    },
+    progress: { notices: [] },
+  });
+  const plans = { listPlans: async () => [view("UC_1", "mine"), view("UC_other", "theirs")], getPlan: async ({ planId }: { planId: string }) => ({ ...view(planId === "theirs" ? "UC_other" : "UC_1", planId), events: [{ at: "2026-10-07T09:05:00.000Z", kind: "job_failed", actor: "app", details: { jobId: "j1", error: "EACCES '/Volumes/SSD/ws'" } }], cursor: "" }) };
+  return createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, access,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, plans as never
+  );
+}
+
+test("AC-GP3-03: agent_list/get_generation_plan(s) show only this channel's plans, without item params or job error text", async () => {
+  const handlers = makePlanHandlers();
+  const listed = parseToolJson(await handlers.agentListGenerationPlans({ channelId: "UC_1" }));
+  assert.deepEqual(listed.plans.map((p: { planId: string }) => p.planId), ["mine"]);
+  assert.ok(!JSON.stringify(listed).includes("secret prompt"), "no job params");
+  const one = parseToolJson(await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine" }));
+  assert.equal(one.plan.planId, "mine");
+  assert.deepEqual(one.events[0].details, { jobId: "j1" }, "no error text");
+  assert.equal(parseToolJson(await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "theirs" })).error.code, "plan_not_found");
+  const refused = makePlanHandlers({ ...makeChannelAccessCoreStub(), assertActiveChannel: async () => { throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "not active" }); } });
+  assert.equal(parseToolJson(await refused.agentListGenerationPlans({ channelId: "UC_2" })).error.code, "CHANNEL_NOT_AUTHORIZED");
+  assert.equal(MCP_TOOL_CLASSIFICATION.agent_list_generation_plans, "bound");
+  assert.equal(MCP_TOOL_CLASSIFICATION.agent_get_generation_plan, "bound");
+});
+
+test("re-review: the agent's plan view drops error texts at any depth and passes since/latest through", async () => {
+  const seen: unknown[] = [];
+  const view = {
+    plan: { planId: "mine", title: "T", channelId: "UC_1", owner: "factory", status: "active", budget: { usd: null, gpuMinutes: null }, note: null, revision: 1, createdAt: "", updatedAt: "", closedAt: null, stages: [], groups: [], items: [] },
+    progress: { notices: [], spend: { usd: 0.1, gpuMinutes: 1, sessions: [{ sessionId: "s", status: "failed", usd: 0.1, final: true, stopReason: "start failed: RunPod said /Volumes/x" }] } },
+    events: [
+      { at: "2026-10-07T09:05:00.000Z", kind: "stage_run", actor: "factory", details: { created: 1, stoppedAt: { itemKey: "C1/F1", seed: 2, error: { code: "media_input_unavailable", message: "/Volumes/SSD/ws/missing.png" } } } },
+      { at: "2026-10-07T09:06:00.000Z", kind: "session_stopped", actor: "app", details: { sessionId: "s", stopReason: "start failed: boom" } },
+    ],
+    more: true,
+    cursor: "2026-10-07T09:06:00.000Z",
+  };
+  const plans = { listPlans: async () => [view], getPlan: async (input: unknown) => (seen.push(input), view) };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, plans as never
+  );
+  const out = parseToolJson(await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine" }));
+  const text = JSON.stringify(out);
+  assert.ok(!text.includes("/Volumes") && !text.includes("boom") && !text.includes("RunPod said"), text);
+  assert.deepEqual(out.events[0].details.stoppedAt, { itemKey: "C1/F1", seed: 2 });
+  assert.equal(out.more, true);
+  assert.equal(out.cursor, "2026-10-07T09:06:00.000Z");
+  await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine", since: "2026-10-07T09:00:00.000Z" });
+  assert.deepEqual(seen, [{ planId: "mine", latest: true }, { planId: "mine", since: "2026-10-07T09:00:00.000Z" }]);
+  const listed = JSON.stringify(parseToolJson(await handlers.agentListGenerationPlans({ channelId: "UC_1" })));
+  assert.ok(!listed.includes("RunPod said"), "spend sessions carry no stop reason");
 });

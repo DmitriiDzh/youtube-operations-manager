@@ -72,3 +72,36 @@ test("peer queue: once the owning device shows the verdict (stored to the whole 
   const noParams = peerQueue({ ...data, devices: [{ ...data.devices[0], plans: [{ planId: "P", review: [entry], itemParams: {} }] }] }, { deviceId: "mac", hostname: "Mac" }, "P");
   assert.deepEqual(noParams[0].params, {}, "an inherited name (constructor) is never taken as params");
 });
+
+test("AC-GP3-04: the validator's LUFS is the latest stage's metrics.lufs; without one it is unknown (then measured in the browser)", async () => {
+  const { reportedLufs } = await import("./plan-review-screen");
+  const row = (stageId: string, metrics: Record<string, unknown>) => ({ stageId, itemKey: "a", attemptRef: "job:1", result: "accepted" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: [], metrics: metrics as never, at: "" });
+  assert.equal(reportedLufs({ stages: [row("postprocess", { lufs: -14 }), row("validate", { lufs: -14.2, key: "D major" })] }), -14.2);
+  assert.equal(reportedLufs({ stages: [row("postprocess", { lufs: -13 }), row("validate", { key: "D" })] }), -13);
+  assert.equal(reportedLufs({ stages: [row("validate", { lufs: "loud" })] }), null);
+  assert.equal(reportedLufs({ stages: [] }), null);
+});
+
+test("FO-MSG-0009 §4: ringing tones and a held note become spectrogram marks; A/B offers the attempt's nearest references first", async () => {
+  const { frequencyMarksOf, referencesFor, reviewKeyAction } = await import("./plan-review-screen");
+  const row = (checks: unknown[], metrics: Record<string, unknown>, referenceIds: string[] = []) => ({ stageId: "validate", itemKey: "a", attemptRef: "job:1", result: "rejected" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: checks as never, metrics: metrics as never, referenceIds, at: "" });
+  const check = (id: string, detail: string | null) => ({ id, label: null, value: null, unit: null, threshold: null, pass: false, severity: "fail", atSeconds: null, detail });
+  assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tones 11000, 14098 Hz"), check("style", "0.92")], { held_hz: 440 })] }), [
+    { hz: 11000, label: "ringing" },
+    { hz: 14098, label: "ringing" },
+    { hz: 440, label: "held note" },
+  ]);
+  const refs = [{ id: "a", label: "A", file: "reference/a.mp3", lufs: null, lra: null, truePeak: null }, { id: "b", label: "B", file: "reference/b.mp3", lufs: -13, lra: null, truePeak: null }];
+  assert.deepEqual(referencesFor({ stages: [row([], {}, ["b"])] }, refs).map((r) => [r.id, r.nearest]), [["b", true], ["a", false]]);
+  assert.equal(reviewKeyAction("b"), "ab");
+});
+
+test("phase 3 review: only the Hz list of a FAILED ringing check is marked (not dB or seconds); kHz is understood", async () => {
+  const { frequencyMarksOf } = await import("./plan-review-screen");
+  const row = (checks: unknown[]) => ({ stageId: "validate", itemKey: "a", attemptRef: "job:1", result: "rejected" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: checks as never, metrics: {} as never, referenceIds: [], at: "" });
+  const check = (id: string, detail: string, pass = false) => ({ id, label: null, value: null, unit: null, threshold: null, pass, severity: "fail", atSeconds: null, detail });
+  assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tones 2751 Hz at -32 dB over 40 s")])] }).map((m) => m.hz), [2751]);
+  assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tone 8.5 kHz")])] }).map((m) => m.hz), [8500]);
+  assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tones 2751, 8500 Hz", true)])] }), [], "a passing check marks nothing");
+  assert.deepEqual(frequencyMarksOf({ stages: [row([check("string_noise", "1000 Hz")])] }), [], "not a ringing check");
+});
