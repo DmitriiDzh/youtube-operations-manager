@@ -18,9 +18,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * media tools; 1.2.0 (BL-133, ADR 0026): GPU sessions within the owner's factory limits, jobs in them, the capacity log;
  * 1.3.0 (FO-REQ-0005): media refusals keep their codes (were `internal_error`), delete/adopt a local template, read the
  * factory settings, `targetName` on a pull -- and a pull now
- * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are.
+ * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are;
+ * 1.5.0 (BL-143, ADR 0029): generation plans (`factory_plan_*`).
  */
-export const FACTORY_API_VERSION = "1.3.0";
+export const FACTORY_API_VERSION = "1.5.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -49,6 +50,15 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_get_job",
   "factory_media_cancel_job",
   "factory_media_capacity_log",
+  // BL-143 (ADR 0029): generation plans.
+  "factory_plan_create",
+  "factory_plan_import",
+  "factory_plan_update",
+  "factory_plan_close",
+  "factory_plan_get",
+  "factory_plan_list",
+  "factory_plan_todo",
+  "factory_plan_report",
 ] as const;
 
 /**
@@ -68,6 +78,11 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_media_stop_session",
   "factory_media_create_job",
   "factory_media_cancel_job",
+  "factory_plan_create",
+  "factory_plan_import",
+  "factory_plan_update",
+  "factory_plan_close",
+  "factory_plan_report",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -108,6 +123,17 @@ export type FactoryToolDeps = {
     getJob(input: { jobId?: string; sessionId?: string }): Promise<Record<string, unknown>>;
     cancelJob(input: { jobId: string }): Promise<Record<string, unknown>>;
     capacityLog(input: { since?: string; gpuTypeId?: string; limit?: number }): Promise<Record<string, unknown>>;
+  };
+  /** BL-143 (ADR 0029): the generation plans core; it validates every input strictly itself. */
+  plans: {
+    create(input: unknown): Promise<Record<string, unknown>>;
+    importPlan(input: unknown): Promise<Record<string, unknown>>;
+    update(input: unknown): Promise<Record<string, unknown>>;
+    close(input: unknown): Promise<Record<string, unknown>>;
+    get(input: unknown): Promise<Record<string, unknown>>;
+    list(input: unknown): Promise<Record<string, unknown>>;
+    todo(input: unknown): Promise<Record<string, unknown>>;
+    report(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -529,6 +555,81 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: capacityLogInput,
     },
     async (args) => successResult(await deps.media.capacityLog(parseInput(capacityLogInput, args)))
+  );
+
+  // -- BL-143 (ADR 0029): generation plans. The plans core validates every field strictly (bounds, patterns); the schemas
+  // here only name the top-level fields. Writes pass the device mutation gate and are recorded as done by the factory.
+
+  const planWrite = (name: (typeof FACTORY_TOOL_NAMES)[number], description: string, schema: z.ZodTypeAny, call: (input: unknown) => Promise<Record<string, unknown>>) =>
+    registerTool(name, { description, inputSchema: schema }, async (args) => {
+      const input = parseInput(schema, args);
+      await deps.assertMutationAllowed();
+      return successResult(await call(input));
+    });
+  const planRead = (name: (typeof FACTORY_TOOL_NAMES)[number], description: string, schema: z.ZodTypeAny, call: (input: unknown) => Promise<Record<string, unknown>>) =>
+    registerTool(name, { description, inputSchema: schema }, async (args) => successResult(await call(parseInput(schema, args))));
+
+  const loose = z.array(z.object({}).passthrough());
+  planWrite(
+    "factory_plan_create",
+    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds? }] } -> { plan, progress }. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group), validation_failed.",
+    z.object({ planId: z.string(), title: z.string(), channelId: z.string(), budget: z.object({}).passthrough().optional(), note: z.string().nullable().optional(), stages: loose, groups: loose.optional(), items: loose.optional() }).strict(),
+    (input) => deps.plans.create(input)
+  );
+  planWrite(
+    "factory_plan_import",
+    "Import a plan file in the ytm-generation-plan/1 format: { plan: <the file's JSON object> } -> { plan, progress, linkedJobs, importedResults }. Item templateId strings are kept as labels (templateLabel). A generate result 'job:<id>' naming a job of this channel that is in no plan is linked to the plan (its live state then counts); other attempts are kept as imported rows. The planId must be new here.",
+    z.object({ plan: z.object({}).passthrough() }).strict(),
+    (input) => deps.plans.importPlan(input)
+  );
+  planWrite(
+    "factory_plan_update",
+    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys? } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
+    z
+      .object({
+        planId: z.string(),
+        title: z.string().optional(),
+        note: z.string().nullable().optional(),
+        budget: z.object({}).passthrough().optional(),
+        addStages: loose.optional(),
+        upsertGroups: loose.optional(),
+        upsertItems: loose.optional(),
+        removeStageIds: z.array(z.string()).optional(),
+        removeGroupIds: z.array(z.string()).optional(),
+        removeItemKeys: z.array(z.string()).optional(),
+      })
+      .strict(),
+    (input) => deps.plans.update(input)
+  );
+  planWrite(
+    "factory_plan_close",
+    "Close a plan: { planId, status: completed | cancelled, note? } -> { plan, progress }. Only the status changes: running jobs, sessions and files are not touched (cancel jobs with factory_media_cancel_job). A closed plan refuses every change (plan_closed).",
+    z.object({ planId: z.string(), status: z.string(), note: z.string().nullable().optional() }).strict(),
+    (input) => deps.plans.close(input)
+  );
+  planRead(
+    "factory_plan_get",
+    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples } }, events: [{ at, kind, actor, details }], cursor }. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note), group_note, rerun_requested, plan_*. Pass the returned cursor as since next time. In-app counts are read from the jobs themselves. Read-only.",
+    z.object({ planId: z.string(), since: z.string().optional() }).strict(),
+    (input) => deps.plans.get(input)
+  );
+  planRead(
+    "factory_plan_list",
+    "This computer's plans with their progress: { status?: active | completed | cancelled, channelId? } -> { plans: [{ plan, progress }] }. Read-only.",
+    z.object({ status: z.string().optional(), channelId: z.string().optional() }).strict(),
+    (input) => deps.plans.list(input)
+  );
+  planRead(
+    "factory_plan_todo",
+    "What is left in a plan: { planId } -> { short: [{ itemKey, groupId, missing, mode }] (attempts still needed), waitingReview: [{ itemKey, attemptRef }] (passed the stage before owner review, no verdict yet), rerun: [{ itemKey, attemptRef, state: failed | interrupted }] (only while the item is short) }. Read-only.",
+    z.object({ planId: z.string() }).strict(),
+    (input) => deps.plans.todo(input)
+  );
+  planWrite(
+    "factory_plan_report",
+    "Report results of external stages (post-process, validator) or a verdict you relay from chat, in bulk: { planId, rows: [{ stageId (not the in_app stage), itemKey, attemptRef ('job:<jobId>' of the generate job), result: done | failed | accepted | rejected, note? (<= 2000), auditionFile? (the file the owner should hear: a path relative to the channel workspace's '99 Data Exchange/Sent to YTM/'), checks?: [{ id, label?, value?, unit?, threshold?, pass, severity: info | warn | fail, atSeconds?: [start, end], detail? (<= 200) }] (<= 50), metrics? (<= 50 keys), rating? (1-10), reasons?, markers?: [{ start, end?, note? }] }] (<= 200 rows) } -> { stored }. One row per (plan, stage, item, attempt): a repeat replaces it. All rows are checked first; one bad row stores nothing (plan_mismatch / validation_failed). Recorded as reported by the factory.",
+    z.object({ planId: z.string(), rows: loose }).strict(),
+    (input) => deps.plans.report(input)
   );
 
   return server;

@@ -1,0 +1,317 @@
+import type {
+  GenerationPlan,
+  PlanAttempt,
+  PlanAttemptState,
+  PlanEvent,
+  PlanItemProgress,
+  PlanProgress,
+  PlanResultRow,
+  PlanStage,
+  PlanStageCounts,
+  PlanTodo,
+} from "./contracts";
+
+// ---------------------------------------------------------------------------
+// BL-143 (ADR 0029 decision 2): everything a plan shows is derived here from the rows -- the linked jobs, the result rows,
+// the linked sessions -- when it is read. Nothing in this file writes or stores a counter. Pure functions (no I/O, no clock
+// except the `now` passed in).
+// ---------------------------------------------------------------------------
+
+/** What the plans module needs of a media job linked to a plan (`media_jobs.plan_*`). */
+export type PlanJobRow = {
+  id: string;
+  sessionId: string;
+  stageId: string | null;
+  itemKey: string | null;
+  seed: number | null;
+  status: "queued" | "submitted" | "generating" | "transferring" | "done" | "failed" | "cancelled";
+  error: string | null;
+  createdAt: Date;
+  submittedAt: Date | null;
+  finishedAt: Date | null;
+};
+
+/** What the plans module needs of a media session linked to a plan (`media_sessions.plan_id`). */
+export type PlanSessionRow = {
+  id: string;
+  status: string;
+  gpuTypeId: string | null;
+  costPerHr: number | null;
+  startedAt: Date | null;
+  readyAt: Date | null;
+  stoppedAt: Date | null;
+  secondsUsed: number | null;
+  usdCharged: number | null;
+  stopReason: string | null;
+};
+
+const SESSION_FINAL = new Set(["done", "failed", "rejected", "interrupted"]);
+/** The error a server restart leaves on a job it could not resume (`jobs.ts` `sweepInterruptedJobs`). */
+const INTERRUPTED_PREFIX = "interrupted";
+
+export function attemptStateOfJob(job: Pick<PlanJobRow, "status" | "error">): PlanAttemptState {
+  switch (job.status) {
+    case "queued":
+    case "submitted":
+      return "queued";
+    case "generating":
+    case "transferring":
+      return "running";
+    case "done":
+      return "done";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return job.error?.startsWith(INTERRUPTED_PREFIX) ? "interrupted" : "failed";
+  }
+}
+
+export const jobAttemptRef = (jobId: string) => `job:${jobId}`;
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const emptyCounts = (planned: number): PlanStageCounts => ({ planned, queued: 0, running: 0, done: 0, failed: 0, interrupted: 0, cancelled: 0, accepted: 0, rejected: 0 });
+
+/**
+ * The in-app attempts: the plan's jobs at its in-app stage, plus attempts imported from a plan file (result rows at that
+ * stage) for which no linked job carries the same ref.
+ */
+export function inAppAttempts(plan: Pick<GenerationPlan, "stages">, jobs: PlanJobRow[], results: PlanResultRow[]): PlanAttempt[] {
+  const stage = plan.stages.find((s) => s.kind === "in_app");
+  if (!stage) return [];
+  const fromJobs: PlanAttempt[] = jobs
+    .filter((j) => j.itemKey !== null && (j.stageId === null || j.stageId === stage.stageId))
+    .map((j) => ({
+      attemptRef: jobAttemptRef(j.id),
+      itemKey: j.itemKey as string,
+      state: attemptStateOfJob(j),
+      jobId: j.id,
+      sessionId: j.sessionId,
+      seed: j.seed,
+      createdAt: j.createdAt.toISOString(),
+      finishedAt: j.finishedAt?.toISOString() ?? null,
+      error: j.error,
+    }));
+  const seen = new Set(fromJobs.map((a) => a.attemptRef));
+  const imported: PlanAttempt[] = results
+    .filter((r) => r.stageId === stage.stageId && !seen.has(r.attemptRef))
+    .map((r) => ({
+      attemptRef: r.attemptRef,
+      itemKey: r.itemKey,
+      state: r.result === "failed" || r.result === "rejected" ? "failed" : "done",
+      jobId: null,
+      sessionId: null,
+      seed: null,
+      createdAt: null,
+      finishedAt: r.at,
+      error: null,
+    }));
+  return [...fromJobs, ...imported];
+}
+
+/** The stage whose verdict decides "accepted": the owner review when the plan has one, else the last stage. */
+export function finalStage(plan: Pick<GenerationPlan, "stages">): PlanStage | null {
+  return plan.stages.find((s) => s.kind === "owner_review") ?? plan.stages.at(-1) ?? null;
+}
+
+/** The stage right before the owner review (what makes an attempt "waiting for review"); null without a review stage. */
+function stageBeforeReview(plan: Pick<GenerationPlan, "stages">): PlanStage | null {
+  const index = plan.stages.findIndex((s) => s.kind === "owner_review");
+  return index > 0 ? plan.stages[index - 1] : null;
+}
+
+type Derived = {
+  attempts: PlanAttempt[];
+  byStageResults: Map<string, PlanResultRow[]>;
+  items: PlanItemProgress[];
+  waiting: Array<{ itemKey: string; attemptRef: string }>;
+};
+
+function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Derived {
+  const attempts = inAppAttempts(plan, jobs, results);
+  const byStageResults = new Map<string, PlanResultRow[]>();
+  for (const r of results) {
+    const list = byStageResults.get(r.stageId) ?? [];
+    list.push(r);
+    byStageResults.set(r.stageId, list);
+  }
+  const final = finalStage(plan);
+  const review = plan.stages.find((s) => s.kind === "owner_review") ?? null;
+  const before = stageBeforeReview(plan);
+  // Attempts that passed the stage before the owner review and have no owner verdict yet.
+  const waiting: Array<{ itemKey: string; attemptRef: string }> = [];
+  if (review && before) {
+    const reviewed = new Set((byStageResults.get(review.stageId) ?? []).map((r) => `${r.itemKey}\u0000${r.attemptRef}`));
+    const passed =
+      before.kind === "in_app"
+        ? attempts.filter((a) => a.state === "done").map((a) => ({ itemKey: a.itemKey, attemptRef: a.attemptRef }))
+        : (byStageResults.get(before.stageId) ?? []).filter((r) => r.result === "accepted" || r.result === "done").map((r) => ({ itemKey: r.itemKey, attemptRef: r.attemptRef }));
+    for (const p of passed) if (!reviewed.has(`${p.itemKey}\u0000${p.attemptRef}`)) waiting.push(p);
+  }
+  const finalRows = final && final.kind !== "in_app" ? (byStageResults.get(final.stageId) ?? []) : [];
+  // An attempt is dead once its job failed, or any stage after generation said failed/rejected; accepted once the final stage
+  // accepted it; otherwise it may still become accepted (pending).
+  const verdictsOf = new Map<string, PlanResultRow[]>();
+  for (const r of results) {
+    const key = `${r.itemKey}\u0000${r.attemptRef}`;
+    const list = verdictsOf.get(key) ?? [];
+    list.push(r);
+    verdictsOf.set(key, list);
+  }
+  const fate = (a: PlanAttempt): "accepted" | "dead" | "pending" => {
+    if (a.state === "failed" || a.state === "interrupted" || a.state === "cancelled") return "dead";
+    const rows = verdictsOf.get(`${a.itemKey}\u0000${a.attemptRef}`) ?? [];
+    if (final && final.kind !== "in_app" && rows.some((r) => r.stageId === final.stageId && (r.result === "accepted" || r.result === "done"))) return "accepted";
+    if (final?.kind === "in_app" && a.state === "done") return "accepted";
+    if (rows.some((r) => r.result === "rejected" || r.result === "failed")) return "dead";
+    return "pending";
+  };
+  const items: PlanItemProgress[] = plan.items.map((item) => {
+    const own = attempts.filter((a) => a.itemKey === item.itemKey);
+    const generated = own.filter((a) => a.state === "done").length;
+    const open = own.filter((a) => a.state === "queued" || a.state === "running").length;
+    const fates = own.map(fate);
+    const accepted = fates.filter((f) => f === "accepted").length;
+    const pending = fates.filter((f) => f === "pending").length;
+    const rejected = finalRows.filter((r) => r.itemKey === item.itemKey && (r.result === "rejected" || r.result === "failed")).length;
+    const waitingReview = waiting.filter((w) => w.itemKey === item.itemKey).length;
+    let missing: number;
+    if (item.mode === "fixed") {
+      // Exactly targetCount attempts that generated or still may: a failed or interrupted job is replaced, a rejection is not.
+      const usable = own.filter((a) => a.state === "done" || a.state === "queued" || a.state === "running").length;
+      missing = Math.max(0, item.targetCount - usable);
+    } else {
+      const capLeft = item.maxAttempts === null ? Infinity : Math.max(0, item.maxAttempts - own.length);
+      missing = Math.min(Math.max(0, item.targetCount - accepted - pending), capLeft);
+    }
+    return { itemKey: item.itemKey, groupId: item.groupId, targetCount: item.targetCount, mode: item.mode, attempts: own.length, generated, accepted, rejected, open, waitingReview, missing };
+  });
+  return { attempts, byStageResults, items, waiting };
+}
+
+function sessionUsd(s: PlanSessionRow, now: Date): { usd: number; final: boolean; seconds: number } {
+  const final = SESSION_FINAL.has(s.status) && s.usdCharged !== null;
+  if (final) return { usd: s.usdCharged as number, final: true, seconds: s.secondsUsed ?? 0 };
+  if (!s.startedAt) return { usd: s.usdCharged ?? 0, final: SESSION_FINAL.has(s.status), seconds: s.secondsUsed ?? 0 };
+  const end = s.stoppedAt ?? now;
+  const seconds = Math.max(0, (end.getTime() - s.startedAt.getTime()) / 1000);
+  return { usd: s.costPerHr !== null ? (s.costPerHr * seconds) / 3600 : 0, final: false, seconds };
+}
+
+export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], sessions: PlanSessionRow[], now: Date): PlanProgress {
+  const d = derive(plan, jobs, results);
+  const totalTarget = plan.items.reduce((sum, i) => sum + i.targetCount, 0);
+  const stages = plan.stages.map((stage) => {
+    const counts = emptyCounts(totalTarget);
+    if (stage.kind === "in_app") {
+      for (const a of d.attempts) counts[a.state] += 1;
+    } else {
+      for (const r of d.byStageResults.get(stage.stageId) ?? []) counts[r.result] += 1;
+    }
+    return { ...stage, counts };
+  });
+  const groups = plan.groups.map((g) => {
+    const own = d.items.filter((i) => i.groupId === g.groupId);
+    return {
+      groupId: g.groupId,
+      title: g.title,
+      counts: {
+        items: own.length,
+        generated: own.reduce((s, i) => s + i.generated, 0),
+        accepted: own.reduce((s, i) => s + i.accepted, 0),
+        rejected: own.reduce((s, i) => s + i.rejected, 0),
+        waitingReview: own.reduce((s, i) => s + i.waitingReview, 0),
+        missing: own.reduce((s, i) => s + i.missing, 0),
+      },
+    };
+  });
+  const sessionViews = sessions.map((s) => {
+    const cost = sessionUsd(s, now);
+    return { sessionId: s.id, status: s.status, gpuTypeId: s.gpuTypeId, usd: round2(cost.usd), final: cost.final, stopReason: s.stopReason, seconds: cost.seconds };
+  });
+  const usd = round2(sessionViews.reduce((sum, s) => sum + s.usd, 0));
+  const gpuMinutes = round2(sessionViews.reduce((sum, s) => sum + s.seconds, 0) / 60);
+  const usedShare = plan.budget.usd ? usd / plan.budget.usd : null;
+  const warnings: Array<"80" | "100"> = usedShare === null ? [] : usedShare >= 1 ? ["80", "100"] : usedShare >= 0.8 ? ["80"] : [];
+  return {
+    stages,
+    groups,
+    items: d.items,
+    spend: { usd, gpuMinutes, sessions: sessionViews.map((s) => ({ sessionId: s.sessionId, status: s.status, gpuTypeId: s.gpuTypeId, usd: s.usd, final: s.final, stopReason: s.stopReason })) },
+    budget: { usd: plan.budget.usd, usedShare: usedShare === null ? null : Math.round(usedShare * 1000) / 1000, warnings },
+    eta: estimate(plan, d, jobs, sessions),
+  };
+}
+
+/** ETA (owner/FO-MSG-0008 §8): only finished jobs on the GPU type of the plan's current (or latest) session count. */
+function estimate(plan: GenerationPlan, d: Derived, jobs: PlanJobRow[], sessions: PlanSessionRow[]): PlanProgress["eta"] {
+  const gpuOf = new Map(sessions.map((s) => [s.id, s.gpuTypeId]));
+  const current = [...sessions].reverse().find((s) => !SESSION_FINAL.has(s.status) && s.gpuTypeId) ?? [...sessions].reverse().find((s) => s.gpuTypeId);
+  const gpuTypeId = current?.gpuTypeId ?? null;
+  const durations = jobs
+    .filter((j) => j.status === "done" && j.submittedAt && j.finishedAt && gpuTypeId !== null && gpuOf.get(j.sessionId) === gpuTypeId)
+    .map((j) => ((j.finishedAt as Date).getTime() - (j.submittedAt as Date).getTime()) / 1000);
+  const left = d.items.reduce((sum, i) => sum + i.missing, 0) + d.attempts.filter((a) => a.state === "queued" || a.state === "running").length;
+  if (durations.length < 3) return { seconds: null, gpuTypeId, samples: durations.length };
+  const mean = durations.reduce((a, b) => a + b, 0) / durations.length;
+  void plan;
+  return { seconds: Math.round(mean * left), gpuTypeId, samples: durations.length };
+}
+
+export function planTodo(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): PlanTodo {
+  const d = derive(plan, jobs, results);
+  // A failed/interrupted attempt needs a re-run only while its item is still short of its target.
+  const shortItems = new Set(d.items.filter((i) => i.missing > 0).map((i) => i.itemKey));
+  return {
+    planId: plan.planId,
+    short: d.items.filter((i) => i.missing > 0).map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, missing: i.missing, mode: i.mode })),
+    waitingReview: d.waiting,
+    rerun: d.attempts
+      .filter((a): a is PlanAttempt & { state: "failed" | "interrupted" } => (a.state === "failed" || a.state === "interrupted") && shortItems.has(a.itemKey))
+      .map((a) => ({ itemKey: a.itemKey, attemptRef: a.attemptRef, state: a.state })),
+  };
+}
+
+/**
+ * The plan's events since a moment (FO-MSG-0008 §7): job created/done/failed, session started/ready/stopped (with its stop
+ * reason), each result and verdict, and the plan's own recorded events. Budget warnings are a current state, in progress.
+ */
+export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 200): PlanEvent[] {
+  const events: PlanEvent[] = [];
+  for (const j of jobs) {
+    const base = { jobId: j.id, sessionId: j.sessionId, itemKey: j.itemKey, seed: j.seed };
+    events.push({ at: j.createdAt.toISOString(), kind: "job_created", actor: "app", details: base });
+    if (j.finishedAt && (j.status === "done" || j.status === "failed" || j.status === "cancelled")) {
+      const state = attemptStateOfJob(j);
+      events.push({ at: j.finishedAt.toISOString(), kind: `job_${state}`, actor: "app", details: { ...base, ...(j.error ? { error: j.error } : {}) } });
+    }
+  }
+  for (const s of sessions) {
+    if (s.startedAt) events.push({ at: s.startedAt.toISOString(), kind: "session_started", actor: "app", details: { sessionId: s.id, gpuTypeId: s.gpuTypeId } });
+    if (s.readyAt) events.push({ at: s.readyAt.toISOString(), kind: "session_ready", actor: "app", details: { sessionId: s.id, gpuTypeId: s.gpuTypeId } });
+    if (s.stoppedAt) events.push({ at: s.stoppedAt.toISOString(), kind: "session_stopped", actor: "app", details: { sessionId: s.id, stopReason: s.stopReason, usdCharged: s.usdCharged } });
+  }
+  for (const r of results) {
+    if (r.reportedBy === "import") continue;
+    events.push({
+      at: r.at,
+      kind: r.reportedBy === "owner" ? "owner_verdict" : "result_reported",
+      actor: r.reportedBy,
+      details: {
+        stageId: r.stageId,
+        itemKey: r.itemKey,
+        attemptRef: r.attemptRef,
+        result: r.result,
+        ...(r.rating !== null ? { rating: r.rating } : {}),
+        ...(r.reasons.length > 0 ? { reasons: r.reasons } : {}),
+        ...(r.markers.length > 0 ? { markers: r.markers } : {}),
+        ...(r.note ? { note: r.note } : {}),
+      },
+    });
+  }
+  events.push(...recorded);
+  const sinceMs = since?.getTime() ?? -Infinity;
+  return events
+    .filter((e) => Date.parse(e.at) > sinceMs)
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .slice(-limit);
+}

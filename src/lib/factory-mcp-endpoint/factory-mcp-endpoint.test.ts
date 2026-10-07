@@ -87,6 +87,17 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       adoptTemplate: async (input) => (mediaCalls.push(`adoptTemplate:${input.templateId}>${input.newTemplateId}`), { status: "pending" }),
       getSettings: async () => (mediaCalls.push("getSettings"), { settings: {} }),
     },
+    // BL-143: the plans core is a fake that records what reached it.
+    plans: {
+      create: async (input) => (mediaCalls.push(`plan.create:${(input as { planId: string }).planId}`), { plan: {} }),
+      importPlan: async () => (mediaCalls.push("plan.import"), { plan: {} }),
+      update: async (input) => (mediaCalls.push(`plan.update:${(input as { planId: string }).planId}`), { plan: {} }),
+      close: async (input) => (mediaCalls.push(`plan.close:${(input as { planId: string }).planId}`), { plan: {} }),
+      get: async (input) => (mediaCalls.push(`plan.get:${(input as { planId: string }).planId}`), { plan: {} }),
+      list: async () => (mediaCalls.push("plan.list"), { plans: [] }),
+      todo: async (input) => (mediaCalls.push(`plan.todo:${(input as { planId: string }).planId}`), { short: [] }),
+      report: async (input) => (mediaCalls.push(`plan.report:${(input as { planId: string }).planId}`), { stored: 1 }),
+    },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
       if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
@@ -225,7 +236,7 @@ test("a non-token verification failure (database down) is a 503, never a false '
 // BL-132 (FACTORY_MEDIA_CONTROL_PLAN.md §2.6, ADR 0025, AC-FM-13) widened the closed list by eight media tools; BL-133
 // (FACTORY_GPU_SESSIONS_PLAN.md §2.2/§2.5, ADR 0026, owner 2026-10-06) by seven more: the factory's own sessions, its jobs in
 // them and the capacity log. No channel tool, and no tool that approves a session for anyone else, is added.
-test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exactly the four 1.0.0 tools, the eight 1.1.0 media tools, the seven 1.2.0 tools and the three 1.3.0 tools (FO-REQ-0005)", async () => {
+test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exactly the four 1.0.0 tools, the eight 1.1.0 media tools, the seven 1.2.0 tools, the three 1.3.0 tools (FO-REQ-0005) and the eight 1.5.0 plan tools (BL-143)", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
@@ -253,6 +264,14 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_media_stop_session",
     "factory_media_storage_status",
     "factory_media_sync_templates",
+    "factory_plan_close",
+    "factory_plan_create",
+    "factory_plan_get",
+    "factory_plan_import",
+    "factory_plan_list",
+    "factory_plan_report",
+    "factory_plan_todo",
+    "factory_plan_update",
   ]);
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
@@ -271,15 +290,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 
 // BL-132 (AC-FM-13): the capabilities answer now reports WRITE and names the write tools; version 1.1.0.
 // BL-133: version 1.2.0 and the seven session/job/capacity tools (four of them writes).
-// FO-REQ-0005: version 1.3.0, delete/adopt a local template (writes) and the settings read.
-test("factory_get_capabilities reports the factory API version 1.3.0, READ and WRITE, the tool list and the write tools", async () => {
+// FO-REQ-0005: version 1.3.0, delete/adopt a local template (writes) and the settings read. BL-143: 1.5.0 and the plan tools.
+test("factory_get_capabilities reports the factory API version 1.5.0, READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.3.0",
+    factoryApiVersion: "1.5.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -303,6 +322,14 @@ test("factory_get_capabilities reports the factory API version 1.3.0, READ and W
       "factory_media_get_job",
       "factory_media_cancel_job",
       "factory_media_capacity_log",
+      "factory_plan_create",
+      "factory_plan_import",
+      "factory_plan_update",
+      "factory_plan_close",
+      "factory_plan_get",
+      "factory_plan_list",
+      "factory_plan_todo",
+      "factory_plan_report",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -316,6 +343,11 @@ test("factory_get_capabilities reports the factory API version 1.3.0, READ and W
       "factory_media_stop_session",
       "factory_media_create_job",
       "factory_media_cancel_job",
+      "factory_plan_create",
+      "factory_plan_import",
+      "factory_plan_update",
+      "factory_plan_close",
+      "factory_plan_report",
     ],
   });
 });
@@ -630,4 +662,38 @@ test("FO-REQ-0005: a media refusal thrown as another bundle's DomainError keeps 
   const error = (result.payload as { error: { code: string; details: { usedBy: unknown } } }).error;
   assert.equal(error.code, "media_model_in_use");
   assert.deepEqual(error.details.usedBy, usedBy);
+});
+
+// BL-143 (ADR 0029): the plan writes pass the device mutation gate first and reach nothing behind a closed one; the plan
+// reads do not need it.
+test("BL-143: factory_plan writes pass the device mutation gate first; get/list/todo are reads", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const writes: Array<[string, Record<string, unknown>, string]> = [
+    ["factory_plan_create", { planId: "p1", title: "T", channelId: "UC_A", stages: [{ stageId: "generate", title: "G", kind: "in_app" }] }, "plan.create:p1"],
+    ["factory_plan_import", { plan: { format: "ytm-generation-plan/1" } }, "plan.import"],
+    ["factory_plan_update", { planId: "p1", title: "T2" }, "plan.update:p1"],
+    ["factory_plan_close", { planId: "p1", status: "completed" }, "plan.close:p1"],
+    ["factory_plan_report", { planId: "p1", rows: [{ stageId: "validate" }] }, "plan.report:p1"],
+  ];
+  for (const [name, args, reached] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate", reached], name);
+  }
+  toolDeps.gateClosed.value = true;
+  for (const [name, args] of writes) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, args), withToken(token))))).isError, true, name);
+    assert.deepEqual(toolDeps.mediaCalls, ["gate"], name);
+  }
+  for (const [name, args, reached] of [
+    ["factory_plan_get", { planId: "p1" }, "plan.get:p1"],
+    ["factory_plan_list", {}, "plan.list"],
+    ["factory_plan_todo", { planId: "p1" }, "plan.todo:p1"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [reached], name);
+  }
 });

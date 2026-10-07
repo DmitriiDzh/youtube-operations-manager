@@ -5,6 +5,7 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
+import { createGenerationPlansCore } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError } from "@/lib/media-generation";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
@@ -143,6 +144,17 @@ function createToolDeps(): FactoryToolDeps {
       capacityLog: async ({ since, gpuTypeId, limit }) => ({
         attempts: await createMediaGenerationCore().listCapacityAttempts({ ...(since ? { since: new Date(since) } : {}), ...(gpuTypeId ? { gpuTypeId } : {}), ...(limit ? { limit } : {}) }),
       }),
+    },
+    // BL-143 (ADR 0029): generation plans; every write is the factory's.
+    plans: {
+      create: async (input) => ({ ...(await createGenerationPlansCore().createPlan(input, "factory")) }),
+      importPlan: async (input) => ({ ...(await createGenerationPlansCore().importPlan(input, "factory")) }),
+      update: async (input) => ({ ...(await createGenerationPlansCore().updatePlan(input, "factory")) }),
+      close: async (input) => ({ ...(await createGenerationPlansCore().closePlan(input, "factory")) }),
+      get: async (input) => ({ ...(await createGenerationPlansCore().getPlan(input)) }),
+      list: async (input) => ({ plans: await createGenerationPlansCore().listPlans(input) }),
+      todo: async (input) => ({ ...(await createGenerationPlansCore().todo(input)) }),
+      report: async (input) => ({ ...(await createGenerationPlansCore().report(input, "factory")) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };
