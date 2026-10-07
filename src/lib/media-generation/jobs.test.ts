@@ -521,6 +521,23 @@ test("sweepInterruptedJobs fails every non-terminal job as interrupted", async (
   assert.match((await f.services.getJob({ jobId: j.jobId })).error ?? "", /interrupted/);
 });
 
+// BL-143 (ADR 0029, AC-GP-08): a job created for a plan attempt keeps the plan fields; one without them has plan null.
+// The interrupted error starts with "interrupted" (the plans module reads that as an interrupted attempt).
+test("BL-143: createJob stores the plan attempt it is part of; a plain job has no plan; validateJobParams checks without creating", async () => {
+  const f = fixture({ comfy: fakeComfy([null, null]) });
+  const t = await importDefault(f.services);
+  const planned = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "x" }, createdBy: "factory", plan: { planId: "R-0001", stageId: "generate", itemKey: "C1/F1", seed: 7 } });
+  assert.deepEqual(planned.plan, { planId: "R-0001", stageId: "generate", itemKey: "C1/F1", seed: 7 });
+  assert.deepEqual((await f.services.getJob({ jobId: planned.jobId })).plan, { planId: "R-0001", stageId: "generate", itemKey: "C1/F1", seed: 7 });
+  const plain = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "y" }, createdBy: "agent" });
+  assert.equal(plain.plan, null);
+  assert.deepEqual((await f.services.validateJobParams({ templateId: t.templateId, params: { prompt: "z" } })).values.prompt, "z");
+  await assert.rejects(f.services.validateJobParams({ templateId: t.templateId, params: { nope: 1 } }), (e: unknown) => isDomainError(e) && e.code === "media_job_params_invalid");
+  assert.equal((await f.services.listJobs({})).length, 2, "validation created nothing");
+  await f.services.sweepInterruptedJobs();
+  assert.match((await f.services.getJob({ jobId: planned.jobId })).error ?? "", /^interrupted/);
+});
+
 // -- AC-P14-14: janitor ------------------------------------------------------------------------------
 
 test("AC-P14-14: the janitor lists only exchange/, skips exchange/in/ and unknown/non-terminal jobs, deletes terminal leftovers; dry-run deletes nothing", async () => {

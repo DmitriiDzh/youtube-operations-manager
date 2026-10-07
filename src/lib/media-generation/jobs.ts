@@ -94,6 +94,11 @@ export type StoredJobRow = {
   createdAt: Date;
   submittedAt: Date | null;
   finishedAt: Date | null;
+  // Schema v66 (BL-143): the plan attempt (absent on rows read before it).
+  planId?: string | null;
+  planStageId?: string | null;
+  planItemKey?: string | null;
+  planSeed?: number | null;
 };
 
 export type ExchangeLedgerRow = { remoteKey: string; jobId: string; localPath: string; bytes: number; sha256: string; pulledAt: Date; remoteDeletedAt: Date | null };
@@ -336,6 +341,7 @@ export function toPublicJob(row: StoredJobRow): MediaJob {
     createdAt: row.createdAt.toISOString(),
     submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    plan: row.planId ? { planId: row.planId, stageId: row.planStageId ?? null, itemKey: row.planItemKey ?? null, seed: row.planSeed ?? null } : null,
   };
 }
 
@@ -1550,6 +1556,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         createdAt: now,
         submittedAt: null,
         finishedAt: null,
+        ...(parsed.plan ? { planId: parsed.plan.planId, planStageId: parsed.plan.stageId, planItemKey: parsed.plan.itemKey, planSeed: parsed.plan.seed ?? null } : {}),
       });
       let comfy: ComfyUiClient;
       try {
@@ -1598,6 +1605,16 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     },
 
     processJob,
+
+    /**
+     * BL-143: the template and parameter checks `createJob` makes, without creating anything -- so a plan run can check every
+     * job before it creates the first. Returns the full value map (defaults filled in).
+     */
+    async validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean> }): Promise<{ templateId: string; templateVersion: number; values: Record<string, string | number | boolean>; parameterNames: string[] }> {
+      const template = await requireTemplate(input.templateId);
+      const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
+      return { templateId: template.id, templateVersion: template.version, values: resolveParams(parameters, input.params), parameterNames: parameters.map((p) => p.name) };
+    },
 
     async getJob(input: unknown): Promise<MediaJob> {
       const { jobId } = parseWithSchema(jobIdInputSchema, input, "job id");

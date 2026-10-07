@@ -50,7 +50,7 @@ test("waiting, error and unavailable say so plainly; unavailable reminds that th
 });
 
 function job(jobId: string, sessionId: string, status: MediaJob["status"], createdAt: string): MediaJob {
-  return { jobId, sessionId, channelId: "UC1", templateId: "t", templateVersion: 1, params: {}, status, createdBy: "factory", promptId: null, outputs: [], assetIds: [], error: null, createdAt, submittedAt: null, finishedAt: null };
+  return { jobId, sessionId, channelId: "UC1", templateId: "t", templateVersion: 1, params: {}, status, createdBy: "factory", promptId: null, outputs: [], assetIds: [], error: null, createdAt, submittedAt: null, finishedAt: null, plan: null };
 }
 
 test("Now on a session: the generating job, and how many others of that session still wait", () => {

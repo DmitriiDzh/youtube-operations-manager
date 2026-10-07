@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { lstat, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { createExchangeFs } from "./adapters/fs";
-import { resolveFromYtmDir, resolveSentToYtmFile } from "./services";
+import { resolveFromYtmDir, resolveFromYtmJobFile, resolveSentToYtmFile } from "./services";
 
 // Behaviour fixed by ADR 0019 (amendment 2026-10-04): the folder is exactly <workspace>/99 Data Exchange/From YTM,
 // created when missing, refused when a symlink or a file sits at any of the three paths; nothing else is touched.
@@ -117,6 +117,39 @@ test("AC-FM-11: a path escaping Sent to YTM (.., absolute, backslash, a symlink 
     await assert.rejects(resolve("missing.png"), /is not in/);
   } finally {
     await rm(ws, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// BL-143 (ADR 0029, AC-GP-14): a job output the owner listens to is served only from that job's own folder under From YTM.
+test("BL-143 resolveFromYtmJobFile: only a regular file inside From YTM/<subdir>/<jobId>/; a symlink out, another job's file or a missing file is refused", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "ytm-job-file-")));
+  const outside = await realpath(await mkdtemp(path.join(tmpdir(), "ytm-job-outside-")));
+  try {
+    const workspace = path.join(root, "ws");
+    const jobDir = path.join(workspace, "99 Data Exchange", "From YTM", "media", "job-1");
+    const otherDir = path.join(workspace, "99 Data Exchange", "From YTM", "media", "job-2");
+    await mkdir(jobDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+    await writeFile(path.join(jobDir, "track.mp3"), "0123456789");
+    await writeFile(path.join(otherDir, "other.mp3"), "x");
+    await writeFile(path.join(outside, "secret.txt"), "s");
+    await symlink(path.join(outside, "secret.txt"), path.join(jobDir, "link.mp3"));
+    const resolve = (jobId: string, filePath: string) =>
+      resolveFromYtmJobFile({ workspace, subdir: "media", jobId, filePath, fs: createExchangeFs(), validateWorkspacePath: async () => ({ ok: true }), isPathInsideOrEqual, unavailable: (reason) => new Error(reason) });
+    assert.deepEqual(await resolve("job-1", path.join(jobDir, "track.mp3")), { path: path.join(jobDir, "track.mp3"), bytes: 10 });
+    await assert.rejects(resolve("job-1", path.join(jobDir, "link.mp3")), /outside the job's output folder/);
+    await assert.rejects(resolve("job-1", path.join(otherDir, "other.mp3")), /outside the job's output folder/);
+    await assert.rejects(resolve("job-1", path.join(jobDir, "missing.mp3")), /not on this device/);
+    await assert.rejects(resolve("job-1", jobDir), /outside the job's output folder/, "the folder itself");
+    await assert.rejects(resolve("../job-2", path.join(otherDir, "other.mp3")), /not a job folder/);
+    await assert.rejects(resolve("job-9", path.join(jobDir, "track.mp3")), /not in the workspace/);
+    // A symlinked job folder pointing at the workspace root is refused (it would expose every workspace file).
+    await symlink(workspace, path.join(workspace, "99 Data Exchange", "From YTM", "media", "job-3"));
+    await writeFile(path.join(workspace, "private.mp3"), "p");
+    await assert.rejects(resolve("job-3", path.join(workspace, "private.mp3")), /not a plain folder/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
 });

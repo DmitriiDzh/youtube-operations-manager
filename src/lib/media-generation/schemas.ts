@@ -82,6 +82,8 @@ export const requestSessionInputSchema = z
     /** BL-133: GPU candidates to try in order (else the device's GPU + fallback list). */
     gpu: gpuPlanSchema.optional(),
     requestedBy: z.enum(["operator", "agent", "factory"]),
+    /** BL-143 (ADR 0029): the generation plan this session works for; checked by the plans module before the request. */
+    planId: z.string().min(2).max(80).optional(),
   })
   .strict();
 
@@ -143,6 +145,11 @@ export const createJobInputSchema = z
     templateId: z.string().min(1).max(64),
     params: z.record(parameterNameSchema, scalarSchema).default({}),
     createdBy: z.enum(["operator", "agent", "factory"]),
+    /** BL-143 (ADR 0029): the plan attempt this job is; checked by the plans module before the job is created. */
+    plan: z
+      .object({ planId: z.string().min(2).max(80), stageId: z.string().min(1).max(40), itemKey: z.string().min(1).max(120), seed: z.number().int().min(0).nullable().optional() })
+      .strict()
+      .optional(),
   })
   .strict();
 

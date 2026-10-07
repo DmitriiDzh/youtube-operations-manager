@@ -18,6 +18,7 @@ import {
   WorkflowTemplatesCard,
   useMediaOverview,
 } from "./media-generation-settings";
+import { PlansPanel } from "./generation-plans-panel";
 
 // Phase 14 slice 6 (owner, Telegram 2026-10-05, msg 1549; PHASE_14_PLAN.md §5.2, AC-P14-26): the Production section --
 // remote media generation's day-to-day work. Tabs are ordered by how often they are visited: the work tabs on the left
@@ -27,6 +28,8 @@ import {
 export const PRODUCTION_TABS = [
   { value: "sessions", label: "Sessions", side: "work" },
   { value: "jobs", label: "Jobs", side: "work" },
+  // BL-143 (ADR 0029, AC-GP-15): generation plans, next to the jobs they are made of.
+  { value: "plans", label: "Plans", side: "work" },
   { value: "models", label: "Models", side: "work" },
   { value: "templates", label: "Workflow templates", side: "work" },
   { value: "setup", label: "Setup", side: "setup" },
@@ -151,6 +154,9 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
       </div>
       <div className={tab === "jobs" ? "space-y-6" : "hidden"}>
         <JobsCard activeChannelId={activeChannelId} />
+      </div>
+      <div className={tab === "plans" ? "space-y-6" : "hidden"}>
+        <PlansPanel active={tab === "plans"} />
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
         <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />

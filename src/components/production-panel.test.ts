@@ -8,12 +8,14 @@ import { describeBalance, PRODUCTION_TABS } from "./production-panel";
 // (sub-tab renamed "RunPod"); a Production section right after Content holds the work, its tabs ordered by frequency
 // of use -- work on the left, setup on the right: Sessions → Jobs → Models → Workflow templates → Setup.
 
-test("AC-P14-26: Production's tabs are Sessions, Jobs, Models, Workflow templates (work, left) then Setup (right)", () => {
+// Changed requirement (BL-143, ADR 0029, AC-GP-15 in GENERATION_PLANS_PLAN.md): a Plans tab after Jobs.
+test("AC-P14-26 / AC-GP-15: Production's tabs are Sessions, Jobs, Plans, Models, Workflow templates (work, left) then Setup (right)", () => {
   assert.deepEqual(
     PRODUCTION_TABS.map((t) => [t.label, t.side]),
     [
       ["Sessions", "work"],
       ["Jobs", "work"],
+      ["Plans", "work"],
       ["Models", "work"],
       ["Workflow templates", "work"],
       ["Setup", "setup"],

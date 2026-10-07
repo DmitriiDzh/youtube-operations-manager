@@ -154,6 +154,12 @@ export type DomainErrorCode =
   | "media_model_in_use"
   | "media_template_registry_unavailable"
   | "media_input_unavailable"
+  // BL-143 (ADR 0029) generation plans: unknown plan; a write on a completed/cancelled plan; a report, job or run that does
+  // not fit the plan (stage kind, item, channel, session, template); a plan definition that is not valid as a whole.
+  | "plan_not_found"
+  | "plan_closed"
+  | "plan_mismatch"
+  | "plan_invalid"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

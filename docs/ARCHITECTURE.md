@@ -2904,3 +2904,36 @@ current job, its progress, how many wait). **Live-verified 2026-10-07** on an RT
 ACE-Step 1.5 2B turbo template: `execution_start`, `execution_cached`, `executing` per node, `progress_state` and the
 KSampler's `progress` (8 of 8) all arrived, node 1 included (the socket connected before the submit). ComfyUI sends
 nothing while a node works before its first step, so such a stretch shows only the node name.
+
+
+## 29. Generation plans (BL-143, ADR 0029) — phase 1
+
+- **Module:** `src/lib/generation-plans/` (contracts / schemas / services / progress / adapters/store / index). It depends on
+  `media-generation` through a port (`PlanMediaPort`: get a session, link a session to a plan, check job params, create a job,
+  read a job's outputs); `media-generation` imports nothing from it (test AC-GP-16).
+- **Storage (schema v66, device-local):**
+  - `generation_plans` holds the definition (stages, groups, items with job `params` and `seeds`) as one JSON document, changed only
+    by a compare-and-swap on `revision`.
+  - `generation_plan_results` holds external-stage reports, verdicts and imported attempts. Its key is (plan, stage, item,
+    attempt), so a repeat replaces the row.
+  - `generation_plan_events` holds the owner's re-run requests, group notes and plan writes, each with its actor.
+  - `media_jobs.plan_id/plan_stage_id/plan_item_key/plan_seed` and `media_sessions.plan_id` link the media rows to a plan.
+- **Derived, never stored:** in-app attempts are the linked jobs. Job status maps to queued/running/done/failed; a job whose
+  error starts with "interrupted" is an interrupted attempt. Imported attempts are added unless a linked job carries the same
+  ref. `progress.ts` computes, from those rows and the plan's sessions when a plan is read:
+  - per-stage counts;
+  - per-item `missing` (fixed: target − usable attempts; until_accepted: target − accepted − pending, capped by `maxAttempts`);
+  - waiting-for-review attempts;
+  - spend (final `usdCharged`, live cost while running);
+  - budget warnings at 80 % / 100 %;
+  - ETA from finished jobs on the current GPU type;
+  - events with a `since` cursor.
+- **Runs:** `runStage` / `rerun` check everything first: a running session the factory started, of the plan's channel, not
+  another plan's; then each job's template and params (`validateJobParams`), and a `seed` parameter when seeds are used. Only
+  then do they create jobs one by one. A create failure after the checks returns the jobs created so far and `stoppedAt`.
+- **Review:** `reviewQueue` lists the attempts that passed the stage before `owner_review`. `resolveAudition` picks the latest
+  reported `auditionFile`, else the job's own output.
+  - The audition route resolves that file through `workspace-exchange`: `resolveSentToYtmFile`, or the new
+    `resolveFromYtmJobFile`, which accepts a file only inside `From YTM/media/<jobId>` after realpath.
+  - It serves allowlisted types with Range support.
+  - The player (`media-review-player.tsx`) loads `wavesurfer.js` and its regions plugin on mount and knows nothing about plans.

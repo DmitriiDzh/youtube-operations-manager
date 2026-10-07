@@ -32,6 +32,17 @@ const EXPECTED_TOOLS = [
   "factory_media_stop_session",
   "factory_media_storage_status",
   "factory_media_sync_templates",
+  "factory_plan_clone_group",
+  "factory_plan_close",
+  "factory_plan_create",
+  "factory_plan_get",
+  "factory_plan_import",
+  "factory_plan_list",
+  "factory_plan_report",
+  "factory_plan_rerun",
+  "factory_plan_run_stage",
+  "factory_plan_todo",
+  "factory_plan_update",
 ];
 
 function registeredNames(): string[] {
@@ -42,6 +53,7 @@ function registeredNames(): string[] {
       async listChannels() { return []; },
       async recordOutcome() {},
       media: {} as never,
+      plans: {} as never,
       async assertMutationAllowed() {},
     },
     { connectionEnabled: true, session: { tokenId: "t", async reverify() {} } }
@@ -70,7 +82,7 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
 
 // AC-FO-09 as amended by ADR 0025 (BL-132) and ADR 0026 (BL-133): the factory writes ONLY through the tools named in
 // FACTORY_WRITE_TOOL_NAMES (four media actions, then its own sessions and jobs; FO-REQ-0005 adds deleting and adopting a
-// local template); every other tool is a read; no tool sets a path, a workspace or a token, and none approves or rejects a
+// local template; BL-143 / ADR 0029 adds its generation plans: create, import, update, close, report); every other tool is a read; no tool sets a path, a workspace or a token, and none approves or rejects a
 // session for anyone else.
 test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/session/job actions; everything else is a read; nothing sets a path, workspace or token", () => {
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
@@ -84,10 +96,18 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_media_start_session",
     "factory_media_stop_session",
     "factory_media_sync_templates",
+    "factory_plan_clone_group",
+    "factory_plan_close",
+    "factory_plan_create",
+    "factory_plan_import",
+    "factory_plan_report",
+    "factory_plan_rerun",
+    "factory_plan_run_stage",
+    "factory_plan_update",
   ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
-    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity))_?/, `${name} must be a read`);
+    if (!writes.has(name)) assert.match(name, /^factory_(get|list|media_(get|list|storage|capacity)|plan_(get|list|todo))_?/, `${name} must be a read`);
     assert.doesNotMatch(name, /_(set|issue|revoke)_|workspace|token|approve|reject/, `${name} must not touch paths, workspaces or tokens, or approve for anyone`);
   }
 });
@@ -116,6 +136,8 @@ test("§2.5(3): the factory route and endpoint reach only the allowlisted module
     // BL-132: the media core (models, storage, templates) and the shared device mutation gate for the write tools.
     "@/lib/media-generation",
     "@/lib/device-mutation-gate",
+    // BL-143 (ADR 0029): the generation plans core for the factory_plan_* tools.
+    "@/lib/generation-plans",
     "@/mcp/factory-server",
   ]);
   assert.deepEqual(route.filter((spec) => !routeAllowed.has(spec)), []);
@@ -138,8 +160,8 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.4.0 since DEV-MSG-0001), separate from the channel agents' version", async () => {
-  assert.equal(FACTORY_API_VERSION, "1.4.0");
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.5.0 since BL-143), separate from the channel agents' version", async () => {
+  assert.equal(FACTORY_API_VERSION, "1.5.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

@@ -97,7 +97,18 @@ non-owning device is view-only: it plays the file if present, but the verdict bu
 1. `wavesurfer.js`: yes.
 2. Reason chips: the starting list in §2 for now.
 3. Loudness match: stays in phase 3 as proposed.
-4. Spectrogram and rating 1–5 (group C): yes, in phase 3.
+4. Spectrogram (group C): yes, in phase 3.
+5. msg 1939 (accepting the Factory Operator's FO-MSG-0008 additions): **moved into phase 1**:
+   - a rating **out of 10** (not 1–5);
+   - a comment on every track;
+   - "mark at playhead";
+   - blind mode as a toggle, off by default;
+   - "ask for a re-run";
+   - the validator's `atSeconds` markers on the waveform;
+   - the reason list from R-0001: thin / sparse; dropout / pause; abrupt start; dead tail / abrupt end; ringing / whine; wrong
+     instrument; stuck loop; sounds like the others; not melodic / boring; unwanted beat / drums; plus free text.
+
+   A/B against a library track stays in phase 3 with loudness match. Plan: `GENERATION_PLANS_PLAN.md`.
 
 ## 7a. The questions as asked
 

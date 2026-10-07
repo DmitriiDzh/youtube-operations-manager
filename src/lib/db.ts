@@ -820,6 +820,8 @@ export const mediaSessions = sqliteTable(
     capacityAttempts: integer("capacity_attempts"),
     capacityNextAttemptAt: integer("capacity_next_attempt_at", { mode: "timestamp" }),
     capacityWaitUntil: integer("capacity_wait_until", { mode: "timestamp" }),
+    /** Schema v66 (BL-143, ADR 0029): the generation plan this session works for (its whole cost counts there). */
+    planId: text("plan_id"),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -885,8 +887,13 @@ export const mediaJobs = sqliteTable(
       .$defaultFn(() => new Date()),
     submittedAt: integer("submitted_at", { mode: "timestamp" }),
     finishedAt: integer("finished_at", { mode: "timestamp" }),
+    // Schema v66 (BL-143, ADR 0029): the generation plan attempt this job is (all null = not part of a plan).
+    planId: text("plan_id"),
+    planStageId: text("plan_stage_id"),
+    planItemKey: text("plan_item_key"),
+    planSeed: integer("plan_seed"),
   },
-  (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status)]
+  (table) => [index("media_jobs_session_idx").on(table.sessionId), index("media_jobs_status_idx").on(table.status), index("media_jobs_plan_idx").on(table.planId)]
 );
 
 /**
@@ -921,6 +928,70 @@ export const mediaCapacityAttempts = sqliteTable(
     detail: text("detail"),
   },
   (table) => [index("media_capacity_attempts_at_idx").on(table.at)]
+);
+
+/**
+ * Schema v66 (BL-143, ADR 0029): a generation plan. The definition (stages, groups, items with their job params) is one
+ * JSON document changed only by a compare-and-swap on `revision`; in-app progress is read from `media_jobs.plan_id`,
+ * never copied. Device-local (owned by the device whose factory endpoint created it).
+ */
+export const generationPlans = sqliteTable(
+  "generation_plans",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    channelId: text("channel_id").notNull(),
+    owner: text("owner", { enum: ["factory", "operator"] }).notNull(),
+    status: text("status", { enum: ["active", "completed", "cancelled"] }).notNull(),
+    budgetUsd: real("budget_usd"),
+    budgetGpuMinutes: real("budget_gpu_minutes"),
+    note: text("note"),
+    definitionJson: text("definition_json").notNull(),
+    revision: integer("revision").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+    closedAt: integer("closed_at", { mode: "timestamp" }),
+  },
+  (table) => [index("generation_plans_status_idx").on(table.status)]
+);
+
+/**
+ * Schema v66: one row per (plan, stage, item, attempt) of an external stage, an owner verdict, or an attempt imported from a
+ * plan file; a repeated report replaces the row. Checks/metrics/markers are bounded JSON written by the plans module.
+ */
+export const generationPlanResults = sqliteTable(
+  "generation_plan_results",
+  {
+    planId: text("plan_id").notNull(),
+    stageId: text("stage_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    attemptRef: text("attempt_ref").notNull(),
+    result: text("result").notNull(),
+    reportedBy: text("reported_by").notNull(),
+    note: text("note"),
+    rating: integer("rating"),
+    reasonsJson: text("reasons_json"),
+    markersJson: text("markers_json"),
+    auditionFile: text("audition_file"),
+    checksJson: text("checks_json"),
+    metricsJson: text("metrics_json"),
+    at: integer("at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.planId, table.stageId, table.itemKey, table.attemptRef] }), index("generation_plan_results_at_idx").on(table.planId, table.at)]
+);
+
+/** Schema v66: things that happened to a plan that no other row records (an owner's re-run request, a group note change). */
+export const generationPlanEvents = sqliteTable(
+  "generation_plan_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    planId: text("plan_id").notNull(),
+    at: integer("at", { mode: "timestamp" }).notNull(),
+    kind: text("kind").notNull(),
+    actor: text("actor").notNull(),
+    detailsJson: text("details_json"),
+  },
+  (table) => [index("generation_plan_events_plan_idx").on(table.planId, table.at)]
 );
 
 export const mediaExchangeInputs = sqliteTable(
@@ -3444,6 +3515,70 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 66,
+    description:
+      "generation_plans + generation_plan_results + generation_plan_events, media_jobs.plan_id/plan_stage_id/plan_item_key/plan_seed, media_sessions.plan_id -- BL-143 (ADR 0029, FO-REQ-0006, owner 2026-10-07): generation plans; in-app progress is read from the jobs. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plans (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        status TEXT NOT NULL,
+        budget_usd REAL,
+        budget_gpu_minutes REAL,
+        note TEXT,
+        definition_json TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        closed_at INTEGER
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plans_status_idx ON generation_plans (status)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_results (
+        plan_id TEXT NOT NULL,
+        stage_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        attempt_ref TEXT NOT NULL,
+        result TEXT NOT NULL,
+        reported_by TEXT NOT NULL,
+        note TEXT,
+        rating INTEGER,
+        reasons_json TEXT,
+        markers_json TEXT,
+        audition_file TEXT,
+        checks_json TEXT,
+        metrics_json TEXT,
+        at INTEGER NOT NULL,
+        PRIMARY KEY (plan_id, stage_id, item_key, attempt_ref)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_results_at_idx ON generation_plan_results (plan_id, at)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        details_json TEXT
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_events_plan_idx ON generation_plan_events (plan_id, at)");
+      for (const statement of [
+        "ALTER TABLE media_jobs ADD COLUMN plan_id TEXT",
+        "ALTER TABLE media_jobs ADD COLUMN plan_stage_id TEXT",
+        "ALTER TABLE media_jobs ADD COLUMN plan_item_key TEXT",
+        "ALTER TABLE media_jobs ADD COLUMN plan_seed INTEGER",
+        "ALTER TABLE media_sessions ADD COLUMN plan_id TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_plan_idx ON media_jobs (plan_id)");
     },
   },
 ];
@@ -8178,6 +8313,119 @@ export async function transitionMediaJob(
     .where(and(eq(mediaJobs.id, id), inArray(mediaJobs.status, [...from])))
     .returning();
   return rows[0] ?? null;
+}
+
+// -- BL-143 (ADR 0029): generation plans ----------------------------------------------------------------------------------
+
+export type StoredGenerationPlan = typeof generationPlans.$inferSelect;
+export type StoredGenerationPlanResult = typeof generationPlanResults.$inferSelect;
+export type StoredGenerationPlanEvent = typeof generationPlanEvents.$inferSelect;
+
+/** `null` when a plan with this id already exists (the id is chosen by the caller). */
+export async function insertGenerationPlan(row: typeof generationPlans.$inferInsert, database: AppDb = db): Promise<StoredGenerationPlan | null> {
+  const rows = await database.insert(generationPlans).values(row).onConflictDoNothing().returning();
+  return rows[0] ?? null;
+}
+
+export async function getGenerationPlan(id: string, database: AppDb = db): Promise<StoredGenerationPlan | null> {
+  const [row] = await database.select().from(generationPlans).where(eq(generationPlans.id, id));
+  return row ?? null;
+}
+
+export async function listGenerationPlans(filter: { status?: StoredGenerationPlan["status"]; channelId?: string }, database: AppDb = db): Promise<StoredGenerationPlan[]> {
+  const conditions = [filter.status ? eq(generationPlans.status, filter.status) : undefined, filter.channelId ? eq(generationPlans.channelId, filter.channelId) : undefined].filter((c) => c !== undefined);
+  const query = database.select().from(generationPlans);
+  return (conditions.length > 0 ? query.where(and(...conditions)) : query).orderBy(desc(generationPlans.updatedAt)).limit(500);
+}
+
+/** Compare-and-swap on `revision`: `null` when the plan changed meanwhile (or does not exist). */
+export async function updateGenerationPlan(
+  id: string,
+  expectedRevision: number,
+  set: Partial<Omit<typeof generationPlans.$inferInsert, "id" | "revision">>,
+  database: AppDb = db
+): Promise<StoredGenerationPlan | null> {
+  const rows = await database
+    .update(generationPlans)
+    .set({ ...set, revision: expectedRevision + 1 })
+    .where(and(eq(generationPlans.id, id), eq(generationPlans.revision, expectedRevision)))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Inserts or replaces each (plan, stage, item, attempt) row, all in one transaction. */
+export async function upsertGenerationPlanResults(rows: Array<typeof generationPlanResults.$inferInsert>, database: AppDb = db): Promise<void> {
+  if (rows.length === 0) return;
+  await database.transaction(async (tx) => {
+    for (const row of rows) {
+      const replaced = {
+        result: row.result,
+        reportedBy: row.reportedBy,
+        note: row.note ?? null,
+        rating: row.rating ?? null,
+        reasonsJson: row.reasonsJson ?? null,
+        markersJson: row.markersJson ?? null,
+        auditionFile: row.auditionFile ?? null,
+        checksJson: row.checksJson ?? null,
+        metricsJson: row.metricsJson ?? null,
+        at: row.at,
+      };
+      await tx
+        .insert(generationPlanResults)
+        .values(row)
+        .onConflictDoUpdate({ target: [generationPlanResults.planId, generationPlanResults.stageId, generationPlanResults.itemKey, generationPlanResults.attemptRef], set: replaced });
+    }
+  });
+}
+
+export async function listGenerationPlanResults(planId: string, database: AppDb = db): Promise<StoredGenerationPlanResult[]> {
+  return database.select().from(generationPlanResults).where(eq(generationPlanResults.planId, planId)).orderBy(asc(generationPlanResults.at));
+}
+
+export async function insertGenerationPlanEvent(row: Omit<typeof generationPlanEvents.$inferInsert, "id">, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanEvents).values(row);
+}
+
+export async function listGenerationPlanEvents(planId: string, database: AppDb = db): Promise<StoredGenerationPlanEvent[]> {
+  // The newest 5000 (a long plan's oldest events drop off, never its new ones), returned oldest first.
+  const rows = await database.select().from(generationPlanEvents).where(eq(generationPlanEvents.planId, planId)).orderBy(desc(generationPlanEvents.at), desc(generationPlanEvents.id)).limit(5000);
+  return rows.reverse();
+}
+
+/** Every job of a plan (no limit beyond a safety cap: a plan has at most a few thousand attempts). */
+export async function listMediaJobsByPlan(planId: string, database: AppDb = db): Promise<StoredMediaJob[]> {
+  return database.select().from(mediaJobs).where(eq(mediaJobs.planId, planId)).orderBy(asc(mediaJobs.createdAt)).limit(10_000);
+}
+
+/**
+ * Links an existing job to a plan attempt (a plan import naming `job:<id>`): only a job of the plan's channel that is not
+ * part of a plan yet. `true` when this call linked it.
+ */
+export async function linkMediaJobToPlan(
+  jobId: string,
+  link: { planId: string; stageId: string; itemKey: string; channelId: string },
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(mediaJobs)
+    .set({ planId: link.planId, planStageId: link.stageId, planItemKey: link.itemKey })
+    .where(and(eq(mediaJobs.id, jobId), eq(mediaJobs.channelId, link.channelId), isNull(mediaJobs.planId)))
+    .returning({ id: mediaJobs.id });
+  return rows.length > 0;
+}
+
+/** Sets a session's plan when it has none (or already this one); `true` when the session now works for this plan. */
+export async function linkMediaSessionToPlan(sessionId: string, planId: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .update(mediaSessions)
+    .set({ planId })
+    .where(and(eq(mediaSessions.id, sessionId), or(isNull(mediaSessions.planId), eq(mediaSessions.planId, planId))))
+    .returning({ id: mediaSessions.id });
+  return rows.length > 0;
+}
+
+export async function listMediaSessionsByPlan(planId: string, database: AppDb = db): Promise<Array<typeof mediaSessions.$inferSelect>> {
+  return database.select().from(mediaSessions).where(eq(mediaSessions.planId, planId)).orderBy(asc(mediaSessions.createdAt)).limit(1000);
 }
 
 export async function upsertMediaExchangeFile(

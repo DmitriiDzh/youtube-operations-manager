@@ -5,6 +5,7 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
+import { createGenerationPlansCore } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError } from "@/lib/media-generation";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
@@ -105,8 +106,11 @@ function createToolDeps(): FactoryToolDeps {
           if (!template) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: input.templateId } });
           gpu = template.gpu ?? undefined;
         }
+        // BL-143: a session for a plan -- the plan must be active and of this channel.
+        if (input.planId) await createGenerationPlansCore().checkSessionLink({ planId: input.planId, channelId: input.channelId });
         return core.factoryStartSession({
           channelId: input.channelId,
+          ...(input.planId ? { planId: input.planId } : {}),
           ...(input.maxMinutes !== undefined ? { maxMinutes: input.maxMinutes } : {}),
           ...(input.maxUsd !== undefined ? { maxUsd: input.maxUsd } : {}),
           ...(gpu ? { gpu } : {}),
@@ -119,9 +123,12 @@ function createToolDeps(): FactoryToolDeps {
         return { session: await factorySession(sessionId) };
       },
       endSession: async ({ sessionId }) => ({ session: await createMediaGenerationCore().factoryStopSession({ sessionId }) }),
-      createJob: async ({ sessionId, templateId, params }) => {
+      createJob: async ({ sessionId, templateId, params, planId, itemKey, seed }) => {
         const session = await factorySession(sessionId);
-        return { job: await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory" }) };
+        // BL-143: a job that names a plan attempt -- all checked by the plans module before the job exists.
+        if ((planId === undefined) !== (itemKey === undefined)) throw new DomainError({ code: "validation_failed", message: "Give planId and itemKey together (seed is optional)." });
+        const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
+        return { job: await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) }) };
       },
       getJob: async ({ jobId, sessionId }) => {
         const core = createMediaGenerationCore();
@@ -143,6 +150,20 @@ function createToolDeps(): FactoryToolDeps {
       capacityLog: async ({ since, gpuTypeId, limit }) => ({
         attempts: await createMediaGenerationCore().listCapacityAttempts({ ...(since ? { since: new Date(since) } : {}), ...(gpuTypeId ? { gpuTypeId } : {}), ...(limit ? { limit } : {}) }),
       }),
+    },
+    // BL-143 (ADR 0029): generation plans; every write is the factory's.
+    plans: {
+      create: async (input) => ({ ...(await createGenerationPlansCore().createPlan(input, "factory")) }),
+      importPlan: async (input) => ({ ...(await createGenerationPlansCore().importPlan(input, "factory")) }),
+      update: async (input) => ({ ...(await createGenerationPlansCore().updatePlan(input, "factory")) }),
+      close: async (input) => ({ ...(await createGenerationPlansCore().closePlan(input, "factory")) }),
+      get: async (input) => ({ ...(await createGenerationPlansCore().getPlan(input)) }),
+      list: async (input) => ({ plans: await createGenerationPlansCore().listPlans(input) }),
+      todo: async (input) => ({ ...(await createGenerationPlansCore().todo(input)) }),
+      report: async (input) => ({ ...(await createGenerationPlansCore().report(input, "factory")) }),
+      runStage: async (input) => ({ ...(await createGenerationPlansCore().runStage(input)) }),
+      rerun: async (input) => ({ ...(await createGenerationPlansCore().rerun(input)) }),
+      cloneGroup: async (input) => ({ ...(await createGenerationPlansCore().cloneGroup(input, "factory")) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

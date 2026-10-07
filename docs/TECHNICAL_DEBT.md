@@ -1811,6 +1811,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Residual:** the template sync does not take the volume lock, so a template added to the registry index in the milliseconds between a deletion's usage check and its `deleteObject` is not seen by that check.
 - **Possible fix:** a daily pull cap (owner answer O4: none for now); an approval queue like GPU sessions (owner chose direct actions); run the delete inside the registry sync's serialization.
 - **BL-133 extension (2026-10-06, ADR 0026):** the factory token can now also start GPU sessions without a click -- only within the owner's factory limits (per session USD and minutes, per day, per month; master switch on by default, owner msg 1683) and the device's own daily cap and concurrency; above them its start waits for the owner. A running factory session counts with its full USD cap. It can stop only its own sessions.
+- **BL-143 extension (2026-10-07, ADR 0029):** `factory_plan_run_stage` creates several jobs in one call (one per item attempt still missing), only inside a running session the factory itself started for the plan's channel, after checking every job first; the spend bound is unchanged (the session's own caps and the factory limits). Plan writes are audited in `generation_plan_events` with the actor.
 - **Re-evaluate:** if the factory limits are raised substantially, or the endpoint ever becomes reachable off-loopback.
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner decisions D1/O4, 2026-10-06).
 
