@@ -11,9 +11,10 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { initializeDatabaseSchema } from "@/lib/db";
-import { createClient } from "@libsql/client";
+import { createClient, type Client } from "@libsql/client";
 import {
   SNAPSHOT_REPLACE_ON_IMPORT_TABLES,
+  SNAPSHOT_DEVICE_LOCAL_TABLES,
   SnapshotError,
   type SnapshotManifest,
   type SqlExecutor,
@@ -351,6 +352,41 @@ export async function verifySnapshotForImport(params: {
   return { manifest, isDuplicateOfCurrent, ancestors, supersedes: lineageFile?.supersedes ?? [] };
 }
 
+/** The table a "no such table: X" / "no such table: main.X" error names, else null. */
+export function missingTableOf(error: unknown): string | null {
+  const match = /no such table: (?:main\.)?([A-Za-z0-9_]+)/.exec(error instanceof Error ? error.message : String(error));
+  return match ? match[1] : null;
+}
+
+/**
+ * A published snapshot never contains the device-local tables (scrubbed, SNAPSHOT_DEVICE_LOCAL_TABLES), but a
+ * migration written for a live database may alter or index one of them (v60 logical_paths, v62+ media_sessions, v64+
+ * media_jobs, ...), and staging an older snapshot then failed with "no such table" -- comparing and importing broke
+ * whenever a new migration touched such a table (owner's Windows computer, 2026-10-06 msg 1798 and 2026-10-07 msg
+ * 1999). On the staged copy only, a statement that fails because a DEVICE-LOCAL table is absent is skipped: that
+ * table is never imported from the copy, so there is nothing to migrate. Any other error still fails the staging.
+ */
+export function skippingAbsentDeviceLocalTables(client: Client): Client {
+  const execute: Client["execute"] = (async (statement: Parameters<Client["execute"]>[0], ...rest: unknown[]) => {
+    try {
+      return await (client.execute as (...args: unknown[]) => ReturnType<Client["execute"]>)(statement, ...rest);
+    } catch (error) {
+      const table = missingTableOf(error);
+      if (table && Object.prototype.hasOwnProperty.call(SNAPSHOT_DEVICE_LOCAL_TABLES, table)) {
+        return { rows: [], columns: [], columnTypes: [], rowsAffected: 0, lastInsertRowid: undefined, toJSON: () => ({}) } as unknown as Awaited<ReturnType<Client["execute"]>>;
+      }
+      throw error;
+    }
+  }) as Client["execute"];
+  return new Proxy(client, {
+    get(target, prop) {
+      if (prop === "execute") return execute;
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 /**
  * Brings a standalone copy of the snapshot's data.db up to this build's current schema
  * version -- reusing `initializeDatabaseSchema` exactly (no parallel migration
@@ -360,7 +396,7 @@ export async function verifySnapshotForImport(params: {
 export async function migrateStagedCopy(stagedDbPath: string): Promise<void> {
   const client = createClient({ url: `file:${stagedDbPath}` });
   try {
-    await initializeDatabaseSchema(client);
+    await initializeDatabaseSchema(skippingAbsentDeviceLocalTables(client));
     // initializeDatabaseSchema leaves the connection in WAL mode (its own PRAGMA). A later
     // ATTACH of this same file from a *different* connection (applySnapshotToDatabase, still
     // inside the live DB's transaction) was observed to fail with "database staged is locked"
