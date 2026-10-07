@@ -32,7 +32,8 @@ export type SyncCycleResult = {
 export type DocumentFamilyForSync = {
   exportBytes(channelId: string): Promise<Uint8Array>;
   /** Throws a DomainError with code "not_found" when there is nothing local to push yet. */
-  mergeIncoming(channelId: string, incomingBytes: Uint8Array): Promise<{ newConflictsCount: number }>;
+  /** `peerDeviceId` is the device the file is named after (per-device report families check the report matches it). */
+  mergeIncoming(channelId: string, incomingBytes: Uint8Array, peerDeviceId: string): Promise<{ newConflictsCount: number }>;
   /** The explicit, human-triggered "discard my local copy, adopt this peer's version instead"
    * resolution for a divergent lineage (`peersSkipped`'s `divergent_document_lineage` reason) --
    * generalized here (2026-09-23) from `change-drafts-sync/services.ts`'s own bespoke
@@ -97,7 +98,7 @@ export function createSyncRunner(deps: SyncRunnerDeps) {
 
     for (const peer of peerFiles) {
       try {
-        const result = await deps.family.mergeIncoming(channelId, peer.bytes);
+        const result = await deps.family.mergeIncoming(channelId, peer.bytes, peer.deviceId);
         peersMerged.push(peer.deviceId);
         newConflictsCount += result.newConflictsCount;
       } catch (error) {

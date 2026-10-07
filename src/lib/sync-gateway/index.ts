@@ -54,5 +54,9 @@ export { createMediaSessionsShareCoreForProduction } from "./media-sessions";
 export type { MediaSessionsReport, SharedMediaSession } from "./media-sessions";
 export { MEDIA_SESSIONS_REPORT_FORMAT } from "./media-sessions";
 export { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
+// BL-143 phase 2: generation plans of every device (per-device reports, `./per-device-report`).
+export { createGenerationPlansShareCoreForProduction, createGenerationPlansShareCore, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportSchema, jobOutputPathSchema } from "./generation-plans";
+export type { GenerationPlansReport, GenerationPlansShareCore, SharedPlan, SharedReviewEntry, SharedVerdict } from "./generation-plans";
+export { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 
 export { runAllSyncFamiliesOnce } from "./run-all-families";

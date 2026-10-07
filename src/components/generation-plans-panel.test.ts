@@ -26,3 +26,11 @@ test("events read as one line: a stopped session says why, a verdict says the ra
   assert.equal(describeEvent({ at: "", kind: "owner_verdict", actor: "owner", details: { itemKey: "C8/U04", result: "rejected", rating: 6 } }), "your verdict C8/U04: rejected 6/10");
   assert.equal(describeEvent({ at: "", kind: "job_interrupted", actor: "app", details: { itemKey: "C6/F1", error: "interrupted by a server restart" } }), "job interrupted C6/F1: interrupted by a server restart");
 });
+
+test("a report's age reads in minutes, then hours", async () => {
+  const { describeAge } = await import("./generation-plans-panel");
+  const now = Date.parse("2026-10-07T12:00:00Z");
+  assert.equal(describeAge("2026-10-07T11:59:40Z", now), "just now");
+  assert.equal(describeAge("2026-10-07T11:53:00Z", now), "7 min ago");
+  assert.equal(describeAge("2026-10-07T09:00:00Z", now), "3 h ago");
+});

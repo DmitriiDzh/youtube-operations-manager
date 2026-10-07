@@ -38,6 +38,29 @@ Telegram. Each wave needed 8–14 hand-built job calls. The owner gave listening
 6. **Factory API 1.5.0** (additive): eleven `factory_plan_*` tools, plus optional plan fields on `factory_media_create_job` and
    `factory_media_start_session`.
 
+## Phase 2 (2026-10-07): other devices
+
+Plan: `docs/roadmap/plans/GENERATION_PLANS_PHASE_2_PLAN.md`; scope decided by the owner in msgs 1951/1952.
+
+- **Transport:** a sync-gateway family, `generation-plans`.
+  - Each device publishes its own plans report: plans, derived progress, the review queue with the job output as
+    `media/<jobId>/<file>`, and its outgoing verdicts. It keeps the latest report of each peer.
+  - The per-device report mechanics were extracted from `media-sessions` into `sync-gateway/per-device-report`, so both
+    families share one implementation.
+- **Other devices are read-only for plans.** The owner may give a verdict there.
+  - The verdict is stored as an outgoing verdict (schema v67) and carried in that device's report.
+  - The owning device applies it on its tick as an owner verdict noting the device. The newest verdict wins, so applying
+    the same one twice changes nothing.
+- **The audio plays from the receiving device's own copy of the channel workspace,** through the same checks.
+- **Deferred:** jobs of one plan run on several devices. Only one Factory Operator runs at a time (msg 1952).
+- **Trust:** a device in the owner's Syncthing folder is trusted like a local plan.
+  - A device's report must name the device its file is named after.
+  - A peer report chooses the channel of its plans, so a peer can make this device play an allowlisted file from that
+    channel's `Sent to YTM` or `From YTM/media/*`. That plays only to a browser on this computer, and the folders are the same
+    ones a local plan may use.
+  - Peer verdicts are applied once per `verdictId`. A verdict dated more than 5 minutes ahead is not taken.
+  - Outgoing verdicts are not part of a device snapshot: a handoff drops the ones not yet applied.
+
 ## Alternatives rejected
 
 - **A status file written by the factory** (DEV-RESP-0008 §3 option A): it would have two writers.
@@ -52,4 +75,5 @@ Telegram. Each wave needed 8–14 hand-built job calls. The owner gave listening
     `generation_plan_events`;
   - columns on `media_jobs` and `media_sessions`.
 - **RISK-109 grows:** one factory call can create several jobs. The bounds stay the session caps and the factory limits.
-- **Not changed:** agent tools (phase 3), cross-device visibility (phase 2), and the YouTube write and read paths.
+- **Schema v67** (phase 2): `generation_plan_peer_verdicts`.
+- **Not changed:** agent tools (phase 3) and the YouTube write and read paths.

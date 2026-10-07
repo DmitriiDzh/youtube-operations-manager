@@ -998,8 +998,9 @@ test("recordGatewayCallOutcome: prunes events older than the retention window on
 
 // sync_family_status (2026-09-23, Merge-tab redesign) -- persistent per-family last-sync outcome,
 // upserted (one row per family), unlike gateway_call_events' own append-only rolling window above.
-// BL-138 (owner, 2026-10-06) added a fourth family, media_sessions: the requirement "every known family has a row" is unchanged.
-test("getSyncFamilyStatuses: every family (four since BL-138) reports a never-synced row before any cycle completes", () =>
+// BL-138 (owner, 2026-10-06) added a fourth family, media_sessions; BL-143 phase 2 (2026-10-07) a fifth, generation_plans: the
+// requirement "every known family has a row" is unchanged.
+test("getSyncFamilyStatuses: every family (five since BL-143 phase 2) reports a never-synced row before any cycle completes", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -1008,7 +1009,7 @@ test("getSyncFamilyStatuses: every family (four since BL-138) reports a never-sy
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["ai_connections", "change_drafts", "editorial_profile", "media_sessions"]
+      ["ai_connections", "change_drafts", "editorial_profile", "generation_plans", "media_sessions"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);
