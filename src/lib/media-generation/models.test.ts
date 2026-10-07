@@ -1096,3 +1096,19 @@ test("review: a usage lookup that throws refuses the factory deletion but never 
   await assert.rejects(make().deleteModel({ key: KEY }, { actor: "factory" }), (e: unknown) => isDomainError(e) && e.code === "media_template_registry_unavailable" && /database is locked/.test(e.message));
   assert.deepEqual(await make().deleteModel({ key: KEY }, { actor: "owner" }), { deleted: KEY });
 });
+
+test("FO-REQ-0005 review: a default name that would be hidden (e.g. .cache) needs a targetName; refused before any pod", async () => {
+  const f = fixture();
+  await assert.rejects(f.services.startPull({ repoId: "a/b", file: "x/.cache", folder: "vae" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && /give targetName/.test(e.message));
+  assert.ok(!f.calls.some((c) => c.startsWith("createPod")));
+});
+
+test("FO-REQ-0005 review: ok=false with the EXPECTED hash means the target was taken (the pod did not overwrite) -- said so, not 'hash mismatch'", async () => {
+  const f = fixture({ hub: fakeHub({ sha256: WANT }) });
+  const pull = await f.services.startPull({ repoId: "a/b", file: "m.safetensors", folder: "checkpoints" });
+  f.verdicts.set(`ytm-pulls/${pull.pullId}.json`, JSON.stringify({ ok: false, sha256: WANT, bytes: 1000 }));
+  const [failed] = await f.services.pollPulls();
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /already existed.*nothing was overwritten/);
+  assert.doesNotMatch(failed.error ?? "", /mismatch/);
+});

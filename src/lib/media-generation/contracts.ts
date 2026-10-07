@@ -190,7 +190,8 @@ export type MediaFactorySettingsView = {
   limits: { maxUsdPerSession: number; maxMinutesPerSession: number; maxUsdPerDay: number; maxUsdPerMonth: number };
   /** What the factory's sessions spent, plus what its open ones may still spend up to their caps -- the numbers a start is checked against. */
   spentOrReservedUsd: { today: number; thisMonth: number };
-  /** The device-wide limits every session (owner's and factory's) is also held to. */
+  /** The device-wide limits every session (owner's and factory's) is also held to. `spentTodayUsd` is THIS device's spend only
+   * (a start also counts other devices on the same RunPod account, BL-138). */
   device: { maxUsdPerDay: number; spentTodayUsd: number; maxConcurrentSessions: number; idleMinutes: number };
   gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType };
   capacity: { retrySeconds: number; waitMinutes: number };

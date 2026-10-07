@@ -510,6 +510,10 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         });
       }
     }
+    // The default name follows the same rule as a given one (independent review): never hidden (`.cache` is the HF CLI's).
+    if (parsed.targetName === undefined && !MODEL_TARGET_NAME_PATTERN.test(modelFileName(parsed.file))) {
+      throw new DomainError({ code: "validation_failed", message: `${modelFileName(parsed.file)} cannot be a model file name on the volume; give targetName.`, details: { file: parsed.file } });
+    }
     const expectedKey = pullTargetKey(parsed);
     // The poll declares the pull done when the key has a size: a key that already exists would be "done" on the
     // first tick while the pod still downloads (review round 7). Re-pulling means deleting the old copy first.
@@ -662,7 +666,12 @@ export function createMediaModelServices(deps: ModelServiceDependencies) {
         }
         if (verdict) {
           if (!verdict.ok || verdict.sha256 !== pull.expectedSha256) {
-            await finishPull(pull, "failed", { error: `hash mismatch: expected ${pull.expectedSha256}, the downloaded file has ${verdict.sha256}; the file was deleted`, actualSha256: verdict.sha256, bytes: verdict.bytes });
+            // A matching hash with ok=false means the pod found the target key taken and did not overwrite it (FO-REQ-0005).
+            const error =
+              verdict.sha256 === pull.expectedSha256
+                ? `${pull.expectedKey} already existed when the download finished; nothing was overwritten and the downloaded copy was deleted`
+                : `hash mismatch: expected ${pull.expectedSha256}, the downloaded file has ${verdict.sha256}; the file was deleted`;
+            await finishPull(pull, "failed", { error, actualSha256: verdict.sha256, bytes: verdict.bytes });
             continue;
           }
           const head = await s3!.headObject(pull.expectedKey).catch(() => undefined);

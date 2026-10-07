@@ -443,3 +443,46 @@ test("FO-REQ-0005: a pending adoption of a template the owner then deletes is fo
   await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
   assert.ok(h.templates.has(kept.templateId), "the registry does not have kept-one yet");
 });
+
+// Independent review (FO-REQ-0005): the local template is removed ONLY when the registry template under the adopted id is
+// that template -- same graph and parameters. Expected: an unrelated template using the id costs the owner nothing.
+const OTHER_GRAPH = {
+  "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "flux1-schnell-fp8.safetensors" } },
+  "6": { class_type: "CLIPTextEncode", inputs: { text: "a completely different prompt graph", clip: ["4", 1] } },
+  "9": { class_type: "SaveImage", inputs: { filename_prefix: "Other", images: ["6", 0] } },
+};
+
+test("FO-REQ-0005 review: adopting into an id installed with a DIFFERENT graph is refused and the local template is kept", async () => {
+  const h = harness();
+  h.publish([{ templateId: "flux-schnell", version: 3, overrides: { workflow: OTHER_GRAPH } }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "factory" });
+  const local = await importLocal(h);
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: "flux-schnell" }), (e: unknown) => isDomainError(e) && e.code === "media_template_invalid" && /different graph or parameters/.test(e.message));
+  assert.ok(h.templates.has(local.templateId));
+  assert.equal(h.events.some((e) => e.action === "template_adopted"), false);
+});
+
+test("FO-REQ-0005 review: a sync that installs OTHER content under a pending adoption's id keeps the local copy and says so", async () => {
+  const h = harness();
+  h.publish([]);
+  const local = await importLocal(h);
+  const adoption = await h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: "flux-owner" });
+  assert.equal(adoption.status, "pending");
+  h.publish([{ templateId: "flux-owner", version: 1, overrides: { workflow: OTHER_GRAPH } }]);
+  const result = await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.deepEqual(result?.installed, [{ templateId: "flux-owner", version: 1 }]);
+  assert.ok(h.templates.has(local.templateId), "the owner's template is not deleted");
+  assert.ok(result?.invalid.some((i) => i.templateId === "flux-owner" && /local copy is kept/.test(i.reason)));
+  // Same key order or not: content written back exactly as adopt returned it completes the adoption.
+  h.folder.set("flux-owner.v2.json", JSON.stringify({ ...adoption.template, version: 2 }));
+  h.folder.set("index.json", indexFile([{ templateId: "flux-owner", version: 2 }]));
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.equal(h.templates.has(local.templateId), false);
+});
+
+test("FO-REQ-0005 review: adopting into the local template's own id is refused with a message that says so", async () => {
+  const h = harness();
+  h.publish([]);
+  const local = await importLocal(h);
+  await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: local.templateId }), (e: unknown) => isDomainError(e) && /own id/.test(e.message));
+});

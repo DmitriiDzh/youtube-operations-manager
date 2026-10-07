@@ -603,6 +603,27 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     if (adoptions.some((a) => a.localTemplateId === localTemplateId)) await writeAdoptions(adoptions.filter((a) => a.localTemplateId !== localTemplateId));
   }
 
+  /** JSON with sorted keys, so two graphs/parameter lists written in a different key order compare equal. */
+  function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value as Record<string, unknown>).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  /**
+   * Independent review (FO-REQ-0005): an adoption is complete only when the installed registry template IS the local one
+   * (same graph, same parameters) -- an unrelated template that happens to use the id must never cost the owner theirs.
+   */
+  function sameTemplateContent(a: StoredTemplateRow, b: StoredTemplateRow): boolean {
+    try {
+      return canonicalJson(JSON.parse(a.workflowJson)) === canonicalJson(JSON.parse(b.workflowJson)) && canonicalJson(JSON.parse(a.parametersJson)) === canonicalJson(JSON.parse(b.parametersJson));
+    } catch {
+      return false;
+    }
+  }
+
   /** The local copy goes once the registry template is installed here (the factory's adoption, so recorded as the factory's). */
   async function completeAdoption(local: StoredTemplateRow, templateId: string): Promise<void> {
     await deps.store.templates.delete(local.id);
@@ -641,7 +662,15 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
     const existing = await deps.store.templates.get(parsed.newTemplateId);
     if (existing && (existing.source ?? "owner") !== "factory") {
-      throw new DomainError({ code: "media_template_invalid", message: `${parsed.newTemplateId} is the id of another local template on this device; choose another id.`, details: { newTemplateId: parsed.newTemplateId } });
+      const which = existing.id === local.id ? "this local template's own id" : "the id of another local template on this device";
+      throw new DomainError({ code: "media_template_invalid", message: `${parsed.newTemplateId} is ${which}; choose a registry id.`, details: { newTemplateId: parsed.newTemplateId } });
+    }
+    if (existing && !sameTemplateContent(existing, local)) {
+      throw new DomainError({
+        code: "media_template_invalid",
+        message: `${parsed.newTemplateId} is already installed from the registry (v${existing.version}) with a different graph or parameters; choose another id. Nothing was changed.`,
+        details: { newTemplateId: parsed.newTemplateId, installedVersion: existing.version },
+      });
     }
     const adoptions = await readAdoptions();
     const clash = adoptions.find((a) => a.templateId === parsed.newTemplateId && a.localTemplateId !== local.id);
@@ -696,15 +725,19 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     // 2. Each listed template. The fingerprint covers this device's template rows too (independent review): a change there
     // (e.g. the owner deleted a local template whose id blocked a registry one) is picked up by the 60 s check as well.
     const rows = await deps.store.templates.list();
-    const fingerprintOf = (current: StoredTemplateRow[]) =>
+    // Pending adoptions are part of it too (independent review): a target installed by another process between an adopt and
+    // its record must still be settled by the next 60 s check.
+    const adoptionsText = async () => (deps.adoptions ? await deps.adoptions.get() : null);
+    const fingerprintOf = (current: StoredTemplateRow[], adoptions: string | null) =>
       registryContentSha256(
         JSON.stringify([
           snapshot.indexText,
+          adoptions,
           ...[...files.entries()].map(([name, text]) => [name, text === null ? null : registryContentSha256(text)]),
           ...current.map((r) => [r.id, r.version, r.source ?? "owner", r.registrySha256 ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
         ])
       );
-    if (input.onlyIfChanged && fingerprintOf(rows) === lastRegistryFingerprint) return null;
+    if (input.onlyIfChanged && fingerprintOf(rows, await adoptionsText()) === lastRegistryFingerprint) return null;
     for (const entry of index.templates) {
       const { templateId, version } = entry;
       const text = files.get(registryTemplateFileName(templateId, version)) ?? null;
@@ -784,12 +817,17 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       const installed = await deps.store.templates.list();
       for (const adoption of await readAdoptions()) {
         const local = installed.find((r) => r.id === adoption.localTemplateId && (r.source ?? "owner") !== "factory");
+        const target = installed.find((r) => r.id === adoption.templateId && r.source === "factory");
         if (!local) await forgetAdoption(adoption.localTemplateId);
-        else if (installed.some((r) => r.id === adoption.templateId && r.source === "factory")) await completeAdoption(local, adoption.templateId);
+        else if (target && sameTemplateContent(target, local)) await completeAdoption(local, adoption.templateId);
+        else if (target) {
+          // Kept, and said so: the registry template under that id is not the adopted one.
+          result.invalid.push({ templateId: adoption.templateId, version: target.version, reason: `adoption of local template ${local.id}: the registry template has a different graph or parameters; the local copy is kept` });
+        }
       }
     }
     // Remembered as the state AFTER this sync's own writes, so the next unchanged tick is skipped.
-    return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list()));
+    return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list(), await adoptionsText()));
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {

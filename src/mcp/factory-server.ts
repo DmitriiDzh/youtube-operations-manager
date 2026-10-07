@@ -11,12 +11,13 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { DomainError } from "@/lib/shared-domain";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 
 /**
  * The factory API's own version (independent of the channel agents' `AGENT_API_VERSION`). 1.1.0 (BL-132, ADR 0025): the
  * media tools; 1.2.0 (BL-133, ADR 0026): GPU sessions within the owner's factory limits, jobs in them, the capacity log;
- * 1.3.0 (FO-REQ-0005): delete/adopt a local template, read the factory settings, `targetName` on a pull -- and a pull now
+ * 1.3.0 (FO-REQ-0005): media refusals keep their codes (were `internal_error`), delete/adopt a local template, read the
+ * factory settings, `targetName` on a pull -- and a pull now
  * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are.
  */
 export const FACTORY_API_VERSION = "1.3.0";
@@ -143,7 +144,10 @@ function mutationGateShape(error: unknown): { code: string; message: string; det
 }
 
 function errorResult(error: unknown, toolName?: string): ToolResponse {
-  const known = error instanceof DomainError ? { code: error.code, message: error.message, details: error.details } : mutationGateShape(error);
+  // `isDomainError`, never `instanceof` (FO-REQ-0005 item 1, the real cause; same fix as 23cab7d for src/mcp/server.ts):
+  // the media core lives on globalThis and is first built by the instrumentation bundle, so its errors are another
+  // bundle's DomainError class -- `instanceof` failed and every media refusal came back as `internal_error`.
+  const known = isDomainError(error) ? { code: error.code, message: error.message, details: error.details } : mutationGateShape(error);
   // An unexpected error is still reported to the role only as `internal_error`, but logged here so it can be diagnosed
   // (FO-REQ-0005: one such answer left no trace at all).
   if (!known) console.error(`[factory-mcp] ${toolName ?? "tool"} failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
@@ -236,7 +240,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         await deps.recordOutcome("blocked");
         // Only a real "token not accepted" is reported as an invalid token. A database failure while re-verifying must not
         // tell the role its (perfectly good) token was revoked (same rule as the endpoint's own 503).
-        return errorResult(error instanceof DomainError && error.code === "AGENT_TOKEN_INVALID" ? error : new Error("token verification unavailable"));
+        return errorResult(isDomainError(error) && error.code === "AGENT_TOKEN_INVALID" ? error : new Error("token verification unavailable"));
       }
       await deps.recordOutcome("allowed");
       try {
@@ -422,7 +426,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_adopt_template",
     {
       description:
-        "Take a LOCAL template over into the template registry: { templateId (the local one), newTemplateId (registry id: 2-63 lower-case letters, digits, '-') } -> { localTemplateId, templateId, fileName, indexEntry, template, status }. Nothing is written to the registry by the app: write `template` exactly as <registry>/<fileName> (version 1; models declared from the graph's loader nodes, sha256 not set -- add it if you want it checked) and add indexEntry to index.json. status 'pending': the local copy stays (and keeps protecting its models) until a sync installs newTemplateId, then it is removed. status 'adopted': newTemplateId was already installed, the local copy is removed now. A template that would not pass the registry checks as it is (e.g. a free-text model parameter) is refused with media_template_invalid, details.problems and details.template. Calling it again returns the same file. Agree it with the owner first; recorded as done by the Factory Operator.",
+        "Take a LOCAL template over into the template registry: { templateId (the local one), newTemplateId (registry id: 2-63 lower-case letters, digits, '-') } -> { localTemplateId, templateId, fileName, indexEntry, template, status }. Nothing is written to the registry by the app: write `template` exactly as <registry>/<fileName> (version 1; models declared from the graph's loader nodes, sha256 not set -- add it if you want it checked) and add indexEntry to index.json. status 'pending': the local copy stays (and keeps protecting its models) until a sync installs newTemplateId, then it is removed. status 'adopted': newTemplateId was already installed with the same graph and parameters, the local copy is removed now. The local copy is only ever removed when the installed registry template has the same graph and parameters; an id already installed with other content is refused (media_template_invalid), and a sync that finds other content under the id keeps the local copy and lists it under invalid. A template that would not pass the registry checks as it is (e.g. a free-text model parameter) is refused with media_template_invalid, details.problems and details.template. Calling it again returns the same file. Agree it with the owner first; recorded as done by the Factory Operator.",
       inputSchema: adoptTemplateInput,
     },
     async (args) => {
@@ -436,7 +440,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_settings",
     {
       description:
-        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd, maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.getSettings())

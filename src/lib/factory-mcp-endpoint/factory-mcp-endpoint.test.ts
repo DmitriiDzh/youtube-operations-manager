@@ -598,3 +598,36 @@ test("FO-REQ-0005: a write refused by the operation lock or recovery mode report
     else assert.equal(error.message, thrown.message);
   }
 });
+
+// FO-REQ-0005 item 1, the cause found by independent review: in the running app the media core is built by the
+// instrumentation bundle (kept on globalThis), so its refusals are a DomainError from ANOTHER copy of the class. The
+// acceptance criterion: deleting a model a local template uses answers `media_model_in_use` with the template ids.
+test("FO-REQ-0005: a media refusal thrown as another bundle's DomainError keeps its code and details (never internal_error)", async () => {
+  class ForeignDomainError extends Error {
+    readonly code: string;
+    readonly details: unknown;
+    constructor(code: string, message: string, details: unknown) {
+      super(message);
+      this.name = "DomainError";
+      this.code = code;
+      this.details = details;
+    }
+  }
+  const usedBy = [{ templateId: "uuid-local-1", version: 1, source: "owner" }];
+  const { endpoint, tokenServices } = setup({
+    toolDeps: {
+      media: {
+        ...fakeToolDeps().deps.media,
+        deleteModel: async () => {
+          throw new ForeignDomainError("media_model_in_use", "models/checkpoints/a.safetensors is used by uuid-local-1 v1 (local); nothing was deleted.", { key: "models/checkpoints/a.safetensors", usedBy });
+        },
+      },
+    },
+  });
+  const { token } = await tokenServices.issueToken({});
+  const result = await toolResult(await endpoint.handle(rpc(call("factory_media_delete_model", { key: "models/checkpoints/a.safetensors" }), withToken(token))));
+  assert.equal(result.isError, true);
+  const error = (result.payload as { error: { code: string; details: { usedBy: unknown } } }).error;
+  assert.equal(error.code, "media_model_in_use");
+  assert.deepEqual(error.details.usedBy, usedBy);
+});
