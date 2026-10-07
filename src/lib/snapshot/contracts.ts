@@ -202,6 +202,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   generation_plans: "generation plans (BL-143, ADR 0029) are owned by the device whose factory endpoint created them; other devices get a read-only report (phase 2), never a copy",
   generation_plan_results: "results of this device's generation plans (BL-143); they belong to the owning device's plan",
   generation_plan_events: "events of this device's generation plans (BL-143)",
+  generation_plan_peer_verdicts: "verdicts given on this device for another device's plans (BL-143 phase 2); they travel in this device's sync report, not in a snapshot",
 });
 
 /**

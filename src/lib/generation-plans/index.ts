@@ -2,6 +2,7 @@ import { hostname } from "node:os";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
+import { randomUUID } from "node:crypto";
 import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
@@ -20,6 +21,11 @@ export function createGenerationPlansCore() {
     store: createPlanStore(),
     channels: { isConnected: async (channelId) => (await channels.listConnectedChannels()).some((c) => c.channelId === channelId) },
     clock: { now: () => new Date() },
+    generateId: () => randomUUID(),
+    peers: {
+      ownDeviceId: async () => (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
+      listPeerReports: () => createGenerationPlansShareCoreForProduction().listPeerReports(),
+    },
     media: {
       async getSession(sessionId) {
         try {
@@ -51,6 +57,8 @@ export async function publishGenerationPlansShare(): Promise<void> {
     host = null;
   }
   const core = createGenerationPlansCore();
+  // First take in the verdicts other devices gave on this device's plans, so this report already shows them applied.
+  await core.applyPeerVerdicts();
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
     version: 1,
@@ -58,6 +66,6 @@ export async function publishGenerationPlansShare(): Promise<void> {
     hostname: host,
     updatedAt: new Date().toISOString(),
     plans: await core.buildSharedPlans(),
-    verdicts: [],
+    verdicts: await core.outgoingVerdicts(),
   });
 }

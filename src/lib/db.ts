@@ -994,6 +994,28 @@ export const generationPlanEvents = sqliteTable(
   (table) => [index("generation_plan_events_plan_idx").on(table.planId, table.at)]
 );
 
+/**
+ * Schema v67 (BL-143 phase 2): verdicts the owner gave on THIS device for plans owned by ANOTHER device. They travel in this
+ * device's generation plans report; the owning device applies them. `at` is an ISO string (millisecond order matters).
+ */
+export const generationPlanPeerVerdicts = sqliteTable(
+  "generation_plan_peer_verdicts",
+  {
+    verdictId: text("verdict_id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    ownerDeviceId: text("owner_device_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    attemptRef: text("attempt_ref").notNull(),
+    result: text("result").notNull(),
+    rating: integer("rating"),
+    reasonsJson: text("reasons_json"),
+    markersJson: text("markers_json"),
+    note: text("note"),
+    at: text("at").notNull(),
+  },
+  (table) => [index("generation_plan_peer_verdicts_at_idx").on(table.at)]
+);
+
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -3579,6 +3601,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         }
       }
       await client.execute("CREATE INDEX IF NOT EXISTS media_jobs_plan_idx ON media_jobs (plan_id)");
+    },
+  },
+  {
+    version: 67,
+    description:
+      "generation_plan_peer_verdicts -- BL-143 phase 2 (owner 2026-10-07): verdicts given on this device for another device's generation plans, carried in this device's plans report until that device applies them. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_peer_verdicts (
+        verdict_id TEXT PRIMARY KEY NOT NULL,
+        plan_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        attempt_ref TEXT NOT NULL,
+        result TEXT NOT NULL,
+        rating INTEGER,
+        reasons_json TEXT,
+        markers_json TEXT,
+        note TEXT,
+        at TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_verdicts_at_idx ON generation_plan_peer_verdicts (at)");
     },
   },
 ];
@@ -8389,6 +8432,19 @@ export async function insertGenerationPlanEvent(row: Omit<typeof generationPlanE
 export async function listGenerationPlanEvents(planId: string, database: AppDb = db): Promise<StoredGenerationPlanEvent[]> {
   // The newest 5000 (a long plan's oldest events drop off, never its new ones), returned oldest first.
   const rows = await database.select().from(generationPlanEvents).where(eq(generationPlanEvents.planId, planId)).orderBy(desc(generationPlanEvents.at), desc(generationPlanEvents.id)).limit(5000);
+  return rows.reverse();
+}
+
+export type StoredGenerationPlanPeerVerdict = typeof generationPlanPeerVerdicts.$inferSelect;
+
+export async function insertGenerationPlanPeerVerdict(row: typeof generationPlanPeerVerdicts.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanPeerVerdicts).values(row);
+}
+
+/** The peer verdicts given since `sinceIso` (newest 1000), oldest first; older ones are deleted (kept 30 days by the caller). */
+export async function listGenerationPlanPeerVerdicts(sinceIso: string, database: AppDb = db): Promise<StoredGenerationPlanPeerVerdict[]> {
+  await database.delete(generationPlanPeerVerdicts).where(lt(generationPlanPeerVerdicts.at, sinceIso));
+  const rows = await database.select().from(generationPlanPeerVerdicts).orderBy(desc(generationPlanPeerVerdicts.at)).limit(1000);
   return rows.reverse();
 }
 

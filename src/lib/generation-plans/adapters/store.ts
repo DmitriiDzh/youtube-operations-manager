@@ -1,5 +1,7 @@
 import {
   getGenerationPlan,
+  insertGenerationPlanPeerVerdict,
+  listGenerationPlanPeerVerdicts,
   insertGenerationPlan,
   insertGenerationPlanEvent,
   linkMediaJobToPlan,
@@ -130,6 +132,34 @@ export function createPlanStore(): PlanStore {
         finishedAt: j.finishedAt ?? null,
       })),
     linkJob: (jobId, link) => linkMediaJobToPlan(jobId, link),
+    insertPeerVerdict: (v) =>
+      insertGenerationPlanPeerVerdict({
+        verdictId: v.verdictId,
+        planId: v.planId,
+        ownerDeviceId: v.ownerDeviceId,
+        itemKey: v.itemKey,
+        attemptRef: v.attemptRef,
+        result: v.result,
+        rating: v.rating,
+        reasonsJson: v.reasons.length > 0 ? JSON.stringify(v.reasons) : null,
+        markersJson: v.markers.length > 0 ? JSON.stringify(v.markers) : null,
+        note: v.note,
+        at: v.at,
+      }),
+    listPeerVerdicts: async (sinceIso) =>
+      (await listGenerationPlanPeerVerdicts(sinceIso)).map((r) => ({
+        verdictId: r.verdictId,
+        planId: r.planId,
+        ownerDeviceId: r.ownerDeviceId,
+        itemKey: r.itemKey,
+        attemptRef: r.attemptRef,
+        result: r.result === "accepted" ? ("accepted" as const) : ("rejected" as const),
+        rating: r.rating ?? null,
+        reasons: parseJson(r.reasonsJson, []),
+        markers: parseJson(r.markersJson, []),
+        note: r.note ?? null,
+        at: r.at,
+      })),
     listSessions: async (planId) =>
       (await listMediaSessionsByPlan(planId)).map((s) => ({
         id: s.id,

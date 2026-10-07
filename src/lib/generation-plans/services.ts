@@ -16,7 +16,7 @@ import {
   type PlanTodo,
   type PlanView,
 } from "./contracts";
-import type { SharedPlan } from "@/lib/sync-gateway";
+import type { GenerationPlansReport, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
 import { inAppAttempts, planEvents, planProgress, planTodo, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
@@ -32,6 +32,7 @@ import {
   listPlansInputSchema,
   ownerVerdictInputSchema,
   parseWithSchema,
+  peerVerdictInputSchema,
   reportInputSchema,
   rerunRequestInputSchema,
   updatePlanInputSchema,
@@ -75,6 +76,10 @@ export type PlanStore = {
   /** Links an existing job of the plan's channel that is in no plan yet; `true` when linked. */
   linkJob(jobId: string, link: { planId: string; stageId: string; itemKey: string; channelId: string }): Promise<boolean>;
   listSessions(planId: string): Promise<PlanSessionRow[]>;
+  /** BL-143 phase 2: verdicts given here on other devices' plans (outgoing). */
+  insertPeerVerdict(verdict: SharedVerdict): Promise<void>;
+  /** The outgoing verdicts given since `sinceIso` (older ones are dropped), oldest first. */
+  listPeerVerdicts(sinceIso: string): Promise<SharedVerdict[]>;
 };
 
 /** BL-143 slice 2: what running a stage needs of the media core (wired in `index.ts`; absent = runs are not available). */
@@ -100,7 +105,14 @@ export type PlanServiceDependencies = {
   channels: { isConnected(channelId: string): Promise<boolean> };
   clock: { now(): Date };
   media?: PlanMediaPort;
+  /** BL-143 phase 2: the other devices' latest plans reports and this device's id (absent = no cross-device view). */
+  peers?: { ownDeviceId(): Promise<string>; listPeerReports(): Promise<GenerationPlansReport[]> };
+  generateId?: () => string;
 };
+
+/** BL-143 phase 2: a peer report older than this is shown as stale (the same 5 minutes as the sessions of other devices). */
+export const PEER_PLANS_STALE_AFTER_MS = 5 * 60_000;
+const PEER_VERDICTS_KEPT_MS = 30 * 24 * 60 * 60_000;
 
 /** A template parameter with this name receives an attempt's seed (GENERATION_PLANS_PLAN.md AC-GP-09). */
 export const SEED_PARAMETER = "seed";
@@ -719,6 +731,99 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   // The rest of the public surface (added to the object returned above).
   const more = {
+    /** BL-143 phase 2: the other devices' plans (read-only), each report with its age and whether it is stale. */
+    async peerPlans(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; plans: SharedPlan[] }>> {
+      if (!deps.peers) return [];
+      const at = now().getTime();
+      return (await deps.peers.listPeerReports()).map((r) => ({ deviceId: r.deviceId, hostname: r.hostname, updatedAt: r.updatedAt, stale: at - Date.parse(r.updatedAt) > PEER_PLANS_STALE_AFTER_MS, plans: r.plans }));
+    },
+
+    /**
+     * AC-GP2-03: the owner's verdict on another device's plan -- only for a plan and attempt in that device's latest report, and
+     * only while the plan is active there. Stored here and carried in this device's report until that device applies it.
+     */
+    async recordPeerVerdict(input: unknown): Promise<SharedVerdict> {
+      const parsed = parseWithSchema(peerVerdictInputSchema, input, "verdict");
+      if (!deps.peers || !deps.generateId) throw planInvalid("Verdicts on other devices' plans are not available in this process");
+      const report = (await deps.peers.listPeerReports()).find((r) => r.deviceId === parsed.deviceId);
+      const plan = report?.plans.find((p) => p.planId === parsed.planId);
+      if (!plan) throw planNotFound(parsed.planId);
+      if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
+      if (!plan.review.some((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef)) {
+        throw planMismatch(`Plan ${parsed.planId} on that device has no attempt ${parsed.attemptRef} of ${parsed.itemKey} to review`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
+      }
+      const verdict: SharedVerdict = {
+        verdictId: deps.generateId(),
+        planId: parsed.planId,
+        ownerDeviceId: parsed.deviceId,
+        itemKey: parsed.itemKey,
+        attemptRef: parsed.attemptRef,
+        result: parsed.result,
+        rating: parsed.rating ?? null,
+        reasons: parsed.reasons ?? [],
+        markers: (parsed.markers ?? []).map((m) => ({ start: m.start, end: m.end ?? null, note: m.note ?? null })),
+        note: parsed.note ?? null,
+        at: now().toISOString(),
+      };
+      await deps.store.insertPeerVerdict(verdict);
+      return verdict;
+    },
+
+    /** The verdicts this device carries for other devices (the last 30 days). */
+    async outgoingVerdicts(): Promise<SharedVerdict[]> {
+      return deps.store.listPeerVerdicts(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString());
+    },
+
+    /**
+     * AC-GP2-04: the verdicts other devices carry for THIS device's plans become owner verdicts here -- newest wins: one not
+     * newer than the owner verdict already stored for that attempt is skipped, so applying the same verdict twice changes
+     * nothing. Closed, unknown or another device's plans and unknown attempts are skipped.
+     */
+    async applyPeerVerdicts(): Promise<{ applied: number; skipped: number }> {
+      if (!deps.peers) return { applied: 0, skipped: 0 };
+      const own = await deps.peers.ownDeviceId();
+      let applied = 0;
+      let skipped = 0;
+      for (const report of await deps.peers.listPeerReports()) {
+        for (const verdict of report.verdicts.filter((v) => v.ownerDeviceId === own)) {
+          const done = await serializedPerPlan(verdict.planId, async () => {
+            const row = await deps.store.getPlan(verdict.planId);
+            const review = row?.definition.stages.find((s) => s.kind === "owner_review");
+            if (!row || row.status !== "active" || !review) return false;
+            const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+            const known = inAppAttempts(row.definition, jobs, results).some((a) => a.itemKey === verdict.itemKey && a.attemptRef === verdict.attemptRef) || results.some((r) => r.itemKey === verdict.itemKey && r.attemptRef === verdict.attemptRef);
+            if (!known) return false;
+            const current = results.find((r) => r.stageId === review.stageId && r.itemKey === verdict.itemKey && r.attemptRef === verdict.attemptRef && r.reportedBy === "owner");
+            // Stored times are whole seconds: a verdict in the same second as the stored one is the same or an older one.
+            if (current && Math.floor(Date.parse(current.at) / 1000) >= Math.floor(Date.parse(verdict.at) / 1000)) return false;
+            const from = `(from ${report.hostname ?? report.deviceId})`;
+            await deps.store.upsertResults(row.id, [
+              {
+                stageId: review.stageId,
+                itemKey: verdict.itemKey,
+                attemptRef: verdict.attemptRef,
+                result: verdict.result,
+                reportedBy: "owner",
+                note: verdict.note ? `${verdict.note} ${from}` : from,
+                rating: verdict.rating,
+                reasons: verdict.reasons,
+                markers: verdict.markers,
+                auditionFile: null,
+                checks: [],
+                metrics: {},
+                at: verdict.at,
+              },
+            ]);
+            await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: report.hostname ?? report.deviceId, itemKey: verdict.itemKey, result: verdict.result });
+            return true;
+          });
+          if (done) applied++;
+          else skipped++;
+        }
+      }
+      return { applied, skipped };
+    },
+
     /**
      * BL-143 phase 2 (AC-GP2-01): what the other devices may see of this device's plans -- active ones and those closed in the
      * last 30 days (newest first, at most 50): header, stages, groups, items WITHOUT params, the derived progress, the last 50

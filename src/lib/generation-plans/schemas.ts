@@ -164,6 +164,19 @@ export const ownerVerdictInputSchema = z
   })
   .strict();
 
+/** BL-143 phase 2: the owner's verdict on ANOTHER device's plan (carried there in this device's report). */
+export const peerVerdictInputSchema = z
+  .object({
+    deviceId: z.string().min(1).max(128),
+    planId: planIdSchema,
+    itemKey: itemKeySchema,
+    attemptRef: attemptRefSchema,
+    result: z.enum(["accepted", "rejected"]),
+    note: noteSchema.nullable().optional(),
+    ...verdictFieldsSchema,
+  })
+  .strict();
+
 export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
 
 export const rerunRequestInputSchema = z.object({ planId: planIdSchema, itemKey: itemKeySchema, attemptRef: attemptRefSchema.optional(), note: noteSchema.nullable().optional() }).strict();
