@@ -84,6 +84,9 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_request_media_session: "bound",
   agent_get_media_session: "bound",
   agent_get_media_limits: "bound",
+  // BL-143 phase 3: read-only generation plans of the session's channel.
+  agent_list_generation_plans: "bound",
+  agent_get_generation_plan: "bound",
   agent_create_media_job: "bound",
   agent_get_media_job: "bound",
   agent_cancel_media_job: "bound",

@@ -461,6 +461,23 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "The owner's media limits in USD (maxUsdPerDay, spentTodayUsd, remainingTodayUsd), defaultMaxMinutes, idleMinutes, whether the setup is complete (ready/missing), this channel's open sessions (openSessions; openSession = the first), maxConcurrentSessions, activeSessionCount and deviceHasOpenSession. Local read only. Implemented as the `agent_get_media_limits` MCP tool. Requires channelId to be the caller's currently-active channel.",
   },
+  // BL-143 phase 3 (ADR 0029): the Factory Operator's generation plans for this channel, read-only.
+  {
+    id: "media_generation.list_generation_plans",
+    mcpTools: ["agent_list_generation_plans"],
+    domain: "media_generation",
+    permission: "READ",
+    description:
+      "This channel's media generation plans (made and run by the Factory Operator): stages, waves with the owner's notes, items without job params, and the derived progress (per-stage counts, accepted/rejected per item, spend against the budget, ETA, notices). Implemented as the `agent_list_generation_plans` MCP tool (`src/lib/generation-plans/`). Local read only. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "media_generation.get_generation_plan",
+    mcpTools: ["agent_get_generation_plan"],
+    domain: "media_generation",
+    permission: "READ",
+    description:
+      "One of this channel's generation plans with its events, including the owner's listening verdicts (rating out of 10, reasons, time markers, note); job error texts are left out. A plan of another channel behaves like one that does not exist. Implemented as the `agent_get_generation_plan` MCP tool. Local read only. Requires channelId to be the caller's currently-active channel.",
+  },
   {
     id: "media_generation.create_media_job",
     mcpTools: ["agent_create_media_job"],
