@@ -63,6 +63,10 @@ function createToolDeps(): FactoryToolDeps {
       },
       cancelPull: async (input) => ({ pull: await createMediaGenerationCore().cancelPull(input, { actor: "factory" }) }),
       deleteModel: async (input) => createMediaGenerationCore().deleteModel(input, { actor: "factory" }),
+      // FO-REQ-0005.
+      deleteTemplate: async (input) => createMediaGenerationCore().deleteWorkflowTemplate(input, { actor: "factory" }),
+      adoptTemplate: async (input) => createMediaGenerationCore().adoptWorkflowTemplate(input),
+      getSettings: async () => ({ settings: await createMediaGenerationCore().getFactorySettings() }),
       listTemplates: async () => {
         const core = createMediaGenerationCore();
         const [templates, lastSync, onVolume] = await Promise.all([

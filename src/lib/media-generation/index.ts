@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getMediaSessionJobSummary, insertMediaCapacityAttempt, listMediaCapacityAttempts, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getMediaSessionJobSummary, insertMediaCapacityAttempt, listMediaCapacityAttempts, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -226,6 +226,7 @@ function buildCore(jobScheduling: JobScheduling) {
     }),
     events: createMediaControlEventSink(),
     syncState: { get: () => getMediaTemplateSyncLastJson(), set: (json) => setMediaTemplateSyncLastJson(json) },
+    adoptions: { get: () => getMediaTemplateAdoptionsJson(), set: (json) => setMediaTemplateAdoptionsJson(json) },
   });
   jobsRef = jobs;
   /** BL-132 audit (plan §2.5): newest first. */

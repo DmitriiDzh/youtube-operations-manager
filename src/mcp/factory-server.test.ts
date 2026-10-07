@@ -14,14 +14,17 @@ const EXPECTED_TOOLS = [
   "factory_get_logical_path",
   "factory_list_channels",
   "factory_list_logical_paths",
+  "factory_media_adopt_template",
   "factory_media_cancel_job",
   "factory_media_cancel_pull",
   "factory_media_capacity_log",
   "factory_media_create_job",
   "factory_media_delete_model",
+  "factory_media_delete_template",
   "factory_media_get_job",
   "factory_media_get_pull",
   "factory_media_get_session",
+  "factory_media_get_settings",
   "factory_media_list_models",
   "factory_media_list_templates",
   "factory_media_pull_model",
@@ -66,14 +69,17 @@ test("§2.5(2): the channel-agent server's source never registers a factory_ too
 });
 
 // AC-FO-09 as amended by ADR 0025 (BL-132) and ADR 0026 (BL-133): the factory writes ONLY through the tools named in
-// FACTORY_WRITE_TOOL_NAMES (four media actions, then its own sessions and jobs); every other tool is a read; no tool sets a
-// path, a workspace or a token, and none approves or rejects a session for anyone else.
+// FACTORY_WRITE_TOOL_NAMES (four media actions, then its own sessions and jobs; FO-REQ-0005 adds deleting and adopting a
+// local template); every other tool is a read; no tool sets a path, a workspace or a token, and none approves or rejects a
+// session for anyone else.
 test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/session/job actions; everything else is a read; nothing sets a path, workspace or token", () => {
   assert.deepEqual([...FACTORY_WRITE_TOOL_NAMES].sort(), [
+    "factory_media_adopt_template",
     "factory_media_cancel_job",
     "factory_media_cancel_pull",
     "factory_media_create_job",
     "factory_media_delete_model",
+    "factory_media_delete_template",
     "factory_media_pull_model",
     "factory_media_start_session",
     "factory_media_stop_session",
@@ -132,8 +138,8 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.2.0 since BL-133), separate from the channel agents' version", async () => {
-  assert.equal(FACTORY_API_VERSION, "1.2.0");
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.3.0 since FO-REQ-0005), separate from the channel agents' version", async () => {
+  assert.equal(FACTORY_API_VERSION, "1.3.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

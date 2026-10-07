@@ -26,12 +26,16 @@ import {
 } from "./contracts";
 import type { MediaControlEvent } from "./models";
 import {
+  adoptTemplateInputSchema,
   checkDeclaredModels,
   localTemplateModels,
   parseRegistryIndex,
   parseRegistryTemplate,
+  parseTemplateAdoptions,
   registryContentSha256,
   registryTemplateFileName,
+  type RegistryTemplate,
+  type TemplateAdoption,
 } from "./template-registry";
 import {
   createJobInputSchema,
@@ -177,6 +181,22 @@ export type JobServiceDependencies = {
   events?: { record(event: MediaControlEvent): Promise<void> };
   /** BL-132: where the last sync result is kept (shown in the Web UI and the factory tool). */
   syncState?: { get(): Promise<string | null>; set(json: string): Promise<void> };
+  /** FO-REQ-0005: the pending adoptions of local templates into the registry (`parseTemplateAdoptions`); absent = none kept. */
+  adoptions?: { get(): Promise<string | null>; set(json: string): Promise<void> };
+};
+
+export type TemplateActor = "owner" | "factory";
+
+/** FO-REQ-0005 item 2: what `factory_media_adopt_template` returns -- the registry file to write, ready as it is. */
+export type MediaTemplateAdoption = {
+  localTemplateId: string;
+  templateId: string;
+  /** Write this exact object as `<registry>/<fileName>` and add `indexEntry` to `index.json`. */
+  fileName: string;
+  indexEntry: { templateId: string; version: number };
+  template: RegistryTemplate;
+  /** `pending` = the local copy stays until a sync installs `templateId`; `adopted` = it was already installed, the local copy is gone. */
+  status: "pending" | "adopted";
 };
 
 const DEFAULT_POLL_MS = 4_000;
@@ -569,6 +589,106 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
   }
 
   let registrySyncChain: Promise<unknown> = Promise.resolve();
+
+  async function readAdoptions(): Promise<TemplateAdoption[]> {
+    return parseTemplateAdoptions(deps.adoptions ? await deps.adoptions.get() : null);
+  }
+
+  async function writeAdoptions(adoptions: TemplateAdoption[]): Promise<void> {
+    await deps.adoptions?.set(JSON.stringify(adoptions));
+  }
+
+  async function forgetAdoption(localTemplateId: string): Promise<void> {
+    const adoptions = await readAdoptions();
+    if (adoptions.some((a) => a.localTemplateId === localTemplateId)) await writeAdoptions(adoptions.filter((a) => a.localTemplateId !== localTemplateId));
+  }
+
+  /** JSON with sorted keys, so two graphs/parameter lists written in a different key order compare equal. */
+  function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value as Record<string, unknown>).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  /**
+   * Independent review (FO-REQ-0005): an adoption is complete only when the installed registry template IS the local one
+   * (same graph, same parameters) -- an unrelated template that happens to use the id must never cost the owner theirs.
+   */
+  function sameTemplateContent(a: StoredTemplateRow, b: StoredTemplateRow): boolean {
+    try {
+      // Parameters re-normalized on both sides: a row saved before a normalization field existed still matches its own copy.
+      const parameters = (row: StoredTemplateRow) => canonicalJson((JSON.parse(row.parametersJson) as Array<Parameters<typeof normalizeParameter>[0]>).map(normalizeParameter));
+      return canonicalJson(JSON.parse(a.workflowJson)) === canonicalJson(JSON.parse(b.workflowJson)) && parameters(a) === parameters(b);
+    } catch {
+      return false;
+    }
+  }
+
+  /** The local copy goes once the registry template is installed here (the factory's adoption, so recorded as the factory's). */
+  async function completeAdoption(local: StoredTemplateRow, templateId: string): Promise<void> {
+    await deps.store.templates.delete(local.id);
+    await forgetAdoption(local.id);
+    await recordEvent({ actor: "factory", action: "template_adopted", subject: local.id, details: { name: local.name, templateId } });
+  }
+
+  async function adoptTemplate(input: unknown): Promise<MediaTemplateAdoption> {
+    if (!deps.adoptions) throw new DomainError({ code: "media_template_registry_unavailable", message: "Template adoption is not available on this device." });
+    const parsed = parseWithSchema(adoptTemplateInputSchema, input, "template adoption");
+    const local = await requireTemplate(parsed.templateId);
+    if (local.source === "factory") throw factoryManaged(local.id);
+    const workflow = JSON.parse(local.workflowJson) as Graph;
+    const parameters = JSON.parse(local.parametersJson) as MediaTemplateParameter[];
+    const models = localTemplateModels(workflow, parameters).flatMap((m) => (m.folder ? [{ folder: m.folder, file: m.file }] : []));
+    const body = {
+      schema: "ytm.media-template",
+      schemaVersion: 1,
+      templateId: parsed.newTemplateId,
+      version: 1,
+      name: local.name,
+      ...(local.description ? { description: local.description } : {}),
+      workflow,
+      parameters,
+      models,
+    };
+    // The file must be one a sync accepts as it is: the factory never gets a body it cannot write.
+    const checked = parseRegistryTemplate(JSON.stringify(body), { templateId: parsed.newTemplateId, version: 1 });
+    const problems = checked.ok ? checkDeclaredModels({ workflow, parameters, models }) : [checked.reason];
+    if (!checked.ok || problems.length > 0) {
+      throw new DomainError({
+        code: "media_template_invalid",
+        message: `This template cannot become a registry template as it is: ${problems.join("; ")}`,
+        details: { templateId: local.id, problems, template: body },
+      });
+    }
+    const existing = await deps.store.templates.get(parsed.newTemplateId);
+    if (existing && (existing.source ?? "owner") !== "factory") {
+      const which = existing.id === local.id ? "this local template's own id" : "the id of another local template on this device";
+      throw new DomainError({ code: "media_template_invalid", message: `${parsed.newTemplateId} is ${which}; choose a registry id.`, details: { newTemplateId: parsed.newTemplateId } });
+    }
+    if (existing && !sameTemplateContent(existing, local)) {
+      throw new DomainError({
+        code: "media_template_invalid",
+        message: `${parsed.newTemplateId} is already installed from the registry (v${existing.version}) with a different graph or parameters; choose another id. Nothing was changed.`,
+        details: { newTemplateId: parsed.newTemplateId, installedVersion: existing.version },
+      });
+    }
+    const adoptions = await readAdoptions();
+    const clash = adoptions.find((a) => a.templateId === parsed.newTemplateId && a.localTemplateId !== local.id);
+    if (clash) {
+      throw new DomainError({ code: "media_template_invalid", message: `${parsed.newTemplateId} is already the adoption target of local template ${clash.localTemplateId}; choose another id.`, details: { newTemplateId: parsed.newTemplateId, localTemplateId: clash.localTemplateId } });
+    }
+    const result = { localTemplateId: local.id, templateId: parsed.newTemplateId, fileName: registryTemplateFileName(parsed.newTemplateId, 1), indexEntry: { templateId: parsed.newTemplateId, version: 1 }, template: checked.template };
+    if (existing) {
+      // Already in the registry and installed here: the local copy is no longer needed.
+      await completeAdoption(local, parsed.newTemplateId);
+      return { ...result, status: "adopted" };
+    }
+    await writeAdoptions([...adoptions.filter((a) => a.localTemplateId !== local.id), { localTemplateId: local.id, templateId: parsed.newTemplateId, requestedAt: deps.clock.now().toISOString() }]);
+    await recordEvent({ actor: "factory", action: "template_adoption_requested", subject: local.id, details: { name: local.name, templateId: parsed.newTemplateId } });
+    return { ...result, status: "pending" };
+  }
   /** What the registry read like at the last sync (the 60 s check compares against it). Per process. */
   let lastRegistryFingerprint: string | null = null;
 
@@ -607,15 +727,19 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     // 2. Each listed template. The fingerprint covers this device's template rows too (independent review): a change there
     // (e.g. the owner deleted a local template whose id blocked a registry one) is picked up by the 60 s check as well.
     const rows = await deps.store.templates.list();
-    const fingerprintOf = (current: StoredTemplateRow[]) =>
+    // Pending adoptions are part of it too (independent review): a target installed by another process between an adopt and
+    // its record must still be settled by the next 60 s check.
+    const adoptionsText = async () => (deps.adoptions ? await deps.adoptions.get() : null);
+    const fingerprintOf = (current: StoredTemplateRow[], adoptions: string | null) =>
       registryContentSha256(
         JSON.stringify([
           snapshot.indexText,
+          adoptions,
           ...[...files.entries()].map(([name, text]) => [name, text === null ? null : registryContentSha256(text)]),
           ...current.map((r) => [r.id, r.version, r.source ?? "owner", r.registrySha256 ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
         ])
       );
-    if (input.onlyIfChanged && fingerprintOf(rows) === lastRegistryFingerprint) return null;
+    if (input.onlyIfChanged && fingerprintOf(rows, await adoptionsText()) === lastRegistryFingerprint) return null;
     for (const entry of index.templates) {
       const { templateId, version } = entry;
       const text = files.get(registryTemplateFileName(templateId, version)) ?? null;
@@ -690,8 +814,22 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       }
       result.removed.push({ templateId: row.id, version: row.version });
     }
+    // 4. FO-REQ-0005: a local template whose adoption target is now installed from the registry is removed.
+    if (!dryRun) {
+      const installed = await deps.store.templates.list();
+      for (const adoption of await readAdoptions()) {
+        const local = installed.find((r) => r.id === adoption.localTemplateId && (r.source ?? "owner") !== "factory");
+        const target = installed.find((r) => r.id === adoption.templateId && r.source === "factory");
+        if (!local) await forgetAdoption(adoption.localTemplateId);
+        else if (target && sameTemplateContent(target, local)) await completeAdoption(local, adoption.templateId);
+        else if (target) {
+          // Kept, and said so: the registry template under that id is not the adopted one.
+          result.invalid.push({ templateId: adoption.templateId, version: target.version, reason: `adoption of local template ${local.id}: the registry template has a different graph or parameters; the local copy is kept` });
+        }
+      }
+    }
     // Remembered as the state AFTER this sync's own writes, so the next unchanged tick is skipped.
-    return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list()));
+    return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list(), await adoptionsText()));
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {
@@ -1239,11 +1377,33 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
       return { ...toPublicTemplate(row), workflow: JSON.parse(row.workflowJson) as Graph };
     },
 
-    async deleteWorkflowTemplate(input: unknown): Promise<{ deleted: boolean }> {
+    /**
+     * A local template only (registry ones are removed via the index). FO-REQ-0005 item 2: the factory may delete one
+     * too (agreed with the owner beforehand, no second approval); either way it is recorded with who did it.
+     */
+    async deleteWorkflowTemplate(input: unknown, options: { actor?: TemplateActor } = {}): Promise<{ deleted: boolean }> {
       const { templateId } = parseWithSchema(templateIdInputSchema, input, "template id");
+      const actor = options.actor ?? "owner";
       const existing = await deps.store.templates.get(templateId);
       if (existing?.source === "factory") throw factoryManaged(templateId);
-      return { deleted: await deps.store.templates.delete(templateId) };
+      if (!existing && actor === "factory") throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId } });
+      const deleted = await deps.store.templates.delete(templateId);
+      if (deleted && existing) {
+        await recordEvent({ actor, action: "template_deleted", subject: templateId, details: { name: existing.name, version: existing.version, source: "owner" } });
+        await forgetAdoption(templateId);
+      }
+      return { deleted };
+    },
+
+    /**
+     * FO-REQ-0005 item 2: the factory takes a local template over into the registry. Nothing is written to the registry
+     * here: the complete registry file (version 1, models declared from the graph) is returned for the factory to write.
+     * The local copy is removed only once a sync has installed `newTemplateId` -- or at once when it already is.
+     */
+    async adoptWorkflowTemplate(input: unknown): Promise<MediaTemplateAdoption> {
+      const run = registrySyncChain.then(() => adoptTemplate(input));
+      registrySyncChain = run.catch(() => undefined);
+      return run;
     },
 
     /**

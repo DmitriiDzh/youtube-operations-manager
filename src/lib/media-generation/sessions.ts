@@ -6,6 +6,7 @@ import {
   MEDIA_SESSION_ACTIVE_STATUSES,
   MEDIA_SESSION_NON_TERMINAL_STATUSES,
   type MediaSession,
+  type MediaFactorySettingsView,
   type MediaSessionLimits,
   type MediaGpuPlan,
   type MediaSessionRequester,
@@ -1055,6 +1056,25 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     async listSessions(limit = 50, channelId?: string): Promise<MediaSession[]> {
       const now = deps.clock.now();
       return (await deps.store.list(limit, channelId)).map((row) => toPublicSession(row, now));
+    },
+
+    /** FO-REQ-0005 item 4: the owner's factory settings and the factory's spend, as the start-session check sees them. */
+    async getFactorySettings(): Promise<MediaFactorySettingsView> {
+      const now = deps.clock.now();
+      const [settings, today, month, deviceSpent] = await Promise.all([
+        deps.base.getSettings(),
+        factorySpendUsd(startOfLocalDay(now), now, ""),
+        factorySpendUsd(startOfLocalMonth(now), now, ""),
+        spentTodayUsd(now),
+      ]);
+      return {
+        factorySessionsEnabled: settings.factorySessionsEnabled,
+        limits: { maxUsdPerSession: settings.factoryMaxUsdPerSession, maxMinutesPerSession: settings.factoryMaxMinutesPerSession, maxUsdPerDay: settings.factoryMaxUsdPerDay, maxUsdPerMonth: settings.factoryMaxUsdPerMonth },
+        spentOrReservedUsd: { today, thisMonth: month },
+        device: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: deviceSpent, maxConcurrentSessions: settings.maxConcurrentSessions, idleMinutes: settings.idleMinutes },
+        gpu: { gpuTypeId: settings.gpuTypeId, fallbackIds: [...settings.gpuFallbackIds], minVramGb: settings.gpuMinVramGb, maxPricePerHr: settings.gpuMaxPricePerHr, onDemandPricePerHr: settings.gpuOnDemandPricePerHr, cloudType: settings.cloudType },
+        capacity: { retrySeconds: settings.capacityRetrySeconds, waitMinutes: settings.capacityWaitMinutes },
+      };
     },
 
     async getLimits(): Promise<MediaSessionLimits> {

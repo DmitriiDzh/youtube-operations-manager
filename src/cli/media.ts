@@ -94,7 +94,7 @@ export const HELP = [
   "  models                                  models/ on the volume + recorded pulls (read-only)",
   "  models-poll                             advance the pulls once (terminate finished pull pods); the running server does this on every tick",
 
-  "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--revision main] [--sha256 <hex>] [--cpu cpu3c] [--vcpu 2]",
+  "  model-pull --repo <owner/name> --file <path in repo> --folder <checkpoints|diffusion_models|...> [--revision main] [--sha256 <hex>] [--name <file name on the volume; default: the base name of --file>] [--cpu cpu3c] [--vcpu 2]",
   "  model-rm <models/...key>",
   "  volume-create --name <n> --dc <ID> --size <GB>   creates a network volume (billed monthly)",
   "  volume-copy-probe                               BL-136: creates a 20 GB test volume, copies two files into it over S3, deletes it (if interrupted, delete leftover ytm-copy-probe-* volumes in Production → Setup)",
@@ -267,6 +267,7 @@ export async function runMediaCli(args: {
           folder: requireFlag(parsed.flags, "folder"),
           ...(typeof parsed.flags.revision === "string" ? { revision: parsed.flags.revision } : {}),
           ...(typeof parsed.flags.sha256 === "string" ? { sha256: parsed.flags.sha256 } : {}),
+          ...(typeof parsed.flags.name === "string" ? { targetName: parsed.flags.name } : {}),
           ...(typeof parsed.flags.cpu === "string" ? { cpuFlavorId: parsed.flags.cpu } : {}),
           ...(typeof parsed.flags.vcpu === "string" ? { vcpuCount: Number(parsed.flags.vcpu) } : {}),
         });
