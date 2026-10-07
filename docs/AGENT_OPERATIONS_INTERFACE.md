@@ -1117,3 +1117,12 @@ after the job ends; the agent's own file is never deleted. BL-135 (Agent API 3.6
 one minute after the last job; since 3.7.0 a request without the flag takes the owner's setting (on by default), so pass `false` to keep
 the pod between bursts. It still cannot approve or start one. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
 idle / minutes / USD; every job submit or poll counts as activity. Contract: `docs/interfaces.md`.
+
+**Generation plans (BL-143 phase 3, Agent API 3.8.0):**
+- `agent_list_generation_plans` / `agent_get_generation_plan` show the Factory Operator's plans for this channel, read-only:
+  - stages and waves (with the owner's notes);
+  - items, without job params;
+  - the derived progress and notices;
+  - for one plan, its events. These include the owner's listening verdicts (rating out of 10, reasons, time markers, note);
+    job error texts are left out.
+- An agent cannot create, change, run or close a plan. Contract: `docs/interfaces.md`.
