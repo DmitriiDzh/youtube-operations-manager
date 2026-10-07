@@ -1151,7 +1151,6 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         stoppingOutcome: null,
         lastSeenAliveAt: null,
         terminateSentAt: null,
-        // Owner msgs 1807/1810: only the owner's own request takes the Setup default; agents and the factory decide themselves.
         // DEV-MSG-0001 / FO-MSG-0007 (owner, 2026-10-07 msg 1939): a request without the flag -- the owner's, an agent's or the
         // factory's -- follows the owner's setting; an explicit true/false always wins.
         releaseWhenDone: parsed.releaseWhenDone ?? settings.ownerReleaseWhenDone,

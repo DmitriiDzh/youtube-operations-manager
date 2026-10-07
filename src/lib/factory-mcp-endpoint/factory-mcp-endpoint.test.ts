@@ -272,14 +272,14 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-132 (AC-FM-13): the capabilities answer now reports WRITE and names the write tools; version 1.1.0.
 // BL-133: version 1.2.0 and the seven session/job/capacity tools (four of them writes).
 // FO-REQ-0005: version 1.3.0, delete/adopt a local template (writes) and the settings read.
-test("factory_get_capabilities reports the factory API version 1.3.0, READ and WRITE, the tool list and the write tools", async () => {
+test("factory_get_capabilities reports the factory API version 1.4.0, READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.3.0",
+    factoryApiVersion: "1.4.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",

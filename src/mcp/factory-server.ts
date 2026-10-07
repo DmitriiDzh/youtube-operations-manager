@@ -18,9 +18,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * media tools; 1.2.0 (BL-133, ADR 0026): GPU sessions within the owner's factory limits, jobs in them, the capacity log;
  * 1.3.0 (FO-REQ-0005): media refusals keep their codes (were `internal_error`), delete/adopt a local template, read the
  * factory settings, `targetName` on a pull -- and a pull now
- * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are.
+ * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are;
+ * 1.4.0 (DEV-MSG-0001 / FO-MSG-0007): `factory_media_start_session` without `releaseWhenDone` follows the owner's setting
+ * (before: false).
  */
-export const FACTORY_API_VERSION = "1.3.0";
+export const FACTORY_API_VERSION = "1.4.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [

@@ -138,8 +138,8 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.3.0 since FO-REQ-0005), separate from the channel agents' version", async () => {
-  assert.equal(FACTORY_API_VERSION, "1.3.0");
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.4.0 since DEV-MSG-0001), separate from the channel agents' version", async () => {
+  assert.equal(FACTORY_API_VERSION, "1.4.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });
