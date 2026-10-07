@@ -486,3 +486,31 @@ test("FO-REQ-0005 review: adopting into the local template's own id is refused w
   const local = await importLocal(h);
   await assert.rejects(h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: local.templateId }), (e: unknown) => isDomainError(e) && /own id/.test(e.message));
 });
+
+test("FO-REQ-0005 review 2: different PARAMETERS alone (same graph) also keep the local template; a reordered but equal file completes the adoption", async () => {
+  const h = harness();
+  h.publish([]);
+  const local = await importLocal(h);
+  const adoption = await h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: "flux-owner" });
+  const otherParams = [{ name: "prompt", type: "text", nodeId: "6", input: "text", required: false }];
+  h.publish([{ templateId: "flux-owner", version: 1, overrides: { workflow: GRAPH, parameters: otherParams } }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.ok(h.templates.has(local.templateId), "parameters differ: kept");
+  // The same content with every object's keys in reverse order is the same template.
+  const reverseKeys = (value: unknown): unknown =>
+    Array.isArray(value) ? value.map(reverseKeys) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).reverse().map(([k, v]) => [k, reverseKeys(v)])) : value;
+  h.folder.set("flux-owner.v2.json", JSON.stringify(reverseKeys({ ...adoption.template, version: 2 })));
+  h.folder.set("index.json", indexFile([{ templateId: "flux-owner", version: 2 }]));
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.equal(h.templates.has(local.templateId), false);
+});
+
+test("FO-REQ-0005 review 2: a new pending adoption alone makes the 60 s check run the sync (it is part of the fingerprint)", async () => {
+  const h = harness();
+  h.publish([]);
+  const local = await importLocal(h);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.equal(await h.services.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true }), null, "nothing changed: skipped");
+  await h.services.adoptWorkflowTemplate({ templateId: local.templateId, newTemplateId: "flux-owner" });
+  assert.notEqual(await h.services.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true }), null);
+});

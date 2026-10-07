@@ -605,8 +605,8 @@ export function WorkflowTemplatesCard() {
       </div>
       {lastSync && lastSync.invalid.length > 0 && (
         <ul className="space-y-1 text-xs text-amber-400">
-          {lastSync.invalid.map((i) => (
-            <li key={`${i.templateId}.${i.version}`}>
+          {lastSync.invalid.map((i, index) => (
+            <li key={`${i.templateId}.${i.version}.${index}`}>
               {i.templateId} v{i.version}: {i.reason}
             </li>
           ))}

@@ -618,7 +618,9 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
    */
   function sameTemplateContent(a: StoredTemplateRow, b: StoredTemplateRow): boolean {
     try {
-      return canonicalJson(JSON.parse(a.workflowJson)) === canonicalJson(JSON.parse(b.workflowJson)) && canonicalJson(JSON.parse(a.parametersJson)) === canonicalJson(JSON.parse(b.parametersJson));
+      // Parameters re-normalized on both sides: a row saved before a normalization field existed still matches its own copy.
+      const parameters = (row: StoredTemplateRow) => canonicalJson((JSON.parse(row.parametersJson) as Array<Parameters<typeof normalizeParameter>[0]>).map(normalizeParameter));
+      return canonicalJson(JSON.parse(a.workflowJson)) === canonicalJson(JSON.parse(b.workflowJson)) && parameters(a) === parameters(b);
     } catch {
       return false;
     }
