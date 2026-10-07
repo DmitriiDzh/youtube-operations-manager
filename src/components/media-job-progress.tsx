@@ -75,12 +75,15 @@ export function fromSharedProgress(p: SharedJobProgress): JobLiveProgress {
   };
 }
 
-/** BL-148: "4 done · 1 running · 3 queued · 1 failed" for another device's session (zeros left out). Exported for its test. */
+/**
+ * BL-148: "4 done · 1 in ComfyUI · 3 queued · 1 failed" for another device's session (zeros left out). "In ComfyUI", not "running":
+ * a submitted job may still wait in ComfyUI's own queue (re-review); the job list below says which one runs. Exported for its test.
+ */
 export function describeSessionJobCounts(jobs: Pick<SharedSessionJobs, "counts">): string {
   const { counts } = jobs;
   const parts = [
     counts.done ? `${counts.done} done` : null,
-    counts.running ? `${counts.running} running` : null,
+    counts.running ? `${counts.running} in ComfyUI` : null,
     counts.queued ? `${counts.queued} queued` : null,
     counts.failed ? `${counts.failed} failed` : null,
     counts.cancelled ? `${counts.cancelled} cancelled` : null,

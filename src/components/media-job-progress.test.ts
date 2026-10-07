@@ -79,7 +79,7 @@ test("BL-144 review: when ComfyUI reports which job runs, that one is current an
 
 // BL-148 (CROSS_DEVICE_JOB_PROGRESS_PLAN.md): another device's session reads in the same words as a local one.
 test("another device's job counts leave out zeros", () => {
-  assert.equal(describeSessionJobCounts({ counts: { queued: 3, running: 1, done: 4, failed: 1, cancelled: 0 } }), "4 done · 1 running · 3 queued · 1 failed");
+  assert.equal(describeSessionJobCounts({ counts: { queued: 3, running: 1, done: 4, failed: 1, cancelled: 0 } }), "4 done · 1 in ComfyUI · 3 queued · 1 failed");
   assert.equal(describeSessionJobCounts({ counts: { queued: 0, running: 0, done: 1200, failed: 0, cancelled: 0 } }), "1200 done");
   assert.equal(describeSessionJobCounts({ counts: { queued: 0, running: 0, done: 0, failed: 0, cancelled: 0 } }), "no jobs yet");
 });

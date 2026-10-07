@@ -25,10 +25,14 @@ test("a session's counts cover all its jobs and the running job is listed first 
     await add("running", "s1", "generating", 11);
     for (let i = 0; i < 300; i++) await add(`queued-${String(i).padStart(3, "0")}`, "s1", "queued", 12 + i);
     await add("other-session", "s2", "generating", 0);
+    // Created in the same second: the insertion order decides (re-review).
+    await add("tie-b", "s3", "queued", 5);
+    await add("tie-a", "s3", "queued", 5);
 
     assert.deepEqual(await countMediaJobsForSessionByStatus("s1", database), { done: 10, failed: 1, generating: 1, queued: 300 });
     const open = await listOpenMediaJobsForSession("s1", 5, database);
     assert.deepEqual(open.map((j) => j.id), ["running", "queued-000", "queued-001", "queued-002", "queued-003"]);
+    assert.deepEqual((await listOpenMediaJobsForSession("s3", 5, database)).map((j) => j.id), ["tie-b", "tie-a"]);
     assert.deepEqual(await countMediaJobsForSessionByStatus("unknown", database), {});
   } finally {
     client.close();
