@@ -92,7 +92,14 @@ non-owning device is view-only: it plays the file if present, but the verdict bu
 - **Phase 3** (notices, budget, agent read tools): group B (loudness match, waveform markers, loop, A/B). Group C if the owner
   wants it.
 
-## 7. Open questions for the owner
+## 7. Owner decisions (Telegram 2026-10-07, msg 1933)
+
+1. `wavesurfer.js`: yes.
+2. Reason chips: the starting list in §2 for now.
+3. Loudness match: stays in phase 3 as proposed.
+4. Spectrogram and rating 1–5 (group C): yes, in phase 3.
+
+## 7a. The questions as asked
 
 1. **New dependency `wavesurfer.js`** (front end only): OK? The alternative is our own canvas component, which costs much more.
 2. **Reason chips**: use the starting list in §2, or do you have your own words for why a track is rejected?
