@@ -4861,7 +4861,19 @@ export type ReachReportImportResult =
  * replaces the older file's rows (including a video the regenerated file no longer lists), and an older
  * file arriving after a newer one is recorded as superseded without touching the data.
  */
-export async function importReachReport(
+// One reach report import at a time in this process (re-review): between reading the period's reports and writing, another import
+// of the same period (the local sync and a peer's file) could otherwise record both as imported and let the older one's rows win.
+let reachImportQueue: Promise<unknown> = Promise.resolve();
+export function importReachReport(input: ReachReportImport, database: AppDb = db): Promise<ReachReportImportResult> {
+  const run = reachImportQueue.then(
+    () => importReachReportUnlocked(input, database),
+    () => importReachReportUnlocked(input, database)
+  );
+  reachImportQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function importReachReportUnlocked(
   input: ReachReportImport,
   database: AppDb = db
 ): Promise<ReachReportImportResult> {
@@ -10545,11 +10557,13 @@ const IMPORT_BATCH_SIZE = 500;
 export async function importAnalyticsShareRows(t: AnalyticsShareTables, database: AppDb = db): Promise<AnalyticsShareImportResult> {
   const channelIds = [...new Set([...t.videoMetrics.map((r) => r[0]), ...t.videoHistory.map((r) => r[1]), ...t.collectionRuns.map((r) => r.channelId)])];
   const known = new Set<string>();
+  const publishedAt = new Map<string, string>();
   const videosByChannel = new Map<string, number>();
   for (let i = 0; i < channelIds.length; i += IMPORT_BATCH_SIZE) {
-    const rows = await database.all<{ id: string; channel_id: string }>(sql`SELECT id, channel_id FROM videos WHERE channel_id IN ${channelIds.slice(i, i + IMPORT_BATCH_SIZE)}`);
+    const rows = await database.all<{ id: string; channel_id: string; published_at: string }>(sql`SELECT id, channel_id, published_at FROM videos WHERE channel_id IN ${channelIds.slice(i, i + IMPORT_BATCH_SIZE)}`);
     for (const r of rows) {
       known.add(String(r.id));
+      publishedAt.set(String(r.id), String(r.published_at));
       videosByChannel.set(String(r.channel_id), (videosByChannel.get(String(r.channel_id)) ?? 0) + 1);
     }
   }
@@ -10600,11 +10614,16 @@ export async function importAnalyticsShareRows(t: AnalyticsShareTables, database
       localThrough.set(String(r.video_id), String(r.history_through));
     }
   }
-  const dayAfter = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  const shiftDay = (date: string, days: number) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+  const dayAfter = (date: string) => shiftDay(date, 1);
   for (const [videoId, channelId, through, at] of t.videoHistory) {
     // Only for a video stored here, and only when it reaches a later date (history is collected forward from publication).
     if (!known.has(videoId)) continue;
-    const mine = localThrough.get(videoId);
+    // No marker here yet: this device's history then starts at the video's publish floor (the day before publication, as
+    // analytics/catch-up.ts `videoPublishFloor`), so a file whose rows start by the publish date completes it (re-review: a new
+    // device must not re-download history the other one already shared).
+    const published = publishedAt.get(videoId);
+    const mine = localThrough.get(videoId) ?? (published ? shiftDay(published.slice(0, 10), -1) : undefined);
     const first = firstRowDate.get(videoId);
     if (mine === undefined || first === undefined || first > dayAfter(mine)) continue;
     items.push(

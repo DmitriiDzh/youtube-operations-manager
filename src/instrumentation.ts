@@ -245,8 +245,13 @@ async function startServerSession() {
       // during a snapshot import/migration or in recovery mode (it writes the settings), the gate the draft sync uses.
       const { rawSqlClient: sqlClient } = await import("@/lib/db");
       const { assertDeviceAvailableForMutation: assertAvailable } = await import("@/lib/device-mutation-gate");
-      await assertAvailable(sqlClient);
-      await media.syncSharedSettings();
+      let available = true;
+      try {
+        await assertAvailable(sqlClient);
+      } catch {
+        available = false; // paused (lock/recovery): quietly, the next tick checks again
+      }
+      if (available) await media.syncSharedSettings();
     } catch (error) {
       console.warn(`[media-settings] the shared settings were not checked: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -50,7 +50,8 @@ Skipping a collection because "the other device did it" would leave this device 
 - **Import transactions.** The import runs in short atomic batches, never as one long transaction with awaits inside it. libsql works synchronously on the one Node thread, so a long transaction made other writers fail with SQLITE_BUSY.
 - **A channel with unknown videos is incomplete.** If any of its rows name a video this device has not synced, or the peer saw no videos while this device has some, the channel's stamp and runs are not imported. This device's own check then still collects it.
   - Its file is applied again once this device has synced more videos.
-  - A history marker is imported only for a video stored here, and only when it reaches a later date.
+  - A history marker is imported only for a video stored here, only when it reaches a later date, and only when it continues this device's own history without a gap. The file's rows for that video must start by the day after the local marker, or, with no local marker, by the publish date. Otherwise this device's catch-up would never fetch the missing days.
+- **Reach report imports** (local or from a peer) run one at a time in the process, as one atomic batch each.
 - **Imported files are remembered persistently** (`app_settings`), so a restart does not import 45 days of files again.
 - **Import still running.** If the peers' rows are still being imported after 2 minutes, this load does not collect; the next load does. It never collects in parallel with the import.
 - **Reach.**

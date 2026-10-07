@@ -244,10 +244,14 @@ test("a history marker is taken over only when it closes onto B's own history; a
     const b = await computer(root, "b");
     try {
       const empty = { channelMetrics: [], channelStamps: [], reportFiles: [], reachRows: [], syncAttempts: [], jobs: [] };
-      // No marker on B yet: A's marker (through 10-05) is not taken -- B lacks the history before the rows in the file.
+      // No marker on B yet: B's history starts at the publish floor (v1 published 09-01 → floor 08-31). A file whose rows start
+      // later (10-05) leaves a gap: not taken. One whose rows start by the publish date completes it: taken (re-review).
       const noMarker = await importAnalyticsShareRows({ ...empty, videoMetrics: [["UC1", "v1", "2026-10-05", "views", 3, T]], videoHistory: [["v1", "UC1", "2026-10-05", T]], collectionRuns: [] }, b.database);
       assert.deepEqual(noMarker.incompleteChannels, []);
       assert.equal(await count(b.database, "analytics_video_history"), 0);
+      await importAnalyticsShareRows({ ...empty, videoMetrics: [["UC1", "v2", "2026-09-01", "views", 3, T]], videoHistory: [["v2", "UC1", "2026-09-30", T]], collectionRuns: [] }, b.database);
+      const [v2] = await b.database.all<{ t: string }>(sql`SELECT history_through AS t FROM analytics_video_history WHERE video_id = 'v2'`);
+      assert.equal(v2?.t, "2026-09-30");
       // B's own marker through 10-01; the file has v1's rows from 10-02: contiguous, so the marker advances to 10-05.
       await b.database.run(sql`INSERT INTO analytics_video_history (video_id, channel_id, history_through, updated_at) VALUES ('v1', 'UC1', '2026-10-01', ${T - 9000})`);
       await importAnalyticsShareRows({ ...empty, videoMetrics: [["UC1", "v1", "2026-10-02", "views", 3, T]], videoHistory: [["v1", "UC1", "2026-10-05", T]], collectionRuns: [] }, b.database);
