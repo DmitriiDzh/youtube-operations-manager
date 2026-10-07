@@ -1,5 +1,8 @@
 "use client";
 
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
@@ -31,22 +34,23 @@ type SyncStatus = {
 
 const POLL_MS = 30_000;
 
-const STATE_LABEL: Record<SyncStatus["state"], string> = {
-  disabled: "Automatic sync is off (Settings → Sync)",
-  not_configured: "No sync folder is configured (Settings → Sync)",
-  folder_unreachable: "The sync folder is not reachable — is the drive connected? Paused until it is.",
-  busy: "Paused while another operation runs",
-  synced: "Up to date",
-  exported: "Published this computer's changes",
-  imported: "Loaded the other computer's changes",
-  waiting: "Waiting (Syncthing transfer or the next export window)",
-  attention: "Needs your attention",
+const STATE_LABEL: Record<SyncStatus["state"], UiTextKey> = {
+  disabled: "deviceSync.state.disabled",
+  not_configured: "deviceSync.state.notConfigured",
+  folder_unreachable: "deviceSync.state.folderUnreachable",
+  busy: "deviceSync.state.busy",
+  synced: "deviceSync.state.synced",
+  exported: "deviceSync.state.exported",
+  imported: "deviceSync.state.imported",
+  waiting: "deviceSync.state.waiting",
+  attention: "deviceSync.state.attention",
 };
 
-function formatTime(iso: string | null): string {
-  if (!iso) return "never";
+// DD.MM.YYYY HH:MM like every date in the app (owner rule 2026-09-26) -- this was a bare `toLocaleString()`.
+function formatTime(t: Translate, iso: string | null): string {
+  if (!iso) return t("common.never");
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "never" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? t("common.never") : formatDisplayDateTime(date);
 }
 
 function BellIcon() {
@@ -58,6 +62,7 @@ function BellIcon() {
 }
 
 export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: () => void }) {
+  const t = useT();
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
@@ -100,7 +105,7 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       await refresh();
@@ -123,7 +128,7 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
     <div className="relative" ref={panelRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        aria-label="Device sync notifications"
+        aria-label={t("deviceSync.bellLabel")}
         className="relative flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent hover:text-white"
       >
         <BellIcon />
@@ -133,15 +138,15 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
       {open && (
         <div className="absolute right-0 z-50 mt-2 w-96 space-y-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
           <div>
-            <h3 className="text-sm font-semibold text-zinc-100">Device sync</h3>
-            <p className="mt-1 text-xs text-zinc-400">{status ? STATE_LABEL[status.state] : "Loading..."}</p>
+            <h3 className="text-sm font-semibold text-zinc-100">{t("shell.deviceSync")}</h3>
+            <p className="mt-1 text-xs text-zinc-400">{status ? t(STATE_LABEL[status.state]) : t("common.loading")}</p>
             {status?.busyReason && status.state === "busy" && <p className="text-xs text-zinc-500">{status.busyReason}</p>}
             <p className="mt-1 text-xs text-zinc-500">
-              Last published: {formatTime(status?.lastExportAt ?? null)} · Last loaded: {formatTime(status?.lastImportAt ?? null)}
+              {t("deviceSync.lastTimes", { published: formatTime(t, status?.lastExportAt ?? null), loaded: formatTime(t, status?.lastImportAt ?? null) })}
             </p>
             {status?.backgroundWritesPausedReason && (
               <p className="mt-1 text-xs text-amber-300">
-                Automatic Research refresh is waiting: {status.backgroundWritesPausedReason}.
+                {t("deviceSync.researchWaiting", { reason: status.backgroundWritesPausedReason })}
               </p>
             )}
           </div>
@@ -152,7 +157,7 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
               {notice.kind === "divergence" && notice.snapshotId && (
                 <>
                   {notice.createdAt && (
-                    <p className="text-[11px] text-zinc-500">Other computer&apos;s data from {formatTime(notice.createdAt)}</p>
+                    <p className="text-[11px] text-zinc-500">{t("deviceSync.otherDataFrom", { time: formatTime(t, notice.createdAt) })}</p>
                   )}
                   {onReviewDivergence && (
                     <button
@@ -162,7 +167,7 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
                       }}
                       className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500"
                     >
-                      See what differs and choose (Merge tab)
+                      {t("deviceSync.seeDifferences")}
                     </button>
                   )}
                 </>
@@ -178,7 +183,7 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
               onClick={() => void post("/api/device-sync/sync-now")}
               className="rounded-md border border-zinc-600 px-3 py-1 text-xs font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-50"
             >
-              {working ? "Syncing..." : "Sync now"}
+              {working ? t("common.syncing") : t("common.syncNow")}
             </button>
           </div>
         </div>

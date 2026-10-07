@@ -1,0 +1,48 @@
+// BL-152: Settings -- the sub-tab cards' names and Settings → General.
+export const settings = {
+  "settings.loadFailed": "Failed to load settings.",
+  "settings.saveFailed": "Failed to save",
+
+  "settingsCard.uiLanguage": "Interface language",
+  "settingsCard.retention": "Retention",
+  "settingsCard.analyticsCollection": "Analytics collection",
+  "settingsCard.liveWrites": "Live writes",
+  "settingsCard.dataReads": "Data reads",
+  "settingsCard.googleCloud": "Google Cloud",
+  "settingsCard.quotaReserve": "Quota reserve",
+  "settingsCard.marketCollection": "Market intelligence collection",
+  "settingsCard.competitorDepth": "Competitor collection depth",
+  "settingsCard.channels": "Channels",
+  "settingsCard.mcp": "MCP connection",
+  "settingsCard.operatorCli": "Operator CLI",
+  "settingsCard.operationsWorkspace": "Operations workspace",
+  "settingsCard.logicalPaths": "Logical paths",
+  "settingsCard.factoryToken": "Factory Operator token",
+  "settingsCard.aiProviders": "AI providers",
+  "settingsCard.sync": "Sync",
+  "settingsCard.autoDeviceSync": "Automatic device sync",
+  "settingsCard.runpod": "RunPod",
+  "settingsCard.about": "About",
+
+  "uiLanguage.system": "System ({language})",
+  "uiLanguage.thisComputer": "Applies to this computer only.",
+
+  "retention.title": "Keeping finished work",
+  "retention.info": "Settled drafts are deleted after the first period: rejected change sets, and approved ones whose changes were written to YouTube and verified. The write log (batches, per-video results, audit events) of a fully successful batch is deleted after the second period. Change sets still in review, and anything that failed, conflicted or was cancelled, are never deleted automatically.",
+  "retention.draftsAria": "Days to keep settled drafts",
+  "retention.draftsLabel": "days to keep settled drafts (at least 1)",
+  "retention.logAria": "Days to keep the write log",
+  "retention.logLabel": "days to keep the write log (at least 7)",
+  "retention.invalid": "Drafts: a whole number of days, at least 1. Write log: at least 7.",
+
+  "analyticsCollection.title": "Analytics auto-collection",
+  "analyticsCollection.info": "Once a day, on entering the dashboard, this app checks whether analytics were already collected today after the time below and collects them if not. This does not run on a background schedule — it only checks when you actually open the dashboard.",
+  "analyticsCollection.time": "Collection time (local, 24h)",
+  "analyticsCollection.timezone": "Timezone (IANA name)",
+  "analyticsCollection.timezonePlaceholder": "e.g. America/New_York",
+  "analyticsCollection.invalidTime": "Time must be HH:MM, 24h.",
+  "analyticsCollection.invalidTimezone": "Timezone must be a valid IANA name (e.g. Europe/Helsinki).",
+
+  "aiProviders.title": "AI provider connections",
+  "aiProviders.info": "Configure AI provider connections for AI Localization. No specific vendor is built into this app — every connection is a Base URL, model id, and optional credential you supply. Credentials are encrypted at rest and never shown again once saved. Testing a connection is an explicit action and may incur cost for a real (non-mock) connection. Unrelated to the MCP connection above (that's an external agent connecting TO this app; this is this app connecting OUT to an AI provider) — grouped here for convenience.",
+} as const;

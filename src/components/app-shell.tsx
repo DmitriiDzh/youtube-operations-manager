@@ -10,6 +10,7 @@ import type { ChannelInfo } from "@/components/app-channel";
 import { ChannelSwitcher } from "./channel-switcher";
 import { DeviceSyncBell } from "./device-sync-bell";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { useT } from "./ui-text-provider";
 
 export type NavItem<T extends string> = {
   value: T;
@@ -33,14 +34,16 @@ export function AppShell<T extends string>(props: {
   onReviewDeviceSyncDivergence?: () => void;
   children: ReactNode;
 }) {
+  const t = useT();
   return (
     <div className="flex min-h-screen">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar">
         <div className="flex h-16 items-center gap-2 px-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent text-sm font-bold text-white">
+            {/* ui-text-ignore: the logo mark */}
             YT
           </div>
-          <span className="text-sm font-semibold tracking-tight">Operations Manager</span>
+          <span className="text-sm font-semibold tracking-tight">{t("shell.productName")}</span>
         </div>
         <nav className="flex flex-1 flex-col gap-0.5 px-2 py-2">
           {props.navItems.map((item) => {
@@ -82,25 +85,25 @@ export function AppShell<T extends string>(props: {
               />
             )}
             <div>
-              <p className="text-xs text-muted">Active channel</p>
+              <p className="text-xs text-muted">{t("shell.activeChannel")}</p>
               <p className="text-sm font-medium">
-                {props.channel?.title ?? (props.channelUnavailable ? "Reconnect needed" : "Loading...")}
+                {props.channel?.title ?? (props.channelUnavailable ? t("shell.reconnectNeeded") : t("common.loading"))}
                 {props.channel?.videoCount && (
-                  <span className="ml-2 text-xs text-muted">{props.channel.videoCount} videos</span>
+                  <span className="ml-2 text-xs text-muted">{t("shell.videoCount", { count: Number(props.channel.videoCount) })}</span>
                 )}
               </p>
             </div>
             <ChannelSwitcher />
           </div>
           <div className="flex items-center gap-3">
-            <FeatureErrorBoundary label="Device sync">
+            <FeatureErrorBoundary label={t("shell.deviceSync")}>
               <DeviceSyncBell onReviewDivergence={props.onReviewDeviceSyncDivergence} />
             </FeatureErrorBoundary>
             <button
               onClick={props.onSignOut}
               className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white"
             >
-              Sign out
+              {t("shell.signOut")}
             </button>
           </div>
         </header>

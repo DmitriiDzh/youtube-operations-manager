@@ -3,18 +3,20 @@
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { BlockingDialog } from "./blocking-dialog";
+import { useT } from "./ui-text-provider";
+import type { Translate } from "@/lib/ui-text";
 import type { ConnectionHealth } from "@/lib/channel-connections/contracts";
 import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 
-function describe(row: ConnectionHealth): string {
+function describe(t: Translate, row: ConnectionHealth): string {
   if (row.kind === "cloud") {
-    if (row.state === "reauth_required") return "Google Cloud connection expired — the quota numbers are hidden until you reconnect.";
-    if (row.daysLeft === null) return "Google Cloud connection expires soon.";
-    return row.daysLeft <= 1 ? "Google Cloud connection expires within a day." : `Google Cloud connection expires in about ${row.daysLeft} days.`;
+    if (row.state === "reauth_required") return t("relogin.cloud.expired");
+    if (row.daysLeft === null) return t("relogin.cloud.expiresSoon");
+    return row.daysLeft <= 1 ? t("relogin.cloud.expiresWithinDay") : t("relogin.cloud.expiresInDays", { count: row.daysLeft });
   }
-  if (row.state === "reauth_required") return "Google sign-in expired — sign in again to keep using this channel.";
-  if (row.daysLeft === null) return "Google sign-in expires soon.";
-  return row.daysLeft <= 1 ? "Google sign-in expires within a day." : `Google sign-in expires in about ${row.daysLeft} days.`;
+  if (row.state === "reauth_required") return t("relogin.google.expired");
+  if (row.daysLeft === null) return t("relogin.google.expiresSoon");
+  return row.daysLeft <= 1 ? t("relogin.google.expiresWithinDay") : t("relogin.google.expiresInDays", { count: row.daysLeft });
 }
 
 /**
@@ -24,6 +26,7 @@ function describe(row: ConnectionHealth): string {
  * soon there is a "Later" button.
  */
 export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] | null }) {
+  const t = useT();
   const [later, setLater] = useState(false);
   const prompt = planReloginPrompt(health ?? [], later);
   const blocking = prompt.mode === "blocking";
@@ -46,16 +49,10 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
   const anyExpired = prompt.rows.some((row) => row.state === "reauth_required");
 
   return (
-    <BlockingDialog label="Sign in with Google again" maxWidthClass="max-w-md">
-      <p className="text-sm font-medium text-zinc-100">
-        {blocking || anyExpired ? "Sign in with Google again" : "A Google sign-in is about to expire"}
-      </p>
+    <BlockingDialog label={t("relogin.title")} maxWidthClass="max-w-md">
+      <p className="text-sm font-medium text-zinc-100">{blocking || anyExpired ? t("relogin.title") : t("relogin.titleExpiring")}</p>
       <p className="text-xs text-zinc-400">
-        {blocking
-          ? "Google no longer accepts the saved sign-in for the account(s) below. Choose the account to sign in with first."
-          : anyExpired
-            ? "Google no longer accepts the saved sign-in below. Sign in again when convenient; the app keeps working without it."
-            : "Sign in again before it expires to avoid an interruption."}
+        {blocking ? t("relogin.bodyBlocking") : anyExpired ? t("relogin.bodyExpired") : t("relogin.bodyExpiring")}
       </p>
       <ul className="space-y-2">
         {prompt.rows.map((row) => (
@@ -63,7 +60,7 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm text-zinc-100">{row.title}</p>
               <p className="truncate text-xs text-zinc-500">{row.connectedEmail}</p>
-              <p className={`text-xs ${row.state === "reauth_required" ? "text-red-400" : "text-amber-400"}`}>{describe(row)}</p>
+              <p className={`text-xs ${row.state === "reauth_required" ? "text-red-400" : "text-amber-400"}`}>{describe(t, row)}</p>
             </div>
             <button
               onClick={() => {
@@ -73,7 +70,7 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
               }}
               className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
             >
-              {row.kind === "cloud" ? "Reconnect Google Cloud" : "Sign in with Google"}
+              {row.kind === "cloud" ? t("relogin.reconnectCloud") : t("signIn.google")}
             </button>
           </li>
         ))}
@@ -84,7 +81,7 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
             onClick={() => setLater(true)}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800"
           >
-            Later
+            {t("common.later")}
           </button>
         </div>
       )}

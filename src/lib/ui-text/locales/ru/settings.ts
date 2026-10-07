@@ -1,0 +1,49 @@
+import type { settings as en } from "../en/settings";
+
+export const settings: Record<keyof typeof en, string> = {
+  "settings.loadFailed": "Не удалось загрузить настройки.",
+  "settings.saveFailed": "Не удалось сохранить",
+
+  "settingsCard.uiLanguage": "Язык интерфейса",
+  "settingsCard.retention": "Хранение",
+  "settingsCard.analyticsCollection": "Сбор аналитики",
+  "settingsCard.liveWrites": "Запись в YouTube",
+  "settingsCard.dataReads": "Чтение данных",
+  "settingsCard.googleCloud": "Google Cloud",
+  "settingsCard.quotaReserve": "Резерв квоты",
+  "settingsCard.marketCollection": "Сбор рыночных данных",
+  "settingsCard.competitorDepth": "Глубина сбора по конкурентам",
+  "settingsCard.channels": "Каналы",
+  "settingsCard.mcp": "Подключение MCP",
+  "settingsCard.operatorCli": "CLI оператора",
+  "settingsCard.operationsWorkspace": "Рабочая папка оператора",
+  "settingsCard.logicalPaths": "Логические пути",
+  "settingsCard.factoryToken": "Токен Factory Operator",
+  "settingsCard.aiProviders": "ИИ-провайдеры",
+  "settingsCard.sync": "Синхронизация",
+  "settingsCard.autoDeviceSync": "Автосинхронизация компьютеров",
+  "settingsCard.runpod": "RunPod",
+  "settingsCard.about": "О программе",
+
+  "uiLanguage.system": "Системный ({language})",
+  "uiLanguage.thisComputer": "Действует только на этом компьютере.",
+
+  "retention.title": "Хранение завершённой работы",
+  "retention.info": "Завершённые черновики удаляются по истечении первого срока: отклонённые наборы изменений и одобренные, изменения которых записаны в YouTube и проверены. Журнал записи (пакеты, результаты по видео, события аудита) полностью успешного пакета удаляется по истечении второго срока. Наборы изменений, которые ещё на проверке, а также всё, что завершилось ошибкой, конфликтом или отменой, никогда не удаляются автоматически.",
+  "retention.draftsAria": "Сколько дней хранить завершённые черновики",
+  "retention.draftsLabel": "дней хранить завершённые черновики (не меньше 1)",
+  "retention.logAria": "Сколько дней хранить журнал записи",
+  "retention.logLabel": "дней хранить журнал записи (не меньше 7)",
+  "retention.invalid": "Черновики: целое число дней, не меньше 1. Журнал записи: не меньше 7.",
+
+  "analyticsCollection.title": "Автосбор аналитики",
+  "analyticsCollection.info": "Раз в день, при открытии приложения, оно проверяет, собиралась ли сегодня аналитика после указанного ниже времени, и если нет — собирает её. Это не фоновое расписание: проверка выполняется, только когда вы открываете приложение.",
+  "analyticsCollection.time": "Время сбора (местное, 24 ч)",
+  "analyticsCollection.timezone": "Часовой пояс (имя IANA)",
+  "analyticsCollection.timezonePlaceholder": "например, Europe/Moscow",
+  "analyticsCollection.invalidTime": "Время должно быть в формате ЧЧ:ММ, 24 ч.",
+  "analyticsCollection.invalidTimezone": "Часовой пояс должен быть допустимым именем IANA (например, Europe/Helsinki).",
+
+  "aiProviders.title": "Подключения к ИИ-провайдерам",
+  "aiProviders.info": "Подключения к ИИ-провайдерам для ИИ-перевода. Ни один поставщик не встроен в приложение: каждое подключение — это указанные вами Base URL, идентификатор модели и, при необходимости, ключ. Ключи хранятся в зашифрованном виде и после сохранения больше не показываются. Проверка подключения запускается явно и для настоящего (не тестового) подключения может стоить денег. Не связано с подключением MCP выше (там внешний агент подключается К приложению, здесь приложение подключается К ИИ-провайдеру) — собрано здесь для удобства.",
+};

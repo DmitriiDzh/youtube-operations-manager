@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "./ui-text-provider";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketResearchPanel, type WatchlistStatusFilter } from "./market-research-panel";
@@ -67,6 +68,7 @@ export function ResearchTab({
   tab?: ResearchSubTab | null;
   onTabChange?: (tab: ResearchSubTab, options: { replace: boolean }) => void;
 }) {
+  const t = useT();
   const [ownTab, setOwnTab] = useState<ResearchSubTab>("channels");
   const routed = onTabChange !== undefined;
   const tab = routed ? (routeTab ?? "channels") : ownTab;
@@ -168,17 +170,17 @@ export function ResearchTab({
       )}
 
       <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label="Research sections">
-        {RESEARCH_TABS.map((t) => (
+        {RESEARCH_TABS.map((item) => (
           <button
-            key={t.value}
+            key={item.value}
             type="button"
             role="tab"
-            aria-selected={tab === t.value}
-            onClick={() => pickTab(t.value)}
-            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+            aria-selected={tab === item.value}
+            onClick={() => pickTab(item.value)}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
           >
-            {t.label}
-            {t.value === "inbox" && pending > 0 && (
+            {t(item.labelKey)}
+            {item.value === "inbox" && pending > 0 && (
               <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[11px] font-semibold text-white">{pending}</span>
             )}
           </button>

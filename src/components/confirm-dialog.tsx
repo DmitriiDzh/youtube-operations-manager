@@ -1,5 +1,7 @@
 "use client";
 
+import { useT } from "./ui-text-provider";
+
 type ConfirmDialogProps = {
   title: string;
   description?: string;
@@ -29,12 +31,13 @@ type ConfirmDialogProps = {
 export function ConfirmDialog({
   title,
   description,
-  cancelLabel = "Cancel",
+  cancelLabel,
   confirmLabel,
   confirmVariant = "default",
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
+  const t = useT();
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
       <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl" role="alertdialog" aria-modal="true" aria-label={title}>
@@ -45,7 +48,7 @@ export function ConfirmDialog({
             onClick={onCancel}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800"
           >
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </button>
           <button
             onClick={onConfirm}

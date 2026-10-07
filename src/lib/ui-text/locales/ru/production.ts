@@ -1,0 +1,30 @@
+import type { production as en } from "../en/production";
+
+export const production: Record<keyof typeof en, string> = {
+  "setupField.datacenterId": "Дата-центр",
+  "setupField.gpuTypeId": "Тип GPU",
+  "setupField.cloudType": "Тип облака",
+  "setupField.networkVolumeId": "Сетевой том",
+  "setupField.templateId": "Шаблон пода",
+  "setupField.maxUsdPerDay": "Лимит расходов в день",
+  "setupField.defaultMaxMinutes": "Длительность сессии по умолчанию",
+  "setupField.idleMinutes": "Останавливать простаивающую сессию через",
+  "setupField.watchIntervalSeconds": "Проверять запущенные сессии каждые",
+  "setupField.maxConcurrentSessions": "Сессий одновременно",
+  "setupField.gpuFallbackIds": "Запасные типы GPU (по порядку)",
+  "setupField.gpuMinVramGb": "Минимальная память GPU",
+  "setupField.gpuMaxPricePerHr": "Максимальная цена GPU",
+  "setupField.capacityRetrySeconds": "Повторять запуск при нехватке мощностей каждые",
+  "setupField.capacityWaitMinutes": "Перестать ждать мощности через",
+  "setupField.factorySessionsEnabled": "Factory Operator может запускать сессии",
+  "setupField.factoryMaxUsdPerSession": "Factory: максимум за сессию",
+  "setupField.factoryMaxMinutesPerSession": "Factory: максимальная длительность сессии",
+  "setupField.factoryMaxUsdPerDay": "Factory: максимум в день",
+  "setupField.factoryMaxUsdPerMonth": "Factory: максимум в месяц",
+  "setupField.ownerReleaseWhenDone": "Освобождать сессию после последнего задания",
+
+  "settingsSync.intro": "Эти настройки одинаковы на всех ваших компьютерах: изменение здесь доходит до остальных примерно за минуту (ключи RunPod остаются на каждом компьютере свои).",
+  "settingsSync.fromOther": "С другого компьютера: {fields} ({time}).",
+  "settingsSync.conflicts": "На двух компьютерах заданы по-разному: {fields} — выберите во вкладке «Слияние».",
+  "settingsSync.error": "Не удалось проверить общие настройки: {error}",
+};

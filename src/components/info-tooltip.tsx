@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useT } from "./ui-text-provider";
 
 /**
  * Small "?" icon that reveals a section's explanatory text in a local popover, on hover or click,
@@ -20,6 +21,7 @@ import type { ReactNode } from "react";
  * whole popover inside the content column regardless of how close the icon is to the sidebar.
  */
 export function InfoTooltip({ children }: { children: ReactNode }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLSpanElement>(null);
   const tooltipId = useId();
@@ -44,7 +46,7 @@ export function InfoTooltip({ children }: { children: ReactNode }) {
     >
       <button
         type="button"
-        aria-label="More info"
+        aria-label={t("common.moreInfo")}
         aria-describedby={tooltipId}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}

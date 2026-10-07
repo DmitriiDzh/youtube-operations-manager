@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { translate } from "@/lib/ui-text";
 import { describeBalance, PRODUCTION_TABS } from "./production-panel";
 
 // AC-P14-26 (PHASE_14_PLAN.md §5.2; owner, Telegram 2026-10-05, msg 1549): Settings keeps only the RunPod connection
@@ -11,7 +12,7 @@ import { describeBalance, PRODUCTION_TABS } from "./production-panel";
 // Changed requirement (BL-143, ADR 0029, AC-GP-15 in GENERATION_PLANS_PLAN.md): a Plans tab after Jobs.
 test("AC-P14-26 / AC-GP-15: Production's tabs are Sessions, Jobs, Plans, Models, Workflow templates (work, left) then Setup (right)", () => {
   assert.deepEqual(
-    PRODUCTION_TABS.map((t) => [t.label, t.side]),
+    PRODUCTION_TABS.map((t) => [translate("en", t.labelKey), t.side]),
     [
       ["Sessions", "work"],
       ["Jobs", "work"],
@@ -33,7 +34,9 @@ test("AC-P14-26: the sidebar has Production right after Content; Settings has a 
   // BL-149 review: the sub-tab lists live in one plain module (section-tabs.ts) shared by the server pages and the client.
   const tabs = await readFile(path.join(process.cwd(), "src", "components", "section-tabs.ts"), "utf8");
   const subTabs = tabs.slice(tabs.indexOf("export const SETTINGS_SUB_TABS"), tabs.indexOf("export type ProductionTab"));
-  assert.match(subTabs, /\{ value: "runpod", label: "RunPod" \}/);
+  // BL-152: the sub-tab name is an interface-text key; its English text is still "RunPod".
+  assert.match(subTabs, /\{ value: "runpod", labelKey: "tabs\.settings\.runpod" \}/);
+  assert.equal(translate("en", "tabs.settings.runpod"), "RunPod");
   assert.doesNotMatch(subTabs, /"media"/);
   const runpodBlock = page.slice(page.indexOf('settingsSubTab === "runpod"'), page.indexOf('settingsSubTab === "about"'));
   assert.match(runpodBlock, /<RunpodConnectionSettings \/>/);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { translate } from "@/lib/ui-text";
 import { describeResearchSummary, RESEARCH_TABS, shouldOpenInbox, type ResearchSummary } from "./research-tab";
 import { videosQueryParams } from "./market-videos-panel";
 import { isAnotherModalOpen } from "./side-drawer";
@@ -12,7 +13,7 @@ import { describeVisibleTo } from "./market-channel-assignment";
 // BL-140 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4, §7 R1; owner decisions msg 1827).
 
 test("AC-R1-1: Research has five sub-tabs in this order: Inbox, Channels, Videos, Discover, Topics & trends", () => {
-  assert.deepEqual(RESEARCH_TABS.map((t) => t.label), ["Inbox", "Channels", "Videos", "Discover", "Topics & trends"]);
+  assert.deepEqual(RESEARCH_TABS.map((t) => translate("en", t.labelKey)), ["Inbox", "Channels", "Videos", "Discover", "Topics & trends"]);
 });
 
 test("AC-R1-1/R1-4: the dashboard renders the ResearchTab shell; the stacked Overview panel is gone", async () => {

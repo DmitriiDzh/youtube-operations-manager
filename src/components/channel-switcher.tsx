@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "./ui-text-provider";
 import { useEffect, useRef, useState } from "react";
 import { signIn } from "next-auth/react";
 import { activateStoredChannel, useConnectedChannels } from "./use-connected-channels";
@@ -18,6 +19,7 @@ import { activateStoredChannel, useConnectedChannels } from "./use-connected-cha
  */
 export function ChannelSwitcher() {
   const { channels, refetch } = useConnectedChannels();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [activatingChannelId, setActivatingChannelId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,17 +54,17 @@ export function ChannelSwitcher() {
         onClick={() => setOpen((o) => !o)}
         className="ml-2 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white"
       >
-        Switch channel
+        {t("channelSwitcher.switch")}
       </button>
 
       {open && (
         <div className="absolute left-0 z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl">
           <ul className="max-h-72 overflow-y-auto p-1">
             {channels === null && (
-              <li className="px-3 py-2 text-xs text-zinc-500">Loading...</li>
+              <li className="px-3 py-2 text-xs text-zinc-500">{t("common.loading")}</li>
             )}
             {channels?.length === 0 && (
-              <li className="px-3 py-2 text-xs text-zinc-500">No channels connected yet.</li>
+              <li className="px-3 py-2 text-xs text-zinc-500">{t("channelSwitcher.none")}</li>
             )}
             {channels?.map((c) => (
               <li key={c.channelId}>
@@ -79,9 +81,9 @@ export function ChannelSwitcher() {
                   )}
                   <span className="min-w-0 flex-1 truncate">{c.title}</span>
                   {c.isActive ? (
-                    <span className="shrink-0 text-[10px] font-medium text-emerald-400">Active</span>
+                    <span className="shrink-0 text-[10px] font-medium text-emerald-400">{t("channelSwitcher.active")}</span>
                   ) : activatingChannelId === c.channelId ? (
-                    <span className="shrink-0 text-[10px] text-zinc-500">Activating...</span>
+                    <span className="shrink-0 text-[10px] text-zinc-500">{t("channelSwitcher.activating")}</span>
                   ) : null}
                 </button>
               </li>
@@ -92,7 +94,7 @@ export function ChannelSwitcher() {
               onClick={() => signIn("google")}
               className="w-full rounded-md px-2 py-1.5 text-left text-sm font-medium text-indigo-400 hover:bg-zinc-800"
             >
-              + Connect a new channel
+              {t("channelSwitcher.connectNew")}
             </button>
           </div>
         </div>

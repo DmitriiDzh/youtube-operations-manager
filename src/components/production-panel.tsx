@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "./ui-text-provider";
 import type { PeerReviewSource } from "./plan-review-screen";
 import { SettingsSyncNotice } from "./settings-sync-notice";
 import { useCallback, useEffect, useState } from "react";
@@ -129,6 +130,7 @@ export function ProductionPanel({
   /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
   onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
 }) {
+  const t = useT();
   const [ownTab, setOwnTab] = useState<ProductionTab>("sessions");
   const tab = routeTab ?? ownTab;
   const setTab = onTabChange ?? setOwnTab;
@@ -139,14 +141,14 @@ export function ProductionPanel({
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
   if (!overview) return <p className="text-sm text-zinc-500">Loading…</p>;
 
-  const tabButton = (t: (typeof PRODUCTION_TABS)[number]) => (
+  const tabButton = (item: (typeof PRODUCTION_TABS)[number]) => (
     <button
-      key={t.value}
+      key={item.value}
       type="button"
-      onClick={() => setTab(t.value)}
-      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+      onClick={() => setTab(item.value)}
+      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
     >
-      {t.label}
+      {t(item.labelKey)}
     </button>
   );
 
@@ -156,8 +158,8 @@ export function ProductionPanel({
     <div className="max-w-5xl space-y-6">
       <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} />
       <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "work").map(tabButton)}</div>
-        <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "setup").map(tabButton)}</div>
+        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((item) => item.side === "work").map(tabButton)}</div>
+        <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((item) => item.side === "setup").map(tabButton)}</div>
       </div>
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
         <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />

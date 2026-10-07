@@ -23,6 +23,9 @@ import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
+import { UiLanguageSettings } from "@/components/ui-language-settings";
+import { useT } from "@/components/ui-text-provider";
+import type { UiTextKey } from "@/lib/ui-text";
 
 import { SETTINGS_SUB_TABS, type SettingsSubTab } from "@/components/section-tabs";
 
@@ -31,6 +34,9 @@ import { SETTINGS_SUB_TABS, type SettingsSubTab } from "@/components/section-tab
 // Settings now loads on its first open, not with the app (owner, msg 2004: option b).
 export default function SettingsLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const t = useT();
+  // A crashed card names itself in the error fallback ("Settings — Retention").
+  const section = (card: UiTextKey) => `${t("nav.settings")} — ${t(card)}`;
   const segment = useSelectedLayoutSegment();
   const settingsSubTab: SettingsSubTab | undefined = SETTINGS_SUB_TABS.find((t) => t.value === segment)?.value;
   const setSettingsSubTab = (next: SettingsSubTab) => router.push(`/settings/${next}`);
@@ -39,15 +45,15 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
     <>
     <div className="max-w-3xl">
       <div className="mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
-        {SETTINGS_SUB_TABS.map((t) => (
+        {SETTINGS_SUB_TABS.map((tab) => (
           <button
-            key={t.value}
-            onClick={() => setSettingsSubTab(t.value)}
+            key={tab.value}
+            onClick={() => setSettingsSubTab(tab.value)}
             className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-              settingsSubTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+              settingsSubTab === tab.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
-            {t.label}
+            {t(tab.labelKey)}
           </button>
         ))}
       </div>
@@ -62,70 +68,65 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       {/* General: settings that are not about an API connection (owner instruction, 2026-10-04: the API
           sub-tab was collecting too much unrelated content). */}
       <div className={settingsSubTab === "general" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — Retention">
+        <FeatureErrorBoundary label={section("settingsCard.uiLanguage")}>
+          <UiLanguageSettings />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("settingsCard.retention")}>
           <RetentionSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Analytics collection">
+        <FeatureErrorBoundary label={section("settingsCard.analyticsCollection")}>
           <AnalyticsCollectionSettings />
         </FeatureErrorBoundary>
       </div>
 
       <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — Live writes">
+        <FeatureErrorBoundary label={section("settingsCard.liveWrites")}>
           <LiveWritesSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Data reads">
+        <FeatureErrorBoundary label={section("settingsCard.dataReads")}>
           <ReadGatewaySettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Google Cloud">
+        <FeatureErrorBoundary label={section("settingsCard.googleCloud")}>
           <CloudConnectionSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Quota reserve">
+        <FeatureErrorBoundary label={section("settingsCard.quotaReserve")}>
           <QuotaReserveSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Market intelligence collection">
+        <FeatureErrorBoundary label={section("settingsCard.marketCollection")}>
           <MarketIntelligenceCollectionSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Competitor collection depth">
+        <FeatureErrorBoundary label={section("settingsCard.competitorDepth")}>
           <MarketIntelligenceCollectionDepthSettings />
         </FeatureErrorBoundary>
       </div>
 
       <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — Channels">
+        <FeatureErrorBoundary label={section("settingsCard.channels")}>
           <ChannelConnectionsSettings />
         </FeatureErrorBoundary>
       </div>
 
       <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — MCP connection">
+        <FeatureErrorBoundary label={section("settingsCard.mcp")}>
           <McpConnectionSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Operator CLI">
+        <FeatureErrorBoundary label={section("settingsCard.operatorCli")}>
           <OperatorCliSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Operations workspace">
+        <FeatureErrorBoundary label={section("settingsCard.operationsWorkspace")}>
           <OperationsWorkspaceSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Logical paths">
+        <FeatureErrorBoundary label={section("settingsCard.logicalPaths")}>
           <LogicalPathsSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Factory Operator token">
+        <FeatureErrorBoundary label={section("settingsCard.factoryToken")}>
           <FactoryAgentTokenSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — AI providers">
+        <FeatureErrorBoundary label={section("settingsCard.aiProviders")}>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-              AI provider connections
-              <InfoTooltip>
-                Configure AI provider connections for AI Localization. No specific vendor is
-                built into this app &mdash; every connection is a Base URL, model id, and
-                optional credential you supply. Credentials are encrypted at rest and never
-                shown again once saved. Testing a connection is an explicit action and may
-                incur cost for a real (non-mock) connection. Unrelated to the MCP connection
-                above (that&rsquo;s an external agent connecting TO this app; this is this app
-                connecting OUT to an AI provider) &mdash; grouped here for convenience.
-              </InfoTooltip>
+              {t("aiProviders.title")}
+              <InfoTooltip>{t("aiProviders.info")}</InfoTooltip>
             </h3>
             <AiConnectionsManager />
           </div>
@@ -133,22 +134,22 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       </div>
 
       <div className={settingsSubTab === "sync" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — Sync">
+        <FeatureErrorBoundary label={section("settingsCard.sync")}>
           <SyncFolderSettings />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Settings — Automatic device sync">
+        <FeatureErrorBoundary label={section("settingsCard.autoDeviceSync")}>
           <DeviceAutoSyncSettings />
         </FeatureErrorBoundary>
       </div>
 
       <div className={settingsSubTab === "runpod" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — RunPod">
+        <FeatureErrorBoundary label={section("settingsCard.runpod")}>
           <RunpodConnectionSettings />
         </FeatureErrorBoundary>
       </div>
 
       <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Settings — About">
+        <FeatureErrorBoundary label={section("settingsCard.about")}>
           <AppVersionInfo />
         </FeatureErrorBoundary>
       </div>
