@@ -26,16 +26,8 @@ import { PlansPanel } from "./generation-plans-panel";
 // (Sessions, Jobs, Models, Workflow templates), the setup tab on the right. The header shows the connected RunPod
 // account's balance and today's spend. The RunPod keys themselves stay in Settings → RunPod.
 
-export const PRODUCTION_TABS = [
-  { value: "sessions", label: "Sessions", side: "work" },
-  { value: "jobs", label: "Jobs", side: "work" },
-  // BL-143 (ADR 0029, AC-GP-15): generation plans, next to the jobs they are made of.
-  { value: "plans", label: "Plans", side: "work" },
-  { value: "models", label: "Models", side: "work" },
-  { value: "templates", label: "Workflow templates", side: "work" },
-  { value: "setup", label: "Setup", side: "setup" },
-] as const;
-type ProductionTab = (typeof PRODUCTION_TABS)[number]["value"];
+import { PRODUCTION_TABS, type ProductionTab } from "./section-tabs";
+export { PRODUCTION_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
 const BALANCE_POLL_MS = 60_000;

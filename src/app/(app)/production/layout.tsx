@@ -1,6 +1,6 @@
 "use client";
 
-import { notFound, useRouter, useSelectedLayoutSegments } from "next/navigation";
+import { useRouter, useSelectedLayoutSegments } from "next/navigation";
 import type { ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
 import { PRODUCTION_TABS, ProductionPanel } from "@/components/production-panel";
@@ -23,15 +23,15 @@ export default function ProductionLayout({ children }: { children: ReactNode }) 
   const segments = useSelectedLayoutSegments();
   const segment = segments[0] ?? null;
   const tab = PRODUCTION_TABS.find((t) => t.value === segment)?.value;
-  // `/production` itself redirects (page.tsx); any other unknown sub-path is not a page.
-  if (segment !== null && !tab) notFound();
-  // `/production/plans/<planId>/review` (AC-RT-07): the review screen replaces the panel, as it did inside Plans.
+  // An unknown sub-path renders nothing here; its [sub] page answers 404.
+  // `/production/plans/<planId>/review` (AC-RT-07): the review screen is shown in place of the panel, which stays mounted
+  // and hidden meanwhile (review finding: the selected plan and the other sub-tabs survive opening and closing a review).
   const reviewing = segment === "plans" && segments[2] === "review";
   return (
     <>
-      {tab && !reviewing && (
+      {tab && (
         <FeatureErrorBoundary label="Production">
-          <div key={channel?.id ?? "no-channel"}>
+          <div key={channel?.id ?? "no-channel"} className={reviewing ? "hidden" : undefined}>
             <ProductionPanel
               activeChannelId={channel?.id ?? null}
               tab={tab}

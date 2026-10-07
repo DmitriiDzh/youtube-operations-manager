@@ -30,7 +30,9 @@ test("AC-P14-26: the sidebar has Production right after Content; Settings has a 
   const page = await readFile(path.join(process.cwd(), "src", "app", "(app)", "settings", "layout.tsx"), "utf8");
   const navValues = [...layout.slice(layout.indexOf("const NAV_ITEMS"), layout.indexOf("] as const satisfies")).matchAll(/value: "([a-z-]+)"/g)].map((m) => m[1]);
   assert.equal(navValues[navValues.indexOf("content") + 1], "production");
-  const subTabs = page.slice(page.indexOf("const SETTINGS_SUB_TABS"), page.indexOf("type SettingsSubTab"));
+  // BL-149 review: the sub-tab lists live in one plain module (section-tabs.ts) shared by the server pages and the client.
+  const tabs = await readFile(path.join(process.cwd(), "src", "components", "section-tabs.ts"), "utf8");
+  const subTabs = tabs.slice(tabs.indexOf("export const SETTINGS_SUB_TABS"), tabs.indexOf("export type ProductionTab"));
   assert.match(subTabs, /\{ value: "runpod", label: "RunPod" \}/);
   assert.doesNotMatch(subTabs, /"media"/);
   const runpodBlock = page.slice(page.indexOf('settingsSubTab === "runpod"'), page.indexOf('settingsSubTab === "about"'));

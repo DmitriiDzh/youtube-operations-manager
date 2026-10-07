@@ -15,15 +15,8 @@ import { MarketCollectionRequestsPanel } from "./market-collection-requests-pane
 // Research tab as a summary line plus sub-tabs, instead of nine stacked panels. Every sub-tab stays mounted and is only
 // hidden (the Production/Settings pattern), so switching is instant and nothing refetches.
 
-export const RESEARCH_TABS = [
-  { value: "inbox", label: "Inbox" },
-  { value: "channels", label: "Channels" },
-  { value: "videos", label: "Videos" },
-  { value: "discover", label: "Discover" },
-  { value: "topics", label: "Topics & trends" },
-] as const;
-
-export type ResearchSubTab = (typeof RESEARCH_TABS)[number]["value"];
+import { RESEARCH_TABS, type ResearchSubTab } from "./section-tabs";
+export { RESEARCH_TABS, type ResearchSubTab };
 
 export type ResearchSummary = {
   watchlistCount: number | null;

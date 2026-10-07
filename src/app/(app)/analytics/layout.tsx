@@ -1,6 +1,6 @@
 "use client";
 
-import { notFound, useRouter, useSelectedLayoutSegment } from "next/navigation";
+import { useRouter, useSelectedLayoutSegment } from "next/navigation";
 import type { ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
 import { ANALYTICS_SUB_TABS, AnalyticsTab } from "@/components/analytics-tab";
@@ -12,7 +12,6 @@ export default function AnalyticsLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const segment = useSelectedLayoutSegment();
   const tab = ANALYTICS_SUB_TABS.find((t) => t.key === segment)?.key;
-  if (segment !== null && !tab) notFound();
   return (
     <>
       {tab && (

@@ -1,6 +1,6 @@
 "use client";
 
-import { notFound, useRouter, useSelectedLayoutSegment } from "next/navigation";
+import { useRouter, useSelectedLayoutSegment } from "next/navigation";
 import type { ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
 import { RESEARCH_TABS, ResearchTab } from "@/components/research-tab";
@@ -13,7 +13,6 @@ export default function ResearchLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const segment = useSelectedLayoutSegment();
   const tab = RESEARCH_TABS.find((t) => t.value === segment)?.value ?? null;
-  if (segment !== null && !tab) notFound();
   return (
     <>
       <FeatureErrorBoundary label="Research">

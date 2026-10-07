@@ -54,7 +54,7 @@ export function CloudConnectionSettings() {
   const cloudHealth = health?.find((h) => h.kind === "cloud") ?? null;
   const [error, setError] = useState<string | null>(null);
   // Read directly from window.location rather than `useSearchParams()` -- this page is statically
-  // prerendered (`○ /dashboard` in the build output), and `useSearchParams()` would force a
+  // prerendered (`○ /dashboard` in the build output; since BL-149 the Settings layout), and `useSearchParams()` would force a
   // Suspense boundary just for this one-time post-redirect banner. A plain client-side read after
   // mount has no such requirement.
   const [callbackResult, setCallbackResult] = useState<string | null>(null);

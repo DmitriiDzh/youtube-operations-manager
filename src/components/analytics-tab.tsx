@@ -6,14 +6,9 @@ import { ChannelOverviewPanel } from "./channel-overview-panel";
 import { ContentAnalyticsPanel } from "./content-analytics-panel";
 import { AudienceAnalyticsPanel } from "./audience-analytics-panel";
 
-export const ANALYTICS_SUB_TABS = [
-  { key: "overview", label: "Overview" },
-  { key: "content", label: "Content" },
-  { key: "audience", label: "Audience" },
-] as const;
-
+import { ANALYTICS_SUB_TABS, type AnalyticsSubTab } from "./section-tabs";
+export { ANALYTICS_SUB_TABS, type AnalyticsSubTab };
 const SUB_TABS = ANALYTICS_SUB_TABS;
-export type AnalyticsSubTab = (typeof ANALYTICS_SUB_TABS)[number]["key"];
 type SubTabKey = AnalyticsSubTab;
 
 /**

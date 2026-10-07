@@ -1,6 +1,6 @@
 "use client";
 
-import { notFound, useRouter, useSelectedLayoutSegment } from "next/navigation";
+import { useRouter, useSelectedLayoutSegment } from "next/navigation";
 import type { ReactNode } from "react";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
@@ -24,23 +24,7 @@ import { AppVersionInfo } from "@/components/app-version-info";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 
-// Settings sub-tabs (owner instruction, 2026-09-23: "давай в настройках сделаем 4 категории
-// закладок"). "AI Agent" deliberately groups two technically unrelated mechanisms -- the MCP
-// connection toggle (how an external AI agent like Codex/Claude connects TO this app) and AI
-// provider connections (how this app connects OUT to an AI provider for AI Localization) -- per
-// the owner's own explicit choice after this distinction was raised and confirmed understood.
-const SETTINGS_SUB_TABS = [
-  { value: "general", label: "General" },
-  { value: "api", label: "API" },
-  { value: "channels", label: "Channels" },
-  { value: "ai-agent", label: "AI Agent" },
-  { value: "sync", label: "Sync" },
-  // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6, D5): the RunPod connection only since slice 6 (owner, msg 1549);
-  // everything else is the Production section.
-  { value: "runpod", label: "RunPod" },
-  { value: "about", label: "About" },
-] as const;
-type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
+import { SETTINGS_SUB_TABS, type SettingsSubTab } from "@/components/section-tabs";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): Settings at `/settings/<sub-tab>`. The cards live in this layout, which
 // persists while only the sub-tab changes, so every visited sub-tab stays mounted and is only hidden (no reload on a switch).
@@ -49,7 +33,6 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const segment = useSelectedLayoutSegment();
   const settingsSubTab: SettingsSubTab | undefined = SETTINGS_SUB_TABS.find((t) => t.value === segment)?.value;
-  if (segment !== null && !settingsSubTab) notFound();
   const setSettingsSubTab = (next: SettingsSubTab) => router.push(`/settings/${next}`);
   if (!settingsSubTab) return <>{children}</>;
   return (

@@ -9,6 +9,7 @@ import { useConnectionHealth } from "@/components/use-connection-health";
 import { AppShell } from "@/components/app-shell";
 import { OperationLockControl } from "@/components/operation-lock-control";
 import { AppChannelProvider, type ChannelInfo } from "@/components/app-channel";
+import { sectionHref, sectionOf } from "@/components/section-tabs";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -80,6 +81,13 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // The section is the first path segment (`/production/plans` → production).
   const pathname = usePathname();
   const tab: Tab | null = NAV_ITEMS.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))?.value ?? null;
+  // Review finding: each sidebar item leads back to the sub-tab last open in its section (this app load only).
+  const [lastPathBySection, setLastPathBySection] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const section = sectionOf(pathname, NAV_ITEMS.map((item) => item.href));
+    if (!section || pathname === section) return;
+    queueMicrotask(() => setLastPathBySection((prev) => (prev[section] === pathname ? prev : { ...prev, [section]: pathname })));
+  }, [pathname]);
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   // BL-115: the channel request failed (typically a stale Google sign-in) -- say so, don't spin on "Loading..." forever.
   const [channelUnavailable, setChannelUnavailable] = useState(false);
@@ -252,7 +260,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [userId]);
 
-  const navItemsWithBadges = NAV_ITEMS.map((item) =>
+  const navItemsWithBadges = NAV_ITEMS.map((item) => ({ ...item, href: sectionHref(item.href, lastPathBySection) })).map((item) =>
     item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "production" ? { ...item, badge: plansWaiting } : item
   );
 
