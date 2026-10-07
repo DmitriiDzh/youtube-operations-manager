@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   MAX_CONCURRENT_SESSIONS_RANGE,
   NETWORK_VOLUME_USD_PER_GB_MONTH,
@@ -24,7 +24,8 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
-import { JobProgress } from "./media-job-progress";
+import { describeSessionJobCounts, fromSharedProgress, JobProgress } from "./media-job-progress";
+import type { SharedSessionJobs } from "@/lib/sync-gateway";
 import { VolumeUsageBar, volumeUsageBreakdown } from "./volume-usage-bar";
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
@@ -1357,6 +1358,8 @@ type SharedSessionRow = {
   stoppedAt: string | null;
   usdCharged: number | null;
   stopReason: string | null;
+  /** BL-148: an open session's jobs and their live progress (absent from a device on an older build). */
+  jobs?: SharedSessionJobs;
 };
 
 const LIVE_LABEL: Record<OtherDevicesResponse["devices"][number]["sessions"][number]["live"], string> = {
@@ -1369,6 +1372,32 @@ const LIVE_LABEL: Record<OtherDevicesResponse["devices"][number]["sessions"][num
 /** Active elsewhere = a peer's session with a running pod (like this device's own count, a pending request is not active). */
 export function countActiveElsewhere(view: Pick<OtherDevicesResponse, "devices">): number {
   return view.devices.reduce((sum, d) => sum + d.sessions.filter((s) => s.live === "pod_running").length, 0);
+}
+
+/** BL-148 (owner msg 1976): the jobs of another device's open session, with their live progress as that device last reported it. */
+function PeerSessionJobsRow({ jobs, nowMs }: { jobs: SharedSessionJobs; nowMs: number }) {
+  return (
+    <tr>
+      <td colSpan={7} className="pb-2 pl-3">
+        <p className="text-zinc-400">Jobs: {describeSessionJobCounts(jobs)}</p>
+        {jobs.current.map((j) => (
+          <div key={j.jobId} className="mt-1 flex flex-wrap items-start gap-x-3">
+            <span className="font-mono text-zinc-300">{j.templateId}</span>
+            {j.planItemKey && <span className="text-zinc-500">item {j.planItemKey}</span>}
+            <span className="text-zinc-500">{j.status}</span>
+            {j.progress ? (
+              <div>
+                <JobProgress progress={fromSharedProgress(j.progress)} />
+                <div className="text-zinc-600">as of {sinceLabel(j.progress.updatedAt, nowMs)} ago</div>
+              </div>
+            ) : (
+              j.status !== "queued" && <span className="text-zinc-600">no live progress reported</span>
+            )}
+          </div>
+        ))}
+      </td>
+    </tr>
+  );
 }
 
 export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean; onActiveElsewhere?: (count: number) => void }) {
@@ -1433,7 +1462,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
   return (
     <Card
       title="Other devices"
-      help="RunPod sessions started on your other computers, as each one last reported them through the sync folder (about a minute behind; a device that is off shows its last report as stale). Each session is checked against RunPod's live pod list: 'pod gone' means RunPod no longer has its pod. Pods named ytm-media-* that no device reports are listed separately: they cost money and nobody shows them."
+      help="RunPod sessions started on your other computers, as each one last reported them through the sync folder (about a minute behind; a device that is off shows its last report as stale). An open session also shows its jobs and the running job's progress as that device reported it. Each session is checked against RunPod's live pod list: 'pod gone' means RunPod no longer has its pod. Pods named ytm-media-* that no device reports are listed separately: they cost money and nobody shows them."
     >
       {error && <p className="text-xs text-red-400">{error}</p>}
       {view?.podsError && <p className="text-xs text-amber-400">RunPod&rsquo;s pod list could not be read ({view.podsError}): the states below are what the devices reported.</p>}
@@ -1463,7 +1492,8 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                 </thead>
                 <tbody>
                   {d.sessions.map((s) => (
-                    <tr key={s.sessionId} className="border-t border-zinc-800">
+                    <Fragment key={s.sessionId}>
+                    <tr className="border-t border-zinc-800">
                       <td className="py-1 pr-3 text-zinc-200">{s.status}</td>
                       <td className={`py-1 pr-3 ${s.live === "pod_gone" ? "text-amber-400" : ""}`}>{LIVE_LABEL[s.live]}</td>
                       <td className="py-1 pr-3 font-mono">{s.channelId}</td>
@@ -1483,6 +1513,8 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                         )}
                       </td>
                     </tr>
+                    {s.jobs && <PeerSessionJobsRow jobs={s.jobs} nowMs={nowMs} />}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

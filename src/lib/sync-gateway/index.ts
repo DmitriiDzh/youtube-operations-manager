@@ -51,8 +51,8 @@ export { GLOBAL_DOCUMENT_KEY as AI_CONNECTIONS_GLOBAL_DOCUMENT_KEY } from "./ai-
 export { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";
 
 export { createMediaSessionsShareCoreForProduction } from "./media-sessions";
-export type { MediaSessionsReport, SharedMediaSession } from "./media-sessions";
-export { MEDIA_SESSIONS_REPORT_FORMAT } from "./media-sessions";
+export type { MediaSessionsReport, SharedMediaSession, SharedSessionJobs, SharedJobProgress } from "./media-sessions";
+export { MEDIA_SESSIONS_REPORT_FORMAT, MEDIA_SESSIONS_REPORT_VERSION, SHARED_CURRENT_JOBS_MAX } from "./media-sessions";
 export { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
 // BL-143 phase 2: generation plans of every device (per-device reports, `./per-device-report`).
 export { createGenerationPlansShareCoreForProduction, createGenerationPlansShareCore, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportSchema, jobOutputPathSchema } from "./generation-plans";

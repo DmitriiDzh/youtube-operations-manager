@@ -92,7 +92,8 @@ test("this device's own report is ignored quietly; an invalid, newer-version, ex
   assert.deepEqual(await core.mergeIncoming(bytes(report("me", "2026-10-06T10:05:00.000Z"))), { accepted: false });
   const refused = async (value: unknown, reason: RegExp) =>
     assert.rejects(core.mergeIncoming(bytes(value)), (e: unknown) => (e as { code?: string }).code === "validation_failed" && reason.test((e as Error).message));
-  await refused({ ...report("x", "2026-10-06T10:05:00.000Z"), version: 2 }, /version 2 is newer/);
+  // BL-148 changed the requirement: this build writes version 2 (CROSS_DEVICE_JOB_PROGRESS_PLAN.md), so "newer" is now 3.
+  await refused({ ...report("x", "2026-10-06T10:05:00.000Z"), version: 3 }, /version 3 is newer/);
   await refused({ ...report("x", "2026-10-06T10:05:00.000Z"), comfyUiProxyUrl: "https://secret" }, /invalid/);
   const withSecretInSession = report("x", "2026-10-06T10:05:00.000Z");
   (withSecretInSession.sessions[0] as Record<string, unknown>).comfyUiProxyUrl = "https://pod-8189.proxy.runpod.net/?token=abc";
@@ -117,4 +118,30 @@ test("listPeerReports returns every peer, newest first", async () => {
   await core.mergeIncoming(bytes(report("a", "2026-10-06T10:00:00.000Z")));
   await core.mergeIncoming(bytes(report("b", "2026-10-06T11:00:00.000Z")));
   assert.deepEqual((await core.listPeerReports()).map((r) => r.deviceId), ["b", "a"]);
+});
+
+// BL-148 (AC-XJ-03): version 2 reports carry an open session's jobs; a version 1 report of an older peer is still read.
+test("a version 2 report with jobs and a version 1 report without are both accepted", async () => {
+  const { core } = fixture();
+  const v2 = report("new", "2026-10-06T10:05:00.000Z", { version: 2 });
+  v2.sessions[0].jobs = {
+    counts: { queued: 3, running: 1, done: 4, failed: 0, cancelled: 0 },
+    capped: false,
+    current: [
+      {
+        jobId: "j1",
+        templateId: "ace-step-music",
+        status: "generating",
+        createdBy: "factory",
+        submittedAt: "2026-10-06T10:02:00.000Z",
+        planItemKey: null,
+        progress: { state: "running", percent: 40, nodesTotal: 10, nodesDone: 4, nodesCached: 0, currentNodeType: "KSampler", step: { value: 20, max: 50 }, startedAt: "2026-10-06T10:02:01.000Z", updatedAt: "2026-10-06T10:04:59.000Z" },
+      },
+    ],
+  };
+  assert.deepEqual(await core.mergeIncoming(bytes(v2)), { accepted: true });
+  assert.deepEqual(await core.mergeIncoming(bytes(report("old", "2026-10-06T10:05:00.000Z"))), { accepted: true });
+  const peers = await core.listPeerReports();
+  assert.equal(peers.find((r) => r.deviceId === "new")?.sessions[0].jobs?.current[0].progress?.percent, 40);
+  assert.equal(peers.find((r) => r.deviceId === "old")?.sessions[0].jobs, undefined);
 });

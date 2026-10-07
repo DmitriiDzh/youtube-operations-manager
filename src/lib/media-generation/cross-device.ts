@@ -1,8 +1,9 @@
 import { z } from "zod";
 import type { RunpodApiClient } from "@/lib/media-gateway";
-import type { MediaSessionsReport, SharedMediaSession } from "@/lib/sync-gateway";
-import { MEDIA_SESSIONS_REPORT_FORMAT } from "@/lib/sync-gateway";
-import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, parseWithSchema, type MediaSession, type MediaSessionStatus } from "./contracts";
+import type { MediaSessionsReport, SharedJobProgress, SharedMediaSession, SharedSessionJobs } from "@/lib/sync-gateway";
+import { MEDIA_SESSIONS_REPORT_FORMAT, MEDIA_SESSIONS_REPORT_VERSION, SHARED_CURRENT_JOBS_MAX } from "@/lib/sync-gateway";
+import { DomainError, MEDIA_JOB_TERMINAL_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, parseWithSchema, type MediaJob, type MediaSession, type MediaSessionStatus } from "./contracts";
+import type { JobLiveProgress } from "./job-progress";
 import { terminateAndConfirm } from "./pod-lifecycle";
 
 // BL-138 (owner, Telegram 2026-10-06, msgs 1706/1735/1739; ADR 0028): this device's sessions published for the other devices
@@ -40,6 +41,60 @@ export function toSharedSession(s: MediaSession): SharedMediaSession {
 
 const isTerminal = (status: string) => (MEDIA_SESSION_TERMINAL_STATUSES as readonly string[]).includes(status);
 
+// -- Jobs of an open session (BL-148, owner msg 1976: see the work's progress from another computer) ------------------------
+
+/** How many of a session's newest jobs are counted for the report. */
+export const SHARED_JOBS_COUNTED = 200;
+
+/** BL-144 progress without `detail`: that can be ComfyUI's error text, which never leaves this device. */
+export function toSharedJobProgress(p: JobLiveProgress): SharedJobProgress {
+  return {
+    state: p.state,
+    percent: p.percent,
+    nodesTotal: p.nodesTotal,
+    nodesDone: p.nodesDone,
+    nodesCached: p.nodesCached,
+    currentNodeType: p.currentNode ? (p.currentNode.type ?? `#${p.currentNode.id}`).slice(0, 128) : null,
+    step: p.step ? { value: p.step.value, max: p.step.max } : null,
+    startedAt: p.startedAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
+const RUNNING_JOB_STATUSES = new Set(["submitted", "generating", "transferring"]);
+
+/**
+ * A session's jobs for the report: counts by status over the newest `SHARED_JOBS_COUNTED` (`capped` when that many were read,
+ * so there may be more),
+ * and the unfinished ones -- running first, then the queue in order -- with their live progress when this device watches it.
+ */
+export function summarizeSessionJobs(jobs: MediaJob[], options: { capped?: boolean } = {}): SharedSessionJobs {
+  const counts = { queued: 0, running: 0, done: 0, failed: 0, cancelled: 0 };
+  for (const j of jobs) {
+    if (j.status === "queued") counts.queued++;
+    else if (RUNNING_JOB_STATUSES.has(j.status)) counts.running++;
+    else if (j.status === "done") counts.done++;
+    else if (j.status === "failed") counts.failed++;
+    else if (j.status === "cancelled") counts.cancelled++;
+  }
+  const open = jobs
+    .filter((j) => !(MEDIA_JOB_TERMINAL_STATUSES as readonly string[]).includes(j.status))
+    .sort((a, b) => Number(RUNNING_JOB_STATUSES.has(b.status)) - Number(RUNNING_JOB_STATUSES.has(a.status)) || a.createdAt.localeCompare(b.createdAt));
+  return {
+    counts,
+    capped: options.capped ?? false,
+    current: open.slice(0, SHARED_CURRENT_JOBS_MAX).map((j) => ({
+      jobId: j.jobId,
+      templateId: j.templateId.slice(0, 128),
+      status: j.status,
+      createdBy: j.createdBy,
+      submittedAt: j.submittedAt,
+      planItemKey: j.plan?.itemKey ? j.plan.itemKey.slice(0, 200) : null,
+      progress: j.progress ? toSharedJobProgress(j.progress) : null,
+    })),
+  };
+}
+
 /** Open sessions, plus the ones finished within the last day. */
 export function buildSessionsReport(input: {
   deviceId: string;
@@ -48,15 +103,21 @@ export function buildSessionsReport(input: {
   now: Date;
   sessions: MediaSession[];
   spentTodayUsd: number;
+  /** BL-148: the jobs of each open session (newest first, at most `SHARED_JOBS_COUNTED`); a session missing here has none listed. */
+  jobsBySession?: Record<string, MediaJob[]>;
 }): MediaSessionsReport {
   const cutoff = input.now.getTime() - REPORT_FINISHED_WINDOW_MS;
   const sessions = input.sessions
     .filter((s) => !isTerminal(s.status) || Date.parse(s.stoppedAt ?? s.createdAt) >= cutoff)
     .slice(0, 200)
-    .map(toSharedSession);
+    .map((s) => {
+      const shared = toSharedSession(s);
+      const jobs = isTerminal(s.status) ? undefined : input.jobsBySession?.[s.sessionId];
+      return jobs ? { ...shared, jobs: summarizeSessionJobs(jobs.slice(0, SHARED_JOBS_COUNTED), { capped: jobs.length >= SHARED_JOBS_COUNTED }) } : shared;
+    });
   return {
     format: MEDIA_SESSIONS_REPORT_FORMAT,
-    version: 1,
+    version: MEDIA_SESSIONS_REPORT_VERSION,
     deviceId: input.deviceId,
     hostname: input.hostname,
     runpodAccountId: input.runpodAccountId,

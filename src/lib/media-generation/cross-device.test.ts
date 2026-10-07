@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { MediaSessionsReport } from "@/lib/sync-gateway";
-import type { MediaSession } from "./contracts";
+import { mediaSessionsReportSchema } from "@/lib/sync-gateway/media-sessions";
+import type { MediaJob, MediaSession } from "./contracts";
 import type { RunpodApiClient } from "@/lib/media-gateway";
-import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, toSharedSession, type PeerStopDeps } from "./cross-device";
+import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, summarizeSessionJobs, toSharedSession, type PeerStopDeps } from "./cross-device";
 
 // BL-138 (plan docs/roadmap/plans/MEDIA_SESSIONS_CROSS_DEVICE_PLAN.md, ADR 0028). Requirements: another device sees a session's
 // state and cost but never its ComfyUI URL (it carries the proxy token) or RunPod error text; a peer's "running" session whose
@@ -294,4 +295,120 @@ test("review: a session on another RunPod account keeps the peer's word (this ac
   });
   assert.deepEqual(view.devices.map((d) => d.sessions[0].live), ["pod_running", "pod_running"]);
   assert.deepEqual(view.unknownPods, [], "a TERMINATED pod is not an unknown billed pod");
+});
+
+// -- BL-148 (plan docs/roadmap/plans/CROSS_DEVICE_JOB_PROGRESS_PLAN.md): an open session's jobs and their live progress ---------
+
+function job(jobId: string, status: MediaJob["status"], createdAt: string, over: Partial<MediaJob> = {}): MediaJob {
+  return {
+    jobId,
+    sessionId: "s-open",
+    channelId: "UC1",
+    templateId: "ace-step-music",
+    templateVersion: 1,
+    params: { prompt: "koto" },
+    status,
+    createdBy: "factory",
+    promptId: null,
+    outputs: [],
+    assetIds: [],
+    error: status === "failed" ? "ComfyUI said: /workspace/secret path" : null,
+    createdAt,
+    submittedAt: status === "queued" ? null : createdAt,
+    finishedAt: null,
+    plan: null,
+    ...over,
+  };
+}
+
+const liveProgress = {
+  state: "error" as const,
+  nodesTotal: 10,
+  nodesDone: 6,
+  nodesCached: 2,
+  currentNode: { id: "7", type: "KSampler" },
+  step: { value: 12, max: 50 },
+  percent: 62,
+  startedAt: "2026-10-06T11:58:00.000Z",
+  updatedAt: "2026-10-06T11:59:50.000Z",
+  detail: "ComfyUI error: CUDA out of memory at /workspace/ComfyUI/models/SECRET",
+};
+
+test("AC-XJ-01/02: an open session carries job counts and at most 5 current jobs, running first, progress without detail", () => {
+  const jobs: MediaJob[] = [
+    job("q3", "queued", "2026-10-06T11:40:00.000Z"),
+    job("q1", "queued", "2026-10-06T11:10:00.000Z"),
+    job("g1", "generating", "2026-10-06T11:30:00.000Z", { progress: liveProgress, plan: { planId: "R-0001", stageId: "generate", itemKey: "w3-07", seed: 11 } }),
+    job("q2", "queued", "2026-10-06T11:20:00.000Z"),
+    job("q4", "queued", "2026-10-06T11:45:00.000Z"),
+    job("q5", "queued", "2026-10-06T11:50:00.000Z"),
+    job("t1", "transferring", "2026-10-06T11:25:00.000Z"),
+    job("d1", "done", "2026-10-06T11:00:00.000Z"),
+    job("d2", "done", "2026-10-06T11:05:00.000Z"),
+    job("f1", "failed", "2026-10-06T11:06:00.000Z"),
+    job("c1", "cancelled", "2026-10-06T11:07:00.000Z"),
+  ];
+  const report = buildSessionsReport({
+    deviceId: "mac",
+    hostname: "mac-host",
+    runpodAccountId: "acct",
+    now: NOW,
+    sessions: [session({}), session({ sessionId: "s-done", status: "done", stoppedAt: "2026-10-06T11:30:00.000Z" })],
+    spentTodayUsd: 1,
+    jobsBySession: { "s-open": jobs, "s-done": jobs },
+  });
+  assert.equal(report.version, 2);
+  const open = report.sessions.find((s) => s.sessionId === "s-open");
+  assert.deepEqual(open?.jobs?.counts, { queued: 5, running: 2, done: 2, failed: 1, cancelled: 1 });
+  assert.equal(open?.jobs?.capped, false);
+  // Running (oldest first): t1 11:25, g1 11:30; then the queue in order: q1, q2, q3 -- five in all.
+  assert.deepEqual(open?.jobs?.current.map((j) => j.jobId), ["t1", "g1", "q1", "q2", "q3"]);
+  const g1 = open?.jobs?.current.find((j) => j.jobId === "g1");
+  assert.equal(g1?.planItemKey, "w3-07");
+  assert.deepEqual(g1?.progress, {
+    state: "error",
+    percent: 62,
+    nodesTotal: 10,
+    nodesDone: 6,
+    nodesCached: 2,
+    currentNodeType: "KSampler",
+    step: { value: 12, max: 50 },
+    startedAt: "2026-10-06T11:58:00.000Z",
+    updatedAt: "2026-10-06T11:59:50.000Z",
+  });
+  assert.equal(open?.jobs?.current.find((j) => j.jobId === "q1")?.progress, null);
+  // A finished session carries no jobs.
+  assert.equal(report.sessions.find((s) => s.sessionId === "s-done")?.jobs, undefined);
+  // No error text of a job or of ComfyUI leaves the device, and the report passes its own schema.
+  const text = JSON.stringify(report);
+  assert.ok(!text.includes("SECRET") && !text.includes("ComfyUI said") && !text.includes("detail"));
+  assert.ok(mediaSessionsReportSchema.safeParse(report).success);
+});
+
+test("AC-XJ-02: the report schema refuses a shared progress that carries detail", () => {
+  const report = buildSessionsReport({ deviceId: "mac", hostname: null, runpodAccountId: null, now: NOW, sessions: [session({})], spentTodayUsd: 0, jobsBySession: { "s-open": [job("g1", "generating", "2026-10-06T11:30:00.000Z", { progress: liveProgress })] } });
+  const tampered = JSON.parse(JSON.stringify(report));
+  tampered.sessions[0].jobs.current[0].progress.detail = "error text";
+  assert.equal(mediaSessionsReportSchema.safeParse(tampered).success, false);
+});
+
+test("AC-XJ-05: 200 jobs read means the counts may be capped; fewer are not", () => {
+  const many = Array.from({ length: 200 }, (_, i) => job(`d${i}`, "done", `2026-10-06T10:${String(i % 60).padStart(2, "0")}:00.000Z`));
+  const report = buildSessionsReport({ deviceId: "mac", hostname: null, runpodAccountId: null, now: NOW, sessions: [session({})], spentTodayUsd: 0, jobsBySession: { "s-open": many } });
+  assert.equal(report.sessions[0].jobs?.capped, true);
+  assert.equal(report.sessions[0].jobs?.counts.done, 200);
+  assert.equal(summarizeSessionJobs(many.slice(0, 199)).capped, false);
+});
+
+test("AC-XJ-04: a peer session's jobs reach the other-devices view unchanged; a version 1 session has none", () => {
+  const withJobs = { ...toSharedSession(session({ sessionId: "a", podId: "pod-a" })), jobs: summarizeSessionJobs([job("g1", "generating", "2026-10-06T11:30:00.000Z", { progress: liveProgress })]) };
+  const view = deriveOtherDevices({
+    peers: [peer("laptop", "2026-10-06T11:59:00.000Z", [withJobs, toSharedSession(session({ sessionId: "b", podId: "pod-b" }))])],
+    ownAccountId: "acct",
+    localPodIds: [],
+    livePods: null,
+    now: NOW,
+  });
+  assert.deepEqual(view.devices[0].sessions[0].jobs, withJobs.jobs);
+  assert.equal(view.devices[0].sessions[1].jobs, undefined);
 });
