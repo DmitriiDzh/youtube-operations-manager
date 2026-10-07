@@ -1114,5 +1114,6 @@ parameter of type `image`/`audio`/`video` is an INPUT FILE named by a path relat
 uploaded for that job before the prompt is submitted (`media_input_unavailable` otherwise), listed in the job's `inputs[]`, removed from the server
 after the job ends; the agent's own file is never deleted. BL-135 (Agent API 3.6.0): the agent may END its own session
 (`agent_release_media_session`: withdraw a pending request or stop its pod) and may request one with `releaseWhenDone`, which the watcher stops
-one minute after the last job; it still cannot approve or start one. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
+one minute after the last job; since 3.7.0 a request without the flag takes the owner's setting (on by default), so pass `false` to keep
+the pod between bursts. It still cannot approve or start one. Several sessions may run at once (3.4.0); a session/job of another channel is reported as not found. The watcher terminates the pod on
 idle / minutes / USD; every job submit or poll counts as activity. Contract: `docs/interfaces.md`.

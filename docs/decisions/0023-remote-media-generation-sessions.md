@@ -96,6 +96,8 @@ not keep a pod billing until the idle timeout.
   mutation gate): only the session's own channel; `pending` → withdrawn (`rejected`), `starting`/`running` → the same stop as the owner's,
   `stopping` → returned as is, `approved` (pod still being created) and terminal → `media_session_invalid_state`. Approving, starting and
   rejecting stay Web-only; the inventory test keeps fencing `stopSession`, `approveSession`, `rejectSession` and the watcher.
-- **Release when done.** A request may carry `releaseWhenDone` (schema v63 `media_sessions.release_when_done`; the Web request form has a
-  toggle, on by default). The watcher stops such a running session once it has at least one job, none is open, and a minute has passed since
+- **Release when done.** A request may carry `releaseWhenDone` (schema v63 `media_sessions.release_when_done`). A request that omits it
+  takes the owner's Production → Setup setting (owner 2026-10-06 msgs 1807/1810 for the owner's requests; since 2026-10-07, DEV-MSG-0001 /
+  FO-MSG-0007, for agents' and the factory's requests too, on by default); an explicit value wins. Such a stop is recorded with
+  `stopReason` "released after last job …". The watcher stops such a running session once it has at least one job, none is open, and a minute has passed since
   both the last job finished and the last activity. Never before the first job, never while a job runs.
