@@ -3,11 +3,15 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createReachReportsCore } from "@/lib/reach-reports";
+import { getAnalyticsDataSync, importPeersFirst } from "@/lib/analytics-data-sync";
 
 export type ReachSyncAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
   core: Pick<ReturnType<typeof createReachReportsCore>, "syncAllReachReports">;
   getActiveChannelId: (userId: string) => Promise<string | null>;
+  /** BL-151: the other devices' reach rows and check times first, so a channel they checked recently is not due here. */
+  importPeers?: () => Promise<{ imported: number; pending: boolean }>;
+  publishLocal?: () => Promise<unknown>;
 };
 
 // BL-141 (owner, Telegram 2026-10-06, msgs 1864/1865): the dashboard's automatic Reach check for every connected
@@ -21,6 +25,8 @@ export function createReachSyncAllHandler(
     getSession: () => getServerSession(authOptions),
     core: createReachReportsCore(),
     getActiveChannelId: (userId) => createChannelAccessCore().getActiveChannelId(userId),
+    importPeers: importPeersFirst,
+    publishLocal: () => getAnalyticsDataSync().publishLocal(),
   }
 ) {
   return async function POST(request: Request) {
@@ -34,7 +40,13 @@ export function createReachSyncAllHandler(
       // No/invalid body: check every channel now.
     }
     try {
+      // Only for the automatic due-check: an explicit "check now" checks regardless of the other computer.
+      if (onlyIfDue && deps.importPeers && (await deps.importPeers()).pending) {
+        // The other computer's rows are still arriving: the automatic check waits for the next load (plan).
+        return NextResponse.json({ channels: [], importPending: true });
+      }
       const { channels } = await deps.core.syncAllReachReports({ onlyIfDue, sessionUserId: session.user.id });
+      void deps.publishLocal?.().catch(() => undefined);
       const activeChannelId = await deps.getActiveChannelId(session.user.id);
       return NextResponse.json({ channels: channels.filter((c) => activeChannelId !== null && c.channelId === activeChannelId) });
     } catch (error) {

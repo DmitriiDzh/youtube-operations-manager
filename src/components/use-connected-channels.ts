@@ -68,11 +68,22 @@ export function useConnectedChannels() {
 /** Reactivates an already-connected channel's session without a Google round-trip (the
  * "channel-connections" NextAuth Credentials provider, `src/lib/auth.ts`). Returns whether it
  * succeeded so the caller can decide what to do next (close a dropdown, show an error, refetch). */
+/** BL-149 follow-up (owner msg 2004): a channel switch, for the app's loading window (the (app) layout listens). */
+export const CHANNEL_SWITCH_EVENT = "ytom:channel-switch";
+export type ChannelSwitchEventDetail = { phase: "start" | "activated" | "failed"; channelId: string };
+function announceSwitch(detail: ChannelSwitchEventDetail) {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent<ChannelSwitchEventDetail>(CHANNEL_SWITCH_EVENT, { detail }));
+}
+
 export async function activateStoredChannel(channelId: string): Promise<{ ok: boolean }> {
+  announceSwitch({ phase: "start", channelId });
   try {
     const result = await signIn("channel-connections", { channelId, redirect: false });
-    return { ok: !result?.error };
+    const ok = !result?.error;
+    announceSwitch({ phase: ok ? "activated" : "failed", channelId });
+    return { ok };
   } catch {
+    announceSwitch({ phase: "failed", channelId });
     return { ok: false };
   }
 }

@@ -18,7 +18,7 @@ export default function RecoveryPage() {
         </p>
       </div>
       <OperationLockControl />
-      <Link href="/dashboard" className="text-sm text-blue-400 hover:underline">
+      <Link href="/home" className="text-sm text-blue-400 hover:underline">
         Open the dashboard
       </Link>
     </div>

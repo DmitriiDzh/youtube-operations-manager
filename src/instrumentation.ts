@@ -170,6 +170,27 @@ async function startServerSession() {
   setTimeout(publishQuotaLedgerQuietly, 45_000).unref();
   setInterval(publishQuotaLedgerQuietly, 120_000).unref();
 
+  // BL-151 (docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md): this device's analytics and reach rows out (its own day files
+  // only), the other devices' in -- so a channel one computer collected today is current on the other too. Quiet on failure.
+  const { getAnalyticsDataSync } = await import("@/lib/analytics-data-sync");
+  const shareAnalyticsQuietly = () => {
+    void (async () => {
+      try {
+        // Review M1: never during a snapshot import/migration or in recovery mode (the gate the draft sync uses).
+        await assertDeviceAvailableForMutation(rawSqlClient);
+      } catch {
+        return; // paused; the next tick tries again
+      }
+      const sync = getAnalyticsDataSync();
+      await sync
+        .importPeers()
+        .then(() => sync.publishLocal())
+        .catch((error: unknown) => console.warn(`[analytics-data] ${error instanceof Error ? error.message : String(error)}`));
+    })();
+  };
+  setTimeout(shareAnalyticsQuietly, 20_000).unref();
+  setInterval(shareAnalyticsQuietly, 120_000).unref();
+
   // Phase 14 slice 2 (docs/roadmap/plans/PHASE_14_PLAN.md §2.3): generation sessions = RunPod pods that
   // must never outlive this process. Boot sweep first (a pod left by a dead process is terminated and
   // its session marked interrupted; AC-P14-08), then the watcher at the operator-set interval
@@ -218,6 +239,21 @@ async function startServerSession() {
       // no device id / sync folder yet, or RunPod unreachable: the next tick tries again. A report that fails its own schema
       // would freeze what the other devices see, silently -- that one is logged (BL-148 independent review).
       if (error instanceof Error && error.name === "ZodError") console.warn(`[media-sessions] the sessions report was not published: ${error.message}`);
+    }
+    try {
+      // BL-150: the Setup settings shared with the other devices -- applied here through Production's own validation. Never
+      // during a snapshot import/migration or in recovery mode (it writes the settings), the gate the draft sync uses.
+      const { rawSqlClient: sqlClient } = await import("@/lib/db");
+      const { assertDeviceAvailableForMutation: assertAvailable } = await import("@/lib/device-mutation-gate");
+      let available = true;
+      try {
+        await assertAvailable(sqlClient);
+      } catch {
+        available = false; // paused (lock/recovery): quietly, the next tick checks again
+      }
+      if (available) await media.syncSharedSettings();
+    } catch (error) {
+      console.warn(`[media-settings] the shared settings were not checked: ${error instanceof Error ? error.message : String(error)}`);
     }
     try {
       // BL-143 phase 2: this device's generation plans for the other devices (sync-gateway `generation-plans`).

@@ -24,10 +24,15 @@ test("AC-P14-26 / AC-GP-15: Production's tabs are Sessions, Jobs, Plans, Models,
 });
 
 test("AC-P14-26: the sidebar has Production right after Content; Settings has a RunPod sub-tab rendering only the connection", async () => {
-  const page = await readFile(path.join(process.cwd(), "src", "app", "dashboard", "page.tsx"), "utf8");
-  const navValues = [...page.slice(page.indexOf("const NAV_ITEMS"), page.indexOf("] as const satisfies")).matchAll(/value: "([a-z-]+)"/g)].map((m) => m[1]);
+  // BL-149: the sidebar lives in the (app) layout and Settings on its own page (the single dashboard page is gone; the
+  // requirement this test checks is unchanged).
+  const layout = await readFile(path.join(process.cwd(), "src", "app", "(app)", "layout.tsx"), "utf8");
+  const page = await readFile(path.join(process.cwd(), "src", "app", "(app)", "settings", "layout.tsx"), "utf8");
+  const navValues = [...layout.slice(layout.indexOf("const NAV_ITEMS"), layout.indexOf("] as const satisfies")).matchAll(/value: "([a-z-]+)"/g)].map((m) => m[1]);
   assert.equal(navValues[navValues.indexOf("content") + 1], "production");
-  const subTabs = page.slice(page.indexOf("const SETTINGS_SUB_TABS"), page.indexOf("type SettingsSubTab"));
+  // BL-149 review: the sub-tab lists live in one plain module (section-tabs.ts) shared by the server pages and the client.
+  const tabs = await readFile(path.join(process.cwd(), "src", "components", "section-tabs.ts"), "utf8");
+  const subTabs = tabs.slice(tabs.indexOf("export const SETTINGS_SUB_TABS"), tabs.indexOf("export type ProductionTab"));
   assert.match(subTabs, /\{ value: "runpod", label: "RunPod" \}/);
   assert.doesNotMatch(subTabs, /"media"/);
   const runpodBlock = page.slice(page.indexOf('settingsSubTab === "runpod"'), page.indexOf('settingsSubTab === "about"'));
@@ -77,5 +82,16 @@ test("release-when-done switch: in the Limits card (saved with the limits), not 
   assert.doesNotMatch(sessions, /Stop by itself when the jobs are done/);
   const limits = card.slice(card.indexOf("export function LimitsCard"), card.indexOf("export function FactoryLimitsCard"));
   assert.match(limits, /<ToggleSwitch label="Stop by itself when the jobs are done" checked=\{ownerReleaseWhenDone\}/);
-  assert.match(limits, /JSON\.stringify\(\{[^}]*ownerReleaseWhenDone \}\)/);
+  // BL-150 review: the card sends only the fields that changed (onlyChangedSettings); the switch is still saved with the limits.
+  assert.match(limits, /JSON\.stringify\(onlyChangedSettings\(\{[^}]*ownerReleaseWhenDone \}, settings\)\)/);
+});
+
+// BL-150 review: a Setup card sends only what the owner changed -- a value it merely shows (perhaps old, if the other computer
+// changed it since the card loaded) is never re-sent and so never undoes the other computer's change.
+test("onlyChangedSettings: only fields that differ from the settings the card shows are sent (plus any `keep`)", async () => {
+  const { onlyChangedSettings } = await import("./media-generation-settings");
+  const loaded = { maxUsdPerDay: 5, idleMinutes: 10, gpuFallbackIds: ["L4"], gpuTypeId: "A40" } as never;
+  assert.deepEqual(onlyChangedSettings({ maxUsdPerDay: 5, idleMinutes: 15, gpuFallbackIds: ["L4"] }, loaded), { idleMinutes: 15 });
+  assert.deepEqual(onlyChangedSettings({ gpuFallbackIds: ["A40", "L4"] }, loaded), { gpuFallbackIds: ["A40", "L4"] });
+  assert.deepEqual(onlyChangedSettings({ gpuTypeId: "A40" }, loaded, ["gpuTypeId"]), { gpuTypeId: "A40" });
 });

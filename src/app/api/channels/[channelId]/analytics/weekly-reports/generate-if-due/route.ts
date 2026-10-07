@@ -8,7 +8,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 const core = createAnalyticsCore();
 
 // Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4, weekly reports). Called once per
-// dashboard mount (src/app/dashboard/page.tsx), chained AFTER the auto-collect trigger resolves
+// dashboard mount (src/app/(app)/layout.tsx, BL-149), chained AFTER the auto-collect trigger resolves
 // -- see src/lib/analytics/weekly-report.ts's own doc comment for the full trigger design. A real
 // local-persistence mutation when (and only when) it decides a new/replacement snapshot is due,
 // so this route is gated by src/proxy.ts like any other mutating POST.

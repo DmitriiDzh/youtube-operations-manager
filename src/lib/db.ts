@@ -7,6 +7,7 @@ import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
+import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -4860,67 +4861,41 @@ export type ReachReportImportResult =
  * replaces the older file's rows (including a video the regenerated file no longer lists), and an older
  * file arriving after a newer one is recorded as superseded without touching the data.
  */
-export async function importReachReport(
+// One reach report import at a time in this process (re-review): between reading the period's reports and writing, another import
+// of the same period (the local sync and a peer's file) could otherwise record both as imported and let the older one's rows win.
+let reachImportQueue: Promise<unknown> = Promise.resolve();
+export function importReachReport(input: ReachReportImport, database: AppDb = db): Promise<ReachReportImportResult> {
+  const run = reachImportQueue.then(
+    () => importReachReportUnlocked(input, database),
+    () => importReachReportUnlocked(input, database)
+  );
+  reachImportQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function importReachReportUnlocked(
   input: ReachReportImport,
   database: AppDb = db
 ): Promise<ReachReportImportResult> {
   const newCreate = Date.parse(input.createTime);
-  return database.transaction(async (tx) => {
-    const samePeriod = await tx
-      .select()
-      .from(reportingReportFiles)
-      .where(
-        and(
-          eq(reportingReportFiles.channelId, input.channelId),
-          eq(reportingReportFiles.reportTypeId, input.reportTypeId),
-          eq(reportingReportFiles.startTime, input.startTime),
-          eq(reportingReportFiles.endTime, input.endTime),
-          eq(reportingReportFiles.status, "imported")
-        )
-      );
-
-    if (samePeriod.some((file) => Date.parse(file.createTime) >= newCreate)) {
-      await tx.insert(reportingReportFiles).values({
-        reportId: input.reportId,
-        channelId: input.channelId,
-        reportTypeId: input.reportTypeId,
-        jobId: input.jobId,
-        startTime: input.startTime,
-        endTime: input.endTime,
-        createTime: input.createTime,
-        rowCount: 0,
-        status: "superseded",
-      });
-      return { outcome: "superseded_by_newer" } as const;
-    }
-
-    const olderIds = samePeriod.map((file) => file.reportId);
-    if (olderIds.length > 0) {
-      await tx.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, olderIds));
-      await tx
-        .update(reportingReportFiles)
-        .set({ status: "superseded" })
-        .where(inArray(reportingReportFiles.reportId, olderIds));
-    }
-
-    for (const row of input.rows) {
-      await tx
-        .insert(channelReachDaily)
-        .values({
-          channelId: input.channelId,
-          date: row.date,
-          videoId: row.videoId,
-          impressions: row.impressions,
-          ctr: row.ctr,
-          sourceReportId: input.reportId,
-        })
-        .onConflictDoUpdate({
-          target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
-          set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId },
-        });
-    }
-
-    await tx.insert(reportingReportFiles).values({
+  // The decision is read first; every write then runs as ONE atomic batch (BL-151 re-review): a transaction with an await per
+  // row held the database lock while other writers of this process failed with SQLITE_BUSY (libsql is synchronous on the one
+  // Node thread). Behaviour is unchanged: a report older than one already imported for the period is recorded as superseded;
+  // otherwise the older reports' rows are replaced by this one's.
+  const samePeriod = await database
+    .select()
+    .from(reportingReportFiles)
+    .where(
+      and(
+        eq(reportingReportFiles.channelId, input.channelId),
+        eq(reportingReportFiles.reportTypeId, input.reportTypeId),
+        eq(reportingReportFiles.startTime, input.startTime),
+        eq(reportingReportFiles.endTime, input.endTime),
+        eq(reportingReportFiles.status, "imported")
+      )
+    );
+  const fileRow = (status: "imported" | "superseded", rowCount: number) =>
+    database.insert(reportingReportFiles).values({
       reportId: input.reportId,
       channelId: input.channelId,
       reportTypeId: input.reportTypeId,
@@ -4928,11 +4903,35 @@ export async function importReachReport(
       startTime: input.startTime,
       endTime: input.endTime,
       createTime: input.createTime,
-      rowCount: input.rows.length,
-      status: "imported",
+      rowCount,
+      status,
     });
-    return { outcome: "imported", replacedReports: olderIds.length } as const;
-  });
+
+  if (samePeriod.some((file) => Date.parse(file.createTime) >= newCreate)) {
+    await fileRow("superseded", 0);
+    return { outcome: "superseded_by_newer" } as const;
+  }
+
+  const olderIds = samePeriod.map((file) => file.reportId);
+  const writes: Array<BatchItem<"sqlite">> = [];
+  if (olderIds.length > 0) {
+    writes.push(database.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, olderIds)));
+    writes.push(database.update(reportingReportFiles).set({ status: "superseded" }).where(inArray(reportingReportFiles.reportId, olderIds)));
+  }
+  for (const row of input.rows) {
+    writes.push(
+      database
+        .insert(channelReachDaily)
+        .values({ channelId: input.channelId, date: row.date, videoId: row.videoId, impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId })
+        .onConflictDoUpdate({
+          target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
+          set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId },
+        })
+    );
+  }
+  writes.push(fileRow("imported", input.rows.length));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+  return { outcome: "imported", replacedReports: olderIds.length } as const;
 }
 
 export type StoredChannelReachRow = {
@@ -5804,9 +5803,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -10457,4 +10456,260 @@ export async function getHypothesisGenerationProvenanceByHypothesis(
     .where(eq(hypothesisGenerationProvenance.hypothesisId, hypothesisId))
     .limit(1);
   return rows[0] ?? null;
+}
+
+// -- BL-151 (docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md): analytics and reach rows shared between devices -------------
+// The rows this device collected (or imported) in a time window, and their idempotent import from another device. Merge rule:
+// a row present on both keeps the one collected later (YouTube revises recent days; these are its numbers, not the owner's).
+
+export type AnalyticsShareTables = {
+  /** [channelId, videoId, metricDate, metricName, metricValue, collectedAt (unix s)] */
+  videoMetrics: Array<[string, string, string, string, number, number]>;
+  /** [channelId, metricDate, metricName, metricValue, collectedAt] */
+  channelMetrics: Array<[string, string, string, number, number]>;
+  /** [videoId, channelId, historyThrough, updatedAt] */
+  videoHistory: Array<[string, string, string, number]>;
+  collectionRuns: Array<{ channelId: string; start: string; end: string; videoCount: number; upserts: number; skippedJson: string; ranAt: number; channelLevel: number | null }>;
+  /** [channelId, analytics_last_auto_collected_at (unix s)] */
+  channelStamps: Array<[string, number]>;
+  reportFiles: Array<{ reportId: string; channelId: string; reportTypeId: string; jobId: string; startTime: string; endTime: string; createTime: string; rowCount: number; status: string; importedAt: number }>;
+  /** [channelId, date, videoId, impressions, ctr, sourceReportId] */
+  reachRows: Array<[string, string, string, number, number | null, string]>;
+  /** Outcome only: no error text leaves the device. */
+  syncAttempts: Array<{ channelId: string; reportTypeId: string; attemptedAt: number; outcome: string; filesListed: number; filesImported: number }>;
+  jobs: Array<{ channelId: string; reportTypeId: string; jobId: string; jobName: string; jobCreatedAt: string | null; lastCheckedAt: number | null }>;
+};
+
+export async function exportAnalyticsShareRows(fromSec: number, toSec: number, database: AppDb = db): Promise<AnalyticsShareTables> {
+  type R = Record<string, unknown>;
+  const all = (q: ReturnType<typeof sql>) => database.all<R>(q);
+  const n = (v: unknown) => Number(v);
+  const [vm, cm, vh, runs, stamps, files, attempts, jobs] = await Promise.all([
+    all(sql`SELECT channel_id, video_id, metric_date, metric_name, metric_value, collected_at FROM video_metrics_daily WHERE collected_at >= ${fromSec} AND collected_at < ${toSec}`),
+    all(sql`SELECT channel_id, metric_date, metric_name, metric_value, collected_at FROM channel_metrics_daily WHERE collected_at >= ${fromSec} AND collected_at < ${toSec}`),
+    all(sql`SELECT video_id, channel_id, history_through, updated_at FROM analytics_video_history WHERE updated_at >= ${fromSec} AND updated_at < ${toSec}`),
+    all(sql`SELECT channel_id, requested_start_date, requested_end_date, video_count, upserts_issued, skipped_video_ids_json, ran_at, channel_level FROM analytics_collection_runs WHERE ran_at >= ${fromSec} AND ran_at < ${toSec}`),
+    all(sql`SELECT id AS channel_id, analytics_last_auto_collected_at AS at FROM channels WHERE analytics_last_auto_collected_at >= ${fromSec} AND analytics_last_auto_collected_at < ${toSec}`),
+    all(sql`SELECT report_id, channel_id, report_type_id, job_id, start_time, end_time, create_time, row_count, status, imported_at FROM reporting_report_files WHERE imported_at >= ${fromSec} AND imported_at < ${toSec}`),
+    all(sql`SELECT channel_id, report_type_id, attempted_at, outcome, files_listed, files_imported FROM reporting_sync_attempts WHERE attempted_at >= ${fromSec} AND attempted_at < ${toSec}`),
+    all(sql`SELECT channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at FROM reporting_jobs WHERE last_checked_at >= ${fromSec} AND last_checked_at < ${toSec}`),
+  ]);
+  const reportIds = files.map((f) => String(f.report_id));
+  const reach = reportIds.length > 0 ? await all(sql`SELECT channel_id, date, video_id, impressions, ctr, source_report_id FROM channel_reach_daily WHERE source_report_id IN ${reportIds}`) : [];
+  return {
+    videoMetrics: vm.map((r) => [String(r.channel_id), String(r.video_id), String(r.metric_date), String(r.metric_name), n(r.metric_value), n(r.collected_at)]),
+    channelMetrics: cm.map((r) => [String(r.channel_id), String(r.metric_date), String(r.metric_name), n(r.metric_value), n(r.collected_at)]),
+    videoHistory: vh.map((r) => [String(r.video_id), String(r.channel_id), String(r.history_through), n(r.updated_at)]),
+    collectionRuns: runs.map((r) => ({
+      channelId: String(r.channel_id),
+      start: String(r.requested_start_date),
+      end: String(r.requested_end_date),
+      videoCount: n(r.video_count),
+      upserts: n(r.upserts_issued),
+      skippedJson: String(r.skipped_video_ids_json),
+      ranAt: n(r.ran_at),
+      channelLevel: r.channel_level === null ? null : n(r.channel_level),
+    })),
+    channelStamps: stamps.map((r) => [String(r.channel_id), n(r.at)]),
+    reportFiles: files.map((r) => ({
+      reportId: String(r.report_id),
+      channelId: String(r.channel_id),
+      reportTypeId: String(r.report_type_id),
+      jobId: String(r.job_id),
+      startTime: String(r.start_time),
+      endTime: String(r.end_time),
+      createTime: String(r.create_time),
+      rowCount: n(r.row_count),
+      status: String(r.status),
+      importedAt: n(r.imported_at),
+    })),
+    reachRows: reach.map((r) => [String(r.channel_id), String(r.date), String(r.video_id), n(r.impressions), r.ctr === null ? null : n(r.ctr), String(r.source_report_id)]),
+    syncAttempts: attempts.map((r) => ({ channelId: String(r.channel_id), reportTypeId: String(r.report_type_id), attemptedAt: n(r.attempted_at), outcome: String(r.outcome), filesListed: n(r.files_listed), filesImported: n(r.files_imported) })),
+    jobs: jobs.map((r) => ({
+      channelId: String(r.channel_id),
+      reportTypeId: String(r.report_type_id),
+      jobId: String(r.job_id),
+      jobName: String(r.job_name),
+      jobCreatedAt: r.job_created_at === null ? null : String(r.job_created_at),
+      lastCheckedAt: r.last_checked_at === null ? null : n(r.last_checked_at),
+    })),
+  };
+}
+
+/** What an import could not fully apply: a channel listed here keeps its own "collected" stamp and runs (see below). */
+export type AnalyticsShareImportResult = { incompleteChannels: string[]; skippedVideoRows: number };
+
+const IMPORT_BATCH_SIZE = 500;
+
+/**
+ * Applies another device's rows. Never deletes; a metric row already here is replaced only by one collected later; the video
+ * history only reaches further back; a collection run is added once; the "collected" stamp and the reach check times only move
+ * forward; a peer's report file goes through the same period-replacement rule as one downloaded here (`importReachReport`).
+ *
+ * In short atomic batches (independent review, BL-151): libsql runs statements synchronously on the one Node thread, so a long
+ * transaction with awaits in it held the database lock while other writers (a collection's upserts) failed with SQLITE_BUSY.
+ * A batch runs in one call: no other write of this process can land inside it, and the lock is held only that long.
+ *
+ * A channel is INCOMPLETE when any of its metric rows names a video this device has not synced yet (they cannot be stored), or
+ * the peer's run saw no videos while this device has some: its stamp and runs are then NOT imported, so this device's own
+ * staleness check still collects it -- it must never count as collected while lacking the data (review H2).
+ */
+export async function importAnalyticsShareRows(t: AnalyticsShareTables, database: AppDb = db): Promise<AnalyticsShareImportResult> {
+  const channelIds = [...new Set([...t.videoMetrics.map((r) => r[0]), ...t.videoHistory.map((r) => r[1]), ...t.collectionRuns.map((r) => r.channelId)])];
+  const known = new Set<string>();
+  const publishedAt = new Map<string, string>();
+  const videosByChannel = new Map<string, number>();
+  for (let i = 0; i < channelIds.length; i += IMPORT_BATCH_SIZE) {
+    const rows = await database.all<{ id: string; channel_id: string; published_at: string }>(sql`SELECT id, channel_id, published_at FROM videos WHERE channel_id IN ${channelIds.slice(i, i + IMPORT_BATCH_SIZE)}`);
+    for (const r of rows) {
+      known.add(String(r.id));
+      publishedAt.set(String(r.id), String(r.published_at));
+      videosByChannel.set(String(r.channel_id), (videosByChannel.get(String(r.channel_id)) ?? 0) + 1);
+    }
+  }
+  const incomplete = new Set<string>();
+  let skippedVideoRows = 0;
+  const items: Array<ReturnType<AppDb["run"]>> = [];
+
+  for (const [channelId, videoId, date, name, value, at] of t.videoMetrics) {
+    if (!known.has(videoId)) {
+      incomplete.add(channelId);
+      skippedVideoRows++;
+      continue;
+    }
+    items.push(
+      database.run(
+        sql`INSERT INTO video_metrics_daily (channel_id, video_id, metric_date, metric_name, metric_value, collected_at) VALUES (${channelId}, ${videoId}, ${date}, ${name}, ${value}, ${at})
+            ON CONFLICT (video_id, metric_date, metric_name) DO UPDATE SET metric_value = excluded.metric_value, collected_at = excluded.collected_at, channel_id = excluded.channel_id
+            WHERE excluded.collected_at > video_metrics_daily.collected_at`
+      )
+    );
+  }
+  // A peer's ROLLING run (its latest window, the one the staleness gate looks at) that saw no videos while this device has some
+  // is no coverage here. A channel-level history catch-up legitimately records 0 videos (its window ends before the rolling one)
+  // and must not mark the channel incomplete (re-review).
+  const latestEnd = new Map<string, string>();
+  for (const r of t.collectionRuns) if (r.end > (latestEnd.get(r.channelId) ?? "")) latestEnd.set(r.channelId, r.end);
+  for (const r of t.collectionRuns) {
+    if (r.videoCount === 0 && r.end === latestEnd.get(r.channelId) && (videosByChannel.get(r.channelId) ?? 0) > 0) incomplete.add(r.channelId);
+  }
+  for (const [channelId, date, name, value, at] of t.channelMetrics) {
+    items.push(
+      database.run(
+        sql`INSERT INTO channel_metrics_daily (channel_id, metric_date, metric_name, metric_value, collected_at) VALUES (${channelId}, ${date}, ${name}, ${value}, ${at})
+            ON CONFLICT (channel_id, metric_date, metric_name) DO UPDATE SET metric_value = excluded.metric_value, collected_at = excluded.collected_at
+            WHERE excluded.collected_at > channel_metrics_daily.collected_at`
+      )
+    );
+  }
+  // A history marker means "this video's rows are complete from its publish floor through X". It is taken over only when this
+  // device's own rows plus the rows in this file make that true: this device already has a marker, and the file's rows for the
+  // video start no later than the day after it. Otherwise this device's catch-up would never fetch the gap (re-review).
+  const firstRowDate = new Map<string, string>();
+  for (const [, videoId, date] of t.videoMetrics) if (date < (firstRowDate.get(videoId) ?? "9999")) firstRowDate.set(videoId, date);
+  const historyIds = [...new Set(t.videoHistory.map((r) => r[0]))];
+  const localThrough = new Map<string, string>();
+  for (let i = 0; i < historyIds.length; i += IMPORT_BATCH_SIZE) {
+    for (const r of await database.all<{ video_id: string; history_through: string }>(sql`SELECT video_id, history_through FROM analytics_video_history WHERE video_id IN ${historyIds.slice(i, i + IMPORT_BATCH_SIZE)}`)) {
+      localThrough.set(String(r.video_id), String(r.history_through));
+    }
+  }
+  const shiftDay = (date: string, days: number) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+  const dayAfter = (date: string) => shiftDay(date, 1);
+  for (const [videoId, channelId, through, at] of t.videoHistory) {
+    // Only for a video stored here, and only when it reaches a later date (history is collected forward from publication).
+    if (!known.has(videoId)) continue;
+    // No marker here yet: this device's history then starts at the video's publish floor (the day before publication, as
+    // analytics/catch-up.ts `videoPublishFloor`), so a file whose rows start by the publish date completes it (re-review: a new
+    // device must not re-download history the other one already shared).
+    const published = publishedAt.get(videoId);
+    const mine = localThrough.get(videoId) ?? (published ? shiftDay(published.slice(0, 10), -1) : undefined);
+    const first = firstRowDate.get(videoId);
+    if (mine === undefined || first === undefined || first > dayAfter(mine)) continue;
+    items.push(
+      database.run(
+        sql`INSERT INTO analytics_video_history (video_id, channel_id, history_through, updated_at) VALUES (${videoId}, ${channelId}, ${through}, ${at})
+            ON CONFLICT (video_id) DO UPDATE SET history_through = excluded.history_through, updated_at = MAX(excluded.updated_at, analytics_video_history.updated_at)
+            WHERE excluded.history_through > analytics_video_history.history_through`
+      )
+    );
+  }
+  for (const r of t.collectionRuns) {
+    if (incomplete.has(r.channelId)) continue;
+    items.push(
+      database.run(
+        sql`INSERT INTO analytics_collection_runs (channel_id, requested_start_date, requested_end_date, video_count, upserts_issued, skipped_video_ids_json, ran_at, channel_level)
+            SELECT ${r.channelId}, ${r.start}, ${r.end}, ${r.videoCount}, ${r.upserts}, ${r.skippedJson}, ${r.ranAt}, ${r.channelLevel}
+            WHERE NOT EXISTS (SELECT 1 FROM analytics_collection_runs WHERE channel_id = ${r.channelId} AND requested_start_date = ${r.start} AND requested_end_date = ${r.end} AND ran_at = ${r.ranAt})`
+      )
+    );
+  }
+  for (const [channelId, at] of t.channelStamps) {
+    if (incomplete.has(channelId)) continue;
+    items.push(database.run(sql`UPDATE channels SET analytics_last_auto_collected_at = ${at} WHERE id = ${channelId} AND (analytics_last_auto_collected_at IS NULL OR analytics_last_auto_collected_at < ${at})`));
+  }
+  // Only a SUCCESSFUL check counts here (review M4): another device's failure (its token, its scope) says nothing about this one,
+  // and must never overwrite this device's own newer result.
+  for (const a of t.syncAttempts) {
+    if (a.outcome !== "ok") continue;
+    items.push(
+      database.run(
+        sql`INSERT INTO reporting_sync_attempts (channel_id, report_type_id, attempted_at, outcome, error, files_listed, files_imported, failures_json)
+            VALUES (${a.channelId}, ${a.reportTypeId}, ${a.attemptedAt}, ${a.outcome}, NULL, ${a.filesListed}, ${a.filesImported}, NULL)
+            ON CONFLICT (channel_id, report_type_id) DO UPDATE SET attempted_at = excluded.attempted_at, outcome = excluded.outcome, error = NULL, files_listed = excluded.files_listed, files_imported = excluded.files_imported, failures_json = NULL
+            WHERE excluded.attempted_at > reporting_sync_attempts.attempted_at`
+      )
+    );
+  }
+  for (const j of t.jobs) {
+    items.push(
+      database.run(
+        sql`INSERT INTO reporting_jobs (channel_id, report_type_id, job_id, job_name, job_created_at, last_checked_at) VALUES (${j.channelId}, ${j.reportTypeId}, ${j.jobId}, ${j.jobName}, ${j.jobCreatedAt}, ${j.lastCheckedAt})
+            ON CONFLICT (channel_id, report_type_id) DO UPDATE SET last_checked_at = excluded.last_checked_at
+            WHERE excluded.job_id = reporting_jobs.job_id AND (reporting_jobs.last_checked_at IS NULL OR excluded.last_checked_at > reporting_jobs.last_checked_at)`
+      )
+    );
+  }
+  for (let i = 0; i < items.length; i += IMPORT_BATCH_SIZE) {
+    const chunk = items.slice(i, i + IMPORT_BATCH_SIZE);
+    await database.batch(chunk as [(typeof chunk)[number], ...(typeof chunk)[number][]]);
+  }
+
+  // A peer's report: imported once, through the same rule as a download here (a restated report replaces the older one's rows).
+  const fileIds = t.reportFiles.filter((f) => f.status === "imported").map((f) => f.reportId);
+  const present = new Set<string>();
+  for (let i = 0; i < fileIds.length; i += IMPORT_BATCH_SIZE) {
+    for (const r of await database.all<{ report_id: string }>(sql`SELECT report_id FROM reporting_report_files WHERE report_id IN ${fileIds.slice(i, i + IMPORT_BATCH_SIZE)}`)) present.add(String(r.report_id));
+  }
+  for (const f of t.reportFiles) {
+    if (f.status !== "imported" || present.has(f.reportId)) continue;
+    await importReachReport(
+      {
+        channelId: f.channelId,
+        reportTypeId: f.reportTypeId,
+        jobId: f.jobId,
+        reportId: f.reportId,
+        startTime: f.startTime,
+        endTime: f.endTime,
+        createTime: f.createTime,
+        rows: t.reachRows.filter((r) => r[5] === f.reportId).map(([, date, videoId, impressions, ctr]) => ({ date, videoId, impressions, ctr })),
+      },
+      database
+    );
+  }
+  return { incompleteChannels: [...incomplete], skippedVideoRows };
+}
+
+const ANALYTICS_SHARE_IMPORTED_KEY = "analytics_share_imported_files";
+/** BL-151: which peer day files were imported, in which form (persisted, so a restart does not re-import 45 days of files). */
+export async function getAnalyticsShareImportedJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(ANALYTICS_SHARE_IMPORTED_KEY, database);
+}
+export async function setAnalyticsShareImportedJson(value: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(ANALYTICS_SHARE_IMPORTED_KEY, value, database);
+}
+/** BL-151: how many videos this device has synced (a file left partly unapplied for unknown videos is retried when it grows). */
+export async function countStoredVideos(database: AppDb = db): Promise<number> {
+  const [row] = await database.all<{ n: number }>(sql`SELECT count(*) AS n FROM videos`);
+  return Number(row?.n ?? 0);
 }

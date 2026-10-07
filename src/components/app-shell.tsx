@@ -4,14 +4,17 @@
 // indicator) and a top bar (active channel + channel switch + sign out), replacing the
 // previous single horizontal pill-tab-bar-as-navigation. Purely a chrome/layout change --
 // every existing tab's own content component is rendered completely unchanged inside it.
+import Link from "next/link";
 import type { ComponentType, ReactNode, SVGProps } from "react";
-import type { ChannelInfo } from "@/app/dashboard/page";
+import type { ChannelInfo } from "@/components/app-channel";
 import { ChannelSwitcher } from "./channel-switcher";
 import { DeviceSyncBell } from "./device-sync-bell";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 
 export type NavItem<T extends string> = {
   value: T;
+  /** BL-149: each section has its own address; the item is a real link (middle-click opens it in a new browser tab). */
+  href: string;
   label: string;
   icon: ComponentType<SVGProps<SVGSVGElement>>;
   /** A small count badge next to the label (e.g. unresolved CRDT conflicts awaiting a decision,
@@ -21,8 +24,7 @@ export type NavItem<T extends string> = {
 
 export function AppShell<T extends string>(props: {
   navItems: readonly NavItem<T>[];
-  activeTab: T;
-  onTabChange: (tab: T) => void;
+  activeTab: T | null;
   channel: Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null;
   /** The channel request failed (typically a stale Google sign-in): say so instead of "Loading..." forever. */
   channelUnavailable?: boolean;
@@ -45,9 +47,9 @@ export function AppShell<T extends string>(props: {
             const active = item.value === props.activeTab;
             const Icon = item.icon;
             return (
-              <button
+              <Link
                 key={item.value}
-                onClick={() => props.onTabChange(item.value)}
+                href={item.href}
                 aria-current={active ? "page" : undefined}
                 className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                   active
@@ -62,7 +64,7 @@ export function AppShell<T extends string>(props: {
                     {item.badge}
                   </span>
                 )}
-              </button>
+              </Link>
             );
           })}
         </nav>

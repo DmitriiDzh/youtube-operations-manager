@@ -102,6 +102,16 @@ function Card({ title, help, children }: { title: string; help: string; children
 }
 
 /** The media overview (credentials, settings, readiness) and the gateway traffic, shared by Settings → RunPod and Production. */
+/**
+ * BL-150 review: a card sends only the fields that differ from the settings it shows -- never a field the owner did not touch.
+ * Setup is shared with the other computers: re-sending a field's old value (a form opened before the other computer changed it)
+ * would publish that old value as a fresh edit and silently undo the other computer's change, a spend limit included.
+ * `keep` names fields always sent (e.g. the GPU, whose re-save repairs a missing price).
+ */
+export function onlyChangedSettings(patch: Record<string, unknown>, loaded: Settings, keep: readonly string[] = []): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(patch).filter(([field, value]) => keep.includes(field) || JSON.stringify(value ?? null) !== JSON.stringify((loaded as Record<string, unknown>)[field] ?? null)));
+}
+
 export function useMediaOverview() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1908,12 +1918,12 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
       await requestJson("/api/media-generation/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(onlyChangedSettings({
           datacenterId: draft.datacenterId || null,
           gpuTypeId: draft.gpuTypeId || null,
           cloudType: draft.cloudType,
           templateId: draft.templateId || null,
-        }),
+        }, overview.settings, overview.settings.gpuTypeId !== null && overview.settings.gpuOnDemandPricePerHr === null ? ["gpuTypeId"] : [])),
       });
       setNotice("Saved.");
       await onChanged();
@@ -2081,7 +2091,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
       await requestJson("/api/media-generation/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ networkVolumeId: selected || null }),
+        body: JSON.stringify(onlyChangedSettings({ networkVolumeId: selected || null }, overview.settings)),
       });
       setNotice("Saved.");
       await onChanged();
@@ -2336,7 +2346,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
     setError(null);
     setNotice(null);
     try {
-      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds, maxConcurrentSessions, ownerReleaseWhenDone }) });
+      await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(onlyChangedSettings({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds, maxConcurrentSessions, ownerReleaseWhenDone }, settings)) });
       setNotice("Saved.");
       await onChanged();
     } catch (err) {
@@ -2421,7 +2431,7 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
       await requestJson("/api/media-generation/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ factorySessionsEnabled: nextEnabled, factoryMaxUsdPerSession, factoryMaxMinutesPerSession, factoryMaxUsdPerDay, factoryMaxUsdPerMonth }),
+        body: JSON.stringify(onlyChangedSettings({ factorySessionsEnabled: nextEnabled, factoryMaxUsdPerSession, factoryMaxMinutesPerSession, factoryMaxUsdPerDay, factoryMaxUsdPerMonth }, settings)),
       });
       setNotice("Saved.");
       await onChanged();
@@ -2480,6 +2490,16 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
   const [retrySeconds, setRetrySeconds] = useState(String(settings.capacityRetrySeconds));
   const [waitMinutes, setWaitMinutes] = useState(String(settings.capacityWaitMinutes));
   const [busy, setBusy] = useState(false);
+  // Re-read when the settings change (a save, or a value applied from the other computer), like the other Setup cards: a form
+  // still showing the old value would send it back with the next save and undo the other computer's change (BL-150 review).
+  const fallbackKey = settings.gpuFallbackIds.join("\n");
+  useEffect(() => {
+    setFallbackText(fallbackKey);
+    setMinVram(settings.gpuMinVramGb === null ? "" : String(settings.gpuMinVramGb));
+    setMaxPrice(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
+    setRetrySeconds(String(settings.capacityRetrySeconds));
+    setWaitMinutes(String(settings.capacityWaitMinutes));
+  }, [fallbackKey, settings.gpuMinVramGb, settings.gpuMaxPricePerHr, settings.capacityRetrySeconds, settings.capacityWaitMinutes]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -2503,7 +2523,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
       await requestJson("/api/media-generation/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes }),
+        body: JSON.stringify(onlyChangedSettings({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes }, settings)),
       });
       setNotice("Saved.");
       await onChanged();

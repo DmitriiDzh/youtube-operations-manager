@@ -23,7 +23,7 @@ function syncFirstWithTimeout() {
 
 // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §6) -- mirrors
 // .../analytics/auto-collect's own shape/idempotence contract: called once per dashboard mount
-// (src/app/dashboard/page.tsx), regardless of which tab is active ("во время запущенного
+// (src/app/(app)/layout.tsx, BL-149), regardless of which tab is active ("во время запущенного
 // интерфейса", owner decision 1), not on a repeating interval. A real mutation when (and only
 // when) it decides to actually collect something -- runCollectionIfStale's own atomic claim
 // (never a per-caller gate here) is what prevents two concurrent callers from double-spending the

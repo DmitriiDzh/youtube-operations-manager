@@ -48,7 +48,7 @@ export function formatPublishColumn(video: SyncedVideo): string {
   return date ? formatDisplayDate(date) : "—";
 }
 
-// A tab switch already re-mounts this component (dashboard/page.tsx's conditional tab
+// A tab switch already re-mounts this component (each section is its own page, BL-149; formerly dashboard/page.tsx's conditional tab
 // rendering), so this only needs to decide, once per mount, whether the already-local data is
 // fresh enough to skip a real YouTube API call -- auto-resyncing on every single mount would
 // spend real, finite quota on every tab click (docs/roadmap/plans/TAB_REFRESH_AND_CHANNEL_UI_PLAN.md

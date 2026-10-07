@@ -6,13 +6,10 @@ import { ChannelOverviewPanel } from "./channel-overview-panel";
 import { ContentAnalyticsPanel } from "./content-analytics-panel";
 import { AudienceAnalyticsPanel } from "./audience-analytics-panel";
 
-const SUB_TABS = [
-  { key: "overview", label: "Overview" },
-  { key: "content", label: "Content" },
-  { key: "audience", label: "Audience" },
-] as const;
-
-type SubTabKey = (typeof SUB_TABS)[number]["key"];
+import { ANALYTICS_SUB_TABS, type AnalyticsSubTab } from "./section-tabs";
+export { ANALYTICS_SUB_TABS, type AnalyticsSubTab };
+const SUB_TABS = ANALYTICS_SUB_TABS;
+type SubTabKey = AnalyticsSubTab;
 
 /**
  * Composes the Studio-Parity Overview/Content/Audience sub-tabs
@@ -23,8 +20,19 @@ type SubTabKey = (typeof SUB_TABS)[number]["key"];
  * preserves the pre-existing raw-collected-data view (`AnalyticsManager`, Phase 8/BL-058)
  * unchanged (AGENTS.md §D), still reachable from Overview's own disclosure toggle.
  */
-export function AnalyticsTab({ subscriberCount }: { subscriberCount?: string }) {
-  const [activeSubTab, setActiveSubTab] = useState<SubTabKey>("overview");
+export function AnalyticsTab({
+  subscriberCount,
+  tab,
+  onTabChange,
+}: {
+  subscriberCount?: string;
+  /** BL-149: the sub-tab from the address (`/analytics/<tab>`), with navigation on a click; absent = local state. */
+  tab?: SubTabKey;
+  onTabChange?: (tab: SubTabKey) => void;
+}) {
+  const [ownSubTab, setOwnSubTab] = useState<SubTabKey>("overview");
+  const activeSubTab = tab ?? ownSubTab;
+  const setActiveSubTab = onTabChange ?? setOwnSubTab;
   const [showRaw, setShowRaw] = useState(false);
 
   return (

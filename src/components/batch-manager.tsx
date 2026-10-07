@@ -72,7 +72,7 @@ type ApiError = { error: string; message: string; details?: unknown };
  * (see src/app/api/channels/[channelId]/batches/route.ts), and Execute is hidden
  * entirely, exactly as before this change.
  *
- * `channelId`/`channelTitle` come from the parent (`dashboard/page.tsx`'s own active-channel
+ * `channelId`/`channelTitle` come from the parent (the `(app)` layout's own active-channel
  * state, the same one the topbar's channel switcher drives) -- owner instruction, 2026-09-23:
  * "на закладке batches есть дроп даун выбора каналов, который не нужен и не выполняет никакую
  * функцию, у нас теперь есть общий дроп даун сверху". The removed dropdown let an operator pick

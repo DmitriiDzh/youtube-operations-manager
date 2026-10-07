@@ -15,15 +15,8 @@ import { MarketCollectionRequestsPanel } from "./market-collection-requests-pane
 // Research tab as a summary line plus sub-tabs, instead of nine stacked panels. Every sub-tab stays mounted and is only
 // hidden (the Production/Settings pattern), so switching is instant and nothing refetches.
 
-export const RESEARCH_TABS = [
-  { value: "inbox", label: "Inbox" },
-  { value: "channels", label: "Channels" },
-  { value: "videos", label: "Videos" },
-  { value: "discover", label: "Discover" },
-  { value: "topics", label: "Topics & trends" },
-] as const;
-
-export type ResearchSubTab = (typeof RESEARCH_TABS)[number]["value"];
+import { RESEARCH_TABS, type ResearchSubTab } from "./section-tabs";
+export { RESEARCH_TABS, type ResearchSubTab };
 
 export type ResearchSummary = {
   watchlistCount: number | null;
@@ -61,8 +54,33 @@ export function shouldOpenInbox(input: { decided: boolean; pending: number }): b
   return !input.decided && input.pending > 0;
 }
 
-export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: number) => void }) {
-  const [tab, setTab] = useState<ResearchSubTab>("channels");
+export function ResearchTab({
+  onPendingChange,
+  tab: routeTab,
+  onTabChange,
+}: {
+  onPendingChange?: (pending: number) => void;
+  /**
+   * BL-149: the sub-tab from the address (`/research/<tab>`), or null on plain `/research`, where the first summary
+   * decides (AC-R1-2) and the address is replaced with that sub-tab. Absent (with `onTabChange`) = local state.
+   */
+  tab?: ResearchSubTab | null;
+  onTabChange?: (tab: ResearchSubTab, options: { replace: boolean }) => void;
+}) {
+  const [ownTab, setOwnTab] = useState<ResearchSubTab>("channels");
+  const routed = onTabChange !== undefined;
+  const tab = routed ? (routeTab ?? "channels") : ownTab;
+  // Read from inside the poll (a new parent function or address never restarts it).
+  const onTabChangeRef = useRef(onTabChange);
+  const addressNamedTab = useRef(Boolean(routeTab));
+  useEffect(() => {
+    onTabChangeRef.current = onTabChange;
+    if (routeTab) addressNamedTab.current = true;
+  }, [onTabChange, routeTab]);
+  const setTab = useCallback((next: ResearchSubTab, options: { replace: boolean } = { replace: false }) => {
+    if (onTabChangeRef.current) onTabChangeRef.current(next, options);
+    else setOwnTab(next);
+  }, []);
   const [summary, setSummary] = useState<ResearchSummary | null>(null);
   // BL-140 R3: cross-sub-tab links -- the summary's warning link opens Channels filtered to the channels it counts,
   // and a channel's "Show all in Videos" opens Videos filtered to that channel. A new nonce re-applies the same value.
@@ -92,7 +110,10 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
         if (cancelled) return;
         setSummary(data);
         onPendingRef.current?.(data.pending.total);
-        if (shouldOpenInbox({ decided: openingDecided.current, pending: data.pending.total })) setTab("inbox");
+        // An address that names a sub-tab is the owner's own pick (AC-R1-2).
+        const decided = openingDecided.current || addressNamedTab.current;
+        if (shouldOpenInbox({ decided, pending: data.pending.total })) setTab("inbox", { replace: true });
+        else if (!decided && onTabChangeRef.current) setTab("channels", { replace: true });
         openingDecided.current = true;
       } catch {
         // Non-fatal: the line keeps its last state until the next poll.
@@ -106,7 +127,7 @@ export function ResearchTab({ onPendingChange }: { onPendingChange?: (pending: n
       refreshRef.current = null;
       clearInterval(id);
     };
-  }, []);
+  }, [setTab]);
 
   // The owner picked a sub-tab (or followed a link): from now on only they move it (AC-R1-2, BL-140 review).
   function pickTab(next: ResearchSubTab) {

@@ -48,6 +48,10 @@ export type AppPaths = {
    * reasoning `migrationBackupsDir` above already uses for its own whole-database backups).
    */
   changeDraftsDiscardedBackupsDir: string;
+  /** BL-150: the shared Production → Setup settings document (sync-gateway `media-settings`). */
+  mediaSettingsDocDir: string;
+  mediaSettingsSyncFallbackDir: string;
+  mediaSettingsDiscardedBackupsDir: string;
   /** Directory holding the per-channel editorial-profile Automerge documents
    * (`src/lib/sync-gateway/editorial-profile/`, added 2026-09-22, `docs/roadmap/plans/
    * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3 -- its own document family, separate from

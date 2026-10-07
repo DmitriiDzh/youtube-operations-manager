@@ -829,6 +829,9 @@ needed (`docs/decisions/0001-additive-idempotent-schema-strategy.md`'s "non-addi
 applies to a change against an already-released schema, not an in-progress, unmerged one) — any
 *future* change to this column's type would need one.
 
+**BL-151 (2026-10-07, §31):** these rows (and the reach rows) now travel between devices through their own per-device day
+files, `src/lib/analytics-data-sync/`, not through the snapshot. The paragraph below still holds for the snapshot itself.
+
 `video_metrics_daily` is **deliberately not added to `SNAPSHOT_TRANSFERRED_TABLES`**
 (`src/lib/snapshot/contracts.ts`) in this slice — collected metrics stay device-local and do not
 travel with a device handoff/snapshot import. Accepted limitation, parallel in kind to RISK-33's
@@ -1261,6 +1264,8 @@ Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `aut
    `cloud_connection` row. Always redirects back to `/dashboard` with a `?cloudConnection=
    connected|error` query param the Settings card reads client-side (via
    `window.location.search`, not `useSearchParams()` — `/dashboard` is statically prerendered, and
+   (BL-149: the callback now redirects to `/settings/api`; the section pages live under `src/app/(app)/`, see
+   `docs/roadmap/plans/APP_ROUTES_PLAN.md` — the `dashboard/page.tsx` references in this document predate that)
    `useSearchParams()` would force a Suspense boundary just for this one-time banner). **Catches
    every error from `completeConnect`, not only `DomainError`** — a full-page OAuth redirect has
    no JS error handling available to the browser either way, so an unexpected error is logged
@@ -2948,3 +2953,46 @@ nothing while a node works before its first step, so such a stretch shows only t
     then publishes `buildSharedPlans()` together with the outgoing verdicts.
   - A peer's audition is resolved by `resolvePeerAudition` from that peer's report, then proven inside this device's workspace
     by the same `workspace-exchange` resolvers.
+
+## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
+
+- **Sync family.** `src/lib/sync-gateway/media-settings/` holds one global Automerge document, `{ format, version, settings: map }`.
+  - The genesis is deterministic (`genesisDocument()`: fixed actor, time 0, loaded as a copy so each device writes with its own actor). Independently started documents therefore merge.
+  - `scanForConflicts` drops values written identically on both sides.
+  - API: `publishChanged` (an owner edit, may settle a conflict), `seedMissing` (never overwrites), `resolveConflict` (one of the conflicting values only), and the runner hooks.
+  - It is registered in `run-all-families.ts` as `media_settings`.
+- **Applying in Production.** `src/lib/media-generation/settings-sync.ts` holds `SHARED_SETTING_FIELDS`, `ACCOUNT_BOUND_FIELDS` and `planPeerApply`, which is pure. `createSettingsSync().tick()` does the following on the media watcher tick (`src/instrumentation.ts`):
+  - seed;
+  - read;
+  - plan: conflicted fields are held, account-bound fields are held on another account;
+  - apply through `base.updateSettings`: the whole patch first, then each field alone on failure. A busy volume is retried; an invalid value is held until the shared value changes;
+  - record `settings_applied_from_peer`.
+- **Publishing a local edit.** `media-generation/index.ts` wraps `updateSettings` to publish only the fields that save changed. A failure to share never fails the save.
+- **UI.**
+  - `components/conflict-center.tsx` (`useConflictCenter`, `ConflictCenter`) reads every family's conflicts plus the snapshot divergence, and resolves through each family's own route. Its display helpers are in `conflict-values.ts`: labels, units, word and list diff.
+  - The `(app)` layout shows it blocking after the startup steps (`startup-progress.ts`, `loading-overlay.tsx`), and the Merge tab shows it non-blocking.
+  - Setup shows `settings-sync-notice.tsx`.
+
+## 31. Analytics and reach data shared between devices (BL-151)
+
+Plan: `docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md`; owner msgs 2004/2008.
+
+- **Module.** `src/lib/analytics-data-sync/` is shaped like `quota-ledger-sync`.
+  - **Files.** Each device writes only its own day files, `<Syncthing root>/analytics-data/<deviceId>/<YYYY-MM-DD>.json` (UTC day of collection). Each holds that day's rows from `exportAnalyticsShareRows`, in `db.ts`.
+  - **Publishing.** Today and yesterday are rewritten only when changed; own files older than 45 days are deleted. The Syncthing folder is never created.
+  - **Peer files.** They are read once per size/mtime. A file naming another device or day, an invalid file or an oversized one is skipped with a reason.
+- **Import.** `importAnalyticsShareRows` runs in one transaction and never deletes. Its merge rules:
+  - metrics and video history: the later `collected_at`/`updated_at` wins;
+  - collection runs: added once (channel, window, `ran_at`);
+  - the channel auto-collect stamp, the reach sync attempt and the job check time: only move forward;
+  - report files: added once;
+  - reach rows: replaced only by a later-created report;
+  - a video metric for a video this device has not synced: skipped;
+  - sync attempts: shared without error text.
+- **When it runs.**
+  - Every 2 minutes on the server (`src/instrumentation.ts`).
+  - Before deciding what is stale: `auto-collect-all` and the automatic `reach/sync-all` first call `importPeersFirst()`, which waits at most 30 s and never fails the collection. Each publishes once its collection is done.
+  - The existing staleness checks are unchanged. They now see the other device's runs and stamps, so a channel it collected today is current here. The startup window then says "collected on the other computer".
+- **Measured on a copy of the Mac's database (2026-10-07).**
+  - Everything: 45,780 metric rows and 1,880 reach rows, 4.3 MB as JSON. One day: about 11,000 rows.
+  - Export of a day: 35 ms. A full re-import into the same data: 1.1 s, and nothing changed.

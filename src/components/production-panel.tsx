@@ -1,5 +1,7 @@
 "use client";
 
+import type { PeerReviewSource } from "./plan-review-screen";
+import { SettingsSyncNotice } from "./settings-sync-notice";
 import { useCallback, useEffect, useState } from "react";
 import type { RunpodAccountBalance } from "@/lib/media-gateway";
 import type { MediaSessionLimits } from "@/lib/media-generation/contracts";
@@ -25,16 +27,8 @@ import { PlansPanel } from "./generation-plans-panel";
 // (Sessions, Jobs, Models, Workflow templates), the setup tab on the right. The header shows the connected RunPod
 // account's balance and today's spend. The RunPod keys themselves stay in Settings → RunPod.
 
-export const PRODUCTION_TABS = [
-  { value: "sessions", label: "Sessions", side: "work" },
-  { value: "jobs", label: "Jobs", side: "work" },
-  // BL-143 (ADR 0029, AC-GP-15): generation plans, next to the jobs they are made of.
-  { value: "plans", label: "Plans", side: "work" },
-  { value: "models", label: "Models", side: "work" },
-  { value: "templates", label: "Workflow templates", side: "work" },
-  { value: "setup", label: "Setup", side: "setup" },
-] as const;
-type ProductionTab = (typeof PRODUCTION_TABS)[number]["value"];
+import { PRODUCTION_TABS, type ProductionTab } from "./section-tabs";
+export { PRODUCTION_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
 const BALANCE_POLL_MS = 60_000;
@@ -119,8 +113,25 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
   );
 }
 
-export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: string | null }) {
-  const [tab, setTab] = useState<ProductionTab>("sessions");
+export function ProductionPanel({
+  activeChannelId = null,
+  tab: routeTab,
+  onTabChange,
+  onReviewPlan,
+  paused = false,
+}: {
+  activeChannelId?: string | null;
+  /** BL-149: the sub-tab from the address (`/production/<tab>`), with navigation on a click; absent = local state. */
+  tab?: ProductionTab;
+  onTabChange?: (tab: ProductionTab) => void;
+  /** BL-149 re-review: the panel is hidden behind a plan review; Plans stops polling meanwhile. */
+  paused?: boolean;
+  /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
+  onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
+}) {
+  const [ownTab, setOwnTab] = useState<ProductionTab>("sessions");
+  const tab = routeTab ?? ownTab;
+  const setTab = onTabChange ?? setOwnTab;
   const [limits, setLimits] = useState<MediaSessionLimits | null>(null);
   const [activeElsewhere, setActiveElsewhere] = useState(0);
   const { overview, loadError, gatewayTraffic, refresh } = useMediaOverview();
@@ -156,7 +167,7 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
         <JobsCard activeChannelId={activeChannelId} />
       </div>
       <div className={tab === "plans" ? "space-y-6" : "hidden"}>
-        <PlansPanel active={tab === "plans"} />
+        <PlansPanel active={tab === "plans" && !paused} onReview={onReviewPlan} />
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
         <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />
@@ -165,6 +176,7 @@ export function ProductionPanel({ activeChannelId = null }: { activeChannelId?: 
         <WorkflowTemplatesCard />
       </div>
       <div className={tab === "setup" ? "max-w-3xl space-y-6" : "hidden"}>
+        <SettingsSyncNotice onApplied={() => void refresh()} />
         <ReadinessBanner overview={overview} />
         <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
         <VolumeCard overview={overview} onChanged={refresh} />

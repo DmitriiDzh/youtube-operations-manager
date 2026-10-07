@@ -754,7 +754,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     /**
      * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
      * when the daily collection last ran; if it's stale, run it." Meant to be called once per
-     * dashboard mount (`src/app/dashboard/page.tsx`), not on a repeating interval -- this is a
+     * dashboard mount (`src/app/(app)/layout.tsx, BL-149`), not on a repeating interval -- this is a
      * once-a-day check, not a continuous poll.
      *
      * **The staleness check and mark-then-run now live entirely inside `collectMetrics` itself**
@@ -1436,7 +1436,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     /**
      * Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4, "analytical reports and
      * weekly channel reviews"). A pure local read/compute -- no YouTube call, no `authResolver` --
-     * meant to be called once per dashboard mount (`src/app/dashboard/page.tsx`), the same
+     * meant to be called once per dashboard mount (`src/app/(app)/layout.tsx, BL-149`), the same
      * "on entering the dashboard" trigger point BL-059's daily auto-collection already uses,
      * chained AFTER that trigger resolves so a Monday load sees Monday's own freshly-collected
      * data (see `weekly-report.ts`'s own doc comment for the full trigger design and its
@@ -1496,7 +1496,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // caller here would report "generated: true" with content that doesn't match what actually
         // ended up persisted (the DB integrity guarantee still holds -- only this response/log
         // would be describing a write that was silently dropped). Not fixed: the only caller
-        // (src/app/dashboard/page.tsx) fires this via `fetch(...).catch(() => {})` and never reads
+        // (src/app/(app)/layout.tsx, BL-149) fires this via `fetch(...).catch(() => {})` and never reads
         // the response body, and no MCP/CLI surface exposes this generate path at all.
         const reportJson = JSON.stringify(content);
         await deps.weeklyReportStore.upsert(
