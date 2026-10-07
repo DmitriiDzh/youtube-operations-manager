@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PlanEvent, PlanStageCounts, PlanStageKind, PlanView } from "@/lib/generation-plans/contracts";
+import type { PlanEvent, PlanNotice, PlanStageCounts, PlanStageKind, PlanView } from "@/lib/generation-plans/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
@@ -75,6 +75,24 @@ export function formatEta(seconds: number | null): string {
   if (minutes < 60) return `about ${minutes} min`;
   return `about ${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
+
+/** A notice in words and its tone (AC-GP3-01). Exported for its test. */
+export function describeNotice(notice: PlanNotice): { text: string; tone: "ok" | "warn" | "bad" | "info" } {
+  switch (notice.kind) {
+    case "stage_complete":
+      return { text: `${notice.title}: complete`, tone: "ok" };
+    case "budget_80":
+      return { text: "80 % of the budget used", tone: "warn" };
+    case "budget_100":
+      return { text: "Budget used up (a warning: nothing is stopped)", tone: "bad" };
+    case "plan_complete":
+      return { text: "Everything planned is done", tone: "ok" };
+    case "review_waiting":
+      return { text: `${notice.count} waiting for your verdict`, tone: "info" };
+  }
+}
+
+const NOTICE_TONES = { ok: "border-emerald-500/40 text-emerald-300", warn: "border-amber-500/40 text-amber-300", bad: "border-red-500/50 text-red-300", info: "border-indigo-500/40 text-indigo-300" } as const;
 
 /** An event in one line. Exported for its test. */
 export function describeEvent(event: PlanEvent): string {
@@ -269,6 +287,18 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
             <span className="font-mono">{plan.planId}</span> · {plan.owner === "factory" ? "Factory Operator" : "you"} · created {formatDisplayDateTime(plan.createdAt)} · {plan.status}
           </p>
           {plan.note && <p className="mt-1 text-xs text-zinc-400">{plan.note}</p>}
+          {progress.notices.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {progress.notices.map((n, i) => {
+                const d = describeNotice(n);
+                return (
+                  <span key={i} className={`rounded-full border px-2 py-0.5 text-xs ${NOTICE_TONES[d.tone]}`}>
+                    {d.text}
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
           {waiting > 0 && onReview && (

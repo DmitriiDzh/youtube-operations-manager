@@ -160,7 +160,15 @@ export type PlanProgress = {
   budget: { usd: number | null; usedShare: number | null; warnings: Array<"80" | "100"> };
   /** Mean finished-job duration on the same GPU type × attempts still missing; null below 3 finished samples. */
   eta: { seconds: number | null; gpuTypeId: string | null; samples: number };
+  /** BL-143 phase 3 (AC-GP3-01): what the owner and the factory should notice now, derived like everything else. */
+  notices: PlanNotice[];
 };
+
+export type PlanNotice =
+  | { kind: "stage_complete"; stageId: string; title: string }
+  | { kind: "budget_80" | "budget_100" }
+  | { kind: "plan_complete" }
+  | { kind: "review_waiting"; count: number };
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
 

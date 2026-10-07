@@ -34,3 +34,10 @@ test("a report's age reads in minutes, then hours", async () => {
   assert.equal(describeAge("2026-10-07T11:53:00Z", now), "7 min ago");
   assert.equal(describeAge("2026-10-07T09:00:00Z", now), "3 h ago");
 });
+
+test("notices read as short chips with a tone (AC-GP3-01)", async () => {
+  const { describeNotice } = await import("./generation-plans-panel");
+  assert.deepEqual(describeNotice({ kind: "stage_complete", stageId: "generate", title: "Generate" }), { text: "Generate: complete", tone: "ok" });
+  assert.equal(describeNotice({ kind: "budget_100" }).tone, "bad");
+  assert.equal(describeNotice({ kind: "review_waiting", count: 3 }).text, "3 waiting for your verdict");
+});

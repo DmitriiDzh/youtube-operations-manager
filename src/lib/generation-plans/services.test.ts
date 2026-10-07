@@ -769,3 +769,14 @@ test("phase 2 review: a later verdict in the same second as the stored one is st
   assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 2, skipped: 0 });
   assert.equal([...d.macBase.results.values()].find((r) => r.stageId === "owner_review")?.result, "accepted", "applied oldest first, so the later one stands");
 });
+
+test("AC-GP3-02: the waiting count is this device's active plans plus other devices' active plans, minus verdicts already sent", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  assert.deepEqual(await d.mac.summary(), { waitingReview: 1, local: 1, otherDevices: 0 });
+  await d.publish("mac", d.mac);
+  assert.deepEqual(await d.win.summary(), { waitingReview: 1, local: 0, otherDevices: 1 });
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" });
+  assert.deepEqual(await d.win.summary(), { waitingReview: 0, local: 0, otherDevices: 0 }, "sent from here: no longer waiting");
+});

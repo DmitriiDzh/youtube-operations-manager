@@ -735,6 +735,28 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   // The rest of the public surface (added to the object returned above).
   const more = {
+    /**
+     * AC-GP3-02: how many attempts wait for the owner -- this device's active plans plus other devices' active plans, minus
+     * the verdicts already sent from here (the Production badge).
+     */
+    async summary(): Promise<{ waitingReview: number; local: number; otherDevices: number }> {
+      let local = 0;
+      for (const row of await deps.store.listPlans({ status: "active" })) {
+        const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+        local += reviewEntries(row, jobs, results).filter((e) => e.verdict === null).length;
+      }
+      let otherDevices = 0;
+      if (deps.peers) {
+        const sent = new Set((await more.outgoingVerdicts()).map((v) => `${v.ownerDeviceId}\u0000${v.planId}\u0000${v.itemKey}\u0000${v.attemptRef}`));
+        for (const report of await deps.peers.listPeerReports()) {
+          for (const plan of report.plans.filter((p) => p.status === "active")) {
+            otherDevices += plan.review.filter((e) => e.verdict === null && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`)).length;
+          }
+        }
+      }
+      return { waitingReview: local + otherDevices, local, otherDevices };
+    },
+
     /** BL-143 phase 2: the other devices' plans (read-only), each report with its age and whether it is stale. */
     async peerPlans(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; plans: SharedPlan[] }>> {
       if (!deps.peers) return [];

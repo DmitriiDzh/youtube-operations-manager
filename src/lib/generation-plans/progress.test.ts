@@ -97,3 +97,16 @@ test("review A1: events are paged oldest first from the since second (inclusive)
   const second = planEvents([], [], [], recorded, new Date(first.cursor as string), 2);
   assert.deepEqual(second.events.map((e) => e.details.n), [2, 3], "event 2 repeats; nothing is lost");
 });
+
+// AC-GP3-01 (GENERATION_PLANS_PHASE_3_PLAN.md): notices follow the counts.
+test("AC-GP3-01: a stage is complete when its count reaches the target; the plan is complete when nothing is missing or open", async () => {
+  const { planProgress } = await import("./progress");
+  const small: GenerationPlan = { ...plan, budget: { usd: 1, gpuMinutes: null }, items: [{ ...plan.items[0], targetCount: 2 }] };
+  const now = t("2026-10-07T10:00:00Z");
+  const running: PlanJobRow = { ...job("a", "s", 90), status: "generating", finishedAt: null };
+  const kinds = (jobs: PlanJobRow[], sessions: PlanSessionRow[] = []) => planProgress(small, jobs, [], sessions, now).notices.map((n) => n.kind);
+  assert.deepEqual(kinds([running]), []);
+  assert.deepEqual(kinds([job("a", "s", 90), running]), []);
+  assert.deepEqual(kinds([job("a", "s", 90), job("b", "s", 90)]), ["stage_complete", "plan_complete"]);
+  assert.deepEqual(kinds([job("a", "s", 90), job("b", "s", 90)], [session({ id: "s", usdCharged: 0.85 })]), ["stage_complete", "budget_80", "plan_complete"]);
+});
