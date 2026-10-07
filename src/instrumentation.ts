@@ -218,6 +218,13 @@ async function startServerSession() {
       // no device id / sync folder yet, or RunPod unreachable: the next tick tries again
     }
     try {
+      // BL-143 phase 2: this device's generation plans for the other devices (sync-gateway `generation-plans`).
+      const { publishGenerationPlansShare } = await import("@/lib/generation-plans");
+      await publishGenerationPlansShare();
+    } catch {
+      // no device id / sync folder yet: the next tick tries again
+    }
+    try {
       // Slice 4: a model pull's CPU pod is terminated as soon as its file is on the volume, even with no browser open.
       await media.pollPulls();
     } catch {

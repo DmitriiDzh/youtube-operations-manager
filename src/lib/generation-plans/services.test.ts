@@ -615,3 +615,27 @@ test("re-review: the cursor of a complete page looks back 60 s, so an event stam
   const asked = Date.parse(page.events.at(-1)!.at);
   assert.ok(Date.parse(page.cursor) <= asked - 50_000, "the cursor is about a minute before the newest event");
 });
+
+// -- phase 2 (GENERATION_PLANS_PHASE_2_PLAN.md) --------------------------------------------------------------------------
+
+test("AC-GP2-01: the shared view of this device's plans has no absolute path and no item params; plans closed over 30 days ago are left out", async () => {
+  const m = withMedia([running()], { outputs: { "job-1": [{ kind: "audio", localPath: "/Volumes/SSD/ws/99 Data Exchange/From YTM/media/job-1/take 1.mp3", filename: "take 1.mp3" }] } });
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  for (const j of m.jobs) j.status = "done";
+  await m.services.report({ planId: "R-0001-S1-music", rows: ["job:job-1", "job:job-2"].map((attemptRef) => ({ stageId: "validate", itemKey: "C1/F1", attemptRef, result: "accepted" })) });
+  await m.services.createPlan({ ...basePlan(), planId: "old-plan" });
+  await m.services.closePlan({ planId: "old-plan", status: "completed" });
+  // 31 days later the old plan is no longer shared.
+  const shared = await m.services.buildSharedPlans();
+  assert.deepEqual(shared.map((p) => p.planId).sort(), ["R-0001-S1-music", "old-plan"]);
+  clockMs += 31 * 24 * 60 * 60_000;
+  const later = await m.services.buildSharedPlans();
+  assert.deepEqual(later.map((p) => p.planId), ["R-0001-S1-music"]);
+  const plan = later[0];
+  assert.equal(JSON.stringify(plan).includes("/Volumes/"), false, "no absolute path");
+  assert.equal(plan.items.some((i) => "params" in i), false, "items carry no params");
+  assert.deepEqual(plan.review.map((r) => [r.attemptRef, r.jobOutput]), [["job:job-1", "media/job-1/take 1.mp3"], ["job:job-2", null]]);
+  const { generationPlansReportSchema } = await import("@/lib/sync-gateway");
+  assert.equal(generationPlansReportSchema.safeParse({ format: "ytm-generation-plans", version: 1, deviceId: "mac", hostname: null, updatedAt: new Date(clockMs).toISOString(), plans: later, verdicts: [] }).success, true, "a valid report");
+});

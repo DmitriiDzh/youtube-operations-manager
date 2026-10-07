@@ -72,6 +72,9 @@ export type AppPaths = {
   mediaSessionsShareDir: string;
   /** BL-138: local-only fallback exchange directory for the media-sessions sync runner (no Syncthing folder configured). */
   mediaSessionsSyncFallbackDir: string;
+  /** BL-143 phase 2: this device's generation plans report and the peers' latest reports (`src/lib/sync-gateway/generation-plans/`). */
+  generationPlansShareDir: string;
+  generationPlansSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

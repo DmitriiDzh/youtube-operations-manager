@@ -1,5 +1,8 @@
+import { hostname } from "node:os";
+import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
-import { linkMediaSessionToPlan } from "@/lib/db";
+import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
+import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
 import { createGenerationPlanServices } from "./services";
@@ -32,5 +35,29 @@ export function createGenerationPlansCore() {
       getJobOutputs: async (jobId) => (await createMediaGenerationCore().getJob({ jobId })).outputs.map((o) => ({ kind: o.kind, localPath: o.localPath ?? null, filename: o.filename })),
       createJob: async (input) => ({ jobId: (await createMediaGenerationCore().createJob(input)).jobId }),
     },
+  });
+}
+
+/**
+ * BL-143 phase 2: this device's generation plans report for the other devices (sync-gateway `generation-plans`), built on the
+ * media watcher tick. Verdicts given here on other devices' plans travel in the same report.
+ */
+export async function publishGenerationPlansShare(): Promise<void> {
+  const config = await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists();
+  let host: string | null = null;
+  try {
+    host = hostname() || null;
+  } catch {
+    host = null;
+  }
+  const core = createGenerationPlansCore();
+  await createGenerationPlansShareCoreForProduction().publishLocalReport({
+    format: GENERATION_PLANS_REPORT_FORMAT,
+    version: 1,
+    deviceId: config.deviceId,
+    hostname: host,
+    updatedAt: new Date().toISOString(),
+    plans: await core.buildSharedPlans(),
+    verdicts: [],
   });
 }

@@ -16,6 +16,7 @@ import {
   type PlanTodo,
   type PlanView,
 } from "./contracts";
+import type { SharedPlan } from "@/lib/sync-gateway";
 import { inAppAttempts, planEvents, planProgress, planTodo, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
@@ -115,6 +116,12 @@ export type PlanRunResult = {
 };
 
 const CAS_RETRIES = 5;
+/** BL-143 phase 2: what goes into this device's plans report for the other devices. */
+type SharedPlanView = SharedPlan;
+const SHARE_CLOSED_FOR_MS = 30 * 24 * 60 * 60_000;
+const SHARE_MAX_PLANS = 50;
+const SHARE_MAX_EVENTS = 50;
+const SHARE_MAX_REVIEW = 500;
 /**
  * Re-review 1: some events are stamped before their row is written (a job's `finishedAt` is taken before its manifest is
  * written to the workspace drive). A cursor that is "now" could pass such an event, so a complete page's cursor looks back
@@ -364,6 +371,41 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   function withSeed(item: PlanItem, seed: number | null): Record<string, string | number | boolean> {
     return seed === null ? { ...item.params } : { ...item.params, [SEED_PARAMETER]: seed };
+  }
+
+  /** The attempts the owner reviews -- every attempt that passed the stage before the owner review -- waiting ones first. */
+  function reviewEntries(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): PlanReviewEntry[] {
+    const review = row.definition.stages.find((s) => s.kind === "owner_review");
+    if (!review) return [];
+    const plan = toPublicPlan(row);
+    const index = row.definition.stages.findIndex((s) => s.stageId === review.stageId);
+    const before = index > 0 ? row.definition.stages[index - 1] : null;
+    const attempts = inAppAttempts(plan, jobs, results);
+    const order = new Map(row.definition.stages.map((s, i) => [s.stageId, i]));
+    const candidates = new Map<string, { itemKey: string; attemptRef: string }>();
+    if (before?.kind === "in_app") for (const a of attempts) if (a.state === "done") candidates.set(`${a.itemKey}\u0000${a.attemptRef}`, a);
+    for (const r of results) {
+      if ((before && before.kind !== "in_app" && r.stageId === before.stageId && (r.result === "accepted" || r.result === "done")) || r.stageId === review.stageId) candidates.set(`${r.itemKey}\u0000${r.attemptRef}`, r);
+    }
+    const entries: PlanReviewEntry[] = [...candidates.values()].map(({ itemKey, attemptRef }) => {
+      const item = row.definition.items.find((i) => i.itemKey === itemKey);
+      const attempt = attempts.find((a) => a.itemKey === itemKey && a.attemptRef === attemptRef);
+      const own = results.filter((r) => r.itemKey === itemKey && r.attemptRef === attemptRef);
+      const stages = own.filter((r) => r.stageId !== review.stageId).sort((a, b) => (order.get(a.stageId) ?? 0) - (order.get(b.stageId) ?? 0));
+      return {
+        itemKey,
+        groupId: item?.groupId ?? null,
+        attemptRef,
+        jobId: attempt?.jobId ?? null,
+        seed: attempt?.seed ?? null,
+        params: item?.params ?? {},
+        stages,
+        verdict: own.find((r) => r.stageId === review.stageId) ?? null,
+        playable: Boolean(attempt?.jobId) || stages.some((s) => s.auditionFile !== null),
+      };
+    });
+    entries.sort((a, b) => Number(a.verdict !== null) - Number(b.verdict !== null) || a.itemKey.localeCompare(b.itemKey) || a.attemptRef.localeCompare(b.attemptRef));
+    return entries;
   }
 
   const api = {
@@ -677,6 +719,60 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   // The rest of the public surface (added to the object returned above).
   const more = {
+    /**
+     * BL-143 phase 2 (AC-GP2-01): what the other devices may see of this device's plans -- active ones and those closed in the
+     * last 30 days (newest first, at most 50): header, stages, groups, items WITHOUT params, the derived progress, the last 50
+     * events and the review entries with the job output as `media/<jobId>/<file>` (never an absolute path).
+     */
+    async buildSharedPlans(): Promise<SharedPlanView[]> {
+      const cutoff = now().getTime() - SHARE_CLOSED_FOR_MS;
+      const rows = (await deps.store.listPlans({}))
+        .filter((r) => r.status === "active" || (r.closedAt !== null && r.closedAt.getTime() >= cutoff))
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+        .slice(0, SHARE_MAX_PLANS);
+      const out: SharedPlanView[] = [];
+      for (const row of rows) {
+        const plan = toPublicPlan(row);
+        const [jobs, results, sessions, recorded] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id)]);
+        const progress = planProgress(plan, jobs, results, sessions, now());
+        const events = planEvents(jobs, sessions, results, recorded, null, 100_000).events.slice(-SHARE_MAX_EVENTS);
+        const queue = (await more.reviewQueueOf(row, jobs, results)).slice(0, SHARE_MAX_REVIEW);
+        const review: SharedPlanView["review"] = [];
+        for (const entry of queue) {
+          let jobOutput: string | null = null;
+          if (entry.jobId && deps.media) {
+            const output = (await deps.media.getJobOutputs(entry.jobId).catch(() => [])).find((o) => o.localPath && (o.kind === "audio" || o.kind === "video" || o.kind === "image"));
+            const name = output?.localPath ? output.localPath.split(/[\\/]/).pop() : undefined;
+            if (name && /^[^/\\]{1,200}$/.test(name) && name !== "." && name !== ".." && /^[A-Za-z0-9_-]{1,64}$/.test(entry.jobId)) jobOutput = `media/${entry.jobId}/${name}`;
+          }
+          review.push({ ...entry, jobOutput });
+        }
+        out.push({
+          planId: plan.planId,
+          title: plan.title,
+          channelId: plan.channelId,
+          owner: plan.owner,
+          status: plan.status,
+          budget: plan.budget,
+          note: plan.note,
+          createdAt: plan.createdAt,
+          updatedAt: plan.updatedAt,
+          closedAt: plan.closedAt,
+          stages: plan.stages,
+          groups: plan.groups,
+          items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateLabel: i.templateLabel ?? i.templateId, targetCount: i.targetCount, mode: i.mode })),
+          progress: progress as unknown as Record<string, unknown>,
+          events,
+          review,
+        });
+      }
+      return out;
+    },
+
+    /** The review queue of a plan whose rows are already loaded (shared by `reviewQueue` and the share report). */
+    async reviewQueueOf(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanReviewEntry[]> {
+      return reviewEntries(row, jobs, results);
+    },
 
     /** AC-GP-12: the next wave -- the group's items under `<newGroupId>/<rest of the key>`, params patched, no results copied. */
     async cloneGroup(input: unknown, actor: PlanActor = "factory"): Promise<PlanView> {
@@ -723,38 +819,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[] }> {
       const { planId } = parseWithSchema(getPlanInputSchema.pick({ planId: true }), input, "plan id");
       const row = await requirePlan(planId);
-      const review = row.definition.stages.find((s) => s.kind === "owner_review");
-      if (!review) return { planId, entries: [] };
       const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-      const plan = toPublicPlan(row);
-      const index = row.definition.stages.findIndex((s) => s.stageId === review.stageId);
-      const before = index > 0 ? row.definition.stages[index - 1] : null;
-      const attempts = inAppAttempts(plan, jobs, results);
-      const order = new Map(row.definition.stages.map((s, i) => [s.stageId, i]));
-      const candidates = new Map<string, { itemKey: string; attemptRef: string }>();
-      if (before?.kind === "in_app") for (const a of attempts) if (a.state === "done") candidates.set(`${a.itemKey}\u0000${a.attemptRef}`, a);
-      for (const r of results) {
-        if ((before && before.kind !== "in_app" && r.stageId === before.stageId && (r.result === "accepted" || r.result === "done")) || r.stageId === review.stageId) candidates.set(`${r.itemKey}\u0000${r.attemptRef}`, r);
-      }
-      const entries: PlanReviewEntry[] = [...candidates.values()].map(({ itemKey, attemptRef }) => {
-        const item = row.definition.items.find((i) => i.itemKey === itemKey);
-        const attempt = attempts.find((a) => a.itemKey === itemKey && a.attemptRef === attemptRef);
-        const own = results.filter((r) => r.itemKey === itemKey && r.attemptRef === attemptRef);
-        const stages = own.filter((r) => r.stageId !== review.stageId).sort((a, b) => (order.get(a.stageId) ?? 0) - (order.get(b.stageId) ?? 0));
-        return {
-          itemKey,
-          groupId: item?.groupId ?? null,
-          attemptRef,
-          jobId: attempt?.jobId ?? null,
-          seed: attempt?.seed ?? null,
-          params: item?.params ?? {},
-          stages,
-          verdict: own.find((r) => r.stageId === review.stageId) ?? null,
-          playable: Boolean(attempt?.jobId) || stages.some((s) => s.auditionFile !== null),
-        };
-      });
-      entries.sort((a, b) => Number(a.verdict !== null) - Number(b.verdict !== null) || a.itemKey.localeCompare(b.itemKey) || a.attemptRef.localeCompare(b.attemptRef));
-      return { planId, entries };
+      return { planId, entries: reviewEntries(row, jobs, results) };
     },
 
     /**

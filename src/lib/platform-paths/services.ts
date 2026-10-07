@@ -52,6 +52,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     aiConnectionsCatalogDiscardedBackupsDir: path.join(appDataDir, "ai-connections-catalog-discarded-backups"),
     mediaSessionsShareDir: path.join(appDataDir, "media-sessions-share"),
     mediaSessionsSyncFallbackDir: path.join(appDataDir, "media-sessions-sync-local"),
+    generationPlansShareDir: path.join(appDataDir, "generation-plans-share"),
+    generationPlansSyncFallbackDir: path.join(appDataDir, "generation-plans-sync-local"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };
