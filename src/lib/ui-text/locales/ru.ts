@@ -8,11 +8,21 @@
 //   AI Localization → ИИ-перевод. Product and service names stay as they are: YouTube, Google Cloud, MCP, CLI, API,
 //   RunPod, Syncthing, Factory Operator, Operations Manager.
 import type { UiTextKey } from "./en";
+import { analytics } from "./ru/analytics";
+import { batches } from "./ru/batches";
 import { common } from "./ru/common";
+import { content } from "./ru/content";
+import { decisions } from "./ru/decisions";
+import { languages } from "./ru/languages";
+import { media } from "./ru/media";
+import { merge } from "./ru/merge";
 import { production } from "./ru/production";
+import { research } from "./ru/research";
+import { researchData } from "./ru/researchData";
 import { settings } from "./ru/settings";
+import { settingsCards } from "./ru/settingsCards";
 import { shell } from "./ru/shell";
 
-export const ruAreas = { common, shell, settings, production } as const;
+export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards } as const;
 
-export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production };
+export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards };
