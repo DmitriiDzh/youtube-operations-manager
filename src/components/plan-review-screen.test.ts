@@ -72,3 +72,12 @@ test("peer queue: once the owning device shows the verdict (stored to the whole 
   const noParams = peerQueue({ ...data, devices: [{ ...data.devices[0], plans: [{ planId: "P", review: [entry], itemParams: {} }] }] }, { deviceId: "mac", hostname: "Mac" }, "P");
   assert.deepEqual(noParams[0].params, {}, "an inherited name (constructor) is never taken as params");
 });
+
+test("AC-GP3-04: the validator's LUFS is the latest stage's metrics.lufs; without one it is unknown (then measured in the browser)", async () => {
+  const { reportedLufs } = await import("./plan-review-screen");
+  const row = (stageId: string, metrics: Record<string, unknown>) => ({ stageId, itemKey: "a", attemptRef: "job:1", result: "accepted" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: [], metrics: metrics as never, at: "" });
+  assert.equal(reportedLufs({ stages: [row("postprocess", { lufs: -14 }), row("validate", { lufs: -14.2, key: "D major" })] }), -14.2);
+  assert.equal(reportedLufs({ stages: [row("postprocess", { lufs: -13 }), row("validate", { key: "D" })] }), -13);
+  assert.equal(reportedLufs({ stages: [row("validate", { lufs: "loud" })] }), null);
+  assert.equal(reportedLufs({ stages: [] }), null);
+});

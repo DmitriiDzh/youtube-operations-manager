@@ -27,18 +27,50 @@ type WaveSurferLike = {
   getCurrentTime(): number;
   getDuration(): number;
   setTime(seconds: number): void;
+  setVolume(volume: number): void;
+  getDecodedData(): { numberOfChannels: number; sampleRate: number; getChannelData(i: number): Float32Array } | null;
   on(event: string, callback: (...args: unknown[]) => void): () => void;
   destroy(): void;
 };
-type RegionsLike = { clearRegions(): void; addRegion(options: { start: number; end?: number; color?: string; drag?: boolean; resize?: boolean; content?: string }): unknown };
+type RegionLike = { id: string; start: number; end: number; play(): void; remove(): void };
+type RegionsLike = {
+  clearRegions(): void;
+  getRegions(): RegionLike[];
+  addRegion(options: { id?: string; start: number; end?: number; color?: string; drag?: boolean; resize?: boolean; content?: string }): RegionLike;
+  enableDragSelection(options: { color?: string; id?: string }): () => void;
+  on(event: string, callback: (...args: unknown[]) => void): () => void;
+};
+
+/** BL-143 phase 3 (AC-GP3-06): the selection the owner drags to loop -- one at a time, never a verdict marker. */
+const SELECTION_ID = "ytm-selection";
+const SELECTION_COLOR = "rgba(129, 140, 248, 0.22)";
 
 const MARKER_COLORS = { finding: "rgba(239, 68, 68, 0.28)", mark: "rgba(245, 158, 11, 0.35)" } as const;
 
-export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, { src: string; markers: ReviewMarker[] }>(function MediaReviewPlayer({ src, markers }, ref) {
+export type MediaReviewPlayerProps = {
+  src: string;
+  markers: ReviewMarker[];
+  /** 0..1, applied to playback only (AC-GP3-04 loudness match). */
+  volume?: number;
+  /** AC-GP3-05: draw the spectrogram under the waveform (from the same decoded audio). */
+  spectrogram?: boolean;
+  /** Called once the audio is decoded, with its channels (for measuring loudness in the browser). */
+  onDecoded?: (audio: { channels: Float32Array[]; sampleRate: number }) => void;
+};
+
+export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded }, ref) {
   const container = useRef<HTMLDivElement | null>(null);
   const wave = useRef<WaveSurferLike | null>(null);
   const regions = useRef<RegionsLike | null>(null);
   const [state, setState] = useState<{ time: number; duration: number; playing: boolean; error: string | null; ready: boolean }>({ time: 0, duration: 0, playing: false, error: null, ready: false });
+  const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
+  const [loop, setLoop] = useState(false);
+  const loopRef = useRef(false);
+  const onDecodedRef = useRef(onDecoded);
+  useEffect(() => {
+    loopRef.current = loop;
+    onDecodedRef.current = onDecoded;
+  });
 
   useImperativeHandle(ref, () => ({
     togglePlay: () => void wave.current?.playPause(),
@@ -55,9 +87,14 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, { src: string; m
     let cancelled = false;
     let instance: WaveSurferLike | null = null;
     void (async () => {
-      const [{ default: WaveSurfer }, { default: RegionsPlugin }] = await Promise.all([import("wavesurfer.js"), import("wavesurfer.js/plugins/regions")]);
+      const [{ default: WaveSurfer }, { default: RegionsPlugin }, spectro] = await Promise.all([
+        import("wavesurfer.js"),
+        import("wavesurfer.js/plugins/regions"),
+        spectrogram ? import("wavesurfer.js/plugins/spectrogram") : Promise.resolve(null),
+      ]);
       if (cancelled || !container.current) return;
       const plugin = RegionsPlugin.create();
+      const extra = spectro ? [spectro.default.create({ height: 128, labels: true, frequencyMax: 16_000 })] : [];
       instance = WaveSurfer.create({
         container: container.current,
         url: src,
@@ -66,11 +103,37 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, { src: string; m
         progressColor: "#818cf8",
         cursorColor: "#e4e4e7",
         normalize: true,
-        plugins: [plugin],
+        plugins: [plugin, ...extra],
       }) as unknown as WaveSurferLike;
       wave.current = instance;
       regions.current = plugin as unknown as RegionsLike;
-      instance.on("ready", () => setState((s) => ({ ...s, ready: true, duration: instance?.getDuration() ?? 0 })));
+      // A new player (another file, or the spectrogram toggled) starts with no selection.
+      setSelection(null);
+      setLoop(false);
+      instance.on("ready", () => {
+        setState((s) => ({ ...s, ready: true, duration: instance?.getDuration() ?? 0 }));
+        const audio = instance?.getDecodedData();
+        if (audio && onDecodedRef.current) {
+          onDecodedRef.current({ channels: Array.from({ length: Math.min(2, audio.numberOfChannels) }, (_, i) => audio.getChannelData(i)), sampleRate: audio.sampleRate });
+        }
+      });
+      // AC-GP3-06: dragging on the waveform selects ONE range (a new drag replaces it); "Loop" replays it.
+      const regionsPlugin = plugin as unknown as RegionsLike;
+      regionsPlugin.enableDragSelection({ color: SELECTION_COLOR, id: SELECTION_ID });
+      regionsPlugin.on("region-created", (created) => {
+        const region = created as RegionLike;
+        if (!region.id.startsWith(SELECTION_ID) && region.id !== SELECTION_ID) return;
+        for (const other of regionsPlugin.getRegions()) if (other !== region && (other.id === SELECTION_ID || other.id.startsWith(SELECTION_ID))) other.remove();
+        setSelection({ start: region.start, end: region.end });
+      });
+      regionsPlugin.on("region-updated", (updated) => {
+        const region = updated as RegionLike;
+        if (region.id === SELECTION_ID || region.id.startsWith(SELECTION_ID)) setSelection({ start: region.start, end: region.end });
+      });
+      regionsPlugin.on("region-out", (left) => {
+        const region = left as RegionLike;
+        if (loopRef.current && (region.id === SELECTION_ID || region.id.startsWith(SELECTION_ID))) region.play();
+      });
       instance.on("timeupdate", () => setState((s) => ({ ...s, time: instance?.getCurrentTime() ?? 0 })));
       instance.on("play", () => setState((s) => ({ ...s, playing: true })));
       instance.on("pause", () => setState((s) => ({ ...s, playing: false })));
@@ -85,13 +148,19 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, { src: string; m
       wave.current = null;
       regions.current = null;
     };
-  }, [src]);
+    // The spectrogram is a plugin of the instance: toggling it rebuilds the player (the file is cached by the browser).
+  }, [src, spectrogram]);
+
+  useEffect(() => {
+    wave.current?.setVolume(Math.max(0, Math.min(1, volume)));
+  }, [volume, state.ready]);
 
   // The ranges are redrawn whenever they (or readiness) change.
   useEffect(() => {
     const plugin = regions.current;
     if (!plugin || !state.ready) return;
-    plugin.clearRegions();
+    // Markers are redrawn; the owner's loop selection is kept.
+    for (const r of plugin.getRegions()) if (r.id !== SELECTION_ID && !r.id.startsWith(SELECTION_ID)) r.remove();
     for (const m of markers) {
       plugin.addRegion({ start: m.start, ...(m.end !== null && m.end > m.start ? { end: m.end } : {}), color: MARKER_COLORS[m.tone], drag: false, resize: false, ...(m.label ? { content: m.label } : {}) });
     }
@@ -107,6 +176,28 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, { src: string; m
         <span className="font-mono">
           {formatPlayerTime(state.time)} / {formatPlayerTime(state.duration)}
         </span>
+        {selection && (
+          <>
+            <span>
+              selection {formatPlayerTime(selection.start)}–{formatPlayerTime(selection.end)}
+            </span>
+            <button type="button" onClick={() => setLoop((v) => !v)} className={`rounded-md border px-2 py-0.5 ${loop ? "border-indigo-400 bg-indigo-500/20 text-indigo-200" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
+              {loop ? "Looping" : "Loop"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                for (const r of regions.current?.getRegions() ?? []) if (r.id === SELECTION_ID || r.id.startsWith(SELECTION_ID)) r.remove();
+                setSelection(null);
+                setLoop(false);
+              }}
+              className="text-zinc-400 hover:text-zinc-100"
+            >
+              Clear
+            </button>
+          </>
+        )}
+        {!selection && state.ready && <span className="text-zinc-500">drag on the waveform to select a range to loop</span>}
         {!state.ready && !state.error && <span>Loading the waveform…</span>}
         {state.error && <span className="text-red-400">{state.error}</span>}
       </div>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PlanCheck, PlanMarker, PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
 
@@ -65,6 +66,15 @@ export function nextWaitingIndex(entries: Array<{ verdict: unknown }>, from: num
   return -1;
 }
 
+/** AC-GP3-04: the loudness the validator measured for this attempt (the latest stage's `metrics.lufs`), or null. Exported for its test. */
+export function reportedLufs(entry: Pick<PlanReviewEntry, "stages">): number | null {
+  for (const stage of [...entry.stages].reverse()) {
+    const value = stage.metrics.lufs ?? stage.metrics.LUFS ?? stage.metrics.integrated_lufs;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
 /** The validator findings that have a time, as waveform ranges. Exported for its test. */
 export function findingMarkers(entry: Pick<PlanReviewEntry, "stages">): ReviewMarker[] {
   return entry.stages.flatMap((stage) =>
@@ -115,6 +125,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [blind, setBlind] = useState(false);
+  // BL-143 phase 3: loudness-matched playback (on by default), the spectrogram (off), and the loudness measured here.
+  const [matchLoudness, setMatchLoudness] = useState(true);
+  const [showSpectrogram, setShowSpectrogram] = useState(false);
+  const [measured, setMeasured] = useState<{ src: string; lufs: number | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const player = useRef<ReviewPlayerHandle | null>(null);
@@ -230,6 +244,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     return [...findings, ...own, ...(draft.openMark !== null ? [{ start: draft.openMark, end: null, label: "mark…", tone: "mark" as const }] : [])];
   }, [blind, draft.marks, draft.openMark, entry]);
 
+  const lufsOf = entry ? (reportedLufs(entry) ?? (measured && entry && measured.src === `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` ? measured.lufs : null)) : null;
   const src = entry ? `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` : null;
   const hideFindings = blind && entry?.verdict === null;
 
@@ -242,6 +257,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         </h3>
         <span className="text-xs text-zinc-400">{entries ? `${waiting} waiting · ${entries.length} in the queue` : "Loading…"}</span>
         <div className="ml-auto flex items-center gap-3">
+          <ToggleSwitch label="Match loudness" checked={matchLoudness} onChange={setMatchLoudness} />
+          <ToggleSwitch label="Spectrogram" checked={showSpectrogram} onChange={setShowSpectrogram} />
           <ToggleSwitch label="Blind (hide the validator until my verdict)" checked={blind} onChange={setBlind} />
           <button type="button" onClick={onClose} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
             Back to the plan
@@ -271,7 +288,28 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
               </span>
             )}
           </div>
-          {entry.playable && src ? <MediaReviewPlayer key={src} ref={player} src={src} markers={markers} /> : <p className="text-sm text-zinc-500">Nothing to play for this attempt on this device.</p>}
+          {entry.playable && src ? (
+            <>
+              <MediaReviewPlayer
+                key={src}
+                ref={player}
+                src={src}
+                markers={markers}
+                spectrogram={showSpectrogram}
+                volume={matchLoudness ? matchedVolume(lufsOf) : 1}
+                onDecoded={(audio) => {
+                  // Measured only when the validator gave no LUFS (AC-GP3-04).
+                  if (reportedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
+                }}
+              />
+              <p className="text-xs text-zinc-500">
+                {lufsOf === null ? "Loudness unknown yet" : `Loudness ${lufsOf.toFixed(1)} LUFS (${reportedLufs(entry) !== null ? "validator" : "measured here"})`}
+                {matchLoudness && lufsOf !== null ? ` · played at ${Math.round(matchedVolume(lufsOf) * 100)} % to match ${LOUDNESS_TARGET_LUFS} LUFS` : ""}
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-zinc-500">Nothing to play for this attempt on this device.</p>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
             <div className="space-y-3">
