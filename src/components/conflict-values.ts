@@ -51,7 +51,9 @@ export function formatValue(value: unknown, unit?: (typeof SETTING_LABELS)[strin
         return String(value);
     }
   }
-  if (Array.isArray(value)) return value.length === 0 ? "none" : value.map(String).join(", ");
+  if (Array.isArray(value)) return value.length === 0 ? "none" : value.map((v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v))).join(", ");
+  // An object (e.g. an AI connection's field) reads as its JSON, never as "[object Object]".
+  if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 

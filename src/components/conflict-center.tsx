@@ -67,7 +67,7 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       fetchJson<{ conflicts?: SettingConflict[] }>("/api/media-generation/settings-sync"),
       fetchJson<{ notices?: Array<{ kind: string; snapshotId?: string | null }> }>("/api/device-sync/status"),
       fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>("/api/ai-connections/conflicts"),
-      fetchJson<{ channels: Array<{ channelId: string; title: string }> }>("/api/channel-connections"),
+      fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>("/api/channel-connections"),
     ]);
     const [settingsRes, statusRes, aiRes, channelsRes] = settled;
     if (settingsRes.status === "fulfilled") setSettings(settingsRes.value.conflicts ?? []);
@@ -81,9 +81,10 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       }
     } else errors.push(aiRes.reason instanceof Error ? aiRes.reason.message : "AI-connection conflicts unavailable");
     if (channelsRes.status === "fulfilled") {
-      // Every connected channel, not only the active one: a conflict of another channel must not wait until it is opened.
+      // The active channel's drafts and profile only: the server answers these for the session's active channel and refuses any
+      // other (ADR 0004); another channel's conflicts appear here once it is the active one (independent review).
       const perChannel = await Promise.allSettled(
-        channelsRes.value.channels.map(async (ch) => {
+        channelsRes.value.channels.filter((ch) => ch.isActive).map(async (ch) => {
           const [drafts, profile] = await Promise.all([
             fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(`/api/channels/${ch.channelId}/change-drafts/conflicts`),
             fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(`/api/channels/${ch.channelId}/editorial-profile/conflicts`),
@@ -185,7 +186,19 @@ function VersionPair({
   );
 }
 
-export function ConflictCenter({ state, blocking = false, hideDivergence = false }: { state: ConflictCenterState; blocking?: boolean; hideDivergence?: boolean }) {
+export function ConflictCenter({
+  state,
+  blocking = false,
+  hideDivergence = false,
+  onDecideLater,
+}: {
+  state: ConflictCenterState;
+  blocking?: boolean;
+  hideDivergence?: boolean;
+  /** Blocking window only: offered when a choice could not be saved (recovery mode, an import holding the lock, an endpoint
+   * failing) -- the window must never trap the owner (independent review). */
+  onDecideLater?: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -231,6 +244,11 @@ export function ConflictCenter({ state, blocking = false, hideDivergence = false
         </p>
       </div>
       {(error || state.error) && <p className="text-sm text-red-400">{error ?? state.error}</p>}
+      {blocking && onDecideLater && error && (
+        <button type="button" onClick={onDecideLater} className="text-xs text-zinc-400 underline hover:text-zinc-200">
+          Decide later — the differences stay listed in Merge
+        </button>
+      )}
 
       {state.settings.length > 0 && (
         <section className="space-y-3">

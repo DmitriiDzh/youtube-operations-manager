@@ -8,10 +8,10 @@ import { defaultMediaRouteDeps, mediaHandler, type MediaRouteDeps } from "../sha
 export function createSettingsSyncGetHandler(deps: MediaRouteDeps = defaultMediaRouteDeps()) {
   return mediaHandler(deps, async ({ core }) => {
     const status = core.getSettingsSyncStatus();
-    // Checked more than 15 s ago (or never, right after a start): check now, so the startup window sees a conflict that arrived
-    // since the watcher's last tick. A check only reads the document unless a received value needs applying.
+    // Checked more than 15 s ago (or never, right after a start): read the document now, so the startup window sees a conflict
+    // that arrived since the watcher's last tick. A GET never writes or applies anything (review): applying is the watcher's.
     const fresh = status.checkedAt !== null && Date.now() - Date.parse(status.checkedAt) < 15_000;
-    return NextResponse.json(fresh ? status : await core.syncSharedSettings());
+    return NextResponse.json(fresh ? status : await core.peekSettingsSync());
   });
 }
 

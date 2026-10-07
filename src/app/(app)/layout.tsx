@@ -11,6 +11,7 @@ import { OperationLockControl } from "@/components/operation-lock-control";
 import { AppChannelProvider, type ChannelInfo } from "@/components/app-channel";
 import { rememberablePath, sectionHref } from "@/components/section-tabs";
 import { LoadingOverlay } from "@/components/loading-overlay";
+import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
 import {
   INITIAL_STARTUP,
@@ -132,8 +133,13 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       const data = await res.json();
       setChannelUnavailable(false);
       setChannel(data.channel);
-      setStartup((prev) => (prev.channel.state === "running" ? { ...prev, channel: { state: "done", detail: data.channel?.title ?? null } } : prev));
+      // Review M6: no channel at all (none connected yet) -- the collections waiting for one will not run this load.
+      setStartup((prev) =>
+        prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ?? null } } : startupWithoutChannel(prev, "no channel connected yet", "skipped")
+      );
     } catch {
+      // The loading window must not wait for it (review M6); the effect below still retries on the next session change.
+      setStartup((prev) => (prev.channel.state === "running" ? startupWithoutChannel(prev, "could not be read") : prev));
       // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
       // right after activating a different stored channel connection, docs/decisions/0010), since
       // that no longer reloads the page the way the old signIn("google")-only flow always did.
@@ -219,7 +225,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ onlyIfDue: true }),
     }).then(
-      (res) => setStep("reach", reachOutcome(res.ok)),
+      async (res) => setStep("reach", reachOutcome(res.ok, await res.json().catch(() => null))),
       // Non-fatal -- the next dashboard load simply tries again.
       () => setStep("reach", reachOutcome(false))
     );
@@ -240,13 +246,17 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     const timer = setTimeout(() => setSwitchingTo(null), 30_000);
     return () => clearTimeout(timer);
   }, [switchingTo]);
-  const switching = switchingTo !== null && channel?.id !== switchingTo;
+  // Review M7: a channel that cannot be read ends the switch window at once (the re-sign-in prompt must not be hidden behind it).
+  const switching = switchingTo !== null && channel?.id !== switchingTo && !channelUnavailable;
+  // Review M7: while the re-sign-in prompt blocks, none of the loading/conflict windows covers it.
+  const reloginBlocking = planReloginPrompt(connectionHealth.health ?? [], false).mode === "blocking";
 
   // Owner, msgs 2011/2013: once the startup work is done, every difference between the two computers is decided before the
   // app opens (the browser waits; the server, syncing and the operator do not). Re-read every few seconds while it is shown.
   const startupDone = !startupInProgress(startup) || startupDismissed;
   const conflicts = useConflictCenter(Boolean(userId) && startupDone);
-  const conflictsBlocking = conflicts.loaded && conflicts.total > 0;
+  const [conflictsDeferred, setConflictsDeferred] = useState(false);
+  const conflictsBlocking = conflicts.loaded && conflicts.total > 0 && !conflictsDeferred;
   const refreshConflictCenter = conflicts.refresh;
   useEffect(() => {
     if (!conflictsBlocking) return;
@@ -349,21 +359,21 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       onSignOut={() => signOut()}
     >
       <ConnectionHealthDialog health={connectionHealth.health} />
-      {startupInProgress(startup) && !startupDismissed && (
+      {startupInProgress(startup) && !startupDismissed && !reloginBlocking && (
         <LoadingOverlay
           title="Loading your data…"
           steps={STARTUP_STEPS.map((step) => ({ ...step, status: startup[step.key] }))}
           onDismiss={() => setStartupDismissed(true)}
         />
       )}
-      {conflictsBlocking && (
+      {conflictsBlocking && !reloginBlocking && (
         <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-zinc-950/40 py-10 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Choose what to keep">
           <div className="w-[56rem] max-w-[94vw] rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
-            <ConflictCenter state={conflicts} blocking />
+            <ConflictCenter state={conflicts} blocking onDecideLater={() => setConflictsDeferred(true)} />
           </div>
         </div>
       )}
-      {switching && !conflictsBlocking && (!startupInProgress(startup) || startupDismissed) && (
+      {switching && !conflictsBlocking && !reloginBlocking && (!startupInProgress(startup) || startupDismissed) && (
         <LoadingOverlay
           title="Switching channel…"
           steps={[{ key: "switch", label: "Loading the channel's data", status: { state: "running", detail: null } }]}

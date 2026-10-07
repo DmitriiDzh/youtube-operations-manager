@@ -30,11 +30,17 @@ async function computer(root: string, name: string) {
   return { client, database };
 }
 
+/** Each device's persisted "already imported" memory (survives a new sync instance, as it survives a restart). */
+const seenStore = new Map<string, Record<string, string>>();
+
 function syncFor(database: AppDb, deviceId: string, folder: string | null, now = NOW) {
   return createAnalyticsDataSync({
     getConfig: async () => ({ deviceId, folder }),
     exportRows: (from, to) => exportAnalyticsShareRows(from, to, database),
     importRows: (tables) => importAnalyticsShareRows(tables, database),
+    loadSeen: async () => ({ ...(seenStore.get(deviceId) ?? {}) }),
+    saveSeen: async (seen) => void seenStore.set(deviceId, { ...seen }),
+    localVideoCount: async () => Number((await database.all<{ n: number }>(sql`SELECT count(*) AS n FROM videos`))[0].n),
     clock: { now: () => now },
   });
 }
@@ -130,7 +136,7 @@ test("AC-AD-04/05: a file naming another device is not imported; B's own files a
       assert.deepEqual(outcome.skipped.map((s) => s.file), ["dev-x/2026-10-07.json"]);
       assert.deepEqual((await syncFor(a.database, "dev-a", folder).importPeers()).imported, ["dev-x/2026-10-07.json"].filter(() => false), "A never imports its own files; dev-x's lie is refused");
       assert.equal(await syncFor(b.database, "dev-b", null).publishLocal(), "no_folder");
-      assert.deepEqual(await syncFor(b.database, "dev-b", path.join(root, "unplugged")).importPeers(), { imported: [], skipped: [] });
+      assert.deepEqual(await syncFor(b.database, "dev-b", path.join(root, "unplugged")).importPeers(), { imported: [], skipped: [], incompleteChannels: [] });
       assert.deepEqual(await readdir(path.join(folder, "analytics-data")), ["dev-a", "dev-x"], "B wrote nothing: it had nothing of its own");
     } finally {
       a.client.close();
@@ -152,5 +158,80 @@ test("own day files older than the window are deleted; an unchanged day is not r
       assert.deepEqual(await readdir(path.join(folder, "analytics-data", "dev-a")), ["2026-10-07.json"]);
     } finally {
       a.client.close();
+    }
+  }));
+
+// Review H2: B must never count a channel as collected while it lacks the rows. A file whose metrics name videos B has not synced
+// yet leaves B's stamp and runs alone (B's own check still collects), and is applied again once B has synced more videos.
+test("H2: rows for videos B has not synced keep B's channel stale; the file is applied again after B syncs the videos", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const folder = path.join(root, "Sync");
+    await mkdir(folder);
+    const a = await computer(root, "a");
+    const b = await computer(root, "b");
+    try {
+      await a.database.run(sql`INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json) VALUES ('v3', 'UC1', 'v3', '', '2026-09-01T00:00:00Z', 'public', '{}', '{}')`);
+      await collectOnA(a.database);
+      await a.database.run(sql`INSERT INTO video_metrics_daily (channel_id, video_id, metric_date, metric_name, metric_value, collected_at) VALUES ('UC1', 'v3', '2026-10-06', 'views', 7, ${T - 600})`);
+      await a.database.run(sql`INSERT INTO analytics_video_history (video_id, channel_id, history_through, updated_at) VALUES ('v3', 'UC1', '2026-09-07', ${T - 600})`);
+      await syncFor(a.database, "dev-a", folder).publishLocal();
+      const first = await syncFor(b.database, "dev-b", folder).importPeers();
+      assert.deepEqual(first.incompleteChannels, ["UC1"]);
+      const stamp = async () => (await b.database.all<{ at: number | null }>(sql`SELECT analytics_last_auto_collected_at AS at FROM channels WHERE id = 'UC1'`))[0].at;
+      assert.equal(await stamp(), null, "B still collects UC1 itself");
+      assert.equal(await count(b.database, "analytics_collection_runs"), 0);
+      assert.equal(await count(b.database, "analytics_video_history"), 0, "no history marker for a video B does not have");
+      assert.equal(await count(b.database, "video_metrics_daily"), 2, "the rows of known videos are stored");
+      // Unchanged: not read again while B has no more videos.
+      assert.deepEqual((await syncFor(b.database, "dev-b", folder).importPeers()).imported, []);
+      // B syncs v3: the same file is applied again, now completely.
+      await b.database.run(sql`INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json) VALUES ('v3', 'UC1', 'v3', '', '2026-09-01T00:00:00Z', 'public', '{}', '{}')`);
+      const second = await syncFor(b.database, "dev-b", folder).importPeers();
+      assert.deepEqual([second.imported, second.incompleteChannels], [["dev-a/2026-10-07.json"], []]);
+      assert.equal(await stamp(), T - 600);
+      assert.equal(await count(b.database, "video_metrics_daily"), 3);
+    } finally {
+      a.client.close();
+      b.client.close();
+    }
+  }));
+
+// Review H3: what was imported is remembered across a restart (a new instance), so 45 days of files are not imported again.
+test("H3: a restart does not import already imported files again", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const folder = path.join(root, "Sync");
+    await mkdir(folder);
+    const a = await computer(root, "a");
+    const b = await computer(root, "b");
+    try {
+      await collectOnA(a.database);
+      await syncFor(a.database, "dev-a", folder).publishLocal();
+      seenStore.delete("dev-b");
+      assert.equal((await syncFor(b.database, "dev-b", folder).importPeers()).imported.length, 1);
+      assert.deepEqual((await syncFor(b.database, "dev-b", folder).importPeers()).imported, [], "a new instance (a restart) remembers it");
+    } finally {
+      a.client.close();
+      b.client.close();
+    }
+  }));
+
+// Review M3/M4: a restated report from A replaces the older report's rows on B, as a download on B would; A's failed check is not
+// taken over by B.
+test("M3/M4: a peer's restated report replaces the older one's rows; a peer's failed check does not overwrite B's", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const b = await computer(root, "b");
+    try {
+      const base = { channelId: "UC1", reportTypeId: "channel_reach_basic_a1", jobId: "job1", startTime: "2026-10-05T07:00:00Z", endTime: "2026-10-06T07:00:00Z", rowCount: 2, status: "imported", importedAt: T - 900 };
+      const empty = { videoMetrics: [], channelMetrics: [], videoHistory: [], collectionRuns: [], channelStamps: [], jobs: [] };
+      await importAnalyticsShareRows({ ...empty, reportFiles: [{ ...base, reportId: "r-old", createTime: "2026-10-06T08:00:00Z" }], reachRows: [["UC1", "2026-10-05", "v1", 100, 0.01, "r-old"], ["UC1", "2026-10-05", "v2", 50, null, "r-old"]], syncAttempts: [{ channelId: "UC1", reportTypeId: "channel_reach_basic_a1", attemptedAt: T - 900, outcome: "ok", filesListed: 1, filesImported: 1 }] }, b.database);
+      await importAnalyticsShareRows({ ...empty, reportFiles: [{ ...base, reportId: "r-new", createTime: "2026-10-06T12:00:00Z", rowCount: 1 }], reachRows: [["UC1", "2026-10-05", "v1", 120, 0.02, "r-new"]], syncAttempts: [{ channelId: "UC1", reportTypeId: "channel_reach_basic_a1", attemptedAt: T - 100, outcome: "failed", filesListed: 0, filesImported: 0 }] }, b.database);
+      const rows = await b.database.all<{ v: string; n: number }>(sql`SELECT video_id AS v, impressions AS n FROM channel_reach_daily ORDER BY video_id`);
+      assert.deepEqual(rows.map((r) => [r.v, Number(r.n)]), [["v1", 120]], "the restated report's rows replace the older report's");
+      const files = await b.database.all<{ id: string; s: string }>(sql`SELECT report_id AS id, status AS s FROM reporting_report_files ORDER BY report_id`);
+      assert.deepEqual(files.map((f) => [f.id, f.s]), [["r-new", "imported"], ["r-old", "superseded"]]);
+      const [attempt] = await b.database.all<{ o: string; at: number }>(sql`SELECT outcome AS o, attempted_at AS at FROM reporting_sync_attempts`);
+      assert.deepEqual([attempt.o, Number(attempt.at)], ["ok", T - 900]);
+    } finally {
+      b.client.close();
     }
   }));

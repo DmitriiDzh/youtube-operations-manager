@@ -17,8 +17,8 @@ export type AutoCollectAllDeps = {
   /** The process-wide single all-channels run (analytics/auto-collect-all.ts); injectable for tests. */
   beginRun: () => boolean;
   endRun: () => void;
-  /** BL-151: import the other devices' rows before deciding what is stale; returns the number of files imported. */
-  importPeers?: () => Promise<number>;
+  /** BL-151: import the other devices' rows before deciding what is stale. `pending` = still importing: do not collect now. */
+  importPeers?: () => Promise<{ imported: number; pending: boolean }>;
   /** BL-151: publish this device's new rows once the background collection is done. */
   publishLocal?: () => Promise<unknown>;
 };
@@ -52,7 +52,13 @@ export function createAutoCollectAllHandler(
     if (!deps.beginRun()) return NextResponse.json({ channels: [], catchUpScheduled: false, inProgress: true });
     let handedOff = false;
     try {
-      const importedFromPeers = deps.importPeers ? await deps.importPeers() : 0;
+      const peers = deps.importPeers ? await deps.importPeers() : { imported: 0, pending: false };
+      if (peers.pending) {
+        // The other computer's rows are still arriving: collecting now would race that import (plan: wait for the next load).
+        // The run is released by the `finally` below (nothing was handed off).
+        return NextResponse.json({ channels: [], catchUpScheduled: false, importedFromPeers: 0, importPending: true });
+      }
+      const importedFromPeers = peers.imported;
       const activeChannelId = await deps.getActiveChannelId(sessionUserId);
       const active = await deps.core.runAutoCollectionForChannels({ sessionUserId, activeChannelId, which: "active" });
 

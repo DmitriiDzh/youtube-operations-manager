@@ -507,7 +507,11 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
                 ? changeDraftConflicts.length
                 : s.family === "editorial_profile"
                   ? editorialProfileConflicts.length
-                  : aiConnectionConflicts.length;
+                  : s.family === "ai_connections"
+                    ? aiConnectionConflicts.length
+                    : s.family === "media_settings"
+                      ? conflictCenter.settings.length
+                      : 0;
             return (
               <li key={s.family} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
                 <span className="font-medium text-zinc-200">{FAMILY_LABELS[s.family]}</span>

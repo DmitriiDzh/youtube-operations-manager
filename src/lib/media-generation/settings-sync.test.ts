@@ -96,3 +96,32 @@ test("a conflict is reported with this computer's value and leaves the local val
   assert.deepEqual(status.conflicts, [{ field: "maxUsdPerDay", values: [10, 15], thisComputer: 10 }]);
   assert.equal(f.applies.length, 0);
 });
+
+// Independent review: only a value Production calls invalid is held; an outage (RunPod unreachable, keys not there yet) is retried.
+test("a RunPod outage is retried on the next tick; only an invalid value is held", async () => {
+  let down = true;
+  const f = fixture({ shared: { gpuTypeId: "NVIDIA L4" }, reject: () => (down ? new Error("fetch failed: RunPod unreachable") : null) });
+  const first = await f.sync.tick();
+  assert.match(first.pending[0]?.reason ?? "", /retried/);
+  down = false;
+  await f.sync.tick();
+  assert.equal(f.settings().gpuTypeId, "NVIDIA L4");
+});
+
+// Independent review: a datacenter and its volume are valid only together; each alone is refused.
+test("fields valid only together are applied together", async () => {
+  const f = fixture({
+    shared: { datacenterId: "EU-RO-1", networkVolumeId: "vol-eu", idleMinutes: 5, gpuTypeId: "BAD" },
+    reject: (patch) => {
+      if ("gpuTypeId" in patch) return new DomainError({ code: "media_settings_invalid", message: "GPU not in the catalog" });
+      const keys = Object.keys(patch);
+      const one = keys.includes("datacenterId") !== keys.includes("networkVolumeId");
+      return one ? new DomainError({ code: "media_settings_invalid", message: "volume is not in that datacenter" }) : null;
+    },
+  });
+  const status = await f.sync.tick();
+  assert.equal(f.settings().datacenterId, "EU-RO-1");
+  assert.equal(f.settings().networkVolumeId, "vol-eu");
+  assert.equal(f.settings().idleMinutes, 5);
+  assert.deepEqual(status.pending.map((p) => p.field), ["gpuTypeId"]);
+});

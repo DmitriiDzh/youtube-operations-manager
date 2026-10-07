@@ -174,8 +174,19 @@ async function startServerSession() {
   // only), the other devices' in -- so a channel one computer collected today is current on the other too. Quiet on failure.
   const { getAnalyticsDataSync } = await import("@/lib/analytics-data-sync");
   const shareAnalyticsQuietly = () => {
-    const sync = getAnalyticsDataSync();
-    void sync.importPeers().then(() => sync.publishLocal()).catch((error: unknown) => console.warn(`[analytics-data] ${error instanceof Error ? error.message : String(error)}`));
+    void (async () => {
+      try {
+        // Review M1: never during a snapshot import/migration or in recovery mode (the gate the draft sync uses).
+        await assertDeviceAvailableForMutation(rawSqlClient);
+      } catch {
+        return; // paused; the next tick tries again
+      }
+      const sync = getAnalyticsDataSync();
+      await sync
+        .importPeers()
+        .then(() => sync.publishLocal())
+        .catch((error: unknown) => console.warn(`[analytics-data] ${error instanceof Error ? error.message : String(error)}`));
+    })();
   };
   setTimeout(shareAnalyticsQuietly, 20_000).unref();
   setInterval(shareAnalyticsQuietly, 120_000).unref();

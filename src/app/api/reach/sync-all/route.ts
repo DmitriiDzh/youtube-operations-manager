@@ -10,7 +10,7 @@ export type ReachSyncAllDeps = {
   core: Pick<ReturnType<typeof createReachReportsCore>, "syncAllReachReports">;
   getActiveChannelId: (userId: string) => Promise<string | null>;
   /** BL-151: the other devices' reach rows and check times first, so a channel they checked recently is not due here. */
-  importPeers?: () => Promise<number>;
+  importPeers?: () => Promise<{ imported: number; pending: boolean }>;
   publishLocal?: () => Promise<unknown>;
 };
 
@@ -41,7 +41,10 @@ export function createReachSyncAllHandler(
     }
     try {
       // Only for the automatic due-check: an explicit "check now" checks regardless of the other computer.
-      if (onlyIfDue) await deps.importPeers?.();
+      if (onlyIfDue && deps.importPeers && (await deps.importPeers()).pending) {
+        // The other computer's rows are still arriving: the automatic check waits for the next load (plan).
+        return NextResponse.json({ channels: [], importPending: true });
+      }
       const { channels } = await deps.core.syncAllReachReports({ onlyIfDue, sessionUserId: session.user.id });
       void deps.publishLocal?.().catch(() => undefined);
       const activeChannelId = await deps.getActiveChannelId(session.user.id);

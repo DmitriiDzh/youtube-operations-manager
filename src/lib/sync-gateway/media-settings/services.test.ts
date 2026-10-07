@@ -86,3 +86,19 @@ test("seeding never overwrites a shared value; publishing an unchanged value wri
   assert.deepEqual(await a.publishChanged({ maxUsdPerDay: 10, idleMinutes: 5 }), { changed: [] });
   assert.deepEqual(await a.publishChanged({ maxUsdPerDay: 12 }), { changed: ["maxUsdPerDay"] });
 });
+
+// Independent review: an owner's save that lands while a merge is in progress must not be overwritten by the merge's result.
+test("an owner's save during a merge is kept (document operations run one at a time)", async () => {
+  const a = device();
+  const b = device();
+  await a.seedMissing({ maxUsdPerDay: 20 });
+  await b.seedMissing({ maxUsdPerDay: 20 });
+  await exchange(a, b);
+  await b.publishChanged({ idleMinutes: 7 });
+  const fromB = await b.exportBytes();
+  // Started together: the merge loads first, the save comes in while it runs.
+  await Promise.all([a.mergeIncoming(fromB), a.publishChanged({ maxUsdPerDay: 5 })]);
+  const seen = await a.read();
+  assert.equal(seen.values.maxUsdPerDay, 5);
+  assert.equal(seen.values.idleMinutes, 7);
+});

@@ -26,13 +26,20 @@ These are not simple preferences. They hold spend limits, factory limits, the GP
 - **Every conflict is decided at startup** (owner msgs 2011, 2013). After the startup work, the browser shows one blocking window with every conflict this device knows of, decided in one go:
   - Setup settings;
   - the snapshot divergence;
-  - every connected channel's change drafts and editorial profile;
+  - the active channel's change drafts and editorial profile (the server answers these for the session's active channel only,
+    ADR 0004; another channel's appear once it is active);
   - AI connections.
 
-  Each conflict shows the two versions side by side, with named fields, values in words, and the differing words or list items highlighted. Only the browser waits; the server, syncing, MCP and the operator keep working. The same screen, not blocking, replaces the Merge tab's conflict list. After each server restart the coding agent checks for this window in Chrome and tells the owner.
+  Each conflict shows the two versions side by side, with named fields, values in words, and the differing words or list items highlighted. Only the browser waits; the server, syncing, MCP and the operator keep working. If a choice cannot be saved (recovery mode, an import holding the lock), the window offers "Decide later" so it never traps the owner. The same screen, not blocking, replaces the Merge tab's conflict list. After each server restart the coding agent checks for this window in Chrome and tells the owner.
+- **Safety rules added after the independent review.**
+  - A Setup card sends only the fields the owner changed (never a stale value).
+  - Every document operation runs one at a time.
+  - A tick, a save and a choice never interleave.
+  - Only a value Production calls invalid is held until the shared values change; outages are retried, and coupled fields are tried together.
+  - A GET only reads.
 
 ## Consequences
 
 - RunPod/S3 keys stay per device (ADR 0027).
 - A field a newer build adds is seeded by the first device that runs that build.
-- The Merge tab's old active-channel-only conflict list is gone; the new screen covers every connected channel.
+- The Merge tab's old conflict list is replaced by the same screen (same scope: the active channel's drafts and profile, plus device-wide conflicts).

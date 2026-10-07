@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatValue, settingLabel, SETTING_LABELS } from "./conflict-values";
 
 // BL-150 (docs/roadmap/plans/PRODUCTION_SETTINGS_SYNC_PLAN.md): Setup says that its settings are shared with the other
@@ -14,8 +14,16 @@ type Status = {
   error: string | null;
 };
 
-export function SettingsSyncNotice() {
+export function SettingsSyncNotice({ onApplied }: { onApplied?: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
+  // BL-150 review: when a value from the other computer has been applied, the cards re-read the settings at once, so no form
+  // keeps showing (and later re-sending) the old value.
+  const appliedAt = status?.lastApplied?.at ?? null;
+  const seenAppliedAt = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (seenAppliedAt.current !== undefined && appliedAt !== seenAppliedAt.current) onApplied?.();
+    seenAppliedAt.current = appliedAt;
+  }, [appliedAt, onApplied]);
   useEffect(() => {
     let cancelled = false;
     const load = () =>

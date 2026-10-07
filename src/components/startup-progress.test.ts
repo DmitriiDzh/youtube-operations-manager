@@ -30,5 +30,10 @@ test("each collection's answer becomes its line: updated / up to date / skipped 
   assert.equal(researchOutcome(true, { collected: 2 }).state, "done");
   assert.equal(researchOutcome(false, null).state, "failed");
   assert.equal(reachOutcome(true).state, "done");
+  // Review M5: a failed or skipped active channel is not "up to date"; a pending import is said as such.
+  assert.deepEqual(analyticsOutcome(true, { channels: [{ collection: "failed", error: "token revoked" }] }), { state: "failed", detail: "token revoked" });
+  assert.equal(analyticsOutcome(true, { channels: [{ collection: "skipped_no_user" }] }).state, "skipped");
+  assert.equal(analyticsOutcome(true, { channels: [], importPending: true }).state, "skipped");
+  assert.equal(reachOutcome(true, { channels: [], importPending: true }).state, "skipped");
   assert.equal(reachOutcome(false).state, "failed");
 });

@@ -176,7 +176,7 @@ export function ProductionPanel({
         <WorkflowTemplatesCard />
       </div>
       <div className={tab === "setup" ? "max-w-3xl space-y-6" : "hidden"}>
-        <SettingsSyncNotice />
+        <SettingsSyncNotice onApplied={() => void refresh()} />
         <ReadinessBanner overview={overview} />
         <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
         <VolumeCard overview={overview} onChanged={refresh} />

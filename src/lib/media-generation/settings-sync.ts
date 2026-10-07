@@ -111,12 +111,47 @@ export type SettingsSyncDeps = {
 };
 
 const isVolumeBusy = (error: unknown) => (error as { code?: string })?.code === "media_session_conflict";
+/** Only a value Production itself calls invalid is held until it changes; anything else (RunPod unreachable, no keys yet) is retried. */
+const isInvalidValue = (error: unknown) => (error as { code?: string })?.code === "media_settings_invalid";
 const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function createSettingsSync(deps: SettingsSyncDeps) {
   let status: SettingsSyncStatus = { checkedAt: null, lastApplied: null, pending: [], conflicts: [], error: null };
-  // A value that failed validation is not retried until the shared value changes (each retry may cost RunPod catalog reads).
+  // A value Production called invalid is not retried until any shared value changes (each retry may cost RunPod catalog reads;
+  // a coupled change -- datacenter and volume -- can become valid when its partner arrives).
   const failed = new Map<string, { value: string; reason: string }>();
+  let lastSharedSignature: string | null = null;
+
+  // One at a time (independent review): a tick, an owner's save in Setup and a conflict choice never interleave -- two ticks
+  // would apply twice (double RunPod reads, double audit rows), and a tick between a save's read and write could undo it.
+  let queue: Promise<unknown> = Promise.resolve();
+  function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** The status from the document alone, applying nothing (for a GET: a read must not write, review). */
+  async function peek(): Promise<SettingsSyncStatus> {
+    const at = deps.clock.now().toISOString();
+    try {
+      const local = await deps.getSettings();
+      const { values, conflicts } = await deps.shared.read();
+      const { patch, held } = planPeerApply({ local, shared: values, conflicted: new Set(conflicts.map((c) => c.field)), sameAccount: await deps.sameAccount() });
+      const nowValues = sharedValuesOf(local);
+      return {
+        ...status,
+        checkedAt: at,
+        pending: [...held, ...Object.entries(patch).map(([field, value]) => ({ field: field as SharedSettingField, value: value as MediaSettingValue, reason: failed.get(field)?.reason ?? "will be applied on the next check" }))],
+        conflicts: conflicts
+          .filter((c): c is MediaSettingConflict & { field: SharedSettingField } => (SHARED_SETTING_FIELDS as readonly string[]).includes(c.field))
+          .map((c) => ({ field: c.field, values: c.values, thisComputer: nowValues[c.field] })),
+        error: null,
+      };
+    } catch (error) {
+      return { ...status, checkedAt: at, error: describe(error) };
+    }
+  }
 
   async function tick(): Promise<SettingsSyncStatus> {
     const at = deps.clock.now().toISOString();
@@ -125,6 +160,9 @@ export function createSettingsSync(deps: SettingsSyncDeps) {
       // The first sync (or a field a newer build added): this device's values for what the document does not have yet.
       await deps.shared.seedMissing(sharedValuesOf(local));
       const { values, conflicts } = await deps.shared.read();
+      const signature = canonical(values);
+      if (signature !== lastSharedSignature) failed.clear();
+      lastSharedSignature = signature;
       const conflicted = new Set(conflicts.map((c) => c.field));
       const { patch, held } = planPeerApply({ local, shared: values, conflicted, sameAccount: await deps.sameAccount() });
       const pending: PendingSetting[] = [...held];
@@ -143,15 +181,35 @@ export function createSettingsSync(deps: SettingsSyncDeps) {
           applied.push(...toTry.map(([field]) => field as SharedSettingField));
         } catch {
           // One bad value must not hold back the others: each is applied on its own.
+          const stillFailing: Array<[string, unknown, unknown]> = [];
           for (const [field, value] of toTry) {
             try {
               await deps.applyUpdate({ [field]: value });
               applied.push(field as SharedSettingField);
             } catch (error) {
-              const reason = isVolumeBusy(error) ? "waiting: the network volume is in use on this computer" : `not applied: ${describe(error)}`;
-              if (!isVolumeBusy(error)) failed.set(field, { value: canonical(value), reason });
-              pending.push({ field: field as SharedSettingField, value: value as MediaSettingValue, reason });
+              stillFailing.push([field, value, error]);
             }
+          }
+          // Fields valid only together (a datacenter and its volume) fail alone: tried together, then -- if one of them is bad on
+          // its own -- together without each one in turn (the group is small: at most the shared fields).
+          if (stillFailing.length > 1) {
+            const groups = [stillFailing, ...stillFailing.map((_, skip) => stillFailing.filter((__, i) => i !== skip))].filter((g) => g.length > 1);
+            for (const group of groups) {
+              try {
+                await deps.applyUpdate(Object.fromEntries(group.map(([field, value]) => [field, value])));
+                applied.push(...group.map(([field]) => field as SharedSettingField));
+                const done = new Set(group.map(([field]) => field));
+                stillFailing.splice(0, stillFailing.length, ...stillFailing.filter(([field]) => !done.has(field)));
+                break;
+              } catch {
+                // the next group
+              }
+            }
+          }
+          for (const [field, value, error] of stillFailing) {
+            const reason = isVolumeBusy(error) ? "waiting: the network volume is in use on this computer" : isInvalidValue(error) ? `not applied: ${describe(error)}` : `not applied yet (retried): ${describe(error)}`;
+            if (isInvalidValue(error)) failed.set(field, { value: canonical(value), reason });
+            pending.push({ field: field as SharedSettingField, value: value as MediaSettingValue, reason });
           }
         }
       }
@@ -176,7 +234,15 @@ export function createSettingsSync(deps: SettingsSyncDeps) {
     return status;
   }
 
-  return { tick, status: () => status };
+  return {
+    /** Seed, read, and apply what can be applied (the media watcher tick). */
+    tick: () => exclusive(tick),
+    /** The status from the document, applying nothing. */
+    peek,
+    status: () => status,
+    /** Runs `fn` with no tick in between (an owner's save, a conflict choice). */
+    exclusive,
+  };
 }
 
 export type SettingsSync = ReturnType<typeof createSettingsSync>;

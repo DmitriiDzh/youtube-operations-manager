@@ -2,14 +2,19 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
-import type { AnalyticsShareTables } from "@/lib/db";
+import type { AnalyticsShareImportResult, AnalyticsShareTables } from "@/lib/db";
 import { ANALYTICS_DATA_DIR_NAME, ANALYTICS_DATA_FORMAT_VERSION, ANALYTICS_DATA_WINDOW_DAYS, MAX_PEER_FILE_BYTES, analyticsDataFileSchema } from "./contracts";
 
 export type AnalyticsDataSyncDeps = {
   /** This device's id and the Syncthing folder; `folder: null` = not configured (everything is a no-op). */
   getConfig(): Promise<{ deviceId: string; folder: string | null }>;
   exportRows(fromSec: number, toSec: number): Promise<AnalyticsShareTables>;
-  importRows(tables: AnalyticsShareTables): Promise<void>;
+  importRows(tables: AnalyticsShareTables): Promise<AnalyticsShareImportResult>;
+  /** Persisted memory of imported peer files (`file → form`), so a restart does not re-import 45 days of files. */
+  loadSeen(): Promise<Record<string, string>>;
+  saveSeen(seen: Record<string, string>): Promise<void>;
+  /** This device's synced video count: a file partly unapplied (unknown videos) is retried once it grows. */
+  localVideoCount(): Promise<number>;
   clock: { now(): Date };
   log?: (message: string) => void;
 };
@@ -20,12 +25,14 @@ const DAY_MS = 86_400_000;
 const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const isEmpty = (t: AnalyticsShareTables) => Object.values(t).every((rows) => (rows as unknown[]).length === 0);
 
-export type ImportOutcome = { imported: string[]; skipped: Array<{ file: string; reason: string }> };
+export type ImportOutcome = { imported: string[]; skipped: Array<{ file: string; reason: string }>; incompleteChannels: string[] };
 
 export function createAnalyticsDataSync(deps: AnalyticsDataSyncDeps) {
   const lastWritten = new Map<string, string>(); // own day file → digest of its content
-  const seen = new Map<string, string>(); // peer file → "size:mtime" already imported
+  // peer file → "size:mtime" imported, or "size:mtime|partial|<video count>" when some rows could not be stored yet
+  let seen: Map<string, string> | null = null;
   let importing: Promise<ImportOutcome> | null = null;
+  let publishing: Promise<"published" | "unchanged" | "no_folder"> | null = null;
 
   async function folderOrNull(): Promise<{ deviceId: string; root: string } | null> {
     const { deviceId, folder } = await deps.getConfig();
@@ -41,9 +48,14 @@ export function createAnalyticsDataSync(deps: AnalyticsDataSyncDeps) {
 
   /** Imports every peer file not yet imported in its current form (one at a time per process). */
   async function importOnce(): Promise<ImportOutcome> {
-    const outcome: ImportOutcome = { imported: [], skipped: [] };
+    const outcome: ImportOutcome = { imported: [], skipped: [], incompleteChannels: [] };
     const where = await folderOrNull();
     if (!where) return outcome;
+    seen ??= new Map(Object.entries(await deps.loadSeen().catch(() => ({}))));
+    const known = seen;
+    const videoCount = await deps.localVideoCount();
+    const incomplete = new Set<string>();
+    let changed = false;
     let devices: string[];
     try {
       devices = await readdir(where.root);
@@ -67,21 +79,28 @@ export function createAnalyticsDataSync(deps: AnalyticsDataSyncDeps) {
         try {
           const info = await stat(file);
           const fingerprint = `${info.size}:${info.mtimeMs}`;
-          if (seen.get(key) === fingerprint) continue;
+          const prior = known.get(key);
+          if (prior === fingerprint) continue;
+          // Partly applied before: retried only once this device has synced more videos.
+          if (prior?.startsWith(`${fingerprint}|partial|`) && Number(prior.split("|")[2]) >= videoCount) continue;
           if (info.size > MAX_PEER_FILE_BYTES) {
             outcome.skipped.push({ file: key, reason: "too large" });
-            seen.set(key, fingerprint);
+            known.set(key, fingerprint);
+            changed = true;
             continue;
           }
           const parsed = analyticsDataFileSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
           // A file must describe the device and the day it is named after; anything else is not trusted (AC-AD-04).
           if (!parsed.success || parsed.data.deviceId !== peer || parsed.data.day !== match[1]) {
             outcome.skipped.push({ file: key, reason: parsed.success ? "names another device or day" : "invalid" });
-            seen.set(key, fingerprint);
+            known.set(key, fingerprint);
+            changed = true;
             continue;
           }
-          await deps.importRows(parsed.data.tables as AnalyticsShareTables);
-          seen.set(key, fingerprint);
+          const result = await deps.importRows(parsed.data.tables as AnalyticsShareTables);
+          for (const channelId of result.incompleteChannels) incomplete.add(channelId);
+          known.set(key, result.incompleteChannels.length > 0 ? `${fingerprint}|partial|${videoCount}` : fingerprint);
+          changed = true;
           outcome.imported.push(key);
         } catch (error) {
           // A half-synced file: not marked as seen, so the next pass reads the finished one.
@@ -89,6 +108,8 @@ export function createAnalyticsDataSync(deps: AnalyticsDataSyncDeps) {
         }
       }
     }
+    outcome.incompleteChannels = [...incomplete];
+    if (changed) await deps.saveSeen(Object.fromEntries(known)).catch(() => undefined);
     if (outcome.skipped.length > 0) deps.log?.(`[analytics-data] skipped: ${outcome.skipped.map((s) => `${s.file} (${s.reason})`).join("; ")}`);
     return outcome;
   }
@@ -99,7 +120,20 @@ export function createAnalyticsDataSync(deps: AnalyticsDataSyncDeps) {
      * own files older than the window. Rows imported from another device keep their collection time, so they appear here too;
      * re-importing them there changes nothing.
      */
-    async publishLocal(): Promise<"published" | "unchanged" | "no_folder"> {
+    publishLocal(): Promise<"published" | "unchanged" | "no_folder"> {
+      // One at a time (review): two overlapping writes of one day file could leave the older content last.
+      if (!publishing) publishing = publishOnce().finally(() => (publishing = null));
+      return publishing;
+    },
+
+    /** The other devices' new rows in (AC-AD-01/02); concurrent callers share one pass. */
+    importPeers(): Promise<ImportOutcome> {
+      if (!importing) importing = importOnce().finally(() => (importing = null));
+      return importing;
+    },
+  };
+
+  async function publishOnce(): Promise<"published" | "unchanged" | "no_folder"> {
       const where = await folderOrNull();
       if (!where) return "no_folder";
       const now = deps.clock.now();
@@ -127,14 +161,7 @@ export function createAnalyticsDataSync(deps: AnalyticsDataSyncDeps) {
         // nothing written yet
       }
       return wrote ? "published" : "unchanged";
-    },
-
-    /** The other devices' new rows in (AC-AD-01/02); concurrent callers share one pass. */
-    importPeers(): Promise<ImportOutcome> {
-      if (!importing) importing = importOnce().finally(() => (importing = null));
-      return importing;
-    },
-  };
+  }
 }
 
 export type AnalyticsDataSync = ReturnType<typeof createAnalyticsDataSync>;

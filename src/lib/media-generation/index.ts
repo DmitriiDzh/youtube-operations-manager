@@ -343,16 +343,23 @@ function buildCore(jobScheduling: JobScheduling) {
     getSettings: () => base.getSettings(),
     applyUpdate: (patch) => base.updateSettings(patch),
     async sameAccount() {
-      const own = await runpodAccountId();
-      if (!own) return false;
-      const peers = await createMediaSessionsShareCoreForProduction().listPeerReports();
-      return peers.length > 0 && peers.every((p) => p.runpodAccountId === own);
+      // Fail closed, but never fail the tick (review): an unreadable report only holds the account-bound fields. A device that has
+      // not reported for a day (switched off, retired) does not hold them forever.
+      try {
+        const own = await runpodAccountId();
+        if (!own) return false;
+        const dayAgo = Date.now() - 24 * 60 * 60_000;
+        const peers = (await createMediaSessionsShareCoreForProduction().listPeerReports()).filter((p) => Date.parse(p.updatedAt) >= dayAgo);
+        return peers.length > 0 && peers.every((p) => p.runpodAccountId === own);
+      } catch {
+        return false;
+      }
     },
     record: (event) => createMediaControlEventSink().record({ actor: "sync", ...event }),
     clock: { now },
   });
   /** An edit in Setup: validated and saved as before, then the fields it changed are shared (a failure to share never fails the save). */
-  const updateSettings = async (input: unknown) => {
+  const updateSettings = (input: unknown) => settingsSync.exclusive(async () => {
     const before = await base.getSettings();
     const after = await base.updateSettings(input);
     const changed = changedSharedFields(before, after);
@@ -362,10 +369,10 @@ function buildCore(jobScheduling: JobScheduling) {
         .catch((error: unknown) => console.warn(`[media-settings] the change was saved here but not shared: ${error instanceof Error ? error.message : String(error)}`));
     }
     return after;
-  };
+  });
   /** The owner picked one value of a conflicted setting (Merge, or the startup window): shared at once, applied here at once. */
   const resolveSettingConflict = async (input: { field: string; value: MediaSettingValue }) => {
-    await createMediaSettingsCoreForProduction().resolveConflict(input);
+    await settingsSync.exclusive(() => createMediaSettingsCoreForProduction().resolveConflict(input));
     return settingsSync.tick();
   };
 
@@ -383,6 +390,7 @@ function buildCore(jobScheduling: JobScheduling) {
     stopOtherDeviceSession,
     syncSharedSettings: () => settingsSync.tick(),
     getSettingsSyncStatus: () => settingsSync.status(),
+    peekSettingsSync: () => settingsSync.peek(),
     resolveSettingConflict,
   };
 }

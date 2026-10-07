@@ -50,6 +50,16 @@ function scanConflictsGeneric(doc: Automerge.Doc<MediaSettingsDocument>): Confli
 }
 
 export function createMediaSettingsCore(deps: ServiceDependencies) {
+  // Every load → change/merge → save runs one at a time (independent review): otherwise a merge that loaded the document before
+  // an owner's save would write its result over that save, and the owner's edit would vanish from every history -- and then be
+  // "applied back" from the document, reverting a lowered spend limit.
+  let queue: Promise<unknown> = Promise.resolve();
+  function serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => undefined);
+    return run;
+  }
+
   async function loadOrGenesis(): Promise<Automerge.Doc<MediaSettingsDocument>> {
     const bytes = await deps.store.loadDocumentBytes(GLOBAL_DOCUMENT_KEY);
     // Loaded from bytes, so this device writes with its own fresh actor -- never with the genesis actor, which every device
@@ -57,7 +67,10 @@ export function createMediaSettingsCore(deps: ServiceDependencies) {
     return Automerge.load<MediaSettingsDocument>(bytes ?? Automerge.save(genesisDocument()));
   }
 
-  async function write(values: Record<string, SettingValue>, shouldWrite: (current: unknown, value: SettingValue) => boolean): Promise<{ changed: string[] }> {
+  function write(values: Record<string, SettingValue>, shouldWrite: (current: unknown, value: SettingValue) => boolean): Promise<{ changed: string[] }> {
+    return serialized(() => writeUnlocked(values, shouldWrite));
+  }
+  async function writeUnlocked(values: Record<string, SettingValue>, shouldWrite: (current: unknown, value: SettingValue) => boolean): Promise<{ changed: string[] }> {
     const doc = await loadOrGenesis();
     const settings = doc.settings ?? {};
     const changed = Object.keys(values).filter((field) => shouldWrite(settings[field], values[field]));
@@ -72,11 +85,13 @@ export function createMediaSettingsCore(deps: ServiceDependencies) {
 
   return {
     /** The shared values (the Automerge winner of a conflicted field is included; see `conflicts` to know which). */
-    async read(): Promise<{ values: Record<string, SettingValue>; conflicts: SettingConflict[] }> {
+    read(): Promise<{ values: Record<string, SettingValue>; conflicts: SettingConflict[] }> {
+      return serialized(async () => {
       const doc = await loadOrGenesis();
       const values: Record<string, SettingValue> = {};
       for (const [field, value] of Object.entries(doc.settings ?? {})) values[field] = plain(value);
       return { values, conflicts: scanForConflicts(doc) };
+      });
     },
 
     /**
@@ -97,7 +112,8 @@ export function createMediaSettingsCore(deps: ServiceDependencies) {
     },
 
     /** The owner picked one of a conflicted field's values in Merge: it becomes the one value on every device. */
-    async resolveConflict(input: { field: string; value: SettingValue }): Promise<void> {
+    resolveConflict(input: { field: string; value: SettingValue }): Promise<void> {
+      return serialized(async () => {
       const doc = await loadOrGenesis();
       const conflict = scanForConflicts(doc).find((c) => c.field === input.field);
       if (!conflict) throw new DomainError({ code: "not_found", message: `Setting "${input.field}" has no conflict to resolve.`, details: { field: input.field } });
@@ -108,21 +124,26 @@ export function createMediaSettingsCore(deps: ServiceDependencies) {
         draft.settings[input.field] = Array.isArray(input.value) ? [...input.value] : input.value;
       });
       await deps.core.save(GLOBAL_DOCUMENT_KEY, next);
+      });
     },
 
-    exportBytes: (): Promise<Uint8Array> => deps.core.exportBytes(GLOBAL_DOCUMENT_KEY),
+    exportBytes: (): Promise<Uint8Array> => serialized(() => deps.core.exportBytes(GLOBAL_DOCUMENT_KEY)),
 
-    async mergeIncoming(incomingBytes: Uint8Array): Promise<MergeResult> {
+    mergeIncoming(incomingBytes: Uint8Array): Promise<MergeResult> {
+      return serialized(async () => {
       const { merged, newConflicts } = await deps.core.mergeIncoming(GLOBAL_DOCUMENT_KEY, incomingBytes, scanConflictsGeneric);
       await deps.core.save(GLOBAL_DOCUMENT_KEY, merged);
       const fields = new Set(newConflicts.map((c) => c.key));
       return { newConflicts: scanForConflicts(merged).filter((c) => fields.has(c.field)) };
+      });
     },
 
-    async discardLocalAndAdoptPeer(incomingBytes: Uint8Array): Promise<{ backupPath: string | null }> {
+    discardLocalAndAdoptPeer(incomingBytes: Uint8Array): Promise<{ backupPath: string | null }> {
+      return serialized(async () => {
       const { backupPath, adopted } = await deps.core.discardLocalAndAdoptPeer(GLOBAL_DOCUMENT_KEY, incomingBytes);
       await deps.core.save(GLOBAL_DOCUMENT_KEY, adopted);
       return { backupPath };
+      });
     },
   };
 }

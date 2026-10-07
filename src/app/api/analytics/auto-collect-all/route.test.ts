@@ -90,7 +90,7 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
     ...deps,
     importPeers: async () => {
       calls.push(["importPeers"]);
-      return 2;
+      return { imported: 2, pending: false };
     },
     publishLocal: async () => void calls.push(["publishLocal"]),
   })();
@@ -98,4 +98,14 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
   assert.deepEqual(calls, [["importPeers"], ["active", "uS", "UC_A"]]);
   await deferred[0]();
   assert.deepEqual(calls.slice(2), [["background", "uS", "UC_A"], ["publishLocal"]]);
+});
+
+// BL-151 review H3: while the other computer's rows are still being imported, this load does not collect (it would race the
+// import and judge staleness on half-imported data); the run is released at once.
+test("BL-151: a still-running import of the peers' rows means no collection on this load", async () => {
+  const { calls, deps, isRunning } = setup();
+  const res = await createAutoCollectAllHandler({ ...deps, importPeers: async () => ({ imported: 0, pending: true }) })();
+  assert.deepEqual(await res.json(), { channels: [], catchUpScheduled: false, importedFromPeers: 0, importPending: true });
+  assert.deepEqual(calls, []);
+  assert.equal(isRunning(), false);
 });

@@ -1,5 +1,5 @@
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
-import { appDataPaths, exportAnalyticsShareRows, importAnalyticsShareRows } from "@/lib/db";
+import { appDataPaths, countStoredVideos, exportAnalyticsShareRows, getAnalyticsShareImportedJson, importAnalyticsShareRows, setAnalyticsShareImportedJson } from "@/lib/db";
 import { createAnalyticsDataSync, type AnalyticsDataSync } from "./services";
 
 // One instance per process (globalThis: the scheduler and the routes are compiled separately), so its "already imported"
@@ -18,6 +18,12 @@ export function getAnalyticsDataSync(): AnalyticsDataSync {
       },
       exportRows: (from, to) => exportAnalyticsShareRows(from, to),
       importRows: (tables) => importAnalyticsShareRows(tables),
+      async loadSeen() {
+        const text = await getAnalyticsShareImportedJson();
+        return text ? (JSON.parse(text) as Record<string, string>) : {};
+      },
+      saveSeen: (seen) => setAnalyticsShareImportedJson(JSON.stringify(seen)),
+      localVideoCount: () => countStoredVideos(),
       clock: { now: () => new Date() },
       log: (message) => console.warn(message),
     });
@@ -25,21 +31,23 @@ export function getAnalyticsDataSync(): AnalyticsDataSync {
   return holder[KEY];
 }
 
-/** BL-151: how long a collection waits for the other computer's rows to be imported before collecting anyway. */
-const PEER_IMPORT_TIMEOUT_MS = 30_000;
+/** BL-151: how long a collection waits for the other computer's rows before giving up on this load's collection. */
+const PEER_IMPORT_WAIT_MS = 120_000;
 
 /**
  * The other devices' rows first (AC-AD-01/03): a channel they collected (or checked) recently then counts as current here.
- * Never fails a collection: an unreachable folder or a slow import means "collect locally, as before" (AC-AD-05).
- * Returns the number of peer files imported.
+ * - Never fails a collection: an unreachable folder means "collect locally, as before" (AC-AD-05), `{ pending: false }`.
+ * - An import still running after the wait means `{ pending: true }`: the caller must NOT collect now (it would race the import
+ *   and judge staleness on half-imported data; plan: "the collection waits for the next load").
  */
-export async function importPeersFirst(): Promise<number> {
+export async function importPeersFirst(): Promise<{ imported: number; pending: boolean }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<number>((resolve) => (timer = setTimeout(() => resolve(0), PEER_IMPORT_TIMEOUT_MS)));
+  const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), PEER_IMPORT_WAIT_MS)));
   try {
-    return await Promise.race([getAnalyticsDataSync().importPeers().then((o) => o.imported.length), timeout]);
+    const result = await Promise.race([getAnalyticsDataSync().importPeers(), timeout]);
+    return result === "timeout" ? { imported: 0, pending: true } : { imported: result.imported.length, pending: false };
   } catch {
-    return 0;
+    return { imported: 0, pending: false };
   } finally {
     clearTimeout(timer);
   }
