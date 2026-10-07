@@ -117,11 +117,14 @@ export function ProductionPanel({
   tab: routeTab,
   onTabChange,
   onReviewPlan,
+  paused = false,
 }: {
   activeChannelId?: string | null;
   /** BL-149: the sub-tab from the address (`/production/<tab>`), with navigation on a click; absent = local state. */
   tab?: ProductionTab;
   onTabChange?: (tab: ProductionTab) => void;
+  /** BL-149 re-review: the panel is hidden behind a plan review; Plans stops polling meanwhile. */
+  paused?: boolean;
   /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
   onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
 }) {
@@ -163,7 +166,7 @@ export function ProductionPanel({
         <JobsCard activeChannelId={activeChannelId} />
       </div>
       <div className={tab === "plans" ? "space-y-6" : "hidden"}>
-        <PlansPanel active={tab === "plans"} onReview={onReviewPlan} />
+        <PlansPanel active={tab === "plans" && !paused} onReview={onReviewPlan} />
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
         <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />

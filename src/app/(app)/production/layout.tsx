@@ -35,6 +35,7 @@ export default function ProductionLayout({ children }: { children: ReactNode }) 
             <ProductionPanel
               activeChannelId={channel?.id ?? null}
               tab={tab}
+              paused={reviewing}
               onTabChange={(next) => router.push(`/production/${next}`)}
               onReviewPlan={(planId, source) => router.push(planReviewHref(planId, source))}
             />

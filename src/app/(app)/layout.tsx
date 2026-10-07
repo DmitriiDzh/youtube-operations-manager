@@ -9,7 +9,7 @@ import { useConnectionHealth } from "@/components/use-connection-health";
 import { AppShell } from "@/components/app-shell";
 import { OperationLockControl } from "@/components/operation-lock-control";
 import { AppChannelProvider, type ChannelInfo } from "@/components/app-channel";
-import { sectionHref, sectionOf } from "@/components/section-tabs";
+import { rememberablePath, sectionHref } from "@/components/section-tabs";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -84,9 +84,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // Review finding: each sidebar item leads back to the sub-tab last open in its section (this app load only).
   const [lastPathBySection, setLastPathBySection] = useState<Record<string, string>>({});
   useEffect(() => {
-    const section = sectionOf(pathname, NAV_ITEMS.map((item) => item.href));
-    if (!section || pathname === section) return;
-    queueMicrotask(() => setLastPathBySection((prev) => (prev[section] === pathname ? prev : { ...prev, [section]: pathname })));
+    const remembered = rememberablePath(pathname);
+    if (!remembered) return;
+    const { section, path } = remembered;
+    queueMicrotask(() => setLastPathBySection((prev) => (prev[section] === path ? prev : { ...prev, [section]: path })));
   }, [pathname]);
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   // BL-115: the channel request failed (typically a stale Google sign-in) -- say so, don't spin on "Loading..." forever.
@@ -260,7 +261,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [userId]);
 
-  const navItemsWithBadges = NAV_ITEMS.map((item) => ({ ...item, href: sectionHref(item.href, lastPathBySection) })).map((item) =>
+  // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
+  // as every visit did before BL-149 (re-review).
+  const navItemsWithBadges = NAV_ITEMS.map((item) => ({ ...item, href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
     item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "production" ? { ...item, badge: plansWaiting } : item
   );
 

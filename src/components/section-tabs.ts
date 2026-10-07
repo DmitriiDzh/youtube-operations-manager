@@ -81,6 +81,19 @@ export function sectionHref(sectionHref: string, lastPathBySection: Readonly<Rec
   return lastPathBySection[sectionHref] ?? sectionHref;
 }
 
+/**
+ * What a sidebar item may lead back to for a visited path (re-review): only a real sub-tab address (`/settings/sync`), never
+ * a mistyped one (that would lead back to a 404); a plan's review counts as Plans (its peer query is not part of the path,
+ * and the sidebar must still lead out of it). Null = nothing to remember.
+ */
+export function rememberablePath(pathname: string): { section: string; path: string } | null {
+  const [, section, sub, planId, last, ...rest] = pathname.split("/");
+  if (!section || !sub) return null;
+  if (section === "production" && sub === "plans" && planId && last === "review" && rest.length === 0) return { section: "/production", path: "/production/plans" };
+  if (planId !== undefined || !isSectionSubTab(section, sub)) return null;
+  return { section: `/${section}`, path: pathname };
+}
+
 /** The section (`/production`) a path belongs to, among the given section addresses; null when none. */
 export function sectionOf(pathname: string, sectionHrefs: readonly string[]): string | null {
   return sectionHrefs.find((href) => pathname === href || pathname.startsWith(`${href}/`)) ?? null;

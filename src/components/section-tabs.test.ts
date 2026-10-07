@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dashboardRedirectTarget, isSectionSubTab, sectionHref, sectionOf } from "./section-tabs";
+import { dashboardRedirectTarget, isSectionSubTab, rememberablePath, sectionHref, sectionOf } from "./section-tabs";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): the address rules, from the plan's address table and AC-RT-01/04.
 
@@ -29,4 +29,18 @@ test("review finding: a sidebar item leads back to its section's last sub-tab; a
   assert.equal(sectionOf("/productionx", sections), null);
   assert.equal(sectionHref("/settings", { "/settings": "/settings/sync" }), "/settings/sync");
   assert.equal(sectionHref("/production", { "/settings": "/settings/sync" }), "/production");
+});
+
+// Re-review: a mistyped address must never become where the sidebar leads (it would lead back to a 404), and a plan review
+// is remembered as Plans (the peer query is not in the path, and the sidebar must still lead out of the review).
+test("only a real sub-tab address is remembered; a review counts as Plans; anything else is not remembered", () => {
+  assert.deepEqual(rememberablePath("/settings/sync"), { section: "/settings", path: "/settings/sync" });
+  assert.deepEqual(rememberablePath("/research/videos"), { section: "/research", path: "/research/videos" });
+  assert.deepEqual(rememberablePath("/production/plans/R-0001/review"), { section: "/production", path: "/production/plans" });
+  assert.equal(rememberablePath("/settings/bogus"), null);
+  assert.equal(rememberablePath("/production/plans/x"), null);
+  assert.equal(rememberablePath("/production/plans/x/review/more"), null);
+  assert.equal(rememberablePath("/settings"), null);
+  assert.equal(rememberablePath("/home"), null);
+  assert.equal(rememberablePath("/merge/x"), null);
 });
