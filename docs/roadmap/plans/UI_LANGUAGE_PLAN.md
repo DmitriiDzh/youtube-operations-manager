@@ -2,7 +2,7 @@
 
 **Requested** by the owner in Telegram on 2026-10-07 (msg 2027): a Settings choice of interface language; Russian as the second language; a key/translation base so the whole UI can later go into any language; every future UI change must add keys and translations for every language.
 
-**Status:** plan only. Not assigned; no code written.
+**Status:** plan only. Not assigned; no code written. Open questions answered by the owner in Telegram on 2026-10-08 (msg 2032), see the end.
 
 ## What exists today (research, 2026-10-08, `dev` at `ba02ddd`)
 
@@ -39,7 +39,8 @@ Out of scope, stays English:
 
 ### The setting
 
-- `app_settings` key `ui_language`, values `en` | `ru`, default `en`. **Per device**, not synced (recommendation, Q1): each computer can show its own language, and a language change never creates a sync conflict on the blocking startup screen.
+- `app_settings` key `ui_language`, values `en` | `ru`. **Per device**, not synced (Q1): each computer shows its own language, and a language change never creates a sync conflict on the blocking startup screen.
+- No saved choice → the system language (Q4): the browser's `Accept-Language` header, read in the root layout (the browser runs on the same computer and follows the OS language; Node's own locale is unreliable when the server is started without `LANG`). The first supported language wins; none supported → `en`. Nothing is saved until the person picks a language, so a later OS language change still applies. The selector shows a «System (Русский)»-style first option for this.
 - `GET/PUT /api/settings` gains `uiLanguage` (validated against the language list).
 - Settings → General: a "Interface language" select. Each language is shown in its own name (English, Русский). After saving, `router.refresh()` re-renders in the new language.
 - `src/app/layout.tsx` reads the setting: `<html lang>`, page title, and the provider's locale.
@@ -58,7 +59,7 @@ Out of scope, stays English:
 
 ### Translation quality
 
-Russian texts are written by the coding agent as part of each slice and reviewed by the owner on screen. Terms are fixed in a short glossary at the top of `ru.ts` (Change Set → «набор изменений» or kept as is, Batch → «пакет», etc. — Q3).
+Russian texts are written by the coding agent as part of each slice and reviewed by the owner on screen. Translations follow meaning and natural Russian, not word for word (Q3). Product terms get one fixed translation each, kept in a short glossary at the top of `ru.ts`, so the same term reads the same on every screen.
 
 ## Slices (one branch `feature/ui-language`, one merge — AGENTS.md §K.1)
 
@@ -78,9 +79,9 @@ Each slice is checked in the browser in both languages (long Russian words can b
 - **Missed strings** in `.ts` helpers and server messages — covered by the slice-4 sweep and the inventory test.
 - **Merge conflicts** with other UI work while the branch is open — keep slices short; other UI branches merged meanwhile must add their strings through `useT()`.
 
-## Open questions for the owner
+## Owner decisions (Telegram, 2026-10-08, msg 2032)
 
-- **Q1.** Language per computer (recommended) or one language shared by both computers?
-- **Q2.** Should CLI output also be translated? Recommendation: no (scripts and agents read it).
-- **Q3.** Product terms in Russian: translate (Change Set → «набор изменений», Batch → «пакет», Live writes → «запись в YouTube») or keep English terms inside Russian sentences?
-- **Q4.** Default language for a fresh install: English, or taken from the operating system?
+- **Q1.** Each computer has its own language choice.
+- **Q2.** CLI output is not translated.
+- **Q3.** Translate by meaning, choosing natural, fitting Russian terms — not word for word.
+- **Q4.** Default is the system language, falling back to English when that language is not available.
