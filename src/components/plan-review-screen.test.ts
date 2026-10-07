@@ -1,0 +1,43 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { formatPlayerTime } from "./media-review-player";
+import { findingMarkers, nextWaitingIndex, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
+
+// BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A; FO-MSG-0008 §6; owner msgs 1933/1939): the review screen's keyboard map,
+// queue order, reasons, finding markers and time display.
+
+test("keyboard: Space plays, arrows seek, A/R decide, N/P move, M marks, digits rate (0 = 10)", () => {
+  assert.equal(reviewKeyAction(" "), "play");
+  assert.equal(reviewKeyAction("ArrowLeft"), "back");
+  assert.equal(reviewKeyAction("ArrowRight"), "forward");
+  assert.equal(reviewKeyAction("a"), "accept");
+  assert.equal(reviewKeyAction("R"), "reject");
+  assert.equal(reviewKeyAction("n"), "next");
+  assert.equal(reviewKeyAction("P"), "previous");
+  assert.equal(reviewKeyAction("m"), "mark");
+  assert.deepEqual(reviewKeyAction("7"), { rating: 7 });
+  assert.deepEqual(reviewKeyAction("0"), { rating: 10 });
+  assert.equal(reviewKeyAction("x"), null);
+  assert.equal(reviewKeyAction("Enter"), null);
+});
+
+test("after a verdict the queue moves to the next attempt still waiting, wrapping; -1 when none is left", () => {
+  const e = (verdict: unknown) => ({ verdict });
+  assert.equal(nextWaitingIndex([e("x"), e(null), e("x"), e(null)], 1), 3);
+  assert.equal(nextWaitingIndex([e(null), e("x"), e("x")], 1), 0, "wraps");
+  assert.equal(nextWaitingIndex([e("x"), e("x")], 0), -1);
+});
+
+test("the reasons are the R-0001 list; the validator's timed findings become waveform ranges", () => {
+  assert.deepEqual([...REVIEW_REASONS].slice(0, 2), ["thin / sparse", "dropout / pause"]);
+  assert.equal(REVIEW_REASONS.length, 10);
+  const check = (id: string, atSeconds: [number, number] | null, label: string | null = null) => ({ id, label, value: 1, unit: null, threshold: null, pass: false, severity: "fail" as const, atSeconds, detail: null });
+  const markers = findingMarkers({ stages: [{ stageId: "validate", itemKey: "C1", attemptRef: "job:1", result: "rejected", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: [check("internal_gap_s", [5.55, 6.5], "Dropout"), check("ring_db", null)], metrics: {}, at: "" }] });
+  assert.deepEqual(markers, [{ start: 5.55, end: 6.5, label: "Dropout", tone: "finding" }]);
+});
+
+test("player time reads m:ss.t", () => {
+  assert.equal(formatPlayerTime(111.25), "1:51.2");
+  assert.equal(formatPlayerTime(0), "0:00.0");
+  assert.equal(formatPlayerTime(Number.NaN), "0:00.0");
+});

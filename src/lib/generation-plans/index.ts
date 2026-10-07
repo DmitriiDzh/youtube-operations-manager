@@ -29,6 +29,7 @@ export function createGenerationPlansCore() {
       },
       linkSession: (sessionId, planId) => linkMediaSessionToPlan(sessionId, planId),
       validateJobParams: (input) => createMediaGenerationCore().validateJobParams(input),
+      getJobOutputs: async (jobId) => (await createMediaGenerationCore().getJob({ jobId })).outputs.map((o) => ({ kind: o.kind, localPath: o.localPath ?? null, filename: o.filename })),
       createJob: async (input) => ({ jobId: (await createMediaGenerationCore().createJob(input)).jobId }),
     },
   });

@@ -362,7 +362,7 @@ test("a re-run request and a group note are recorded for the factory; nothing is
 type FakeSession = { sessionId: string; status: string; channelId: string; requestedBy: string; planId: string | null };
 
 /** A media port that behaves like the media core's contract: params checked against a template; created jobs become rows. */
-function withMedia(seedSessions: FakeSession[], opts: { templates?: Record<string, string[]>; failCreateAfter?: number } = {}) {
+function withMedia(seedSessions: FakeSession[], opts: { templates?: Record<string, string[]>; failCreateAfter?: number; outputs?: Record<string, Array<{ kind: string; localPath: string | null; filename: string }>> } = {}) {
   const s = setup();
   const sessions = new Map(seedSessions.map((x) => [x.sessionId, { ...x }]));
   const templates = opts.templates ?? { "tpl-ace": ["prompt", "duration", "seed"], "tpl-noseed": ["prompt"] };
@@ -387,6 +387,7 @@ function withMedia(seedSessions: FakeSession[], opts: { templates?: Record<strin
         if (unknown.length > 0) throw Object.assign(new Error(`unknown parameter "${unknown[0]}"`), { code: "validation_failed" });
         return { parameterNames: names };
       },
+      getJobOutputs: async (jobId) => opts.outputs?.[jobId] ?? [],
       async createJob(input) {
         if (opts.failCreateAfter !== undefined && createdJobs.length >= opts.failCreateAfter) throw Object.assign(new Error("ComfyUI unreachable"), { code: "comfyui_unreachable" });
         const jobId = `job-${++n}`;
@@ -525,4 +526,41 @@ test("a hand-made job may name a plan attempt only for an active plan of its cha
   await assert.rejects(m.services.checkJobLink({ planId: "R-0001-S1-music", itemKey: "C1/F1", sessionId: "s-other-plan", channelId: CHANNEL }), refused("plan_mismatch"));
   await assert.rejects(m.services.checkSessionLink({ planId: "R-0001-S1-music", channelId: "UC_other" }), refused("plan_mismatch"));
   await m.services.checkSessionLink({ planId: "R-0001-S1-music", channelId: CHANNEL });
+});
+
+// -- slice 4: review queue and what to play (AC-GP-13/14, service part) ------------------------------------------------
+
+test("the review queue lists attempts that passed the stage before review, waiting first, with the validator's rows and the verdict", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  for (const j of m.jobs) j.status = "done";
+  await m.services.report({
+    planId: "R-0001-S1-music",
+    rows: [
+      { stageId: "postprocess", itemKey: "C1/F1", attemptRef: "job:job-1", result: "done", auditionFile: "R-0001/C1/final-1.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "job:job-1", result: "accepted", checks: [check], metrics: { lufs: -14 } },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "job:job-2", result: "accepted" },
+    ],
+  });
+  await m.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-2", result: "accepted", rating: 8 });
+  const queue = await m.services.reviewQueue({ planId: "R-0001-S1-music" });
+  assert.deepEqual(queue.entries.map((e) => [e.attemptRef, e.verdict?.result ?? null]), [["job:job-1", null], ["job:job-2", "accepted"]]);
+  const first = queue.entries[0];
+  assert.deepEqual(first.stages.map((r) => r.stageId), ["postprocess", "validate"], "in stage order");
+  assert.equal(first.seed, 1001);
+  assert.deepEqual(first.params, { prompt: "koto, slow", duration: 120 });
+  assert.equal(first.playable, true);
+});
+
+test("AC-GP-14 (service): the audition is the latest reported auditionFile, else the attempt's own job output; never another plan's or an unknown attempt", async () => {
+  const m = withMedia([running()], { outputs: { "job-1": [{ kind: "audio", localPath: "/ws/99 Data Exchange/From YTM/media/job-1/a.mp3", filename: "a.mp3" }] } });
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  assert.deepEqual(await m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-1" }), { channelId: CHANNEL, kind: "job", jobId: "job-1", localPath: "/ws/99 Data Exchange/From YTM/media/job-1/a.mp3" });
+  await m.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "postprocess", itemKey: "C1/F1", attemptRef: "job:job-1", result: "done", auditionFile: "R-0001/C1/final-1.mp3" }] });
+  assert.deepEqual(await m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-1" }), { channelId: CHANNEL, kind: "sent", relativePath: "R-0001/C1/final-1.mp3" });
+  await assert.rejects(m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-2" }), refused("plan_mismatch"), "job-2 has no output on this device");
+  await assert.rejects(m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C2/F1", attemptRef: "job:job-1" }), refused("plan_mismatch"), "job-1 is not C2/F1's attempt");
+  await assert.rejects(m.services.resolveAudition({ planId: "other-plan", itemKey: "C1/F1", attemptRef: "job:job-1" }), refused("plan_not_found"));
 });

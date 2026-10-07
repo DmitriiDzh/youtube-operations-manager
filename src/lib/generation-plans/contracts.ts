@@ -133,6 +133,23 @@ export type PlanItemProgress = {
   missing: number;
 };
 
+/** BL-143 slice 4: one attempt on the owner's review screen, with what the earlier stages said about it. */
+export type PlanReviewEntry = {
+  itemKey: string;
+  groupId: string | null;
+  attemptRef: string;
+  jobId: string | null;
+  seed: number | null;
+  /** The item's job params (the generation details shown next to the player). */
+  params: Record<string, PlanParamValue>;
+  /** The external stages' rows for this attempt (validator checks, metrics, notes), in stage order. */
+  stages: PlanResultRow[];
+  /** The owner's verdict when given (null = waiting). */
+  verdict: PlanResultRow | null;
+  /** Something can be played: a reported audition file or a job of this plan. */
+  playable: boolean;
+};
+
 export type PlanEvent = { at: string; kind: string; actor: string; details: Record<string, unknown> };
 
 export type PlanProgress = {

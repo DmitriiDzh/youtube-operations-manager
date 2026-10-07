@@ -12,6 +12,7 @@ import {
   type PlanResultRow,
   type PlanStage,
   type PlanStatus,
+  type PlanReviewEntry,
   type PlanTodo,
   type PlanView,
 } from "./contracts";
@@ -81,6 +82,8 @@ export type PlanMediaPort = {
   /** Sets the session's plan when it has none; `true` when it is (now) this plan's. */
   linkSession(sessionId: string, planId: string): Promise<boolean>;
   validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean> }): Promise<{ parameterNames: string[] }>;
+  /** The job's output files as recorded by the media core (`localPath` on this device). */
+  getJobOutputs(jobId: string): Promise<Array<{ kind: string; localPath: string | null; filename: string }>>;
   createJob(input: {
     sessionId: string;
     channelId: string;
@@ -627,6 +630,67 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!row.definition.items.some((i) => i.itemKey === parsed.itemKey)) throw planMismatch(`Plan ${row.id} has no item ${parsed.itemKey}`, { planId: row.id, itemKey: parsed.itemKey });
       if (deps.media && !(await deps.media.linkSession(parsed.sessionId, row.id))) throw planMismatch(`Session ${parsed.sessionId} works for another plan`, { sessionId: parsed.sessionId, planId: row.id });
       return { planId: row.id, stageId: stage.stageId, itemKey: parsed.itemKey, seed: parsed.seed ?? null };
+    },
+
+    /**
+     * BL-143 slice 4: the attempts the owner reviews -- every attempt that passed the stage before the owner review --
+     * waiting ones first, each with what the earlier stages reported and the owner's verdict if given.
+     */
+    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[] }> {
+      const { planId } = parseWithSchema(getPlanInputSchema.pick({ planId: true }), input, "plan id");
+      const row = await requirePlan(planId);
+      const review = row.definition.stages.find((s) => s.kind === "owner_review");
+      if (!review) return { planId, entries: [] };
+      const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+      const plan = toPublicPlan(row);
+      const index = row.definition.stages.findIndex((s) => s.stageId === review.stageId);
+      const before = index > 0 ? row.definition.stages[index - 1] : null;
+      const attempts = inAppAttempts(plan, jobs, results);
+      const order = new Map(row.definition.stages.map((s, i) => [s.stageId, i]));
+      const candidates = new Map<string, { itemKey: string; attemptRef: string }>();
+      if (before?.kind === "in_app") for (const a of attempts) if (a.state === "done") candidates.set(`${a.itemKey}\u0000${a.attemptRef}`, a);
+      for (const r of results) {
+        if ((before && before.kind !== "in_app" && r.stageId === before.stageId && (r.result === "accepted" || r.result === "done")) || r.stageId === review.stageId) candidates.set(`${r.itemKey}\u0000${r.attemptRef}`, r);
+      }
+      const entries: PlanReviewEntry[] = [...candidates.values()].map(({ itemKey, attemptRef }) => {
+        const item = row.definition.items.find((i) => i.itemKey === itemKey);
+        const attempt = attempts.find((a) => a.itemKey === itemKey && a.attemptRef === attemptRef);
+        const own = results.filter((r) => r.itemKey === itemKey && r.attemptRef === attemptRef);
+        const stages = own.filter((r) => r.stageId !== review.stageId).sort((a, b) => (order.get(a.stageId) ?? 0) - (order.get(b.stageId) ?? 0));
+        return {
+          itemKey,
+          groupId: item?.groupId ?? null,
+          attemptRef,
+          jobId: attempt?.jobId ?? null,
+          seed: attempt?.seed ?? null,
+          params: item?.params ?? {},
+          stages,
+          verdict: own.find((r) => r.stageId === review.stageId) ?? null,
+          playable: Boolean(attempt?.jobId) || stages.some((s) => s.auditionFile !== null),
+        };
+      });
+      entries.sort((a, b) => Number(a.verdict !== null) - Number(b.verdict !== null) || a.itemKey.localeCompare(b.itemKey) || a.attemptRef.localeCompare(b.attemptRef));
+      return { planId, entries };
+    },
+
+    /**
+     * AC-GP-14: what to play for one attempt of this plan -- the latest reported `auditionFile` (relative to the channel's
+     * Sent to YTM), else the attempt's own job output. Never a path from the caller; an unknown attempt is plan_mismatch.
+     */
+    async resolveAudition(input: { planId: string; itemKey: string; attemptRef: string }): Promise<{ channelId: string } & ({ kind: "sent"; relativePath: string } | { kind: "job"; jobId: string; localPath: string })> {
+      const row = await requirePlan(input.planId);
+      const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+      const order = new Map(row.definition.stages.map((s, i) => [s.stageId, i]));
+      const reported = results
+        .filter((r) => r.itemKey === input.itemKey && r.attemptRef === input.attemptRef && r.auditionFile !== null)
+        .sort((a, b) => (order.get(b.stageId) ?? 0) - (order.get(a.stageId) ?? 0) || b.at.localeCompare(a.at))[0];
+      if (reported?.auditionFile) return { channelId: row.channelId, kind: "sent", relativePath: reported.auditionFile };
+      const job = input.attemptRef.startsWith("job:") ? jobs.find((j) => j.id === input.attemptRef.slice(4) && j.itemKey === input.itemKey) : undefined;
+      if (!job) throw planMismatch(`Plan ${row.id} has nothing to play for ${input.itemKey} ${input.attemptRef}`, { planId: row.id, itemKey: input.itemKey, attemptRef: input.attemptRef });
+      const outputs = deps.media ? await deps.media.getJobOutputs(job.id) : [];
+      const playable = outputs.find((o) => o.localPath && (o.kind === "audio" || o.kind === "video" || o.kind === "image")) ?? outputs.find((o) => o.localPath);
+      if (!playable?.localPath) throw planMismatch(`Job ${job.id} has no output on this device`, { jobId: job.id });
+      return { channelId: row.channelId, kind: "job", jobId: job.id, localPath: playable.localPath };
     },
 
     /** A session started for a plan (`factory_media_start_session` with planId): the plan is active and of that channel. */

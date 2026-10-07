@@ -5,6 +5,7 @@ import type { PlanEvent, PlanStageCounts, PlanStageKind, PlanView } from "@/lib/
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import { PlanReviewScreen } from "./plan-review-screen";
 
 // BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Production → Plans. Every number comes from the plans core, which derives
 // it from the jobs, sessions and results when read -- this view only shows it. Polls while the tab is open.
@@ -101,13 +102,14 @@ function waitingCount(view: PlanView): number {
   return view.progress.items.reduce((sum, i) => sum + i.waitingReview, 0);
 }
 
-export function PlansPanel({ active, onReview }: { active: boolean; onReview?: (planId: string) => void }) {
+export function PlansPanel({ active }: { active: boolean }) {
   const [filter, setFilter] = useState<"active" | "history">("active");
   const [plans, setPlans] = useState<PlanView[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedRef = useRef<string | null>(null);
+  const [reviewing, setReviewing] = useState<string | null>(null);
 
   const load = useCallback(() => {
     void requestJson<{ plans: PlanView[] }>("/api/generation-plans").then(
@@ -143,6 +145,8 @@ export function PlansPanel({ active, onReview }: { active: boolean; onReview?: (
   };
 
   const shown = (plans ?? []).filter((p) => (filter === "active" ? p.plan.status === "active" : p.plan.status !== "active"));
+
+  if (reviewing) return <PlanReviewScreen planId={reviewing} onClose={() => setReviewing(null)} onChanged={load} />;
 
   return (
     <div className="space-y-4">
@@ -197,7 +201,7 @@ export function PlansPanel({ active, onReview }: { active: boolean; onReview?: (
         </ul>
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
-      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={onReview} />}
+      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={setReviewing} />}
       {selected && !detail && <p className="text-xs text-zinc-500">Loading the plan…</p>}
     </div>
   );
