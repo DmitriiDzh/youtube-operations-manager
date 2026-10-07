@@ -81,3 +81,19 @@ test("AC-GP-16: media-generation imports nothing from generation-plans", async (
   assert.ok(files.length > 10);
   for (const file of files) assert.equal((await readFile(file, "utf8")).includes("generation-plans"), false, file);
 });
+
+// Review A1: stored times have one-second resolution, so `since` is inclusive of its second and the page is the OLDEST
+// events after it, with a cursor that never skips one.
+test("review A1: events are paged oldest first from the since second (inclusive); the cursor never skips an event", async () => {
+  const { planEvents } = await import("./progress");
+  const ev = (iso: string, n: number) => ({ at: iso, kind: "group_note", actor: "owner", details: { n } });
+  const recorded = [ev("2026-10-07T10:00:00.000Z", 1), ev("2026-10-07T10:00:01.000Z", 2), ev("2026-10-07T10:00:02.000Z", 3), ev("2026-10-07T10:00:03.000Z", 4)];
+  // A cursor taken at 10:00:01.400 must still deliver the event stored as 10:00:01.000 (it may have happened at .800).
+  const page = planEvents([], [], [], recorded, new Date("2026-10-07T10:00:01.400Z"));
+  assert.deepEqual(page.events.map((e) => e.details.n), [2, 3, 4]);
+  assert.equal(page.more, false);
+  const first = planEvents([], [], [], recorded, null, 2);
+  assert.deepEqual([first.events.map((e) => e.details.n), first.more, first.cursor], [[1, 2], true, "2026-10-07T10:00:01.000Z"]);
+  const second = planEvents([], [], [], recorded, new Date(first.cursor as string), 2);
+  assert.deepEqual(second.events.map((e) => e.details.n), [2, 3], "event 2 repeats; nothing is lost");
+});

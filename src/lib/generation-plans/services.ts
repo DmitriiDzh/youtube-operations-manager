@@ -16,7 +16,7 @@ import {
   type PlanTodo,
   type PlanView,
 } from "./contracts";
-import { inAppAttempts, planEvents, planProgress, planTodo, type PlanJobRow, type PlanSessionRow } from "./progress";
+import { inAppAttempts, planEvents, planProgress, planTodo, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
   closePlanInputSchema,
@@ -108,11 +108,45 @@ export type PlanRunResult = {
   planId: string;
   sessionId: string;
   created: Array<{ itemKey: string; jobId: string; seed: number | null }>;
+  /** Items that still need attempts but list seeds and have none left unused: nothing was created for them. */
+  skipped: Array<{ itemKey: string; missing: number; reason: string }>;
   /** Set when a job could not be created after the checks passed (e.g. ComfyUI down); the jobs before it exist. */
   stoppedAt: { itemKey: string; seed: number | null; error: { code: string; message: string } } | null;
 };
 
 const CAS_RETRIES = 5;
+/** Independent review (A2): at most this many jobs per run_stage call -- larger runs go per group or per item. */
+export const MAX_JOBS_PER_RUN = 200;
+
+/**
+ * Independent review (A2): runs of one plan are serialized in this process ("work out what is missing, check, create" is
+ * not atomic -- two concurrent run_stage calls, or a retry while the first still creates, would each create the missing
+ * jobs). On globalThis because the plans core is created per call. The factory endpoint runs only in the web server.
+ */
+const RUN_LOCKS_KEY = Symbol.for("youtube-operations-manager.generation-plans.run-locks");
+function runLocks(): Map<string, Promise<unknown>> {
+  const holder = globalThis as unknown as Record<symbol, Map<string, Promise<unknown>> | undefined>;
+  return (holder[RUN_LOCKS_KEY] ??= new Map());
+}
+function serializedPerPlan<T>(planId: string, work: () => Promise<T>): Promise<T> {
+  const locks = runLocks();
+  const previous = locks.get(planId) ?? Promise.resolve();
+  const run = previous.then(work, work);
+  const settled = run.then(
+    () => undefined,
+    () => undefined
+  );
+  locks.set(planId, settled);
+  void settled.then(() => {
+    if (locks.get(planId) === settled) locks.delete(planId);
+  });
+  return run;
+}
+
+/** A seed counts as used while its attempt is live or generated (a failed, interrupted or cancelled one frees it). */
+function usedSeedsOf(jobs: PlanJobRow[], itemKey: string): Set<number> {
+  return new Set(jobs.filter((j) => j.itemKey === itemKey && j.seed !== null && ["queued", "submitted", "generating", "transferring", "done"].includes(j.status)).map((j) => j.seed as number));
+}
 
 function toPublicPlan(row: StoredPlan): GenerationPlan {
   return {
@@ -300,6 +334,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   async function createJobs(row: StoredPlan, sessionId: string, stageId: string, planned: PlannedJob[]): Promise<PlanRunResult> {
     const media = requireMedia();
+    if (planned.length === 0) return { planId: row.id, sessionId, created: [], skipped: [], stoppedAt: null };
     if (!(await media.linkSession(sessionId, row.id))) throw planMismatch(`Session ${sessionId} works for another plan`, { sessionId, planId: row.id });
     const created: PlanRunResult["created"] = [];
     for (const job of planned) {
@@ -315,17 +350,17 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         created.push({ itemKey: job.item.itemKey, jobId, seed: job.seed });
       } catch (error) {
         const code = (error as { code?: unknown }).code;
-        return { planId: row.id, sessionId, created, stoppedAt: { itemKey: job.item.itemKey, seed: job.seed, error: { code: typeof code === "string" ? code : "internal_error", message: error instanceof Error ? error.message : String(error) } } };
+        return { planId: row.id, sessionId, created, skipped: [], stoppedAt: { itemKey: job.item.itemKey, seed: job.seed, error: { code: typeof code === "string" ? code : "internal_error", message: error instanceof Error ? error.message : String(error) } } };
       }
     }
-    return { planId: row.id, sessionId, created, stoppedAt: null };
+    return { planId: row.id, sessionId, created, skipped: [], stoppedAt: null };
   }
 
   function withSeed(item: PlanItem, seed: number | null): Record<string, string | number | boolean> {
     return seed === null ? { ...item.params } : { ...item.params, [SEED_PARAMETER]: seed };
   }
 
-  return {
+  const api = {
     /** AC-GP-01. */
     async createPlan(input: unknown, actor: PlanActor = "factory"): Promise<PlanView> {
       const parsed = parseWithSchema(createPlanInputSchema, input, "generation plan");
@@ -466,13 +501,18 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       return view(updated);
     },
 
-    async getPlan(input: unknown): Promise<PlanView & { events: PlanEvent[]; cursor: string }> {
+    /**
+     * Events (review A1): times are stored to the second, so `since` is inclusive and the cursor is a whole second --
+     * an event in the cursor's own second can come again on the next call (drop ones you already have); none is lost.
+     */
+    async getPlan(input: unknown): Promise<PlanView & { events: PlanEvent[]; more: boolean; cursor: string }> {
       const parsed = parseWithSchema(getPlanInputSchema, input, "plan id");
       const row = await requirePlan(parsed.planId);
       const [jobs, results, sessions, recorded] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id)]);
       const plan = toPublicPlan(row);
       const at = now();
-      return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null), cursor: at.toISOString() };
+      const page = planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null);
+      return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: page.events, more: page.more, cursor: page.cursor ?? secondFloor(at).toISOString() };
     },
 
     async listPlans(input: unknown = {}): Promise<PlanView[]> {
@@ -494,6 +534,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const parsed = parseWithSchema(reportInputSchema, input, "plan report");
       const row = await requireActive(parsed.planId);
       checkRowsFit(row, parsed.rows);
+      // Review A3 (approval integrity): a relayed verdict never replaces the owner's own verdict on the same attempt.
+      const review = row.definition.stages.find((s) => s.kind === "owner_review");
+      if (review && parsed.rows.some((r) => r.stageId === review.stageId)) {
+        const owned = new Set((await deps.store.listResults(row.id)).filter((r) => r.stageId === review.stageId && r.reportedBy === "owner").map((r) => `${r.itemKey}\u0000${r.attemptRef}`));
+        const clash = parsed.rows.find((r) => r.stageId === review.stageId && owned.has(`${r.itemKey}\u0000${r.attemptRef}`));
+        if (clash) throw planMismatch(`The owner already gave a verdict on ${clash.itemKey} ${clash.attemptRef}; a relayed verdict cannot replace it`, { itemKey: clash.itemKey, attemptRef: clash.attemptRef });
+      }
       const at = now().toISOString();
       await deps.store.upsertResults(row.id, parsed.rows.map((r) => resultRow(r, actor, at)));
       return { planId: row.id, stored: parsed.rows.length };
@@ -542,6 +589,18 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      */
     async runStage(input: unknown): Promise<PlanRunResult> {
       const parsed = parseWithSchema(runStageInputSchema, input, "run stage");
+      return serializedPerPlan(parsed.planId, () => runStageLocked(parsed));
+    },
+
+    /** One more attempt of one item (the given seed, else the item's next unused one; none only when the item has no seeds). */
+    async rerun(input: unknown): Promise<PlanRunResult> {
+      const parsed = parseWithSchema(rerunInputSchema, input, "re-run");
+      return serializedPerPlan(parsed.planId, () => rerunLocked(parsed));
+    },
+  };
+
+  async function runStageLocked(parsed: { planId: string; sessionId: string; itemKeys?: string[]; groupId?: string }): Promise<PlanRunResult> {
+    {
       const row = await requireActive(parsed.planId);
       const stage = row.definition.stages.find((s) => s.kind === "in_app");
       if (!stage) throw planMismatch(`Plan ${row.id} has no in_app stage`, { planId: row.id });
@@ -558,26 +617,31 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
       const progress = planProgress(toPublicPlan(row), jobs, results, [], now());
       const planned: PlannedJob[] = [];
+      const skipped: PlanRunResult["skipped"] = [];
       for (const item of items) {
         const missing = progress.items.find((i) => i.itemKey === item.itemKey)?.missing ?? 0;
         if (missing === 0) continue;
-        const usedSeeds = new Set(jobs.filter((j) => j.itemKey === item.itemKey && j.seed !== null && ["queued", "submitted", "generating", "transferring", "done"].includes(j.status)).map((j) => j.seed as number));
-        const freeSeeds = item.seeds.filter((s) => !usedSeeds.has(s));
-        const count = item.mode === "fixed" && item.seeds.length > 0 ? Math.min(missing, freeSeeds.length) : missing;
+        // An item that lists seeds is never run without one (review B1: a template's default seed would repeat a result).
+        const freeSeeds = item.seeds.filter((s) => !usedSeedsOf(jobs, item.itemKey).has(s));
+        const count = item.seeds.length > 0 ? Math.min(missing, freeSeeds.length) : missing;
+        if (count < missing) skipped.push({ itemKey: item.itemKey, missing: missing - count, reason: "no unused seed left; add seeds with factory_plan_update" });
         for (let n = 0; n < count; n++) {
-          const seed = freeSeeds[n] ?? null;
+          const seed = item.seeds.length > 0 ? freeSeeds[n] : null;
           planned.push({ item, seed, params: withSeed(item, seed) });
         }
       }
+      if (planned.length > MAX_JOBS_PER_RUN) {
+        throw planMismatch(`This run would create ${planned.length} jobs; at most ${MAX_JOBS_PER_RUN} per call -- run it per group or per item`, { planId: row.id, jobs: planned.length, max: MAX_JOBS_PER_RUN });
+      }
       await checkJobs(planned);
       const result = await createJobs(row, parsed.sessionId, stage.stageId, planned);
-      await record(row.id, "stage_run", "factory", { sessionId: parsed.sessionId, created: result.created.length, ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
-      return result;
-    },
+      await record(row.id, "stage_run", "factory", { sessionId: parsed.sessionId, created: result.created.length, ...(skipped.length > 0 ? { skipped } : {}), ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
+      return { ...result, skipped };
+    }
+  }
 
-    /** One more attempt of one item (a new seed: the given one, else the next unused one, else none). */
-    async rerun(input: unknown): Promise<PlanRunResult> {
-      const parsed = parseWithSchema(rerunInputSchema, input, "re-run");
+  async function rerunLocked(parsed: { planId: string; sessionId: string; itemKey: string; seed?: number }): Promise<PlanRunResult> {
+    {
       const row = await requireActive(parsed.planId);
       const stage = row.definition.stages.find((s) => s.kind === "in_app");
       if (!stage) throw planMismatch(`Plan ${row.id} has no in_app stage`, { planId: row.id });
@@ -585,14 +649,23 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!item) throw planMismatch(`Plan ${row.id} has no item ${parsed.itemKey}`, { planId: row.id, itemKey: parsed.itemKey });
       await requireRunSession(row, parsed.sessionId);
       const jobs = await deps.store.listJobs(row.id);
-      const used = new Set(jobs.filter((j) => j.itemKey === item.itemKey && j.seed !== null).map((j) => j.seed as number));
-      const seed = parsed.seed ?? item.seeds.find((s) => !used.has(s)) ?? null;
+      // Review B2: the same seed rule as run_stage, and an until_accepted item's attempt cap holds here too.
+      if (item.mode === "until_accepted" && item.maxAttempts !== null && jobs.filter((j) => j.itemKey === item.itemKey).length >= item.maxAttempts) {
+        throw planMismatch(`Item ${item.itemKey} reached its ${item.maxAttempts} attempts`, { itemKey: item.itemKey, maxAttempts: item.maxAttempts });
+      }
+      const used = usedSeedsOf(jobs, item.itemKey);
+      const seed = parsed.seed ?? (item.seeds.length > 0 ? (item.seeds.find((s) => !used.has(s)) ?? null) : null);
+      if (seed === null && item.seeds.length > 0) throw planMismatch(`Item ${item.itemKey} has no unused seed left; give a seed or add seeds`, { itemKey: item.itemKey });
       const planned: PlannedJob[] = [{ item, seed, params: withSeed(item, seed) }];
       await checkJobs(planned);
       const result = await createJobs(row, parsed.sessionId, stage.stageId, planned);
       await record(row.id, "item_rerun", "factory", { sessionId: parsed.sessionId, itemKey: item.itemKey, seed, ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
       return result;
-    },
+    }
+  }
+
+  // The rest of the public surface (added to the object returned above).
+  const more = {
 
     /** AC-GP-12: the next wave -- the group's items under `<newGroupId>/<rest of the key>`, params patched, no results copied. */
     async cloneGroup(input: unknown, actor: PlanActor = "factory"): Promise<PlanView> {
@@ -699,6 +772,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (row.channelId !== input.channelId) throw planMismatch(`Plan ${row.id} is for another channel`, { planId: row.id });
     },
   };
+  return { ...api, ...more };
 }
 
 export type GenerationPlanServices = ReturnType<typeof createGenerationPlanServices>;

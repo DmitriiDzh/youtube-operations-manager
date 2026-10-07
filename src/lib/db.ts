@@ -8387,7 +8387,9 @@ export async function insertGenerationPlanEvent(row: Omit<typeof generationPlanE
 }
 
 export async function listGenerationPlanEvents(planId: string, database: AppDb = db): Promise<StoredGenerationPlanEvent[]> {
-  return database.select().from(generationPlanEvents).where(eq(generationPlanEvents.planId, planId)).orderBy(asc(generationPlanEvents.at), asc(generationPlanEvents.id)).limit(5000);
+  // The newest 5000 (a long plan's oldest events drop off, never its new ones), returned oldest first.
+  const rows = await database.select().from(generationPlanEvents).where(eq(generationPlanEvents.planId, planId)).orderBy(desc(generationPlanEvents.at), desc(generationPlanEvents.id)).limit(5000);
+  return rows.reverse();
 }
 
 /** Every job of a plan (no limit beyond a safety cap: a plan has at most a few thousand attempts). */

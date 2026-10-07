@@ -131,11 +131,12 @@ export function PlansPanel({ active }: { active: boolean }) {
   }, []);
 
   useEffect(() => {
-    if (!active) return;
+    // Not while the review screen is open (it loads its own queue).
+    if (!active || reviewing) return;
     load();
     const timer = setInterval(load, POLL_MS);
     return () => clearInterval(timer);
-  }, [active, load]);
+  }, [active, load, reviewing]);
 
   const open = (planId: string | null) => {
     selectedRef.current = planId;
@@ -427,14 +428,28 @@ function GroupRow({
             <button type="button" onClick={() => void save()} className={primaryButton}>
               Save note
             </button>
-            <button type="button" onClick={() => setEditing(false)} className={secondaryButton}>
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setNote(group.note ?? "");
+              }}
+              className={secondaryButton}
+            >
               Cancel
             </button>
           </div>
         </div>
       ) : (
         editable && (
-          <button type="button" onClick={() => setEditing(true)} className="text-indigo-300 hover:underline">
+          <button
+            type="button"
+            onClick={() => {
+              setNote(group.note ?? "");
+              setEditing(true);
+            }}
+            className="text-indigo-300 hover:underline"
+          >
             {group.note ? "Edit note" : "Add a note on this wave"}
           </button>
         )

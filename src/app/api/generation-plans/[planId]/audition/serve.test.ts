@@ -43,7 +43,7 @@ function handler(ws: string, targets: Record<string, { kind: "sent"; relativePat
 }
 
 const get = (h: ReturnType<typeof handler>, query: string, headers: Record<string, string> = {}, planId = "P1") =>
-  h(new Request(`http://127.0.0.1:3000/api/generation-plans/${planId}/audition?${query}`, { headers }), { params: Promise.resolve({ planId }) });
+  h(new Request(`http://127.0.0.1:3000/api/generation-plans/${planId}/audition?${query}`, { headers: { host: "127.0.0.1:3000", ...headers } }), { params: Promise.resolve({ planId }) });
 
 test("AC-GP-14: the plan attempt's file is served with its type; Range bytes=0-99 is a 206 with exactly 100 bytes", async () => {
   const w = await workspaceWithFiles();
@@ -87,6 +87,8 @@ test("AC-GP-14: another plan's attempt, a path in the query, a symlink out, a di
     assert.equal(missing.status, 404);
     assert.match((await missing.json()).message, /not available on this device/);
     assert.equal((await get(handler(w.ws, {}, { session: false }), "itemKey=C1/F1&attemptRef=job:ok")).status, 401);
+    assert.equal((await get(h, "itemKey=C1/F1&attemptRef=job:ok", { host: "203.0.113.5:3000" })).status, 403, "not loopback");
+    assert.equal((await get(h, "itemKey=C1/F1&attemptRef=job:ok", { origin: "https://evil.example" })).status, 403, "a foreign page's origin");
   } finally {
     await w.cleanup();
   }
@@ -98,5 +100,6 @@ test("parseRange follows RFC 9110 single ranges", () => {
   assert.deepEqual(parseRange("bytes=990-", 1000), { start: 990, end: 999 });
   assert.deepEqual(parseRange("bytes=-10", 1000), { start: 990, end: 999 });
   assert.deepEqual(parseRange("bytes=0-5000", 1000), { start: 0, end: 999 }, "the end is clamped");
-  for (const bad of ["bytes=1000-", "bytes=5-2", "bytes=-0", "bytes=-", "items=0-1", "bytes=0-1,5-6"]) assert.equal(parseRange(bad, 1000), "invalid", bad);
+  for (const bad of ["bytes=1000-", "bytes=5-2", "bytes=-0", "bytes=-", "items=0-1"]) assert.equal(parseRange(bad, 1000), "invalid", bad);
+  assert.equal(parseRange("bytes=0-1,5-6", 1000), null, "multi-range: the whole file (RFC 9110 lets a server ignore it)");
 });

@@ -91,8 +91,17 @@ export async function resolveFromYtmJobFile(
     if (!info) throw args.unavailable(`${path.relative(realWorkspace, folder)} does not exist`);
     if (info.isSymbolicLink || !info.isDirectory) throw args.unavailable(`${path.relative(realWorkspace, folder)} is not a plain folder inside the workspace`);
   }
+  // The subfolder and the job folder must be plain folders too (review B4): a symlinked one could point anywhere in the workspace.
+  for (const folder of [path.join(from, args.subdir), path.join(from, args.subdir, args.jobId)]) {
+    const info = await args.fs.lstat(folder);
+    if (!info) throw args.unavailable("the job's output folder is not in the workspace on this device");
+    if (info.isSymbolicLink || !info.isDirectory) throw args.unavailable(`${path.relative(realWorkspace, folder)} is not a plain folder inside the workspace`);
+  }
+  const realFrom = await args.fs.realpath(from).catch(() => null);
   const realJobDir = await args.fs.realpath(path.join(from, args.subdir, args.jobId)).catch(() => null);
-  if (!realJobDir || !args.isPathInsideOrEqual(realWorkspace, realJobDir)) throw args.unavailable("the job's output folder is not in the workspace on this device");
+  if (!realFrom || !realJobDir || !args.isPathInsideOrEqual(realWorkspace, realFrom) || realJobDir === realFrom || !args.isPathInsideOrEqual(realFrom, realJobDir)) {
+    throw args.unavailable("the job's output folder is not in the workspace on this device");
+  }
   const realFile = await args.fs.realpath(args.filePath).catch(() => null);
   if (!realFile) throw args.unavailable("the file is not on this device");
   if (realFile === realJobDir || !args.isPathInsideOrEqual(realJobDir, realFile)) throw args.unavailable("the file is outside the job's output folder");

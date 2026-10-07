@@ -171,10 +171,13 @@ export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: strin
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable)) return;
+      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const action = reviewKeyAction(event.key);
       if (!action) return;
+      // A focused button or switch keeps Space/Enter (review B7); a held key never decides the next attempt too.
+      if (action === "play" && target?.closest("button, [role=switch], a")) return;
+      if (event.repeat && (action === "accept" || action === "reject" || action === "next" || action === "previous")) return;
       event.preventDefault();
       if (typeof action === "object") setDraft((d) => ({ ...d, rating: action.rating }));
       else if (action === "play") player.current?.togglePlay();

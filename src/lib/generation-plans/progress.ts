@@ -189,8 +189,8 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
 }
 
 function sessionUsd(s: PlanSessionRow, now: Date): { usd: number; final: boolean; seconds: number } {
-  const final = SESSION_FINAL.has(s.status) && s.usdCharged !== null;
-  if (final) return { usd: s.usdCharged as number, final: true, seconds: s.secondsUsed ?? 0 };
+  // A finished session counts what it was charged (never a cost growing with the clock, even without a stop time).
+  if (SESSION_FINAL.has(s.status)) return { usd: s.usdCharged ?? 0, final: true, seconds: s.secondsUsed ?? 0 };
   if (!s.startedAt) return { usd: s.usdCharged ?? 0, final: SESSION_FINAL.has(s.status), seconds: s.secondsUsed ?? 0 };
   const end = s.stoppedAt ?? now;
   const seconds = Math.max(0, (end.getTime() - s.startedAt.getTime()) / 1000);
@@ -275,7 +275,17 @@ export function planTodo(plan: GenerationPlan, jobs: PlanJobRow[], results: Plan
  * The plan's events since a moment (FO-MSG-0008 §7): job created/done/failed, session started/ready/stopped (with its stop
  * reason), each result and verdict, and the plan's own recorded events. Budget warnings are a current state, in progress.
  */
-export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 200): PlanEvent[] {
+/** The start of the second `at` falls in (the stored times' resolution). */
+export function secondFloor(at: Date): Date {
+  return new Date(Math.floor(at.getTime() / 1000) * 1000);
+}
+
+/**
+ * The first `limit` events at or after `since`, oldest first, and the cursor for the next call: the whole second of the last
+ * event returned when more remain (so none is skipped -- events of that second may repeat), else null (the caller uses
+ * the current second). Stored times have one-second resolution, hence the inclusive bound.
+ */
+export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 500): { events: PlanEvent[]; more: boolean; cursor: string | null } {
   const events: PlanEvent[] = [];
   for (const j of jobs) {
     const base = { jobId: j.id, sessionId: j.sessionId, itemKey: j.itemKey, seed: j.seed };
@@ -309,9 +319,12 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
     });
   }
   events.push(...recorded);
-  const sinceMs = since?.getTime() ?? -Infinity;
-  return events
-    .filter((e) => Date.parse(e.at) > sinceMs)
-    .sort((a, b) => a.at.localeCompare(b.at))
-    .slice(-limit);
+  const sinceMs = since ? secondFloor(since).getTime() : -Infinity;
+  const after = events.filter((e) => Date.parse(e.at) >= sinceMs).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  if (after.length <= limit) return { events: after, more: false, cursor: null };
+  const page = after.slice(0, limit);
+  const lastSecond = secondFloor(new Date(page[page.length - 1].at));
+  // A page that is all one second would never advance: then the next call starts at the following second.
+  const stuck = since !== null && lastSecond.getTime() <= secondFloor(since).getTime();
+  return { events: page, more: true, cursor: (stuck ? new Date(lastSecond.getTime() + 1000) : lastSecond).toISOString() };
 }

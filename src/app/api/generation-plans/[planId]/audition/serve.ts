@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
+import { isLoopbackRequest } from "@/lib/loopback-guard";
 import { planErrorResponse } from "../../shared";
 
 // BL-143 (ADR 0029 decision 5, AC-GP-14): the one route that sends a local media file to the browser -- the file of ONE
@@ -29,9 +30,13 @@ export function contentTypeFor(filePath: string): string | null {
   return AUDITION_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? null;
 }
 
-/** One `bytes=` range (RFC 9110 §14.1.2): `a-b`, `a-` or `-n`. `null` = no Range header; `"invalid"` = not satisfiable. */
+/**
+ * One `bytes=` range (RFC 9110 §14.1.2): `a-b`, `a-` or `-n`. `null` = serve the whole file (no Range header, or a
+ * multi-range request, which RFC 9110 lets a server ignore); `"invalid"` = not satisfiable.
+ */
 export function parseRange(header: string | null, size: number): { start: number; end: number } | "invalid" | null {
   if (!header) return null;
+  if (header.includes(",")) return null;
   const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
   if (!match || (match[1] === "" && match[2] === "") || size === 0) return "invalid";
   if (match[1] === "") {
@@ -57,6 +62,8 @@ export type AuditionDeps = {
 
 export function createAuditionGetHandler(deps: AuditionDeps) {
   return async function GET(request: Request, context: { params: Promise<{ planId: string }> }): Promise<Response> {
+    // A local file leaves this route only for a browser on this computer (ADR 0029 §5): loopback Host and Origin.
+    if (!isLoopbackRequest(request.headers)) return NextResponse.json({ error: "forbidden", message: "Local files are served only to this computer" }, { status: 403 });
     const session = await deps.getSession();
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     try {

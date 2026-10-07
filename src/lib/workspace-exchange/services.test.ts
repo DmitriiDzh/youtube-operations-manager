@@ -144,6 +144,10 @@ test("BL-143 resolveFromYtmJobFile: only a regular file inside From YTM/<subdir>
     await assert.rejects(resolve("job-1", jobDir), /outside the job's output folder/, "the folder itself");
     await assert.rejects(resolve("../job-2", path.join(otherDir, "other.mp3")), /not a job folder/);
     await assert.rejects(resolve("job-9", path.join(jobDir, "track.mp3")), /not in the workspace/);
+    // A symlinked job folder pointing at the workspace root is refused (it would expose every workspace file).
+    await symlink(workspace, path.join(workspace, "99 Data Exchange", "From YTM", "media", "job-3"));
+    await writeFile(path.join(workspace, "private.mp3"), "p");
+    await assert.rejects(resolve("job-3", path.join(workspace, "private.mp3")), /not a plain folder/);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });

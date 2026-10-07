@@ -564,3 +564,43 @@ test("AC-GP-14 (service): the audition is the latest reported auditionFile, else
   await assert.rejects(m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C2/F1", attemptRef: "job:job-1" }), refused("plan_mismatch"), "job-1 is not C2/F1's attempt");
   await assert.rejects(m.services.resolveAudition({ planId: "other-plan", itemKey: "C1/F1", attemptRef: "job:job-1" }), refused("plan_not_found"));
 });
+
+// -- independent review fixes ---------------------------------------------------------------------------------------------
+
+test("review A2: two concurrent run_stage calls (or a retry) create the missing jobs once, not twice", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  const [a, b] = await Promise.all([m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" })]);
+  assert.equal(a.created.length + b.created.length, 4, "C1/F1: 2 seeds, C2/F1: target 2");
+  assert.equal(m.createdJobs.length, 4);
+});
+
+test("review A2: a run that would create more than 200 jobs is refused whole", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan({ ...basePlan(), items: [{ itemKey: "C1/F1", groupId: "C1", templateId: "tpl-noseed", targetCount: 201, params: { prompt: "x" } }] });
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), refused("plan_mismatch"));
+  assert.equal(m.createdJobs.length, 0);
+});
+
+test("review A3: a relayed verdict cannot replace the owner's own verdict on the same attempt", async () => {
+  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "done" as const, error: null, createdAt: new Date("2026-10-07T09:00:00Z"), submittedAt: new Date("2026-10-07T09:00:00Z"), finishedAt: new Date("2026-10-07T09:05:00Z"), planId: "R-0001-S1-music", channelId: CHANNEL };
+  const s = setup({ jobs: [job] });
+  await s.services.createPlan(basePlan());
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" });
+  await assert.rejects(s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "owner_review", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] }), refused("plan_mismatch"));
+  assert.equal([...s.results.values()][0].result, "rejected");
+  // A relayed verdict on an attempt the owner has not judged is fine.
+  await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "owner_review", itemKey: "C1/F1", attemptRef: "job:j2", result: "accepted" }] });
+});
+
+test("review B1/B2: an item with seeds is never run without one; rerun keeps maxAttempts and the seed rule", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan({ ...basePlan(), items: [{ itemKey: "C2/F1", groupId: "C2", templateId: "tpl-ace", targetCount: 3, mode: "until_accepted", maxAttempts: 4, params: { prompt: "x" }, seeds: [1, 2] }] });
+  const run = await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" });
+  assert.deepEqual(run.created.map((c) => c.seed), [1, 2]);
+  assert.deepEqual(run.skipped, [{ itemKey: "C2/F1", missing: 1, reason: "no unused seed left; add seeds with factory_plan_update" }]);
+  await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1" }), refused("plan_mismatch"), "no unused seed");
+  await m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1", seed: 3 });
+  await m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1", seed: 4 });
+  await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1", seed: 5 }), refused("plan_mismatch"), "4 attempts = maxAttempts");
+});
