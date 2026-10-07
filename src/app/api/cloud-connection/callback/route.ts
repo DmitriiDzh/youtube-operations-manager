@@ -64,7 +64,8 @@ export async function GET(request: Request) {
     .find((entry) => entry.startsWith(`${CLOUD_CONNECTION_STATE_COOKIE}=`))
     ?.slice(CLOUD_CONNECTION_STATE_COOKIE.length + 1);
 
-  const redirectTo = new URL("/dashboard", url.origin);
+  // BL-149: straight to the Settings sub-tab that shows the result.
+  const redirectTo = new URL("/settings/api", url.origin);
 
   function fail(reason: CloudConnectionFailureReason) {
     redirectTo.searchParams.set("cloudConnection", "error");

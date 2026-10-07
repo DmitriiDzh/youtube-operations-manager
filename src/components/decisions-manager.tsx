@@ -11,7 +11,7 @@ import {
   EXPERIMENT_STATUS_LABELS as STATUS_LABELS,
   type ExperimentStatus,
 } from "@/lib/decision-engine/status";
-import type { ChannelInfo } from "@/app/dashboard/page";
+import type { ChannelInfo } from "@/components/app-channel";
 
 type Hypothesis = {
   hypothesisId: string;

@@ -24,8 +24,11 @@ test("AC-P14-26 / AC-GP-15: Production's tabs are Sessions, Jobs, Plans, Models,
 });
 
 test("AC-P14-26: the sidebar has Production right after Content; Settings has a RunPod sub-tab rendering only the connection", async () => {
-  const page = await readFile(path.join(process.cwd(), "src", "app", "dashboard", "page.tsx"), "utf8");
-  const navValues = [...page.slice(page.indexOf("const NAV_ITEMS"), page.indexOf("] as const satisfies")).matchAll(/value: "([a-z-]+)"/g)].map((m) => m[1]);
+  // BL-149: the sidebar lives in the (app) layout and Settings on its own page (the single dashboard page is gone; the
+  // requirement this test checks is unchanged).
+  const layout = await readFile(path.join(process.cwd(), "src", "app", "(app)", "layout.tsx"), "utf8");
+  const page = await readFile(path.join(process.cwd(), "src", "app", "(app)", "settings", "page.tsx"), "utf8");
+  const navValues = [...layout.slice(layout.indexOf("const NAV_ITEMS"), layout.indexOf("] as const satisfies")).matchAll(/value: "([a-z-]+)"/g)].map((m) => m[1]);
   assert.equal(navValues[navValues.indexOf("content") + 1], "production");
   const subTabs = page.slice(page.indexOf("const SETTINGS_SUB_TABS"), page.indexOf("type SettingsSubTab"));
   assert.match(subTabs, /\{ value: "runpod", label: "RunPod" \}/);
