@@ -115,6 +115,12 @@ export type PlanRunResult = {
 };
 
 const CAS_RETRIES = 5;
+/**
+ * Re-review 1: some events are stamped before their row is written (a job's `finishedAt` is taken before its manifest is
+ * written to the workspace drive). A cursor that is "now" could pass such an event, so a complete page's cursor looks back
+ * this far; the repeats are part of the contract (drop what you already have).
+ */
+export const EVENT_CURSOR_LOOKBACK_MS = 60_000;
 /** Independent review (A2): at most this many jobs per run_stage call -- larger runs go per group or per item. */
 export const MAX_JOBS_PER_RUN = 200;
 
@@ -512,7 +518,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const plan = toPublicPlan(row);
       const at = now();
       const page = planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null);
-      return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: page.events, more: page.more, cursor: page.cursor ?? secondFloor(at).toISOString() };
+      return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: page.events, more: page.more, cursor: page.cursor ?? new Date(secondFloor(at).getTime() - EVENT_CURSOR_LOOKBACK_MS).toISOString() };
     },
 
     async listPlans(input: unknown = {}): Promise<PlanView[]> {
@@ -532,6 +538,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     /** AC-GP-03/04: all rows checked before any is written; one row per (plan, stage, item, attempt), a repeat replaces it. */
     async report(input: unknown, actor: PlanActor = "factory"): Promise<{ planId: string; stored: number }> {
       const parsed = parseWithSchema(reportInputSchema, input, "plan report");
+      // Same lock as the owner's verdict (re-review 2): the "no owner verdict yet" check and the write are one step.
+      return serializedPerPlan(parsed.planId, async () => {
       const row = await requireActive(parsed.planId);
       checkRowsFit(row, parsed.rows);
       // Review A3 (approval integrity): a relayed verdict never replaces the owner's own verdict on the same attempt.
@@ -544,11 +552,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const at = now().toISOString();
       await deps.store.upsertResults(row.id, parsed.rows.map((r) => resultRow(r, actor, at)));
       return { planId: row.id, stored: parsed.rows.length };
+      });
     },
 
     /** AC-GP-13: the owner's verdict from the Web UI, at the plan's owner-review stage, for an attempt the plan has. */
     async recordOwnerVerdict(input: unknown): Promise<PlanResultRow> {
       const parsed = parseWithSchema(ownerVerdictInputSchema, input, "owner verdict");
+      return serializedPerPlan(parsed.planId, async () => {
       const row = await requireActive(parsed.planId);
       const stage = row.definition.stages.find((s) => s.kind === "owner_review");
       if (!stage) throw planMismatch(`Plan ${row.id} has no owner review stage`, { planId: row.id });
@@ -559,6 +569,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const result = resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString());
       await deps.store.upsertResults(row.id, [result]);
       return result;
+      });
     },
 
     /** The owner's (or factory's) note on a whole wave (FO-MSG-0008 §4). */
@@ -650,7 +661,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       await requireRunSession(row, parsed.sessionId);
       const jobs = await deps.store.listJobs(row.id);
       // Review B2: the same seed rule as run_stage, and an until_accepted item's attempt cap holds here too.
-      if (item.mode === "until_accepted" && item.maxAttempts !== null && jobs.filter((j) => j.itemKey === item.itemKey).length >= item.maxAttempts) {
+      if (item.mode === "until_accepted" && item.maxAttempts !== null && inAppAttempts(row.definition, jobs, await deps.store.listResults(row.id)).filter((a) => a.itemKey === item.itemKey).length >= item.maxAttempts) {
         throw planMismatch(`Item ${item.itemKey} reached its ${item.maxAttempts} attempts`, { itemKey: item.itemKey, maxAttempts: item.maxAttempts });
       }
       const used = usedSeedsOf(jobs, item.itemKey);

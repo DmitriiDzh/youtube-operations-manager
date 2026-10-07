@@ -340,8 +340,10 @@ test("AC-GP-13: the owner's verdict is stored with reportedBy owner, rating, rea
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", rating: 6, reasons: ["dropout / pause"], markers: [{ start: 111, end: 112.2 }], note: "pause 1:51" });
   const row = [...s.results.values()][0];
   assert.deepEqual([row.stageId, row.reportedBy, row.result, row.rating, row.reasons, row.markers, row.note], ["owner_review", "owner", "rejected", 6, ["dropout / pause"], [{ start: 111, end: 112.2, note: null }], "pause 1:51"]);
+  // The cursor looks back a minute (events may repeat, re-review 1); the verdict is among the events after it.
   const after = await s.services.getPlan({ planId: "R-0001-S1-music", since: before });
-  assert.deepEqual(after.events.map((e) => [e.kind, e.actor, e.details.rating]), [["owner_verdict", "owner", 6]]);
+  assert.deepEqual(after.events.filter((e) => e.kind === "owner_verdict").map((e) => [e.kind, e.actor, e.details.rating]), [["owner_verdict", "owner", 6]]);
+  assert.equal(Date.parse(before) <= Date.parse(after.events.at(-1)!.at), true);
   await assert.rejects(s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:nope", result: "accepted" }), refused("plan_mismatch"), "an attempt the plan does not have");
 });
 
@@ -603,4 +605,13 @@ test("review B1/B2: an item with seeds is never run without one; rerun keeps max
   await m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1", seed: 3 });
   await m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1", seed: 4 });
   await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C2/F1", seed: 5 }), refused("plan_mismatch"), "4 attempts = maxAttempts");
+});
+
+test("re-review: the cursor of a complete page looks back 60 s, so an event stamped just before it was written is not passed", async () => {
+  const s = setup();
+  await s.services.createPlan(basePlan());
+  const page = await s.services.getPlan({ planId: "R-0001-S1-music" });
+  assert.equal(page.more, false);
+  const asked = Date.parse(page.events.at(-1)!.at);
+  assert.ok(Date.parse(page.cursor) <= asked - 50_000, "the cursor is about a minute before the newest event");
 });

@@ -881,7 +881,7 @@ A second agent role, separate from the channel agents. Technical contract only (
     - `factory_plan_clone_group` `{ planId, groupId, newGroupId, title?, paramsPatch?, seeds? }`.
 
     Reads:
-    - `factory_plan_get` `{ planId, since? }` → `{ plan, progress, events, more, cursor }`. Events are returned oldest first, at or after `since`. Times have one-second resolution, so an event in the cursor's second may come again. `more` means call again with `cursor`;
+    - `factory_plan_get` `{ planId, since? }` → `{ plan, progress, events, more, cursor }`. Events are returned oldest first, at or after `since`. Times have one-second resolution, and a complete page's cursor looks back 60 s (some events are stamped just before they are written), so events repeat across calls; dedupe them. `more` means call again with `cursor`. More than 500 events in one second: the excess of that second is skipped;
     - `factory_plan_list` `{ status?, channelId? }` → `{ plans }`;
     - `factory_plan_todo` `{ planId }` → `{ short, waitingReview, rerun }`.
 

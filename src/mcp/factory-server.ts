@@ -624,7 +624,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planRead(
     "factory_plan_get",
-    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples } }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since (times have one-second resolution, so an event of the cursor's second can come again -- drop what you already have); more = true means call again with the cursor. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note), group_note, rerun_requested, plan_*. In-app counts are read from the jobs themselves. Read-only.",
+    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples } }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note), group_note, rerun_requested, plan_*. In-app counts are read from the jobs themselves. Read-only.",
     z.object({ planId: z.string(), since: z.string().optional() }).strict(),
     (input) => deps.plans.get(input)
   );
@@ -654,7 +654,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_rerun",
-    "One more attempt of one item in one of YOUR running sessions: { planId, sessionId, itemKey, seed? (default: the item's next unused seed; an item that lists seeds and has none left is refused) } -> { created, skipped, stoppedAt }. Same checks as factory_plan_run_stage; an until_accepted item at maxAttempts is refused.",
+    "One more attempt of one item in one of YOUR running sessions: { planId, sessionId, itemKey, seed? (a seed you give is used as given, even one used before; default: the item's next unused seed; an item that lists seeds and has none left is refused) } -> { created, skipped, stoppedAt }. Same checks as factory_plan_run_stage; an until_accepted item at maxAttempts is refused.",
     z.object({ planId: z.string(), sessionId: z.string(), itemKey: z.string(), seed: z.number().int().optional() }).strict(),
     (input) => deps.plans.rerun(input)
   );
