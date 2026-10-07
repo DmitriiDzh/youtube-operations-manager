@@ -214,8 +214,10 @@ async function startServerSession() {
     try {
       // BL-138: this device's sessions for the other devices (sync-gateway `media-sessions`, carried by the sync scheduler).
       await media.publishSessionsShare();
-    } catch {
-      // no device id / sync folder yet, or RunPod unreachable: the next tick tries again
+    } catch (error) {
+      // no device id / sync folder yet, or RunPod unreachable: the next tick tries again. A report that fails its own schema
+      // would freeze what the other devices see, silently -- that one is logged (BL-148 independent review).
+      if (error instanceof Error && error.name === "ZodError") console.warn(`[media-sessions] the sessions report was not published: ${error.message}`);
     }
     try {
       // BL-143 phase 2: this device's generation plans for the other devices (sync-gateway `generation-plans`).

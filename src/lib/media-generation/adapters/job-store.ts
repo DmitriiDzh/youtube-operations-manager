@@ -12,6 +12,8 @@ import {
   listMediaJobs,
   listMediaWorkflowTemplates,
   listNonTerminalMediaJobs,
+  countMediaJobsForSessionByStatus,
+  listOpenMediaJobsForSession,
   markMediaExchangeFileRemoteDeleted,
   transitionMediaJob,
   updateMediaWorkflowTemplate,
@@ -74,6 +76,8 @@ export function createMediaJobStore(): MediaJobStore {
       get: (id) => getMediaJobById(id).then((r) => (r ? jobFromDb(r) : null)),
       list: (filter) => listMediaJobs(filter).then((rows) => rows.map(jobFromDb)),
       listNonTerminal: () => listNonTerminalMediaJobs().then((rows) => rows.map(jobFromDb)),
+      countBySession: (sessionId) => countMediaJobsForSessionByStatus(sessionId),
+      listOpenBySession: (sessionId, limit) => listOpenMediaJobsForSession(sessionId, limit).then((rows) => rows.map(jobFromDb)),
       transition: (id, from, set) => transitionMediaJob(id, from, set).then((r) => (r ? jobFromDb(r) : null)),
     },
     ledger: {

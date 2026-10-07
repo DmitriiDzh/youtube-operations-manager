@@ -37,9 +37,8 @@ export const sharedSessionJobsSchema = z
   .object({
     counts: z
       .object({ queued: z.number().int().min(0), running: z.number().int().min(0), done: z.number().int().min(0), failed: z.number().int().min(0), cancelled: z.number().int().min(0) })
+      // All of the session's jobs, counted by the database (no cap).
       .strict(),
-    /** The session has more jobs than were counted (only the newest are). */
-    capped: z.boolean(),
     current: z
       .array(
         z

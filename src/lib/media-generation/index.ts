@@ -15,7 +15,7 @@ import { createFsKeyFile } from "./adapters/key-file-fs";
 import { createMediaSessionStore } from "./adapters/session-store";
 import { createTemplateRegistryReader } from "./adapters/template-registry-fs";
 import { createMediaControlEventSink, createMediaGenerationStore, createModelPullStore, createVolumeLockStore } from "./adapters/store";
-import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, type MediaCapacityAttempt, type MediaControlEventView, type MediaJob, type MediaModelUsage } from "./contracts";
+import { DomainError, MEDIA_SESSION_TERMINAL_STATUSES, type MediaCapacityAttempt, type MediaControlEventView, type MediaModelUsage } from "./contracts";
 import { createJobProgressRegistry } from "./job-progress";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
@@ -24,9 +24,9 @@ import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
-import { accountWideUsage, buildSessionsReport, deriveOtherDevices, SHARED_JOBS_COUNTED, stopPeerSession, type OtherDevicesView } from "./cross-device";
+import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView, type SessionJobsInput } from "./cross-device";
 import { podNameFor } from "./sessions";
-import { createMediaSessionsShareCoreForProduction } from "@/lib/sync-gateway";
+import { createMediaSessionsShareCoreForProduction, SHARED_CURRENT_JOBS_MAX } from "@/lib/sync-gateway";
 
 type JobScheduling = "background" | "detached";
 
@@ -299,10 +299,11 @@ function buildCore(jobScheduling: JobScheduling) {
   const publishSessionsShare = async (): Promise<void> => {
     const [identity, list, limits, accountId] = await Promise.all([deviceIdentity(), sessions.listSessions(200), sessions.getLimits(), runpodAccountId()]);
     // BL-148: the open sessions' jobs (with BL-144 live progress), so the other devices can follow the work.
-    const jobsBySession: Record<string, MediaJob[]> = {};
+    const jobsBySession: Record<string, SessionJobsInput> = {};
     for (const s of list) {
       if ((MEDIA_SESSION_TERMINAL_STATUSES as readonly string[]).includes(s.status)) continue;
-      jobsBySession[s.sessionId] = await jobs.listJobs({ sessionId: s.sessionId, limit: SHARED_JOBS_COUNTED });
+      const share = await jobs.sessionJobsForShare(s.sessionId, SHARED_CURRENT_JOBS_MAX);
+      if (share) jobsBySession[s.sessionId] = share;
     }
     await createMediaSessionsShareCoreForProduction().publishLocalReport(
       buildSessionsReport({ ...identity, runpodAccountId: accountId, now: now(), sessions: list, spentTodayUsd: limits.spentTodayUsd, jobsBySession })

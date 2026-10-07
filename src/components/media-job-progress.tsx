@@ -76,7 +76,7 @@ export function fromSharedProgress(p: SharedJobProgress): JobLiveProgress {
 }
 
 /** BL-148: "4 done · 1 running · 3 queued · 1 failed" for another device's session (zeros left out). Exported for its test. */
-export function describeSessionJobCounts(jobs: Pick<SharedSessionJobs, "counts" | "capped">): string {
+export function describeSessionJobCounts(jobs: Pick<SharedSessionJobs, "counts">): string {
   const { counts } = jobs;
   const parts = [
     counts.done ? `${counts.done} done` : null,
@@ -86,5 +86,5 @@ export function describeSessionJobCounts(jobs: Pick<SharedSessionJobs, "counts" 
     counts.cancelled ? `${counts.cancelled} cancelled` : null,
   ].filter(Boolean);
   if (parts.length === 0) return "no jobs yet";
-  return `${parts.join(" · ")}${jobs.capped ? " (of the latest 200 jobs)" : ""}`;
+  return parts.join(" · ");
 }

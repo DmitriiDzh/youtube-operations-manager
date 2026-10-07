@@ -11,8 +11,8 @@
 ## Design
 
 - **The report** (sync-gateway `media-sessions`) goes to **version 2**. Each open session may carry `jobs`:
-  - `counts` of its jobs by status: queued, running (`submitted`, `generating`, `transferring`), done, failed, cancelled;
-  - `capped: true` when 200 jobs were read (the most a job listing returns), so there may be more;
+  - `counts` of all its jobs by status, counted by the database: queued, running (`submitted`, `generating`, `transferring`), done,
+    failed, cancelled;
   - `current` (≤ 5): the non-terminal jobs, running first and then oldest first. Each has `jobId`, `templateId`, `status`,
     `createdBy`, `submittedAt`, the plan item key, and `progress`.
 - **`progress`** is the BL-144 live progress without `detail`, which can carry ComfyUI's error text. What is shared:
@@ -21,7 +21,8 @@
   - the step;
   - `startedAt` and `updatedAt`.
 
-  `progress` is null when this device is not watching the job.
+  `progress` is null when this device is not watching the job. Its numbers are clamped to the report's bounds, and a session
+  whose job summary still fails the schema is reported without `jobs`, so one odd value never hides every session.
 - **Compatibility:**
   - A device on this build reads version 1 and version 2 reports. A version 1 report simply has no `jobs`.
   - A device on an older build refuses a version 2 report with the existing "version 2 is newer… update the app" reason in the
@@ -39,4 +40,6 @@
 - AC-XJ-03: version 2 reports with jobs are accepted. A version 1 report (no `jobs`) from an older peer is still accepted. Version 3
   is refused as newer.
 - AC-XJ-04: `deriveOtherDevices` passes each session's `jobs` through unchanged.
-- AC-XJ-05: 200 or more jobs in a session → the counts cover the newest 200 and `capped` is true; fewer → `capped` is false.
+- AC-XJ-05: out-of-range progress numbers (negative, huge, NaN, an over-long node type) are clamped; the report stays valid.
+- AC-XJ-06 (independent review): a plan run creates all its jobs at once, so the running job is often the oldest. Counts cover
+  every job of the session, and the running job is listed first even behind 300 newer queued jobs (real database test).

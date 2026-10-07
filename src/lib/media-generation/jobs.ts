@@ -118,6 +118,10 @@ export type MediaJobStore = {
     get(id: string): Promise<StoredJobRow | null>;
     list(filter: { sessionId?: string; channelId?: string; limit?: number }): Promise<StoredJobRow[]>;
     listNonTerminal(): Promise<StoredJobRow[]>;
+    /** BL-148: job count per status of one session (absent = this store cannot say). */
+    countBySession?(sessionId: string): Promise<Record<string, number>>;
+    /** BL-148: one session's unfinished jobs, running first, then the queue oldest first. */
+    listOpenBySession?(sessionId: string, limit: number): Promise<StoredJobRow[]>;
     transition(id: string, from: readonly MediaJobStatus[], set: Partial<Omit<StoredJobRow, "id" | "status">> & { status: MediaJobStatus }): Promise<StoredJobRow | null>;
   };
   ledger: {
@@ -1619,6 +1623,22 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     async getJob(input: unknown): Promise<MediaJob> {
       const { jobId } = parseWithSchema(jobIdInputSchema, input, "job id");
       return withInputs(toPublicJob(await requireJob(jobId)));
+    },
+
+    /**
+     * BL-148: what another device is shown of a session's work -- the job count per status (no cap) and the first `limit`
+     * unfinished jobs with their live progress. Cheap: two queries, no input ledger. Null when the store cannot say.
+     */
+    async sessionJobsForShare(sessionId: string, limit: number): Promise<{ counts: Record<string, number>; open: MediaJob[] } | null> {
+      if (!deps.store.jobs.countBySession || !deps.store.jobs.listOpenBySession) return null;
+      const [counts, rows] = await Promise.all([deps.store.jobs.countBySession(sessionId), deps.store.jobs.listOpenBySession(sessionId, limit)]);
+      return {
+        counts,
+        open: rows.map((row) => {
+          const progress = deps.progress?.get(row.id) ?? null;
+          return { ...toPublicJob(row), ...(progress ? { progress } : {}) };
+        }),
+      };
     },
 
     async listJobs(input: unknown = {}): Promise<MediaJob[]> {

@@ -126,7 +126,6 @@ test("a version 2 report with jobs and a version 1 report without are both accep
   const v2 = report("new", "2026-10-06T10:05:00.000Z", { version: 2 });
   v2.sessions[0].jobs = {
     counts: { queued: 3, running: 1, done: 4, failed: 0, cancelled: 0 },
-    capped: false,
     current: [
       {
         jobId: "j1",

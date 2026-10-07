@@ -37,7 +37,7 @@ Amends ADR 0023 ("sessions are device-local").
 ## Amendment (2026-10-07, BL-148): job progress in the report
 
 Owner, Telegram 2026-10-07, msg 1976. The report goes to **version 2**. Each open session may carry `jobs`:
-- counts by status over the newest 200 jobs;
+- counts by status over all of the session's jobs;
 - up to 5 unfinished jobs with BL-144 live progress, without `detail`, so no ComfyUI error text is shared.
 
 "Other devices" shows them about a minute behind. A device on this build still reads version 1 reports. An older build refuses
