@@ -1041,7 +1041,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // job being submitted right now is never cut off).
       const jobs = await deps.jobSummary(open.id);
       const quietSince = Math.max(jobs.lastFinishedAt?.getTime() ?? 0, open.lastActivityAt?.getTime() ?? 0);
-      if (jobs.total > 0 && jobs.open === 0 && now.getTime() - quietSince >= RELEASE_WHEN_DONE_GRACE_MS) reason = "all jobs done (release when done)";
+      if (jobs.total > 0 && jobs.open === 0 && now.getTime() - quietSince >= RELEASE_WHEN_DONE_GRACE_MS) reason = "released after last job (1 min after the last job finished)";
     }
     if (!reason) return { action: "none", sessionId: open.id, reason: null };
     const stopped = await stopRow(open, reason);
@@ -1154,8 +1154,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         stoppingOutcome: null,
         lastSeenAliveAt: null,
         terminateSentAt: null,
-        // Owner msgs 1807/1810: only the owner's own request takes the Setup default; agents and the factory decide themselves.
-        releaseWhenDone: parsed.releaseWhenDone ?? (parsed.requestedBy === "operator" ? settings.ownerReleaseWhenDone : false),
+        // DEV-MSG-0001 / FO-MSG-0007 (owner, 2026-10-07 msg 1939): a request without the flag -- the owner's, an agent's or the
+        // factory's -- follows the owner's setting; an explicit true/false always wins.
+        releaseWhenDone: parsed.releaseWhenDone ?? settings.ownerReleaseWhenDone,
         gpuPlanJson: parsed.gpu ? JSON.stringify({ candidates: parsed.gpu.candidates, minVramGb: parsed.gpu.minVramGb ?? null, maxPricePerHr: parsed.gpu.maxPricePerHr ?? null }) : null,
         planId: parsed.planId ?? null,
       });

@@ -2339,7 +2339,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
       <div className="flex items-center gap-2">
         <ToggleSwitch label="Stop by itself when the jobs are done" checked={ownerReleaseWhenDone} onChange={setOwnerReleaseWhenDone} />
         <span className="text-xs text-zinc-400">
-          Sessions you request in Sessions stop their pod by itself one minute after the last job finished (instead of waiting for the idle timeout). Agents&rsquo; requests decide this themselves.
+          Every session stops its pod by itself one minute after the last job finished (instead of waiting for the idle timeout) &mdash; yours, agents&rsquo; and the Factory Operator&rsquo;s, unless the request says otherwise.
         </span>
       </div>
       <button type="button" onClick={save} disabled={busy} className={primaryButton}>

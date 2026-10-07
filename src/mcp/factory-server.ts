@@ -19,6 +19,8 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * 1.3.0 (FO-REQ-0005): media refusals keep their codes (were `internal_error`), delete/adopt a local template, read the
  * factory settings, `targetName` on a pull -- and a pull now
  * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are;
+ * 1.4.0 (DEV-MSG-0001 / FO-MSG-0007): `factory_media_start_session` without `releaseWhenDone` follows the owner's setting
+ * (before: false);
  * 1.5.0 (BL-143, ADR 0029): generation plans (`factory_plan_*`).
  */
 export const FACTORY_API_VERSION = "1.5.0";
@@ -493,7 +495,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_start_session",
     {
       description:
-        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, releaseWhenDone? }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Poll factory_media_get_session.",
+        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Poll factory_media_get_session.",
       inputSchema: startSessionInput,
     },
     async (args) => {

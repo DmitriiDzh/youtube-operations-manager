@@ -1650,7 +1650,9 @@ test("BL-135: with releaseWhenDone the watcher stops the pod one minute after th
   f.advance(2_000);
   const tick = await tick1(f.services);
   assert.equal(tick.action, "stopped");
-  assert.match(tick.reason ?? "", /all jobs done/);
+  // FO-MSG-0007: the session record tells an automatic release apart from a stop or an app shutdown.
+  assert.match(tick.reason ?? "", /^released after last job/);
+  assert.match(f.mem.rows.get(pending.sessionId)?.stopReason ?? "", /^released after last job \(1 min/);
   assert.equal(f.runpod.pods.has("pod1"), false);
 });
 
@@ -1900,18 +1902,23 @@ test("owner 2026-10-06 (msg 1683): factory sessions are switched ON by default",
 });
 
 // Owner, Telegram 2026-10-06 (msgs 1807/1810, variant 1): "Stop the pod by itself one minute after the session's last
-// job finished" moves from the Sessions request form to a saved setting in Production → Setup, on by default (the form's
-// default). It applies ONLY to the owner's own requests; an agent's or the factory's request without the flag keeps
-// today's behaviour (no release) -- the operator-facing contract is unchanged.
-test("owner release-when-done setting: the owner's request follows it (default on), an explicit flag wins, agents are unaffected", async () => {
+// job finished" moves from the Sessions request form to a saved setting in Production → Setup, on by default.
+// Changed requirement (DEV-MSG-0001 / FO-MSG-0007, owner 2026-10-07 msg 1939): the setting is the default of EVERY request
+// without the flag -- agents' and the factory's too (before: owner only); an explicit true/false always wins.
+test("owner release-when-done setting: every request without the flag follows it (default on), an explicit flag wins", async () => {
   const byDefault = fixture({});
   assert.equal((await byDefault.services.requestSession({ ...operatorRequest })).releaseWhenDone, true, "default: on");
   const off = fixture({ settings: { ownerReleaseWhenDone: false } });
   assert.equal((await off.services.requestSession({ ...operatorRequest })).releaseWhenDone, false, "setting off");
   assert.equal((await off.services.requestSession({ ...operatorRequest, releaseWhenDone: true })).releaseWhenDone, true, "explicit flag wins");
   const on = fixture({ settings: { ownerReleaseWhenDone: true } });
-  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "agent" })).releaseWhenDone, false, "agent without the flag");
-  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "factory" })).releaseWhenDone, false, "factory without the flag");
+  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "agent" })).releaseWhenDone, true, "agent without the flag");
+  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "factory" })).releaseWhenDone, true, "factory without the flag");
+  assert.equal((await on.services.requestSession({ ...operatorRequest, requestedBy: "agent", releaseWhenDone: false })).releaseWhenDone, false, "an agent's explicit false wins");
+  assert.equal((await off.services.requestSession({ ...operatorRequest, requestedBy: "factory" })).releaseWhenDone, false, "setting off: factory without the flag");
+  const factory = fixture({ settings: { ...FACTORY_ON, ownerReleaseWhenDone: true } });
+  assert.equal((await factory.services.factoryStartSession({ channelId: "UC1" })).session.releaseWhenDone, true, "a factory start without the flag");
+  assert.equal((await factory.services.factoryStartSession({ channelId: "UC1", releaseWhenDone: false })).session.releaseWhenDone, false, "a factory probe start keeps its pod");
 });
 
 // -- FO-REQ-0005 item 4: the owner's factory settings, readable by the factory without a session ---------------------------
