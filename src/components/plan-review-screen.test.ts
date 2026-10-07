@@ -57,3 +57,18 @@ test("peer queue: a sent verdict marks the entry as waiting for the owning devic
   assert.equal(queue[2].verdict?.note, "(from Windows PC)");
   assert.deepEqual(peerQueue(data, { deviceId: "linux", hostname: null }, "P"), []);
 });
+
+test("peer queue: once the owning device shows the verdict (stored to the whole second), it is no longer 'sent, waiting'; params come from itemParams by own key only", async () => {
+  const { peerQueue } = await import("./plan-review-screen");
+  const applied = { result: "rejected", reportedBy: "owner", note: "(from Windows PC)", at: "2026-10-07T12:00:05.000Z" };
+  const entry = { itemKey: "constructor", groupId: null, attemptRef: "job:1", jobId: null, seed: null, params: {}, stages: [], verdict: applied, playable: true } as never;
+  const data = {
+    devices: [{ deviceId: "mac", hostname: "Mac", plans: [{ planId: "P", review: [entry], itemParams: { constructor: { prompt: "koto" } } }] }],
+    outgoing: [{ planId: "P", ownerDeviceId: "mac", itemKey: "constructor", attemptRef: "job:1", result: "rejected" as const, rating: null, at: "2026-10-07T12:00:05.678Z" }],
+  };
+  const [shown] = peerQueue(data, { deviceId: "mac", hostname: "Mac" }, "P");
+  assert.equal(shown.verdict?.note, "(from Windows PC)", "the applied verdict, not 'sent, waiting'");
+  assert.deepEqual(shown.params, { prompt: "koto" });
+  const noParams = peerQueue({ ...data, devices: [{ ...data.devices[0], plans: [{ planId: "P", review: [entry], itemParams: {} }] }] }, { deviceId: "mac", hostname: "Mac" }, "P");
+  assert.deepEqual(noParams[0].params, {}, "an inherited name (constructor) is never taken as params");
+});

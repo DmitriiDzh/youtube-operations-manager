@@ -100,10 +100,12 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
   const device = source.hostname ?? source.deviceId;
   return plan.review.map((raw) => {
     // The params travel once per item (the report's itemParams), not per entry.
-    const entry = { ...raw, params: plan.itemParams?.[raw.itemKey] ?? raw.params };
+    const params = plan.itemParams && Object.hasOwn(plan.itemParams, raw.itemKey) ? plan.itemParams[raw.itemKey] : raw.params;
+    const entry = { ...raw, params };
     const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.itemKey === entry.itemKey && v.attemptRef === entry.attemptRef).at(-1);
     // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
-    if (!sent || (entry.verdict && Date.parse(entry.verdict.at) >= Date.parse(sent.at))) return entry;
+    // Whole seconds: the owning device stores times to the second, so the applied copy of a verdict sent at …:12.345 reads …:12.000.
+    if (!sent || (entry.verdict && Math.floor(Date.parse(entry.verdict.at) / 1000) >= Math.floor(Date.parse(sent.at) / 1000))) return entry;
     return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `sent, waiting for ${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
   });
 }

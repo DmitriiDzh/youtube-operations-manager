@@ -902,8 +902,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           }
           review.push({ ...entry, params: {}, jobOutput });
         }
-        const itemParams: Record<string, PlanItem["params"]> = {};
-        for (const entry of queue) itemParams[entry.itemKey] ??= entry.params;
+        // A null-prototype map: an item key like "constructor" must be an ordinary key here.
+        const itemParams: Record<string, PlanItem["params"]> = Object.create(null) as Record<string, PlanItem["params"]>;
+        for (const entry of queue) if (!Object.hasOwn(itemParams, entry.itemKey)) itemParams[entry.itemKey] = entry.params;
         out.push({
           planId: plan.planId,
           title: plan.title,
