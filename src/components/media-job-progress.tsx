@@ -1,6 +1,7 @@
 "use client";
 
 import type { JobLiveProgress } from "@/lib/media-generation/job-progress";
+import type { SharedJobProgress, SharedSessionJobs } from "@/lib/sync-gateway";
 
 // BL-144 (owner, Telegram 2026-10-06, msg 1887: real progress, not estimates): a generating job's progress exactly as
 // ComfyUI reports it (media-generation/job-progress.ts). Nothing here is estimated or extrapolated.
@@ -56,4 +57,37 @@ export function JobProgress({ progress }: { progress: JobLiveProgress }) {
       {view.detail && <div className="text-zinc-500">{view.detail}</div>}
     </div>
   );
+}
+
+/** BL-148: another device's reported progress (no `detail`) in the shape the view above takes. Exported for its test. */
+export function fromSharedProgress(p: SharedJobProgress): JobLiveProgress {
+  return {
+    state: p.state,
+    nodesTotal: p.nodesTotal,
+    nodesDone: p.nodesDone,
+    nodesCached: p.nodesCached,
+    currentNode: p.currentNodeType ? { id: "", type: p.currentNodeType } : null,
+    step: p.step,
+    percent: p.percent,
+    startedAt: p.startedAt,
+    updatedAt: p.updatedAt,
+    detail: null,
+  };
+}
+
+/**
+ * BL-148: "4 done · 1 in ComfyUI · 3 queued · 1 failed" for another device's session (zeros left out). "In ComfyUI", not "running":
+ * a submitted job may still wait in ComfyUI's own queue (re-review); the job list below says which one runs. Exported for its test.
+ */
+export function describeSessionJobCounts(jobs: Pick<SharedSessionJobs, "counts">): string {
+  const { counts } = jobs;
+  const parts = [
+    counts.done ? `${counts.done} done` : null,
+    counts.running ? `${counts.running} in ComfyUI` : null,
+    counts.queued ? `${counts.queued} queued` : null,
+    counts.failed ? `${counts.failed} failed` : null,
+    counts.cancelled ? `${counts.cancelled} cancelled` : null,
+  ].filter(Boolean);
+  if (parts.length === 0) return "no jobs yet";
+  return parts.join(" · ");
 }

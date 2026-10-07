@@ -2940,6 +2940,8 @@ nothing while a node works before its first step, so such a stretch shows only t
 
 - **Phase 2 (other devices):**
   - `src/lib/sync-gateway/per-device-report` holds the shared report mechanics, used by `media-sessions` and `generation-plans`.
+    The `media-sessions` report is version 2 since BL-148: an open session also carries its job counts and up to 5 unfinished
+    jobs with BL-144 live progress (no `detail`), shown under "Other devices" (ADR 0028 amendment).
     Each device writes only its own report and keeps each peer's latest. A report older than the stored one, one dated in the
     future, or an invalid one is refused; a peer silent for 7 days is forgotten.
   - On the media watcher tick, `publishGenerationPlansShare` (in `generation-plans/index.ts`) first runs `applyPeerVerdicts`,

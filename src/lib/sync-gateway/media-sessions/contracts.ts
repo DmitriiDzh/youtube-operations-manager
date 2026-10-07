@@ -12,6 +12,51 @@ export { DomainError, isDomainError };
 export const GLOBAL_DOCUMENT_KEY = "global";
 export const MEDIA_SESSIONS_REPORT_FORMAT = "ytm-media-sessions";
 
+/**
+ * BL-148 (owner, Telegram 2026-10-07, msg 1976): a job's live ComfyUI progress as another device may see it -- BL-144's
+ * `JobLiveProgress` without `detail` (it can carry ComfyUI's error text). Defined here: sync-gateway imports nothing from
+ * media-generation.
+ */
+export const sharedJobProgressSchema = z
+  .object({
+    state: z.enum(["connecting", "waiting", "running", "finished", "error", "interrupted", "unavailable"]),
+    percent: z.number().min(0).max(100).nullable(),
+    nodesTotal: z.number().int().min(0).max(100_000).nullable(),
+    nodesDone: z.number().int().min(0).max(100_000),
+    nodesCached: z.number().int().min(0).max(100_000),
+    currentNodeType: z.string().max(128).nullable(),
+    step: z.object({ value: z.number(), max: z.number() }).strict().nullable(),
+    startedAt: z.string().max(40).nullable(),
+    updatedAt: z.string().max(40),
+  })
+  .strict();
+
+export const SHARED_CURRENT_JOBS_MAX = 5;
+
+export const sharedSessionJobsSchema = z
+  .object({
+    counts: z
+      .object({ queued: z.number().int().min(0), running: z.number().int().min(0), done: z.number().int().min(0), failed: z.number().int().min(0), cancelled: z.number().int().min(0) })
+      // All of the session's jobs, counted by the database (no cap).
+      .strict(),
+    current: z
+      .array(
+        z
+          .object({
+            jobId: z.string().min(1).max(64),
+            templateId: z.string().max(128),
+            status: z.string().min(1).max(32),
+            createdBy: z.string().max(32),
+            submittedAt: z.string().max(40).nullable(),
+            planItemKey: z.string().max(200).nullable(),
+            progress: sharedJobProgressSchema.nullable(),
+          })
+          .strict()
+      )
+      .max(SHARED_CURRENT_JOBS_MAX),
+  })
+  .strict();
+
 /** What another device may see of a session: its state and cost, never a URL, token or error text from RunPod. */
 export const sharedSessionSchema = z
   .object({
@@ -32,13 +77,18 @@ export const sharedSessionSchema = z
     secondsUsed: z.number().nullable(),
     usdCharged: z.number().nullable(),
     stopReason: z.string().max(200).nullable(),
+    /** BL-148 (report version 2): the open session's jobs; absent for a finished session and in a version 1 report. */
+    jobs: sharedSessionJobsSchema.optional(),
   })
   .strict();
+
+/** BL-148: the report version this build writes; it still reads version 1 (no `jobs`). */
+export const MEDIA_SESSIONS_REPORT_VERSION = 2;
 
 export const mediaSessionsReportSchema = z
   .object({
     format: z.literal(MEDIA_SESSIONS_REPORT_FORMAT),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     deviceId: z.string().min(1).max(128),
     hostname: z.string().max(255).nullable(),
     /** The RunPod account id (GraphQL `myself.id`), or null when it could not be read; never anything derived from a key. */
@@ -51,4 +101,6 @@ export const mediaSessionsReportSchema = z
   .strict();
 
 export type SharedMediaSession = z.infer<typeof sharedSessionSchema>;
+export type SharedSessionJobs = z.infer<typeof sharedSessionJobsSchema>;
+export type SharedJobProgress = z.infer<typeof sharedJobProgressSchema>;
 export type MediaSessionsReport = z.infer<typeof mediaSessionsReportSchema>;

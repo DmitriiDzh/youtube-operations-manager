@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { JobLiveProgress } from "@/lib/media-generation/job-progress";
 import type { MediaJob } from "@/lib/media-generation/contracts";
-import { describeJobProgress } from "./media-job-progress";
+import { describeJobProgress, describeSessionJobCounts, fromSharedProgress } from "./media-job-progress";
 import { nowRunningOn } from "./media-generation-settings";
 
 // BL-144 (owner, Telegram 2026-10-06, msg 1887): what the owner reads about a running job, only ComfyUI's own facts.
@@ -75,4 +75,18 @@ test("BL-144 review: when ComfyUI reports which job runs, that one is current an
   const now = nowRunningOn("s1", [queuedInComfy, running, job("q", "s1", "queued", "2026-10-06T19:06:00Z")]);
   assert.equal(now.current?.jobId, "young");
   assert.equal(now.waiting, 2, "the job still in ComfyUI's queue and the queued one");
+});
+
+// BL-148 (CROSS_DEVICE_JOB_PROGRESS_PLAN.md): another device's session reads in the same words as a local one.
+test("another device's job counts leave out zeros", () => {
+  assert.equal(describeSessionJobCounts({ counts: { queued: 3, running: 1, done: 4, failed: 1, cancelled: 0 } }), "4 done · 1 in ComfyUI · 3 queued · 1 failed");
+  assert.equal(describeSessionJobCounts({ counts: { queued: 0, running: 0, done: 1200, failed: 0, cancelled: 0 } }), "1200 done");
+  assert.equal(describeSessionJobCounts({ counts: { queued: 0, running: 0, done: 0, failed: 0, cancelled: 0 } }), "no jobs yet");
+});
+
+test("another device's reported progress is described like a local one (node type, step, percent)", () => {
+  const view = describeJobProgress(
+    fromSharedProgress({ state: "running", percent: 45, nodesTotal: 10, nodesDone: 4, nodesCached: 0, currentNodeType: "KSampler", step: { value: 25, max: 50 }, startedAt: null, updatedAt: "2026-10-07T12:00:00.000Z" })
+  );
+  assert.deepEqual(view, { headline: "45 % · node 5 of 10", detail: "KSampler · step 25 of 50", percent: 45, tone: "info" });
 });

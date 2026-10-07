@@ -27,6 +27,8 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
   schema: ZodType<R>;
   /** How the family names its report in messages, e.g. "media sessions report". */
   label: string;
+  /** The newest report version this build reads; a higher one is refused as "newer, update the app" (default 1). */
+  currentVersion?: number;
   store: PerDeviceReportStore;
   ownDeviceId(): Promise<string>;
   clock?: { now(): Date };
@@ -63,7 +65,7 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
       return `not a ${deps.label} (unreadable JSON)`;
     }
     const version = json && typeof json === "object" ? (json as Record<string, unknown>).version : undefined;
-    if (typeof version === "number" && version > 1) return `${deps.label} version ${version} is newer than this app understands; update the app on this device`;
+    if (typeof version === "number" && version > (deps.currentVersion ?? 1)) return `${deps.label} version ${version} is newer than this app understands; update the app on this device`;
     return `invalid ${deps.label}`;
   }
 

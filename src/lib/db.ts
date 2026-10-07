@@ -8354,6 +8354,22 @@ export async function listMediaJobs(filter: { sessionId?: string; channelId?: st
   return filtered.orderBy(desc(mediaJobs.createdAt)).limit(filter.limit ?? 50);
 }
 
+/** BL-148: a session's job count per status (all of its jobs, no cap). */
+export async function countMediaJobsForSessionByStatus(sessionId: string, database: AppDb = db): Promise<Record<string, number>> {
+  const rows = await database.select({ status: mediaJobs.status, n: sql<number>`count(*)` }).from(mediaJobs).where(eq(mediaJobs.sessionId, sessionId)).groupBy(mediaJobs.status);
+  return Object.fromEntries(rows.map((r) => [r.status, Number(r.n)]));
+}
+
+/** BL-148: a session's unfinished jobs in the order they run -- the running ones first, then the queue, oldest first. */
+export async function listOpenMediaJobsForSession(sessionId: string, limit: number, database: AppDb = db): Promise<StoredMediaJob[]> {
+  return database
+    .select()
+    .from(mediaJobs)
+    .where(and(eq(mediaJobs.sessionId, sessionId), inArray(mediaJobs.status, ["queued", "submitted", "generating", "transferring"])))
+    .orderBy(sql`CASE WHEN ${mediaJobs.status} = 'queued' THEN 1 ELSE 0 END`, asc(mediaJobs.createdAt), sql`rowid`)
+    .limit(limit);
+}
+
 export async function listNonTerminalMediaJobs(database: AppDb = db): Promise<StoredMediaJob[]> {
   return database.select().from(mediaJobs).where(inArray(mediaJobs.status, ["queued", "submitted", "generating", "transferring"]));
 }
