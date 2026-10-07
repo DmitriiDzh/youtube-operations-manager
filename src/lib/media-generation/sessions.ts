@@ -67,6 +67,8 @@ export type StoredSessionRow = {
   capacityAttempts?: number | null;
   capacityNextAttemptAt?: Date | null;
   capacityWaitUntil?: Date | null;
+  /** Schema v66 (BL-143): the generation plan this session works for. */
+  planId?: string | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -215,6 +217,7 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     stopReason: row.stopReason,
     error: row.error,
     releaseWhenDone: row.releaseWhenDone ?? false,
+    planId: row.planId ?? null,
     approvedBy: row.approvedBy ?? (row.approvedAt ? "owner" : null),
     gpuPlan: row.gpuPlanJson ? (JSON.parse(row.gpuPlanJson) as MediaGpuPlan) : null,
     capacity:
@@ -1154,6 +1157,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         // Owner msgs 1807/1810: only the owner's own request takes the Setup default; agents and the factory decide themselves.
         releaseWhenDone: parsed.releaseWhenDone ?? (parsed.requestedBy === "operator" ? settings.ownerReleaseWhenDone : false),
         gpuPlanJson: parsed.gpu ? JSON.stringify({ candidates: parsed.gpu.candidates, minVramGb: parsed.gpu.minVramGb ?? null, maxPricePerHr: parsed.gpu.maxPricePerHr ?? null }) : null,
+        planId: parsed.planId ?? null,
       });
       return toPublicSession(row, now);
     },
@@ -1214,6 +1218,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       maxUsd?: number;
       gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null };
       releaseWhenDone?: boolean;
+      /** BL-143: the plan this session works for (checked by the caller with the plans module). */
+      planId?: string;
     }): Promise<{ session: MediaSession; approved: boolean; heldBy: string | null }> {
       const settings = await deps.base.getSettings();
       const pending = await services.requestSession({
@@ -1223,6 +1229,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         reason: "started by the Factory Operator",
         ...(input.releaseWhenDone !== undefined ? { releaseWhenDone: input.releaseWhenDone } : {}),
         ...(input.gpu ? { gpu: input.gpu } : {}),
+        ...(input.planId ? { planId: input.planId } : {}),
         requestedBy: "factory",
       });
       const row = await requireRow(pending.sessionId);

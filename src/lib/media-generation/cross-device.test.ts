@@ -17,6 +17,7 @@ function session(over: Partial<MediaSession>): MediaSession {
     channelId: "UC1",
     status: "running",
     requestedBy: "operator",
+    planId: null,
     approvedBy: "owner",
     gpuPlan: null,
     capacity: null,

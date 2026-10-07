@@ -59,6 +59,9 @@ export const FACTORY_TOOL_NAMES = [
   "factory_plan_list",
   "factory_plan_todo",
   "factory_plan_report",
+  "factory_plan_run_stage",
+  "factory_plan_rerun",
+  "factory_plan_clone_group",
 ] as const;
 
 /**
@@ -83,6 +86,9 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_update",
   "factory_plan_close",
   "factory_plan_report",
+  "factory_plan_run_stage",
+  "factory_plan_rerun",
+  "factory_plan_clone_group",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -116,10 +122,10 @@ export type FactoryToolDeps = {
     adoptTemplate(input: { templateId: string; newTemplateId: string }): Promise<Record<string, unknown>>;
     getSettings(): Promise<Record<string, unknown>>;
     // BL-133.
-    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean }): Promise<Record<string, unknown>>;
+    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string }): Promise<Record<string, unknown>>;
     getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
     endSession(input: { sessionId: string }): Promise<Record<string, unknown>>;
-    createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean> }): Promise<Record<string, unknown>>;
+    createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean>; planId?: string; itemKey?: string; seed?: number }): Promise<Record<string, unknown>>;
     getJob(input: { jobId?: string; sessionId?: string }): Promise<Record<string, unknown>>;
     cancelJob(input: { jobId: string }): Promise<Record<string, unknown>>;
     capacityLog(input: { since?: string; gpuTypeId?: string; limit?: number }): Promise<Record<string, unknown>>;
@@ -134,6 +140,9 @@ export type FactoryToolDeps = {
     list(input: unknown): Promise<Record<string, unknown>>;
     todo(input: unknown): Promise<Record<string, unknown>>;
     report(input: unknown): Promise<Record<string, unknown>>;
+    runStage(input: unknown): Promise<Record<string, unknown>>;
+    rerun(input: unknown): Promise<Record<string, unknown>>;
+    cloneGroup(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -218,6 +227,8 @@ const startSessionInput = z
     templateId: z.string().min(1).max(64).optional(),
     gpu: gpuPlanInput.optional(),
     releaseWhenDone: z.boolean().optional(),
+    /** BL-143: the generation plan this session works for (its whole cost counts there). */
+    planId: z.string().min(2).max(80).optional(),
   })
   .strict();
 const sessionIdInput = z.object({ sessionId: z.string().min(1).max(64) }).strict();
@@ -227,6 +238,10 @@ const createJobInput = z
     sessionId: z.string().min(1).max(64),
     templateId: z.string().min(1).max(64),
     params: z.record(z.string().min(1).max(64), z.union([z.string().max(20_000), z.number(), z.boolean()])).default({}),
+    /** BL-143: the plan attempt this job is (all three, or none). */
+    planId: z.string().min(2).max(80).optional(),
+    itemKey: z.string().min(1).max(120).optional(),
+    seed: z.number().int().min(0).optional(),
   })
   .strict();
 const getJobInput = z.object({ jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() }).strict();
@@ -630,6 +645,24 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "Report results of external stages (post-process, validator) or a verdict you relay from chat, in bulk: { planId, rows: [{ stageId (not the in_app stage), itemKey, attemptRef ('job:<jobId>' of the generate job), result: done | failed | accepted | rejected, note? (<= 2000), auditionFile? (the file the owner should hear: a path relative to the channel workspace's '99 Data Exchange/Sent to YTM/'), checks?: [{ id, label?, value?, unit?, threshold?, pass, severity: info | warn | fail, atSeconds?: [start, end], detail? (<= 200) }] (<= 50), metrics? (<= 50 keys), rating? (1-10), reasons?, markers?: [{ start, end?, note? }] }] (<= 200 rows) } -> { stored }. One row per (plan, stage, item, attempt): a repeat replaces it. All rows are checked first; one bad row stores nothing (plan_mismatch / validation_failed). Recorded as reported by the factory.",
     z.object({ planId: z.string(), rows: loose }).strict(),
     (input) => deps.plans.report(input)
+  );
+  planWrite(
+    "factory_plan_run_stage",
+    "Create the jobs a plan still needs, in one of YOUR running sessions for the plan's channel: { planId, sessionId, itemKeys? | groupId? (default: every item) } -> { created: [{ itemKey, jobId, seed }], stoppedAt }. Per item: fixed -- one job per seed with no live or finished attempt yet, up to what the target still misses (no seeds: that many jobs); until_accepted -- as many as the target still misses (accepted + pending counted), within maxAttempts, taking the next unused seeds. Each job gets the item's params, plus its seed in the template's 'seed' parameter. Every job is checked first (session running, yours, the plan's channel and not another plan's; template and params valid); any problem refuses all (plan_mismatch) and creates nothing. If creating a job fails after the checks (e.g. ComfyUI down), the jobs before it exist and stoppedAt says where it stopped. The session is linked to the plan for its spend. Nothing ever runs without this call.",
+    z.object({ planId: z.string(), sessionId: z.string(), itemKeys: z.array(z.string()).optional(), groupId: z.string().optional() }).strict(),
+    (input) => deps.plans.runStage(input)
+  );
+  planWrite(
+    "factory_plan_rerun",
+    "One more attempt of one item in one of YOUR running sessions: { planId, sessionId, itemKey, seed? (default: the item's next unused seed, else none) } -> { created, stoppedAt }. Same checks as factory_plan_run_stage.",
+    z.object({ planId: z.string(), sessionId: z.string(), itemKey: z.string(), seed: z.number().int().optional() }).strict(),
+    (input) => deps.plans.rerun(input)
+  );
+  planWrite(
+    "factory_plan_clone_group",
+    "Build the next wave from a group: { planId, groupId, newGroupId, title?, paramsPatch? (merged into every copied item's params), seeds? (replace the copied seeds) } -> { plan, progress }. Items are copied as '<newGroupId>/<rest of the key>' with no attempts or results; the new group dependsOn the source.",
+    z.object({ planId: z.string(), groupId: z.string(), newGroupId: z.string(), title: z.string().optional(), paramsPatch: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(), seeds: z.array(z.number().int()).optional() }).strict(),
+    (input) => deps.plans.cloneGroup(input)
   );
 
   return server;

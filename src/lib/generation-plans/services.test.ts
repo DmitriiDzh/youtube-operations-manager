@@ -255,7 +255,7 @@ test("AC-GP-04: auditionFile must be relative to Sent to YTM -- absolute, '..', 
 // -- AC-GP-05 / 06 / 07 -------------------------------------------------------------------------------------------------
 
 test("AC-GP-05: close changes only the status (jobs untouched); every later write is refused with plan_closed", async () => {
-  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "generating" as const, error: null, createdAt: new Date(), submittedAt: new Date(), finishedAt: null, planId: "R-0001-S1-music", channelId: CHANNEL };
+  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "generating" as const, error: null, createdAt: new Date("2026-10-07T09:00:00Z"), submittedAt: new Date("2026-10-07T09:00:00Z"), finishedAt: null, planId: "R-0001-S1-music", channelId: CHANNEL };
   const s = setup({ jobs: [job] });
   await s.services.createPlan(basePlan());
   const closed = await s.services.closePlan({ planId: "R-0001-S1-music", status: "cancelled", note: "stopped by the owner" });
@@ -269,7 +269,7 @@ test("AC-GP-05: close changes only the status (jobs untouched); every later writ
 });
 
 test("AC-GP-06: update cannot remove a stage or item with attempts/results; it can change targets and params, add stages, groups and items", async () => {
-  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "done" as const, error: null, createdAt: new Date(), submittedAt: new Date(), finishedAt: new Date(), planId: "R-0001-S1-music", channelId: CHANNEL };
+  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "done" as const, error: null, createdAt: new Date("2026-10-07T09:00:00Z"), submittedAt: new Date("2026-10-07T09:00:00Z"), finishedAt: new Date("2026-10-07T09:05:00Z"), planId: "R-0001-S1-music", channelId: CHANNEL };
   const s = setup({ jobs: [job] });
   await s.services.createPlan(basePlan());
   await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
@@ -333,7 +333,7 @@ test("AC-GP-07: todo lists items short of target, attempts waiting for the owner
 // -- AC-GP-13 (service part) --------------------------------------------------------------------------------------------
 
 test("AC-GP-13: the owner's verdict is stored with reportedBy owner, rating, reasons, markers and a note, and is an event the factory reads", async () => {
-  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "done" as const, error: null, createdAt: new Date(), submittedAt: new Date(), finishedAt: new Date(), planId: "R-0001-S1-music", channelId: CHANNEL };
+  const job = { id: "j1", sessionId: "s1", stageId: "generate", itemKey: "C1/F1", seed: 1001, status: "done" as const, error: null, createdAt: new Date("2026-10-07T09:00:00Z"), submittedAt: new Date("2026-10-07T09:00:00Z"), finishedAt: new Date("2026-10-07T09:05:00Z"), planId: "R-0001-S1-music", channelId: CHANNEL };
   const s = setup({ jobs: [job] });
   await s.services.createPlan(basePlan());
   const before = (await s.services.getPlan({ planId: "R-0001-S1-music" })).cursor;
@@ -355,4 +355,174 @@ test("a re-run request and a group note are recorded for the factory; nothing is
   assert.deepEqual(events, ["plan_created", "rerun_requested", "group_note"]);
   await assert.rejects(s.services.requestRerun({ planId: "R-0001-S1-music", itemKey: "Z/9" }), refused("plan_mismatch"));
   await assert.rejects(s.services.setGroupNote({ planId: "R-0001-S1-music", groupId: "Z", note: "x" }), refused("plan_mismatch"));
+});
+
+// -- slice 2: running stages (AC-GP-08..12) -----------------------------------------------------------------------------
+
+type FakeSession = { sessionId: string; status: string; channelId: string; requestedBy: string; planId: string | null };
+
+/** A media port that behaves like the media core's contract: params checked against a template; created jobs become rows. */
+function withMedia(seedSessions: FakeSession[], opts: { templates?: Record<string, string[]>; failCreateAfter?: number } = {}) {
+  const s = setup();
+  const sessions = new Map(seedSessions.map((x) => [x.sessionId, { ...x }]));
+  const templates = opts.templates ?? { "tpl-ace": ["prompt", "duration", "seed"], "tpl-noseed": ["prompt"] };
+  const createdJobs: Array<{ jobId: string; params: Record<string, unknown>; plan: unknown; sessionId: string }> = [];
+  let n = 0;
+  const services = createGenerationPlanServices({
+    store: s.store,
+    channels: { isConnected: async (id) => id === CHANNEL },
+    clock: { now: () => new Date((clockMs += 1000)) },
+    media: {
+      getSession: async (id) => sessions.get(id) ?? null,
+      async linkSession(id, planId) {
+        const x = sessions.get(id);
+        if (!x || (x.planId !== null && x.planId !== planId)) return false;
+        x.planId = planId;
+        return true;
+      },
+      async validateJobParams({ templateId, params }) {
+        const names = templates[templateId];
+        if (!names) throw Object.assign(new Error(`No workflow template ${templateId}`), { code: "media_template_not_found" });
+        const unknown = Object.keys(params).filter((k) => !names.includes(k));
+        if (unknown.length > 0) throw Object.assign(new Error(`unknown parameter "${unknown[0]}"`), { code: "validation_failed" });
+        return { parameterNames: names };
+      },
+      async createJob(input) {
+        if (opts.failCreateAfter !== undefined && createdJobs.length >= opts.failCreateAfter) throw Object.assign(new Error("ComfyUI unreachable"), { code: "comfyui_unreachable" });
+        const jobId = `job-${++n}`;
+        createdJobs.push({ jobId, params: input.params, plan: input.plan, sessionId: input.sessionId });
+        s.jobs.push({ id: jobId, sessionId: input.sessionId, stageId: input.plan.stageId, itemKey: input.plan.itemKey, seed: input.plan.seed, status: "queued", error: null, createdAt: new Date(clockMs), submittedAt: null, finishedAt: null, planId: input.plan.planId, channelId: input.channelId });
+        return { jobId };
+      },
+    },
+  });
+  return { ...s, services, sessions, createdJobs };
+}
+
+const running = (over: Partial<FakeSession> = {}): FakeSession => ({ sessionId: "s1", status: "running", channelId: CHANNEL, requestedBy: "factory", planId: null, ...over });
+
+test("AC-GP-09: run_stage creates exactly the missing jobs -- fixed: one per unused seed; until_accepted: up to the target -- with params and the seed", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  const result = await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" });
+  // C1/F1 fixed, 2 seeds -> 2 jobs (seeds 1001, 1002); C2/F1 until_accepted target 2, no seeds -> 2 jobs, no seed.
+  assert.deepEqual(result.created.map((c) => [c.itemKey, c.seed]), [["C1/F1", 1001], ["C1/F1", 1002], ["C2/F1", null], ["C2/F1", null]]);
+  assert.equal(result.stoppedAt, null);
+  assert.deepEqual(m.createdJobs[0].params, { prompt: "koto, slow", duration: 120, seed: 1001 });
+  assert.deepEqual(m.createdJobs[0].plan, { planId: "R-0001-S1-music", stageId: "generate", itemKey: "C1/F1", seed: 1001 });
+  assert.equal(m.sessions.get("s1")?.planId, "R-0001-S1-music", "the session is linked for its spend");
+  // A second run creates nothing: every attempt is still open.
+  assert.deepEqual((await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" })).created, []);
+  // A failed fixed attempt frees its seed; an interrupted one too.
+  m.jobs[0].status = "failed";
+  m.jobs[0].error = "interrupted by a server restart";
+  const again = await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  assert.deepEqual(again.created.map((c) => [c.itemKey, c.seed]), [["C1/F1", 1001]]);
+});
+
+test("AC-GP-09: until_accepted counts accepted and pending attempts and stops at maxAttempts", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan({ ...basePlan(), items: [{ itemKey: "C2/F1", groupId: "C2", templateId: "tpl-noseed", targetCount: 2, mode: "until_accepted", maxAttempts: 3, params: { prompt: "x" } }] });
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" });
+  assert.equal(m.createdJobs.length, 2);
+  // Both generated; the validator rejects one -> 1 more is needed; the cap (3) allows exactly one.
+  for (const j of m.jobs) j.status = "done";
+  await m.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C2/F1", attemptRef: "job:job-1", result: "rejected" }] });
+  assert.equal((await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" })).created.length, 1);
+  m.jobs[2].status = "done";
+  await m.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C2/F1", attemptRef: "job:job-3", result: "rejected" }] });
+  assert.equal((await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" })).created.length, 0, "3 attempts = the cap");
+});
+
+test("AC-GP-10: run_stage is refused, creating no job, for a wrong session, channel, plan state, item, group, template or params", async () => {
+  const sessions = [
+    running(),
+    running({ sessionId: "s-owner", requestedBy: "operator" }),
+    running({ sessionId: "s-stopped", status: "done" }),
+    running({ sessionId: "s-other-channel", channelId: "UC_other" }),
+    running({ sessionId: "s-other-plan", planId: "another-plan" }),
+  ];
+  const m = withMedia(sessions);
+  await m.services.createPlan(basePlan());
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["unknown session", { sessionId: "nope" }],
+    ["owner's session", { sessionId: "s-owner" }],
+    ["stopped session", { sessionId: "s-stopped" }],
+    ["other channel", { sessionId: "s-other-channel" }],
+    ["other plan's session", { sessionId: "s-other-plan" }],
+    ["unknown item", { sessionId: "s1", itemKeys: ["C1/F1", "Z/9"] }],
+    ["unknown group", { sessionId: "s1", groupId: "Z" }],
+  ];
+  for (const [name, extra] of cases) await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", ...extra }), refused("plan_mismatch"), name);
+  // A template problem on the LAST item refuses the whole run, so the first item gets no job either.
+  await m.services.updatePlan({ planId: "R-0001-S1-music", upsertItems: [{ itemKey: "C2/F1", groupId: "C2", templateId: "tpl-ace", targetCount: 1, params: { tempo: 90 } }] });
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), refused("plan_mismatch"), "unknown parameter");
+  await m.services.updatePlan({ planId: "R-0001-S1-music", upsertItems: [{ itemKey: "C2/F1", groupId: "C2", templateId: null, targetCount: 1 }] });
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), refused("plan_mismatch"), "no template id");
+  await m.services.updatePlan({ planId: "R-0001-S1-music", upsertItems: [{ itemKey: "C2/F1", groupId: "C2", templateId: "tpl-noseed", targetCount: 1, params: { prompt: "x" }, seeds: [5] }] });
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), refused("plan_mismatch"), "seeds for a template without a seed parameter");
+  assert.equal(m.createdJobs.length, 0);
+  await m.services.closePlan({ planId: "R-0001-S1-music", status: "completed" });
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), refused("plan_closed"));
+  assert.equal(m.createdJobs.length, 0);
+});
+
+test("AC-GP-10: when creating a job fails after the checks, the jobs before it exist and stoppedAt says where", async () => {
+  const m = withMedia([running()], { failCreateAfter: 1 });
+  await m.services.createPlan(basePlan());
+  const result = await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" });
+  assert.deepEqual(result.created.map((c) => c.seed), [1001]);
+  assert.deepEqual(result.stoppedAt, { itemKey: "C1/F1", seed: 1002, error: { code: "comfyui_unreachable", message: "ComfyUI unreachable" } });
+});
+
+test("AC-GP-08: a linked job's state is the attempt's state with no extra call -- queued, running, done, failed, interrupted", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  const counts = async () => (await m.services.getPlan({ planId: "R-0001-S1-music" })).progress.stages[0].counts;
+  assert.equal((await counts()).queued, 2);
+  m.jobs[0].status = "generating";
+  m.jobs[1].status = "submitted";
+  assert.deepEqual([(await counts()).running, (await counts()).queued], [1, 1]);
+  m.jobs[0].status = "done";
+  m.jobs[1].status = "failed";
+  m.jobs[1].error = "interrupted by a server restart";
+  const c = await counts();
+  assert.deepEqual([c.done, c.interrupted, c.failed], [1, 1, 0]);
+});
+
+test("rerun creates one attempt with the next unused seed (or the given one) under the same checks", async () => {
+  const m = withMedia([running(), running({ sessionId: "s-owner", requestedBy: "operator" })]);
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  await m.services.updatePlan({ planId: "R-0001-S1-music", upsertItems: [{ itemKey: "C1/F1", groupId: "C1", templateId: "tpl-ace", targetCount: 2, params: { prompt: "koto, slow" }, seeds: [1001, 1002, 1003] }] });
+  assert.deepEqual((await m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C1/F1" })).created.map((c) => c.seed), [1003]);
+  assert.deepEqual((await m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "C1/F1", seed: 42 })).created.map((c) => c.seed), [42]);
+  await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s-owner", itemKey: "C1/F1" }), refused("plan_mismatch"));
+  await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: "Z/9" }), refused("plan_mismatch"));
+});
+
+test("AC-GP-12: clone_group copies the items as <newGroupId>/<rest>, patches params, copies no results, depends on the source", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  await m.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:x", result: "accepted" }] });
+  const cloned = await m.services.cloneGroup({ planId: "R-0001-S1-music", groupId: "C1", newGroupId: "C3", title: "Wave 3", paramsPatch: { prompt: "koto, soft start" }, seeds: [2001, 2002] });
+  const copy = cloned.plan.items.find((i) => i.itemKey === "C3/F1");
+  assert.deepEqual([copy?.groupId, copy?.params, copy?.seeds, copy?.targetCount], ["C3", { prompt: "koto, soft start", duration: 120 }, [2001, 2002], 2]);
+  assert.deepEqual(cloned.plan.groups.at(-1), { groupId: "C3", title: "Wave 3", dependsOn: "C1", note: null });
+  assert.equal(cloned.progress.items.find((i) => i.itemKey === "C3/F1")?.accepted, 0, "no results copied");
+  await assert.rejects(m.services.cloneGroup({ planId: "R-0001-S1-music", groupId: "C1", newGroupId: "C3" }), refused("plan_invalid"), "the new group exists");
+  await assert.rejects(m.services.cloneGroup({ planId: "R-0001-S1-music", groupId: "Z", newGroupId: "C4" }), refused("plan_mismatch"));
+});
+
+test("a hand-made job may name a plan attempt only for an active plan of its channel, an existing item and the in_app stage", async () => {
+  const m = withMedia([running(), running({ sessionId: "s-other-plan", planId: "another-plan" })]);
+  await m.services.createPlan(basePlan());
+  assert.deepEqual(await m.services.checkJobLink({ planId: "R-0001-S1-music", itemKey: "C1/F1", seed: 7, sessionId: "s1", channelId: CHANNEL }), { planId: "R-0001-S1-music", stageId: "generate", itemKey: "C1/F1", seed: 7 });
+  await assert.rejects(m.services.checkJobLink({ planId: "R-0001-S1-music", itemKey: "C1/F1", sessionId: "s1", channelId: "UC_other" }), refused("plan_mismatch"));
+  await assert.rejects(m.services.checkJobLink({ planId: "R-0001-S1-music", itemKey: "Z/9", sessionId: "s1", channelId: CHANNEL }), refused("plan_mismatch"));
+  await assert.rejects(m.services.checkJobLink({ planId: "R-0001-S1-music", stageId: "validate", itemKey: "C1/F1", sessionId: "s1", channelId: CHANNEL }), refused("plan_mismatch"));
+  await assert.rejects(m.services.checkJobLink({ planId: "R-0001-S1-music", itemKey: "C1/F1", sessionId: "s-other-plan", channelId: CHANNEL }), refused("plan_mismatch"));
+  await assert.rejects(m.services.checkSessionLink({ planId: "R-0001-S1-music", channelId: "UC_other" }), refused("plan_mismatch"));
+  await m.services.checkSessionLink({ planId: "R-0001-S1-music", channelId: CHANNEL });
 });

@@ -17,7 +17,11 @@ import {
 } from "./contracts";
 import { inAppAttempts, planEvents, planProgress, planTodo, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
+  cloneGroupInputSchema,
   closePlanInputSchema,
+  jobLinkInputSchema,
+  rerunInputSchema,
+  runStageInputSchema,
   createPlanInputSchema,
   getPlanInputSchema,
   groupNoteInputSchema,
@@ -71,10 +75,38 @@ export type PlanStore = {
   listSessions(planId: string): Promise<PlanSessionRow[]>;
 };
 
+/** BL-143 slice 2: what running a stage needs of the media core (wired in `index.ts`; absent = runs are not available). */
+export type PlanMediaPort = {
+  getSession(sessionId: string): Promise<{ sessionId: string; status: string; channelId: string; requestedBy: string; planId: string | null } | null>;
+  /** Sets the session's plan when it has none; `true` when it is (now) this plan's. */
+  linkSession(sessionId: string, planId: string): Promise<boolean>;
+  validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean> }): Promise<{ parameterNames: string[] }>;
+  createJob(input: {
+    sessionId: string;
+    channelId: string;
+    templateId: string;
+    params: Record<string, string | number | boolean>;
+    createdBy: "factory";
+    plan: { planId: string; stageId: string; itemKey: string; seed: number | null };
+  }): Promise<{ jobId: string }>;
+};
+
 export type PlanServiceDependencies = {
   store: PlanStore;
   channels: { isConnected(channelId: string): Promise<boolean> };
   clock: { now(): Date };
+  media?: PlanMediaPort;
+};
+
+/** A template parameter with this name receives an attempt's seed (GENERATION_PLANS_PLAN.md AC-GP-09). */
+export const SEED_PARAMETER = "seed";
+
+export type PlanRunResult = {
+  planId: string;
+  sessionId: string;
+  created: Array<{ itemKey: string; jobId: string; seed: number | null }>;
+  /** Set when a job could not be created after the checks passed (e.g. ComfyUI down); the jobs before it exist. */
+  stoppedAt: { itemKey: string; seed: number | null; error: { code: string; message: string } } | null;
 };
 
 const CAS_RETRIES = 5;
@@ -225,6 +257,69 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       metrics: r.metrics ?? {},
       at,
     };
+  }
+
+  function requireMedia(): PlanMediaPort {
+    if (!deps.media) throw planInvalid("Running plan stages is not available in this process");
+    return deps.media;
+  }
+
+  /** AC-GP-10: the session must be running, the factory's, of the plan's channel, and not another plan's. */
+  async function requireRunSession(row: StoredPlan, sessionId: string) {
+    const media = requireMedia();
+    const session = await media.getSession(sessionId);
+    if (!session || session.requestedBy !== "factory") throw planMismatch(`Session ${sessionId} is not one of the factory's sessions`, { sessionId });
+    if (session.status !== "running") throw planMismatch(`Session ${sessionId} is ${session.status}, not running`, { sessionId, status: session.status });
+    if (session.channelId !== row.channelId) throw planMismatch(`Session ${sessionId} is for another channel than plan ${row.id}`, { sessionId, planId: row.id });
+    if (session.planId !== null && session.planId !== row.id) throw planMismatch(`Session ${sessionId} works for plan ${session.planId}`, { sessionId, planId: row.id, sessionPlanId: session.planId });
+    return session;
+  }
+
+  type PlannedJob = { item: PlanItem; seed: number | null; params: Record<string, string | number | boolean> };
+
+  /** AC-GP-10: every job is checked (template, params, seed parameter) before the first is created; any failure refuses all. */
+  async function checkJobs(planned: PlannedJob[]): Promise<void> {
+    const media = requireMedia();
+    for (const job of planned) {
+      if (!job.item.templateId) throw planMismatch(`Item ${job.item.itemKey} has no templateId`, { itemKey: job.item.itemKey });
+      let checked: { parameterNames: string[] };
+      try {
+        checked = await media.validateJobParams({ templateId: job.item.templateId, params: job.params });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw planMismatch(`Item ${job.item.itemKey}: ${message}`, { itemKey: job.item.itemKey, templateId: job.item.templateId, cause: (error as { details?: unknown }).details ?? null });
+      }
+      if (job.seed !== null && !checked.parameterNames.includes(SEED_PARAMETER)) {
+        throw planMismatch(`Item ${job.item.itemKey} has seeds, but template ${job.item.templateId} has no "${SEED_PARAMETER}" parameter`, { itemKey: job.item.itemKey, templateId: job.item.templateId });
+      }
+    }
+  }
+
+  async function createJobs(row: StoredPlan, sessionId: string, stageId: string, planned: PlannedJob[]): Promise<PlanRunResult> {
+    const media = requireMedia();
+    if (!(await media.linkSession(sessionId, row.id))) throw planMismatch(`Session ${sessionId} works for another plan`, { sessionId, planId: row.id });
+    const created: PlanRunResult["created"] = [];
+    for (const job of planned) {
+      try {
+        const { jobId } = await media.createJob({
+          sessionId,
+          channelId: row.channelId,
+          templateId: job.item.templateId as string,
+          params: job.params,
+          createdBy: "factory",
+          plan: { planId: row.id, stageId, itemKey: job.item.itemKey, seed: job.seed },
+        });
+        created.push({ itemKey: job.item.itemKey, jobId, seed: job.seed });
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        return { planId: row.id, sessionId, created, stoppedAt: { itemKey: job.item.itemKey, seed: job.seed, error: { code: typeof code === "string" ? code : "internal_error", message: error instanceof Error ? error.message : String(error) } } };
+      }
+    }
+    return { planId: row.id, sessionId, created, stoppedAt: null };
+  }
+
+  function withSeed(item: PlanItem, seed: number | null): Record<string, string | number | boolean> {
+    return seed === null ? { ...item.params } : { ...item.params, [SEED_PARAMETER]: seed };
   }
 
   return {
@@ -434,6 +529,110 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!row.definition.items.some((i) => i.itemKey === parsed.itemKey)) throw planMismatch(`Plan ${row.id} has no item ${parsed.itemKey}`, { planId: row.id, itemKey: parsed.itemKey });
       await record(row.id, "rerun_requested", "owner", { itemKey: parsed.itemKey, ...(parsed.attemptRef ? { attemptRef: parsed.attemptRef } : {}), ...(parsed.note ? { note: parsed.note } : {}) });
       return { recorded: true };
+    },
+
+    /**
+     * AC-GP-09/10: creates the jobs a stage still needs, in a running session the factory started for this plan's channel.
+     * fixed -- one job per seed with no live or finished attempt yet, up to what the target still misses (without seeds:
+     * that many jobs); until_accepted -- as many as the target still misses, within maxAttempts, taking the next unused
+     * seeds. Everything is checked before the first job; nothing is ever started without this call.
+     */
+    async runStage(input: unknown): Promise<PlanRunResult> {
+      const parsed = parseWithSchema(runStageInputSchema, input, "run stage");
+      const row = await requireActive(parsed.planId);
+      const stage = row.definition.stages.find((s) => s.kind === "in_app");
+      if (!stage) throw planMismatch(`Plan ${row.id} has no in_app stage`, { planId: row.id });
+      await requireRunSession(row, parsed.sessionId);
+      let items = row.definition.items;
+      if (parsed.itemKeys) {
+        const unknown = parsed.itemKeys.filter((k) => !items.some((i) => i.itemKey === k));
+        if (unknown.length > 0) throw planMismatch(`Plan ${row.id} has no item ${unknown[0]}`, { planId: row.id, itemKeys: unknown });
+        items = items.filter((i) => parsed.itemKeys!.includes(i.itemKey));
+      } else if (parsed.groupId) {
+        if (!row.definition.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${row.id} has no group ${parsed.groupId}`, { planId: row.id, groupId: parsed.groupId });
+        items = items.filter((i) => i.groupId === parsed.groupId);
+      }
+      const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+      const progress = planProgress(toPublicPlan(row), jobs, results, [], now());
+      const planned: PlannedJob[] = [];
+      for (const item of items) {
+        const missing = progress.items.find((i) => i.itemKey === item.itemKey)?.missing ?? 0;
+        if (missing === 0) continue;
+        const usedSeeds = new Set(jobs.filter((j) => j.itemKey === item.itemKey && j.seed !== null && ["queued", "submitted", "generating", "transferring", "done"].includes(j.status)).map((j) => j.seed as number));
+        const freeSeeds = item.seeds.filter((s) => !usedSeeds.has(s));
+        const count = item.mode === "fixed" && item.seeds.length > 0 ? Math.min(missing, freeSeeds.length) : missing;
+        for (let n = 0; n < count; n++) {
+          const seed = freeSeeds[n] ?? null;
+          planned.push({ item, seed, params: withSeed(item, seed) });
+        }
+      }
+      await checkJobs(planned);
+      const result = await createJobs(row, parsed.sessionId, stage.stageId, planned);
+      await record(row.id, "stage_run", "factory", { sessionId: parsed.sessionId, created: result.created.length, ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
+      return result;
+    },
+
+    /** One more attempt of one item (a new seed: the given one, else the next unused one, else none). */
+    async rerun(input: unknown): Promise<PlanRunResult> {
+      const parsed = parseWithSchema(rerunInputSchema, input, "re-run");
+      const row = await requireActive(parsed.planId);
+      const stage = row.definition.stages.find((s) => s.kind === "in_app");
+      if (!stage) throw planMismatch(`Plan ${row.id} has no in_app stage`, { planId: row.id });
+      const item = row.definition.items.find((i) => i.itemKey === parsed.itemKey);
+      if (!item) throw planMismatch(`Plan ${row.id} has no item ${parsed.itemKey}`, { planId: row.id, itemKey: parsed.itemKey });
+      await requireRunSession(row, parsed.sessionId);
+      const jobs = await deps.store.listJobs(row.id);
+      const used = new Set(jobs.filter((j) => j.itemKey === item.itemKey && j.seed !== null).map((j) => j.seed as number));
+      const seed = parsed.seed ?? item.seeds.find((s) => !used.has(s)) ?? null;
+      const planned: PlannedJob[] = [{ item, seed, params: withSeed(item, seed) }];
+      await checkJobs(planned);
+      const result = await createJobs(row, parsed.sessionId, stage.stageId, planned);
+      await record(row.id, "item_rerun", "factory", { sessionId: parsed.sessionId, itemKey: item.itemKey, seed, ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
+      return result;
+    },
+
+    /** AC-GP-12: the next wave -- the group's items under `<newGroupId>/<rest of the key>`, params patched, no results copied. */
+    async cloneGroup(input: unknown, actor: PlanActor = "factory"): Promise<PlanView> {
+      const parsed = parseWithSchema(cloneGroupInputSchema, input, "clone group");
+      const updated = await mutate(parsed.planId, (row) => {
+        const source = row.definition.groups.find((g) => g.groupId === parsed.groupId);
+        if (!source) throw planMismatch(`Plan ${row.id} has no group ${parsed.groupId}`, { planId: row.id, groupId: parsed.groupId });
+        if (row.definition.groups.some((g) => g.groupId === parsed.newGroupId)) throw planInvalid(`Group ${parsed.newGroupId} already exists`, { groupId: parsed.newGroupId });
+        const rest = (key: string) => (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key);
+        const copies = row.definition.items
+          .filter((i) => i.groupId === parsed.groupId)
+          .map((i) => ({ ...i, itemKey: `${parsed.newGroupId}/${rest(i.itemKey)}`, groupId: parsed.newGroupId, params: { ...i.params, ...(parsed.paramsPatch ?? {}) }, seeds: parsed.seeds ?? [...i.seeds] }));
+        return {
+          definition: {
+            ...row.definition,
+            groups: [...row.definition.groups, { groupId: parsed.newGroupId, title: parsed.title ?? parsed.newGroupId, dependsOn: parsed.groupId, note: null }],
+            items: [...row.definition.items, ...copies],
+          },
+        };
+      });
+      await record(updated.id, "group_cloned", actor, { from: parsed.groupId, to: parsed.newGroupId });
+      return view(updated);
+    },
+
+    /**
+     * A job created by hand that names a plan attempt (`factory_media_create_job` with plan fields): the plan is active and
+     * of the session's channel, the item exists, the stage is the in-app one. Returns the stage id to store on the job.
+     */
+    async checkJobLink(input: unknown): Promise<{ planId: string; stageId: string; itemKey: string; seed: number | null }> {
+      const parsed = parseWithSchema(jobLinkInputSchema, input, "plan link");
+      const row = await requireActive(parsed.planId);
+      const stage = row.definition.stages.find((s) => s.kind === "in_app");
+      if (!stage || (parsed.stageId !== undefined && parsed.stageId !== stage.stageId)) throw planMismatch(`Jobs feed only the in_app stage of plan ${row.id}`, { planId: row.id, stageId: parsed.stageId ?? null });
+      if (row.channelId !== parsed.channelId) throw planMismatch(`Plan ${row.id} is for another channel`, { planId: row.id });
+      if (!row.definition.items.some((i) => i.itemKey === parsed.itemKey)) throw planMismatch(`Plan ${row.id} has no item ${parsed.itemKey}`, { planId: row.id, itemKey: parsed.itemKey });
+      if (deps.media && !(await deps.media.linkSession(parsed.sessionId, row.id))) throw planMismatch(`Session ${parsed.sessionId} works for another plan`, { sessionId: parsed.sessionId, planId: row.id });
+      return { planId: row.id, stageId: stage.stageId, itemKey: parsed.itemKey, seed: parsed.seed ?? null };
+    },
+
+    /** A session started for a plan (`factory_media_start_session` with planId): the plan is active and of that channel. */
+    async checkSessionLink(input: { planId: string; channelId: string }): Promise<void> {
+      const row = await requireActive(input.planId);
+      if (row.channelId !== input.channelId) throw planMismatch(`Plan ${row.id} is for another channel`, { planId: row.id });
     },
   };
 }

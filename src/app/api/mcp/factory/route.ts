@@ -106,8 +106,11 @@ function createToolDeps(): FactoryToolDeps {
           if (!template) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: input.templateId } });
           gpu = template.gpu ?? undefined;
         }
+        // BL-143: a session for a plan -- the plan must be active and of this channel.
+        if (input.planId) await createGenerationPlansCore().checkSessionLink({ planId: input.planId, channelId: input.channelId });
         return core.factoryStartSession({
           channelId: input.channelId,
+          ...(input.planId ? { planId: input.planId } : {}),
           ...(input.maxMinutes !== undefined ? { maxMinutes: input.maxMinutes } : {}),
           ...(input.maxUsd !== undefined ? { maxUsd: input.maxUsd } : {}),
           ...(gpu ? { gpu } : {}),
@@ -120,9 +123,12 @@ function createToolDeps(): FactoryToolDeps {
         return { session: await factorySession(sessionId) };
       },
       endSession: async ({ sessionId }) => ({ session: await createMediaGenerationCore().factoryStopSession({ sessionId }) }),
-      createJob: async ({ sessionId, templateId, params }) => {
+      createJob: async ({ sessionId, templateId, params, planId, itemKey, seed }) => {
         const session = await factorySession(sessionId);
-        return { job: await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory" }) };
+        // BL-143: a job that names a plan attempt -- all checked by the plans module before the job exists.
+        if ((planId === undefined) !== (itemKey === undefined)) throw new DomainError({ code: "validation_failed", message: "Give planId and itemKey together (seed is optional)." });
+        const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
+        return { job: await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) }) };
       },
       getJob: async ({ jobId, sessionId }) => {
         const core = createMediaGenerationCore();
@@ -155,6 +161,9 @@ function createToolDeps(): FactoryToolDeps {
       list: async (input) => ({ plans: await createGenerationPlansCore().listPlans(input) }),
       todo: async (input) => ({ ...(await createGenerationPlansCore().todo(input)) }),
       report: async (input) => ({ ...(await createGenerationPlansCore().report(input, "factory")) }),
+      runStage: async (input) => ({ ...(await createGenerationPlansCore().runStage(input)) }),
+      rerun: async (input) => ({ ...(await createGenerationPlansCore().rerun(input)) }),
+      cloneGroup: async (input) => ({ ...(await createGenerationPlansCore().cloneGroup(input, "factory")) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

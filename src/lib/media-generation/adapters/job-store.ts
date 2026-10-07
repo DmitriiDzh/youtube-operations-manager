@@ -39,6 +39,10 @@ function jobFromDb(row: StoredMediaJob): StoredJobRow {
     createdAt: row.createdAt,
     submittedAt: row.submittedAt ?? null,
     finishedAt: row.finishedAt ?? null,
+    planId: row.planId ?? null,
+    planStageId: row.planStageId ?? null,
+    planItemKey: row.planItemKey ?? null,
+    planSeed: row.planSeed ?? null,
   };
 }
 

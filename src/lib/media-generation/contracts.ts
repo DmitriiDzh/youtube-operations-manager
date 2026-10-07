@@ -179,6 +179,8 @@ export type MediaSession = {
   error: string | null;
   /** BL-135: stop the pod by itself once every job of the session is finished and none followed for a minute. */
   releaseWhenDone: boolean;
+  /** BL-143 (ADR 0029): the generation plan this session works for (its whole cost counts there); null = none. */
+  planId: string | null;
 };
 
 /**
@@ -381,6 +383,8 @@ export type MediaJob = {
    * generation (job-progress.ts). Never estimated.
    */
   progress?: JobLiveProgress;
+  /** BL-143 (ADR 0029): the generation plan attempt this job is; null = not part of a plan. */
+  plan: { planId: string; stageId: string | null; itemKey: string | null; seed: number | null } | null;
 };
 
 /** Where this job's outputs are written locally, relative to the From YTM folder. */

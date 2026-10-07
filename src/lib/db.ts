@@ -8412,6 +8412,16 @@ export async function linkMediaJobToPlan(
   return rows.length > 0;
 }
 
+/** Sets a session's plan when it has none (or already this one); `true` when the session now works for this plan. */
+export async function linkMediaSessionToPlan(sessionId: string, planId: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .update(mediaSessions)
+    .set({ planId })
+    .where(and(eq(mediaSessions.id, sessionId), or(isNull(mediaSessions.planId), eq(mediaSessions.planId, planId))))
+    .returning({ id: mediaSessions.id });
+  return rows.length > 0;
+}
+
 export async function listMediaSessionsByPlan(planId: string, database: AppDb = db): Promise<Array<typeof mediaSessions.$inferSelect>> {
   return database.select().from(mediaSessions).where(eq(mediaSessions.planId, planId)).orderBy(asc(mediaSessions.createdAt)).limit(1000);
 }

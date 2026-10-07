@@ -97,6 +97,9 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       list: async () => (mediaCalls.push("plan.list"), { plans: [] }),
       todo: async (input) => (mediaCalls.push(`plan.todo:${(input as { planId: string }).planId}`), { short: [] }),
       report: async (input) => (mediaCalls.push(`plan.report:${(input as { planId: string }).planId}`), { stored: 1 }),
+      runStage: async (input) => (mediaCalls.push(`plan.runStage:${(input as { planId: string }).planId}`), { created: [] }),
+      rerun: async (input) => (mediaCalls.push(`plan.rerun:${(input as { planId: string }).planId}`), { created: [] }),
+      cloneGroup: async (input) => (mediaCalls.push(`plan.cloneGroup:${(input as { planId: string }).planId}`), { plan: {} }),
     },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
@@ -264,12 +267,15 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_media_stop_session",
     "factory_media_storage_status",
     "factory_media_sync_templates",
+    "factory_plan_clone_group",
     "factory_plan_close",
     "factory_plan_create",
     "factory_plan_get",
     "factory_plan_import",
     "factory_plan_list",
     "factory_plan_report",
+    "factory_plan_rerun",
+    "factory_plan_run_stage",
     "factory_plan_todo",
     "factory_plan_update",
   ]);
@@ -330,6 +336,9 @@ test("factory_get_capabilities reports the factory API version 1.5.0, READ and W
       "factory_plan_list",
       "factory_plan_todo",
       "factory_plan_report",
+      "factory_plan_run_stage",
+      "factory_plan_rerun",
+      "factory_plan_clone_group",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -348,6 +357,9 @@ test("factory_get_capabilities reports the factory API version 1.5.0, READ and W
       "factory_plan_update",
       "factory_plan_close",
       "factory_plan_report",
+      "factory_plan_run_stage",
+      "factory_plan_rerun",
+      "factory_plan_clone_group",
     ],
   });
 });
@@ -675,6 +687,9 @@ test("BL-143: factory_plan writes pass the device mutation gate first; get/list/
     ["factory_plan_update", { planId: "p1", title: "T2" }, "plan.update:p1"],
     ["factory_plan_close", { planId: "p1", status: "completed" }, "plan.close:p1"],
     ["factory_plan_report", { planId: "p1", rows: [{ stageId: "validate" }] }, "plan.report:p1"],
+    ["factory_plan_run_stage", { planId: "p1", sessionId: "s1" }, "plan.runStage:p1"],
+    ["factory_plan_rerun", { planId: "p1", sessionId: "s1", itemKey: "C1/F1" }, "plan.rerun:p1"],
+    ["factory_plan_clone_group", { planId: "p1", groupId: "C1", newGroupId: "C2" }, "plan.cloneGroup:p1"],
   ];
   for (const [name, args, reached] of writes) {
     toolDeps.mediaCalls.length = 0;

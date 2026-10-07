@@ -168,6 +168,29 @@ export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: gr
 
 export const rerunRequestInputSchema = z.object({ planId: planIdSchema, itemKey: itemKeySchema, attemptRef: attemptRefSchema.optional(), note: noteSchema.nullable().optional() }).strict();
 
+// -- running a stage (slice 2, AC-GP-09..12) -------------------------------------------------------------------------------
+
+export const runStageInputSchema = z
+  .object({ planId: planIdSchema, sessionId: z.string().min(1).max(64), itemKeys: z.array(itemKeySchema).min(1).max(PLAN_LIMITS.items).optional(), groupId: groupIdSchema.optional() })
+  .strict()
+  .refine((v) => !(v.itemKeys && v.groupId), "give itemKeys or groupId, not both");
+
+export const rerunInputSchema = z.object({ planId: planIdSchema, sessionId: z.string().min(1).max(64), itemKey: itemKeySchema, seed: seedSchema.optional() }).strict();
+
+export const cloneGroupInputSchema = z
+  .object({
+    planId: planIdSchema,
+    groupId: groupIdSchema,
+    newGroupId: groupIdSchema,
+    title: titleSchema.optional(),
+    paramsPatch: z.record(z.string().min(1).max(64), paramValueSchema).optional(),
+    seeds: z.array(seedSchema).max(PLAN_LIMITS.seedsPerItem).optional(),
+  })
+  .strict();
+
+/** A job created by hand (`factory_media_create_job`) that names a plan attempt. */
+export const jobLinkInputSchema = z.object({ planId: planIdSchema, stageId: stageIdSchema.optional(), itemKey: itemKeySchema, seed: seedSchema.nullable().optional(), sessionId: z.string().min(1).max(64), channelId: z.string().min(1).max(64) }).strict();
+
 // -- the `ytm-generation-plan/1` file (DEV-RESP-0008 §8, plus the factory's `group` field, FO-MSG-0008) ---------------------
 
 export const importFileSchema = z

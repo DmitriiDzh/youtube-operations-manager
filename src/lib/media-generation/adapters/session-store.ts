@@ -51,6 +51,7 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     capacityAttempts: row.capacityAttempts ?? null,
     capacityNextAttemptAt: row.capacityNextAttemptAt ?? null,
     capacityWaitUntil: row.capacityWaitUntil ?? null,
+    planId: row.planId ?? null,
   };
 }
 
