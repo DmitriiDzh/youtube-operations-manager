@@ -40,9 +40,9 @@ async function withDb(run: (client: Client) => Promise<void>): Promise<void> {
   }
 }
 
-// Bumped with each new migration (v67: BL-143 phase 2 peer verdicts).
-test("merge numbering: the current schema is 67 with both branches' tables", async () => {
-  assert.equal(SCHEMA_CURRENT_VERSION, 67);
+// Bumped with each new migration (v68: BL-143 phase 3 reference ids).
+test("merge numbering: the current schema is 68 with both branches' tables", async () => {
+  assert.equal(SCHEMA_CURRENT_VERSION, 68);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);

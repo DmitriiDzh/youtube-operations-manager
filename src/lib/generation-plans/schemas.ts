@@ -25,6 +25,8 @@ export const PLAN_LIMITS = Object.freeze({
   noteChars: 2000,
   detailChars: 200,
   importResults: 20_000,
+  references: 50,
+  referencesPerRow: 5,
 });
 
 export const planIdSchema = z.string().trim().regex(PLAN_ID_PATTERN, "a plan id: 2-80 letters, digits, '.', '_' or '-'");
@@ -56,6 +58,21 @@ export const itemSchema = z
   })
   .strict();
 
+export const referenceSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "a reference id: up to 64 letters, digits, '.', '_' or '-'"),
+    label: z.string().trim().min(1).max(200),
+    file: z
+      .string()
+      .min(1)
+      .max(500)
+      .refine((v) => !v.startsWith("/") && !v.includes("\\") && !/^[A-Za-z]:/.test(v) && !v.split("/").some((x) => x === "" || x === "." || x === ".."), "a path relative to the workspace's '99 Data Exchange/Sent to YTM/'"),
+    lufs: z.number().min(-70).max(10).nullable().optional(),
+    lra: z.number().min(0).max(100).nullable().optional(),
+    truePeak: z.number().min(-70).max(20).nullable().optional(),
+  })
+  .strict();
+
 const budgetSchema = z.object({ usd: z.number().min(0).max(100_000).nullable().optional(), gpuMinutes: z.number().min(0).max(1_000_000).nullable().optional() }).strict();
 
 export const createPlanInputSchema = z
@@ -68,6 +85,7 @@ export const createPlanInputSchema = z
     stages: z.array(stageSchema).min(1).max(PLAN_LIMITS.stages),
     groups: z.array(groupSchema).max(PLAN_LIMITS.groups).optional(),
     items: z.array(itemSchema).max(PLAN_LIMITS.items).optional(),
+    references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
   })
   .strict();
 export type CreatePlanInput = z.infer<typeof createPlanInputSchema>;
@@ -87,6 +105,9 @@ export const updatePlanInputSchema = z
     removeStageIds: z.array(stageIdSchema).max(PLAN_LIMITS.stages).optional(),
     removeGroupIds: z.array(groupIdSchema).max(PLAN_LIMITS.groups).optional(),
     removeItemKeys: z.array(itemKeySchema).max(PLAN_LIMITS.items).optional(),
+    /** An id already present replaces that reference. */
+    upsertReferences: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
+    removeReferenceIds: z.array(z.string().min(1).max(64)).max(PLAN_LIMITS.references).optional(),
   })
   .strict();
 export type UpdatePlanInput = z.infer<typeof updatePlanInputSchema>;
@@ -146,6 +167,8 @@ export const reportRowSchema = z
       .refine((m) => Object.keys(m).length <= PLAN_LIMITS.metricsPerRow, `at most ${PLAN_LIMITS.metricsPerRow} metrics`)
       .optional(),
     ...verdictFieldsSchema,
+    /** Plan references nearest to this attempt (FO-MSG-0009: the validator's nearest library tracks). */
+    referenceIds: z.array(z.string().min(1).max(64)).max(PLAN_LIMITS.referencesPerRow).optional(),
   })
   .strict();
 export type ReportRowInput = z.infer<typeof reportRowSchema>;
@@ -176,6 +199,8 @@ export const peerVerdictInputSchema = z
     ...verdictFieldsSchema,
   })
   .strict();
+
+export const referenceInputSchema = z.object({ planId: planIdSchema, id: z.string().min(1).max(64) }).strict();
 
 export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
 

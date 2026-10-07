@@ -12,7 +12,15 @@ export type ReviewPlayerHandle = {
   togglePlay(): void;
   seekBy(seconds: number): void;
   currentTime(): number;
+  /** For A/B: stop here, and resume from a given second. */
+  pause(): void;
+  playFrom(seconds: number): void;
 };
+
+/** BL-143 phase 3 (FO-MSG-0009 §4): a frequency the validator flagged (a ringing tone, a held note), drawn on the spectrogram. */
+export type FrequencyMark = { hz: number; label: string };
+export const SPECTROGRAM_MAX_HZ = 16_000;
+const SPECTROGRAM_HEIGHT = 128;
 
 /** "1:51.2" -- minutes, seconds and a tenth. Exported for its test. */
 export function formatPlayerTime(seconds: number): string {
@@ -56,10 +64,13 @@ export type MediaReviewPlayerProps = {
   spectrogram?: boolean;
   /** Called once the audio is decoded, with its channels (for measuring loudness in the browser). */
   onDecoded?: (audio: { channels: Float32Array[]; sampleRate: number }) => void;
+  /** Frequencies to mark on the spectrogram (only drawn while it is shown). */
+  frequencyMarks?: FrequencyMark[];
 };
 
-export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded }, ref) {
+export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [] }, ref) {
   const container = useRef<HTMLDivElement | null>(null);
+  const spectrogramContainer = useRef<HTMLDivElement | null>(null);
   const wave = useRef<WaveSurferLike | null>(null);
   const regions = useRef<RegionsLike | null>(null);
   const [state, setState] = useState<{ time: number; duration: number; playing: boolean; error: string | null; ready: boolean }>({ time: 0, duration: 0, playing: false, error: null, ready: false });
@@ -80,6 +91,16 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       w.setTime(Math.max(0, Math.min(w.getDuration(), w.getCurrentTime() + seconds)));
     },
     currentTime: () => wave.current?.getCurrentTime() ?? 0,
+    pause: () => {
+      const w = wave.current as (WaveSurferLike & { pause?: () => void }) | null;
+      w?.pause?.();
+    },
+    playFrom: (seconds) => {
+      const w = wave.current as (WaveSurferLike & { play?: () => Promise<void> }) | null;
+      if (!w) return;
+      w.setTime(Math.max(0, Math.min(w.getDuration(), seconds)));
+      void w.play?.();
+    },
   }));
 
   // One wavesurfer per file; the library is imported on demand (it touches `window`, so never during prerendering).
@@ -94,7 +115,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       ]);
       if (cancelled || !container.current) return;
       const plugin = RegionsPlugin.create();
-      const extra = spectro ? [spectro.default.create({ height: 128, labels: true, frequencyMax: 16_000 })] : [];
+      const extra = spectro && spectrogramContainer.current ? [spectro.default.create({ container: spectrogramContainer.current, height: SPECTROGRAM_HEIGHT, labels: true, frequencyMax: SPECTROGRAM_MAX_HZ })] : [];
       instance = WaveSurfer.create({
         container: container.current,
         url: src,
@@ -169,6 +190,19 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
   return (
     <div className="space-y-2">
       <div ref={container} className="min-h-24 w-full rounded-md bg-zinc-950" />
+      <div className={spectrogram ? "relative w-full" : "hidden"} style={{ height: SPECTROGRAM_HEIGHT }}>
+        <div ref={spectrogramContainer} className="absolute inset-0" />
+        {spectrogram &&
+          frequencyMarks
+            .filter((m) => m.hz > 0 && m.hz < SPECTROGRAM_MAX_HZ)
+            .map((m, i) => (
+              <div key={i} className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-red-400/80" style={{ top: `${(1 - m.hz / SPECTROGRAM_MAX_HZ) * 100}%` }}>
+                <span className="absolute right-1 -top-4 rounded bg-zinc-950/80 px-1 text-[10px] text-red-300">
+                  {m.label} {Math.round(m.hz)} Hz
+                </span>
+              </div>
+            ))}
+      </div>
       <div className="flex items-center gap-3 text-xs text-zinc-400">
         <button type="button" onClick={() => void wave.current?.playPause()} disabled={!state.ready} className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
           {state.playing ? "Pause" : "Play"}

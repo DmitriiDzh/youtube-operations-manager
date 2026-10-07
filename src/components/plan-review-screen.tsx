@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PlanCheck, PlanMarker, PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import type { PlanCheck, PlanMarker, PlanReference, PlanReviewEntry } from "@/lib/generation-plans/contracts";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
-import { MediaReviewPlayer, formatPlayerTime, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
+import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
 
 // BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A + the owner's additions, msg 1939): the owner's listening review of a plan --
@@ -25,7 +25,7 @@ export const REVIEW_REASONS = [
   "unwanted beat / drums",
 ] as const;
 
-export type ReviewKeyAction = "play" | "back" | "forward" | "accept" | "reject" | "next" | "previous" | "mark" | { rating: number };
+export type ReviewKeyAction = "play" | "back" | "forward" | "accept" | "reject" | "next" | "previous" | "mark" | "ab" | { rating: number };
 
 /** The keyboard map (Space, ←/→, A, R, N, P, M, 1-9 and 0 for 10). Exported for its test. */
 export function reviewKeyAction(key: string): ReviewKeyAction | null {
@@ -51,6 +51,9 @@ export function reviewKeyAction(key: string): ReviewKeyAction | null {
     case "m":
     case "M":
       return "mark";
+    case "b":
+    case "B":
+      return "ab";
     default:
       if (/^[0-9]$/.test(key)) return { rating: key === "0" ? 10 : Number(key) };
       return null;
@@ -75,6 +78,33 @@ export function reportedLufs(entry: Pick<PlanReviewEntry, "stages">): number | n
   return null;
 }
 
+/**
+ * FO-MSG-0009 §4: the frequencies the validator flagged -- steady artefact tones (a ringing check's `detail`, e.g.
+ * "tones 2751, 8500 Hz") and a held note (`metrics.held_hz`) -- for the spectrogram. Exported for its test.
+ */
+export function frequencyMarksOf(entry: Pick<PlanReviewEntry, "stages">): FrequencyMark[] {
+  const marks: FrequencyMark[] = [];
+  for (const stage of entry.stages) {
+    for (const check of stage.checks) {
+      if (!/ring/i.test(check.id) || !check.detail) continue;
+      for (const m of check.detail.matchAll(/(\d+(?:\.\d+)?)/g)) {
+        const hz = Number(m[1]);
+        if (hz >= 20 && hz <= 24_000) marks.push({ hz, label: "ringing" });
+      }
+    }
+    const held = stage.metrics.held_hz;
+    if (typeof held === "number" && held >= 20 && held <= 24_000) marks.push({ hz: held, label: "held note" });
+  }
+  return marks.filter((m, i) => marks.findIndex((x) => x.hz === m.hz && x.label === m.label) === i);
+}
+
+/** The references to offer for A/B: this attempt's nearest ones first (`referenceIds` of its rows), then the plan's others. */
+export function referencesFor(entry: Pick<PlanReviewEntry, "stages">, references: PlanReference[]): Array<PlanReference & { nearest: boolean }> {
+  const nearestIds = new Set(entry.stages.flatMap((s) => s.referenceIds ?? []));
+  const nearest = references.filter((r) => nearestIds.has(r.id)).map((r) => ({ ...r, nearest: true }));
+  return [...nearest, ...references.filter((r) => !nearestIds.has(r.id)).map((r) => ({ ...r, nearest: false }))];
+}
+
 /** The validator findings that have a time, as waveform ranges. Exported for its test. */
 export function findingMarkers(entry: Pick<PlanReviewEntry, "stages">): ReviewMarker[] {
   return entry.stages.flatMap((stage) =>
@@ -96,7 +126,7 @@ const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [
 export type PeerReviewSource = { deviceId: string; hostname: string | null };
 
 type PeerQueueResponse = {
-  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]> }> }>;
+  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[] }> }>;
   outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
 };
 
@@ -129,6 +159,11 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const [matchLoudness, setMatchLoudness] = useState(true);
   const [showSpectrogram, setShowSpectrogram] = useState(false);
   const [measured, setMeasured] = useState<{ src: string; lufs: number | null } | null>(null);
+  // BL-143 phase 3 (FO-MSG-0009): the plan's reference tracks and the A/B state (B = the chosen reference is playing).
+  const [references, setReferences] = useState<PlanReference[]>([]);
+  const [referenceId, setReferenceId] = useState<string | null>(null);
+  const [onB, setOnB] = useState(false);
+  const referenceAudio = useRef<HTMLAudioElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const player = useRef<ReviewPlayerHandle | null>(null);
@@ -141,8 +176,9 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     (): Promise<PlanReviewEntry[]> =>
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
-          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; message?: string } & Partial<PeerQueueResponse>;
+          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; message?: string } & Partial<PeerQueueResponse>;
           if (!res.ok) throw new Error(data.message ?? `Failed to load the review queue (${res.status})`);
+          setReferences(peerDevice ? (data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId)?.references ?? []) : (data.references ?? []));
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
           return list;
@@ -161,14 +197,21 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
   const waiting = entries?.filter((e) => e.verdict === null).length ?? 0;
 
+  /** Back to A whenever the attempt changes (the reference never keeps playing under another track). */
+  const stopB = useCallback(() => {
+    referenceAudio.current?.pause();
+    setOnB(false);
+  }, []);
+
   const go = useCallback(
     (to: number) => {
       if (!entries || entries.length === 0) return;
+      stopB();
       setIndex(((to % entries.length) + entries.length) % entries.length);
       setDraft(emptyDraft());
       setMessage(null);
     },
-    [entries]
+    [entries, stopB]
   );
 
   const submit = useCallback(
@@ -185,6 +228,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
         const next = nextWaitingIndex(list, here >= 0 ? here : index);
         setDraft(emptyDraft());
+        stopB();
         setIndex(next >= 0 ? next : Math.max(0, here));
       } catch (error) {
         setMessage({ tone: "error", text: error instanceof Error ? error.message : "The verdict could not be saved" });
@@ -192,7 +236,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, index, load, onChanged]
+    [base, busy, draft, entry, index, load, onChanged, stopB]
   );
 
   const mark = useCallback(() => {
@@ -210,6 +254,31 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       setMessage({ tone: "error", text: error instanceof Error ? error.message : "The request could not be saved" });
     }
   };
+
+  const offered = entry ? referencesFor(entry, references) : [];
+  const chosen = offered.find((r) => r.id === referenceId) ?? offered[0] ?? null;
+
+  /**
+   * FO-MSG-0009 / AC-GP3-07: A/B -- switch between the track (A) and the chosen reference (B) at the same position, each at its
+   * matched loudness (the reference's own LUFS when given).
+   */
+  const toggleAB = useCallback(() => {
+    const audio = referenceAudio.current;
+    if (!audio || !chosen) return;
+    if (!onB) {
+      const t = player.current?.currentTime() ?? 0;
+      player.current?.pause();
+      audio.currentTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(t, audio.duration) : t;
+      audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
+      void audio.play().catch(() => setMessage({ tone: "error", text: "The reference could not be played on this device" }));
+      setOnB(true);
+    } else {
+      const t = audio.currentTime;
+      audio.pause();
+      player.current?.playFrom(t);
+      setOnB(false);
+    }
+  }, [chosen, matchLoudness, onB]);
 
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
@@ -232,10 +301,11 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       else if (action === "next") go(index + 1);
       else if (action === "previous") go(index - 1);
       else if (action === "mark") mark();
+      else if (action === "ab") toggleAB();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, index, mark, submit]);
+  }, [go, index, mark, submit, toggleAB]);
 
   const markers = useMemo<ReviewMarker[]>(() => {
     if (!entry) return [];
@@ -296,6 +366,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 src={src}
                 markers={markers}
                 spectrogram={showSpectrogram}
+                frequencyMarks={hideFindings ? [] : frequencyMarksOf(entry)}
                 volume={matchLoudness ? matchedVolume(lufsOf) : 1}
                 onDecoded={(audio) => {
                   // Measured only when the validator gave no LUFS (AC-GP3-04).
@@ -306,6 +377,31 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 {lufsOf === null ? "Loudness unknown yet" : `Loudness ${lufsOf.toFixed(1)} LUFS (${reportedLufs(entry) !== null ? "validator" : "measured here"})`}
                 {matchLoudness && lufsOf !== null ? ` · played at ${Math.round(matchedVolume(lufsOf) * 100)} % to match ${LOUDNESS_TARGET_LUFS} LUFS` : ""}
               </p>
+              {chosen && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                  <span>Compare with</span>
+                  <select
+                    value={chosen.id}
+                    onChange={(e) => {
+                      stopB();
+                      setReferenceId(e.target.value);
+                    }}
+                    className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    {offered.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.nearest ? "★ " : ""}
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
+                    {onB ? `B: ${chosen.label} -- back to A (B)` : "A/B (B)"}
+                  </button>
+                  {offered.some((r) => r.nearest) && <span className="text-zinc-500">★ = nearest library track by the validator</span>}
+                  <audio ref={referenceAudio} src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`} preload="metadata" onEnded={() => setOnB(false)} className="hidden" />
+                </div>
+              )}
             </>
           ) : (
             <p className="text-sm text-zinc-500">Nothing to play for this attempt on this device.</p>
@@ -360,7 +456,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                   </button>
                 )}
               </div>
-              <p className="text-xs text-zinc-500">Space play/pause · ←/→ 5 s · A accept · R reject · N/P next/previous · M mark · 1–9, 0 = 10 rating</p>
+              <p className="text-xs text-zinc-500">Space play/pause · ←/→ 5 s · A accept · R reject · N/P next/previous · M mark · B A/B · 1–9, 0 = 10 rating</p>
               {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}
             </div>
             <div className="space-y-3 text-xs">

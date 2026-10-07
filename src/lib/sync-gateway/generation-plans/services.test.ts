@@ -30,7 +30,7 @@ test("AC-GP2-02: own report ignored; newer replaces older; older not accepted; f
   await assert.rejects(c.mergeIncoming(new TextEncoder().encode("{")), /unreadable JSON/);
   // A verdict naming an absolute or escaping job output path is not a valid report.
   const bad = report("win", "2026-10-07T11:45:00Z", {
-    plans: [{ planId: "p", title: "t", channelId: "UC", owner: "factory", status: "active", budget: { usd: null, gpuMinutes: null }, note: null, createdAt: "", updatedAt: "", closedAt: null, stages: [], groups: [], items: [], itemParams: {}, progress: {}, events: [], review: [{ itemKey: "a", groupId: null, attemptRef: "job:1", jobId: "1", seed: null, params: {}, stages: [], verdict: null, playable: true, jobOutput: "media/../../etc/passwd" }] }],
+    plans: [{ planId: "p", title: "t", channelId: "UC", owner: "factory", status: "active", budget: { usd: null, gpuMinutes: null }, note: null, createdAt: "", updatedAt: "", closedAt: null, stages: [], groups: [], items: [], itemParams: {}, references: [], progress: {}, events: [], review: [{ itemKey: "a", groupId: null, attemptRef: "job:1", jobId: "1", seed: null, params: {}, stages: [], verdict: null, playable: true, jobOutput: "media/../../etc/passwd" }] }],
   });
   await assert.rejects(c.mergeIncoming(bytes(bad)), /invalid generation plans report/);
   const old = core();

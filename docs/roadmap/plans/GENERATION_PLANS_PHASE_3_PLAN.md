@@ -43,9 +43,20 @@ The budget stays a warning only (Q2), so there is no hard stop.
 - **AC-GP3-06: region loop.** Drag on the waveform to select a range. "Loop" replays it until switched off or cleared. A
   selection never changes a verdict marker unless "Mark" is pressed.
 
+**A/B and validator highlights** (FO-MSG-0009; the owner's OK was relayed by the operator).
+- **AC-GP3-07: reference tracks.**
+  - A plan carries up to 50 `references: [{ id, label, file (relative to Sent to YTM), lufs?, lra?, truePeak? }]`, set through
+    create/update/import.
+  - A report row may name up to 5 `referenceIds` of that plan; an unknown one is refused with `plan_mismatch`.
+  - `GET .../reference?id=` serves only a file the plan names, with the same rules as an audition.
+  - The review screen offers the attempt's nearest references first, then the plan's others. "A/B" (key B) switches between the
+    track and the reference at the same position, each at its matched loudness.
+- **AC-GP3-08: spectrogram marks.** The frequencies of a ringing check's `detail` and `metrics.held_hz` are marked on the
+  spectrogram. Repeats and dropouts arrive as `atSeconds` markers, as before.
+
 ## Slices (one branch `feature/generation-plans-phase-3`)
 
 1. Notices + summary badge (AC-01, 02).
 2. Agent read tools (AC-03).
 3. Listening tools (AC-04..06).
-4. A/B, after DEV-MSG-0003 is answered.
+4. A/B and spectrogram marks (AC-07, 08), schema v68.

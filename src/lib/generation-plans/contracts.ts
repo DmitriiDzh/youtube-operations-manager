@@ -43,7 +43,9 @@ export type PlanItem = {
   /** One job per seed (`fixed`), or the seeds tried in order (`until_accepted`). */
   seeds: number[];
 };
-export type PlanDefinition = { stages: PlanStage[]; groups: PlanGroup[]; items: PlanItem[] };
+/** BL-143 phase 3 (FO-MSG-0009): a reference track for A/B listening, copied by the factory into the channel's Sent to YTM. */
+export type PlanReference = { id: string; label: string; file: string; lufs: number | null; lra: number | null; truePeak: number | null };
+export type PlanDefinition = { stages: PlanStage[]; groups: PlanGroup[]; items: PlanItem[]; references?: PlanReference[] };
 
 export type GenerationPlan = {
   planId: string;
@@ -86,6 +88,8 @@ export type PlanResultRow = {
   auditionFile: string | null;
   checks: PlanCheck[];
   metrics: Record<string, number | string | boolean | null>;
+  /** BL-143 phase 3: plan references nearest to this attempt (the validator's nearest library tracks), for A/B. */
+  referenceIds?: string[];
   at: string;
 };
 

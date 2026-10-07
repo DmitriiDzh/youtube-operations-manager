@@ -61,6 +61,19 @@ Plan: `docs/roadmap/plans/GENERATION_PLANS_PHASE_2_PLAN.md`; scope decided by th
   - Peer verdicts are applied once per `verdictId`. A verdict dated more than 5 minutes ahead is not taken.
   - Outgoing verdicts are not part of a device snapshot: a handoff drops the ones not yet applied.
 
+## Phase 3 (2026-10-07): notices, agent reads, listening tools
+
+Plan: `docs/roadmap/plans/GENERATION_PLANS_PHASE_3_PLAN.md`.
+
+- **Notices** are derived from progress, like everything else.
+- **Channel agents** read their own channel's plans only: no params and no error texts (Agent API 3.8.0).
+- **Listening tools:**
+  - loudness match (BS.1770, computed in the browser when the validator gives no LUFS);
+  - the spectrogram, with the validator's frequencies marked;
+  - region loop;
+  - A/B against reference tracks the factory copies into the channel's Sent to YTM and names in the plan (schema v68
+    `reference_ids_json`). They are served by id only, under the audition's rules.
+
 ## Alternatives rejected
 
 - **A status file written by the factory** (DEV-RESP-0008 §3 option A): it would have two writers.

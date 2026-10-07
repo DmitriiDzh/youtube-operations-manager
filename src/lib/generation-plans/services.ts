@@ -9,6 +9,7 @@ import {
   type PlanEvent,
   type PlanGroup,
   type PlanItem,
+  type PlanReference,
   type PlanResultRow,
   type PlanStage,
   type PlanStatus,
@@ -220,6 +221,10 @@ function normalizeItem(item: {
   };
 }
 
+function normalizeReference(r: { id: string; label: string; file: string; lufs?: number | null; lra?: number | null; truePeak?: number | null }): PlanReference {
+  return { id: r.id, label: r.label, file: r.file, lufs: r.lufs ?? null, lra: r.lra ?? null, truePeak: r.truePeak ?? null };
+}
+
 function normalizeGroup(group: { groupId: string; title?: string; dependsOn?: string | null; note?: string | null }): PlanGroup {
   return { groupId: group.groupId, title: group.title ?? group.groupId, dependsOn: group.dependsOn ?? null, note: group.note ?? null };
 }
@@ -237,6 +242,7 @@ export function validateDefinition(definition: PlanDefinition): void {
     if (g.dependsOn !== null && (g.dependsOn === g.groupId || !groupIds.has(g.dependsOn))) problems.push(`group ${g.groupId} depends on unknown group ${g.dependsOn}`);
   }
   for (const id of dup(definition.items.map((i) => i.itemKey))) problems.push(`item ${id} appears twice`);
+  for (const id of dup((definition.references ?? []).map((r) => r.id))) problems.push(`reference ${id} appears twice`);
   for (const item of definition.items) {
     if (item.groupId !== null && !groupIds.has(item.groupId)) problems.push(`item ${item.itemKey} is in unknown group ${item.groupId}`);
     if (new Set(item.seeds).size !== item.seeds.length) problems.push(`item ${item.itemKey} lists a seed twice`);
@@ -294,6 +300,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!stage) throw planMismatch(`Plan ${row.id} has no stage ${r.stageId}`, { planId: row.id, stageId: r.stageId });
       if (stage.kind === "in_app") throw planMismatch(`Stage ${r.stageId} is fed by the plan's jobs, not by reports`, { planId: row.id, stageId: r.stageId });
       if (!items.has(r.itemKey)) throw planMismatch(`Plan ${row.id} has no item ${r.itemKey}`, { planId: row.id, itemKey: r.itemKey });
+      const unknownRef = (r.referenceIds ?? []).find((id) => !(row.definition.references ?? []).some((x) => x.id === id));
+      if (unknownRef) throw planMismatch(`Plan ${row.id} has no reference ${unknownRef}; add it with factory_plan_update first`, { planId: row.id, referenceId: unknownRef });
     }
   }
 
@@ -321,6 +329,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         detail: c.detail ?? null,
       })),
       metrics: r.metrics ?? {},
+      referenceIds: r.referenceIds ?? [],
       at,
     };
   }
@@ -433,6 +442,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         stages: parsed.stages as PlanStage[],
         groups: (parsed.groups ?? []).map(normalizeGroup),
         items: (parsed.items ?? []).map(normalizeItem),
+        references: (parsed.references ?? []).map(normalizeReference),
       };
       validateDefinition(definition);
       const at = now();
@@ -544,13 +554,18 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           items = items.some((x) => x.itemKey === i.itemKey) ? items.map((x) => (x.itemKey === i.itemKey ? next : x)) : [...items, next];
         }
         for (const g of parsed.removeGroupIds ?? []) if (items.some((i) => i.groupId === g)) throw planInvalid(`Group ${g} still has items`, { groupId: g });
+        let references = (d.references ?? []).filter((r) => !(parsed.removeReferenceIds ?? []).includes(r.id));
+        for (const r of parsed.upsertReferences ?? []) {
+          const next = normalizeReference(r);
+          references = references.some((x) => x.id === r.id) ? references.map((x) => (x.id === r.id ? next : x)) : [...references, next];
+        }
         return {
           ...(parsed.title !== undefined ? { title: parsed.title } : {}),
           ...(parsed.note !== undefined ? { note: parsed.note ?? null } : {}),
           ...(parsed.budget !== undefined
             ? { budgetUsd: parsed.budget.usd === undefined ? row.budgetUsd : parsed.budget.usd, budgetGpuMinutes: parsed.budget.gpuMinutes === undefined ? row.budgetGpuMinutes : parsed.budget.gpuMinutes }
             : {}),
-          definition: { stages, groups, items },
+          definition: { stages, groups, items, references },
         };
       });
       await record(updated.id, "plan_updated", actor);
@@ -813,6 +828,16 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       throw planMismatch(`That device reports no file for ${input.itemKey} ${input.attemptRef}`, { planId: input.planId });
     },
 
+    /** A reference of ANOTHER device's plan, named only by that device's latest report. */
+    async resolvePeerReference(input: { deviceId: string; planId: string; id: string }): Promise<{ channelId: string; kind: "sent"; relativePath: string }> {
+      const report = deps.peers ? (await deps.peers.listPeerReports()).find((r) => r.deviceId === input.deviceId) : undefined;
+      const plan = report?.plans.find((p) => p.planId === input.planId);
+      if (!plan) throw planNotFound(input.planId);
+      const reference = plan.references.find((r) => r.id === input.id);
+      if (!reference) throw planMismatch(`That device's plan ${input.planId} has no reference ${input.id}`, { planId: input.planId, referenceId: input.id });
+      return { channelId: plan.channelId, kind: "sent", relativePath: reference.file };
+    },
+
     /** The verdicts this device carries for other devices (the last 30 days). */
     async outgoingVerdicts(): Promise<SharedVerdict[]> {
       return deps.store.listPeerVerdicts(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString());
@@ -922,7 +947,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
             const name = output?.localPath ? output.localPath.split(/[\\/]/).pop() : undefined;
             if (name && /^[^/\\]{1,200}$/.test(name) && name !== "." && name !== ".." && /^[A-Za-z0-9_-]{1,64}$/.test(entry.jobId)) jobOutput = `media/${entry.jobId}/${name}`;
           }
-          review.push({ ...entry, params: {}, jobOutput });
+          const shareRow = (r: PlanResultRow) => ({ ...r, referenceIds: r.referenceIds ?? [] });
+          review.push({ ...entry, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput });
         }
         // A null-prototype map: an item key like "constructor" must be an ordinary key here.
         const itemParams: Record<string, PlanItem["params"]> = Object.create(null) as Record<string, PlanItem["params"]>;
@@ -943,6 +969,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateLabel: i.templateLabel ?? i.templateId, targetCount: i.targetCount, mode: i.mode })),
           progress: progress as unknown as Record<string, unknown>,
           itemParams,
+          references: plan.references ?? [],
           events,
           review,
         });
@@ -1003,11 +1030,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * BL-143 slice 4: the attempts the owner reviews -- every attempt that passed the stage before the owner review --
      * waiting ones first, each with what the earlier stages reported and the owner's verdict if given.
      */
-    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[] }> {
+    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[]; references: PlanReference[] }> {
       const { planId } = parseWithSchema(getPlanInputSchema.pick({ planId: true }), input, "plan id");
       const row = await requirePlan(planId);
       const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-      return { planId, entries: reviewEntries(row, jobs, results) };
+      return { planId, entries: reviewEntries(row, jobs, results), references: row.definition.references ?? [] };
     },
 
     /**
@@ -1028,6 +1055,14 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const playable = outputs.find((o) => o.localPath && (o.kind === "audio" || o.kind === "video" || o.kind === "image")) ?? outputs.find((o) => o.localPath);
       if (!playable?.localPath) throw planMismatch(`Job ${job.id} has no output on this device`, { jobId: job.id });
       return { channelId: row.channelId, kind: "job", jobId: job.id, localPath: playable.localPath };
+    },
+
+    /** BL-143 phase 3 (FO-MSG-0009): a plan reference's file for A/B -- named only by the plan, never by the request. */
+    async resolveReference(input: { planId: string; id: string }): Promise<{ channelId: string; kind: "sent"; relativePath: string }> {
+      const row = await requirePlan(input.planId);
+      const reference = (row.definition.references ?? []).find((r) => r.id === input.id);
+      if (!reference) throw planMismatch(`Plan ${row.id} has no reference ${input.id}`, { planId: row.id, referenceId: input.id });
+      return { channelId: row.channelId, kind: "sent", relativePath: reference.file };
     },
 
     /** A session started for a plan (`factory_media_start_session` with planId): the plan is active and of that channel. */

@@ -780,3 +780,23 @@ test("AC-GP3-02: the waiting count is this device's active plans plus other devi
   await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" });
   assert.deepEqual(await d.win.summary(), { waitingReview: 0, local: 0, otherDevices: 0 }, "sent from here: no longer waiting");
 });
+
+// -- phase 3, A/B references (FO-MSG-0009, GENERATION_PLANS_PHASE_3_PLAN.md AC-GP3-07) ----------------------------------
+
+test("AC-GP3-07: plan references are kept as given; a report may name only existing ones; a reference resolves to its Sent to YTM file", async () => {
+  const s = setup();
+  const ref = { id: "koto-01", label: "Koto-led, slow", file: "reference/koto-01.mp3", lufs: -13.2 };
+  await s.services.createPlan({ ...basePlan(), references: [ref] });
+  const got = await s.services.getPlan({ planId: "R-0001-S1-music" });
+  assert.deepEqual(got.plan.references, [{ ...ref, lra: null, truePeak: null }]);
+  await assert.rejects(s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:a", result: "accepted", referenceIds: ["piano-02"] }] }), refused("plan_mismatch"));
+  await s.services.updatePlan({ planId: "R-0001-S1-music", upsertReferences: [{ id: "piano-02", label: "Felt piano", file: "reference/piano-02.mp3" }] });
+  await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:a", result: "accepted", referenceIds: ["piano-02"] }] });
+  assert.deepEqual([...s.results.values()][0].referenceIds, ["piano-02"]);
+  assert.deepEqual(await s.services.resolveReference({ planId: "R-0001-S1-music", id: "koto-01" }), { channelId: CHANNEL, kind: "sent", relativePath: "reference/koto-01.mp3" });
+  await assert.rejects(s.services.resolveReference({ planId: "R-0001-S1-music", id: "nope" }), refused("plan_mismatch"));
+  await assert.rejects(s.services.createPlan({ ...basePlan(), planId: "p2", references: [{ id: "x", label: "x", file: "../escape.mp3" }] }), refused("validation_failed"));
+  await assert.rejects(s.services.createPlan({ ...basePlan(), planId: "p3", references: [ref, ref] }), refused("plan_invalid"), "duplicate id");
+  await s.services.updatePlan({ planId: "R-0001-S1-music", removeReferenceIds: ["koto-01"] });
+  assert.deepEqual((await s.services.getPlan({ planId: "R-0001-S1-music" })).plan.references?.map((r) => r.id), ["piano-02"]);
+});

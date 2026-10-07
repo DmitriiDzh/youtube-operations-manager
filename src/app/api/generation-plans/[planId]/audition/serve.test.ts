@@ -6,7 +6,7 @@ import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { DomainError } from "@/lib/shared-domain";
 import { createExchangeFs, resolveFromYtmJobFile, resolveSentToYtmFile } from "@/lib/workspace-exchange";
-import { createAuditionGetHandler, parseRange } from "./serve";
+import { createAuditionGetHandler, createReferenceGetHandler, parseRange } from "./serve";
 
 // AC-GP-14 (GENERATION_PLANS_PLAN.md §4): the audition route serves only the file of the plan's own attempt, found by the
 // plans core and proven inside the channel workspace; Range works; a missing file is a 404 with a message.
@@ -102,4 +102,32 @@ test("parseRange follows RFC 9110 single ranges", () => {
   assert.deepEqual(parseRange("bytes=0-5000", 1000), { start: 0, end: 999 }, "the end is clamped");
   for (const bad of ["bytes=1000-", "bytes=5-2", "bytes=-0", "bytes=-", "items=0-1"]) assert.equal(parseRange(bad, 1000), "invalid", bad);
   assert.equal(parseRange("bytes=0-1,5-6", 1000), null, "multi-range: the whole file (RFC 9110 lets a server ignore it)");
+});
+
+test("AC-GP3-07: a reference is served by its id only (the plan names the file), with the same checks and Range", async () => {
+  const w = await workspaceWithFiles();
+  try {
+    const unavailable = (reason: string) => new Error(reason);
+    const h = createReferenceGetHandler({
+      getSession: async () => ({ user: { id: "u1" } }),
+      async resolveReference({ id }) {
+        if (id !== "koto") throw new DomainError({ code: "plan_mismatch", message: "no such reference" });
+        return { channelId: "UC1", kind: "sent", relativePath: "R-0001/C1/final-1.mp3" };
+      },
+      workspaceOf: async () => w.ws,
+      resolveSentFile: (workspace, relativePath) => resolveSentToYtmFile({ workspace, relativePath, fs: createExchangeFs(), validateWorkspacePath: async () => ({ ok: true }), isPathInsideOrEqual, unavailable }),
+      resolveJobFile: async () => {
+        throw new Error("never");
+      },
+    });
+    const call = (query: string, headers: Record<string, string> = {}) => h(new Request(`http://127.0.0.1:3000/api/generation-plans/P1/reference?${query}`, { headers: { host: "127.0.0.1:3000", ...headers } }), { params: Promise.resolve({ planId: "P1" }) });
+    const ok = await call("id=koto", { range: "bytes=0-9" });
+    assert.equal(ok.status, 206);
+    assert.equal((await ok.arrayBuffer()).byteLength, 10);
+    assert.equal((await call("id=other")).status, 422);
+    assert.equal((await call("id=koto&file=/etc/passwd")).status, 400);
+    assert.equal((await call("")).status, 400);
+  } finally {
+    await w.cleanup();
+  }
 });

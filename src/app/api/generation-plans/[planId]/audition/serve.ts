@@ -60,7 +60,19 @@ export type AuditionDeps = {
   resolveJobFile(workspace: string, jobId: string, filePath: string): Promise<{ path: string; bytes: number }>;
 };
 
+type ResolvedTarget = { channelId: string } & ({ kind: "sent"; relativePath: string } | { kind: "job"; jobId: string; localPath: string });
+
+/** The audition of one attempt: `?itemKey=&attemptRef=` (nothing else). */
 export function createAuditionGetHandler(deps: AuditionDeps) {
+  return createPlanFileGetHandler(deps, ["itemKey", "attemptRef"], (planId, q) => deps.resolveAudition({ planId, itemKey: q.itemKey, attemptRef: q.attemptRef }));
+}
+
+/** BL-143 phase 3 (FO-MSG-0009): a plan reference for A/B, `?id=` -- the same checks, Range and types as an audition. */
+export function createReferenceGetHandler(deps: Omit<AuditionDeps, "resolveAudition"> & { resolveReference(input: { planId: string; id: string }): Promise<ResolvedTarget> }) {
+  return createPlanFileGetHandler(deps, ["id"], (planId, q) => deps.resolveReference({ planId, id: q.id }));
+}
+
+function createPlanFileGetHandler(deps: Omit<AuditionDeps, "resolveAudition">, names: string[], resolveTarget: (planId: string, query: Record<string, string>) => Promise<ResolvedTarget>) {
   return async function GET(request: Request, context: { params: Promise<{ planId: string }> }): Promise<Response> {
     // A local file leaves this route only for a browser on this computer (ADR 0029 §5): loopback Host and Origin.
     if (!isLoopbackRequest(request.headers)) return NextResponse.json({ error: "forbidden", message: "Local files are served only to this computer" }, { status: 403 });
@@ -69,12 +81,15 @@ export function createAuditionGetHandler(deps: AuditionDeps) {
     try {
       const { planId } = await context.params;
       const url = new URL(request.url);
-      const extra = [...url.searchParams.keys()].filter((k) => k !== "itemKey" && k !== "attemptRef");
-      if (extra.length > 0) return NextResponse.json({ error: "validation_failed", message: `Unknown query parameter ${extra[0]}: only itemKey and attemptRef` }, { status: 400 });
-      const itemKey = url.searchParams.get("itemKey");
-      const attemptRef = url.searchParams.get("attemptRef");
-      if (!itemKey || !attemptRef) return NextResponse.json({ error: "validation_failed", message: "itemKey and attemptRef are required" }, { status: 400 });
-      const target = await deps.resolveAudition({ planId, itemKey, attemptRef });
+      const extra = [...url.searchParams.keys()].filter((k) => !names.includes(k));
+      if (extra.length > 0) return NextResponse.json({ error: "validation_failed", message: `Unknown query parameter ${extra[0]}: only ${names.join(" and ")}` }, { status: 400 });
+      const query: Record<string, string> = {};
+      for (const name of names) {
+        const value = url.searchParams.get(name);
+        if (!value) return NextResponse.json({ error: "validation_failed", message: `${names.join(" and ")} ${names.length > 1 ? "are" : "is"} required` }, { status: 400 });
+        query[name] = value;
+      }
+      const target = await resolveTarget(planId, query);
       const workspace = await deps.workspaceOf(target.channelId);
       if (!workspace) return NextResponse.json({ error: "not_found", message: "This channel has no workspace folder on this device, so the file cannot be played here." }, { status: 404 });
       let file: { path: string; bytes: number };
