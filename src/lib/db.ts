@@ -7,6 +7,7 @@ import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
+import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -4865,62 +4866,24 @@ export async function importReachReport(
   database: AppDb = db
 ): Promise<ReachReportImportResult> {
   const newCreate = Date.parse(input.createTime);
-  return database.transaction(async (tx) => {
-    const samePeriod = await tx
-      .select()
-      .from(reportingReportFiles)
-      .where(
-        and(
-          eq(reportingReportFiles.channelId, input.channelId),
-          eq(reportingReportFiles.reportTypeId, input.reportTypeId),
-          eq(reportingReportFiles.startTime, input.startTime),
-          eq(reportingReportFiles.endTime, input.endTime),
-          eq(reportingReportFiles.status, "imported")
-        )
-      );
-
-    if (samePeriod.some((file) => Date.parse(file.createTime) >= newCreate)) {
-      await tx.insert(reportingReportFiles).values({
-        reportId: input.reportId,
-        channelId: input.channelId,
-        reportTypeId: input.reportTypeId,
-        jobId: input.jobId,
-        startTime: input.startTime,
-        endTime: input.endTime,
-        createTime: input.createTime,
-        rowCount: 0,
-        status: "superseded",
-      });
-      return { outcome: "superseded_by_newer" } as const;
-    }
-
-    const olderIds = samePeriod.map((file) => file.reportId);
-    if (olderIds.length > 0) {
-      await tx.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, olderIds));
-      await tx
-        .update(reportingReportFiles)
-        .set({ status: "superseded" })
-        .where(inArray(reportingReportFiles.reportId, olderIds));
-    }
-
-    for (const row of input.rows) {
-      await tx
-        .insert(channelReachDaily)
-        .values({
-          channelId: input.channelId,
-          date: row.date,
-          videoId: row.videoId,
-          impressions: row.impressions,
-          ctr: row.ctr,
-          sourceReportId: input.reportId,
-        })
-        .onConflictDoUpdate({
-          target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
-          set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId },
-        });
-    }
-
-    await tx.insert(reportingReportFiles).values({
+  // The decision is read first; every write then runs as ONE atomic batch (BL-151 re-review): a transaction with an await per
+  // row held the database lock while other writers of this process failed with SQLITE_BUSY (libsql is synchronous on the one
+  // Node thread). Behaviour is unchanged: a report older than one already imported for the period is recorded as superseded;
+  // otherwise the older reports' rows are replaced by this one's.
+  const samePeriod = await database
+    .select()
+    .from(reportingReportFiles)
+    .where(
+      and(
+        eq(reportingReportFiles.channelId, input.channelId),
+        eq(reportingReportFiles.reportTypeId, input.reportTypeId),
+        eq(reportingReportFiles.startTime, input.startTime),
+        eq(reportingReportFiles.endTime, input.endTime),
+        eq(reportingReportFiles.status, "imported")
+      )
+    );
+  const fileRow = (status: "imported" | "superseded", rowCount: number) =>
+    database.insert(reportingReportFiles).values({
       reportId: input.reportId,
       channelId: input.channelId,
       reportTypeId: input.reportTypeId,
@@ -4928,11 +4891,35 @@ export async function importReachReport(
       startTime: input.startTime,
       endTime: input.endTime,
       createTime: input.createTime,
-      rowCount: input.rows.length,
-      status: "imported",
+      rowCount,
+      status,
     });
-    return { outcome: "imported", replacedReports: olderIds.length } as const;
-  });
+
+  if (samePeriod.some((file) => Date.parse(file.createTime) >= newCreate)) {
+    await fileRow("superseded", 0);
+    return { outcome: "superseded_by_newer" } as const;
+  }
+
+  const olderIds = samePeriod.map((file) => file.reportId);
+  const writes: Array<BatchItem<"sqlite">> = [];
+  if (olderIds.length > 0) {
+    writes.push(database.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, olderIds)));
+    writes.push(database.update(reportingReportFiles).set({ status: "superseded" }).where(inArray(reportingReportFiles.reportId, olderIds)));
+  }
+  for (const row of input.rows) {
+    writes.push(
+      database
+        .insert(channelReachDaily)
+        .values({ channelId: input.channelId, date: row.date, videoId: row.videoId, impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId })
+        .onConflictDoUpdate({
+          target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
+          set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId },
+        })
+    );
+  }
+  writes.push(fileRow("imported", input.rows.length));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+  return { outcome: "imported", replacedReports: olderIds.length } as const;
 }
 
 export type StoredChannelReachRow = {
@@ -10584,8 +10571,13 @@ export async function importAnalyticsShareRows(t: AnalyticsShareTables, database
       )
     );
   }
+  // A peer's ROLLING run (its latest window, the one the staleness gate looks at) that saw no videos while this device has some
+  // is no coverage here. A channel-level history catch-up legitimately records 0 videos (its window ends before the rolling one)
+  // and must not mark the channel incomplete (re-review).
+  const latestEnd = new Map<string, string>();
+  for (const r of t.collectionRuns) if (r.end > (latestEnd.get(r.channelId) ?? "")) latestEnd.set(r.channelId, r.end);
   for (const r of t.collectionRuns) {
-    if (r.videoCount === 0 && (videosByChannel.get(r.channelId) ?? 0) > 0) incomplete.add(r.channelId);
+    if (r.videoCount === 0 && r.end === latestEnd.get(r.channelId) && (videosByChannel.get(r.channelId) ?? 0) > 0) incomplete.add(r.channelId);
   }
   for (const [channelId, date, name, value, at] of t.channelMetrics) {
     items.push(
@@ -10596,10 +10588,25 @@ export async function importAnalyticsShareRows(t: AnalyticsShareTables, database
       )
     );
   }
+  // A history marker means "this video's rows are complete from its publish floor through X". It is taken over only when this
+  // device's own rows plus the rows in this file make that true: this device already has a marker, and the file's rows for the
+  // video start no later than the day after it. Otherwise this device's catch-up would never fetch the gap (re-review).
+  const firstRowDate = new Map<string, string>();
+  for (const [, videoId, date] of t.videoMetrics) if (date < (firstRowDate.get(videoId) ?? "9999")) firstRowDate.set(videoId, date);
+  const historyIds = [...new Set(t.videoHistory.map((r) => r[0]))];
+  const localThrough = new Map<string, string>();
+  for (let i = 0; i < historyIds.length; i += IMPORT_BATCH_SIZE) {
+    for (const r of await database.all<{ video_id: string; history_through: string }>(sql`SELECT video_id, history_through FROM analytics_video_history WHERE video_id IN ${historyIds.slice(i, i + IMPORT_BATCH_SIZE)}`)) {
+      localThrough.set(String(r.video_id), String(r.history_through));
+    }
+  }
+  const dayAfter = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
   for (const [videoId, channelId, through, at] of t.videoHistory) {
-    // Only for a video stored here, and only when it reaches a later date (history is collected forward from publication): a marker for a video without its rows would stop this device's own
-    // catch-up from ever fetching that history (review H2).
+    // Only for a video stored here, and only when it reaches a later date (history is collected forward from publication).
     if (!known.has(videoId)) continue;
+    const mine = localThrough.get(videoId);
+    const first = firstRowDate.get(videoId);
+    if (mine === undefined || first === undefined || first > dayAfter(mine)) continue;
     items.push(
       database.run(
         sql`INSERT INTO analytics_video_history (video_id, channel_id, history_through, updated_at) VALUES (${videoId}, ${channelId}, ${through}, ${at})

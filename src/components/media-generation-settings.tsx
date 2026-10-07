@@ -1923,7 +1923,7 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
           gpuTypeId: draft.gpuTypeId || null,
           cloudType: draft.cloudType,
           templateId: draft.templateId || null,
-        }, overview.settings, overview.settings.gpuOnDemandPricePerHr === null ? ["gpuTypeId"] : [])),
+        }, overview.settings, overview.settings.gpuTypeId !== null && overview.settings.gpuOnDemandPricePerHr === null ? ["gpuTypeId"] : [])),
       });
       setNotice("Saved.");
       await onChanged();
@@ -2490,6 +2490,16 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
   const [retrySeconds, setRetrySeconds] = useState(String(settings.capacityRetrySeconds));
   const [waitMinutes, setWaitMinutes] = useState(String(settings.capacityWaitMinutes));
   const [busy, setBusy] = useState(false);
+  // Re-read when the settings change (a save, or a value applied from the other computer), like the other Setup cards: a form
+  // still showing the old value would send it back with the next save and undo the other computer's change (BL-150 review).
+  const fallbackKey = settings.gpuFallbackIds.join("\n");
+  useEffect(() => {
+    setFallbackText(fallbackKey);
+    setMinVram(settings.gpuMinVramGb === null ? "" : String(settings.gpuMinVramGb));
+    setMaxPrice(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
+    setRetrySeconds(String(settings.capacityRetrySeconds));
+    setWaitMinutes(String(settings.capacityWaitMinutes));
+  }, [fallbackKey, settings.gpuMinVramGb, settings.gpuMaxPricePerHr, settings.capacityRetrySeconds, settings.capacityWaitMinutes]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 

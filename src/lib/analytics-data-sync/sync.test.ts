@@ -235,3 +235,37 @@ test("M3/M4: a peer's restated report replaces the older one's rows; a peer's fa
       b.client.close();
     }
   }));
+
+// Re-review: a history marker says "rows complete from the publish floor through X". B takes it over only when its own rows plus
+// the file's rows make that true; otherwise B's catch-up would never fetch the gap. A channel-level catch-up run (0 videos, an
+// older window) is not "the peer saw no videos".
+test("a history marker is taken over only when it closes onto B's own history; a catch-up run with 0 videos keeps the channel complete", () =>
+  withTempDir("analytics-share-", async (root) => {
+    const b = await computer(root, "b");
+    try {
+      const empty = { channelMetrics: [], channelStamps: [], reportFiles: [], reachRows: [], syncAttempts: [], jobs: [] };
+      // No marker on B yet: A's marker (through 10-05) is not taken -- B lacks the history before the rows in the file.
+      const noMarker = await importAnalyticsShareRows({ ...empty, videoMetrics: [["UC1", "v1", "2026-10-05", "views", 3, T]], videoHistory: [["v1", "UC1", "2026-10-05", T]], collectionRuns: [] }, b.database);
+      assert.deepEqual(noMarker.incompleteChannels, []);
+      assert.equal(await count(b.database, "analytics_video_history"), 0);
+      // B's own marker through 10-01; the file has v1's rows from 10-02: contiguous, so the marker advances to 10-05.
+      await b.database.run(sql`INSERT INTO analytics_video_history (video_id, channel_id, history_through, updated_at) VALUES ('v1', 'UC1', '2026-10-01', ${T - 9000})`);
+      await importAnalyticsShareRows({ ...empty, videoMetrics: [["UC1", "v1", "2026-10-02", "views", 3, T]], videoHistory: [["v1", "UC1", "2026-10-05", T]], collectionRuns: [] }, b.database);
+      const [h] = await b.database.all<{ t: string }>(sql`SELECT history_through AS t FROM analytics_video_history WHERE video_id = 'v1'`);
+      assert.equal(h.t, "2026-10-05");
+      // A gap (rows only from 10-20, B through 10-05): not taken.
+      await importAnalyticsShareRows({ ...empty, videoMetrics: [["UC1", "v1", "2026-10-20", "views", 3, T]], videoHistory: [["v1", "UC1", "2026-10-25", T]], collectionRuns: [] }, b.database);
+      const [h2] = await b.database.all<{ t: string }>(sql`SELECT history_through AS t FROM analytics_video_history WHERE video_id = 'v1'`);
+      assert.equal(h2.t, "2026-10-05");
+      // A channel-level catch-up run (0 videos, older window) next to the rolling run: the channel stays complete.
+      const runs = [
+        { channelId: "UC1", start: "2026-09-08", end: "2026-10-06", videoCount: 2, upserts: 4, skippedJson: "[]", ranAt: T, channelLevel: 1 },
+        { channelId: "UC1", start: "2025-01-01", end: "2026-09-07", videoCount: 0, upserts: 30, skippedJson: "[]", ranAt: T + 1, channelLevel: 1 },
+      ];
+      const withCatchUp = await importAnalyticsShareRows({ ...empty, videoMetrics: [], videoHistory: [], collectionRuns: runs, channelStamps: [["UC1", T]] }, b.database);
+      assert.deepEqual(withCatchUp.incompleteChannels, []);
+      assert.equal(await count(b.database, "analytics_collection_runs"), 2);
+    } finally {
+      b.client.close();
+    }
+  }));

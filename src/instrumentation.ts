@@ -241,7 +241,11 @@ async function startServerSession() {
       if (error instanceof Error && error.name === "ZodError") console.warn(`[media-sessions] the sessions report was not published: ${error.message}`);
     }
     try {
-      // BL-150: the Setup settings shared with the other devices -- applied here through Production's own validation.
+      // BL-150: the Setup settings shared with the other devices -- applied here through Production's own validation. Never
+      // during a snapshot import/migration or in recovery mode (it writes the settings), the gate the draft sync uses.
+      const { rawSqlClient: sqlClient } = await import("@/lib/db");
+      const { assertDeviceAvailableForMutation: assertAvailable } = await import("@/lib/device-mutation-gate");
+      await assertAvailable(sqlClient);
       await media.syncSharedSettings();
     } catch (error) {
       console.warn(`[media-settings] the shared settings were not checked: ${error instanceof Error ? error.message : String(error)}`);
