@@ -769,6 +769,24 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       return verdict;
     },
 
+    /**
+     * AC-GP2-05: what to play for an attempt of ANOTHER device's plan -- named only by that device's latest report: the
+     * latest reported `auditionFile` (relative to the channel's Sent to YTM), else the job output `media/<jobId>/<file>`
+     * relative to the channel's From YTM. Resolved later in THIS device's copy of the channel workspace.
+     */
+    async resolvePeerAudition(input: { deviceId: string; planId: string; itemKey: string; attemptRef: string }): Promise<{ channelId: string } & ({ kind: "sent"; relativePath: string } | { kind: "job"; jobId: string; localPath: string })> {
+      if (!deps.peers) throw planNotFound(input.planId);
+      const report = (await deps.peers.listPeerReports()).find((r) => r.deviceId === input.deviceId);
+      const plan = report?.plans.find((p) => p.planId === input.planId);
+      if (!plan) throw planNotFound(input.planId);
+      const entry = plan.review.find((e) => e.itemKey === input.itemKey && e.attemptRef === input.attemptRef);
+      if (!entry) throw planMismatch(`That device's plan ${input.planId} has nothing to play for ${input.itemKey} ${input.attemptRef}`, { planId: input.planId, itemKey: input.itemKey, attemptRef: input.attemptRef });
+      const reported = [...entry.stages].reverse().find((s) => s.auditionFile !== null);
+      if (reported?.auditionFile) return { channelId: plan.channelId, kind: "sent", relativePath: reported.auditionFile };
+      if (entry.jobOutput && entry.jobId) return { channelId: plan.channelId, kind: "job", jobId: entry.jobId, localPath: entry.jobOutput };
+      throw planMismatch(`That device reports no file for ${input.itemKey} ${input.attemptRef}`, { planId: input.planId });
+    },
+
     /** The verdicts this device carries for other devices (the last 30 days). */
     async outgoingVerdicts(): Promise<SharedVerdict[]> {
       return deps.store.listPeerVerdicts(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString());

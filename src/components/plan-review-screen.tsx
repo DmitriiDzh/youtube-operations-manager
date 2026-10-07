@@ -82,7 +82,31 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
 type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
 
-export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: string; onClose: () => void; onChanged?: () => void }) {
+/** BL-143 phase 2: the queue of ANOTHER device's plan, from its report, with the verdicts sent from here still waiting. */
+export type PeerReviewSource = { deviceId: string; hostname: string | null };
+
+type PeerQueueResponse = {
+  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[] }> }>;
+  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
+};
+
+/**
+ * A peer plan's queue: the owning device's entries, where a verdict sent from here and not yet shown applied there counts as
+ * given ("sent, waiting for <device>"). Exported for its test.
+ */
+export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, planId: string): PlanReviewEntry[] {
+  const plan = data.devices.find((d) => d.deviceId === source.deviceId)?.plans.find((p) => p.planId === planId);
+  if (!plan) return [];
+  const device = source.hostname ?? source.deviceId;
+  return plan.review.map((entry) => {
+    if (entry.verdict) return entry;
+    const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.itemKey === entry.itemKey && v.attemptRef === entry.attemptRef).at(-1);
+    if (!sent) return entry;
+    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `sent, waiting for ${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
+  });
+}
+
+export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
   const [entries, setEntries] = useState<PlanReviewEntry[] | null>(null);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
@@ -90,16 +114,18 @@ export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: strin
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const player = useRef<ReviewPlayerHandle | null>(null);
-  const base = `/api/generation-plans/${encodeURIComponent(planId)}`;
+  const peerDevice = source?.deviceId;
+  const peerName = source?.hostname ?? null;
+  const base = peerDevice ? `/api/generation-plans/peers/${encodeURIComponent(peerDevice)}/${encodeURIComponent(planId)}` : `/api/generation-plans/${encodeURIComponent(planId)}`;
 
   /** The queue, freshest from the server; `[]` (with the message shown) when it cannot be read. */
   const load = useCallback(
     (): Promise<PlanReviewEntry[]> =>
-      fetch(`${base}/review`)
+      fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
-          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; message?: string };
+          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; message?: string } & Partial<PeerQueueResponse>;
           if (!res.ok) throw new Error(data.message ?? `Failed to load the review queue (${res.status})`);
-          const list = data.entries ?? [];
+          const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
           return list;
         })
@@ -107,7 +133,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: strin
           setMessage({ tone: "error", text: error instanceof Error ? error.message : "Failed to load the review queue" });
           return [];
         }),
-    [base]
+    [base, peerDevice, peerName, planId]
   );
 
   useEffect(() => {
@@ -206,7 +232,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: strin
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-base font-semibold text-zinc-100">Review · {planId}</h3>
+        <h3 className="text-base font-semibold text-zinc-100">
+          Review · {planId}
+          {source ? <span className="ml-2 text-xs font-normal text-zinc-400">on {source.hostname ?? source.deviceId} · your verdicts are sent there</span> : null}
+        </h3>
         <span className="text-xs text-zinc-400">{entries ? `${waiting} waiting · ${entries.length} in the queue` : "Loading…"}</span>
         <div className="ml-auto flex items-center gap-3">
           <ToggleSwitch label="Blind (hide the validator until my verdict)" checked={blind} onChange={setBlind} />
@@ -233,6 +262,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: strin
             {entry.verdict && (
               <span className={`ml-auto text-xs ${entry.verdict.result === "accepted" ? "text-emerald-400" : "text-red-400"}`}>
                 {entry.verdict.reportedBy === "owner" ? "your" : "relayed"} verdict: {entry.verdict.result}
+                {entry.verdict.note?.startsWith("sent, waiting for") ? ` · ${entry.verdict.note}` : ""}
                 {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
               </span>
             )}
@@ -282,9 +312,11 @@ export function PlanReviewScreen({ planId, onClose, onChanged }: { planId: strin
                 <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-md bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50">
                   Reject (R)
                 </button>
-                <button type="button" onClick={() => void askRerun()} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
-                  Ask for a re-run
-                </button>
+                {!source && (
+                  <button type="button" onClick={() => void askRerun()} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
+                    Ask for a re-run
+                  </button>
+                )}
               </div>
               <p className="text-xs text-zinc-500">Space play/pause · ←/→ 5 s · A accept · R reject · N/P next/previous · M mark · 1–9, 0 = 10 rating</p>
               {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}

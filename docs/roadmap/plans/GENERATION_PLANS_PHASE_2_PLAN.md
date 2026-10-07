@@ -53,7 +53,8 @@ computer today.
 ## 2. Acceptance criteria (written before the code)
 
 - AC-GP2-01: a report is built only from this device's plans, has no absolute path and no item `params`, and respects every bound.
-  A plan closed more than 30 days ago is not in it.
+  The review entries do carry their item's `params`, as generation details for the review screen. A plan closed more than
+  30 days ago is not in it.
 - AC-GP2-02: merge rules as `media-sessions`:
   - its own report is ignored;
   - a newer report replaces an older one; an older one is not accepted;

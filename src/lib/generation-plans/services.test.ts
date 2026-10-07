@@ -719,3 +719,19 @@ test("AC-GP2-03: a verdict on a peer plan is refused for an unknown device or pl
   await assert.rejects(d.win.recordPeerVerdict(base), refused("plan_closed"));
   assert.equal(d.winBase.peerVerdicts.length, 0);
 });
+
+test("AC-GP2-05 (service): another device's attempt plays its latest reported auditionFile, else its job output; nothing else", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  // The Mac's report had no output for j1 (no media port output here): nothing to play.
+  await assert.rejects(d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), refused("plan_mismatch"));
+  d.reports.mac.plans[0].review[0].jobOutput = "media/j1/take.mp3";
+  assert.deepEqual(await d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), { channelId: CHANNEL, kind: "job", jobId: "j1", localPath: "media/j1/take.mp3" });
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "postprocess", itemKey: "C1/F1", attemptRef: "job:j1", result: "done", auditionFile: "R-0001/C1/final.mp3" }] });
+  await d.publish("mac", d.mac);
+  assert.deepEqual(await d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), { channelId: CHANNEL, kind: "sent", relativePath: "R-0001/C1/final.mp3" });
+  await assert.rejects(d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j2" }), refused("plan_mismatch"));
+  await assert.rejects(d.win.resolvePeerAudition({ deviceId: "linux", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), refused("plan_not_found"));
+});

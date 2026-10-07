@@ -41,3 +41,19 @@ test("player time reads m:ss.t", () => {
   assert.equal(formatPlayerTime(0), "0:00.0");
   assert.equal(formatPlayerTime(Number.NaN), "0:00.0");
 });
+
+// BL-143 phase 2 (GENERATION_PLANS_PHASE_2_PLAN.md AC-GP2-03/06): another device's queue counts a verdict sent from here as
+// given ("sent, waiting for <device>") until that device's report shows it applied.
+test("peer queue: a sent verdict marks the entry as waiting for the owning device; an applied one comes from the report", async () => {
+  const { peerQueue } = await import("./plan-review-screen");
+  const entry = (attemptRef: string, verdict: unknown = null) => ({ itemKey: "C1/F1", groupId: "C1", attemptRef, jobId: null, seed: null, params: {}, stages: [], verdict, playable: true }) as never;
+  const data = {
+    devices: [{ deviceId: "mac", hostname: "Mac", plans: [{ planId: "P", review: [entry("job:1"), entry("job:2"), entry("job:3", { result: "accepted", reportedBy: "owner", note: "(from Windows PC)" })] }] }],
+    outgoing: [{ planId: "P", ownerDeviceId: "mac", itemKey: "C1/F1", attemptRef: "job:2", result: "rejected" as const, rating: 5, at: "2026-10-07T12:00:00.000Z" }],
+  };
+  const queue = peerQueue(data, { deviceId: "mac", hostname: "Mac" }, "P");
+  assert.equal(queue[0].verdict, null);
+  assert.deepEqual([queue[1].verdict?.result, queue[1].verdict?.note, queue[1].verdict?.rating], ["rejected", "sent, waiting for Mac", 5]);
+  assert.equal(queue[2].verdict?.note, "(from Windows PC)");
+  assert.deepEqual(peerQueue(data, { deviceId: "linux", hostname: null }, "P"), []);
+});

@@ -5,7 +5,7 @@ import type { PlanEvent, PlanStageCounts, PlanStageKind, PlanView } from "@/lib/
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
-import { PlanReviewScreen } from "./plan-review-screen";
+import { PlanReviewScreen, type PeerReviewSource } from "./plan-review-screen";
 
 // BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Production → Plans. Every number comes from the plans core, which derives
 // it from the jobs, sessions and results when read -- this view only shows it. Polls while the tab is open.
@@ -15,6 +15,23 @@ const primaryButton = "rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium 
 const secondaryButton = "rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50";
 
 type PlanDetail = PlanView & { events: PlanEvent[]; cursor: string };
+
+/** BL-143 phase 2: another device's plans as its report shows them (read-only here). */
+type PeerDevicePlans = {
+  deviceId: string;
+  hostname: string | null;
+  updatedAt: string;
+  stale: boolean;
+  plans: Array<{ planId: string; title: string; status: string; channelId: string; progress: { stages?: Array<{ stageId: string; title: string; kind: PlanStageKind; counts: PlanStageCounts }>; spend?: { usd: number }; items?: Array<{ waitingReview: number }> }; review: Array<{ verdict: unknown }>; groups: Array<{ groupId: string; title: string; note: string | null }> }>;
+};
+
+/** "2 min ago" / "1 h ago" for a report's age. Exported for its test. */
+export function describeAge(updatedAt: string, now: number): string {
+  const minutes = Math.max(0, Math.round((now - Date.parse(updatedAt)) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  return `${Math.round(minutes / 60)} h ago`;
+}
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -109,7 +126,8 @@ export function PlansPanel({ active }: { active: boolean }) {
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedRef = useRef<string | null>(null);
-  const [reviewing, setReviewing] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState<{ planId: string; source?: PeerReviewSource } | null>(null);
+  const [peers, setPeers] = useState<PeerDevicePlans[]>([]);
 
   const load = useCallback(() => {
     void requestJson<{ plans: PlanView[] }>("/api/generation-plans").then(
@@ -118,6 +136,11 @@ export function PlansPanel({ active }: { active: boolean }) {
         setError(null);
       },
       (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load the plans")
+    );
+    // BL-143 phase 2: the other devices' plans; a failure here never hides this device's own plans.
+    void requestJson<{ devices: PeerDevicePlans[] }>("/api/generation-plans/peers").then(
+      (data) => setPeers(data.devices),
+      () => setPeers([])
     );
     const planId = selectedRef.current;
     if (planId) {
@@ -147,7 +170,7 @@ export function PlansPanel({ active }: { active: boolean }) {
 
   const shown = (plans ?? []).filter((p) => (filter === "active" ? p.plan.status === "active" : p.plan.status !== "active"));
 
-  if (reviewing) return <PlanReviewScreen planId={reviewing} onClose={() => setReviewing(null)} onChanged={load} />;
+  if (reviewing) return <PlanReviewScreen planId={reviewing.planId} source={reviewing.source} onClose={() => setReviewing(null)} onChanged={load} />;
 
   return (
     <div className="space-y-4">
@@ -202,7 +225,8 @@ export function PlansPanel({ active }: { active: boolean }) {
         </ul>
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
-      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={setReviewing} />}
+      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={(planId) => setReviewing({ planId })} />}
+      {peers.some((d) => d.plans.length > 0) && <PeerPlansCard devices={peers} onReview={(planId, source) => setReviewing({ planId, source })} />}
       {selected && !detail && <p className="text-xs text-zinc-500">Loading the plan…</p>}
     </div>
   );
@@ -455,6 +479,72 @@ function GroupRow({
         )
       )}
       {error && <p className="text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+/** BL-143 phase 2 (AC-GP2-06): the other devices' plans, read-only -- progress as that device reported it, and listening. */
+function PeerPlansCard({ devices, onReview }: { devices: PeerDevicePlans[]; onReview: (planId: string, source: PeerReviewSource) => void }) {
+  const [now] = useState(() => Date.now());
+  return (
+    <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+        Plans on other devices
+        <InfoTooltip>Plans the Factory Operator runs on another computer, as that computer last reported them (read-only here). You can listen and give verdicts; they are sent to that computer, which applies them. The audio plays from this computer&rsquo;s copy of the channel folder.</InfoTooltip>
+      </h3>
+      {devices
+        .filter((d) => d.plans.length > 0)
+        .map((d) => (
+          <div key={d.deviceId} className="space-y-2">
+            <p className="text-xs text-zinc-400">
+              {d.hostname ?? d.deviceId} · reported {describeAge(d.updatedAt, now)}
+              {d.stale ? <span className="ml-1 text-amber-300">(stale: that computer has not reported for a while)</span> : null}
+            </p>
+            <ul className="space-y-2">
+              {d.plans.map((p) => {
+                const generate = p.progress.stages?.find((s) => s.kind === "in_app");
+                const bar = generate ? describeStage(generate.kind, generate.counts) : null;
+                const waiting = p.review.filter((e) => e.verdict === null).length;
+                return (
+                  <li key={p.planId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-2 text-sm">
+                      <span className="font-medium text-zinc-100">{p.title}</span>
+                      <span className="font-mono text-xs text-zinc-500">{p.planId}</span>
+                      {p.status !== "active" && <span className="text-xs text-zinc-400">{p.status}</span>}
+                      <span className="ml-auto text-xs text-zinc-400">${(p.progress.spend?.usd ?? 0).toFixed(2)}</span>
+                      {p.status === "active" && waiting > 0 && (
+                        <button type="button" onClick={() => onReview(p.planId, { deviceId: d.deviceId, hostname: d.hostname })} className={primaryButton}>
+                          Review {waiting} waiting
+                        </button>
+                      )}
+                    </div>
+                    {bar && (
+                      <div className="flex items-center gap-2 text-xs text-zinc-400">
+                        <div className="w-40 shrink-0">
+                          <Bar percent={bar.percent} />
+                        </div>
+                        generated {bar.value} of {bar.total}
+                      </div>
+                    )}
+                    {(p.progress.stages ?? []).filter((s) => s.kind !== "in_app").map((s) => {
+                      const st = describeStage(s.kind, s.counts);
+                      return (
+                        <div key={s.stageId} className="text-xs text-zinc-500">
+                          {s.title}: {st.words}
+                        </div>
+                      );
+                    })}
+                    {p.groups.filter((g) => g.note).map((g) => (
+                      <div key={g.groupId} className="text-xs text-zinc-400">
+                        {g.title}: {g.note}
+                      </div>
+                    ))}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
     </div>
   );
 }

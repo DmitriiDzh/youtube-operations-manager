@@ -2937,3 +2937,12 @@ nothing while a node works before its first step, so such a stretch shows only t
     `resolveFromYtmJobFile`, which accepts a file only inside `From YTM/media/<jobId>` after realpath.
   - It serves allowlisted types with Range support.
   - The player (`media-review-player.tsx`) loads `wavesurfer.js` and its regions plugin on mount and knows nothing about plans.
+
+- **Phase 2 (other devices):**
+  - `src/lib/sync-gateway/per-device-report` holds the shared report mechanics, used by `media-sessions` and `generation-plans`.
+    Each device writes only its own report and keeps each peer's latest. A report older than the stored one, one dated in the
+    future, or an invalid one is refused; a peer silent for 7 days is forgotten.
+  - On the media watcher tick, `publishGenerationPlansShare` (in `generation-plans/index.ts`) first runs `applyPeerVerdicts`,
+    then publishes `buildSharedPlans()` together with the outgoing verdicts.
+  - A peer's audition is resolved by `resolvePeerAudition` from that peer's report, then proven inside this device's workspace
+    by the same `workspace-exchange` resolvers.
