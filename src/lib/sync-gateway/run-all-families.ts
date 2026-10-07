@@ -4,6 +4,7 @@ import { createEditorialProfileSyncRunnerForProduction } from "./editorial-profi
 import { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";
 import { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
 import { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
+import { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -34,7 +35,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -42,8 +43,10 @@ async function runAllOnce() {
     runAndRecord("media_sessions", () => createMediaSessionsSyncRunnerForProduction().runSyncCycle()),
     // BL-143 phase 2: this device's generation plans (and its verdicts on others' plans) out, the other devices' in.
     runAndRecord("generation_plans", () => createGenerationPlansSyncRunnerForProduction().runSyncCycle()),
+    // BL-150: the shared Production → Setup settings (one Automerge document; media-generation applies it on its own tick).
+    runAndRecord("media_settings", () => createMediaSettingsSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OperationLockControl } from "@/components/operation-lock-control";
 import { DeviceSyncDivergenceCard } from "@/components/device-sync-divergence-card";
+import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
 
 type UnresolvedRow = { batchId: string; ledgerRowId: string; videoId: string; status: string };
 
@@ -26,7 +27,7 @@ type SnapshotSummary = {
  * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4) -- mirrors `src/lib/db.ts`'s own `SyncFamily` type,
  * kept as a local structural type rather than importing a server-only module into a client
  * component. */
-type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans";
+type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings";
 
 const FAMILY_LABELS: Record<SyncFamily, string> = {
   change_drafts: "Change drafts",
@@ -34,6 +35,7 @@ const FAMILY_LABELS: Record<SyncFamily, string> = {
   ai_connections: "AI connections",
   media_sessions: "RunPod sessions",
   generation_plans: "Generation plans",
+  media_settings: "Production settings",
 };
 
 type SyncFamilyStatusView = {
@@ -132,27 +134,13 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
   const [changeDraftConflicts, setChangeDraftConflicts] = useState<UnifiedConflict[]>([]);
   const [editorialProfileConflicts, setEditorialProfileConflicts] = useState<UnifiedConflict[]>([]);
   const [aiConnectionConflicts, setAiConnectionConflicts] = useState<UnifiedConflict[]>([]);
-  const conflicts = [...changeDraftConflicts, ...editorialProfileConflicts, ...aiConnectionConflicts];
 
   const [syncBusy, setSyncBusy] = useState(false);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
   const [syncPushErrors, setSyncPushErrors] = useState<Array<{ family: SyncFamily; channelId: string | null; reason: string }>>([]);
   const [syncPeersSkipped, setSyncPeersSkipped] = useState<PeerSkipped[]>([]);
 
-  const [pendingResolution, setPendingResolution] = useState<{
-    family: SyncFamily;
-    changeId?: string;
-    connectionId?: string;
-    field: string;
-    winningActorId: string;
-    value: string;
-  } | null>(null);
-  const [resolveBusy, setResolveBusy] = useState(false);
-  // A plain ref, not just the `resolveBusy` state: a rapid double-click can dispatch two click
-  // events before React re-renders with the updated `disabled`-driven UI, and both handler
-  // invocations would otherwise read `resolveBusy` from the same stale render's closure. A ref
-  // mutates synchronously, so the second invocation sees the lock immediately.
-  const resolveInFlight = useRef(false);
+  const conflictCenter = useConflictCenter(true);
   const [pendingAdoptPeer, setPendingAdoptPeer] = useState<{ family: SyncFamily; channelId: string | null; peerDeviceId: string } | null>(null);
   const [adoptBusy, setAdoptBusy] = useState(false);
   const [lastAdoptResult, setLastAdoptResult] = useState<string | null>(null);
@@ -327,68 +315,11 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       // Lower severity than the `refreshConflicts` case: `syncStatuses`' own per-row `lastError`
       // (rendered below) still shows each family's real status either way, so a lost banner
       // message here is not a total loss of signal.
-      await Promise.all([refreshConflicts(), refreshSyncStatuses()]);
+      await Promise.all([refreshConflicts(), refreshSyncStatuses(), conflictCenter.refresh()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
     } finally {
       setSyncBusy(false);
-    }
-  }
-
-  async function handleResolveConflict() {
-    if (!pendingResolution || resolveInFlight.current) return;
-    resolveInFlight.current = true;
-    setResolveBusy(true);
-    setError(null);
-    try {
-      // A bare `return` for the two per-channel families here (found by independent review)
-      // would leave the confirm dialog open with a "Use this version" button that silently does
-      // nothing -- `channelId` can flip to null between the dialog opening and this click
-      // (channel-info still loading, channel unlinked, Data API reads disabled). Throwing routes
-      // it through the same catch below (which itself already closes... no -- explicitly closing
-      // the dialog here too, since the conflict genuinely can't be resolved without a channel and
-      // leaving it open invites another dead click) gives the operator an actual explanation
-      // instead of a dead end.
-      if ((pendingResolution.family === "change_drafts" || pendingResolution.family === "editorial_profile") && !channelId) {
-        setPendingResolution(null);
-        throw new Error(
-          `No active channel -- can't resolve this ${pendingResolution.family === "change_drafts" ? "change-drafts" : "editorial-profile"} conflict without one.`
-        );
-      }
-      if (pendingResolution.family === "change_drafts") {
-        await fetchJson(`/api/channels/${channelId}/change-drafts/conflicts`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            changeId: pendingResolution.changeId,
-            field: pendingResolution.field,
-            winningActorId: pendingResolution.winningActorId,
-          }),
-        });
-      } else if (pendingResolution.family === "editorial_profile") {
-        await fetchJson(`/api/channels/${channelId}/editorial-profile/conflicts`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ field: pendingResolution.field, winningActorId: pendingResolution.winningActorId }),
-        });
-      } else {
-        await fetchJson("/api/ai-connections/conflicts", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            connectionId: pendingResolution.connectionId,
-            field: pendingResolution.field,
-            winningActorId: pendingResolution.winningActorId,
-          }),
-        });
-      }
-      setPendingResolution(null);
-      await refreshConflicts();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to resolve conflict");
-    } finally {
-      resolveInFlight.current = false;
-      setResolveBusy(false);
     }
   }
 
@@ -670,64 +601,11 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         )}
       </div>
 
+      {/* Owner, msgs 2011/2013: every difference between the computers on one screen -- the same one the startup window shows
+          (blocking there, not here). Every connected channel, not only the active one; the snapshot divergence has its own card above. */}
       <div>
-        <h2 className="mb-2 text-lg font-semibold">Conflicts</h2>
-        {conflicts.length > 0 ? (
-          <ul className="space-y-3">
-            {conflicts.map((conflict) => (
-              <li key={conflict.key} className="rounded-lg border border-red-800 bg-red-950/30 px-4 py-3">
-                <p className="mb-2 text-xs uppercase text-red-300">
-                  {FAMILY_LABELS[conflict.family]} &mdash; {conflict.subject}, field &ldquo;{conflict.field}&rdquo;
-                </p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {Object.entries(conflict.valuesByActor).map(([actor, value]) => (
-                    <div key={actor}>
-                      <p className="text-[10px] uppercase text-zinc-600">Version ({actor.slice(0, 8)})</p>
-                      <p className="whitespace-pre-wrap text-sm text-zinc-100">{String(value)}</p>
-                      {conflict.resolvable && (
-                        <button
-                          onClick={() =>
-                            setPendingResolution({
-                              family: conflict.family,
-                              changeId: conflict.changeId,
-                              connectionId: conflict.connectionId,
-                              field: conflict.field,
-                              winningActorId: actor,
-                              value: String(value),
-                            })
-                          }
-                          className="mt-1 rounded-md border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-500"
-                        >
-                          Use this version
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                {!conflict.resolvable && (
-                  <p className="mt-2 text-xs text-zinc-500">
-                    This field can&rsquo;t be resolved from this screen yet &mdash; contact support.
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-zinc-500">
-            {channelId ? "No unresolved conflicts for this channel or your AI connections." : "No unresolved AI-connection conflicts."}
-          </p>
-        )}
+        <ConflictCenter state={conflictCenter} hideDivergence />
       </div>
-
-      {pendingResolution && (
-        <ConfirmDialog
-          title="Resolve conflict?"
-          description={`This will overwrite the competing value(s) for "${pendingResolution.field}" with: "${pendingResolution.value}". This cannot be undone once synced to other devices.`}
-          confirmLabel={resolveBusy ? "Resolving..." : "Use this version"}
-          onCancel={() => setPendingResolution(null)}
-          onConfirm={handleResolveConflict}
-        />
-      )}
 
       {/* Visually separated (owner instruction, 2026-09-23: "отдельная карточка") from the
           continuous background sync above -- this is a fundamentally different mechanism: an

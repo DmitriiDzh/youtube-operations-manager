@@ -58,5 +58,9 @@ export { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-syn
 export { createGenerationPlansShareCoreForProduction, createGenerationPlansShareCore, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportSchema, jobOutputPathSchema } from "./generation-plans";
 export type { GenerationPlansReport, GenerationPlansShareCore, SharedPlan, SharedReviewEntry, SharedVerdict } from "./generation-plans";
 export { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
+// BL-150: the shared Production → Setup settings (one global Automerge document, an opaque map of values).
+export { createMediaSettingsCoreForProduction } from "./media-settings";
+export type { MediaSettingsCore, SettingConflict as MediaSettingConflict, SettingValue as MediaSettingValue } from "./media-settings";
+export { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
 
 export { runAllSyncFamiliesOnce } from "./run-all-families";

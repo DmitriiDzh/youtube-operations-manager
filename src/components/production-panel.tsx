@@ -1,6 +1,7 @@
 "use client";
 
 import type { PeerReviewSource } from "./plan-review-screen";
+import { SettingsSyncNotice } from "./settings-sync-notice";
 import { useCallback, useEffect, useState } from "react";
 import type { RunpodAccountBalance } from "@/lib/media-gateway";
 import type { MediaSessionLimits } from "@/lib/media-generation/contracts";
@@ -175,6 +176,7 @@ export function ProductionPanel({
         <WorkflowTemplatesCard />
       </div>
       <div className={tab === "setup" ? "max-w-3xl space-y-6" : "hidden"}>
+        <SettingsSyncNotice />
         <ReadinessBanner overview={overview} />
         <ComputeCard overview={overview} gatewayTraffic={gatewayTraffic} onChanged={refresh} />
         <VolumeCard overview={overview} onChanged={refresh} />

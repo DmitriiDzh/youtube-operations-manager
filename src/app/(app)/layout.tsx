@@ -11,6 +11,7 @@ import { OperationLockControl } from "@/components/operation-lock-control";
 import { AppChannelProvider, type ChannelInfo } from "@/components/app-channel";
 import { rememberablePath, sectionHref } from "@/components/section-tabs";
 import { LoadingOverlay } from "@/components/loading-overlay";
+import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
 import {
   INITIAL_STARTUP,
   STARTUP_STEPS,
@@ -241,6 +242,18 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   }, [switchingTo]);
   const switching = switchingTo !== null && channel?.id !== switchingTo;
 
+  // Owner, msgs 2011/2013: once the startup work is done, every difference between the two computers is decided before the
+  // app opens (the browser waits; the server, syncing and the operator do not). Re-read every few seconds while it is shown.
+  const startupDone = !startupInProgress(startup) || startupDismissed;
+  const conflicts = useConflictCenter(Boolean(userId) && startupDone);
+  const conflictsBlocking = conflicts.loaded && conflicts.total > 0;
+  const refreshConflictCenter = conflicts.refresh;
+  useEffect(() => {
+    if (!conflictsBlocking) return;
+    const id = setInterval(() => void refreshConflictCenter(), 5_000);
+    return () => clearInterval(id);
+  }, [conflictsBlocking, refreshConflictCenter]);
+
   // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
   // sidebar badge (AC-CRDT-08) stays current even while the operator is on an unrelated tab.
   useEffect(() => {
@@ -343,7 +356,14 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           onDismiss={() => setStartupDismissed(true)}
         />
       )}
-      {switching && (!startupInProgress(startup) || startupDismissed) && (
+      {conflictsBlocking && (
+        <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-zinc-950/40 py-10 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Choose what to keep">
+          <div className="w-[56rem] max-w-[94vw] rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
+            <ConflictCenter state={conflicts} blocking />
+          </div>
+        </div>
+      )}
+      {switching && !conflictsBlocking && (!startupInProgress(startup) || startupDismissed) && (
         <LoadingOverlay
           title="Switching channel…"
           steps={[{ key: "switch", label: "Loading the channel's data", status: { state: "running", detail: null } }]}

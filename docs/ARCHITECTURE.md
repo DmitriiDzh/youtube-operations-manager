@@ -2950,3 +2950,22 @@ nothing while a node works before its first step, so such a stretch shows only t
     then publishes `buildSharedPlans()` together with the outgoing verdicts.
   - A peer's audition is resolved by `resolvePeerAudition` from that peer's report, then proven inside this device's workspace
     by the same `workspace-exchange` resolvers.
+
+## 30. Shared Production settings and the conflict screen (BL-150, ADR 0030)
+
+- **Sync family.** `src/lib/sync-gateway/media-settings/` holds one global Automerge document, `{ format, version, settings: map }`.
+  - The genesis is deterministic (`genesisDocument()`: fixed actor, time 0, loaded as a copy so each device writes with its own actor). Independently started documents therefore merge.
+  - `scanForConflicts` drops values written identically on both sides.
+  - API: `publishChanged` (an owner edit, may settle a conflict), `seedMissing` (never overwrites), `resolveConflict` (one of the conflicting values only), and the runner hooks.
+  - It is registered in `run-all-families.ts` as `media_settings`.
+- **Applying in Production.** `src/lib/media-generation/settings-sync.ts` holds `SHARED_SETTING_FIELDS`, `ACCOUNT_BOUND_FIELDS` and `planPeerApply`, which is pure. `createSettingsSync().tick()` does the following on the media watcher tick (`src/instrumentation.ts`):
+  - seed;
+  - read;
+  - plan: conflicted fields are held, account-bound fields are held on another account;
+  - apply through `base.updateSettings`: the whole patch first, then each field alone on failure. A busy volume is retried; an invalid value is held until the shared value changes;
+  - record `settings_applied_from_peer`.
+- **Publishing a local edit.** `media-generation/index.ts` wraps `updateSettings` to publish only the fields that save changed. A failure to share never fails the save.
+- **UI.**
+  - `components/conflict-center.tsx` (`useConflictCenter`, `ConflictCenter`) reads every family's conflicts plus the snapshot divergence, and resolves through each family's own route. Its display helpers are in `conflict-values.ts`: labels, units, word and list diff.
+  - The `(app)` layout shows it blocking after the startup steps (`startup-progress.ts`, `loading-overlay.tsx`), and the Merge tab shows it non-blocking.
+  - Setup shows `settings-sync-notice.tsx`.

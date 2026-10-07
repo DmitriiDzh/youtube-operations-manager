@@ -52,6 +52,10 @@ export type AppPaths = {
    * (`src/lib/sync-gateway/editorial-profile/`, added 2026-09-22, `docs/roadmap/plans/
    * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3 -- its own document family, separate from
    * `changeDraftsDir` above, per the owner's "отдельными документами" decision). */
+  /** BL-150: the shared Production → Setup settings document (sync-gateway `media-settings`). */
+  mediaSettingsDocDir: string;
+  mediaSettingsSyncFallbackDir: string;
+  mediaSettingsDiscardedBackupsDir: string;
   editorialProfileDraftsDir: string;
   /** Local-only fallback exchange directory for the editorial-profile sync runner, mirroring
    * `changeDraftsSyncFallbackDir`'s identical reasoning. */

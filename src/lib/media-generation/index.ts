@@ -26,7 +26,8 @@ import { createVolumeLock } from "./volume-lock";
 import { createVolumeMigrationServices } from "./volume-migration";
 import { accountWideUsage, buildSessionsReport, deriveOtherDevices, stopPeerSession, type OtherDevicesView, type SessionJobsInput } from "./cross-device";
 import { podNameFor } from "./sessions";
-import { createMediaSessionsShareCoreForProduction, SHARED_CURRENT_JOBS_MAX } from "@/lib/sync-gateway";
+import { createMediaSessionsShareCoreForProduction, createMediaSettingsCoreForProduction, SHARED_CURRENT_JOBS_MAX, type MediaSettingValue } from "@/lib/sync-gateway";
+import { changedSharedFields, createSettingsSync } from "./settings-sync";
 
 type JobScheduling = "background" | "detached";
 
@@ -336,7 +337,54 @@ function buildCore(jobScheduling: JobScheduling) {
       },
       input
     );
-  return { ...base, ...sessions, ...jobs, ...models, ...migration, listControlEvents, listCapacityAttempts, publishSessionsShare, listOtherDevices, stopOtherDeviceSession };
+  // -- BL-150: the Setup settings shared with the other devices (sync-gateway `media-settings`) ------------------------------
+  const settingsSync = createSettingsSync({
+    shared: createMediaSettingsCoreForProduction(),
+    getSettings: () => base.getSettings(),
+    applyUpdate: (patch) => base.updateSettings(patch),
+    async sameAccount() {
+      const own = await runpodAccountId();
+      if (!own) return false;
+      const peers = await createMediaSessionsShareCoreForProduction().listPeerReports();
+      return peers.length > 0 && peers.every((p) => p.runpodAccountId === own);
+    },
+    record: (event) => createMediaControlEventSink().record({ actor: "sync", ...event }),
+    clock: { now },
+  });
+  /** An edit in Setup: validated and saved as before, then the fields it changed are shared (a failure to share never fails the save). */
+  const updateSettings = async (input: unknown) => {
+    const before = await base.getSettings();
+    const after = await base.updateSettings(input);
+    const changed = changedSharedFields(before, after);
+    if (Object.keys(changed).length > 0) {
+      await createMediaSettingsCoreForProduction()
+        .publishChanged(changed as Record<string, MediaSettingValue>)
+        .catch((error: unknown) => console.warn(`[media-settings] the change was saved here but not shared: ${error instanceof Error ? error.message : String(error)}`));
+    }
+    return after;
+  };
+  /** The owner picked one value of a conflicted setting (Merge, or the startup window): shared at once, applied here at once. */
+  const resolveSettingConflict = async (input: { field: string; value: MediaSettingValue }) => {
+    await createMediaSettingsCoreForProduction().resolveConflict(input);
+    return settingsSync.tick();
+  };
+
+  return {
+    ...base,
+    ...sessions,
+    ...jobs,
+    ...models,
+    ...migration,
+    updateSettings,
+    listControlEvents,
+    listCapacityAttempts,
+    publishSessionsShare,
+    listOtherDevices,
+    stopOtherDeviceSession,
+    syncSharedSettings: () => settingsSync.tick(),
+    getSettingsSyncStatus: () => settingsSync.status(),
+    resolveSettingConflict,
+  };
 }
 
 type MediaGenerationCoreInstance = ReturnType<typeof buildCore>;

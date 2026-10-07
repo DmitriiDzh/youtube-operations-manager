@@ -220,6 +220,12 @@ async function startServerSession() {
       if (error instanceof Error && error.name === "ZodError") console.warn(`[media-sessions] the sessions report was not published: ${error.message}`);
     }
     try {
+      // BL-150: the Setup settings shared with the other devices -- applied here through Production's own validation.
+      await media.syncSharedSettings();
+    } catch (error) {
+      console.warn(`[media-settings] the shared settings were not checked: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
       // BL-143 phase 2: this device's generation plans for the other devices (sync-gateway `generation-plans`).
       const { publishGenerationPlansShare } = await import("@/lib/generation-plans");
       await publishGenerationPlansShare();
