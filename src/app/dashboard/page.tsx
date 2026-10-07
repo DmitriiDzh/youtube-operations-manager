@@ -302,13 +302,7 @@ export default function Dashboard() {
   }, [userId]);
 
   const navItemsWithBadges = NAV_ITEMS.map((item) =>
-    item.value === "merge"
-      ? { ...item, badge: conflictCount }
-      : item.value === "research"
-        ? { ...item, badge: researchPending }
-        : item.value === "production"
-          ? { ...item, badge: plansWaiting }
-          : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "production" ? { ...item, badge: plansWaiting } : item
   );
 
   if (status === "loading") {
