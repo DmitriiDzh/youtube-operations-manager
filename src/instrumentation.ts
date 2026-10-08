@@ -301,8 +301,9 @@ async function startServerSession() {
   // browser session instead: Live writes are reset (RISK-09: they live only as long as a session), the process stays.
   // Pods keep running under the media watcher's own caps; the sync loop keeps publishing, so no final export is needed.
   const idleAction = resolveIdleAction();
+  const idleLogger = createDefaultLogger();
   const onIdle = createIdleHandler(idleAction, {
-    resetLiveWrites: resetQuietly,
+    resetLiveWrites: () => resetLiveWritesForNewServerSession(),
     // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
     stopPods: () => media.stopForShutdown(),
     flush: async () => {
@@ -310,8 +311,12 @@ async function startServerSession() {
       await tickQuietly({ force: true, exportOnly: true });
     },
     exit: () => process.exit(0),
-    onSessionEnded: () =>
-      createDefaultLogger().info({ event: "idle_shutdown.session_ended", context: { liveWritesReset: true } }),
+    onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: { liveWritesReset: true } }),
+    onSessionEndFailed: (error) =>
+      idleLogger.error({
+        event: "idle_shutdown.session_end_failed",
+        context: { reason: error instanceof Error ? error.message : String(error), retry: "next idle check" },
+      }),
   });
   startIdleShutdownWatcher({
     action: idleAction,
@@ -325,6 +330,6 @@ async function startServerSession() {
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },
-    onIdle: () => void onIdle(),
+    onIdle,
   });
 }

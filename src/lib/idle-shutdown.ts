@@ -73,8 +73,11 @@ export function resolveIdleAction(env: Record<string, string | undefined> = proc
 /**
  * The handler an expired idle window runs (`src/instrumentation.ts`), built here so each action's behaviour is tested.
  * `end-session` (BL-158): reset Live writes, then report -- it never stops pods, flushes or exits; the process goes on.
- * `exit` (BL-116): reset Live writes, stop a running generation pod (AC-P14-09), publish unexported changes, then exit --
- * in that order, and the exit happens even when an earlier step fails.
+ * Resolves false when the reset failed, so the watcher tries again: under the service nothing else would ever switch
+ * Live writes off (the process keeps renewing the session lease), unlike the exit below.
+ * `exit` (BL-116): reset Live writes (best effort: the process is going away and the lease lapses within its TTL), stop
+ * a running generation pod (AC-P14-09), publish unexported changes, then exit -- in that order, and the exit happens
+ * even when an earlier step fails.
  */
 export function createIdleHandler(
   action: IdleAction,
@@ -84,14 +87,29 @@ export function createIdleHandler(
     flush: () => Promise<unknown>;
     exit: () => void;
     onSessionEnded: () => void;
+    onSessionEndFailed: (error: unknown) => void;
   }
-): () => Promise<unknown> {
-  if (action === "end-session") return () => steps.resetLiveWrites().then(() => steps.onSessionEnded());
+): () => Promise<boolean> {
+  if (action === "end-session") {
+    return () =>
+      steps.resetLiveWrites().then(
+        () => {
+          steps.onSessionEnded();
+          return true;
+        },
+        (error: unknown) => {
+          steps.onSessionEndFailed(error);
+          return false;
+        }
+      );
+  }
   return () =>
     steps
       .resetLiveWrites()
+      .catch(() => undefined)
       .then(() => steps.stopPods())
       .then(() => steps.flush())
+      .then(() => true)
       .finally(() => steps.exit());
 }
 
@@ -123,7 +141,8 @@ export function startIdleShutdownWatcher(
   opts: {
     timeoutMs?: number;
     checkIntervalMs?: number;
-    onIdle?: () => void;
+    /** In `end-session` mode a result of false (or a rejection) means "not done": the next check tries again. */
+    onIdle?: () => unknown;
     /** True while work is running that an exit would cut short (BL-116). A throwing check counts as busy. */
     isBusy?: () => boolean | Promise<boolean>;
     maxDeferralMs?: number;
@@ -158,9 +177,19 @@ export function startIdleShutdownWatcher(
         if (getLastActivityAt() !== lastActivityAt) return;
         const decision = decideIdleShutdown({ lastActivityAt, now: new Date(), timeoutMs, busy, maxDeferralMs: opts.maxDeferralMs });
         if (decision === "exit") {
-          if (action === "end-session") endedSessionActivityAt = lastActivityAt;
-          else exiting = true;
-          onIdle();
+          if (action === "end-session") {
+            let ended = false;
+            try {
+              ended = (await onIdle()) !== false;
+            } catch {
+              ended = false;
+            }
+            if (ended) endedSessionActivityAt = lastActivityAt; // otherwise the next check tries again
+          } else {
+            exiting = true;
+            const result = onIdle();
+            if (result instanceof Promise) result.catch(() => undefined); // the process is exiting either way
+          }
         }
       } finally {
         checking = false;

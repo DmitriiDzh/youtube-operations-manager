@@ -271,24 +271,58 @@ test("activity that arrives while the busy check runs is not overruled by the st
 });
 
 // The handler itself (what instrumentation.ts runs on an expired window).
-function recordingSteps(failStopPods = false) {
+function recordingSteps(options: { failStopPods?: boolean; failReset?: boolean } = {}) {
   const calls: string[] = [];
   return {
     calls,
     steps: {
-      resetLiveWrites: async () => { calls.push("resetLiveWrites"); },
-      stopPods: async () => { calls.push("stopPods"); if (failStopPods) throw new Error("RunPod unreachable"); },
+      resetLiveWrites: async () => { calls.push("resetLiveWrites"); if (options.failReset) throw new Error("SQLITE_BUSY"); },
+      stopPods: async () => { calls.push("stopPods"); if (options.failStopPods) throw new Error("RunPod unreachable"); },
       flush: async () => { calls.push("flush"); },
       exit: () => { calls.push("exit"); },
       onSessionEnded: () => { calls.push("sessionEnded"); },
+      onSessionEndFailed: () => { calls.push("sessionEndFailed"); },
     },
   };
 }
 
 test("createIdleHandler end-session: switches Live writes off and reports it -- never stops pods, flushes or exits", async () => {
   const { calls, steps } = recordingSteps();
-  await createIdleHandler("end-session", steps)();
+  assert.equal(await createIdleHandler("end-session", steps)(), true);
   assert.deepEqual(calls, ["resetLiveWrites", "sessionEnded"]);
+});
+
+test("createIdleHandler end-session: a failed reset is reported as a failure, never as a session end (so it is retried)", async () => {
+  const { calls, steps } = recordingSteps({ failReset: true });
+  assert.equal(await createIdleHandler("end-session", steps)(), false);
+  assert.deepEqual(calls, ["resetLiveWrites", "sessionEndFailed"]);
+});
+
+test("createIdleHandler exit: a failed reset does not hold up the exit (the lease lapses on its own once the process is gone)", async () => {
+  const { calls, steps } = recordingSteps({ failReset: true });
+  await createIdleHandler("exit", steps)();
+  assert.deepEqual(calls, ["resetLiveWrites", "stopPods", "flush", "exit"]);
+});
+
+test("service mode: a session end that failed is tried again on a later check, and not again once it succeeded", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let attempts = 0;
+  const stop = startIdleShutdownWatcher({
+    action: "end-session",
+    timeoutMs: 20,
+    checkIntervalMs: 10,
+    onIdle: async () => {
+      attempts += 1;
+      return attempts >= 2; // the first reset fails, the second works
+    },
+  });
+  try {
+    assert.ok(await waitFor(() => attempts >= 2), "the failed session end is retried");
+    await pause(100);
+    assert.equal(attempts, 2, "once it worked, the same idle period is not ended again");
+  } finally {
+    stop();
+  }
 });
 
 test("createIdleHandler exit: Live writes off, pods stopped, changes published, then exit -- in that order", async () => {
@@ -298,7 +332,7 @@ test("createIdleHandler exit: Live writes off, pods stopped, changes published, 
 });
 
 test("createIdleHandler exit: the process still exits when stopping the pods fails", async () => {
-  const { calls, steps } = recordingSteps(true);
+  const { calls, steps } = recordingSteps({ failStopPods: true });
   await createIdleHandler("exit", steps)().catch(() => undefined);
   assert.deepEqual(calls, ["resetLiveWrites", "stopPods", "exit"]);
 });

@@ -119,7 +119,9 @@ rule (`scripts/macos/build-if-stale.sh`, shared by `start.sh`, `update.sh` and t
 is stricter than Windows': a folder without git also gets a marker (`no-git`), missing
 `node_modules` or a missing marker always means a full install and build, the marker is removed
 before building and written only after a complete build (an interrupted install or build is never
-served), and `next build` runs with `NODE_TEST_CONTEXT=1` so it never opens the real database. Never touches git, the
+served), and `next build` runs with `NODE_TEST_CONTEXT=1` so it never opens the real database. If git
+cannot report the commit (e.g. after a macOS update), a present marker counts as complete and a build
+writes `git-unavailable`, so it is redone once git works again. Never touches git, the
 network, or your working tree — no `git pull`, nothing (see §3's note on why, and what changed
 2026-09-21).
 

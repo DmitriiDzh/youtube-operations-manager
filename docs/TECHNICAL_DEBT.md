@@ -281,7 +281,8 @@ Verified: `npm test`, lint, build, and a production-server smoke test (`/`, `/ap
   - The web server renews the lease every 30 s (`src/instrumentation.ts`) and resets the toggle
     at start and on graceful end.
   - Under the macOS system service (BL-158, ADR 0032) the process does not end by idleness, so the
-    idle window itself ends the session: it resets the toggle and the process stays (RISK-115).
+    idle window itself ends the session: it resets the toggle and the process stays (RISK-115). A reset
+    that fails there is logged and retried at the next idle check, since no process exit backs it up.
   - The lease TTL is 3 min.
   - Previously the toggle was reset on every process's database initialization. That let every
     MCP/CLI process switch the operator's toggle off mid-session and could strand a Batch in

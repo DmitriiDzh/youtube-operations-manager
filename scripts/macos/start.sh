@@ -27,7 +27,7 @@ if [ ! -f ".env.local" ]; then
   exit 1
 fi
 
-# Exit codes: 0 = running and opened; 1 = failed; 3 (service only) = running and opened, but on its previous build.
+# Exit codes: 0 = running and opened; 1 = failed; 3 (service only) = running and opened, with a warning to read.
 # BL-158: with the system service installed, launchd owns the server -- it runs from power-on and is started again
 # whenever it stops. Then this script never starts a second instance and never builds under a running server: it
 # waits for the server, restarts the service once if the checked-out commit changed (the service rebuilds before
@@ -56,7 +56,7 @@ if service_installed; then
     fi
   fi
   RESTARTED=""
-  KEPT_OLD="" # set when the running build is kept although it is stale: exit 3 so start.command keeps the warning visible
+  WARNED="" # set when a warning was printed (stale build kept, or the service cannot restart): exit 3 keeps it on screen
   OLD_PIDS="" # after a restart, only a new process counts as ready
   echo "Waiting for http://localhost:$PORT ..."
   ATTEMPT=0
@@ -79,21 +79,34 @@ if service_installed; then
           fi
           # 2 = refused before signalling anything (an operation is running): keep using the running build.
           echo "[WARN] Not restarted now; the new commit loads on the next start, once that operation has finished."
-          KEPT_OLD=1
+          WARNED=1
         elif [ "$BRANCH_RC" -eq 4 ]; then
           echo "[WARN] The repository folder is on $BRANCH, not on dev or main: the service keeps running its last build."
           echo "       Switch back (git switch dev) and run this again to load the new commit."
-          KEPT_OLD=1
+          WARNED=1
         else
           echo "[WARN] Cannot tell the repository folder's branch ($BRANCH): the service keeps running its last build."
-          KEPT_OLD=1
+          WARNED=1
+        fi
+      fi
+      # Even with a current build: the service restarts and rebuilds only on an accepted branch with a working git.
+      if [ -z "$WARNED" ]; then
+        BRANCH_RC=0; BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+        if [ "$BRANCH_RC" -eq 4 ]; then
+          echo "[WARN] The repository folder is on $BRANCH: the service will not restart or rebuild it until it is back on"
+          echo "       dev or main (git switch dev)."
+          WARNED=1
+        elif [ "$BRANCH_RC" -ne 0 ]; then
+          echo "[WARN] git cannot run ($BRANCH): the service cannot restart or rebuild until it works again"
+          echo "       (after a macOS update: xcode-select --install)."
+          WARNED=1
         fi
       fi
       if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
         open "http://localhost:$PORT"
       fi
-      if [ -n "$KEPT_OLD" ]; then
-        echo "The application is running on its previous build (see the warning above)."
+      if [ -n "$WARNED" ]; then
+        echo "The application is running -- read the warning above."
         exit 3
       fi
       echo "The application is running -- you can close this window."

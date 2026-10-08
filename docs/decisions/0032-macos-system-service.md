@@ -49,7 +49,9 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
    Gate B rule that Live writes live only as long as a session (RISK-09): the same 10 minutes without an open window or
    an agent request that used to stop the server now end the session. Running work defers it exactly as before.
    Generation pods keep running under the media watcher's own caps (they no longer need stopping because the process
-   stays). The handler is `createIdleHandler` in `idle-shutdown.ts`, tested per action.
+   stays). The handler is `createIdleHandler` in `idle-shutdown.ts`, tested per action. Under the service the idle reset
+   is the only thing that switches Live writes off (the process keeps renewing the session lease), so a reset that fails
+   is logged (`idle_shutdown.session_end_failed`) and tried again at the next check, never counted as done.
 5. **The launcher scripts know the service.** With the service installed, `start.sh` never starts a second server and
    never builds under a running one: it restarts the service when the build is stale, waits, and opens the browser.
    `stop.sh` reports the old process gone (the port does not stay free). `update.sh` refuses.

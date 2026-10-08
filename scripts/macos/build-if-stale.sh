@@ -20,7 +20,9 @@ cd "$SCRIPT_DIR/../.."
 # published/<version>/ release copy) the word "no-git", where `update.sh` (--force) remains the explicit rebuild step
 # (docs/RELEASE_LAYOUT.md §1, AGENTS.md §K.4). A missing or different marker always means a build is needed, and the
 # marker is removed before installing/building and written only after a complete build (BL-158): an interrupted
-# install or build -- the service stops one on purpose when asked to stop -- never reads as current later.
+# install or build -- the service stops one on purpose when asked to stop -- never reads as current later. In a checkout
+# whose commit git cannot report (e.g. after a macOS update), a present marker counts as complete and a build writes
+# "git-unavailable", which never equals a commit, so the build is redone once git works again.
 BUILD_MARKER=".next-build-commit.txt"
 CURRENT_REV=""
 GIT_BROKEN="" # a checkout whose commit git cannot report right now (e.g. after a macOS update: xcode-select --install)
@@ -30,7 +32,7 @@ if [ -e ".git" ]; then
   else
     GIT_BROKEN=1
     CURRENT_REV=""
-    echo "[WARN] git cannot report the checked-out commit: judging the build only by whether it exists, recording nothing."
+    echo "[WARN] git cannot report the checked-out commit: judging only whether a complete build exists."
   fi
 fi
 EXPECTED_MARKER="${CURRENT_REV:-no-git}"
@@ -42,7 +44,12 @@ fi
 NEED_BUILD=""
 if [ ! -d ".next" ] || [ ! -d "node_modules" ] || [ "$1" = "--force" ]; then
   NEED_BUILD=1
-elif [ -z "$GIT_BROKEN" ] && [ "$BUILT_MARKER" != "$EXPECTED_MARKER" ]; then
+elif [ -n "$GIT_BROKEN" ]; then
+  # Commits cannot be compared, but a missing marker still means an interrupted install or build.
+  if [ -z "$BUILT_MARKER" ]; then
+    NEED_BUILD=1
+  fi
+elif [ "$BUILT_MARKER" != "$EXPECTED_MARKER" ]; then
   NEED_BUILD=1
 fi
 
@@ -67,7 +74,9 @@ if [ -n "$NEED_BUILD" ]; then
     echo "[ERROR] The checked-out commit changed while building -- this build is not recorded; build again."
     exit 6
   fi
-  if [ -z "$GIT_BROKEN" ]; then
+  if [ -n "$GIT_BROKEN" ]; then
+    echo "git-unavailable" > "$BUILD_MARKER" # complete, but of an unknown commit: rebuilt once git works again
+  else
     echo "$EXPECTED_MARKER" > "$BUILD_MARKER"
   fi
 fi
