@@ -3076,6 +3076,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     covers every distinct `auditionFile` of every result row and every reference. The answer reports
     `{ checked, missing (≤ 500), missingCount, unfinishedJobs, moved }`. `checkOnly` writes nothing.
   - On success it records `plan_moved { from, to, checked }`.
+  - A plan changed during the check (its revision moved) is refused, to be asked again. The factory's plan-linked
+    `create_job` runs under the same lock (`withPlanLock`), so a move cannot pass between its check and the job's creation.
   - `PlanJobRow.channelId` (`media_jobs.channel_id`) makes `resolveAudition` of a job output use the job's channel. The report's
     `jobChannelId` does the same for the other device.
 - **Plans report version 2** (`GENERATION_PLANS_REPORT_VERSION`; the reader accepts 1 and 2, and every level stays strict).
@@ -3099,6 +3101,9 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     - `recordOwnerVerdict` appends a row with `deviceLabel`, the host name.
     - `applyPeerVerdicts` appends a row with the sending device and the verdict's own note. A peer verdict older than the
       stored one is not applied but is still appended, and is recorded once as `peer_verdict { superseded: true }`.
+    - `seedHistory`: before the first history row of an attempt, a current verdict stored before v69 goes in first. Its device is
+      read from the note's ` (from <device>)` suffix, else this device. A replacement or an older peer verdict therefore never
+      hides it.
     - `planEvents(..., history)` emits one `owner_verdict` per history row, with `device`. A key with no history row gets one
       event from the result row.
   - **Claims (schema v70, `generation_plan_review_claims`, this device's own).**
@@ -3108,6 +3113,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     - A claim lasts 10 minutes. `since` is kept while the same track is renewed. A verdict here ends this device's claim on
       that track.
     - The claim routes (`[planId]/claim`, `peers/[deviceId]/[planId]/claim`) publish the report at once.
+    - `claimReview` runs under the plan's lock, so a release and the next claim sent together keep the new claim. A release
+      removes only this device's own claim (the same track) and needs no plan or channel, so it works after a channel switch.
     - `claimsOn` and `peerClaims` read the peers' live claims. A claim that reaches more than 15 minutes ahead is ignored.
     - The screen:
       - renews its claims every 60 s and releases them on leaving (`keepalive`);

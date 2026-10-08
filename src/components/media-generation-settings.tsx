@@ -1203,7 +1203,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   const maxConcurrent = limits?.maxConcurrentSessions ?? 1;
   const atLimit = activeCount >= maxConcurrent;
   const sessionChannels = [...new Set([...openSessions.map((s) => s.channelId), ...sessions.map((s) => s.channelId)])];
-  const ofFilter = <T extends { channelId: string }>(list: T[]) => (channelFilter === null ? list : list.filter((s) => s.channelId === channelFilter));
+  // A filter on a channel that no longer has sessions here falls back to all channels (review round 2: its bar is gone).
+  const shownFilter = channelFilter !== null && sessionChannels.includes(channelFilter) ? channelFilter : null;
+  const ofFilter = <T extends { channelId: string }>(list: T[]) => (shownFilter === null ? list : list.filter((s) => s.channelId === shownFilter));
   const shownOpen = ofFilter(openSessions);
   const recent = ofFilter(sessions.filter((s) => !OPEN_STATUSES.has(s.status))).slice(0, 10);
 
@@ -1270,9 +1272,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               key={channelId ?? "all"}
               type="button"
               role="tab"
-              aria-selected={channelFilter === channelId}
+              aria-selected={shownFilter === channelId}
               onClick={() => setChannelFilter(channelId)}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${channelFilter === channelId ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${shownFilter === channelId ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
             >
               {/* ui-text-ignore: a channel's own name (data) */}
               {channelId === null ? t("media.sessions.allChannels") : nameOf(channelId)}
@@ -2772,10 +2774,12 @@ export function NowRunningLine({ activeChannelId, sessionsHref }: { activeChanne
   useEffect(() => {
     if (!activeChannelId) return;
     let cancelled = false;
+    // The open sessions (`limits.openSessions`, never cut off), not the latest 50 rows -- a long-running one stays here
+    // however many sessions came after it (review round 2).
     const load = () =>
-      requestJson<{ sessions: Session[] }>("/api/media-generation/sessions").then(
+      requestJson<{ limits: { openSessions: Session[] } }>("/api/media-generation/sessions").then(
         (data) => {
-          if (!cancelled) setSessions(data.sessions);
+          if (!cancelled) setSessions(data.limits.openSessions);
         },
         () => undefined
       );

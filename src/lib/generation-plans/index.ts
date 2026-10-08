@@ -15,7 +15,7 @@ import { createGenerationPlanServices } from "./services";
 // It depends on the media core (to run stages), never the reverse (AGENTS.md §M).
 
 export * from "./contracts";
-export { createGenerationPlanServices, validateDefinition, type GenerationPlanServices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
+export { createGenerationPlanServices, validateDefinition, withPlanLock, type GenerationPlanServices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 export { PLAN_LIMITS, PLAN_ID_PATTERN } from "./schemas";
 
 export function createGenerationPlansCore() {

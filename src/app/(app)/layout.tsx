@@ -254,6 +254,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     const { ok } = await activateStoredChannel(channelId);
     if (!ok) setOpenAfterSwitch(null);
   }, [channel?.id, router]);
+  // Nor does it outlive the switch window: the channel never arriving (or a channel that cannot be read) drops it.
+  useEffect(() => {
+    if (!openAfterSwitch) return;
+    if (channelUnavailable) {
+      queueMicrotask(() => setOpenAfterSwitch(null));
+      return;
+    }
+    const timer = setTimeout(() => setOpenAfterSwitch(null), 30_000);
+    return () => clearTimeout(timer);
+  }, [openAfterSwitch, channelUnavailable]);
   useEffect(() => {
     if (!openAfterSwitch || channel?.id !== openAfterSwitch.channelId) return;
     const { href } = openAfterSwitch;
@@ -268,6 +278,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     function onSwitch(event: Event) {
       const detail = (event as CustomEvent<ChannelSwitchEventDetail>).detail;
       setSwitchingTo(detail.phase === "start" ? detail.channelId : detail.phase === "failed" ? null : (current) => current);
+      // BL-157 (review round 2): a bell entry's pending "open the place" belongs to its own switch -- a failed switch, or a
+      // switch to another channel, drops it, so it never fires later on an unrelated switch back.
+      if (detail.phase === "failed" || detail.phase === "start") setOpenAfterSwitch((pending) => (pending && (detail.phase === "failed" || pending.channelId !== detail.channelId) ? null : pending));
     }
     window.addEventListener(CHANNEL_SWITCH_EVENT, onSwitch);
     return () => window.removeEventListener(CHANNEL_SWITCH_EVENT, onSwitch);

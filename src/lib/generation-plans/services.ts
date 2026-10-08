@@ -197,6 +197,13 @@ function runLocks(): Map<string, Promise<unknown>> {
   const holder = globalThis as unknown as Record<symbol, Map<string, Promise<unknown>> | undefined>;
   return (holder[RUN_LOCKS_KEY] ??= new Map());
 }
+/**
+ * One plan's writes, one at a time in this process. Exported (BL-157, review round 2) as `withPlanLock` for a write that
+ * starts outside this module but must not interleave with a plan move (the factory's plan-linked job creation).
+ */
+export function withPlanLock<T>(planId: string, work: () => Promise<T>): Promise<T> {
+  return serializedPerPlan(planId, work);
+}
 function serializedPerPlan<T>(planId: string, work: () => Promise<T>): Promise<T> {
   const locks = runLocks();
   const previous = locks.get(planId) ?? Promise.resolve();
@@ -500,6 +507,30 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       .filter((h) => h.itemKey === itemKey && h.attemptRef === attemptRef)
       .slice(-HISTORY_SHOWN)
       .map((h) => ({ result: h.result, rating: h.rating, note: h.note, device: h.device, at: h.at }));
+  }
+
+  /**
+   * BL-157 (AC-TC-05, review round 2): the first history row of an attempt whose current verdict was stored before the history
+   * existed (schema v69) -- that verdict goes in first, so the history and the `owner_verdict` events never lose it. A verdict
+   * applied from another device names it in its note (" (from <device>)"); any other was given on this device.
+   */
+  async function seedHistory(planId: string, history: PlanVerdictHistoryRow[], current: PlanResultRow | undefined): Promise<void> {
+    if (!current || current.reportedBy !== "owner" || (current.result !== "accepted" && current.result !== "rejected")) return;
+    if (history.some((h) => h.itemKey === current.itemKey && h.attemptRef === current.attemptRef)) return;
+    const from = current.note ? /^([\s\S]*?)\s*\(from ([^()]+)\)$/.exec(current.note) : null;
+    const row: PlanVerdictHistoryRow = {
+      itemKey: current.itemKey,
+      attemptRef: current.attemptRef,
+      result: current.result,
+      rating: current.rating,
+      reasons: current.reasons,
+      markers: current.markers,
+      note: from ? from[1].trim() || null : current.note,
+      device: from ? from[2] : await ownLabel(),
+      at: current.at,
+    };
+    await deps.store.insertVerdictHistory(planId, row);
+    history.push(row);
   }
 
   /**
@@ -845,10 +876,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!known) throw planMismatch(`Item ${parsed.itemKey} has no attempt ${parsed.attemptRef}`, { planId: row.id, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
       // BL-157 (AC-TC-04): a verdict already there -- given here, relayed, or on its way from another device -- is replaced
       // only when the owner confirmed it (`replace`); the screen asks first, this holds when the screen's data was stale.
+      const history = await deps.store.listVerdictHistory(row.id);
+      const current = results.find((r) => r.stageId === stage.stageId && r.itemKey === parsed.itemKey && r.attemptRef === parsed.attemptRef);
       if (!parsed.replace) {
-        const [events, history] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
+        const events = await deps.store.listEvents(row.id);
         const incoming = (await pendingPeerVerdicts(row, events, results)).get(keyOf(parsed.itemKey, parsed.attemptRef));
-        const current = results.find((r) => r.stageId === stage.stageId && r.itemKey === parsed.itemKey && r.attemptRef === parsed.attemptRef);
         if (incoming) {
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} was already rated on ${incoming.from}`, { result: incoming.verdict.result, rating: incoming.verdict.rating, device: incoming.from, at: incoming.verdict.at });
         }
@@ -858,6 +890,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         }
       }
       const result = resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString());
+      await seedHistory(row.id, history, current);
       await deps.store.upsertResults(row.id, [result]);
       await deps.store.insertVerdictHistory(row.id, {
         itemKey: result.itemKey,
@@ -1080,49 +1113,55 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const parsed = parseWithSchema(reviewClaimInputSchema, input, "review claim");
       const own = await ownDeviceId();
       const ownerDeviceId = parsed.deviceId ?? own;
-      // The plan must be one this device can review: its own active plan, or an active plan in that device's report.
-      let entries: Array<{ itemKey: string; attemptRef: string; groupId: string | null }>;
-      let groups: string[];
-      if (ownerDeviceId === own) {
-        const row = await requireActive(parsed.planId);
-        const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-        entries = reviewEntries(row, jobs, results);
-        groups = row.definition.groups.map((g) => g.groupId);
-      } else {
-        const report = deps.peers ? (await deps.peers.listPeerReports()).find((r) => r.deviceId === ownerDeviceId) : undefined;
-        const plan = report?.plans.find((p) => p.planId === parsed.planId);
-        if (!plan) throw planNotFound(parsed.planId);
-        if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
-        entries = plan.review;
-        groups = plan.groups.map((g) => g.groupId);
-      }
       const claimId = claimIdOf(parsed.scope, ownerDeviceId, parsed.planId, parsed.groupId);
-      if (parsed.release) {
-        // A track claim moves with the track: giving up the old track never drops the claim on the one now open (review round 1).
-        const stored = (await deps.store.listClaims(now())).find((c) => c.claimId === claimId);
-        if (stored && (parsed.scope === "group" || (stored.itemKey === (parsed.itemKey ?? null) && stored.attemptRef === (parsed.attemptRef ?? null)))) await deps.store.deleteClaim(claimId);
-        return { claimId, until: null };
-      }
-      if (parsed.scope === "attempt" && !entries.some((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef)) {
-        throw planMismatch(`Plan ${parsed.planId} has no attempt ${parsed.attemptRef} of ${parsed.itemKey} to review`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
-      }
-      if (parsed.scope === "group" && !groups.includes(parsed.groupId as string)) throw planMismatch(`Plan ${parsed.planId} has no group ${parsed.groupId}`, { planId: parsed.planId, groupId: parsed.groupId });
-      const at = now();
-      const existing = (await deps.store.listClaims(at)).find((c) => c.claimId === claimId);
-      const same = existing && existing.itemKey === (parsed.itemKey ?? null) && existing.attemptRef === (parsed.attemptRef ?? null);
-      const until = new Date(at.getTime() + REVIEW_CLAIM_TTL_MS).toISOString();
-      await deps.store.upsertClaim({
-        claimId,
-        planId: parsed.planId,
-        ownerDeviceId,
-        scope: parsed.scope,
-        itemKey: parsed.scope === "attempt" ? (parsed.itemKey ?? null) : null,
-        attemptRef: parsed.scope === "attempt" ? (parsed.attemptRef ?? null) : null,
-        groupId: parsed.scope === "group" ? (parsed.groupId ?? null) : null,
-        since: same && existing ? existing.since : at.toISOString(),
-        until,
+      // One plan's claims, one call at a time: a release and the next track's claim sent together never drop the new one
+      // (review round 2).
+      return serializedPerPlan(parsed.planId, async () => {
+        if (parsed.release) {
+          // Giving up removes only this device's own claim -- found by its id, and for a track only that track's (a track
+          // claim moves with the track; review round 1). No plan or channel check: a claim is released even after the plan
+          // closed or the active channel changed (review round 2).
+          const stored = (await deps.store.listClaims(now())).find((c) => c.claimId === claimId);
+          if (stored && (parsed.scope === "group" || (stored.itemKey === (parsed.itemKey ?? null) && stored.attemptRef === (parsed.attemptRef ?? null)))) await deps.store.deleteClaim(claimId);
+          return { claimId, until: null };
+        }
+        // The plan must be one this device can review: its own active plan, or an active plan in that device's report.
+        let entries: Array<{ itemKey: string; attemptRef: string; groupId: string | null }>;
+        let groups: string[];
+        if (ownerDeviceId === own) {
+          const row = await requireActive(parsed.planId);
+          const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+          entries = reviewEntries(row, jobs, results);
+          groups = row.definition.groups.map((g) => g.groupId);
+        } else {
+          const report = deps.peers ? (await deps.peers.listPeerReports()).find((r) => r.deviceId === ownerDeviceId) : undefined;
+          const plan = report?.plans.find((p) => p.planId === parsed.planId);
+          if (!plan) throw planNotFound(parsed.planId);
+          if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
+          entries = plan.review;
+          groups = plan.groups.map((g) => g.groupId);
+        }
+        if (parsed.scope === "attempt" && !entries.some((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef)) {
+          throw planMismatch(`Plan ${parsed.planId} has no attempt ${parsed.attemptRef} of ${parsed.itemKey} to review`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
+        }
+        if (parsed.scope === "group" && !groups.includes(parsed.groupId as string)) throw planMismatch(`Plan ${parsed.planId} has no group ${parsed.groupId}`, { planId: parsed.planId, groupId: parsed.groupId });
+        const at = now();
+        const existing = (await deps.store.listClaims(at)).find((c) => c.claimId === claimId);
+        const same = existing && existing.itemKey === (parsed.itemKey ?? null) && existing.attemptRef === (parsed.attemptRef ?? null);
+        const until = new Date(at.getTime() + REVIEW_CLAIM_TTL_MS).toISOString();
+        await deps.store.upsertClaim({
+          claimId,
+          planId: parsed.planId,
+          ownerDeviceId,
+          scope: parsed.scope,
+          itemKey: parsed.scope === "attempt" ? (parsed.itemKey ?? null) : null,
+          attemptRef: parsed.scope === "attempt" ? (parsed.attemptRef ?? null) : null,
+          groupId: parsed.scope === "group" ? (parsed.groupId ?? null) : null,
+          since: same && existing ? existing.since : at.toISOString(),
+          until,
+        });
+        return { claimId, until };
       });
-      return { claimId, until };
     },
 
     /** BL-157 (AC-TC-01): this device's live claims, for its report. */
@@ -1202,7 +1241,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         at: now().toISOString(),
       };
       await deps.store.insertPeerVerdict(verdict);
-      await endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef);
+      await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef));
       return verdict;
     },
 
@@ -1266,7 +1305,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           const row = await deps.store.getPlan(planId);
           const review = row?.definition.stages.find((s) => s.kind === "owner_review");
           if (!row || row.status !== "active" || !review) return { applied: 0, skipped: incoming.length };
-          const [jobs, results, events] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listEvents(row.id)]);
+          const [jobs, results, events, history] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
           const appliedIds = new Set(events.filter((e) => e.kind === "peer_verdict" && typeof e.details.verdictId === "string").map((e) => e.details.verdictId as string));
           const attempts = inAppAttempts(row.definition, jobs, results);
           const current = new Map(results.filter((r) => r.stageId === review.stageId && r.reportedBy === "owner").map((r) => [`${r.itemKey}\u0000${r.attemptRef}`, r]));
@@ -1284,6 +1323,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               k++;
               continue;
             }
+            // The verdict stored before the history existed goes into it first (review round 2).
+            await seedHistory(row.id, history, stored);
             if (older) {
               // BL-157 (AC-TC-05, review round 1): a verdict older than the stored one does not replace it, but the history
               // keeps it -- the double rating claims and the confirmation exist for must not lose either verdict. Recorded as
