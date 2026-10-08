@@ -36,9 +36,14 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
 3. **One build rule, accepted branches only.** `service-run.mjs` builds through `build-if-stale.sh`, the rule `start.sh`
    uses too (extracted from it), then runs `npm run start` in the foreground. When the server exits, the run exits and
    launchd starts the next one, which rebuilds first when the checked-out commit changed. So `stop.sh` is the restart.
-   Nobody watches these builds, and a build migrates the real database, so the runner builds and runs only when the
-   repository folder is on `dev` or `main` (a folder without git builds as before); on any other branch it logs why and
-   retries every 5 minutes. A start, check or build that fails also waits 5 minutes before the next run.
+   Nobody watches these builds, and a new build migrates the real database at its first start, so the runner builds and
+   runs only when the repository folder is on `dev` or `main` (a folder without git builds as before) -- checked before
+   the build and again before the start; on any other branch it logs why and retries every 5 minutes. The rule is one
+   script, `accepted-branch.sh`, which `start.sh` and `install-service.sh` also consult before they stop a running server
+   (on another branch `start.sh` keeps the running build and warns). A start, check or build that fails also waits 5
+   minutes before the next run. The build itself runs with `NODE_TEST_CONTEXT=1`, so `next build` never opens the real
+   database (RISK-63's root cause; every route is dynamic, so nothing is prerendered from data) -- for `start.sh` too.
+   If a stop request arrives during a build, the runner lets the build finish and then stops without starting.
 4. **Idleness ends the session, not the process.** `YTOM_SERVICE_MODE=1` (set only by the daemon's runner) makes the
    idle watcher call its handler once per idle period and keep watching. The handler resets Live writes. This keeps the
    Gate B rule that Live writes live only as long as a session (RISK-09): the same 10 minutes without an open window or
@@ -49,8 +54,8 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
    never builds under a running one: it restarts the service when the build is stale, waits, and opens the browser.
    `stop.sh` reports the old process gone (the port does not stay free). `update.sh` refuses.
 6. **Install and remove are explicit, one admin password each.** `install-service.command` / `uninstall-service.command`
-   (double-click). Both first wait for a running export/import/migration (as `stop.sh` does) and change nothing if it does
-   not finish; a reinstall waits until the old instance is gone before loading the new one, and never replaces a service
+   (double-click). Both first wait for a running export/import/migration (as `stop.sh` does, whether or not the server is
+   up) and change nothing if it does not finish; installing also refuses a folder on another branch first; a reinstall waits until the old instance is gone before loading the new one, and never replaces a service
    installed for another account. launchd gives the server 5 minutes after SIGTERM before killing it (`ExitTimeOut`), so
    a stop drains like `stop.sh`'s. The job's working directory is the home folder, not the repository, so launchd can
    enter it without node's Full Disk Access. After uninstalling, `start.command` works as before.
@@ -59,9 +64,9 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
 
 - The server runs all the time on the Mac. The second account works without the owner logged in.
 - Full Disk Access is granted to node's binary. The daemon runs node through Homebrew's `/opt/homebrew/bin/node` link,
-  so after a node upgrade it runs the new binary, which has no grant yet: node then cannot load the runner ("EPERM ...
-  service-run.mjs" in `~/Library/Logs/YouTubeOperationsManager/service.log`). Granting the new binary is enough; no
-  reinstall. RISK-115.
+  so after a node upgrade it runs the new binary, which has no grant yet: node then cannot load the runner
+  (`EPERM: operation not permitted, open '.../service-run.mjs'` in `~/Library/Logs/YouTubeOperationsManager/service.log`,
+  measured on the Mac with a launchd job). Granting the new binary is enough; no reinstall. RISK-115.
 - Live writes once enabled stay on while anyone keeps a window open or an agent keeps working, and switch off 10 minutes
   after the last activity, as before.
 - External drives mount only at the first login. Until someone logs in after a restart, sync reports the folder as

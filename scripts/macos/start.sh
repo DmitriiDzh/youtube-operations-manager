@@ -43,19 +43,26 @@ if service_installed; then
   LOG_START=0
   if [ -f "$SERVICE_LOG" ]; then LOG_START=$(wc -c < "$SERVICE_LOG"); fi
   RESTARTED=""
+  OLD_PIDS="" # after a restart, only a new process counts as ready
   echo "Waiting for http://localhost:$PORT ..."
   ATTEMPT=0
   while [ "$ATTEMPT" -lt 900 ]; do
-    if curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
-      # Checked once the server answers (also after a build that was running when this started): restart at most once.
+    LISTEN_PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"
+    if [ -n "$LISTEN_PIDS" ] && [ "$LISTEN_PIDS" != "$OLD_PIDS" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+      # Checked once the server answers (also after a build that was running when this started): restart at most once,
+      # and only onto an accepted branch -- otherwise the service would refuse it and both accounts would lose the app.
       if [ -z "$RESTARTED" ] && ! "$SCRIPT_DIR/build-if-stale.sh" --check; then
-        echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first, a few minutes)..."
-        if ! "$SCRIPT_DIR/stop.sh"; then
-          echo "[ERROR] The running server could not be stopped safely - it keeps running on the old build."
-          exit 1
-        fi
         RESTARTED=1
-        continue
+        if BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")"; then
+          echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first, a few minutes)..."
+          OLD_PIDS="$LISTEN_PIDS"
+          if ! "$SCRIPT_DIR/stop.sh"; then
+            echo "The server is still finishing its work; the service starts the new build once it has stopped."
+          fi
+          continue
+        fi
+        echo "[WARN] The repository folder is on $BRANCH, not on dev or main: the service keeps running its last build."
+        echo "       Switch back (git switch dev) and run this again to load the new commit."
       fi
       if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
         open "http://localhost:$PORT"

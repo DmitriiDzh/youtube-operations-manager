@@ -3,13 +3,13 @@
 // launchd starts THIS file with node itself (ProgramArguments of the daemon written by install-service.sh). macOS
 // privacy protection (TCC) judges a launchd job's file access by the job's own executable, and both the repository
 // (~/Documents) and the sync folder (an external drive) are protected -- so node, which the owner gives Full Disk
-// Access, has to be that executable, not a shell. If node lacks it, node cannot even load this file: launchd's log
-// (service.log) then shows "EPERM ... service-run.mjs".
+// Access, has to be that executable, not a shell. Without it node cannot even load this file; launchd's log
+// (service.log) then shows "EPERM: operation not permitted, open '.../service-run.mjs'" (measured on the Mac).
 //
 // One run = build when needed (build-if-stale.sh, the launcher's own rule) -> `npm run start` in the foreground with
 // YTOM_SERVICE_MODE=1 (idleness ends the browser session, never the process). When the server exits, this exits too
 // and launchd starts the next run (KeepAlive), which rebuilds first if the checked-out commit changed -- so stopping
-// the server (stop.sh) is how it is restarted.
+// the server (stop.sh) is how it is restarted. Only an accepted branch is built and run (accepted-branch.sh).
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -21,8 +21,6 @@ const root = path.resolve(scriptDir, "../..");
 const FAILURE_PAUSE_MS = 5 * 60_000;
 // A server that exits this soon after starting failed to start (e.g. the port is taken): pause before the next run.
 const EARLY_EXIT_MS = 60_000;
-// Nobody watches this process build: it builds and migrates the real database only from an accepted branch.
-const SERVICE_BRANCHES = ["dev", "main"];
 
 function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
@@ -34,11 +32,62 @@ function failAfterPause(message) {
   setTimeout(() => process.exit(1), FAILURE_PAUSE_MS);
 }
 
-/** The checked-out branch, or null when this is not a git checkout (a published copy builds as before). */
-function checkedOutBranch() {
-  if (!fs.existsSync(path.join(root, ".git"))) return null;
-  const result = spawnSync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root, encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() : "(detached HEAD)";
+/** null when the folder may be built and run; otherwise why not (accepted-branch.sh is the rule). */
+function branchProblem() {
+  const result = spawnSync("/bin/sh", [path.join(scriptDir, "accepted-branch.sh")], { encoding: "utf8" });
+  const said = `${result.stdout ?? ""}`.trim();
+  if (result.status === 0) return null;
+  if (result.status === 4) {
+    return (
+      `The repository folder is on ${said.startsWith("a detached") ? said : `'${said}'`}, not on dev or main. The service ` +
+      "builds and runs only an accepted branch (a new build migrates the real database). Switch back: git switch dev."
+    );
+  }
+  return `Cannot tell which branch the repository folder is on: ${said || result.error?.message || `exit ${result.status}`}.`;
+}
+
+// What the current step is, so a stop request (launchd's SIGTERM on uninstall/reinstall/shutdown) does the right thing:
+// during a build it waits for the build (a killed build can leave a stale lock), during the server it is passed on.
+let phase = "checking"; // checking | building | serving | done
+let server = null;
+let stopRequested = false;
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.on(signal, () => {
+    stopRequested = true;
+    if (phase === "serving" && server) server.kill(signal); // npm passes it on to the server
+    else if (phase === "building") log(`${signal} received: finishing the build, then stopping without starting the server.`);
+    else process.exit(0);
+  });
+}
+
+function startServer() {
+  // Same log file as the launcher's server (start.sh), truncated per run.
+  const logPath = path.join(root, ".launcher.log");
+  const out = fs.openSync(logPath, "w");
+  const startedAt = Date.now();
+  // Not detached: the server stays in this job's process group, so launchd cleans it up if this process ever dies.
+  phase = "serving";
+  server = spawn("npm", ["run", "start"], { cwd: root, env: { ...process.env, YTOM_SERVICE_MODE: "1" }, stdio: ["ignore", out, out] });
+  log(`Server starting (npm pid ${server.pid}); its output is in ${logPath}.`);
+  let spawnFailed = false;
+  server.on("error", (error) => {
+    spawnFailed = true;
+    phase = "done";
+    failAfterPause(`Could not start the server: ${error.message}`);
+  });
+  server.on("exit", (code, signal) => {
+    if (spawnFailed) return;
+    phase = "done";
+    log(`Server exited (${signal ?? `exit ${code}`}); launchd starts the next run.`);
+    // Stopped on purpose (stop.sh sends SIGTERM to the server; npm reports 143, or 130 for SIGINT) is a restart.
+    // A crash -- even one by a signal such as SIGABRT or SIGKILL -- is not.
+    const stopped = stopRequested || signal === "SIGTERM" || signal === "SIGINT" || code === 143 || code === 130;
+    if (!stopped && Date.now() - startedAt < EARLY_EXIT_MS) {
+      failAfterPause(`The server stopped within ${EARLY_EXIT_MS / 1000} s of starting -- see ${logPath}.`);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
 }
 
 function main() {
@@ -47,58 +96,31 @@ function main() {
     failAfterPause(`.env.local not found in ${root} -- copy .env.example to .env.local first (docs/getting-started.md).`);
     return;
   }
-  const branch = checkedOutBranch();
-  if (branch !== null && !SERVICE_BRANCHES.includes(branch)) {
-    failAfterPause(
-      `The repository folder is on '${branch}', not on ${SERVICE_BRANCHES.join("/")}. The service builds and runs only an ` +
-        "accepted branch (an unreviewed build would migrate the real database). Switch the folder back, e.g. git switch dev."
-    );
+  const before = branchProblem();
+  if (before) {
+    failAfterPause(before);
     return;
   }
 
-  const build = spawnSync("/bin/sh", [path.join(scriptDir, "build-if-stale.sh")], { cwd: root, stdio: "inherit" });
-  if (build.status !== 0) {
-    failAfterPause(`Building the application failed (${build.signal ?? `exit ${build.status}`}) -- see the output above.`);
-    return;
-  }
-
-  // Same log file as the launcher's server (start.sh), truncated per run.
-  const logPath = path.join(root, ".launcher.log");
-  const out = fs.openSync(logPath, "w");
-  // Not detached: the server stays in this job's process group, so launchd cleans it up if this process ever dies.
-  const startedAt = Date.now();
-  let running = true;
-  let stopRequested = false;
-  const server = spawn("npm", ["run", "start"], {
-    cwd: root,
-    env: { ...process.env, YTOM_SERVICE_MODE: "1" },
-    stdio: ["ignore", out, out],
-  });
-  log(`Server starting (npm pid ${server.pid}); its output is in ${logPath}.`);
-  for (const signal of ["SIGTERM", "SIGINT"]) {
-    process.on(signal, () => {
-      stopRequested = true;
-      if (!running) process.exit(0); // nothing to stop (e.g. during the failure pause)
-      server.kill(signal); // npm passes it on to the server
-    });
-  }
-  let spawnFailed = false;
-  server.on("error", (error) => {
-    running = false;
-    spawnFailed = true;
-    failAfterPause(`Could not start the server: ${error.message}`);
-  });
-  server.on("exit", (code, signal) => {
-    running = false;
-    if (spawnFailed) return;
-    log(`Server exited (${signal ?? `exit ${code}`}); launchd starts the next run.`);
-    // Stopped on purpose (stop.sh signals the server; 143/130 = SIGTERM/SIGINT) is a restart, never a failure.
-    const stopped = stopRequested || signal !== null || code === 143 || code === 130;
-    if (!stopped && code !== 0 && Date.now() - startedAt < EARLY_EXIT_MS) {
-      failAfterPause(`The server stopped within ${EARLY_EXIT_MS / 1000} s of starting -- see ${logPath}.`);
+  phase = "building";
+  const build = spawn("/bin/sh", [path.join(scriptDir, "build-if-stale.sh")], { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
+  build.on("exit", (code, signal) => {
+    phase = "checking";
+    if (stopRequested) {
+      log("Stopped as requested after the build.");
+      process.exit(0);
+    }
+    if (code !== 0) {
+      failAfterPause(`Building the application failed (${signal ?? `exit ${code}`}) -- see the output above.`);
       return;
     }
-    process.exit(code ?? 1);
+    // The folder may have been switched while building: check again right before the first start migrates.
+    const after = branchProblem();
+    if (after) {
+      failAfterPause(after);
+      return;
+    }
+    startServer();
   });
 }
 

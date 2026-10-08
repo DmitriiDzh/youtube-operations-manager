@@ -55,8 +55,17 @@ fi
 if [ -n "$NEED_BUILD" ]; then
   echo "Installing dependencies and building the application (no build found, or the checked-out commit changed since the last build)..."
   npm install
-  npm run build
+  # NODE_TEST_CONTEXT=1 keeps `next build` off the real app-data database: its page-data step loads the app, and
+  # without the guard that initializes -- and migrates -- the real database with whatever sources are checked out
+  # (RISK-63's root cause). Every route is dynamic, so nothing is prerendered from data; the real migration happens
+  # when the server starts (with its pre-migration backup).
+  NODE_TEST_CONTEXT=1 npm run build
   if [ -n "$CURRENT_REV" ]; then
+    # The marker must name the commit that was actually built: if the checkout changed while building, record nothing.
+    if [ "$(git rev-parse HEAD 2>/dev/null || echo "")" != "$CURRENT_REV" ]; then
+      echo "[ERROR] The checked-out commit changed while building -- this build is not recorded; build again."
+      exit 6
+    fi
     echo "$CURRENT_REV" > "$BUILD_MARKER"
   fi
 fi

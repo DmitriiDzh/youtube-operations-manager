@@ -24,12 +24,11 @@ fi
 SERVICE_USER="$(/usr/libexec/PlistBuddy -c 'Print :UserName' "$SERVICE_PLIST")"
 SERVICE_HOME="$(dscl . -read "/Users/$SERVICE_USER" NFSHomeDirectory | awk '{print $2}')"
 
-if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
-  echo "Checking that no export, import or database migration is running..."
-  if ! (cd "$ROOT" && sudo -u "$SERVICE_USER" env PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$SERVICE_HOME" npm run --silent operation-lock -- wait-idle --timeout 120); then
-    echo "[ERROR] The service was NOT removed: a running operation did not finish (or could not be checked)."
-    exit 1
-  fi
+# Always, not only when the port is busy: the service may be building, and the check reads the database, not the server.
+echo "Checking that no export, import or database migration is running..."
+if ! (cd "$ROOT" && sudo -u "$SERVICE_USER" env PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$SERVICE_HOME" npm run --silent operation-lock -- wait-idle --timeout 120); then
+  echo "[ERROR] The service was NOT removed: a running operation did not finish (or could not be checked)."
+  exit 1
 fi
 
 echo "Stopping the server..."
@@ -39,6 +38,10 @@ while launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1 && [ "$ATTEMPT" -l
   ATTEMPT=$((ATTEMPT + 1))
   sleep 1
 done
+if launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
+  echo "[ERROR] The service did not stop within 5 minutes; it stays installed. Try again later."
+  exit 1
+fi
 rm -f "$SERVICE_PLIST"
 if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   echo "[WARN] The service is removed, but something still listens on port $PORT (see lsof -ti tcp:$PORT -sTCP:LISTEN)."

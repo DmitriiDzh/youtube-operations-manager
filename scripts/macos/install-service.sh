@@ -48,13 +48,18 @@ if service_installed; then
   fi
 fi
 
-# Nothing running may be cut short -- checked before anything is torn down (the same check stop.sh makes).
-if listening; then
-  echo "Checking that no export, import or database migration is running..."
-  if ! (cd "$ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
-    echo "[ERROR] Nothing was changed: a running operation did not finish (or could not be checked)."
-    exit 1
-  fi
+# The service builds and runs only an accepted branch: refuse now, before anything running is stopped.
+if ! BRANCH="$(as_user "$SCRIPT_DIR/accepted-branch.sh")"; then
+  echo "[ERROR] The repository folder is on $BRANCH, not on dev or main -- nothing was changed. Switch back first."
+  exit 1
+fi
+
+# Nothing running may be cut short -- checked before anything is torn down (the same check stop.sh makes). Always, not
+# only when the port is busy: the service may be building, and the check reads the database, not the server.
+echo "Checking that no export, import or database migration is running..."
+if ! (cd "$ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
+  echo "[ERROR] Nothing was changed: a running operation did not finish (or could not be checked)."
+  exit 1
 fi
 
 # Stop what runs now: the previously installed service, or a server started by start.sh.
@@ -144,6 +149,6 @@ while [ "$ATTEMPT" -lt 900 ]; do
 done
 echo "[WARN] The service is installed but the server did not answer within 15 minutes. Last lines of $SERVICE_LOG:"
 tail -n 20 "$SERVICE_LOG" 2>/dev/null | sed 's/^/    /'
-echo "If they say 'Operation not permitted' (EPERM): give Full Disk Access to $NODE_REAL"
+echo "If they say \"EPERM: operation not permitted, open .../service-run.mjs\": give Full Disk Access to $NODE_REAL"
 echo "(System Settings > Privacy & Security > Full Disk Access). The service retries by itself."
 exit 1
