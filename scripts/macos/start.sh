@@ -1,7 +1,10 @@
 #!/bin/sh
 # YouTube Operations Manager - macOS launcher.
 set -e
-cd "$(dirname "$0")/../.."
+# Absolute script folder, taken BEFORE the cd below: start.command runs this as ./start.sh, so "$(dirname "$0")"
+# is "." and would point at the repository root once we cd there (stop.sh was then "not found").
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 PIDFILE="$(pwd)/.launcher.pid"
 # BL-116: the server runs DETACHED (its own session, output in .launcher.log), so this terminal can close and the
 # server keeps running. It stops by itself 10 minutes after the last open window, or via stop.sh.
@@ -31,7 +34,7 @@ fi
 # Note: whatever listens on port 3000 is stopped, exactly as stop.sh has always done.
 if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   echo "Port $PORT is already in use - stopping the running instance first..."
-  if ! "$(dirname "$0")/stop.sh"; then
+  if ! "$SCRIPT_DIR/stop.sh"; then
     echo "[ERROR] The running instance could not be stopped safely - not starting a second one."
     exit 1
   fi
