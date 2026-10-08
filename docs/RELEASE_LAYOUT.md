@@ -36,7 +36,10 @@ platforms side by side:
 The application resolves its own runtime and app-data location independently of which
 platform folder it was launched from — see §2. **Do not sync `node_modules/` or native build
 artifacts** (`.next/`, compiled native bindings) between platforms; they are platform-specific
-and must be produced locally on each device via its own `npm install`/`npm run build`. This is
+and must be produced locally on each device via its own `npm install`/`npm run build`. The same
+goes for the per-device files next to them: `.next-build-commit.txt` (what this device's `.next` was
+built from), `.launcher.pid` and `.launcher.log` -- a synced marker could make one device take
+another device's interrupted build for a complete one. This is
 packaging guidance only — no build pipeline change is part of this task.
 
 The Syncthing-shared folder's **root** (or a dedicated subdirectory within it — the operator

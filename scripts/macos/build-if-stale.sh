@@ -23,8 +23,15 @@ cd "$SCRIPT_DIR/../.."
 # install or build -- the service stops one on purpose when asked to stop -- never reads as current later.
 BUILD_MARKER=".next-build-commit.txt"
 CURRENT_REV=""
-if [ -e ".git" ] && command -v git >/dev/null 2>&1; then
-  CURRENT_REV="$(git rev-parse HEAD 2>/dev/null || echo "")"
+GIT_BROKEN="" # a checkout whose commit git cannot report right now (e.g. after a macOS update: xcode-select --install)
+if [ -e ".git" ]; then
+  if command -v git >/dev/null 2>&1 && CURRENT_REV="$(git rev-parse HEAD 2>/dev/null)" && [ -n "$CURRENT_REV" ]; then
+    :
+  else
+    GIT_BROKEN=1
+    CURRENT_REV=""
+    echo "[WARN] git cannot report the checked-out commit: judging the build only by whether it exists, recording nothing."
+  fi
 fi
 EXPECTED_MARKER="${CURRENT_REV:-no-git}"
 BUILT_MARKER=""
@@ -33,7 +40,9 @@ if [ -f "$BUILD_MARKER" ]; then
 fi
 
 NEED_BUILD=""
-if [ ! -d ".next" ] || [ ! -d "node_modules" ] || [ "$BUILT_MARKER" != "$EXPECTED_MARKER" ] || [ "$1" = "--force" ]; then
+if [ ! -d ".next" ] || [ ! -d "node_modules" ] || [ "$1" = "--force" ]; then
+  NEED_BUILD=1
+elif [ -z "$GIT_BROKEN" ] && [ "$BUILT_MARKER" != "$EXPECTED_MARKER" ]; then
   NEED_BUILD=1
 fi
 
@@ -58,5 +67,7 @@ if [ -n "$NEED_BUILD" ]; then
     echo "[ERROR] The checked-out commit changed while building -- this build is not recorded; build again."
     exit 6
   fi
-  echo "$EXPECTED_MARKER" > "$BUILD_MARKER"
+  if [ -z "$GIT_BROKEN" ]; then
+    echo "$EXPECTED_MARKER" > "$BUILD_MARKER"
+  fi
 fi
