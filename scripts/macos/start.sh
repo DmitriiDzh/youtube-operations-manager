@@ -29,7 +29,7 @@ fi
 # a stale build. stop.sh waits for any running export/import/migration before stopping, and refuses
 # (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
 # Note: whatever listens on port 3000 is stopped, exactly as stop.sh has always done.
-if [ -n "$(lsof -ti tcp:$PORT 2>/dev/null)" ]; then
+if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   echo "Port $PORT is already in use - stopping the running instance first..."
   if ! "$(dirname "$0")/stop.sh"; then
     echo "[ERROR] The running instance could not be stopped safely - not starting a second one."
