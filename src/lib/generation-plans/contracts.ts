@@ -25,7 +25,11 @@ export type PlanActor = "factory" | "owner";
 export type PlanParamValue = string | number | boolean;
 
 export type PlanStage = { stageId: string; title: string; kind: PlanStageKind };
-export type PlanGroup = { groupId: string; title: string; dependsOn: string | null; note: string | null };
+/**
+ * `note` is the factory's context for the wave; `ownerNote` (BL-157, SERVERS_MEDIA_PLAN.md AC-WV-04) is the owner's own note on
+ * it, kept apart so neither overwrites the other -- present only once the owner wrote one.
+ */
+export type PlanGroup = { groupId: string; title: string; dependsOn: string | null; note: string | null; ownerNote?: string | null };
 export type PlanItem = {
   itemKey: string;
   groupId: string | null;
@@ -206,6 +210,27 @@ export type PlanNotice =
   | { kind: "review_waiting"; count: number; passed: number; rejected: number };
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
+
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-03, FO-REQ-0009 §7.2): one wave (group) of a plan for the review's context card --
+ * computed on the device that owns the plan, carried to the others in the plans report.
+ */
+export type PlanReviewBatch = {
+  groupId: string;
+  title: string;
+  /** The factory's context for the wave. */
+  note: string | null;
+  /** The owner's own note on the wave. */
+  ownerNote: string | null;
+  /** The earliest attempt of the wave (a job's creation, or a reported row's time); null = no attempt yet. */
+  firstAt: string | null;
+  /** The wave's items' templates (label, else id), each once. */
+  templates: string[];
+  /** The item params whose values differ between the wave's items, each with its distinct values in item order. */
+  differingParams: Array<{ name: string; values: PlanParamValue[] }>;
+  /** At the stage right before the owner's review: attempts it passed (accepted / done) and rejected. */
+  validator: { passed: number; rejected: number };
+};
 
 /** BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01): another device's plan, named for "open the place" (null = this device's). */
 export type PlanDeviceRef = { deviceId: string; hostname: string | null } | null;

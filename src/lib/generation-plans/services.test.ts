@@ -359,7 +359,10 @@ test("a re-run request and a group note are recorded for the factory; nothing is
   await s.services.createPlan(basePlan());
   await s.services.requestRerun({ planId: "R-0001-S1-music", itemKey: "C1/F1", note: "start too sharp" });
   const withNote = await s.services.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "all too thin" });
-  assert.equal(withNote.plan.groups[0].note, "all too thin");
+  // Changed requirement (BL-157, SERVERS_MEDIA_PLAN.md AC-WV-04, FO-REQ-0009 §7.2): the owner's note is its own field,
+  // `ownerNote`, so the factory's context in `note` is no longer overwritten by it.
+  assert.equal(withNote.plan.groups[0].ownerNote, "all too thin");
+  assert.equal(withNote.plan.groups[0].note, null);
   const events = (await s.services.getPlan({ planId: "R-0001-S1-music" })).events.map((e) => e.kind);
   assert.deepEqual(events, ["plan_created", "rerun_requested", "group_note"]);
   await assert.rejects(s.services.requestRerun({ planId: "R-0001-S1-music", itemKey: "Z/9" }), refused("plan_mismatch"));
@@ -1248,4 +1251,64 @@ test("AC-BL-01: notices other than review_waiting are listed per plan; another d
     [{ kind: "stage_complete", stageId: "validate", title: "Validator" }, { kind: "budget_80" }, { kind: "attempts_exhausted", count: 3 }]
   );
   assert.deepEqual(sharedNotices({}), []);
+});
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-04/05): the owner's wave note apart from the factory's, and "wave done".
+test("AC-WV-04: the owner's note is ownerNote, the factory's is note; a factory upsert of the wave keeps the owner's note", async () => {
+  const s = setup();
+  await s.services.createPlan(basePlan());
+  await s.services.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "all too thin" }, "owner");
+  await s.services.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "LM planner off" }, "factory");
+  const updated = await s.services.updatePlan({ planId: "R-0001-S1-music", upsertGroups: [{ groupId: "C1", title: "Wave 1 (koto)" }] });
+  // An upsert keeps what it does not name (the existing upsert rule): the factory's note stays, and so does the owner's.
+  assert.deepEqual(updated.plan.groups[0], { groupId: "C1", title: "Wave 1 (koto)", dependsOn: null, note: "LM planner off", ownerNote: "all too thin" });
+  const events = (await s.services.getPlan({ planId: "R-0001-S1-music" })).events.filter((e) => e.kind === "group_note");
+  assert.deepEqual(events.map((e) => [e.actor, e.details]), [["owner", { groupId: "C1", note: "all too thin" }], ["factory", { groupId: "C1", note: "LM planner off" }]]);
+});
+
+test("AC-WV-05: the verdict that takes a wave's waiting count to zero records group_reviewed once, with the owner's counts and validator overrides", async () => {
+  const s = setup();
+  await s.services.createPlan({ ...basePlan(), reviewRejected: true });
+  await s.services.report({
+    planId: "R-0001-S1-music",
+    rows: [
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", auditionFile: "R-0001/C1/a.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:b", result: "rejected", auditionFile: "R-0001/C1/b.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:c", result: "rejected", auditionFile: "R-0001/C1/c.mp3" },
+      { stageId: "validate", itemKey: "C2/F1", attemptRef: "ext:d", result: "accepted", auditionFile: "R-0001/C2/d.mp3" },
+    ],
+  });
+  const reviewed = () => s.events.filter((e) => e.kind === "group_reviewed");
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", rating: 8 });
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:b", result: "accepted", rating: 7 });
+  assert.equal(reviewed().length, 0, "C1 still has one waiting");
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "rejected", rating: 3 });
+  assert.deepEqual(reviewed().map((e) => [e.actor, e.details]), [["owner", { groupId: "C1", accepted: 2, rejected: 1, overridesValidator: 1 }]]);
+  // Changing a verdict in a finished wave does not finish it again.
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "accepted", rating: 6 });
+  assert.equal(reviewed().length, 1);
+  // A new waiting attempt reopens the wave; finishing it again records it again.
+  await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:e", result: "accepted", auditionFile: "R-0001/C1/e.mp3" }] });
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:e", result: "rejected" });
+  assert.deepEqual(reviewed().at(-1)?.details, { groupId: "C1", accepted: 3, rejected: 1, overridesValidator: 2 });
+  assert.equal(reviewed().length, 2);
+  assert.equal(reviewed().some((e) => e.details.groupId === "C2"), false, "C2 still waits");
+});
+
+test("AC-WV-05: a verdict from the other computer that finishes a wave records group_reviewed on the owning device", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 9 });
+  await d.publish("win", d.win);
+  await d.mac.applyPeerVerdicts();
+  assert.deepEqual(d.macBase.events.filter((e) => e.kind === "group_reviewed").map((e) => e.details), [{ groupId: "C1", accepted: 1, rejected: 0, overridesValidator: 0 }]);
+});
+
+test("AC-WV-03: the review queue carries each wave's context", async () => {
+  const s = setup();
+  await s.services.createPlan(basePlan());
+  const queue = await s.services.reviewQueue({ planId: "R-0001-S1-music" });
+  assert.deepEqual(queue.batches.map((b) => [b.groupId, b.title]), [["C1", "Wave 1"], ["C2", "Wave 2"]]);
 });

@@ -60,3 +60,8 @@ test("AC-MV-07: plan_moved names both channels by name when known, by id otherwi
   assert.equal(panel.describeEvent(createTranslator("ru"), event, (id) => names[id] ?? id), "перенесён из Tropico Jazz в Rural Japan Music");
   assert.equal(panel.describeEvent(t, { ...event, details: { from: "UC_gone", to: "UC_japan", checked: 0 } }, (id) => names[id] ?? id), "moved from UC_gone to Rural Japan Music");
 });
+
+// BL-157 (AC-WV-05): "wave done" in the plan's event log.
+test("AC-WV-05: group_reviewed names the wave and the owner's counts", () => {
+  assert.equal(describeEvent({ at: "", kind: "group_reviewed", actor: "owner", details: { groupId: "C14", accepted: 12, rejected: 28, overridesValidator: 3 } }), "wave C14 reviewed: 12 accepted, 28 rejected");
+});

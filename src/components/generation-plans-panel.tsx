@@ -26,7 +26,7 @@ type PeerDevicePlans = {
   hostname: string | null;
   updatedAt: string;
   stale: boolean;
-  plans: Array<{ planId: string; title: string; status: string; channelId: string; progress: { stages?: Array<{ stageId: string; title: string; kind: PlanStageKind; counts: PlanStageCounts }>; spend?: { usd: number }; items?: Array<{ waitingReview: number }> }; review: Array<{ itemKey: string; attemptRef: string; verdict: unknown }>; groups: Array<{ groupId: string; title: string; note: string | null }> }>;
+  plans: Array<{ planId: string; title: string; status: string; channelId: string; progress: { stages?: Array<{ stageId: string; title: string; kind: PlanStageKind; counts: PlanStageCounts }>; spend?: { usd: number }; items?: Array<{ waitingReview: number }> }; review: Array<{ itemKey: string; attemptRef: string; verdict: unknown }>; groups: Array<{ groupId: string; title: string; note: string | null; ownerNote?: string | null }> }>;
 };
 type OutgoingVerdict = { ownerDeviceId: string; planId: string; itemKey: string; attemptRef: string };
 
@@ -157,6 +157,8 @@ export function describeEvent(t: Translate, event: PlanEvent, channelName: (chan
       return t("plans.event.groupNote", { group: String(d.groupId) });
     case "stage_run":
       return t("plans.event.stageRun", { count: String(d.created) });
+    case "group_reviewed":
+      return t("plans.event.groupReviewed", { group: String(d.groupId), accepted: Number(d.accepted) || 0, rejected: Number(d.rejected) || 0 });
     case "plan_moved":
       return t("plans.event.planMoved", { from: channelName(String(d.from)), to: channelName(String(d.to)) });
     default:
@@ -512,14 +514,15 @@ function GroupRow({
   onSaved,
 }: {
   planId: string;
-  group: { groupId: string; title: string; dependsOn: string | null; note: string | null };
+  group: { groupId: string; title: string; dependsOn: string | null; note: string | null; ownerNote?: string | null };
   counts: { items: number; generated: number; accepted: number; rejected: number; waitingReview: number; missing: number } | undefined;
   editable: boolean;
   onSaved: () => void;
 }) {
   const t = useT();
   const [editing, setEditing] = useState(false);
-  const [note, setNote] = useState(group.note ?? "");
+  // BL-157 (AC-WV-04): the owner edits their own note; the factory's context (`note`) is shown apart, read-only.
+  const [note, setNote] = useState(group.ownerNote ?? "");
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
     try {
@@ -545,7 +548,8 @@ function GroupRow({
           </span>
         )}
       </div>
-      {!editing && group.note && <p className="whitespace-pre-wrap text-zinc-300">{group.note}</p>}
+      {group.note && <p className="whitespace-pre-wrap text-zinc-400">{group.note}</p>}
+      {!editing && group.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: group.ownerNote })}</p>}
       {editing ? (
         <div className="space-y-1">
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100" placeholder={t("plans.notePlaceholder")} />
@@ -557,7 +561,7 @@ function GroupRow({
               type="button"
               onClick={() => {
                 setEditing(false);
-                setNote(group.note ?? "");
+                setNote(group.ownerNote ?? "");
               }}
               className={secondaryButton}
             >
@@ -570,12 +574,12 @@ function GroupRow({
           <button
             type="button"
             onClick={() => {
-              setNote(group.note ?? "");
+              setNote(group.ownerNote ?? "");
               setEditing(true);
             }}
             className="text-indigo-300 hover:underline"
           >
-            {group.note ? t("plans.editNote") : t("plans.addNote")}
+            {group.ownerNote ? t("plans.editNote") : t("plans.addNote")}
           </button>
         )
       )}
@@ -640,9 +644,9 @@ function PeerPlansCard({ devices, outgoing, onReview }: { devices: PeerDevicePla
                         </div>
                       );
                     })}
-                    {p.groups.filter((g) => g.note).map((g) => (
+                    {p.groups.filter((g) => g.note || g.ownerNote).map((g) => (
                       <div key={g.groupId} className="text-xs text-zinc-400">
-                        {g.title}: {g.note}
+                        {g.title}: {[g.note, g.ownerNote ? t("plans.ownerNote", { note: g.ownerNote }) : null].filter(Boolean).join(" · ")}
                       </div>
                     ))}
                   </li>

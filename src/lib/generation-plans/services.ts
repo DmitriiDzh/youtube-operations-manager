@@ -17,6 +17,7 @@ import {
   type PlanNotice,
   type PlanReference,
   type PlanResultRow,
+  type PlanReviewBatch,
   type PlanStage,
   type PlanStatus,
   type PlanReviewEntry,
@@ -24,7 +25,7 @@ import {
   type PlanView,
 } from "./contracts";
 import type { GenerationPlansReport, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
-import { inAppAttempts, planEvents, planProgress, planTodo, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
+import { inAppAttempts, planEvents, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
   closePlanInputSchema,
@@ -240,8 +241,9 @@ function normalizeReference(r: { id: string; label: string; file: string; lufs?:
   return { id: r.id, label: r.label, file: r.file, lufs: r.lufs ?? null, lra: r.lra ?? null, truePeak: r.truePeak ?? null };
 }
 
-function normalizeGroup(group: { groupId: string; title?: string; dependsOn?: string | null; note?: string | null }): PlanGroup {
-  return { groupId: group.groupId, title: group.title ?? group.groupId, dependsOn: group.dependsOn ?? null, note: group.note ?? null };
+function normalizeGroup(group: { groupId: string; title?: string; dependsOn?: string | null; note?: string | null; ownerNote?: string | null }): PlanGroup {
+  // BL-157 (AC-WV-04): the owner's note survives a factory upsert of the same group (the factory never sends it).
+  return { groupId: group.groupId, title: group.title ?? group.groupId, dependsOn: group.dependsOn ?? null, note: group.note ?? null, ...(group.ownerNote ? { ownerNote: group.ownerNote } : {}) };
 }
 
 /** The whole-definition rules (AC-GP-01): unique ids, at most one in-app and one owner-review stage, known references. */
@@ -456,6 +458,27 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         validator,
       };
     });
+  }
+
+  /**
+   * BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-05): a wave whose waiting count an owner verdict took from above zero to zero records
+   * `group_reviewed` once -- the owner's accepted and rejected verdicts in it, and how many of the accepted ones the validator
+   * had rejected (the factory's cue to recalibrate it). A wave finished again later records it again.
+   */
+  async function recordGroupsReviewed(row: StoredPlan, before: PlanReviewEntry[], after: PlanReviewEntry[]): Promise<void> {
+    const waiting = (entries: PlanReviewEntry[], groupId: string) => entries.filter((e) => e.groupId === groupId && e.verdict === null).length;
+    const groups = [...new Set(before.filter((e) => e.verdict === null && e.groupId !== null).map((e) => e.groupId as string))];
+    for (const groupId of groups) {
+      if (waiting(after, groupId) > 0) continue;
+      const reviewed = after.filter((e) => e.groupId === groupId && e.verdict !== null);
+      const accepted = reviewed.filter((e) => e.verdict?.result === "accepted");
+      await record(row.id, "group_reviewed", "owner", {
+        groupId,
+        accepted: accepted.length,
+        rejected: reviewed.filter((e) => e.verdict?.result === "rejected").length,
+        overridesValidator: accepted.filter((e) => e.validator === "rejected").length,
+      });
+    }
   }
 
   const api = {
@@ -717,16 +740,21 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!known) throw planMismatch(`Item ${parsed.itemKey} has no attempt ${parsed.attemptRef}`, { planId: row.id, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
       const result = resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString());
       await deps.store.upsertResults(row.id, [result]);
+      await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
       return result;
       });
     },
 
-    /** The owner's (or factory's) note on a whole wave (FO-MSG-0008 §4). */
+    /**
+     * The owner's (or factory's) note on a whole wave (FO-MSG-0008 §4). BL-157 (AC-WV-04): the owner's goes to `ownerNote`, the
+     * factory's to `note` (its context for the wave), so neither overwrites the other.
+     */
     async setGroupNote(input: unknown, actor: PlanActor = "owner"): Promise<PlanView> {
       const parsed = parseWithSchema(groupNoteInputSchema, input, "group note");
+      const field = actor === "owner" ? "ownerNote" : "note";
       const updated = await mutate(parsed.planId, (row) => {
         if (!row.definition.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${row.id} has no group ${parsed.groupId}`, { planId: row.id, groupId: parsed.groupId });
-        return { definition: { ...row.definition, groups: row.definition.groups.map((g) => (g.groupId === parsed.groupId ? { ...g, note: parsed.note } : g)) } };
+        return { definition: { ...row.definition, groups: row.definition.groups.map((g) => (g.groupId === parsed.groupId ? { ...g, [field]: parsed.note } : g)) } };
       });
       await record(updated.id, "group_note", actor, { groupId: parsed.groupId, note: parsed.note });
       return view(updated);
@@ -1043,6 +1071,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
             await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: from, itemKey: verdict.itemKey, result: verdict.result });
             a++;
           }
+          // BL-157 (AC-WV-05): a verdict from the other computer may finish a wave too.
+          if (a > 0) await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
           return { applied: a, skipped: k };
         });
         applied += done.applied;
@@ -1110,6 +1140,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           references: plan.references ?? [],
           events,
           review,
+          // BL-157 (report v2, AC-WV-03): the waves' context, computed here on the owning device.
+          batches: reviewBatches(plan, jobs, results),
         });
       }
       // Bounded (independent review): the oldest plans -- closed ones first -- are left out until the report fits.
@@ -1168,11 +1200,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * BL-143 slice 4: the attempts the owner reviews -- every attempt that passed the stage before the owner review --
      * waiting ones first, each with what the earlier stages reported and the owner's verdict if given.
      */
-    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[]; references: PlanReference[] }> {
+    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[]; references: PlanReference[]; batches: PlanReviewBatch[] }> {
       const { planId } = parseWithSchema(getPlanInputSchema.pick({ planId: true }), input, "plan id");
       const row = await requirePlan(planId);
       const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-      return { planId, entries: reviewEntries(row, jobs, results), references: row.definition.references ?? [] };
+      // BL-157 (AC-WV-03): each wave's context for the review screen.
+      return { planId, entries: reviewEntries(row, jobs, results), references: row.definition.references ?? [], batches: reviewBatches(toPublicPlan(row), jobs, results) };
     },
 
     /**

@@ -161,3 +161,37 @@ test("AC-RR-07: failed checks -- fail before warn, passing and info ones left ou
   );
   assert.deepEqual(failedChecksOf({ stages: [row("accepted", [{ id: "loop", pass: false, severity: "fail" }])] }), [], "a passed attempt shows no line");
 });
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-01/02/05): review by wave -- each wave's waiting and reviewed counts, the walk inside a
+// wave, the "wave done" numbers. Expected values are counted by hand from the entries below.
+test("AC-WV-01/05: wave summaries in the plan's wave order -- waiting passed/rejected, reviewed of total, the owner's counts", async () => {
+  const { waveSummaries } = await import("./plan-review-screen");
+  const verdict = (result: "accepted" | "rejected") => ({ stageId: "owner_review", itemKey: "", attemptRef: "", result, reportedBy: "owner", note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: "2026-10-08T10:00:00Z" });
+  const e = (groupId: string | null, validator: "passed" | "rejected", v: "accepted" | "rejected" | null) => ({ groupId, validator, stages: [], verdict: v ? verdict(v) : null });
+  const entries = [
+    e("C14", "passed", null),
+    e("C14", "rejected", null),
+    e("C14", "rejected", "accepted"),
+    e("C13", "passed", "rejected"),
+    e("C13", "passed", "accepted"),
+    e(null, "passed", null),
+    e("C99", "passed", null),
+  ];
+  const batches = [{ groupId: "C13", title: "C13 planner off" }, { groupId: "C14", title: "C14 new instruments" }, { groupId: "C15", title: "C15" }];
+  assert.deepEqual(waveSummaries(entries as never, batches), [
+    { groupId: "C13", title: "C13 planner off", total: 2, reviewed: 2, waitingPassed: 0, waitingRejected: 0, accepted: 1, rejected: 1, overridesValidator: 0 },
+    { groupId: "C14", title: "C14 new instruments", total: 3, reviewed: 1, waitingPassed: 1, waitingRejected: 1, accepted: 1, rejected: 0, overridesValidator: 1 },
+    // A wave the batches do not name (an older report) comes last, titled by its id; C15 has no entries; no-wave entries are not a wave.
+    { groupId: "C99", title: "C99", total: 1, reviewed: 0, waitingPassed: 1, waitingRejected: 0, accepted: 0, rejected: 0, overridesValidator: 0 },
+  ]);
+});
+
+test("AC-WV-02: the walk is the validator filter, then the chosen wave", async () => {
+  const { visibleEntries } = await import("./plan-review-screen");
+  const e = (id: string, groupId: string | null, validator: "passed" | "rejected") => ({ id, groupId, validator, stages: [] });
+  const entries = [e("a", "C14", "passed"), e("b", "C14", "rejected"), e("c", "C13", "rejected"), e("d", null, "passed")];
+  assert.deepEqual(visibleEntries(entries, "all", null).map((x) => x.id), ["a", "b", "c", "d"]);
+  assert.deepEqual(visibleEntries(entries, "all", "C14").map((x) => x.id), ["a", "b"]);
+  assert.deepEqual(visibleEntries(entries, "rejected", "C14").map((x) => x.id), ["b"]);
+  assert.deepEqual(visibleEntries(entries, "rejected", null).map((x) => x.id), ["b", "c"]);
+});

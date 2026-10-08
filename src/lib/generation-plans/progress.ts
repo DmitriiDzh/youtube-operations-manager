@@ -4,8 +4,10 @@ import type {
   PlanAttemptState,
   PlanEvent,
   PlanItemProgress,
+  PlanParamValue,
   PlanProgress,
   PlanResultRow,
+  PlanReviewBatch,
   PlanStage,
   PlanStageCounts,
   PlanTodo,
@@ -409,4 +411,61 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
   // A page that is all one second would never advance: then the next call starts at the following second.
   const stuck = since !== null && lastSecond.getTime() <= secondFloor(since).getTime();
   return { events: page, more: true, cursor: (stuck ? new Date(lastSecond.getTime() + 1000) : lastSecond).toISOString() };
+}
+
+const BATCH_LIMITS = { templates: 20, params: 60, values: 20, valueChars: 500 } as const;
+
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-03): each wave's context for the review -- its title and notes, its earliest attempt,
+ * its templates, the item params that differ between its items, and what the stage right before the owner's review said
+ * about its attempts. In the plan's group order. Pure.
+ */
+export function reviewBatches(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): PlanReviewBatch[] {
+  const reviewIndex = plan.stages.findIndex((s) => s.kind === "owner_review");
+  const before = reviewIndex > 0 ? plan.stages[reviewIndex - 1] : null;
+  const attempts = before?.kind === "in_app" ? inAppAttempts(plan, jobs, results) : [];
+  return plan.groups.map((group) => {
+    const items = plan.items.filter((i) => i.groupId === group.groupId);
+    const keys = new Set(items.map((i) => i.itemKey));
+    const times = [
+      ...jobs.filter((j) => j.itemKey !== null && keys.has(j.itemKey)).map((j) => j.createdAt.getTime()),
+      ...results.filter((r) => keys.has(r.itemKey)).map((r) => Date.parse(r.at)),
+    ].filter((ms) => Number.isFinite(ms));
+    const templates = [...new Set(items.map((i) => i.templateLabel ?? i.templateId).filter((x): x is string => typeof x === "string" && x.length > 0))]
+      .slice(0, BATCH_LIMITS.templates)
+      .map((x) => x.slice(0, 200));
+    const names = [...new Set(items.flatMap((i) => Object.keys(i.params ?? {})))];
+    const differingParams: PlanReviewBatch["differingParams"] = [];
+    for (const name of names) {
+      const values: PlanParamValue[] = [];
+      for (const item of items) {
+        const raw = item.params?.[name];
+        if (raw === undefined) continue;
+        const value = typeof raw === "string" ? raw.slice(0, BATCH_LIMITS.valueChars) : raw;
+        if (!values.some((v) => v === value)) values.push(value);
+      }
+      if (values.length > 1 && differingParams.length < BATCH_LIMITS.params) differingParams.push({ name: name.slice(0, 64), values: values.slice(0, BATCH_LIMITS.values) });
+    }
+    let passed = 0;
+    let rejected = 0;
+    if (before?.kind === "in_app") {
+      passed = attempts.filter((a) => keys.has(a.itemKey) && a.state === "done").length;
+    } else if (before) {
+      for (const r of results) {
+        if (r.stageId !== before.stageId || !keys.has(r.itemKey)) continue;
+        if (r.result === "accepted" || r.result === "done") passed++;
+        else if (r.result === "rejected") rejected++;
+      }
+    }
+    return {
+      groupId: group.groupId,
+      title: group.title,
+      note: group.note,
+      ownerNote: group.ownerNote ?? null,
+      firstAt: times.length > 0 ? new Date(Math.min(...times)).toISOString() : null,
+      templates,
+      differingParams,
+      validator: { passed, rejected },
+    };
+  });
 }

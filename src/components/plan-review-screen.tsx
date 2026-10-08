@@ -2,7 +2,9 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { validatorOfEntry, type PlanCheck, type PlanMarker, type PlanReference, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { validatorOfEntry, type PlanCheck, type PlanMarker, type PlanReference, type PlanReviewBatch, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { formatDisplayDate } from "@/lib/shared-formatting";
+import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
@@ -192,11 +194,59 @@ export function failedChecksOf(entry: Pick<PlanReviewEntry, "stages">): FailedCh
     }));
 }
 
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-01/05): one wave of the queue -- how many of its entries wait (by the validator) and how many were reviewed. */
+export type WaveSummary = {
+  groupId: string;
+  title: string;
+  total: number;
+  reviewed: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** The owner's verdicts in the wave, for the "wave done" summary. */
+  accepted: number;
+  rejected: number;
+  /** Accepted although the validator rejected them. */
+  overridesValidator: number;
+};
+
+/**
+ * The waves that have entries, in the plan's wave order (`batches`), then any wave the batches do not name (an older
+ * report), by first appearance. Entries in no wave are not a wave. Exported for its test.
+ */
+export function waveSummaries(entries: Array<Pick<PlanReviewEntry, "groupId" | "verdict" | "stages"> & { validator?: PlanReviewEntry["validator"] }>, batches: Array<Pick<PlanReviewBatch, "groupId" | "title">>): WaveSummary[] {
+  const order = [...batches.map((b) => b.groupId), ...entries.map((e) => e.groupId).filter((g): g is string => g !== null)];
+  const ids = [...new Set(order)].filter((id) => entries.some((e) => e.groupId === id));
+  return ids.map((groupId) => {
+    const mine = entries.filter((e) => e.groupId === groupId);
+    const waiting = mine.filter((e) => e.verdict === null);
+    const reviewed = mine.filter((e) => e.verdict !== null);
+    const accepted = reviewed.filter((e) => e.verdict?.result === "accepted");
+    const rejectedByValidator = waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
+    return {
+      groupId,
+      title: batches.find((b) => b.groupId === groupId)?.title ?? groupId,
+      total: mine.length,
+      reviewed: reviewed.length,
+      waitingPassed: waiting.length - rejectedByValidator,
+      waitingRejected: rejectedByValidator,
+      accepted: accepted.length,
+      rejected: reviewed.filter((e) => e.verdict?.result === "rejected").length,
+      overridesValidator: accepted.filter((e) => validatorOfEntry(e) === "rejected").length,
+    };
+  });
+}
+
+/** The entries the screen walks: the validator filter, then the chosen wave (null = all waves). Exported for its test. */
+export function visibleEntries<T extends Pick<PlanReviewEntry, "stages" | "groupId"> & { validator?: PlanReviewEntry["validator"] }>(entries: T[], filter: ReviewFilter, wave: string | null): T[] {
+  const filtered = filterEntries(entries, filter);
+  return wave === null ? filtered : filtered.filter((e) => e.groupId === wave);
+}
+
 /** BL-143 phase 2: the queue of ANOTHER device's plan, from its report, with the verdicts sent from here still waiting. */
 export type PeerReviewSource = { deviceId: string; hostname: string | null };
 
 type PeerQueueResponse = {
-  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[] }> }>;
+  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[]; batches?: PlanReviewBatch[] }> }>;
   outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
 };
 
@@ -222,10 +272,14 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
 
 export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
   const { t, formatNumber, language } = useUiText();
+  const { channel } = useAppChannel();
   const [allEntries, setEntries] = useState<PlanReviewEntry[] | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>("all");
-  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06).
-  const entries = useMemo(() => (allEntries ? filterEntries(allEntries, filter) : null), [allEntries, filter]);
+  // BL-157 (AC-WV-01/02): the chosen wave (null = all waves) and each wave's context.
+  const [wave, setWave] = useState<string | null>(null);
+  const [batches, setBatches] = useState<PlanReviewBatch[]>([]);
+  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06) and wave (BL-157).
+  const entries = useMemo(() => (allEntries ? visibleEntries(allEntries, filter, wave) : null), [allEntries, filter, wave]);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [blind, setBlind] = useState(false);
@@ -250,9 +304,11 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     (): Promise<PlanReviewEntry[]> =>
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
-          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; message?: string } & Partial<PeerQueueResponse>;
+          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; batches?: PlanReviewBatch[]; message?: string } & Partial<PeerQueueResponse>;
           if (!res.ok) throw new Error(errorText(t, data, t("review.loadFailedStatus", { status: String(res.status) }), { showErrorField: false }));
-          setReferences(peerDevice ? (data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId)?.references ?? []) : (data.references ?? []));
+          const peerPlan = peerDevice ? data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId) : undefined;
+          setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
+          setBatches(peerDevice ? (peerPlan?.batches ?? []) : (data.batches ?? []));
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
           return list;
@@ -298,7 +354,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
-        const list = filterEntries(await load(), filter);
+        const list = visibleEntries(await load(), filter, wave);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
         const next = nextWaitingIndex(list, here >= 0 ? here : index);
         setDraft(emptyDraft());
@@ -310,7 +366,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, filter, index, load, onChanged, stopB, t]
+    [base, busy, draft, entry, filter, index, load, onChanged, stopB, t, wave]
   );
 
   /** A filter shows its own first waiting attempt. */
@@ -318,17 +374,38 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     (next: ReviewFilter) => {
       stopB();
       setFilter(next);
-      setIndex(Math.max(0, filterEntries(allEntries ?? [], next).findIndex((e) => e.verdict === null)));
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], next, wave).findIndex((e) => e.verdict === null)));
       setDraft(emptyDraft());
       setMessage(null);
     },
-    [allEntries, stopB]
+    [allEntries, stopB, wave]
   );
+  /** BL-157 (AC-WV-02): a wave shows its own first waiting attempt; null = all waves. */
+  const chooseWave = useCallback(
+    (next: string | null) => {
+      stopB();
+      setWave(next);
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], filter, next).findIndex((e) => e.verdict === null)));
+      setDraft(emptyDraft());
+      setMessage(null);
+    },
+    [allEntries, filter, stopB]
+  );
+  const waves = useMemo(() => waveSummaries(allEntries ?? [], batches), [allEntries, batches]);
+  const chosenWave = wave === null ? null : (waves.find((w) => w.groupId === wave) ?? null);
+  const chosenBatch = wave === null ? null : (batches.find((b) => b.groupId === wave) ?? null);
+  // AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has something.
+  const nextWave = useMemo(() => {
+    if (!chosenWave || chosenWave.waitingPassed + chosenWave.waitingRejected > 0) return null;
+    const at = waves.findIndex((w) => w.groupId === chosenWave.groupId);
+    return [...waves.slice(at + 1), ...waves.slice(0, at)].find((w) => w.waitingPassed + w.waitingRejected > 0) ?? null;
+  }, [chosenWave, waves]);
+  const entryWaveTitle = (groupId: string | null) => (groupId === null ? null : (batches.find((b) => b.groupId === groupId)?.title ?? groupId));
   const filterCounts = useMemo(() => {
-    const list = allEntries ?? [];
+    const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);
     const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter((e) => e.verdict === null).length;
     return { all: waitingIn("all"), passed: waitingIn("passed"), rejected: waitingIn("rejected"), anyRejected: list.some((e) => validatorOfEntry(e) === "rejected") };
-  }, [allEntries]);
+  }, [allEntries, wave]);
 
   const mark = useCallback(() => {
     const at = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
@@ -442,7 +519,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-base font-semibold text-zinc-100">
+          {/* BL-157 (AC-SM-07): "<channel> · Review · <plan> · <wave>" -- whose track this is, at a glance. */}
+          {channel?.title ? <span className="text-zinc-300">{t("review.titleChannel", { channel: channel.title })}</span> : null}
           {t("review.title", { plan: planId })}
+          {entry && entryWaveTitle(entry.groupId) ? <span className="text-zinc-300">{t("review.titleWave", { wave: entryWaveTitle(entry.groupId) ?? "" })}</span> : null}
           {source ? <span className="ml-2 text-xs font-normal text-zinc-400">{t("review.onDevice", { device: source.hostname ?? source.deviceId })}</span> : null}
         </h3>
         <span className="text-xs text-zinc-400">{entries ? t("review.queueCounts", { waiting, total: entries.length }) : t("common.loading")}</span>
@@ -455,6 +535,81 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           </button>
         </div>
       </div>
+      {/* BL-157 (AC-WV-01): the plan's waves that have entries -- pick one to review it alone. */}
+      {waves.length > 0 && (
+        <div className="flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.wave.label")}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={wave === null}
+            onClick={() => chooseWave(null)}
+            className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${wave === null ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            {t("review.wave.all")}
+          </button>
+          {waves.map((w) => (
+            <button
+              key={w.groupId}
+              type="button"
+              role="tab"
+              aria-selected={wave === w.groupId}
+              onClick={() => chooseWave(w.groupId)}
+              title={t("review.wave.progress", { reviewed: w.reviewed, total: w.total })}
+              className={`rounded-md px-3 py-1 text-left text-xs transition-colors ${wave === w.groupId ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+            >
+              <span className="font-medium">{w.title}</span>
+              <span className="ml-1.5 text-[11px] text-zinc-500">
+                {w.waitingPassed + w.waitingRejected > 0
+                  ? t("review.wave.waiting", { waiting: w.waitingPassed + w.waitingRejected, passed: w.waitingPassed, rejected: w.waitingRejected, reviewed: w.reviewed, total: w.total })
+                  : t("review.wave.progress", { reviewed: w.reviewed, total: w.total })}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {/* AC-WV-03: the chosen wave's context. */}
+      {chosenWave && (
+        <div className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-300">
+          <p className="text-sm font-medium text-zinc-100">{chosenWave.title}</p>
+          {chosenBatch?.note && <p className="whitespace-pre-wrap text-zinc-300">{chosenBatch.note}</p>}
+          {chosenBatch?.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: chosenBatch.ownerNote })}</p>}
+          <p className="text-zinc-400">
+            {[
+              chosenBatch?.firstAt ? t("review.wave.date", { date: formatDisplayDate(chosenBatch.firstAt) }) : null,
+              chosenBatch && chosenBatch.templates.length > 0 ? t("review.wave.templates", { templates: chosenBatch.templates.join(", ") }) : null,
+              chosenBatch && chosenBatch.validator.passed + chosenBatch.validator.rejected > 0
+                ? t("review.wave.passRate", {
+                    passed: chosenBatch.validator.passed,
+                    total: chosenBatch.validator.passed + chosenBatch.validator.rejected,
+                    percent: Math.round((chosenBatch.validator.passed / (chosenBatch.validator.passed + chosenBatch.validator.rejected)) * 100),
+                  })
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+          {chosenBatch && chosenBatch.differingParams.length > 0 && (
+            <ul className="space-y-0.5 text-zinc-400">
+              {chosenBatch.differingParams.map((p) => (
+                <li key={p.name}>
+                  <span className="font-mono text-zinc-300">{p.name}</span>: {p.values.map((v) => String(v)).join(" | ")}
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
+          {chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
+            <div className="mt-1 flex flex-wrap items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-2 py-1.5 text-emerald-200">
+              <span>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</span>
+              {nextWave && (
+                <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-indigo-600 px-2.5 py-0.5 text-xs font-medium text-white hover:bg-indigo-500">
+                  {t("review.wave.next", { wave: nextWave.title, count: nextWave.waitingPassed + nextWave.waitingRejected })}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {/* Kept while a filter other than All is chosen, so a queue whose rejects went away never hides its way back. */}
       {(filterCounts.anyRejected || filter !== "all") && (
         <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
