@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useT } from "./ui-text-provider";
 
 // BL-143 (ADR 0029 decision 5, MEDIA_REVIEW_TOOLS.md §2 group A): a generic player for one audio file -- waveform with a
 // playhead (wavesurfer.js, loaded only when this component mounts), click to seek, and time ranges drawn as regions. It knows
@@ -73,6 +74,7 @@ export type MediaReviewPlayerProps = {
 };
 
 export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart }, ref) {
+  const t = useT();
   const container = useRef<HTMLDivElement | null>(null);
   const spectrogramContainer = useRef<HTMLDivElement | null>(null);
   const wave = useRef<WaveSurferLike | null>(null);
@@ -83,7 +85,10 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
   const loopRef = useRef(false);
   const onDecodedRef = useRef(onDecoded);
   const onPlayStartRef = useRef(onPlayStart);
+  // The load errors are worded inside the per-file effect; a language change never rebuilds the player.
+  const tRef = useRef(t);
   useEffect(() => {
+    tRef.current = t;
     loopRef.current = loop;
     onDecodedRef.current = onDecoded;
     onPlayStartRef.current = onPlayStart;
@@ -167,9 +172,9 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       });
       instance.on("pause", () => setState((s) => ({ ...s, playing: false })));
       instance.on("finish", () => setState((s) => ({ ...s, playing: false })));
-      instance.on("error", (error) => setState((s) => ({ ...s, error: error instanceof Error ? error.message : "The file could not be played" })));
+      instance.on("error", (error) => setState((s) => ({ ...s, error: error instanceof Error ? error.message : tRef.current("review.player.couldNotPlay") })));
     })().catch((error: unknown) => {
-      if (!cancelled) setState((s) => ({ ...s, error: error instanceof Error ? error.message : "The player could not be loaded" }));
+      if (!cancelled) setState((s) => ({ ...s, error: error instanceof Error ? error.message : tRef.current("review.player.couldNotLoad") }));
     });
     return () => {
       cancelled = true;
@@ -225,25 +230,23 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
             .map((m, i) => (
               <div key={i} className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-red-400/80" style={{ top: `${(1 - m.hz / SPECTROGRAM_MAX_HZ) * 100}%` }}>
                 <span className="absolute right-1 -top-4 rounded bg-zinc-950/80 px-1 text-[10px] text-red-300">
-                  {m.label} {Math.round(m.hz)} Hz
+                  {t("review.player.frequency", { label: m.label, hz: Math.round(m.hz) })}
                 </span>
               </div>
             ))}
       </div>
       <div className="flex items-center gap-3 text-xs text-zinc-400">
         <button type="button" onClick={() => void wave.current?.playPause()} disabled={!state.ready} className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
-          {state.playing ? "Pause" : "Play"}
+          {state.playing ? t("review.player.pause") : t("review.player.play")}
         </button>
         <span className="font-mono">
           {formatPlayerTime(state.time)} / {formatPlayerTime(state.duration)}
         </span>
         {selection && (
           <>
-            <span>
-              selection {formatPlayerTime(selection.start)}–{formatPlayerTime(selection.end)}
-            </span>
+            <span>{t("review.player.selection", { start: formatPlayerTime(selection.start), end: formatPlayerTime(selection.end) })}</span>
             <button type="button" onClick={() => setLoop((v) => !v)} className={`rounded-md border px-2 py-0.5 ${loop ? "border-indigo-400 bg-indigo-500/20 text-indigo-200" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
-              {loop ? "Looping" : "Loop"}
+              {loop ? t("review.player.looping") : t("review.player.loop")}
             </button>
             <button
               type="button"
@@ -254,12 +257,12 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
               }}
               className="text-zinc-400 hover:text-zinc-100"
             >
-              Clear
+              {t("review.player.clear")}
             </button>
           </>
         )}
-        {!selection && state.ready && <span className="text-zinc-500">drag on the waveform to select a range to loop</span>}
-        {!state.ready && !state.error && <span>Loading the waveform…</span>}
+        {!selection && state.ready && <span className="text-zinc-500">{t("review.player.dragHint")}</span>}
+        {!state.ready && !state.error && <span>{t("review.player.loading")}</span>}
         {state.error && <span className="text-red-400">{state.error}</span>}
       </div>
     </div>

@@ -5,6 +5,8 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OperationLockControl } from "@/components/operation-lock-control";
 import { DeviceSyncDivergenceCard } from "@/components/device-sync-divergence-card";
 import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
+import { useT } from "@/components/ui-text-provider";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
 
 type UnresolvedRow = { batchId: string; ledgerRowId: string; videoId: string; status: string };
 
@@ -29,13 +31,13 @@ type SnapshotSummary = {
  * component. */
 type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings";
 
-const FAMILY_LABELS: Record<SyncFamily, string> = {
-  change_drafts: "Change drafts",
-  editorial_profile: "Editorial profiles",
-  ai_connections: "AI connections",
-  media_sessions: "RunPod sessions",
-  generation_plans: "Generation plans",
-  media_settings: "Production settings",
+const FAMILY_LABELS: Record<SyncFamily, UiTextKey> = {
+  change_drafts: "handoff.family.changeDrafts",
+  editorial_profile: "handoff.family.editorialProfiles",
+  ai_connections: "handoff.family.aiConnections",
+  media_sessions: "handoff.family.mediaSessions",
+  generation_plans: "handoff.family.generationPlans",
+  media_settings: "handoff.family.mediaSettings",
 };
 
 type SyncFamilyStatusView = {
@@ -102,28 +104,29 @@ type SyncCycleResponse = (
   aiConnections: OtherFamilyCycle;
 };
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const data = await res.json();
   if (!res.ok && res.status !== 207) {
-    throw new Error(data?.message ?? `Request to ${url} failed (${res.status})`);
+    throw new Error(data?.message ?? t("handoff.requestFailed", { url, status: String(res.status) }));
   }
   return data as T;
 }
 
-function formatRelativeTime(iso: string | null): string {
-  if (!iso) return "never";
+function formatRelativeTime(t: Translate, iso: string | null): string {
+  if (!iso) return t("common.never");
   const ms = Date.now() - new Date(iso).getTime();
   const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  if (minutes < 1) return t("handoff.justNow");
+  if (minutes < 60) return t("handoff.minutesAgo", { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  if (hours < 24) return t("handoff.hoursAgo", { count: hours });
   const days = Math.round(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
+  return t("handoff.daysAgo", { count: days });
 }
 
 export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) {
+  const t = useT();
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -148,30 +151,30 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
 
   const refreshStatus = useCallback(async () => {
     try {
-      const data = await fetchJson<StatusResponse>("/api/device-handoff/status");
+      const data = await fetchJson<StatusResponse>(t, "/api/device-handoff/status");
       setStatus(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load status");
+      setError(err instanceof Error ? err.message : t("handoff.error.loadStatus"));
     }
-  }, []);
+  }, [t]);
 
   const refreshSnapshots = useCallback(async () => {
     try {
-      const data = await fetchJson<{ snapshots: SnapshotSummary[] }>("/api/device-handoff/snapshots");
+      const data = await fetchJson<{ snapshots: SnapshotSummary[] }>(t, "/api/device-handoff/snapshots");
       setSnapshots(data.snapshots);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to list snapshots");
+      setError(err instanceof Error ? err.message : t("handoff.error.listSnapshots"));
     }
-  }, []);
+  }, [t]);
 
   const refreshSyncStatuses = useCallback(async () => {
     try {
-      const data = await fetchJson<{ statuses: SyncFamilyStatusView[] }>("/api/change-drafts/sync-status");
+      const data = await fetchJson<{ statuses: SyncFamilyStatusView[] }>(t, "/api/change-drafts/sync-status");
       setSyncStatuses(data.statuses);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load sync status");
+      setError(err instanceof Error ? err.message : t("handoff.error.loadSyncStatus"));
     }
-  }, []);
+  }, [t]);
 
   const refreshConflicts = useCallback(async () => {
     // Only change-drafts/editorial-profile are per-channel -- ai-connections is device-wide
@@ -195,9 +198,11 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       try {
         const [changeDrafts, editorialProfile] = await Promise.all([
           fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(
+            t,
             `/api/channels/${channelId}/change-drafts/conflicts`
           ),
           fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(
+            t,
             `/api/channels/${channelId}/editorial-profile/conflicts`
           ),
         ]);
@@ -206,7 +211,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
           changeDrafts.conflicts.map((c) => ({
             family: "change_drafts",
             key: `change_drafts.${c.changeId}.${c.field}`,
-            subject: `change ${c.changeId}`,
+            subject: t("handoff.subject.change", { id: c.changeId }),
             field: c.field,
             changeId: c.changeId,
             valuesByActor: c.valuesByActor,
@@ -217,26 +222,26 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
           editorialProfile.conflicts.map((c) => ({
             family: "editorial_profile",
             key: `editorial_profile.${c.field}`,
-            subject: "editorial profile",
+            subject: t("handoff.subject.editorialProfile"),
             field: c.field,
             valuesByActor: c.valuesByActor,
             resolvable: true,
           }))
         );
       } catch (err) {
-        refreshErrors.push(err instanceof Error ? err.message : "Failed to load conflicts");
+        refreshErrors.push(err instanceof Error ? err.message : t("handoff.error.loadConflicts"));
       }
     }
 
     try {
       const aiConnections = await fetchJson<{
         conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }>;
-      }>("/api/ai-connections/conflicts");
+      }>(t, "/api/ai-connections/conflicts");
       setAiConnectionConflicts(
         aiConnections.conflicts.map((c) => ({
           family: "ai_connections",
           key: `ai_connections.${c.connectionId}.${c.field}`,
-          subject: `connection ${c.connectionId}`,
+          subject: t("handoff.subject.connection", { id: c.connectionId }),
           field: c.field,
           connectionId: c.connectionId,
           valuesByActor: c.valuesByActor,
@@ -244,11 +249,11 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         }))
       );
     } catch (err) {
-      refreshErrors.push(err instanceof Error ? err.message : "Failed to load AI-connection conflicts");
+      refreshErrors.push(err instanceof Error ? err.message : t("handoff.error.loadAiConflicts"));
     }
 
     if (refreshErrors.length > 0) setError(refreshErrors.join(" "));
-  }, [channelId]);
+  }, [channelId, t]);
 
   useEffect(() => {
     void refreshStatus();
@@ -264,7 +269,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     setSyncBusy(true);
     setError(null);
     try {
-      const result = await fetchJson<SyncCycleResponse>("/api/change-drafts/sync", { method: "POST" });
+      const result = await fetchJson<SyncCycleResponse>(t, "/api/change-drafts/sync", { method: "POST" });
       const { editorialProfile, aiConnections } = result;
       const changeDraftsOk = "channels" in result;
       const channelsPushed = changeDraftsOk ? result.channels.filter((c) => c.pushed).length : 0;
@@ -272,9 +277,24 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       const profilesPushed = "channels" in editorialProfile ? editorialProfile.channels.filter((c) => c.pushed).length : 0;
       const connectionsPushed = "channels" in aiConnections ? aiConnections.channels.some((c) => c.pushed) : false;
       setLastSyncSummary(
-        `Change drafts: ${changeDraftsOk ? `${channelsPushed}/${result.channels.length} channel(s) pushed, merged from ${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s)` : `failed (${result.error})`}. ` +
-          `Editorial profiles: ${"channels" in editorialProfile ? `${profilesPushed} pushed, ${editorialProfile.totalNewConflicts} new conflict(s)` : `failed (${editorialProfile.error})`}. ` +
-          `AI connections: ${"channels" in aiConnections ? `${connectionsPushed ? "pushed" : "nothing to push"}, ${aiConnections.totalNewConflicts} new conflict(s)` : `failed (${aiConnections.error})`}.`
+        [
+          changeDraftsOk
+            ? t("handoff.summary.changeDrafts", {
+                pushed: channelsPushed,
+                total: result.channels.length,
+                peers: peersSeen,
+                conflicts: result.totalNewConflicts,
+              })
+            : t("handoff.summary.changeDraftsFailed", { error: result.error }),
+          "channels" in editorialProfile
+            ? t("handoff.summary.profiles", { pushed: profilesPushed, conflicts: editorialProfile.totalNewConflicts })
+            : t("handoff.summary.profilesFailed", { error: editorialProfile.error }),
+          "channels" in aiConnections
+            ? t(connectionsPushed ? "handoff.summary.connectionsPushed" : "handoff.summary.connectionsNothing", {
+                conflicts: aiConnections.totalNewConflicts,
+              })
+            : t("handoff.summary.connectionsFailed", { error: aiConnections.error }),
+        ].join(" ")
       );
 
       const pushErrors: Array<{ family: SyncFamily; channelId: string | null; reason: string }> = [];
@@ -317,7 +337,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       // message here is not a total loss of signal.
       await Promise.all([refreshConflicts(), refreshSyncStatuses(), conflictCenter.refresh()]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync failed");
+      setError(err instanceof Error ? err.message : t("handoff.error.syncFailed"));
     } finally {
       setSyncBusy(false);
     }
@@ -336,15 +356,15 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
             ? `/api/channels/${pendingAdoptPeer.channelId}/editorial-profile/adopt-peer`
             : "/api/ai-connections/adopt-peer";
 
-      const result = await fetchJson<{ backupPath: string | null }>(url, {
+      const result = await fetchJson<{ backupPath: string | null }>(t, url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ peerDeviceId: pendingAdoptPeer.peerDeviceId }),
       });
       setLastAdoptResult(
         result.backupPath
-          ? `Adopted device ${pendingAdoptPeer.peerDeviceId.slice(0, 8)}'s version. Your previous local copy was backed up to ${result.backupPath}.`
-          : `Adopted device ${pendingAdoptPeer.peerDeviceId.slice(0, 8)}'s version (there was no local copy to back up).`
+          ? t("handoff.adopted", { device: pendingAdoptPeer.peerDeviceId.slice(0, 8), path: result.backupPath })
+          : t("handoff.adoptedNoBackup", { device: pendingAdoptPeer.peerDeviceId.slice(0, 8) })
       );
       // The just-resolved entry is now stale -- remove it immediately rather than leaving a
       // misleading "could not be merged" warning on screen until the next sync cycle re-runs
@@ -363,7 +383,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       setPendingAdoptPeer(null);
       await refreshConflicts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to adopt peer's version");
+      setError(err instanceof Error ? err.message : t("handoff.error.adoptFailed"));
     } finally {
       adoptInFlight.current = false;
       setAdoptBusy(false);
@@ -376,18 +396,15 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     setLastResult(null);
     try {
       const result = await fetchJson<{ snapshotId: string; generation: number }>(
+        t,
         "/api/device-handoff/export",
         { method: "POST" }
       );
-      setLastResult(
-        `Exported as snapshot ${result.snapshotId} (generation ${result.generation}). ` +
-          "This only records that export finished on this device -- it does not confirm any " +
-          "other device has stopped."
-      );
+      setLastResult(t("handoff.exported", { snapshot: result.snapshotId, generation: String(result.generation) }));
       await refreshSnapshots();
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Export failed");
+      setError(err instanceof Error ? err.message : t("handoff.error.exportFailed"));
     } finally {
       setBusy(null);
     }
@@ -398,22 +415,21 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     setError(null);
     setLastResult(null);
     try {
-      const result = await fetchJson<{ status: string }>("/api/device-handoff/import", {
+      const result = await fetchJson<{ status: string }>(t, "/api/device-handoff/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ snapshotId }),
       });
       setLastResult(
         result.status === "activated_recovery_mode"
-          ? "Imported, but this device now has unresolved YouTube operation state -- restricted " +
-              "recovery mode is active. See below."
+          ? t("handoff.imported.recovery")
           : result.status === "duplicate_noop"
-            ? "This snapshot is already the current state on this device -- nothing changed."
-            : "Imported and activated normally."
+            ? t("handoff.imported.duplicate")
+            : t("handoff.imported.ok")
       );
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(err instanceof Error ? err.message : t("handoff.error.importFailed"));
     } finally {
       setBusy(null);
     }
@@ -423,14 +439,15 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     setBusy("acknowledge");
     setError(null);
     try {
-      await fetchJson("/api/device-handoff/acknowledge", {
+      await fetchJson(t, "/api/device-handoff/acknowledge", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        // ui-text-ignore: an audit note sent to the API, not shown in the interface
         body: JSON.stringify({ note: "Reviewed via dashboard" }),
       });
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to record acknowledgement");
+      setError(err instanceof Error ? err.message : t("handoff.error.acknowledgeFailed"));
     } finally {
       setBusy(null);
     }
@@ -451,18 +468,12 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
 
       {status?.recoveryMode && (
         <div className="rounded-lg border border-amber-700 bg-amber-950/40 px-4 py-4 text-sm text-amber-200">
-          <p className="mb-2 font-semibold">Restricted recovery mode</p>
-          <p className="mb-3">
-            This device has {status.unresolved.length} batch execution row(s) with an uncertain
-            YouTube write outcome (imported from a snapshot). Every mutating action &mdash; local
-            state and YouTube writes alike &mdash; is refused until this is resolved through the
-            existing recovery mechanism. Acknowledging below only records that you have reviewed
-            this; it never changes any row&rsquo;s status or lifts this restriction by itself.
-          </p>
+          <p className="mb-2 font-semibold">{t("handoff.recovery.title")}</p>
+          <p className="mb-3">{t("handoff.recovery.body", { count: status.unresolved.length })}</p>
           <ul className="mb-3 list-disc space-y-1 pl-5 font-mono text-xs">
             {status.unresolved.map((row) => (
               <li key={row.ledgerRowId}>
-                batch {row.batchId} / video {row.videoId}: {row.status}
+                {t("handoff.recovery.row", { batch: row.batchId, video: row.videoId, status: row.status })}
               </li>
             ))}
           </ul>
@@ -471,7 +482,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
             disabled={busy === "acknowledge"}
             className="rounded-md border border-amber-600 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-900/40 disabled:opacity-50"
           >
-            {busy === "acknowledge" ? "Recording..." : "I've reviewed this (acknowledge only)"}
+            {busy === "acknowledge" ? t("handoff.recovery.recording") : t("handoff.recovery.acknowledge")}
           </button>
         </div>
       )}
@@ -482,23 +493,16 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Sync status</h2>
+          <h2 className="text-lg font-semibold">{t("handoff.syncStatus.title")}</h2>
           <button
             onClick={handleSyncNow}
             disabled={syncBusy}
             className="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-500 disabled:opacity-50"
           >
-            {syncBusy ? "Syncing..." : "Sync now"}
+            {syncBusy ? t("common.syncing") : t("common.syncNow")}
           </button>
         </div>
-        <p className="mb-3 text-sm text-zinc-400">
-          Change Sets, editorial profiles, and AI connections each sync continuously in the
-          background between devices sharing the configured Syncthing folder (Settings &rarr;
-          Sync; checked automatically every minute while this app is open) &mdash; the button
-          above just runs all three cycles immediately. A conflict below means two devices edited
-          the same field while offline; nothing is ever picked automatically &mdash; choose which
-          version to keep when one appears.
-        </p>
+        <p className="mb-3 text-sm text-zinc-400">{t("handoff.syncStatus.intro")}</p>
 
         <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
           {syncStatuses.map((s) => {
@@ -514,19 +518,23 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
                       : 0;
             return (
               <li key={s.family} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
-                <span className="font-medium text-zinc-200">{FAMILY_LABELS[s.family]}</span>
+                <span className="font-medium text-zinc-200">{t(FAMILY_LABELS[s.family])}</span>
                 <span className="flex items-center gap-3 text-xs">
                   <span
                     className={
                       s.lastSyncOk === false ? "text-red-400" : s.lastSyncOk === null ? "text-zinc-500" : "text-emerald-400"
                     }
                   >
-                    {s.lastSyncOk === false ? "Failed" : s.lastSyncOk === null ? "Never synced" : "Ok"}
-                    {s.lastSyncedAt && ` · ${formatRelativeTime(s.lastSyncedAt)}`}
+                    {s.lastSyncOk === false
+                      ? t("handoff.syncStatus.failed")
+                      : s.lastSyncOk === null
+                        ? t("handoff.syncStatus.never")
+                        : t("handoff.syncStatus.ok")}
+                    {s.lastSyncedAt && ` · ${formatRelativeTime(t, s.lastSyncedAt)}`}
                   </span>
                   {familyConflictCount > 0 && (
                     <span className="rounded-full bg-red-900/60 px-2 py-0.5 text-red-200">
-                      {familyConflictCount} conflict{familyConflictCount === 1 ? "" : "s"}
+                      {t("handoff.syncStatus.conflicts", { count: familyConflictCount })}
                     </span>
                   )}
                 </span>
@@ -540,32 +548,31 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
 
         {syncPushErrors.length > 0 && (
           <div className="mt-3 rounded-lg border border-amber-700 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
-            <p className="mb-1 font-semibold">Sync folder unreachable for {syncPushErrors.length} item(s)</p>
+            <p className="mb-1 font-semibold">{t("handoff.pushErrors.title", { count: syncPushErrors.length })}</p>
             <ul className="list-disc space-y-1 pl-5 text-xs">
               {syncPushErrors.map((e, i) => (
                 <li key={`${e.family}.${e.channelId}.${i}`}>
-                  {FAMILY_LABELS[e.family]}
+                  {t(FAMILY_LABELS[e.family])}
                   {e.channelId ? ` (${e.channelId})` : ""}: {e.reason}
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-xs text-amber-300">
-              Nothing local was lost &mdash; this device&rsquo;s changes just weren&rsquo;t published this
-              cycle. Check that the Syncthing folder (Settings &rarr; Sync) is actually mounted/reachable.
-            </p>
+            <p className="mt-2 text-xs text-amber-300">{t("handoff.pushErrors.hint")}</p>
           </div>
         )}
 
         {syncPeersSkipped.length > 0 && (
           <div className="mt-3 rounded-lg border border-orange-700 bg-orange-950/40 px-4 py-3 text-sm text-orange-200">
-            <p className="mb-1 font-semibold">
-              {syncPeersSkipped.length} peer device file(s) could not be merged this cycle
-            </p>
+            <p className="mb-1 font-semibold">{t("handoff.peersSkipped.title", { count: syncPeersSkipped.length })}</p>
             <ul className="space-y-2 text-xs">
               {syncPeersSkipped.map((p, i) => (
                 <li key={`${p.family}.${p.channelId}.${p.deviceId}.${i}`} className="list-disc pl-5">
-                  {FAMILY_LABELS[p.family]}
-                  {p.channelId ? ` (${p.channelId})` : ""}, device {p.deviceId.slice(0, 8)}: {p.reason}
+                  {t("handoff.peersSkipped.row", {
+                    family: t(FAMILY_LABELS[p.family]),
+                    channel: p.channelId ? ` (${p.channelId})` : "",
+                    device: p.deviceId.slice(0, 8),
+                    reason: p.reason,
+                  })}
                   {p.reason === "divergent_document_lineage" &&
                     (p.family === "ai_connections" || p.channelId === channelId ? (
                       <div className="mt-1">
@@ -573,31 +580,27 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
                           onClick={() => setPendingAdoptPeer({ family: p.family, channelId: p.channelId, peerDeviceId: p.deviceId })}
                           className="rounded-md border border-orange-600 px-2 py-1 text-xs font-medium text-orange-200 hover:bg-orange-900/40"
                         >
-                          Discard my local copy, adopt this device&rsquo;s version
+                          {t("handoff.peersSkipped.adopt")}
                         </button>
                       </div>
                     ) : (
-                      <p className="mt-1 italic text-orange-300">Switch to this channel to resolve it here.</p>
+                      <p className="mt-1 italic text-orange-300">{t("handoff.peersSkipped.switchChannel")}</p>
                     ))}
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-xs text-orange-300">
-              A field-level conflict (below) is not the same as this &mdash; this means this
-              device and that one share no common history at all and can never be automatically
-              combined (e.g. a corrupted file, or two devices that started this data
-              independently). Only &ldquo;divergent history&rdquo; entries can be resolved here, by
-              explicitly discarding one side; any other reason (e.g. a corrupted file) will keep
-              being retried automatically on its own.
-            </p>
+            <p className="mt-2 text-xs text-orange-300">{t("handoff.peersSkipped.hint")}</p>
           </div>
         )}
         {lastAdoptResult && <p className="mt-3 text-sm text-zinc-400">{lastAdoptResult}</p>}
         {pendingAdoptPeer && (
           <ConfirmDialog
-            title="Discard local copy and adopt peer's version?"
-            description={`This permanently replaces this device's local ${FAMILY_LABELS[pendingAdoptPeer.family].toLowerCase()} with device ${pendingAdoptPeer.peerDeviceId.slice(0, 8)}'s version. Your current local copy is backed up to a file first (never deleted outright), but this action itself cannot be undone through this screen.`}
-            confirmLabel={adoptBusy ? "Adopting..." : "Discard and adopt"}
+            title={t("handoff.adoptConfirm.title")}
+            description={t("handoff.adoptConfirm.body", {
+              family: t(FAMILY_LABELS[pendingAdoptPeer.family]).toLowerCase(),
+              device: pendingAdoptPeer.peerDeviceId.slice(0, 8),
+            })}
+            confirmLabel={adoptBusy ? t("handoff.adoptConfirm.adopting") : t("handoff.adoptConfirm.confirm")}
             confirmVariant="danger"
             onCancel={() => setPendingAdoptPeer(null)}
             onConfirm={handleAdoptPeer}
@@ -617,37 +620,25 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
           that cannot move to continuous CRDT sync at all (`docs/decisions/
           0009-defer-write-pipeline-sync-gateway-migration.md`), never a background process. */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <h2 className="mb-1 text-lg font-semibold">Device handoff</h2>
-        <p className="mb-4 text-sm text-zinc-500">
-          A separate mechanism from the continuous sync above -- an explicit, one-at-a-time
-          transfer of ownership for the YouTube write pipeline (batches, their execution ledger,
-          and the audit trail), which cannot sync continuously in the background.
-        </p>
+        <h2 className="mb-1 text-lg font-semibold">{t("handoff.title")}</h2>
+        <p className="mb-4 text-sm text-zinc-500">{t("handoff.intro")}</p>
 
         <div className="mb-6">
-          <h3 className="mb-2 text-sm font-semibold text-zinc-200">Finish work on this device</h3>
-          <p className="mb-3 text-sm text-zinc-400">
-            Exports a scrubbed snapshot (never includes OAuth tokens or AI connection
-            credentials) into the configured Syncthing folder (Settings &rarr; Sync). This
-            records that export finished here &mdash; it does not and cannot confirm any other
-            device has stopped.
-          </p>
+          <h3 className="mb-2 text-sm font-semibold text-zinc-200">{t("handoff.export.title")}</h3>
+          <p className="mb-3 text-sm text-zinc-400">{t("handoff.export.body")}</p>
           <button
             onClick={handleExport}
             disabled={busy === "export" || status?.recoveryMode || !!status?.lock}
             className="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-500 disabled:opacity-50"
           >
-            {busy === "export" ? "Exporting..." : "Export handoff"}
+            {busy === "export" ? t("handoff.export.busy") : t("handoff.export.button")}
           </button>
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-semibold text-zinc-200">Continue work on this device</h3>
-          <p className="mb-3 text-sm text-zinc-400">
-            Available snapshots in the configured folder. Importing never resumes an
-            in-progress/uncertain YouTube write automatically.
-          </p>
-          {snapshots.length === 0 && <p className="text-sm text-zinc-500">No snapshots found.</p>}
+          <h3 className="mb-2 text-sm font-semibold text-zinc-200">{t("handoff.import.title")}</h3>
+          <p className="mb-3 text-sm text-zinc-400">{t("handoff.import.body")}</p>
+          {snapshots.length === 0 && <p className="text-sm text-zinc-500">{t("handoff.import.none")}</p>}
           <ul className="space-y-2">
             {snapshots.map((snap) => (
               <li
@@ -655,15 +646,19 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
                 className="flex items-center justify-between rounded-md border border-zinc-800 px-3 py-2 text-sm"
               >
                 <span className="font-mono text-xs text-zinc-400">
-                  {snap.snapshotId} (device {snap.sourceDeviceId}, gen {snap.generation},{" "}
-                  {snap.createdAt})
+                  {t("handoff.import.snapshot", {
+                    snapshot: snap.snapshotId,
+                    device: snap.sourceDeviceId,
+                    generation: String(snap.generation),
+                    time: snap.createdAt,
+                  })}
                 </span>
                 <button
                   onClick={() => handleImport(snap.snapshotId)}
                   disabled={busy !== null || !!status?.lock}
                   className="rounded-md border border-zinc-700 px-3 py-1 text-xs font-medium text-zinc-200 hover:border-zinc-500 disabled:opacity-50"
                 >
-                  {busy === `import-${snap.snapshotId}` ? "Importing..." : "Import"}
+                  {busy === `import-${snap.snapshotId}` ? t("handoff.import.busy") : t("handoff.import.button")}
                 </button>
               </li>
             ))}

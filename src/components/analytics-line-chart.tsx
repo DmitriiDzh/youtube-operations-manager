@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useUiText } from "./ui-text-provider";
 
 export type LineChartPoint = {
   date: string;
@@ -35,11 +36,13 @@ const VIEWBOX_WIDTH = 600;
  */
 export function AnalyticsLineChart({
   data,
-  formatValue = (v) => v.toLocaleString(),
+  formatValue: formatValueProp,
   formatDate = (d) => d,
   height = 180,
   colorClassName = "text-indigo-400",
 }: Props) {
+  const { t, formatNumber } = useUiText();
+  const formatValue = formatValueProp ?? ((v: number) => formatNumber(v));
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
   const { points, maxValue, minValue } = useMemo(() => {
@@ -62,7 +65,7 @@ export function AnalyticsLineChart({
         className="flex items-center justify-center rounded-lg border border-zinc-800 bg-zinc-950/40 text-sm text-zinc-500"
         style={{ height }}
       >
-        No data for this period yet.
+        {t("chart.noData")}
       </div>
     );
   }
@@ -150,7 +153,7 @@ export function AnalyticsLineChart({
       {/* Screen-reader-only max/min so the two data points anchoring the visual scale are not
           color-only information -- matches the dataviz skill's "text wears text tokens" rule. */}
       <span className="sr-only">
-        Range: {formatValue(minValue)} to {formatValue(maxValue)}.
+        {t("chart.range", { min: formatValue(minValue), max: formatValue(maxValue) })}
       </span>
     </div>
   );

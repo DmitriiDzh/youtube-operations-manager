@@ -7,6 +7,7 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
+import { useT } from "./ui-text-provider";
 
 type Settings = {
   dataApiReadsEnabled: boolean;
@@ -32,6 +33,7 @@ type Settings = {
  * in the toggle's own description below rather than left as a surprise.
  */
 export function ReadGatewaySettings() {
+  const t = useT();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -73,12 +75,12 @@ export function ReadGatewaySettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
         return;
       }
       setSettings(data);
       setDraft(data);
-      setSavedNotice("Saved.");
+      setSavedNotice(t("common.saved"));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -102,21 +104,16 @@ export function ReadGatewaySettings() {
         left={
           <div>
             <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-              Data API reads
-              <InfoTooltip>
-                On by default. Governs every real call to the YouTube Data API v3 (channel sync,
-                video listing, playlists). Turning this off also fails any write path that depends
-                on a read first (Batches, the pre-write channel identity check) -- Live writes
-                above still separately governs whether a write is otherwise allowed.
-              </InfoTooltip>
+              {t("settingsCards.reads.dataApi.title")}
+              <InfoTooltip>{t("settingsCards.reads.dataApi.info")}</InfoTooltip>
             </h3>
             <div className="mt-2 flex items-center gap-2">
               <ToggleSwitch
-                label="Enable Data API reads"
+                label={t("settingsCards.reads.dataApi.toggle")}
                 checked={draft.dataApiReadsEnabled}
                 onChange={(checked) => setDraft({ ...draft, dataApiReadsEnabled: checked })}
               />
-              <span className="text-sm text-zinc-300">Enable Data API reads</span>
+              <span className="text-sm text-zinc-300">{t("settingsCards.reads.dataApi.toggle")}</span>
             </div>
           </div>
         }
@@ -136,19 +133,16 @@ export function ReadGatewaySettings() {
           left={
             <div>
               <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-                Analytics reads
-                <InfoTooltip>
-                  On by default. Governs every real call to the YouTube Analytics API (the
-                  Analytics tab&apos;s manual and automatic collection).
-                </InfoTooltip>
+                {t("settingsCards.reads.analytics.title")}
+                <InfoTooltip>{t("settingsCards.reads.analytics.info")}</InfoTooltip>
               </h3>
               <div className="mt-2 flex items-center gap-2">
                 <ToggleSwitch
-                  label="Enable Analytics reads"
+                  label={t("settingsCards.reads.analytics.toggle")}
                   checked={draft.analyticsReadsEnabled}
                   onChange={(checked) => setDraft({ ...draft, analyticsReadsEnabled: checked })}
                 />
-                <span className="text-sm text-zinc-300">Enable Analytics reads</span>
+                <span className="text-sm text-zinc-300">{t("settingsCards.reads.analytics.toggle")}</span>
               </div>
             </div>
           }
@@ -169,16 +163,16 @@ export function ReadGatewaySettings() {
           left={
             <div>
               <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-                RSS feed reads
-                <InfoTooltip>On by default. YouTube&apos;s public RSS feeds of channels&apos; newest uploads -- no quota at all. Research lists watchlist channels&apos; latest videos from the uploads playlist (1 quota unit); the RSS feed is the fallback when that call fails, e.g. when quota is exhausted. If this is off, there is no fallback.</InfoTooltip>
+                {t("settingsCards.reads.rss.title")}
+                <InfoTooltip>{t("settingsCards.reads.rss.info")}</InfoTooltip>
               </h3>
               <div className="mt-2 flex items-center gap-2">
                 <ToggleSwitch
-                  label="Enable RSS feed reads"
+                  label={t("settingsCards.reads.rss.toggle")}
                   checked={draft.youtubeFeedReadsEnabled}
                   onChange={(checked) => setDraft({ ...draft, youtubeFeedReadsEnabled: checked })}
                 />
-                <span className="text-sm text-zinc-300">Enable RSS feed reads</span>
+                <span className="text-sm text-zinc-300">{t("settingsCards.reads.rss.toggle")}</span>
               </div>
             </div>
           }
@@ -191,16 +185,16 @@ export function ReadGatewaySettings() {
           left={
             <div>
               <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-                Wikipedia reads
-                <InfoTooltip>On by default. Daily page views of Wikipedia articles linked to Research topics -- an interest signal from outside YouTube. Free, no key.</InfoTooltip>
+                {t("settingsCards.reads.wikipedia.title")}
+                <InfoTooltip>{t("settingsCards.reads.wikipedia.info")}</InfoTooltip>
               </h3>
               <div className="mt-2 flex items-center gap-2">
                 <ToggleSwitch
-                  label="Enable Wikipedia reads"
+                  label={t("settingsCards.reads.wikipedia.toggle")}
                   checked={draft.wikipediaReadsEnabled}
                   onChange={(checked) => setDraft({ ...draft, wikipediaReadsEnabled: checked })}
                 />
-                <span className="text-sm text-zinc-300">Enable Wikipedia reads</span>
+                <span className="text-sm text-zinc-300">{t("settingsCards.reads.wikipedia.toggle")}</span>
               </div>
             </div>
           }
@@ -213,16 +207,16 @@ export function ReadGatewaySettings() {
           left={
             <div>
               <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-                Reporting reads
-                <InfoTooltip>On by default. Governs every real call to the YouTube Reporting API -- the bulk daily reports that carry thumbnail impressions and click-through rate, which the Analytics API does not return. Free; separate from the Analytics reads toggle.</InfoTooltip>
+                {t("settingsCards.reads.reporting.title")}
+                <InfoTooltip>{t("settingsCards.reads.reporting.info")}</InfoTooltip>
               </h3>
               <div className="mt-2 flex items-center gap-2">
                 <ToggleSwitch
-                  label="Enable Reporting reads"
+                  label={t("settingsCards.reads.reporting.toggle")}
                   checked={draft.reportingReadsEnabled}
                   onChange={(checked) => setDraft({ ...draft, reportingReadsEnabled: checked })}
                 />
-                <span className="text-sm text-zinc-300">Enable Reporting reads</span>
+                <span className="text-sm text-zinc-300">{t("settingsCards.reads.reporting.toggle")}</span>
               </div>
             </div>
           }
@@ -231,7 +225,7 @@ export function ReadGatewaySettings() {
               <GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "reporting_reads")} />
               <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.reporting} />
               {settings?.cloudQuotaStatus?.connected && !settings.cloudQuotaStatus.reporting && (
-                <p className="text-xs text-zinc-500">No daily quota figure is available from Google Cloud for the Reporting API (not reported, or the lookup failed).</p>
+                <p className="text-xs text-zinc-500">{t("settingsCards.reads.reporting.noQuota")}</p>
               )}
             </>
           }
@@ -247,11 +241,11 @@ export function ReadGatewaySettings() {
           disabled={saving || !dirty}
           className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save / Apply"}
+          {saving ? t("common.saving") : t("settingsCards.saveApply")}
         </button>
         {dirty && (
           <button onClick={() => setDraft(settings)} className="text-xs text-zinc-500 hover:text-zinc-300">
-            Discard changes
+            {t("settingsCards.discardChanges")}
           </button>
         )}
       </div>

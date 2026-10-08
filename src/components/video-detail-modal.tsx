@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
+import { useT } from "./ui-text-provider";
 
 type VideoDetailModalProps = {
   title: string;
@@ -40,6 +41,7 @@ export function VideoDetailModal({
   widthClassName = "max-w-5xl",
   children,
 }: VideoDetailModalProps) {
+  const t = useT();
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   // Tracks where the CURRENT mouse gesture started, so a text-selection drag that begins inside
   // the card and is released past its edge is never mistaken for a click on the backdrop (owner
@@ -95,7 +97,7 @@ export function VideoDetailModal({
           <button
             onClick={attemptClose}
             className="shrink-0 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-            aria-label="Close"
+            aria-label={t("common.close")}
           >
             &#10005;
           </button>
@@ -104,9 +106,9 @@ export function VideoDetailModal({
 
         {showDiscardConfirm && (
           <ConfirmDialog
-            title="Discard unsaved changes?"
-            description="This video has edits that haven't been saved yet. Closing now will discard them."
-            confirmLabel="Discard changes"
+            title={t("video.discard.title")}
+            description={t("video.discard.body")}
+            confirmLabel={t("video.discard.confirm")}
             confirmVariant="danger"
             onCancel={() => setShowDiscardConfirm(false)}
             onConfirm={() => {

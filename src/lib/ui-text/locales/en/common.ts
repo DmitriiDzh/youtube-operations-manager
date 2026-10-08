@@ -19,6 +19,7 @@ export const common = {
   "common.syncing": "Syncing…",
   "common.moreInfo": "More info",
   "common.errorStatus": "Error {status}",
+  "common.errorDetail": "{text} Details: {detail}",
 
   "value.notSet": "not set",
   "value.on": "On",

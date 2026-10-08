@@ -64,7 +64,7 @@ export function AnalyticsTab({
               onClick={() => setShowRaw((v) => !v)}
               className="text-sm font-medium text-zinc-400 hover:text-zinc-200"
             >
-              {showRaw ? "Hide" : "Show"} raw collected data
+              {t(showRaw ? "analytics.raw.hide" : "analytics.raw.show")}
             </button>
             {showRaw && (
               <div className="mt-4">

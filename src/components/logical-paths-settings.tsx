@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type LogicalPathEntry = {
   name: string;
@@ -15,9 +17,9 @@ type LogicalPathEntry = {
 
 type ApiError = { message?: string };
 
-const AUDIENCE_LABEL: Record<LogicalPathEntry["audience"], string> = {
-  all_agents: "all agents (read-only)",
-  factory_only: "Factory Operator only",
+const AUDIENCE_LABEL: Record<LogicalPathEntry["audience"], UiTextKey> = {
+  all_agents: "settingsCards.paths.audience.allAgents",
+  factory_only: "settingsCards.paths.audience.factoryOnly",
 };
 
 /**
@@ -29,6 +31,7 @@ const AUDIENCE_LABEL: Record<LogicalPathEntry["audience"], string> = {
  * its own fetch/save against `/api/logical-paths` and is wrapped in its own error boundary by the caller.
  */
 export function LogicalPathsSettings() {
+  const t = useT();
   const [paths, setPaths] = useState<LogicalPathEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -39,9 +42,9 @@ export function LogicalPathsSettings() {
       if (!res.ok) throw new Error("load failed");
       setPaths(((await res.json()) as { paths: LogicalPathEntry[] }).paths);
     } catch {
-      setLoadError("Could not load the logical paths.");
+      setLoadError(t("settingsCards.paths.loadFailed"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     load();
@@ -52,7 +55,7 @@ export function LogicalPathsSettings() {
       <div className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-red-400">
         <p>{loadError}</p>
         <button onClick={() => load()} className="underline hover:text-red-300">
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -69,16 +72,8 @@ export function LogicalPathsSettings() {
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
-        Logical paths (this computer)
-        <InfoTooltip>
-          Named folders that connected agents can look up by name. The same name usually points to a
-          different folder on each computer, so every computer keeps only its own value: nothing here
-          is synced or handed off. Agents are given just the stored path text; this app never opens,
-          lists or changes anything inside a folder. &ldquo;All agents&rdquo; paths can be read by every
-          channel agent, &ldquo;Factory Operator only&rdquo; paths only by the Factory Operator role.
-          Agents can never create, change or delete a path. A folder must exist and must not be inside
-          this app&apos;s own data directory.
-        </InfoTooltip>
+        {t("settingsCards.paths.title")}
+        <InfoTooltip>{t("settingsCards.paths.info")}</InfoTooltip>
       </h3>
 
       <ul className="space-y-3">
@@ -93,6 +88,7 @@ export function LogicalPathsSettings() {
 }
 
 function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChanged: () => Promise<void> }) {
+  const t = useT();
   const [draft, setDraft] = useState(entry.path ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,14 +110,14 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
     try {
       const res = await fetch(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) {
-        setError(((await res.json()) as ApiError).message ?? "Request failed");
+        setError(((await res.json()) as ApiError).message ?? t("settingsCards.paths.requestFailed"));
         return false;
       }
       setNotice(success);
       await onChanged();
       return true;
     } catch {
-      setError("Request failed");
+      setError(t("settingsCards.paths.requestFailed"));
       return false;
     } finally {
       setBusy(false);
@@ -129,7 +125,7 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
   }
 
   async function save(next: string | null) {
-    const ok = await call("/api/logical-paths/value", "PUT", { name: entry.name, path: next }, next ? "Saved." : "Cleared.");
+    const ok = await call("/api/logical-paths/value", "PUT", { name: entry.name, path: next }, next ? t("common.saved") : t("settingsCards.workspace.cleared"));
     if (ok && next === null) setDraft("");
   }
 
@@ -138,17 +134,17 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <span className="font-mono text-sm text-zinc-100">{entry.name}</span>
-          <span className="ml-2 text-xs text-zinc-500">{AUDIENCE_LABEL[entry.audience]}</span>
+          <span className="ml-2 text-xs text-zinc-500">{t(AUDIENCE_LABEL[entry.audience])}</span>
         </div>
-        {entry.status === "exists" && <span className="text-xs text-green-500">folder exists</span>}
-        {entry.status === "missing" && <span className="text-xs text-amber-400">folder not found on this computer</span>}
-        {entry.status === null && <span className="text-xs text-zinc-500">not set on this computer</span>}
+        {entry.status === "exists" && <span className="text-xs text-green-500">{t("settingsCards.paths.exists")}</span>}
+        {entry.status === "missing" && <span className="text-xs text-amber-400">{t("settingsCards.paths.missing")}</span>}
+        {entry.status === null && <span className="text-xs text-zinc-500">{t("settingsCards.paths.notSet")}</span>}
       </div>
       {entry.description && <p className="text-xs text-zinc-400">{entry.description}</p>}
 
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs text-zinc-400">
-          Folder on this computer
+          {t("settingsCards.paths.folderLabel")}
           <input
             type="text"
             value={draft}
@@ -162,7 +158,7 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
           disabled={busy || !dirty}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {busy ? "Saving..." : "Save"}
+          {busy ? t("common.saving") : t("common.save")}
         </button>
         {entry.path && (
           <button
@@ -170,7 +166,7 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
             disabled={busy}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-50"
           >
-            Clear
+            {t("settingsCards.workspace.clear")}
           </button>
         )}
         {!confirmingDelete ? (
@@ -179,20 +175,20 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
             disabled={busy}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-400 hover:border-red-700 hover:text-red-400 disabled:opacity-50"
           >
-            Delete path
+            {t("settingsCards.paths.delete")}
           </button>
         ) : (
-          <span role="alertdialog" aria-label={`Delete logical path ${entry.name}`} className="flex items-center gap-2 text-xs text-red-400">
-            Remove this name and its value?
+          <span role="alertdialog" aria-label={t("settingsCards.paths.deleteAria", { name: entry.name })} className="flex items-center gap-2 text-xs text-red-400">
+            {t("settingsCards.paths.deleteConfirm")}
             <button
-              onClick={() => call("/api/logical-paths", "DELETE", { name: entry.name }, "Deleted.")}
+              onClick={() => call("/api/logical-paths", "DELETE", { name: entry.name }, t("settingsCards.paths.deleted"))}
               disabled={busy}
               className="rounded-md bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-700 disabled:opacity-50"
             >
-              Yes, delete
+              {t("settingsCards.paths.yesDelete")}
             </button>
             <button onClick={() => setConfirmingDelete(false)} className="underline hover:text-red-300">
-              Cancel
+              {t("common.cancel")}
             </button>
           </span>
         )}
@@ -204,6 +200,7 @@ function LogicalPathRow({ entry, onChanged }: { entry: LogicalPathEntry; onChang
 }
 
 function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }) {
+  const t = useT();
   const [name, setName] = useState("");
   const [audience, setAudience] = useState<LogicalPathEntry["audience"]>("all_agents");
   const [description, setDescription] = useState("");
@@ -220,14 +217,14 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
         body: JSON.stringify({ name: name.trim(), audience, description: description.trim() }),
       });
       if (!res.ok) {
-        setError(((await res.json()) as ApiError).message ?? "Failed to create");
+        setError(((await res.json()) as ApiError).message ?? t("settingsCards.paths.createFailed"));
         return;
       }
       setName("");
       setDescription("");
       await onCreated();
     } catch {
-      setError("Failed to create");
+      setError(t("settingsCards.paths.createFailed"));
     } finally {
       setBusy(false);
     }
@@ -241,10 +238,10 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
         if (!busy && name.trim() !== "") void create();
       }}
     >
-      <p className="text-xs font-medium text-zinc-300">Add a logical path</p>
+      <p className="text-xs font-medium text-zinc-300">{t("settingsCards.paths.addTitle")}</p>
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Name
+          {t("settingsCards.paths.name")}
           <input
             type="text"
             value={name}
@@ -254,18 +251,18 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Visible to
+          {t("settingsCards.paths.visibleTo")}
           <select
             value={audience}
             onChange={(e) => setAudience(e.target.value as LogicalPathEntry["audience"])}
             className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100"
           >
-            <option value="all_agents">{AUDIENCE_LABEL.all_agents}</option>
-            <option value="factory_only">{AUDIENCE_LABEL.factory_only}</option>
+            <option value="all_agents">{t(AUDIENCE_LABEL.all_agents)}</option>
+            <option value="factory_only">{t(AUDIENCE_LABEL.factory_only)}</option>
           </select>
         </label>
         <label className="flex min-w-48 flex-1 flex-col gap-1 text-xs text-zinc-400">
-          Description (optional)
+          {t("settingsCards.paths.description")}
           <input
             type="text"
             value={description}
@@ -279,12 +276,11 @@ function CreateLogicalPathForm({ onCreated }: { onCreated: () => Promise<void> }
           disabled={busy || name.trim() === ""}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {busy ? "Adding..." : "Add"}
+          {busy ? t("settingsCards.paths.adding") : t("settingsCards.paths.add")}
         </button>
       </div>
       <p className="text-xs text-zinc-500">
-        Name: 2&ndash;64 characters, lowercase letters, digits and underscore, starting with a letter. The
-        value is set separately, on each computer.
+        {t("settingsCards.paths.nameRule")}
       </p>
       {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
     </form>

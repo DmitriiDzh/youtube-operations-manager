@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { Translate } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type RecordKind = "research_channel" | "topic" | "trend_candidate" | "discovery_candidate" | "research_request" | "collection_request";
 type Assignment = { recordKind: RecordKind; recordId: string; channelIds: string[] };
@@ -58,6 +60,7 @@ export function MarketChannelAssignment({
   recordId: string;
   onChange?: (channelIds: string[]) => void;
 }) {
+  const t = useT();
   const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
   const [assigned, setAssigned] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -69,9 +72,9 @@ export function MarketChannelAssignment({
       setChannels(connected);
       setAssigned(all.find((a) => a.recordId === recordId)?.channelIds ?? []);
     } catch {
-      setError("Could not load channel assignments.");
+      setError(t("assignment.loadFailed"));
     }
-  }, [recordKind, recordId]);
+  }, [recordKind, recordId, t]);
 
   useEffect(() => {
     load();
@@ -90,13 +93,13 @@ export function MarketChannelAssignment({
       });
       const data = (await res.json()) as { assignment?: Assignment; message?: string };
       if (!res.ok || !data.assignment) {
-        setError(data.message ?? "Failed to save");
+        setError(data.message ?? t("assignment.saveFailed"));
         return;
       }
       setAssigned(data.assignment.channelIds);
       onChange?.(data.assignment.channelIds);
     } catch {
-      setError("Failed to save");
+      setError(t("assignment.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -108,13 +111,13 @@ export function MarketChannelAssignment({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-xs">
-      <span className="text-zinc-500">Visible to agents of:</span>
+      <span className="text-zinc-500">{t("assignment.visibleToLabel")}</span>
       {[
         ...channels,
         // A channel assigned before it was disconnected stays visible so it can be removed.
         ...assigned
           .filter((id) => !channels.some((channel) => channel.channelId === id))
-          .map((id) => ({ channelId: id, title: `${id} (disconnected)` })),
+          .map((id) => ({ channelId: id, title: t("assignment.disconnected", { id }) })),
       ].map((channel) => {
         const on = assigned.includes(channel.channelId);
         return (
@@ -172,16 +175,17 @@ export function useMarketAssignments(recordKind: RecordKind) {
 }
 
 /** "No channels", the one channel's title, or "N channels". Exported for its test. */
-export function describeVisibleTo(channelIds: string[], connectedChannels: ConnectedChannel[]): string {
-  if (channelIds.length === 0) return "No channels";
-  if (channelIds.length === 1) return connectedChannels.find((c) => c.channelId === channelIds[0])?.title ?? "1 channel";
-  return `${channelIds.length} channels`;
+export function describeVisibleTo(t: Translate, channelIds: string[], connectedChannels: ConnectedChannel[]): string {
+  if (channelIds.length === 0) return t("assignment.noChannels");
+  if (channelIds.length === 1) return connectedChannels.find((c) => c.channelId === channelIds[0])?.title ?? t("assignment.channelCount", { count: 1 });
+  return t("assignment.channelCount", { count: channelIds.length });
 }
 
 export function VisibleToPill({ channelIds, connectedChannels }: { channelIds: string[]; connectedChannels: ConnectedChannel[] }) {
+  const t = useT();
   return (
-    <span className="whitespace-nowrap rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-400" title="Which channels' agents can see this record">
-      {describeVisibleTo(channelIds, connectedChannels)}
+    <span className="whitespace-nowrap rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-400" title={t("assignment.pillTitle")}>
+      {describeVisibleTo(t, channelIds, connectedChannels)}
     </span>
   );
 }

@@ -20,6 +20,7 @@ export const common: Record<keyof typeof en, string> = {
   "common.syncing": "Синхронизация…",
   "common.moreInfo": "Подробнее",
   "common.errorStatus": "Ошибка {status}",
+  "common.errorDetail": "{text} Подробности: {detail}",
 
   "value.notSet": "не задано",
   "value.on": "Вкл.",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { translate } from "@/lib/ui-text";
+import { createTranslator, translate } from "@/lib/ui-text";
 import { describeBalance, PRODUCTION_TABS } from "./production-panel";
 
 // AC-P14-26 (PHASE_14_PLAN.md §5.2; owner, Telegram 2026-10-05, msg 1549): Settings keeps only the RunPod connection
@@ -46,11 +46,13 @@ test("AC-P14-26: the sidebar has Production right after Content; Settings has a 
 });
 
 test("AC-P14-25: the balance header shows the GraphQL balance, or says the balance is unavailable and shows the v2 spend with the reason", () => {
-  assert.deepEqual(describeBalance({ source: "graphql", balanceUsd: 12.72, spendPerHrUsd: 0.005, spendLimitUsd: 80 }), {
+  // BL-152: the header is translated; the requirement checked here is the English wording.
+  const t = createTranslator("en");
+  assert.deepEqual(describeBalance(t, { source: "graphql", balanceUsd: 12.72, spendPerHrUsd: 0.005, spendLimitUsd: 80 }), {
     headline: "$12.72",
     detail: "spending $0.005/h now · account spend limit $80.00/h",
   });
-  const degraded = describeBalance({ source: "billing", balanceUsd: null, spentUsd: 3.75, podsUsd: 0.25, networkVolumesUsd: 3.5, from: "2026-09-05T00:00:00Z", to: "2026-10-06T00:00:00Z", balanceError: "RunPod GraphQL returned HTTP 500." });
+  const degraded = describeBalance(t, { source: "billing", balanceUsd: null, spentUsd: 3.75, podsUsd: 0.25, networkVolumesUsd: 3.5, from: "2026-09-05T00:00:00Z", to: "2026-10-06T00:00:00Z", balanceError: "RunPod GraphQL returned HTTP 500." });
   assert.equal(degraded.headline, "balance unavailable");
   assert.equal(degraded.detail, "RunPod spend (2026-09-05 – 2026-10-06): $3.75 (pods $0.25, network volumes $3.50). The balance read failed: RunPod GraphQL returned HTTP 500.");
 });
@@ -82,9 +84,11 @@ test("readiness banner: rendered inside the Setup tab only, not above the tabs",
 test("release-when-done switch: in the Limits card (saved with the limits), not in the Sessions request form", async () => {
   const card = await readFile(path.join(process.cwd(), "src", "components", "media-generation-settings.tsx"), "utf8");
   const sessions = card.slice(card.indexOf("export function SessionsCard"), card.indexOf("export function", card.indexOf("export function SessionsCard") + 10));
-  assert.doesNotMatch(sessions, /Stop by itself when the jobs are done/);
+  // BL-152: the switch's label is an interface-text key; the requirement checked here is the English wording.
+  assert.equal(createTranslator("en")("media.limits.releaseToggle"), "Stop by itself when the jobs are done");
+  assert.doesNotMatch(sessions, /Stop by itself when the jobs are done|media\.limits\.releaseToggle/);
   const limits = card.slice(card.indexOf("export function LimitsCard"), card.indexOf("export function FactoryLimitsCard"));
-  assert.match(limits, /<ToggleSwitch label="Stop by itself when the jobs are done" checked=\{ownerReleaseWhenDone\}/);
+  assert.match(limits, /<ToggleSwitch label=\{t\("media\.limits\.releaseToggle"\)\} checked=\{ownerReleaseWhenDone\}/);
   // BL-150 review: the card sends only the fields that changed (onlyChangedSettings); the switch is still saved with the limits.
   assert.match(limits, /JSON\.stringify\(onlyChangedSettings\(\{[^}]*ownerReleaseWhenDone \}, settings\)\)/);
 });

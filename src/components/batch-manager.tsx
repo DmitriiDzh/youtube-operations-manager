@@ -5,7 +5,8 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { runBatchWithProgress } from "./batch-run";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation } from "./operation-progress";
-import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { QuotaBlockDialog, translateWithSlots, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { useT } from "./ui-text-provider";
 
 type ChangeSetSummary = {
   id: string;
@@ -87,6 +88,7 @@ export function BatchManager({
   channelId: string | null;
   channelTitle: string | null;
 }) {
+  const t = useT();
   const [error, setError] = useState<string | null>(null);
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
@@ -189,7 +191,7 @@ export function BatchManager({
       const data = await res.json();
       if (!res.ok) {
         const err = data as ApiError;
-        throw new Error(err.message ?? "Failed to create batch");
+        throw new Error(err.message ?? t("batches.error.create"));
       }
       setSelectedChangeIds(new Set());
       setCreateAsLive(false);
@@ -198,7 +200,7 @@ export function BatchManager({
       await openBatch(data.id);
       return data.id as string;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to create batch");
+      setError(e instanceof Error ? e.message : t("batches.error.create"));
       return null;
     } finally {
       setCreatingBatch(false);
@@ -237,6 +239,7 @@ export function BatchManager({
         title,
         failureMessage,
         acknowledgeUnknownQuota: options.acknowledgeUnknownQuota,
+        t,
       });
       if (result.kind === "quota_block") {
         setSplitOutcome(null);
@@ -282,13 +285,13 @@ export function BatchManager({
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error((data as ApiError).message ?? `Failed to create a batch from batch ${batchId.slice(0, 8)}`);
+      if (!res.ok) throw new Error((data as ApiError).message ?? t("batches.error.createFromBatch", { batchId: batchId.slice(0, 8) }));
       newBatchId = data.id as string;
       await fetchBatches(channelId);
       setSelectedBatchId(newBatchId);
       await openBatch(newBatchId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to create the batch");
+      setError(e instanceof Error ? e.message : t("batches.error.createThe"));
     } finally {
       setCreatingBatch(false);
     }
@@ -299,7 +302,7 @@ export function BatchManager({
     setExecuting(true);
     setError(null);
     try {
-      await runBatchRequest(batchId, "execute", "Writing batch to YouTube", "Failed to execute batch", options);
+      await runBatchRequest(batchId, "execute", t("batches.run.executeTitle"), t("batches.error.execute"), options);
     } finally {
       setExecuting(false);
     }
@@ -307,13 +310,13 @@ export function BatchManager({
 
   /** BL-117: prepare "what fits now" + "the rest" batches from a batch the quota guard refused (writes nothing to YouTube). */
   async function splitBlockedBatch(batchId: string): Promise<SplitOutcome> {
-    if (!channelId) throw new Error("No active channel");
+    if (!channelId) throw new Error(t("batches.noActiveChannel"));
     const res = await fetch(
       `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}/split-for-quota`,
       { method: "POST" }
     );
     const data = await res.json();
-    if (!res.ok) throw new Error((data as ApiError).message ?? "Could not split the batch");
+    if (!res.ok) throw new Error((data as ApiError).message ?? t("quota.block.splitFailed"));
     const outcome = data as SplitOutcome;
     setSplitOutcome(outcome);
     await fetchBatches(channelId);
@@ -343,7 +346,7 @@ export function BatchManager({
     setPreparing(true);
     setError(null);
     try {
-      await runBatchRequest(batchId, "prepare", "Dry-run preview", "Failed to run dry-run preview");
+      await runBatchRequest(batchId, "prepare", t("batches.run.dryRunTitle"), t("batches.error.dryRun"));
     } finally {
       setPreparing(false);
     }
@@ -357,23 +360,15 @@ export function BatchManager({
   const totalFieldCount = ledgerRows.reduce((sum, row) => sum + row.changeIds.length, 0);
 
   if (!channelId) {
-    return <p className="text-sm text-zinc-500">No active channel.</p>;
+    return <p className="text-sm text-zinc-500">{t("batches.noActiveChannelShort")}</p>;
   }
 
   return (
     <div className="space-y-8">
       {liveWritesEnabled ? (
-        <div className="rounded-lg border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-          &ldquo;Live writes&rdquo; is ON (Settings) &mdash; a batch created below with &ldquo;Create as a real,
-          live batch&rdquo; checked can perform a genuine, non-dry-run write to YouTube once you click
-          Execute. Turn it back off in Settings if you don&rsquo;t intend to do that right now.
-        </div>
+        <div className="rounded-lg border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-200">{t("batches.banner.liveOn")}</div>
       ) : (
-        <div className="rounded-lg border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
-          Real YouTube writes are currently disabled by a server-side safety barrier
-          (&ldquo;Live writes&rdquo; is off in Settings). Every batch created here always runs in dry-run
-          mode only &mdash; nothing is ever written to YouTube from this tab.
-        </div>
+        <div className="rounded-lg border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">{t("batches.banner.liveOff")}</div>
       )}
 
       {error && <p className="text-sm text-red-400">{error}</p>}
@@ -406,7 +401,7 @@ export function BatchManager({
       )}
 
       <div>
-        <h3 className="mb-2 text-sm font-semibold text-zinc-300">1. Pick a Change Set with approved changes</h3>
+        <h3 className="mb-2 text-sm font-semibold text-zinc-300">{t("batches.step1")}</h3>
         <div className="flex flex-wrap gap-2">
           {changeSets.map((cs) => (
             <button
@@ -423,18 +418,16 @@ export function BatchManager({
                 selectedChangeSetId === cs.id ? "border-zinc-400 bg-zinc-800 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
               }`}
             >
-              {cs.importedFilename ?? cs.id.slice(0, 8)} &mdash; {cs.approvedCount} approved
+              {t("batches.changeSetButton", { name: cs.importedFilename ?? cs.id.slice(0, 8), count: cs.approvedCount })}
             </button>
           ))}
-          {changeSets.length === 0 && <p className="text-sm text-zinc-500">No Change Sets for this channel yet.</p>}
+          {changeSets.length === 0 && <p className="text-sm text-zinc-500">{t("batches.noChangeSets")}</p>}
         </div>
       </div>
 
       {selectedChangeSetId && (
         <div>
-          <h3 className="mb-2 text-sm font-semibold text-zinc-300">
-            2. Select approved changes for a new Batch ({selectedChangeIds.size} selected)
-          </h3>
+          <h3 className="mb-2 text-sm font-semibold text-zinc-300">{t("batches.step2", { count: selectedChangeIds.size })}</h3>
           <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-zinc-800 p-2">
             {approvedSelectableChanges.map((c) => (
               <label key={c.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-zinc-900">
@@ -445,7 +438,7 @@ export function BatchManager({
               </label>
             ))}
             {approvedSelectableChanges.length === 0 && (
-              <p className="p-2 text-sm text-zinc-500">No approved, valid, non-conflicting changes in this Change Set.</p>
+              <p className="p-2 text-sm text-zinc-500">{t("batches.noSelectable")}</p>
             )}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
@@ -454,14 +447,14 @@ export function BatchManager({
               disabled={approvedSelectableChanges.length === 0}
               className="text-zinc-400 underline disabled:opacity-40"
             >
-              Select all ({approvedSelectableChanges.length})
+              {t("batches.selectAll", { count: approvedSelectableChanges.length })}
             </button>
             <button
               onClick={() => setSelectedChangeIds(new Set())}
               disabled={selectedChangeIds.size === 0}
               className="text-zinc-400 underline disabled:opacity-40"
             >
-              Clear
+              {t("batches.clear")}
             </button>
             {liveWritesEnabled && (
               <button
@@ -469,17 +462,17 @@ export function BatchManager({
                 disabled={approvedSelectableChanges.length === 0 || changes.length >= 500 || creatingBatch || executing}
                 className="rounded-lg bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-700 disabled:opacity-40"
               >
-                Send all {approvedSelectableChanges.length} approved changes to YouTube
+                {t("batches.sendAllButton", { count: approvedSelectableChanges.length })}
               </button>
             )}
             {changes.length >= 500 && (
-              <span className="text-amber-300">Only the first 500 changes are loaded; &ldquo;Send all&rdquo; is disabled &mdash; select in parts.</span>
+              <span className="text-amber-300">{t("batches.first500", { limit: 500 })}</span>
             )}
           </div>
           {liveWritesEnabled && (
             <label className="mt-3 flex items-center gap-2 text-xs text-amber-300">
               <input type="checkbox" checked={createAsLive} onChange={(e) => setCreateAsLive(e.target.checked)} />
-              Create as a real, live batch (will be able to write to YouTube)
+              {t("batches.createAsLive")}
             </label>
           )}
           <button
@@ -487,13 +480,13 @@ export function BatchManager({
             disabled={selectedChangeIds.size === 0 || creatingBatch}
             className="mt-2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 disabled:opacity-40"
           >
-            {creatingBatch ? "Creating..." : createAsLive ? "Create Batch (live)" : "Create Batch (dry-run)"}
+            {creatingBatch ? t("batches.creating") : createAsLive ? t("batches.createLive") : t("batches.createDryRun")}
           </button>
         </div>
       )}
 
       <div>
-        <h3 className="mb-2 text-sm font-semibold text-zinc-300">3. Batches for this channel</h3>
+        <h3 className="mb-2 text-sm font-semibold text-zinc-300">{t("batches.step3")}</h3>
         <div className="space-y-1">
           {batches.map((b) => (
             <button
@@ -512,11 +505,15 @@ export function BatchManager({
             >
               <span className="font-mono text-zinc-400">{b.id.slice(0, 8)}</span>{" "}
               <span className="text-zinc-500">
-                &mdash; {b.splitInto ? "split for quota" : b.status}, {b.dryRun ? "dry-run" : "live"}, created {formatDisplayDateTime(b.createdAt)}
+                {t("batches.batchRow", {
+                  status: b.splitInto ? t("batches.splitForQuota") : b.status,
+                  mode: b.dryRun ? t("batches.mode.dryRun") : t("batches.mode.live"),
+                  date: formatDisplayDateTime(b.createdAt),
+                })}
               </span>
             </button>
           ))}
-          {batches.length === 0 && <p className="text-sm text-zinc-500">No batches yet.</p>}
+          {batches.length === 0 && <p className="text-sm text-zinc-500">{t("batches.noBatches")}</p>}
         </div>
       </div>
 
@@ -524,7 +521,7 @@ export function BatchManager({
         <div className="space-y-4 rounded-lg border border-zinc-800 p-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-zinc-300">
-              Batch {selectedBatchId.slice(0, 8)} &mdash; immutable membership ({ledgerRows.length} video{ledgerRows.length === 1 ? "" : "s"})
+              {t("batches.detailTitle", { batchId: selectedBatchId.slice(0, 8), count: ledgerRows.length })}
             </h3>
             <div className="flex items-center gap-2">
               <button
@@ -532,7 +529,7 @@ export function BatchManager({
                 disabled={preparing}
                 className="rounded-lg border border-zinc-600 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-40"
               >
-                {preparing ? "Running dry-run..." : "Run dry-run preview"}
+                {preparing ? t("batches.runningDryRun") : t("batches.runDryRun")}
               </button>
               {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && !selectedBatch.splitInto && ledgerRows.some((row) => row.status === "CANCELLED") && (
                 <button
@@ -540,7 +537,7 @@ export function BatchManager({
                   disabled={executing || creatingBatch}
                   className="rounded-lg border border-red-700 px-3 py-1.5 text-xs font-medium text-red-300 hover:border-red-500 disabled:opacity-40"
                 >
-                  {`Resend ${ledgerRows.filter((row) => row.status === "CANCELLED").length} cancelled in a new batch`}
+                  {t("batches.resendButton", { count: ledgerRows.filter((row) => row.status === "CANCELLED").length })}
                 </button>
               )}
               {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && selectedBatch.status === "PENDING" && (
@@ -549,7 +546,7 @@ export function BatchManager({
                   disabled={executing}
                   className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
                 >
-                  {executing ? "Executing..." : "Execute (real write)"}
+                  {executing ? t("batches.executing") : t("batches.executeReal")}
                 </button>
               )}
             </div>
@@ -557,26 +554,26 @@ export function BatchManager({
 
           {selectedBatch?.splitInto && (
             <p className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs text-zinc-300">
-              This batch needed more YouTube quota than was available, so it was never started. It was split into{" "}
-              {selectedBatch.splitInto.map((id, i) => (
-                <span key={id}>
-                  {i > 0 ? " and " : ""}
-                  <button className="font-mono text-indigo-300 hover:underline" onClick={() => void openBatch(id)}>
-                    {id.slice(0, 8)}
-                  </button>
-                </span>
-              ))}
-              . Nothing was written to YouTube, and its videos live on in those batches.
+              {translateWithSlots(t, "batches.splitNotice", {}, {
+                batches: selectedBatch.splitInto.map((id, i) => (
+                  <span key={id}>
+                    {i > 0 ? t("batches.splitNoticeAnd") : ""}
+                    <button className="font-mono text-indigo-300 hover:underline" onClick={() => void openBatch(id)}>
+                      {id.slice(0, 8)}
+                    </button>
+                  </span>
+                )),
+              })}
             </p>
           )}
           <div className="overflow-x-auto">
           <table className="w-full min-w-[480px] text-xs">
             <thead className="text-zinc-500">
               <tr>
-                <th className="p-1 text-left">Video</th>
-                <th className="p-1 text-left">Changes</th>
-                <th className="p-1 text-left">Status</th>
-                <th className="p-1 text-left">Error</th>
+                <th className="p-1 text-left">{t("batches.col.video")}</th>
+                <th className="p-1 text-left">{t("batches.col.changes")}</th>
+                <th className="p-1 text-left">{t("batches.col.status")}</th>
+                <th className="p-1 text-left">{t("batches.col.error")}</th>
               </tr>
             </thead>
             <tbody>
@@ -593,9 +590,9 @@ export function BatchManager({
           </div>
 
           <div>
-            <h4 className="mb-1 text-xs font-semibold text-zinc-400">Error report</h4>
+            <h4 className="mb-1 text-xs font-semibold text-zinc-400">{t("batches.errorReport")}</h4>
             {batchErrors.length === 0 ? (
-              <p className="text-xs text-zinc-500">No errors.</p>
+              <p className="text-xs text-zinc-500">{t("batches.noErrors")}</p>
             ) : (
               <ul className="space-y-0.5 text-xs text-red-400">
                 {batchErrors.map((e, i) => (
@@ -608,14 +605,14 @@ export function BatchManager({
           </div>
 
           <div>
-            <h4 className="mb-1 text-xs font-semibold text-zinc-400">Audit trail</h4>
+            <h4 className="mb-1 text-xs font-semibold text-zinc-400">{t("batches.auditTrail")}</h4>
             {auditEvents.length === 0 ? (
-              <p className="text-xs text-zinc-500">No audit events yet &mdash; run the dry-run preview above.</p>
+              <p className="text-xs text-zinc-500">{t("batches.noAudit")}</p>
             ) : (
               <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-zinc-500">
                 {auditEvents.map((e) => (
                   <li key={e.id}>
-                    {new Date(e.occurredAt).toLocaleTimeString()} &mdash; {e.videoId} &mdash; {e.eventType}
+                    {formatDisplayDateTime(e.occurredAt)} &mdash; {e.videoId} &mdash; {e.eventType}
                   </li>
                 ))}
               </ul>
@@ -626,14 +623,13 @@ export function BatchManager({
 
       {confirmingSendAll && (
         <ConfirmDialog
-          title="Send every approved change to YouTube for real?"
-          description={
-            `Channel: ${channelTitle ?? channelId}. ${approvedSelectableChanges.length} approved change${approvedSelectableChanges.length === 1 ? "" : "s"} ` +
-            `across ${new Set(approvedSelectableChanges.map((c) => c.videoId)).size} video(s) will be put into one live batch and executed now. ` +
-            `Each video still goes through identity check, a fresh conflict check and an automatic backup before being written; ` +
-            `only title/description translations are sent. This cannot be undone by this app.`
-          }
-          confirmLabel="Send all"
+          title={t("batches.confirmSendAll.title")}
+          description={t("batches.confirmSendAll.body", {
+            channel: channelTitle ?? channelId,
+            count: approvedSelectableChanges.length,
+            videos: new Set(approvedSelectableChanges.map((c) => c.videoId)).size,
+          })}
+          confirmLabel={t("batches.confirmSendAll.confirm")}
           confirmVariant="danger"
           onCancel={() => setConfirmingSendAll(false)}
           onConfirm={() => {
@@ -645,9 +641,9 @@ export function BatchManager({
 
       {confirmingResend && selectedBatchId && (
         <ConfirmDialog
-          title={`Write the ${ledgerRows.filter((row) => row.status === "CANCELLED").length} cancelled videos to YouTube?`}
-          description="Creates a NEW live batch from the videos this batch did not get to, and runs it right away. Videos already written are not touched. Every check (identity, conflict, backup, verification) runs again, and any change that is no longer approved or has gone stale makes the whole new batch fail to start."
-          confirmLabel="Create and write"
+          title={t("batches.confirmResend.title", { count: ledgerRows.filter((row) => row.status === "CANCELLED").length })}
+          description={t("batches.confirmResend.body")}
+          confirmLabel={t("batches.confirmResend.confirm")}
           confirmVariant="danger"
           onCancel={() => setConfirmingResend(false)}
           onConfirm={() => {
@@ -658,14 +654,9 @@ export function BatchManager({
       )}
       {confirmingExecute && selectedBatchId && (
         <ConfirmDialog
-          title="Send this batch to YouTube for real?"
-          description={
-            `Channel: ${channelTitle ?? channelId}. ${ledgerRows.length} video${ledgerRows.length === 1 ? "" : "s"}, ` +
-            `${totalFieldCount} field${totalFieldCount === 1 ? "" : "s"} total. This is a real, non-dry-run write -- ` +
-            `each video still goes through identity check, a fresh conflict check, and an automatic backup before ` +
-            `being written, and the result will show here per video. This cannot be undone by this app.`
-          }
-          confirmLabel="Execute"
+          title={t("batches.confirmExecute.title")}
+          description={t("batches.confirmExecute.body", { channel: channelTitle ?? channelId, count: ledgerRows.length, fields: totalFieldCount })}
+          confirmLabel={t("batches.execute")}
           confirmVariant="danger"
           onCancel={() => setConfirmingExecute(false)}
           onConfirm={() => {

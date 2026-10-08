@@ -8,6 +8,9 @@ import { ChangeSetReview } from "./change-set-review";
 import { ConfirmDialog } from "./confirm-dialog";
 import { postChannelSync } from "./channel-sync-client";
 import { OperationOverlay, useOperation } from "./operation-progress";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
+import { CHANGE_SET_SOURCE_LABELS, CHANGE_SET_STATUS_LABELS } from "./change-set-review";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -83,11 +86,11 @@ type ChangeSetSummary = {
 
 type SubTab = "in_progress" | "approved" | "rejected" | "all";
 
-const SUB_TABS: Array<{ value: SubTab; label: string }> = [
-  { value: "in_progress", label: "In progress" },
-  { value: "approved", label: "Approved" },
-  { value: "rejected", label: "Rejected" },
-  { value: "all", label: "All" },
+const SUB_TABS: Array<{ value: SubTab; label: UiTextKey }> = [
+  { value: "in_progress", label: "languages.subTab.inProgress" },
+  { value: "approved", label: "languages.subTab.approved" },
+  { value: "rejected", label: "languages.subTab.rejected" },
+  { value: "all", label: "languages.subTab.all" },
 ];
 
 function matchesSubTab(cs: ChangeSetSummary, subTab: SubTab): boolean {
@@ -229,6 +232,7 @@ type GenerateScope = { kind: "bulk" } | { kind: "row"; videoId: string };
  * (docs/TECHNICAL_DEBT.md RISK-09).
  */
 export function LanguagesManager() {
+  const t = useT();
   const op = useOperation();
   const { runBlocking, attach } = op;
   const [channelId, setChannelId] = useState("");
@@ -327,7 +331,7 @@ export function LanguagesManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(id)}/localizations`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       setOverview(data);
@@ -336,7 +340,7 @@ export function LanguagesManager() {
     } finally {
       setLoadingOverview(false);
     }
-  }, []);
+  }, [t]);
 
   async function handleAddTrackedLanguage(explicitLanguage?: string) {
     // Accepts an explicit code (dropdown selection) since setNewTrackedLanguage() before calling
@@ -354,7 +358,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       setNewTrackedLanguage("");
@@ -404,7 +408,7 @@ export function LanguagesManager() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       await fetchOverview(channelId);
@@ -427,7 +431,7 @@ export function LanguagesManager() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       const { changeSet, affectedVideoIds, skippedDefaultLanguageVideoIds } = data as {
@@ -437,16 +441,17 @@ export function LanguagesManager() {
       };
       if (!changeSet) {
         setTrackedLanguageNotice(
-          `Nothing to propose for "${language}" -- every matching video has it as their own ` +
-            `default language, which this mechanism never touches (${skippedDefaultLanguageVideoIds.length} skipped).`
+          t("languages.nothingToProposeDeletion", { language, skipped: skippedDefaultLanguageVideoIds.length })
         );
       } else {
         setTrackedLanguageNotice(
-          `Deletion proposed for "${language}" on ${affectedVideoIds.length} video(s)` +
-            (skippedDefaultLanguageVideoIds.length > 0
-              ? ` (${skippedDefaultLanguageVideoIds.length} skipped -- it's their default language)`
-              : "") +
-            ` -- see the new Change Set in the queue below for review/approval.`
+          skippedDefaultLanguageVideoIds.length > 0
+            ? t("languages.deletionProposedWithSkipped", {
+                language,
+                count: affectedVideoIds.length,
+                skipped: skippedDefaultLanguageVideoIds.length,
+              })
+            : t("languages.deletionProposed", { language, count: affectedVideoIds.length })
         );
         setOpenChangeSetId(changeSet.id);
         await fetchChangeSets(channelId);
@@ -483,16 +488,16 @@ export function LanguagesManager() {
     setError(null);
     try {
       const { res, data } = await runBlocking({
-        title: "Syncing the channel from YouTube",
+        title: t("languages.sync.title"),
         track: { channelId, kind: "channel-sync" },
         quotaServices: ["dataApi"],
-        request: () => postChannelSync(channelId, { onConflict: "retry" }),
-        failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? `Error ${res.status}`)),
+        request: () => postChannelSync(channelId, { onConflict: "retry", t }),
+        failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? t("common.errorStatus", { status: res.status }))),
         summarize: ({ data }) =>
-          typeof data?.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null,
+          typeof data?.videoCount === "number" ? t("languages.sync.summary", { count: data.videoCount }) : null,
       });
       if (!res.ok) {
-        setError(String(data?.message ?? data?.error ?? `Error ${res.status}`));
+        setError(String(data?.message ?? data?.error ?? t("common.errorStatus", { status: res.status })));
         return;
       }
       setLastSyncedAt((data?.channel as { lastSyncedAt?: string } | undefined)?.lastSyncedAt ?? null);
@@ -502,7 +507,7 @@ export function LanguagesManager() {
     } finally {
       setSyncing(false);
     }
-  }, [channelId, fetchOverview, fetchChangeSets, runBlocking]);
+  }, [channelId, fetchOverview, fetchChangeSets, runBlocking, t]);
 
   // After a reload, follow a sync the server is still running for this channel (ADR 0015). Syncs only --
   // see the same note in content-manager.tsx for why an AI generation is not re-attached.
@@ -517,7 +522,7 @@ export function LanguagesManager() {
         if (!running || cancelled) return;
         setSyncing(true);
         attach(running.id, {
-          title: "Syncing the channel from YouTube",
+          title: t("languages.sync.title"),
           quotaServices: ["dataApi"],
           onFinished: () => {
             setSyncing(false);
@@ -531,7 +536,7 @@ export function LanguagesManager() {
     return () => {
       cancelled = true;
     };
-  }, [channelId, attach, fetchOverview, fetchChangeSets]);
+  }, [channelId, attach, fetchOverview, fetchChangeSets, t]);
 
   useEffect(() => {
     (async () => {
@@ -719,7 +724,7 @@ export function LanguagesManager() {
       const res = await fetch(url);
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.message ?? data?.error ?? `Error ${res.status}`);
+        setError(data?.message ?? data?.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
 
@@ -771,7 +776,7 @@ export function LanguagesManager() {
       .filter(Boolean);
     const videoIds = generateScope.kind === "bulk" ? [...selectedIds] : [generateScope.videoId];
     if (videoIds.length === 0 || languages.length === 0) {
-      setError("Select at least one video and one target language");
+      setError(t("languages.generate.needSelection"));
       return;
     }
 
@@ -790,13 +795,15 @@ export function LanguagesManager() {
     // independent-review finding, 2026-09-21: a frozen label could overstate a stale video count
     // if the operator deselected some videos while the request was still in flight).
     const currentRequestLabel = () =>
-      generateScope.kind === "row" ? `video ${generateScope.videoId}` : `${selectedIdsRef.current.size} selected video(s)`;
+      generateScope.kind === "row"
+        ? t("languages.generate.labelVideo", { videoId: generateScope.videoId })
+        : t("languages.generate.labelSelected", { count: selectedIdsRef.current.size });
     setGenerating(true);
     try {
       // Shown in the progress overlay with Cancel (ADR 0015): a real connection is paid, and Cancel
       // stops the provider being called for the remaining targets; what finished is kept.
       const { res, data } = await runBlocking({
-        title: "Generating translations",
+        title: t("languages.generate.title"),
         track: { channelId, kind: "ai-generation" },
         cancellable: true,
         request: async () => {
@@ -811,12 +818,15 @@ export function LanguagesManager() {
           });
           return { res, data: (await res.json()) as GenerationResponse & { message?: string; cancelled?: boolean; summary?: { targetsGenerated?: number; targetsSkipped?: number } } };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? "Generation failed")),
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? t("languages.generate.failedShort"))),
         outcomeOf: ({ data }) => (data.cancelled === true ? "cancelled" : "success"),
         summarize: ({ data }) =>
           data.cancelled
-            ? `Stopped: ${data.summary?.targetsGenerated ?? 0} generated, ${data.summary?.targetsSkipped ?? 0} not started.`
-            : `${data.summary?.targetsGenerated ?? 0} generated.`,
+            ? t("languages.generate.stopped", {
+                generated: data.summary?.targetsGenerated ?? 0,
+                skipped: data.summary?.targetsSkipped ?? 0,
+              })
+            : t("languages.generate.generated", { generated: data.summary?.targetsGenerated ?? 0 }),
       });
       if (!res.ok) {
         // Surfaced unconditionally, even for an abandoned/superseded session (round-3
@@ -827,7 +837,12 @@ export function LanguagesManager() {
         // error banner with every other action in the tab, so it can in principle be immediately
         // overwritten by an unrelated error -- the same pre-existing property every handler in
         // this file already has, not something new here.
-        setError(`Generation for ${currentRequestLabel()} failed: ${data.message ?? "Generation failed"}`);
+        setError(
+          t("languages.generate.failedFor", {
+            target: currentRequestLabel(),
+            message: data.message ?? t("languages.generate.failedShort"),
+          })
+        );
         return;
       }
       if (requestId !== generationRequestIdRef.current) return;
@@ -846,7 +861,7 @@ export function LanguagesManager() {
       // file (fetchOverview, handleExport, handlePreviewImport, ...), this one had no catch --
       // a network failure or a non-JSON error body threw past both branches above, silently
       // clearing `generating` via `finally` with no error ever shown to the operator.
-      setError(`Generation for ${currentRequestLabel()} failed: ${String(e)}`);
+      setError(t("languages.generate.failedFor", { target: currentRequestLabel(), message: String(e) }));
     } finally {
       setGenerating(false);
     }
@@ -869,7 +884,7 @@ export function LanguagesManager() {
    * the same proposal rather than requiring a fresh, possibly-billed regenerate -- intentional,
    * not a bug, since the approval workflow downstream is what actually gates anything real. */
   const visibleTargets = useMemo(
-    () => targets.filter((t) => stillTargeted(t.videoId)),
+    () => targets.filter((target) => stillTargeted(target.videoId)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [targets, selectedIds, generateScope]
   );
@@ -889,7 +904,9 @@ export function LanguagesManager() {
   // `visibleTargets` (a filtered view of `targets`), so an index into that filtered array would
   // no longer line up with the same entry's real position in the underlying `targets` state.
   function updateTarget(videoId: string, language: string, patch: Partial<EditableTarget>) {
-    setTargets((prev) => prev.map((t) => (t.videoId === videoId && t.language === language ? { ...t, ...patch } : t)));
+    setTargets((prev) =>
+      prev.map((target) => (target.videoId === videoId && target.language === language ? { ...target, ...patch } : target))
+    );
   }
 
   async function handleCreateChangeSetFromAi() {
@@ -898,16 +915,16 @@ export function LanguagesManager() {
     // never be submitted into the Change Set just because its proposal is still sitting in state
     // (round-5 independent-review finding, 2026-09-21).
     const proposals = visibleTargets
-      .filter((t) => t.includeTitle || t.includeDescription)
-      .map((t) => ({
-        videoId: t.videoId,
-        language: t.language,
-        ...(t.includeTitle ? { title: t.editedTitle } : {}),
-        ...(t.includeDescription ? { description: t.editedDescription } : {}),
+      .filter((target) => target.includeTitle || target.includeDescription)
+      .map((target) => ({
+        videoId: target.videoId,
+        language: target.language,
+        ...(target.includeTitle ? { title: target.editedTitle } : {}),
+        ...(target.includeDescription ? { description: target.editedDescription } : {}),
       }));
 
     if (proposals.length === 0) {
-      setError("No proposals selected to include");
+      setError(t("languages.generate.noProposals"));
       return;
     }
 
@@ -925,7 +942,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to create change set");
+        setError(data.message ?? t("languages.generate.createFailed"));
         return;
       }
       setCreatedChangeSetId(data.changeSet.id);
@@ -955,7 +972,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       setPreviewSummary(data.summary);
@@ -982,7 +999,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
         return;
       }
       setPreviewSummary(null);
@@ -1046,24 +1063,21 @@ export function LanguagesManager() {
   function renderGenerationPanel() {
     return (
       <div className="space-y-3">
-        <p className="text-xs text-zinc-500">
-          Review and edit the agent&rsquo;s output below before creating a Change Set &mdash;
-          nothing is written to YouTube from this panel.
-        </p>
+        <p className="text-xs text-zinc-500">{t("languages.panel.intro")}</p>
         <div className="flex flex-wrap items-center gap-2">
           <input
             value={targetLanguages}
             onChange={(e) => setTargetLanguages(e.target.value)}
-            placeholder="Target language(s), comma-separated (e.g. es, de, pt-BR)"
+            placeholder={t("languages.panel.targetPlaceholder")}
             className="min-w-[220px] flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
           />
           <select
             value={connectionId}
             onChange={(e) => setConnectionId(e.target.value)}
             className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
-            title="Configure connections in the Settings tab"
+            title={t("languages.panel.connectionHint")}
           >
-            <option value="">Mock provider (default, no network)</option>
+            <option value="">{t("languages.panel.mockProvider")}</option>
             {connections.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.displayName}
@@ -1075,17 +1089,14 @@ export function LanguagesManager() {
             disabled={generating}
             className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            {generating ? "Generating..." : "Generate proposals"}
+            {generating ? t("languages.panel.generating") : t("languages.panel.generate")}
           </button>
           <button onClick={closeGeneratePanel} className="text-xs text-zinc-500 hover:text-zinc-300">
-            Close
+            {t("common.close")}
           </button>
         </div>
         {connectionId && (
-          <p className="text-xs text-amber-400">
-            A real connection is selected &mdash; generating will make a real request to its
-            configured endpoint and may incur cost.
-          </p>
+          <p className="text-xs text-amber-400">{t("languages.panel.realConnectionWarning")}</p>
         )}
 
         {visibleRowErrors.length > 0 && (
@@ -1100,35 +1111,34 @@ export function LanguagesManager() {
 
         {allResultsDiscardedBySelectionChange && (
           <p className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
-            The selection changed before this request finished, so none of its results still apply
-            &mdash; regenerate for the videos you have selected now.
+            {t("languages.panel.selectionChanged")}
           </p>
         )}
 
         {visibleTargets.length > 0 && (
           <div className="max-h-[50vh] space-y-4 overflow-y-auto">
-            <h3 className="text-sm font-semibold text-zinc-200">Review &amp; edit proposals</h3>
-            {visibleTargets.map((t) => (
-              <div key={`${t.videoId}-${t.language}`} className="rounded-lg border border-zinc-800 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">{t("languages.panel.reviewTitle")}</h3>
+            {visibleTargets.map((target) => (
+              <div key={`${target.videoId}-${target.language}`} className="rounded-lg border border-zinc-800 p-4">
                 <p className="mb-2 text-xs text-zinc-500">
-                  {t.videoId} &rarr; {t.language}
+                  {target.videoId} &rarr; {target.language}
                 </p>
-                {t.providerError ? (
-                  <p className="text-sm text-red-400">Provider error: {t.providerError}</p>
+                {target.providerError ? (
+                  <p className="text-sm text-red-400">{t("languages.panel.providerError", { error: target.providerError })}</p>
                 ) : (
                   <div className="space-y-3">
                     <label className="block">
                       <span className="flex items-center gap-2 text-xs text-zinc-400">
                         <input
                           type="checkbox"
-                          checked={t.includeTitle}
-                          onChange={(e) => updateTarget(t.videoId, t.language, { includeTitle: e.target.checked })}
+                          checked={target.includeTitle}
+                          onChange={(e) => updateTarget(target.videoId, target.language, { includeTitle: e.target.checked })}
                         />
-                        Title
+                        {t("languages.panel.fieldTitle")}
                       </span>
                       <textarea
-                        value={t.editedTitle}
-                        onChange={(e) => updateTarget(t.videoId, t.language, { editedTitle: e.target.value })}
+                        value={target.editedTitle}
+                        onChange={(e) => updateTarget(target.videoId, target.language, { editedTitle: e.target.value })}
                         className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
                         rows={2}
                       />
@@ -1137,14 +1147,14 @@ export function LanguagesManager() {
                       <span className="flex items-center gap-2 text-xs text-zinc-400">
                         <input
                           type="checkbox"
-                          checked={t.includeDescription}
-                          onChange={(e) => updateTarget(t.videoId, t.language, { includeDescription: e.target.checked })}
+                          checked={target.includeDescription}
+                          onChange={(e) => updateTarget(target.videoId, target.language, { includeDescription: e.target.checked })}
                         />
-                        Description
+                        {t("languages.panel.fieldDescription")}
                       </span>
                       <textarea
-                        value={t.editedDescription}
-                        onChange={(e) => updateTarget(t.videoId, t.language, { editedDescription: e.target.value })}
+                        value={target.editedDescription}
+                        onChange={(e) => updateTarget(target.videoId, target.language, { editedDescription: e.target.value })}
                         className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
                         rows={3}
                       />
@@ -1159,14 +1169,14 @@ export function LanguagesManager() {
               disabled={creating}
               className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
             >
-              {creating ? "Creating..." : "Create Change Set from reviewed proposals"}
+              {creating ? t("languages.panel.creating") : t("languages.panel.createFromReviewed")}
             </button>
           </div>
         )}
 
         {createdChangeSetId && (
           <p className="rounded-md border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300">
-            Change Set <code>{createdChangeSetId}</code> created &mdash; see it in the queue below.
+            {t("languages.panel.created", { id: createdChangeSetId })}
           </p>
         )}
       </div>
@@ -1190,12 +1200,12 @@ export function LanguagesManager() {
     return (
       <div className="flex h-full flex-col">
         {loadingDetail ? (
-          <p className="text-sm text-zinc-500">Loading detail...</p>
+          <p className="text-sm text-zinc-500">{t("languages.detail.loading")}</p>
         ) : detail ? (
           <div className="grid min-h-0 flex-1 grid-cols-2 gap-4">
             <div className="flex min-h-0 flex-col">
               <p className="mb-1 shrink-0 text-xs font-medium text-zinc-500">
-                Original / default language: {detail.defaultLanguage ?? "unset"}
+                {t("languages.detail.originalLanguage", { language: detail.defaultLanguage ?? t("languages.detail.unset") })}
               </p>
               <div className="mb-2 shrink-0 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
                 <p className="text-sm font-medium text-zinc-100">{detail.originalTitle}</p>
@@ -1213,7 +1223,7 @@ export function LanguagesManager() {
                 className="mb-2 shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
               >
                 {languageOptions.length === 0 ? (
-                  <option value="">No other tracked languages</option>
+                  <option value="">{t("languages.detail.noOtherLanguages")}</option>
                 ) : (
                   languageOptions.map((lang) => (
                     <option key={lang} value={lang}>
@@ -1235,8 +1245,8 @@ export function LanguagesManager() {
                 <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-800 p-4 text-center">
                   <p className="text-xs text-zinc-500">
                     {languageOptions.length === 0
-                      ? "Add a language column in the table first."
-                      : `No "${reviewLanguage}" translation yet for this video.`}
+                      ? t("languages.detail.addColumnFirst")
+                      : t("languages.detail.noTranslationYet", { language: reviewLanguage })}
                   </p>
                   {reviewLanguage && (
                     <button
@@ -1246,7 +1256,7 @@ export function LanguagesManager() {
                       }}
                       className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
                     >
-                      Generate with AI for this language
+                      {t("languages.detail.generateForLanguage")}
                     </button>
                   )}
                 </div>
@@ -1254,7 +1264,7 @@ export function LanguagesManager() {
             </div>
           </div>
         ) : (
-          <p className="text-sm text-red-400">Failed to load detail.</p>
+          <p className="text-sm text-red-400">{t("languages.detail.loadFailed")}</p>
         )}
 
         <div className="mt-4 shrink-0 border-t border-zinc-800 pt-4">
@@ -1265,7 +1275,7 @@ export function LanguagesManager() {
               onClick={() => startRowGenerate(video.videoId)}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
             >
-              Generate with AI for this video
+              {t("languages.detail.generateForVideo")}
             </button>
           )}
         </div>
@@ -1276,7 +1286,7 @@ export function LanguagesManager() {
   return (
     <div className="space-y-4">
       <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
-      {!channelId && <p className="text-sm text-zinc-400">No channel synchronized yet.</p>}
+      {!channelId && <p className="text-sm text-zinc-400">{t("languages.noChannel")}</p>}
 
       {error && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>
@@ -1289,10 +1299,10 @@ export function LanguagesManager() {
             disabled={syncing}
             className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
           >
-            {syncing ? "Syncing..." : "Sync now"}
+            {syncing ? t("common.syncing") : t("common.syncNow")}
           </button>
           <p className="text-xs text-zinc-500">
-            Last synced: {lastSyncedAt ? formatDisplayDateTime(lastSyncedAt) : "never"}
+            {t("languages.lastSynced", { when: lastSyncedAt ? formatDisplayDateTime(lastSyncedAt) : t("common.never") })}
           </p>
         </div>
       )}
@@ -1301,9 +1311,8 @@ export function LanguagesManager() {
 
       {channelId && (
         <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">
-          <span className="font-medium text-zinc-400">Recommended languages</span> &mdash; coming with
-          Analytics integration (Phase 8). Once real audience data is available, this card will
-          suggest languages for this channel with a one-click apply.
+          <span className="font-medium text-zinc-400">{t("languages.recommended.title")}</span>{" "}
+          {t("languages.recommended.body")}
         </div>
       )}
 
@@ -1311,27 +1320,27 @@ export function LanguagesManager() {
         <div className="rounded-xl border border-zinc-800 bg-zinc-900">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
             <div className="flex gap-1 rounded-lg bg-zinc-950 p-1">
-              {SUB_TABS.map((t) => (
+              {SUB_TABS.map((tab) => (
                 <button
-                  key={t.value}
+                  key={tab.value}
                   onClick={() => {
                     // An opened set does not follow the user to another tab (owner request 2026-10-04).
                     setOpenChangeSetId(null);
-                    setSubTab(t.value);
+                    setSubTab(tab.value);
                   }}
                   className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                    subTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+                    subTab === tab.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
-                  {t.label}
+                  {t(tab.label)}
                 </button>
               ))}
             </div>
-            <span className="text-xs text-zinc-500">Awaiting review across all videos &middot; {filteredChangeSets.length} change set(s)</span>
+            <span className="text-xs text-zinc-500">{t("languages.queue.awaiting", { count: filteredChangeSets.length })}</span>
           </div>
           <div className="p-4">
             {filteredChangeSets.length === 0 ? (
-              <p className="text-sm text-zinc-500">No change sets in this view yet.</p>
+              <p className="text-sm text-zinc-500">{t("languages.queue.empty")}</p>
             ) : (
               <div className="space-y-2">
                 {filteredChangeSets.map((cs) => (
@@ -1345,17 +1354,14 @@ export function LanguagesManager() {
                     }`}
                   >
                     <span>
-                      {cs.importedFilename ??
-                        (cs.source === "ai_localization"
-                          ? "AI Generated"
-                          : cs.source === "deletion"
-                            ? "Deletion"
-                            : "XLSX Import")}{" "}
-                      &middot;{" "}
-                      {cs.totalChanges} changes &middot; {formatDisplayDateTime(cs.createdAt)}
+                      {t("languages.queue.item", {
+                        source: cs.importedFilename ?? t(CHANGE_SET_SOURCE_LABELS[cs.source]),
+                        count: cs.totalChanges,
+                        date: formatDisplayDateTime(cs.createdAt),
+                      })}
                     </span>
                     <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
-                      {cs.status}
+                      {t(CHANGE_SET_STATUS_LABELS[cs.status])}
                     </span>
                   </button>
                 ))}
@@ -1383,7 +1389,7 @@ export function LanguagesManager() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by title..."
+              placeholder={t("languages.table.searchPlaceholder")}
               className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
             />
             <div className="relative flex items-center gap-2">
@@ -1403,7 +1409,7 @@ export function LanguagesManager() {
                   }
                   if (e.key === "Escape") setLanguageDropdownOpen(false);
                 }}
-                placeholder="Add language column (search by code or name)"
+                placeholder={t("languages.table.addLanguagePlaceholder")}
                 className="w-56 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
               />
               <button
@@ -1411,12 +1417,12 @@ export function LanguagesManager() {
                 disabled={trackedLanguageBusy || !exactLanguageMatch}
                 title={
                   newTrackedLanguage.trim() && !exactLanguageMatch
-                    ? "Pick a language from YouTube's supported list below"
+                    ? t("languages.table.pickFromList")
                     : undefined
                 }
                 className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
               >
-                Add
+                {t("languages.table.add")}
               </button>
 
               {languageDropdownOpen && addableLanguages.length > 0 && (
@@ -1441,7 +1447,9 @@ export function LanguagesManager() {
               )}
             </div>
             <span className="text-sm text-zinc-400">
-              {loadingOverview ? "Loading..." : `${sortedFilteredVideos.length} of ${overview.totalVideos} videos`}
+              {loadingOverview
+                ? t("common.loading")
+                : t("languages.table.videosShown", { shown: sortedFilteredVideos.length, total: overview.totalVideos })}
             </span>
           </div>
 
@@ -1454,9 +1462,9 @@ export function LanguagesManager() {
           {selectedIds.size > 0 && (
             <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-sm">
               <div className="flex items-center gap-3">
-                <span className="font-medium text-zinc-200">{selectedIds.size} selected</span>
+                <span className="font-medium text-zinc-200">{t("languages.table.selected", { count: selectedIds.size })}</span>
                 <button onClick={() => setSelectedIds(new Set())} className="text-xs text-zinc-500 hover:text-zinc-300">
-                  Clear
+                  {t("languages.table.clear")}
                 </button>
               </div>
               <div className="flex items-center gap-2">
@@ -1464,14 +1472,14 @@ export function LanguagesManager() {
                   onClick={startBulkGenerate}
                   className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
                 >
-                  Generate with AI &#9662;
+                  {t("languages.table.generateWithAi")}
                 </button>
                 <button
                   onClick={() => handleExport("selected")}
                   disabled={exporting}
                   className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  Export to XLSX
+                  {t("languages.table.exportXlsx")}
                 </button>
               </div>
 
@@ -1490,12 +1498,14 @@ export function LanguagesManager() {
                   <th className="w-8 px-4 py-2 font-medium" />
                   <th className="px-4 py-2 font-medium">
                     <button onClick={() => handleSort("title")} className="hover:text-zinc-300">
-                      Video{sortIndicator("title", sort)}
+                      {t("languages.table.colVideo")}
+                      {sortIndicator("title", sort)}
                     </button>
                   </th>
                   <th className="w-24 px-4 py-2 font-medium">
                     <button onClick={() => handleSort("publishedAt")} className="hover:text-zinc-300">
-                      Publish{sortIndicator("publishedAt", sort)}
+                      {t("languages.table.colPublish")}
+                      {sortIndicator("publishedAt", sort)}
                     </button>
                   </th>
                   {languages.map((lang) => (
@@ -1509,8 +1519,8 @@ export function LanguagesManager() {
                           onClick={() => handleRemoveTrackedLanguage(lang)}
                           disabled={trackedLanguageBusy}
                           className="text-zinc-600 hover:text-red-400 disabled:opacity-50"
-                          title={`Remove "${lang}" column`}
-                          aria-label={`Remove ${lang} column`}
+                          title={t("languages.table.removeColumnTitle", { language: lang })}
+                          aria-label={t("languages.table.removeColumnAria", { language: lang })}
                         >
                           &#10005;
                         </button>
@@ -1519,7 +1529,7 @@ export function LanguagesManager() {
                         <button
                           onClick={() => startBulkGenerateForLanguage(lang)}
                           className="mt-0.5 block w-full text-center text-[10px] font-normal normal-case text-indigo-400 hover:text-indigo-300"
-                          title={`Add "${lang}" translation to ${missingCountByLanguage.get(lang)} video(s) missing it`}
+                          title={t("languages.table.addMissingTitle", { language: lang, count: missingCountByLanguage.get(lang) ?? 0 })}
                         >
                           +{missingCountByLanguage.get(lang)}
                         </button>
@@ -1528,7 +1538,8 @@ export function LanguagesManager() {
                   ))}
                   <th className="w-32 px-4 py-2 font-medium">
                     <button onClick={() => handleSort("lastSyncedAt")} className="hover:text-zinc-300">
-                      Last modified{sortIndicator("lastSyncedAt", sort)}
+                      {t("languages.table.colLastModified")}
+                      {sortIndicator("lastSyncedAt", sort)}
                     </button>
                   </th>
                 </tr>
@@ -1545,7 +1556,7 @@ export function LanguagesManager() {
                           type="checkbox"
                           checked={selectedIds.has(video.videoId)}
                           onChange={() => toggleSelected(video.videoId)}
-                          aria-label={`Select ${video.title}`}
+                          aria-label={t("languages.table.selectVideo", { title: video.title })}
                         />
                       </td>
                       <td className="min-w-0 px-4 py-3">
@@ -1567,15 +1578,15 @@ export function LanguagesManager() {
                       {languages.map((lang) => (
                         <td key={lang} className="px-2 py-3 text-center">
                           {video.presentLanguages.includes(lang) ? (
-                            <span className="text-emerald-400" title={`${lang}: translated`}>
+                            <span className="text-emerald-400" title={t("languages.table.translated", { language: lang })}>
                               &#10003;
                             </span>
                           ) : video.defaultLanguage === lang ? (
-                            <span className="text-[10px] uppercase tracking-wide text-sky-400" title={`${lang}: this video's original language (no translation needed)`}>
-                              original
+                            <span className="text-[10px] uppercase tracking-wide text-sky-400" title={t("languages.table.originalTitle", { language: lang })}>
+                              {t("languages.table.original")}
                             </span>
                           ) : (
-                            <span className="text-zinc-700" title={`${lang}: missing`}>
+                            <span className="text-zinc-700" title={t("languages.table.missing", { language: lang })}>
                               &mdash;
                             </span>
                           )}
@@ -1591,7 +1602,7 @@ export function LanguagesManager() {
           </div>
 
           {!loadingOverview && sortedFilteredVideos.length === 0 && (
-            <p className="px-4 py-6 text-center text-sm text-zinc-500">No videos match the current search.</p>
+            <p className="px-4 py-6 text-center text-sm text-zinc-500">{t("languages.table.noMatch")}</p>
           )}
         </div>
       )}
@@ -1602,40 +1613,35 @@ export function LanguagesManager() {
             onClick={() => setImportOpen((v) => !v)}
             className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-zinc-300"
           >
-            <span>Import from XLSX (bulk, secondary)</span>
-            <span className="text-xs text-zinc-500">{importOpen ? "Hide" : "Show"}</span>
+            <span>{t("languages.import.toggle")}</span>
+            <span className="text-xs text-zinc-500">{importOpen ? t("languages.import.hide") : t("languages.import.show")}</span>
           </button>
           {importOpen && (
             <div className="space-y-3 border-t border-zinc-800 p-4">
-              <p className="text-xs text-zinc-500">
-                Export the current localization state to XLSX, edit it externally, then upload
-                it below to preview proposed changes and create a change set for review. Nothing
-                is written to YouTube here or during approval &mdash; imported values remain
-                local drafts until a future write phase applies them.
-              </p>
+              <p className="text-xs text-zinc-500">{t("languages.import.intro")}</p>
               <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 pb-3">
                 <button
                   onClick={() => handleExport("selected")}
                   disabled={exporting || selectedIds.size === 0}
                   className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  Export selected ({selectedIds.size})
+                  {t("languages.import.exportSelected", { count: selectedIds.size })}
                 </button>
                 <button
                   onClick={() => handleExport("filtered")}
                   disabled={exporting || sortedFilteredVideos.length === 0}
                   className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  Export filtered ({sortedFilteredVideos.length})
+                  {t("languages.import.exportFiltered", { count: sortedFilteredVideos.length })}
                 </button>
                 <button
                   onClick={() => handleExport("all")}
                   disabled={exporting || !overview || overview.totalVideos === 0}
                   className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
                 >
-                  {exporting ? "Exporting..." : `Export all (${overview?.totalVideos ?? 0})`}
+                  {exporting ? t("languages.import.exporting") : t("languages.import.exportAll", { count: overview?.totalVideos ?? 0 })}
                 </button>
-                <span className="text-xs text-zinc-500">Select rows in the table above to export.</span>
+                <span className="text-xs text-zinc-500">{t("languages.import.selectRowsHint")}</span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <input
@@ -1649,45 +1655,46 @@ export function LanguagesManager() {
                   disabled={previewing}
                   className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  {previewing ? "Parsing..." : "Preview"}
+                  {previewing ? t("languages.import.parsing") : t("languages.import.preview")}
                 </button>
                 <button
                   onClick={handleCreateChangeSetFromXlsx}
                   disabled={creatingChangeSet || !previewSummary}
                   className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
                 >
-                  {creatingChangeSet ? "Creating..." : "Create Change Set"}
+                  {creatingChangeSet ? t("languages.import.creating") : t("languages.import.createChangeSet")}
                 </button>
               </div>
 
               {previewSummary && (
                 <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
                   <div className="flex flex-wrap gap-2 text-xs">
-                    <span className="rounded bg-zinc-800 px-2 py-1">Videos found: {previewSummary.videosFound}</span>
-                    <span className="rounded bg-zinc-800 px-2 py-1">Rows: {previewSummary.localizationRows}</span>
+                    <span className="rounded bg-zinc-800 px-2 py-1">{t("languages.import.videosFound", { count: previewSummary.videosFound })}</span>
+                    <span className="rounded bg-zinc-800 px-2 py-1">{t("languages.import.rows", { count: previewSummary.localizationRows })}</span>
                     <span className="rounded bg-green-900/40 px-2 py-1 text-green-400">
-                      Valid changes: {previewSummary.validChanges}
+                      {t("languages.import.validChanges", { count: previewSummary.validChanges })}
                     </span>
                     <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-400">
-                      Unchanged: {previewSummary.unchangedValues}
+                      {t("languages.import.unchanged", { count: previewSummary.unchangedValues })}
                     </span>
                     <span className="rounded bg-red-900/40 px-2 py-1 text-red-400">
-                      Invalid: {previewSummary.invalidRows}
+                      {t("languages.import.invalid", { count: previewSummary.invalidRows })}
                     </span>
                     <span className="rounded bg-amber-900/40 px-2 py-1 text-amber-400">
-                      Conflicts: {previewSummary.conflicts}
+                      {t("languages.import.conflicts", { count: previewSummary.conflicts })}
                     </span>
                   </div>
                   {previewErrors.length > 0 && (
                     <div className="max-h-40 overflow-y-auto rounded border border-zinc-800 p-2 text-xs text-zinc-400">
                       {previewErrors.map((e, i) => (
                         <p key={i}>
-                          Row {e.row}
-                          {e.videoId ? ` (${e.videoId})` : ""}: {e.message}
+                          {e.videoId
+                            ? t("languages.import.rowErrorWithVideo", { row: String(e.row), videoId: e.videoId, message: e.message })
+                            : t("languages.import.rowError", { row: String(e.row), message: e.message })}
                         </p>
                       ))}
                       {previewTotalErrors > previewErrors.length && (
-                        <p className="text-zinc-600">...and {previewTotalErrors - previewErrors.length} more</p>
+                        <p className="text-zinc-600">{t("languages.import.moreErrors", { count: previewTotalErrors - previewErrors.length })}</p>
                       )}
                     </div>
                   )}
@@ -1719,20 +1726,15 @@ export function LanguagesManager() {
         <ConfirmDialog
           title={
             pendingRemoveLanguage.hasRealData
-              ? `Propose deleting "${pendingRemoveLanguage.language}"?`
-              : `Remove "${pendingRemoveLanguage.language}" from tracked languages?`
+              ? t("languages.remove.proposeTitle", { language: pendingRemoveLanguage.language })
+              : t("languages.remove.untrackTitle", { language: pendingRemoveLanguage.language })
           }
           description={
             pendingRemoveLanguage.hasRealData
-              ? `"${pendingRemoveLanguage.language}" has real translations on this channel. This will propose ` +
-                `DELETING that localization (title + description) from every video that has it -- this does NOT ` +
-                `delete anything immediately: it creates a Change Set that still needs your approval, a backup of ` +
-                `the current values is captured automatically when the batch pipeline processes it, and nothing ` +
-                `can actually be written to YouTube until Gate B is cleared. The column will remain visible until ` +
-                `that eventually happens and the channel re-syncs.`
+              ? t("languages.remove.proposeDescription", { language: pendingRemoveLanguage.language })
               : undefined
           }
-          confirmLabel={pendingRemoveLanguage.hasRealData ? "Propose deletion" : "Remove"}
+          confirmLabel={pendingRemoveLanguage.hasRealData ? t("languages.remove.proposeConfirm") : t("languages.remove.untrackConfirm")}
           confirmVariant="danger"
           onCancel={() => setPendingRemoveLanguage(null)}
           onConfirm={() => {

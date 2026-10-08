@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatChartDate, formatWatchTimeHours } from "@/lib/analytics/period";
 import { formatDisplayDateUtc } from "@/lib/shared-formatting";
 import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
+import type { UiTextKey } from "@/lib/ui-text";
 import { AnalyticsDataStrip } from "./analytics-data-strip";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
@@ -11,6 +12,7 @@ import { MetricDelta } from "./metric-delta";
 import { useReachSummary } from "./use-reach-summary";
 import { useTopVideos } from "./use-top-videos";
 import { VideoPerformanceTable } from "./video-performance-table";
+import { useUiText } from "./ui-text-provider";
 
 /**
  * Studio-parity Slice O1 (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §2.4) -- real
@@ -20,30 +22,12 @@ import { VideoPerformanceTable } from "./video-performance-table";
  */
 type OverviewMetricKey = "views" | "watchTimeHours" | "subscribers" | "impressions" | "ctr";
 
-const OVERVIEW_METRIC_INFO: Record<OverviewMetricKey, { label: string; explain: string }> = {
-  views: {
-    label: "Views",
-    explain: "How many times your videos were watched in this period, compared with the previous period of the same length.",
-  },
-  watchTimeHours: {
-    label: "Watch time (hours)",
-    explain:
-      "Total time viewers spent watching your videos in this period, compared with the previous period. Includes public, private, unlisted, and deleted videos.",
-  },
-  subscribers: {
-    label: "Subscribers",
-    explain: "Net change in subscribers (gained minus lost) in this period, compared with the previous period.",
-  },
-  impressions: {
-    label: "Impressions",
-    explain:
-      "How many times YouTube showed your video thumbnails to viewers in this period (from the daily Reporting API files this app downloads). Only days since the report subscription started exist, so there is no comparison with the previous period.",
-  },
-  ctr: {
-    label: "Click-through rate",
-    explain:
-      "The share of thumbnail impressions that led to a view. Over a period it is impressions-weighted (total clicks divided by total impressions), never an average of daily rates.",
-  },
+const OVERVIEW_METRIC_INFO: Record<OverviewMetricKey, { labelKey: UiTextKey; explainKey: UiTextKey }> = {
+  views: { labelKey: "overview.metric.views", explainKey: "overview.explain.views" },
+  watchTimeHours: { labelKey: "overview.metric.watchTimeHours", explainKey: "overview.explain.watchTimeHours" },
+  subscribers: { labelKey: "overview.metric.subscribers", explainKey: "overview.explain.subscribers" },
+  impressions: { labelKey: "overview.metric.impressions", explainKey: "overview.explain.impressions" },
+  ctr: { labelKey: "overview.metric.ctr", explainKey: "overview.explain.ctr" },
 };
 
 type SyncedChannel = {
@@ -97,20 +81,21 @@ type DataQualityReport = {
 };
 
 type Granularity = "day" | "week" | "month";
-const GRANULARITY_OPTIONS: Array<{ key: Granularity; label: string }> = [
-  { key: "day", label: "Days" },
-  { key: "week", label: "Weeks" },
-  { key: "month", label: "Months" },
+const GRANULARITY_OPTIONS: Array<{ key: Granularity; labelKey: UiTextKey }> = [
+  { key: "day", labelKey: "overview.granularity.day" },
+  { key: "week", labelKey: "overview.granularity.week" },
+  { key: "month", labelKey: "overview.granularity.month" },
 ];
 
 const PERIOD_OPTIONS = [
-  { days: 7, label: "Last 7 days" },
-  { days: 28, label: "Last 28 days" },
-  { days: 90, label: "Last 90 days" },
-  { days: 365, label: "Last 365 days" },
+  { days: 7, labelKey: "analytics.period.last7", previousKey: "analytics.previousPeriod.7" },
+  { days: 28, labelKey: "analytics.period.last28", previousKey: "analytics.previousPeriod.28" },
+  { days: 90, labelKey: "analytics.period.last90", previousKey: "analytics.previousPeriod.90" },
+  { days: 365, labelKey: "analytics.period.last365", previousKey: "analytics.previousPeriod.365" },
 ] as const;
 
 export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: string }) {
+  const { t, formatNumber } = useUiText();
   const op = useOperation();
   const { runBlocking } = op;
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
@@ -195,19 +180,19 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       const data = await res.json();
       if (!isLatest()) return;
       if (!res.ok) {
-        setOverviewError(data.message ?? "Failed to load channel analytics");
+        setOverviewError(data.message ?? t("overview.loadFailed"));
         if (!refresh) setOverview(null);
         return;
       }
       setOverview(data as ChannelOverview);
     } catch {
       if (!isLatest()) return;
-      setOverviewError("Failed to load channel analytics");
+      setOverviewError(t("overview.loadFailed"));
       if (!refresh) setOverview(null);
     } finally {
       if (isLatest()) setLoadingOverview(false);
     }
-  }, []);
+  }, [t]);
 
   // Read-only diagnostic (Phase 8 follow-up, slice 2) -- scoped to the same range "Top content"
   // uses (the locally-collected data window), since that's what this is actually answering:
@@ -273,7 +258,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       // collect metrics input", since these two fields have no default).
       const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
       const { res, data } = await runBlocking({
-        title: "Collecting YouTube Analytics",
+        title: t("analytics.collectingTitle"),
         track: { channelId: channel.channelId, kind: "analytics-collect" },
         quotaServices: ["analytics"],
         request: async () => {
@@ -285,15 +270,15 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           return { res, data: await res.json() };
         },
         failureOf: ({ res, data }) =>
-          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? data.error ?? `Error ${res.status}`),
+          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) })),
         summarize: ({ data }) =>
-          typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} queried.` : null,
+          typeof data.videoCount === "number" ? t("analytics.videosQueried", { count: data.videoCount }) : null,
       });
       if (!res.ok) {
         if (data.error === "analytics_data_current") {
-          setCollectMessage({ kind: "info", text: data.message ?? "Analytics data is already up to date for today." });
+          setCollectMessage({ kind: "info", text: data.message ?? t("overview.alreadyCurrent") });
         } else {
-          setCollectMessage({ kind: "error", text: data.message ?? data.error ?? `Error ${res.status}` });
+          setCollectMessage({ kind: "error", text: data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }) });
         }
         return;
       }
@@ -301,9 +286,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       setCollectMessage({
         kind: skipped > 0 && data.upsertsIssued === 0 ? "error" : "info",
         text:
-          skipped > 0
-            ? `Collected with ${skipped} video${skipped === 1 ? "" : "s"} skipped (see details below).`
-            : "Data refreshed.",
+          skipped > 0 ? t("overview.collectedWithSkips", { count: skipped }) : t("overview.dataRefreshed"),
       });
       await Promise.all([
         fetchOverview(channel.channelId, periodDays, granularity),
@@ -313,11 +296,11 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       ]);
       setCoverageReloadKey((key) => key + 1);
     } catch {
-      setCollectMessage({ kind: "error", text: "Failed to collect analytics data." });
+      setCollectMessage({ kind: "error", text: t("overview.collectFailed") });
     } finally {
       setCollecting(false);
     }
-  }, [channel, periodDays, granularity, fetchOverview, refetchTopVideos, fetchDataQuality, reloadReach, runBlocking]);
+  }, [channel, periodDays, granularity, fetchOverview, refetchTopVideos, fetchDataQuality, reloadReach, runBlocking, t]);
 
   const reachReady = reach?.state === "ready";
   const chartData = useMemo(() => {
@@ -349,22 +332,22 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     (value: number) => {
       switch (selectedMetric) {
         case "watchTimeHours":
-          return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} hours`;
+          return t("chart.value.hours", { value: formatNumber(value, { maximumFractionDigits: 1 }) });
         case "subscribers":
-          return `${value >= 0 ? "+" : ""}${value.toLocaleString()} subscribers`;
+          return t("chart.value.subscribers", { sign: value >= 0 ? "+" : "", count: value });
         case "impressions":
-          return `${formatImpressions(value)} impressions`;
+          return t("chart.value.impressions", { count: value });
         case "ctr":
-          return `${value.toFixed(2)}% click-through rate`;
+          return t("chart.value.ctr", { value: formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
         case "views":
         default:
-          return `${value.toLocaleString()} views`;
+          return t("chart.value.views", { count: value });
       }
     },
-    [selectedMetric]
+    [selectedMetric, t, formatNumber]
   );
 
-  const periodLabel = PERIOD_OPTIONS.find((p) => p.days === periodDays)?.label.toLowerCase().replace("last ", "previous ") ?? "previous period";
+  const periodLabel = t(PERIOD_OPTIONS.find((p) => p.days === periodDays)?.previousKey ?? "analytics.previousPeriod.generic");
 
   if (loadingChannel) {
     return <LoadingIndicator className="text-sm text-zinc-400" />;
@@ -372,9 +355,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
   if (!channel) {
     return (
-      <p className="text-sm text-zinc-400">
-        No channel synchronized yet — sign in and sync a channel in the Content tab first.
-      </p>
+      <p className="text-sm text-zinc-400">{t("analytics.noChannel")}</p>
     );
   }
 
@@ -382,7 +363,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     <div className="space-y-4">
       <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-medium text-zinc-300">Overview</h3>
+        <h3 className="text-sm font-medium text-zinc-300">{t("tabs.analytics.overview")}</h3>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
             {PERIOD_OPTIONS.map((option) => (
@@ -393,7 +374,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                   periodDays === option.days ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
-                {option.label}
+                {t(option.labelKey)}
               </button>
             ))}
           </div>
@@ -402,7 +383,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
             disabled={collecting}
             className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
           >
-            {collecting ? "Collecting..." : "Collect now"}
+            {collecting ? t("analytics.collecting") : t("analytics.collectNow")}
           </button>
         </div>
       </div>
@@ -438,9 +419,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           />
           {overview.viewCountingChangeInComparison && (
             <p className="rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
-              YouTube changed how views are counted on 27 Aug 2026 (a view now counts as soon as playback starts).
-              This period and the one it is compared with use different methods, so the views change is not
-              like-for-like.
+              {t("overview.viewCountingChange")}
             </p>
           )}
           <div ref={metricCardsRef} className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-3 lg:grid-cols-5">
@@ -452,8 +431,8 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 selectedMetric === "views" ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
               }`}
             >
-              <div className="text-xs text-zinc-500">Views</div>
-              <div className="text-2xl font-semibold text-zinc-100">{overview.currentTotals.views.toLocaleString()}</div>
+              <div className="text-xs text-zinc-500">{t("overview.metric.views")}</div>
+              <div className="text-2xl font-semibold text-zinc-100">{formatNumber(overview.currentTotals.views)}</div>
               <MetricDelta
                 percent={computePercentChange(overview.currentTotals.views, overview.previousTotals.views)}
                 periodLabel={periodLabel}
@@ -468,7 +447,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 selectedMetric === "watchTimeHours" ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
               }`}
             >
-              <div className="text-xs text-zinc-500">Watch time (hours)</div>
+              <div className="text-xs text-zinc-500">{t("overview.metric.watchTimeHours")}</div>
               <div className="text-2xl font-semibold text-zinc-100">
                 {formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}
               </div>
@@ -489,11 +468,11 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 selectedMetric === "subscribers" ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
               }`}
             >
-              <div className="text-xs text-zinc-500">Subscribers</div>
+              <div className="text-xs text-zinc-500">{t("overview.metric.subscribers")}</div>
               <div className="text-2xl font-semibold text-zinc-100">
                 {(() => {
                   const net = overview.currentTotals.subscribersGained - overview.currentTotals.subscribersLost;
-                  return `${net >= 0 ? "+" : ""}${net.toLocaleString()}`;
+                  return `${net >= 0 ? "+" : ""}${formatNumber(net)}`;
                 })()}
               </div>
               <MetricDelta
@@ -515,14 +494,16 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                   selectedMetric === key ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
                 }`}
               >
-                <div className="text-xs text-zinc-500">{OVERVIEW_METRIC_INFO[key].label}</div>
+                <div className="text-xs text-zinc-500">{t(OVERVIEW_METRIC_INFO[key].labelKey)}</div>
                 {reachReady && reach ? (
                   <>
                     <div className="text-2xl font-semibold text-zinc-100">
                       {key === "impressions" ? formatImpressions(reach.totals.impressions) : formatCtr(reach.totals.ctr)}
                     </div>
                     <span className="text-xs text-zinc-500">
-                      {reach.coverage.firstDate ? `Data since ${formatDisplayDateUtc(reach.coverage.firstDate)}` : "From YouTube Reporting files"}
+                      {reach.coverage.firstDate
+                        ? t("overview.reach.dataSince", { date: formatDisplayDateUtc(reach.coverage.firstDate) })
+                        : t("overview.reach.fromReportingFiles")}
                     </span>
                   </>
                 ) : (
@@ -531,11 +512,11 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                     <span className="text-xs text-zinc-500">
                       {reach === null
                         ? reachLoaded
-                          ? "Not available"
-                          : "Loading…"
+                          ? t("overview.reach.notAvailable")
+                          : t("common.loading")
                         : reach.state === "no_job"
-                          ? "Not set up yet — see Content"
-                          : "Waiting for YouTube's first report"}
+                          ? t("overview.reach.notSetUp")
+                          : t("overview.reach.waiting")}
                     </span>
                   </>
                 )}
@@ -545,21 +526,23 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
           {openMetricInfo && (
             <div className="rounded-xl border border-zinc-700 bg-zinc-800 p-3 text-xs leading-relaxed text-zinc-300">
-              <span className="font-medium text-zinc-100">{OVERVIEW_METRIC_INFO[openMetricInfo].label}:</span>{" "}
-              {OVERVIEW_METRIC_INFO[openMetricInfo].explain}
+              <span className="font-medium text-zinc-100">
+                {t("overview.explainLabel", { label: t(OVERVIEW_METRIC_INFO[openMetricInfo].labelKey) })}
+              </span>{" "}
+              {t(OVERVIEW_METRIC_INFO[openMetricInfo].explainKey)}
             </div>
           )}
 
           {subscriberCount && (
             <p className="text-xs text-zinc-500">
-              Current subscribers (all-time): <span className="text-zinc-300">{Number(subscriberCount).toLocaleString()}</span>
+              {t("overview.currentSubscribers")} <span className="text-zinc-300">{formatNumber(Number(subscriberCount))}</span>
             </p>
           )}
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             {selectedMetric !== "impressions" && selectedMetric !== "ctr" && (
               <div className="mb-2 flex justify-end">
-                <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-950/40 p-0.5" role="group" aria-label="Chart granularity">
+                <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-950/40 p-0.5" role="group" aria-label={t("overview.granularity.label")}>
                   {GRANULARITY_OPTIONS.map((option) => (
                     <button
                       key={option.key}
@@ -569,7 +552,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                         granularity === option.key ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"
                       }`}
                     >
-                      {option.label}
+                      {t(option.labelKey)}
                     </button>
                   ))}
                 </div>
@@ -578,7 +561,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
             <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} formatDate={formatChartDate} />
             {granularity !== "day" && selectedMetric !== "impressions" && selectedMetric !== "ctr" && (
               <p className="mt-1 text-xs text-zinc-500">
-                Each point is the total of a calendar {granularity}; the first and last point may cover only part of one.
+                {t(granularity === "week" ? "overview.granularityNote.week" : "overview.granularityNote.month")}
               </p>
             )}
           </div>

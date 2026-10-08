@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatPlayerTime } from "./media-review-player";
+import { createTranslator } from "@/lib/ui-text";
 import { findingMarkers, nextWaitingIndex, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
+
+// BL-152: the spectrogram marks' labels are translated; the requirement checked here is the English wording.
+const t = createTranslator("en");
 
 // BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A; FO-MSG-0008 §6; owner msgs 1933/1939): the review screen's keyboard map,
 // queue order, reasons, finding markers and time display.
@@ -83,7 +87,8 @@ test("AC-GP3-04: the validator's LUFS is the latest stage's metrics.lufs; withou
 });
 
 test("FO-MSG-0009 §4: ringing tones and a held note become spectrogram marks; A/B offers the attempt's nearest references first", async () => {
-  const { frequencyMarksOf, referencesFor, reviewKeyAction } = await import("./plan-review-screen");
+  const { frequencyMarksOf: marksOf, referencesFor, reviewKeyAction } = await import("./plan-review-screen");
+  const frequencyMarksOf = (entry: Parameters<typeof marksOf>[1]) => marksOf(t, entry);
   const row = (checks: unknown[], metrics: Record<string, unknown>, referenceIds: string[] = []) => ({ stageId: "validate", itemKey: "a", attemptRef: "job:1", result: "rejected" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: checks as never, metrics: metrics as never, referenceIds, at: "" });
   const check = (id: string, detail: string | null) => ({ id, label: null, value: null, unit: null, threshold: null, pass: false, severity: "fail", atSeconds: null, detail });
   assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tones 11000, 14098 Hz"), check("style", "0.92")], { held_hz: 440 })] }), [
@@ -97,7 +102,8 @@ test("FO-MSG-0009 §4: ringing tones and a held note become spectrogram marks; A
 });
 
 test("phase 3 review: only the Hz list of a FAILED ringing check is marked (not dB or seconds); kHz is understood", async () => {
-  const { frequencyMarksOf } = await import("./plan-review-screen");
+  const { frequencyMarksOf: marksOf } = await import("./plan-review-screen");
+  const frequencyMarksOf = (entry: Parameters<typeof marksOf>[1]) => marksOf(t, entry);
   const row = (checks: unknown[]) => ({ stageId: "validate", itemKey: "a", attemptRef: "job:1", result: "rejected" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: checks as never, metrics: {} as never, referenceIds: [], at: "" });
   const check = (id: string, detail: string, pass = false) => ({ id, label: null, value: null, unit: null, threshold: null, pass, severity: "fail", atSeconds: null, detail });
   assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tones 2751 Hz at -32 dB over 40 s")])] }).map((m) => m.hz), [2751]);

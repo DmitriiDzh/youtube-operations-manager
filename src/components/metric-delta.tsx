@@ -1,3 +1,5 @@
+import { useUiText } from "./ui-text-provider";
+
 // Shared "+N% more/less than previous period" indicator (docs/roadmap/plans/STUDIO_PARITY_PLAN.md
 // §4) -- one implementation, used by both the Analytics "Overview" cards and Home's "Channel
 // analytics" summary card, rather than each rolling its own copy (AGENTS.md §M: shared logic
@@ -19,11 +21,12 @@ export function MetricDelta({
   /** BL-120: whether the comparison period existed at all (`predates_channel` = nothing to compare with, `partial` = only part of it did). */
   previousStatus?: "full" | "partial" | "predates_channel";
 }) {
+  const { t } = useUiText();
   if (previousStatus === "predates_channel") {
-    return <span className="text-xs text-zinc-500">The channel did not exist in the previous period</span>;
+    return <span className="text-xs text-zinc-500">{t("analytics.delta.predatesChannel")}</span>;
   }
   if (percent === null) {
-    return <span className="text-xs text-zinc-500">No previous-period data to compare against</span>;
+    return <span className="text-xs text-zinc-500">{t("analytics.delta.noPrevious")}</span>;
   }
 
   const isFlat = percent === 0;
@@ -35,9 +38,11 @@ export function MetricDelta({
     <span className="flex flex-col">
       <span className={`inline-flex items-center gap-1 text-xs font-medium ${colorClass}`}>
         <span aria-hidden="true">{arrow}</span>
-        {Math.abs(percent)}% {isUp ? "more" : isFlat ? "than" : "less"} than {periodLabel}
+        {isFlat
+          ? t("analytics.delta.same", { period: periodLabel })
+          : t(isUp ? "analytics.delta.more" : "analytics.delta.less", { percent: Math.abs(percent), period: periodLabel })}
       </span>
-      {previousStatus === "partial" && <span className="text-[11px] text-zinc-500">the channel existed for only part of that period</span>}
+      {previousStatus === "partial" && <span className="text-[11px] text-zinc-500">{t("analytics.delta.partial")}</span>}
     </span>
   );
 }

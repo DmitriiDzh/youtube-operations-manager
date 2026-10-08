@@ -6,6 +6,8 @@ import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type MarketResearchRequestStatus = "pending" | "approved" | "rejected" | "executed" | "execution_failed";
 
@@ -25,12 +27,12 @@ type MarketResearchRequest = {
   executionError: string | null;
 };
 
-const STATUS_LABELS: Record<MarketResearchRequestStatus, string> = {
-  pending: "Pending review",
-  approved: "Approved",
-  rejected: "Rejected",
-  executed: "Executed",
-  execution_failed: "Execution failed",
+const STATUS_LABELS: Record<MarketResearchRequestStatus, UiTextKey> = {
+  pending: "requests.research.status.pending",
+  approved: "requests.research.status.approved",
+  rejected: "requests.research.status.rejected",
+  executed: "requests.research.status.executed",
+  execution_failed: "requests.research.status.execution_failed",
 };
 
 // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §9) -- the ONLY
@@ -40,6 +42,7 @@ const STATUS_LABELS: Record<MarketResearchRequestStatus, string> = {
 // commits.
 /** `onChanged` runs after an approve or reject, so the summary line and badges follow at once (BL-140 review). */
 export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => void } = {}) {
+  const t = useT();
   const [requests, setRequests] = useState<MarketResearchRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +79,7 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to approve request");
+        setError(data.message ?? t("requests.research.approveFailed"));
         return;
       }
       setApproveTarget(null);
@@ -99,7 +102,7 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to reject request");
+        setError(data.message ?? t("requests.rejectFailed"));
         return;
       }
       setRejectTarget(null);
@@ -118,23 +121,19 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          Research requests
-          <InfoTooltip>
-            Structured research drafts an agent (MCP/CLI) can create -- an agent can never approve
-            or reject its own request. Approving here uses one of YouTube&rsquo;s 100 daily searches
-            (one search.list call) and runs Discover with the request&rsquo;s own query.
-          </InfoTooltip>
+          {t("requests.research.title")}
+          <InfoTooltip>{t("requests.research.info")}</InfoTooltip>
         </h3>
       </div>
       {error && <p className="text-sm text-red-400">{error}</p>}
 
-      {!loading && pending.length === 0 && <p className="text-sm text-zinc-500">No pending requests.</p>}
+      {!loading && pending.length === 0 && <p className="text-sm text-zinc-500">{t("requests.research.empty")}</p>}
 
       <div className="space-y-2">
         {pending.map((request) => (
           <div key={request.requestId} className="rounded-lg border border-amber-800/50 bg-amber-950/10 p-3">
             <div className="mb-2">
-              <FeatureErrorBoundary label="Channel assignment">
+              <FeatureErrorBoundary label={t("requests.channelAssignment")}>
                 <MarketChannelAssignment recordKind="research_request" recordId={request.requestId} />
               </FeatureErrorBoundary>
             </div>
@@ -143,11 +142,13 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
                 <p className="text-sm font-medium text-zinc-100">{request.query}</p>
                 <p className="mt-1 text-xs text-zinc-400">{request.rationale}</p>
                 {request.monitorDurationDays !== null && (
-                  <p className="mt-1 text-xs text-zinc-500">Requested monitoring: {request.monitorDurationDays} days (metadata only)</p>
+                  <p className="mt-1 text-xs text-zinc-500">{t("requests.research.monitoring", { count: request.monitorDurationDays })}</p>
                 )}
                 <p className="mt-1 text-xs text-zinc-600">
-                  Created via {request.createdVia}
-                  {request.agentApiVersion ? ` (agent API v${request.agentApiVersion})` : ""} &middot;{" "}
+                  {request.agentApiVersion
+                    ? t("requests.createdViaVersion", { via: request.createdVia, version: request.agentApiVersion })
+                    : t("requests.createdVia", { via: request.createdVia })}{" "}
+                  &middot;{" "}
                   {formatDisplayDateTime(request.createdAt)}
                 </p>
               </div>
@@ -156,13 +157,13 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
                   onClick={() => setApproveTarget(request)}
                   className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
                 >
-                  Approve
+                  {t("requests.approve")}
                 </button>
                 <button
                   onClick={() => setRejectTarget(request)}
                   className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:border-red-700 hover:text-red-400"
                 >
-                  Reject
+                  {t("requests.reject")}
                 </button>
               </div>
             </div>
@@ -172,12 +173,12 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
 
       {resolved.length > 0 && (
         <div className="space-y-2 border-t border-zinc-800 pt-3">
-          <p className="text-xs font-medium text-zinc-500">History</p>
+          <p className="text-xs font-medium text-zinc-500">{t("requests.history")}</p>
           {resolved.map((request) => (
             <div key={request.requestId} className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400">
               <span>
-                {request.query} &middot; {STATUS_LABELS[request.status]}
-                {request.status === "executed" && ` (${request.candidatesFound ?? 0} found, ${request.candidatesNew ?? 0} new)`}
+                {request.query} &middot; {t(STATUS_LABELS[request.status])}
+                {request.status === "executed" && ` ${t("requests.research.executedCounts", { found: request.candidatesFound ?? 0, fresh: request.candidatesNew ?? 0 })}`}
                 {request.status === "execution_failed" && request.executionError ? `: ${request.executionError}` : ""}
                 {request.status === "rejected" && request.resolvedReason ? `: ${request.resolvedReason}` : ""}
               </span>
@@ -189,9 +190,9 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
 
       {approveTarget && (
         <ConfirmDialog
-          title="Approve this research request?"
-          description={`This uses one of YouTube's 100 daily searches (one search.list call) for "${approveTarget.query}". This cannot be undone.`}
-          confirmLabel={approving ? "Approving..." : "Approve"}
+          title={t("requests.research.approveTitle")}
+          description={t("requests.research.approveBody", { query: approveTarget.query })}
+          confirmLabel={approving ? t("requests.research.approving") : t("requests.approve")}
           confirmVariant="danger"
           onCancel={() => setApproveTarget(null)}
           onConfirm={handleConfirmApprove}
@@ -201,11 +202,11 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
       {rejectTarget && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl">
-            <h4 className="text-base font-semibold text-zinc-100">Reject this research request?</h4>
+            <h4 className="text-base font-semibold text-zinc-100">{t("requests.research.rejectTitle")}</h4>
             <input
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="Reason for rejecting"
+              placeholder={t("requests.rejectReasonPlaceholder")}
               className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
             />
             <div className="flex justify-end gap-2">
@@ -216,14 +217,14 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
                 }}
                 className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300"
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 onClick={handleConfirmReject}
                 disabled={rejecting || rejectReason.trim().length === 0}
                 className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {rejecting ? "Rejecting..." : "Reject"}
+                {rejecting ? t("requests.rejecting") : t("requests.reject")}
               </button>
             </div>
           </div>

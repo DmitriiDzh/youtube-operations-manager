@@ -1,5 +1,7 @@
 "use client";
 
+import { useUiText } from "./ui-text-provider";
+
 export type GatewayTrafficWindowView = {
   category: string;
   totalAttempts: number;
@@ -22,6 +24,7 @@ export function GatewayTrafficStats({
    * бар сделаем крупнее"). `"sm"` (default) is unchanged from before that instruction. */
   size?: "sm" | "lg";
 }) {
+  const { t, formatNumber } = useUiText();
   if (!window) return null;
 
   const textClass = size === "lg" ? "text-sm text-zinc-400" : "text-xs text-zinc-500";
@@ -29,9 +32,9 @@ export function GatewayTrafficStats({
 
   return (
     <p className={`mt-2 ${textClass}`}>
-      Attempts (24h): <span className={valueClass}>{window.totalAttempts.toLocaleString()}</span>
+      {t("settingsCards.traffic.attempts")} <span className={valueClass}>{formatNumber(window.totalAttempts)}</span>
       {" — "}
-      Succeeded: <span className={valueClass}>{window.succeeded.toLocaleString()}</span>
+      {t("settingsCards.traffic.succeeded")} <span className={valueClass}>{formatNumber(window.succeeded)}</span>
     </p>
   );
 }

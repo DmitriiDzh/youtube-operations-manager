@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { computeDefaultPeriodRange, formatWatchTimeHours } from "@/lib/analytics/period";
+import type { Translate } from "@/lib/ui-text";
 import { LoadingIndicator } from "./operation-progress";
+import { useUiText } from "./ui-text-provider";
 
 type SyncedChannel = {
   channelId: string;
@@ -41,18 +43,16 @@ type ChannelOverview = {
 const RECENT_VIDEO_COUNT = 10;
 const PUBLISHED_LIST_COUNT = 5;
 
-function formatCount(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString();
+function formatCount(value: number | null, formatNumber: (n: number) => string): string {
+  return value === null ? "—" : formatNumber(value);
 }
 
-function formatTimeSincePublish(publishedAt: string): string {
+function formatTimeSincePublish(t: Translate, publishedAt: string): string {
   const publishedMs = new Date(publishedAt).getTime();
   const days = Math.floor((Date.now() - publishedMs) / (1000 * 60 * 60 * 24));
-  if (days <= 0) return "Published today";
-  if (days === 1) return "1 day ago";
-  if (days < 30) return `${days} days ago`;
-  const months = Math.floor(days / 30);
-  return months === 1 ? "1 month ago" : `${months} months ago`;
+  if (days <= 0) return t("home.publishedToday");
+  if (days < 30) return t("home.daysAgo", { count: days });
+  return t("home.monthsAgo", { count: Math.floor(days / 30) });
 }
 
 function formatAverageDuration(seconds: number): string {
@@ -73,6 +73,8 @@ export function HomeDashboardPanel({
   subscriberCount?: string;
   onViewAllContent?: () => void;
 }) {
+  const { t, formatNumber } = useUiText();
+  const count = (value: number | null) => formatCount(value, formatNumber);
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loading, setLoading] = useState(true);
   const [videos, setVideos] = useState<SyncedVideo[]>([]);
@@ -174,7 +176,7 @@ export function HomeDashboardPanel({
   if (!channel) {
     return (
       <p className="text-sm text-zinc-400">
-        No channel synchronized yet — sign in and sync a channel in the Content tab first.
+        {t("home.noChannel")}
       </p>
     );
   }
@@ -183,9 +185,9 @@ export function HomeDashboardPanel({
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <div className="space-y-4">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-          <h3 className="mb-3 text-sm font-medium text-zinc-300">Latest video performance</h3>
+          <h3 className="mb-3 text-sm font-medium text-zinc-300">{t("home.latestVideo.title")}</h3>
           {!latestVideo ? (
-            <p className="text-sm text-zinc-500">No synced videos yet.</p>
+            <p className="text-sm text-zinc-500">{t("home.noVideos")}</p>
           ) : (
             <div className="space-y-3">
               <div className="flex gap-3">
@@ -201,26 +203,32 @@ export function HomeDashboardPanel({
                 )}
                 <div className="min-w-0 flex-1 space-y-1">
                   <p className="truncate text-sm font-medium text-zinc-100">{latestVideo.title}</p>
-                  <p className="text-xs text-zinc-500">{formatTimeSincePublish(latestVideo.publishedAt)}</p>
+                  <p className="text-xs text-zinc-500">{formatTimeSincePublish(t, latestVideo.publishedAt)}</p>
                   <div className="flex gap-3 text-xs text-zinc-400">
-                    <span>{formatCount(latestVideo.viewCount)} views</span>
-                    <span>{formatCount(latestVideo.commentCount)} comments</span>
-                    <span>{formatCount(latestVideo.likeCount)} likes</span>
+                    <span>
+                      {latestVideo.viewCount === null ? t("home.views.none") : t("home.views", { count: latestVideo.viewCount })}
+                    </span>
+                    <span>
+                      {latestVideo.commentCount === null
+                        ? t("home.comments.none")
+                        : t("home.comments", { count: latestVideo.commentCount })}
+                    </span>
+                    <span>
+                      {latestVideo.likeCount === null ? t("home.likes.none") : t("home.likes", { count: latestVideo.likeCount })}
+                    </span>
                   </div>
                 </div>
               </div>
               <dl className="grid grid-cols-2 gap-2 text-xs">
                 {ranking && (
                   <div className="rounded-lg bg-zinc-800/60 p-2">
-                    <dt className="text-zinc-500">Ranking by views</dt>
-                    <dd className="text-zinc-200">
-                      {ranking.rank} of {ranking.of}
-                    </dd>
+                    <dt className="text-zinc-500">{t("home.rankingByViews")}</dt>
+                    <dd className="text-zinc-200">{t("home.rankOf", { rank: ranking.rank, total: ranking.of })}</dd>
                   </div>
                 )}
                 {latestVideoAvgDuration !== null && (
                   <div className="rounded-lg bg-zinc-800/60 p-2">
-                    <dt className="text-zinc-500">Average view duration</dt>
+                    <dt className="text-zinc-500">{t("home.avgViewDuration")}</dt>
                     <dd className="text-zinc-200">{formatAverageDuration(latestVideoAvgDuration)}</dd>
                   </div>
                 )}
@@ -236,15 +244,15 @@ export function HomeDashboardPanel({
 
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-medium text-zinc-300">Published videos</h3>
+            <h3 className="text-sm font-medium text-zinc-300">{t("home.publishedVideos")}</h3>
             {onViewAllContent && (
               <button onClick={onViewAllContent} className="text-xs text-indigo-400 hover:text-indigo-300">
-                View all
+                {t("home.viewAll")}
               </button>
             )}
           </div>
           {recentVideos.length === 0 ? (
-            <p className="text-sm text-zinc-500">No synced videos yet.</p>
+            <p className="text-sm text-zinc-500">{t("home.noVideos")}</p>
           ) : (
             <ul className="space-y-2">
               {recentVideos.slice(0, PUBLISHED_LIST_COUNT).map((video) => (
@@ -261,7 +269,7 @@ export function HomeDashboardPanel({
                   )}
                   <span className="min-w-0 flex-1 truncate text-zinc-300">{video.title}</span>
                   <span className="shrink-0 text-xs text-zinc-500">
-                    {formatCount(video.viewCount)} · {formatCount(video.commentCount)} · {formatCount(video.likeCount)}
+                    {count(video.viewCount)} · {count(video.commentCount)} · {count(video.likeCount)}
                   </span>
                 </li>
               ))}
@@ -271,11 +279,11 @@ export function HomeDashboardPanel({
       </div>
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <h3 className="mb-3 text-sm font-medium text-zinc-300">Channel analytics</h3>
+        <h3 className="mb-3 text-sm font-medium text-zinc-300">{t("home.channelAnalytics")}</h3>
         <div className="space-y-1">
-          <div className="text-xs text-zinc-500">Current subscribers</div>
+          <div className="text-xs text-zinc-500">{t("home.currentSubscribers")}</div>
           <div className="text-2xl font-semibold text-zinc-100">
-            {subscriberCount ? Number(subscriberCount).toLocaleString() : "—"}
+            {subscriberCount ? formatNumber(Number(subscriberCount)) : "—"}
           </div>
           {overview &&
             (() => {
@@ -291,9 +299,9 @@ export function HomeDashboardPanel({
                 <p className="text-xs text-zinc-500">
                   <span className={netNew >= 0 ? "text-green-400" : "text-red-400"}>
                     {netNew >= 0 ? "+" : ""}
-                    {netNew.toLocaleString()}
+                    {formatNumber(netNew)}
                   </span>{" "}
-                  in last 28 days
+                  {t("home.inLast28Days")}
                 </p>
               );
             })()}
@@ -302,11 +310,11 @@ export function HomeDashboardPanel({
         {overview ? (
           <div className="mt-4 grid grid-cols-2 gap-3 border-t border-zinc-800 pt-4 text-sm">
             <div>
-              <div className="text-xs text-zinc-500">Views, last 28 days</div>
-              <div className="font-medium text-zinc-100">{overview.currentTotals.views.toLocaleString()}</div>
+              <div className="text-xs text-zinc-500">{t("home.viewsLast28Days")}</div>
+              <div className="font-medium text-zinc-100">{formatNumber(overview.currentTotals.views)}</div>
             </div>
             <div>
-              <div className="text-xs text-zinc-500">Watch time (hours), last 28 days</div>
+              <div className="text-xs text-zinc-500">{t("home.watchTimeLast28Days")}</div>
               <div className="font-medium text-zinc-100">{formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}</div>
             </div>
           </div>
@@ -314,8 +322,7 @@ export function HomeDashboardPanel({
           <LoadingIndicator className="mt-4 border-t border-zinc-800 pt-4 text-xs text-zinc-500" />
         ) : (
           <p className="mt-4 border-t border-zinc-800 pt-4 text-xs text-zinc-500">
-            Analytics summary unavailable -- Analytics reads may be disabled, or nothing has been
-            collected yet.
+            {t("home.analyticsUnavailable")}
           </p>
         )}
 

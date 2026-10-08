@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
+import { useT } from "./ui-text-provider";
 
 type WorkspaceListEntry = { channelId: string; path: string | null; updatedAt: string | null };
 
@@ -31,6 +32,7 @@ function fetchWorkspaceList(): Promise<WorkspaceListEntry[]> {
  * Channels card (listing, Activate, Disconnect). Plain controlled text input, no native dialogs.
  */
 export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
+  const t = useT();
   const [savedPath, setSavedPath] = useState<string | null | undefined>(undefined);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -49,9 +51,9 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
       setDraft(current ?? "");
     } catch {
       setLoadFailed(true);
-      setError("Could not load the workspace path.");
+      setError(t("settingsCards.workspace.loadFailed"));
     }
-  }, [channelId]);
+  }, [channelId, t]);
 
   useEffect(() => {
     load();
@@ -72,15 +74,15 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
         message?: string;
       };
       if (!res.ok || !data.workspace) {
-        setError(data.message ?? "Failed to save");
+        setError(data.message ?? t("settings.saveFailed"));
         return;
       }
       const stored = data.workspace.configured ? (data.workspace.path ?? null) : null;
       setSavedPath(stored);
       setDraft(stored ?? "");
-      setNotice(stored ? "Saved." : "Cleared.");
+      setNotice(stored ? t("common.saved") : t("settingsCards.workspace.cleared"));
     } catch {
-      setError("Failed to save");
+      setError(t("settings.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -94,14 +96,8 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs text-zinc-400">
           <span className="flex items-center gap-1.5">
-            Production workspace folder (this device)
-            <InfoTooltip>
-              An absolute path to this channel&apos;s production folder on this computer. It is stored
-              only on this device and never synced or handed off. A connected agent working on this
-              channel (while it is the active channel) can read this path back. This app never
-              opens, lists or changes anything inside the folder. The folder must exist and must not
-              be inside this app&apos;s own data directory. Leave empty and save to clear.
-            </InfoTooltip>
+            {t("settingsCards.workspace.label")}
+            <InfoTooltip>{t("settingsCards.workspace.info")}</InfoTooltip>
           </span>
           <input
             type="text"
@@ -117,7 +113,7 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
           disabled={saving || !dirty}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? t("common.saving") : t("common.save")}
         </button>
         {savedPath && (
           <button
@@ -125,7 +121,7 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
             disabled={saving}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-50"
           >
-            Clear
+            {t("settingsCards.workspace.clear")}
           </button>
         )}
       </div>
@@ -135,7 +131,7 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
           {error}
           {loadFailed && (
             <button onClick={() => load()} className="underline hover:text-red-300">
-              Retry
+              {t("common.retry")}
             </button>
           )}
         </p>

@@ -8,10 +8,11 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import {
   EXPERIMENT_STATUS_TRANSITIONS as NEXT_STATUSES,
   EXPERIMENT_OUTCOME_RECORDABLE_STATUSES as OUTCOME_RECORDABLE_STATUSES,
-  EXPERIMENT_STATUS_LABELS as STATUS_LABELS,
   type ExperimentStatus,
 } from "@/lib/decision-engine/status";
 import type { ChannelInfo } from "@/components/app-channel";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type Hypothesis = {
   hypothesisId: string;
@@ -63,11 +64,27 @@ type HypothesisEvidence = {
   createdAt: string;
 };
 
-const EVIDENCE_SOURCE_TYPE_LABELS: Record<EvidenceSourceType, string> = {
-  phase8_metric: "Phase 8 metric (our own channel)",
-  phase9_channel_snapshot: "Phase 9 channel snapshot",
-  phase9_video_snapshot: "Phase 9 video snapshot",
-  phase9_trend_candidate: "Phase 9 trend candidate",
+const EVIDENCE_SOURCE_TYPE_LABELS: Record<EvidenceSourceType, UiTextKey> = {
+  phase8_metric: "decisions.evidenceSource.phase8Metric",
+  phase9_channel_snapshot: "decisions.evidenceSource.phase9ChannelSnapshot",
+  phase9_video_snapshot: "decisions.evidenceSource.phase9VideoSnapshot",
+  phase9_trend_candidate: "decisions.evidenceSource.phase9TrendCandidate",
+};
+
+// BL-152: an experiment's state (badge) and the button that moves it there; Russian distinguishes «Одобрено» from «Одобрить».
+const STATUS_LABELS: Record<ExperimentStatus, UiTextKey> = {
+  proposed: "decisions.status.proposed",
+  approved: "decisions.status.approved",
+  running: "decisions.status.running",
+  concluded: "decisions.status.concluded",
+  abandoned: "decisions.status.abandoned",
+};
+const TRANSITION_LABELS: Record<ExperimentStatus, UiTextKey> = {
+  proposed: "decisions.transition.proposed",
+  approved: "decisions.transition.approved",
+  running: "decisions.transition.running",
+  concluded: "decisions.transition.concluded",
+  abandoned: "decisions.transition.abandoned",
 };
 
 // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- manual-entry record-keeping
@@ -79,6 +96,7 @@ const EVIDENCE_SOURCE_TYPE_LABELS: Record<EvidenceSourceType, string> = {
 // toggle below lets an operator pick per hypothesis, matching this app's standing rule that any
 // boolean ON/OFF control uses the shared ToggleSwitch, never a native checkbox.
 export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
+  const t = useT();
   const op = useOperation();
   const { runBlocking } = op;
   const [hypotheses, setHypotheses] = useState<Hypothesis[]>([]);
@@ -242,7 +260,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
   async function handleCreateHypothesis() {
     if (!newStatement || !newEvidenceNotes) {
-      setError("Statement and evidence notes are required");
+      setError(t("decisions.error.statementRequired"));
       return;
     }
     setCreatingHypothesis(true);
@@ -259,7 +277,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to create hypothesis");
+        setError(data.message ?? t("decisions.error.createHypothesis"));
         return;
       }
       setNewStatement("");
@@ -273,7 +291,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
   async function handleGenerateDraft() {
     if (!genNotes) {
-      setGenError("Notes are required");
+      setGenError(t("decisions.error.notesRequired"));
       return;
     }
     setGenerating(true);
@@ -281,8 +299,8 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
     setDraft(null);
     try {
       const { res, data } = await runBlocking({
-        title: "Generating a hypothesis draft",
-        stage: "Waiting for the AI provider",
+        title: t("decisions.generate.opTitle"),
+        stage: t("decisions.generate.opStage"),
         request: async () => {
           const res = await fetch("/api/decision-engine/hypotheses/generate", {
             method: "POST",
@@ -295,11 +313,11 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
           });
           return { res, data: await res.json() };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? "Failed to generate a draft")),
-        summarize: () => "Draft ready for review.",
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? t("decisions.error.generate"))),
+        summarize: () => t("decisions.generate.ready"),
       });
       if (!res.ok) {
-        setGenError(data.message ?? "Failed to generate a draft");
+        setGenError(data.message ?? t("decisions.error.generate"));
         return;
       }
       setDraft(data.draft);
@@ -330,7 +348,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setGenError(data.message ?? "Failed to save the generated hypothesis");
+        setGenError(data.message ?? t("decisions.error.saveGenerated"));
         return;
       }
       setDraft(null);
@@ -346,7 +364,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
   async function handleCreateExperiment() {
     if (!selectedHypothesisId) return;
     if (!newTreatment || !newControlBaseline || !newSuccessCriteria || !newStoppingCriteria || !newResponsible) {
-      setError("Treatment, control/baseline, success criteria, stopping criteria, and responsible are all required");
+      setError(t("decisions.error.experimentFieldsRequired"));
       return;
     }
     setCreatingExperiment(true);
@@ -365,7 +383,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to create experiment");
+        setError(data.message ?? t("decisions.error.createExperiment"));
         return;
       }
       setNewTreatment("");
@@ -404,7 +422,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
     if (!selectedHypothesisId) return;
     const reference = buildEvidenceReference();
     if (!reference) {
-      setEvidenceError("All identifying fields for the selected source type are required");
+      setEvidenceError(t("decisions.error.evidenceFieldsRequired"));
       return;
     }
     setAddingEvidence(true);
@@ -417,7 +435,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setEvidenceError(data.message ?? "Failed to add evidence");
+        setEvidenceError(data.message ?? t("decisions.error.addEvidence"));
         return;
       }
       setEvidenceChannelId("");
@@ -445,7 +463,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to transition experiment");
+        setError(data.message ?? t("decisions.error.transition"));
         return;
       }
       if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
@@ -471,7 +489,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to update the experiment's Change Set");
+        setError(data.message ?? t("decisions.error.changeSet"));
         return;
       }
       if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
@@ -492,7 +510,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to execute experiment");
+        setError(data.message ?? t("decisions.error.execute"));
         return;
       }
       setExecuteResult({ experimentId: executeTarget.experimentId, batchId: data.batchId, videoCount: data.videoCount, dryRun: data.dryRun });
@@ -506,7 +524,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
   async function handleRecordOutcome() {
     if (!selectedExperimentId || !outcomeData) {
-      setError("Outcome data is required");
+      setError(t("decisions.error.outcomeRequired"));
       return;
     }
     setRecordingOutcome(true);
@@ -519,7 +537,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to record outcome");
+        setError(data.message ?? t("decisions.error.recordOutcome"));
         return;
       }
       setOutcomeData("");
@@ -539,17 +557,17 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-        <h3 className="mb-3 font-medium">New hypothesis</h3>
+        <h3 className="mb-3 font-medium">{t("decisions.newHypothesis")}</h3>
         <div className="space-y-2">
           <textarea
             className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-            placeholder="Statement -- a falsifiable proposition (e.g. shorter titles improve CTR)"
+            placeholder={t("decisions.placeholder.statement")}
             value={newStatement}
             onChange={(e) => setNewStatement(e.target.value)}
           />
           <textarea
             className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-            placeholder="Evidence notes -- why do we think this?"
+            placeholder={t("decisions.placeholder.evidenceNotes")}
             value={newEvidenceNotes}
             onChange={(e) => setNewEvidenceNotes(e.target.value)}
           />
@@ -558,10 +576,10 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
               <ToggleSwitch
                 checked={scopeToChannel}
                 onChange={setScopeToChannel}
-                label={`Scope to ${channel.title}`}
+                label={t("decisions.scopeTo", { channel: channel.title })}
               />
               <span className="text-sm text-zinc-400">
-                {scopeToChannel ? `Scoped to ${channel.title}` : "New channel concept (not scoped to any owned channel)"}
+                {scopeToChannel ? t("decisions.scopedTo", { channel: channel.title }) : t("decisions.newChannelConceptLong")}
               </span>
             </div>
           )}
@@ -570,50 +588,47 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
             disabled={creatingHypothesis}
             onClick={() => void handleCreateHypothesis()}
           >
-            {creatingHypothesis ? "Creating..." : "Create hypothesis"}
+            {creatingHypothesis ? t("decisions.creating") : t("decisions.createHypothesis")}
           </button>
         </div>
       </div>
 
       <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-        <h3 className="mb-3 font-medium">Generate with AI</h3>
-        <p className="mb-3 text-sm text-zinc-400">
-          A draft is always generated by the mock provider unless a real AI Connection is configured in Settings -- it
-          is never saved automatically. Review and edit it below before saving.
-        </p>
+        <h3 className="mb-3 font-medium">{t("decisions.generate.title")}</h3>
+        <p className="mb-3 text-sm text-zinc-400">{t("decisions.generate.intro")}</p>
         {genError && <p className="mb-2 text-sm text-red-400">{genError}</p>}
         <div className="space-y-2">
           <textarea
             className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-            placeholder="Notes -- what should the AI draft a hypothesis about?"
+            placeholder={t("decisions.placeholder.genNotes")}
             value={genNotes}
             onChange={(e) => setGenNotes(e.target.value)}
           />
           {channel && (
-            <ToggleSwitch checked={genScopeToChannel} onChange={setGenScopeToChannel} label={`Scope to ${channel.title}`} />
+            <ToggleSwitch checked={genScopeToChannel} onChange={setGenScopeToChannel} label={t("decisions.scopeTo", { channel: channel.title })} />
           )}
           <button
             className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
             disabled={generating}
             onClick={() => void handleGenerateDraft()}
           >
-            {generating ? "Generating..." : "Generate draft"}
+            {generating ? t("decisions.generate.generating") : t("decisions.generate.button")}
           </button>
           {draft && (
             <div className="mt-3 space-y-2 rounded border border-zinc-700 bg-zinc-800 p-3">
-              <p className="text-xs text-zinc-500">Provider: {draft.providerName}</p>
+              <p className="text-xs text-zinc-500">{t("decisions.generate.provider", { provider: draft.providerName })}</p>
               <textarea
                 className="w-full rounded border border-zinc-700 bg-zinc-900 p-2 text-sm"
                 value={editedStatement}
                 onChange={(e) => setEditedStatement(e.target.value)}
               />
-              <p className="text-xs text-zinc-400">Rationale: {draft.rationale}</p>
+              <p className="text-xs text-zinc-400">{t("decisions.generate.rationale", { rationale: draft.rationale })}</p>
               <button
                 className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
                 disabled={savingDraft}
                 onClick={() => void handleSaveDraft()}
               >
-                {savingDraft ? "Saving..." : "Save as hypothesis"}
+                {savingDraft ? t("common.saving") : t("decisions.generate.save")}
               </button>
             </div>
           )}
@@ -621,11 +636,11 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       </div>
 
       <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-        <h3 className="mb-3 font-medium">Hypotheses</h3>
+        <h3 className="mb-3 font-medium">{t("decisions.hypotheses")}</h3>
         {loading ? (
           <LoadingIndicator className="text-sm text-zinc-400" />
         ) : hypotheses.length === 0 ? (
-          <p className="text-sm text-zinc-400">No hypotheses yet.</p>
+          <p className="text-sm text-zinc-400">{t("decisions.noHypotheses")}</p>
         ) : (
           <ul className="space-y-2">
             {hypotheses.map((h) => (
@@ -639,7 +654,10 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                   <div className="font-medium">{h.statement}</div>
                   <div className="text-xs text-zinc-400">
                     {formatDisplayDateTime(h.createdAt)}
-                    {h.channelId ? ` · scoped to ${h.channelId === channel?.id ? channel?.title : h.channelId}` : " · new channel concept"}
+                    {" · "}
+                    {h.channelId
+                      ? t("decisions.scopedToShort", { channel: (h.channelId === channel?.id ? channel?.title : h.channelId) ?? h.channelId })
+                      : t("decisions.newChannelConcept")}
                   </div>
                 </button>
               </li>
@@ -650,35 +668,35 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
       {selectedHypothesisId && (
         <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-          <h3 className="mb-3 font-medium">New experiment</h3>
+          <h3 className="mb-3 font-medium">{t("decisions.newExperiment")}</h3>
           <div className="space-y-2">
             <input
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-              placeholder="Treatment"
+              placeholder={t("decisions.placeholder.treatment")}
               value={newTreatment}
               onChange={(e) => setNewTreatment(e.target.value)}
             />
             <input
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-              placeholder="Control / baseline"
+              placeholder={t("decisions.placeholder.controlBaseline")}
               value={newControlBaseline}
               onChange={(e) => setNewControlBaseline(e.target.value)}
             />
             <input
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-              placeholder="Success criteria"
+              placeholder={t("decisions.placeholder.successCriteria")}
               value={newSuccessCriteria}
               onChange={(e) => setNewSuccessCriteria(e.target.value)}
             />
             <input
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-              placeholder="Stopping criteria"
+              placeholder={t("decisions.placeholder.stoppingCriteria")}
               value={newStoppingCriteria}
               onChange={(e) => setNewStoppingCriteria(e.target.value)}
             />
             <input
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-              placeholder="Responsible (who owns this experiment)"
+              placeholder={t("decisions.placeholder.responsible")}
               value={newResponsible}
               onChange={(e) => setNewResponsible(e.target.value)}
             />
@@ -687,15 +705,15 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
               disabled={creatingExperiment}
               onClick={() => void handleCreateExperiment()}
             >
-              {creatingExperiment ? "Creating..." : "Create experiment"}
+              {creatingExperiment ? t("decisions.creating") : t("decisions.createExperiment")}
             </button>
           </div>
 
-          <h4 className="mt-4 mb-2 font-medium">Experiments</h4>
+          <h4 className="mt-4 mb-2 font-medium">{t("decisions.experiments")}</h4>
           {experimentsLoading ? (
             <LoadingIndicator className="text-sm text-zinc-400" />
           ) : experiments.length === 0 ? (
-            <p className="text-sm text-zinc-400">No experiments yet.</p>
+            <p className="text-sm text-zinc-400">{t("decisions.noExperiments")}</p>
           ) : (
             <ul className="space-y-2">
               {experiments.map((exp) => {
@@ -711,9 +729,9 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                     <button className="w-full text-left text-sm" onClick={() => handleSelectExperiment(exp.experimentId)}>
                       <div className="font-medium">{exp.treatment}</div>
                       <div className="text-xs text-zinc-400">
-                        {STATUS_LABELS[exp.status]}
-                        {exp.approvedBy ? ` · approved by ${exp.approvedBy}` : ""}
-                        {exp.executionBatchId ? ` · Batch ${exp.executionBatchId}` : ""}
+                        {t(STATUS_LABELS[exp.status])}
+                        {exp.approvedBy ? ` · ${t("decisions.approvedBy", { name: exp.approvedBy })}` : ""}
+                        {exp.executionBatchId ? ` · ${t("decisions.batchRef", { batchId: exp.executionBatchId })}` : ""}
                       </div>
                     </button>
                     <div className="mt-2 flex gap-2">
@@ -725,7 +743,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                             disabled={transitioning}
                             onClick={() => setAbandonTarget(exp)}
                           >
-                            Abandon
+                            {t("decisions.abandon")}
                           </button>
                         ) : (
                           <button
@@ -734,7 +752,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                             disabled={transitioning}
                             onClick={() => void transition(exp, target)}
                           >
-                            {STATUS_LABELS[target]}
+                            {t(TRANSITION_LABELS[target])}
                           </button>
                         )
                       )}
@@ -744,7 +762,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                           disabled={executing}
                           onClick={() => setExecuteTarget(exp)}
                         >
-                          Execute
+                          {t("decisions.execute")}
                         </button>
                       )}
                     </div>
@@ -752,20 +770,20 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                       <div className="mt-2 flex items-center gap-2 text-xs">
                         {exp.changeSetId ? (
                           <>
-                            <span className="text-zinc-400">Change Set: {exp.changeSetId}</span>
+                            <span className="text-zinc-400">{t("decisions.changeSetRef", { changeSetId: exp.changeSetId })}</span>
                             <button
                               className="rounded border border-zinc-600 px-2 py-0.5 disabled:opacity-50"
                               disabled={settingChangeSet}
                               onClick={() => void handleSetChangeSet(exp, null)}
                             >
-                              Detach
+                              {t("decisions.detach")}
                             </button>
                           </>
                         ) : (
                           <>
                             <input
                               className="w-40 rounded border border-zinc-700 bg-zinc-800 p-1"
-                              placeholder="Change Set id"
+                              placeholder={t("decisions.placeholder.changeSetId")}
                               value={changeSetIdInput[exp.experimentId] ?? ""}
                               onChange={(e) => setChangeSetIdInput((prev) => ({ ...prev, [exp.experimentId]: e.target.value }))}
                             />
@@ -774,7 +792,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                               disabled={settingChangeSet || !(changeSetIdInput[exp.experimentId] ?? "").trim()}
                               onClick={() => void handleSetChangeSet(exp, (changeSetIdInput[exp.experimentId] ?? "").trim())}
                             >
-                              Attach
+                              {t("decisions.attach")}
                             </button>
                           </>
                         )}
@@ -782,8 +800,10 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                     )}
                     {executeResult && executeResult.experimentId === exp.experimentId && (
                       <p className={`mt-2 text-xs ${executeResult.dryRun ? "text-emerald-400" : "text-red-400"}`}>
-                        Created {executeResult.dryRun ? "dry-run" : "LIVE"} Batch {executeResult.batchId} ({executeResult.videoCount}{" "}
-                        video(s)) -- open the Batches tab to review/run it.
+                        {t(executeResult.dryRun ? "decisions.executeResultDryRun" : "decisions.executeResultLive", {
+                          batchId: executeResult.batchId,
+                          count: executeResult.videoCount,
+                        })}
                       </p>
                     )}
                   </li>
@@ -796,20 +816,17 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
       {selectedHypothesisId && (
         <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-          <h3 className="mb-1 font-medium">Structured evidence</h3>
-          <p className="mb-3 text-xs text-zinc-400">
-            A validated reference into real Phase 8/9 data, in addition to the free-text evidence above -- the server
-            confirms the referenced row actually exists before it is stored.
-          </p>
+          <h3 className="mb-1 font-medium">{t("decisions.evidence.title")}</h3>
+          <p className="mb-3 text-xs text-zinc-400">{t("decisions.evidence.intro")}</p>
           <div className="mb-4 space-y-2">
             <select
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
               value={evidenceSourceType}
               onChange={(e) => setEvidenceSourceType(e.target.value as EvidenceSourceType)}
             >
-              {Object.entries(EVIDENCE_SOURCE_TYPE_LABELS).map(([value, label]) => (
+              {Object.entries(EVIDENCE_SOURCE_TYPE_LABELS).map(([value, labelKey]) => (
                 <option key={value} value={value}>
-                  {label}
+                  {t(labelKey)}
                 </option>
               ))}
             </select>
@@ -817,25 +834,25 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
               <>
                 <input
                   className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                  placeholder="Channel id (our own owned channel)"
+                  placeholder={t("decisions.placeholder.channelId")}
                   value={evidenceChannelId}
                   onChange={(e) => setEvidenceChannelId(e.target.value)}
                 />
                 <input
                   className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                  placeholder="Video id"
+                  placeholder={t("decisions.placeholder.videoId")}
                   value={evidenceVideoId}
                   onChange={(e) => setEvidenceVideoId(e.target.value)}
                 />
                 <input
                   className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                  placeholder="Metric date (YYYY-MM-DD)"
+                  placeholder={t("decisions.placeholder.metricDate")}
                   value={evidenceMetricDate}
                   onChange={(e) => setEvidenceMetricDate(e.target.value)}
                 />
                 <input
                   className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                  placeholder="Metric name"
+                  placeholder={t("decisions.placeholder.metricName")}
                   value={evidenceMetricName}
                   onChange={(e) => setEvidenceMetricName(e.target.value)}
                 />
@@ -845,13 +862,13 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
               <>
                 <input
                   className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                  placeholder="Research channel id (UC...)"
+                  placeholder={t("decisions.placeholder.researchChannelId")}
                   value={evidenceResearchChannelId}
                   onChange={(e) => setEvidenceResearchChannelId(e.target.value)}
                 />
                 <input
                   className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                  placeholder="Snapshot id"
+                  placeholder={t("decisions.placeholder.snapshotId")}
                   value={evidenceSnapshotId}
                   onChange={(e) => setEvidenceSnapshotId(e.target.value)}
                 />
@@ -860,14 +877,14 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
             {evidenceSourceType === "phase9_trend_candidate" && (
               <input
                 className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                placeholder="Trend candidate id"
+                placeholder={t("decisions.placeholder.trendCandidateId")}
                 value={evidenceTrendCandidateId}
                 onChange={(e) => setEvidenceTrendCandidateId(e.target.value)}
               />
             )}
             <input
               className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-              placeholder="Note (optional)"
+              placeholder={t("decisions.placeholder.note")}
               value={evidenceNote}
               onChange={(e) => setEvidenceNote(e.target.value)}
             />
@@ -877,19 +894,19 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
               disabled={addingEvidence}
               onClick={() => void handleAddEvidence()}
             >
-              {addingEvidence ? "Adding..." : "Add evidence"}
+              {addingEvidence ? t("decisions.evidence.adding") : t("decisions.evidence.add")}
             </button>
           </div>
 
           {evidenceLoading ? (
             <LoadingIndicator className="text-sm text-zinc-400" />
           ) : evidence.length === 0 ? (
-            <p className="text-sm text-zinc-400">No structured evidence yet.</p>
+            <p className="text-sm text-zinc-400">{t("decisions.evidence.none")}</p>
           ) : (
             <ul className="space-y-2">
               {evidence.map((item) => (
                 <li key={item.evidenceId} className="rounded border border-zinc-700 p-2 text-sm">
-                  <div className="font-medium">{EVIDENCE_SOURCE_TYPE_LABELS[item.reference.sourceType]}</div>
+                  <div className="font-medium">{t(EVIDENCE_SOURCE_TYPE_LABELS[item.reference.sourceType])}</div>
                   <div className="text-xs text-zinc-400">
                     {Object.entries(item.reference)
                       .filter(([key]) => key !== "sourceType")
@@ -907,23 +924,23 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
       {selectedExperiment && (
         <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-          <h3 className="mb-1 font-medium">Outcomes -- {selectedExperiment.treatment}</h3>
+          <h3 className="mb-1 font-medium">{t("decisions.outcomes.title", { treatment: selectedExperiment.treatment })}</h3>
           <dl className="mb-3 space-y-1 text-xs text-zinc-400">
             <div>
-              <dt className="inline font-medium text-zinc-300">Control/baseline: </dt>
+              <dt className="inline font-medium text-zinc-300">{t("decisions.outcomes.controlBaseline")} </dt>
               <dd className="inline">{selectedExperiment.controlBaseline}</dd>
             </div>
             <div>
-              <dt className="inline font-medium text-zinc-300">Success criteria: </dt>
+              <dt className="inline font-medium text-zinc-300">{t("decisions.outcomes.successCriteria")} </dt>
               <dd className="inline">{selectedExperiment.successCriteria}</dd>
             </div>
             <div>
-              <dt className="inline font-medium text-zinc-300">Stopping criteria: </dt>
+              <dt className="inline font-medium text-zinc-300">{t("decisions.outcomes.stoppingCriteria")} </dt>
               <dd className="inline">{selectedExperiment.stoppingCriteria}</dd>
             </div>
             {selectedHypothesisId && (
               <div>
-                <dt className="inline font-medium text-zinc-300">Hypothesis evidence: </dt>
+                <dt className="inline font-medium text-zinc-300">{t("decisions.outcomes.hypothesisEvidence")} </dt>
                 <dd className="inline">{hypotheses.find((h) => h.hypothesisId === selectedHypothesisId)?.evidenceNotes}</dd>
               </div>
             )}
@@ -933,7 +950,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
             <div className="mb-4 space-y-2">
               <textarea
                 className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                placeholder="Outcome data -- actual data / comparison against baseline"
+                placeholder={t("decisions.placeholder.outcomeData")}
                 value={outcomeData}
                 onChange={(e) => setOutcomeData(e.target.value)}
               />
@@ -942,13 +959,13 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                 value={criteriaMet}
                 onChange={(e) => setCriteriaMet(e.target.value as "met" | "not_met" | "inconclusive")}
               >
-                <option value="met">Success criteria met</option>
-                <option value="not_met">Success criteria not met</option>
-                <option value="inconclusive">Inconclusive</option>
+                <option value="met">{t("decisions.criteria.met")}</option>
+                <option value="not_met">{t("decisions.criteria.notMet")}</option>
+                <option value="inconclusive">{t("decisions.criteria.inconclusive")}</option>
               </select>
               <textarea
                 className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
-                placeholder="Lessons learned (optional)"
+                placeholder={t("decisions.placeholder.lessons")}
                 value={lessonsLearned}
                 onChange={(e) => setLessonsLearned(e.target.value)}
               />
@@ -957,25 +974,24 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                 disabled={recordingOutcome}
                 onClick={() => void handleRecordOutcome()}
               >
-                {recordingOutcome ? "Recording..." : "Record outcome"}
+                {recordingOutcome ? t("decisions.outcomes.recording") : t("decisions.outcomes.record")}
               </button>
             </div>
           ) : (
-            <p className="mb-4 text-sm text-zinc-400">
-              An outcome can only be recorded once this experiment is running, concluded, or abandoned.
-            </p>
+            <p className="mb-4 text-sm text-zinc-400">{t("decisions.outcomes.notYet")}</p>
           )}
 
           {outcomesLoading ? (
             <LoadingIndicator className="text-sm text-zinc-400" />
           ) : outcomes.length === 0 ? (
-            <p className="text-sm text-zinc-400">No outcomes recorded yet.</p>
+            <p className="text-sm text-zinc-400">{t("decisions.outcomes.none")}</p>
           ) : (
             <ul className="space-y-2">
               {outcomes.map((o) => (
                 <li key={o.outcomeId} className="rounded border border-zinc-700 p-2 text-sm">
                   <div>{o.outcomeData}</div>
                   <div className="text-xs text-zinc-400">
+                    {/* ui-text-ignore: criteriaMet is the stored enum value (met/not_met/inconclusive), shown as recorded */}
                     {o.criteriaMet} · {formatDisplayDateTime(o.recordedAt)} · {o.recordedBy}
                   </div>
                   {o.lessonsLearned && <div className="mt-1 text-xs italic text-zinc-400">{o.lessonsLearned}</div>}
@@ -988,9 +1004,9 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
       {abandonTarget && (
         <ConfirmDialog
-          title="Abandon experiment"
-          description={`Abandon "${abandonTarget.treatment}"? This is a terminal state -- it cannot be reopened.`}
-          confirmLabel="Abandon"
+          title={t("decisions.abandonConfirm.title")}
+          description={t("decisions.abandonConfirm.body", { treatment: abandonTarget.treatment })}
+          confirmLabel={t("decisions.abandon")}
           confirmVariant="danger"
           onCancel={() => setAbandonTarget(null)}
           onConfirm={() => void handleConfirmAbandon()}
@@ -1000,26 +1016,22 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       {executeTarget && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={() => setExecuteTarget(null)}>
           <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="mb-2 font-medium">Execute experiment</h3>
-            <p className="mb-3 text-sm text-zinc-400">
-              Creates a real Batch from Change Set {executeTarget.changeSetId}&apos;s own approved changes. Dry-run by default;
-              a live write additionally requires the Live Writes toggle to already be on in Settings -- otherwise this stays
-              dry-run regardless of the choice below.
-            </p>
+            <h3 className="mb-2 font-medium">{t("decisions.executeDialog.title")}</h3>
+            <p className="mb-3 text-sm text-zinc-400">{t("decisions.executeDialog.body", { changeSetId: executeTarget.changeSetId ?? "" })}</p>
             <div className="mb-4 flex items-center gap-2">
-              <ToggleSwitch checked={executeAsLive} onChange={setExecuteAsLive} label="Execute as a live write" />
-              <span className="text-sm">Execute as a live write (requires Live Writes already on)</span>
+              <ToggleSwitch checked={executeAsLive} onChange={setExecuteAsLive} label={t("decisions.executeDialog.liveToggle")} />
+              <span className="text-sm">{t("decisions.executeDialog.liveToggleHint")}</span>
             </div>
             <div className="flex justify-end gap-2">
               <button className="rounded border border-zinc-600 px-3 py-1.5 text-sm" onClick={() => setExecuteTarget(null)}>
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
                 disabled={executing}
                 onClick={() => void handleConfirmExecute()}
               >
-                {executing ? "Executing..." : "Execute"}
+                {executing ? t("decisions.executing") : t("decisions.execute")}
               </button>
             </div>
           </div>

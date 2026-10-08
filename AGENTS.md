@@ -121,6 +121,8 @@ Keep project documentation current when architecture, features, schema, or contr
 
 **Keep new `docs/ROADMAP_STATUS.md` and `docs/roadmap/BACKLOG.md` entries short (added 2026-09-21, at the project owner's request — both files are read in full at the start of most future sessions, so their per-entry length is a recurring, compounding token cost, not a one-time one).** A new row's summary should be a few sentences: what shipped, which requirement or instruction it satisfies, and any explicit scope boundary (what was deliberately not done and why) — not a full paragraph re-narrating implementation detail, a file-by-file change list, or verification steps that the commit message (referenced by the row's own commit-hash column) already records. Point to the commit for that detail instead of duplicating it in prose. This applies to entries written from this point on; an existing long entry is not retroactively rewritten purely to shorten it — that would spend tokens for a stylistic change with no informational gain, the opposite of this rule's own purpose.
 
+**Interface text in every language (added 2026-10-08, BL-152, owner instruction, Telegram msg 2027 — "при добавлении чего-либо в инструмент — заводить ключи и переводы на все языки").** The Web UI has no text of its own in components: every text is a key in `src/lib/ui-text/locales/<language>/<area>.ts`, added in English **and** every other supported language in the same change (`docs/DEVELOPMENT_PLAYBOOK.md` §6.9 item 11). The build and `src/lib/ui-text/*.test.ts` enforce it. MCP, API and CLI texts stay English.
+
 ## I. Communication preferences
 
 - Communicate with the user in Russian by default.

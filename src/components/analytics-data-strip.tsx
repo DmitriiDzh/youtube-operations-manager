@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { formatDisplayDateTime, formatDisplayDateUtc } from "@/lib/shared-formatting";
+import { useT } from "./ui-text-provider";
 
 export type StripOverviewInfo = {
   source?: "live" | "local";
@@ -44,6 +45,7 @@ export function AnalyticsDataStrip({
   /** Changes whenever new data was collected, so the catch-up status is read again. */
   reloadKey: number;
 }) {
+  const t = useT();
   const [history, setHistory] = useState<HistoryStatus | null>(null);
   const [backfillRunning, setBackfillRunning] = useState(false);
 
@@ -79,12 +81,12 @@ export function AnalyticsDataStrip({
         <p>
           {overview.source === "local" ? (
             <>
-              <span className="font-medium text-zinc-200">Stored data</span>
-              {overview.collectedAt ? <> · collected {formatDisplayDateTime(overview.collectedAt)}</> : null}
+              <span className="font-medium text-zinc-200">{t("analytics.strip.stored")}</span>
+              {overview.collectedAt ? <> · {t("analytics.strip.collectedAt", { date: formatDisplayDateTime(overview.collectedAt) })}</> : null}
             </>
           ) : (
             <>
-              <span className="font-medium text-zinc-200">Live from YouTube</span> · read just now
+              <span className="font-medium text-zinc-200">{t("analytics.strip.live")}</span> · {t("analytics.strip.readJustNow")}
             </>
           )}
         </p>
@@ -94,42 +96,41 @@ export function AnalyticsDataStrip({
             disabled={refreshing}
             className="rounded-md border border-zinc-700 px-3 py-1 font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
           >
-            {refreshing ? "Refreshing..." : "Refresh live"}
+            {refreshing ? t("analytics.strip.refreshing") : t("analytics.strip.refreshLive")}
           </button>
         )}
       </div>
 
       {overview.channelStartDate && (
         <p>
-          Channel created {formatDisplayDateUtc(overview.channelStartDate)}
-          {dataQuality?.notApplicableRange ? <> · {range(dataQuality.notApplicableRange)} is before the channel existed (not applicable)</> : null}
+          {t("analytics.strip.channelCreated", { date: formatDisplayDateUtc(overview.channelStartDate) })}
+          {dataQuality?.notApplicableRange ? <> · {t("analytics.strip.notApplicable", { range: range(dataQuality.notApplicableRange) })}</> : null}
         </p>
       )}
 
       <p>
         {uncovered.length === 0 && (dataQuality?.uncoveredDates.length ?? 0) === 0
-          ? "Every day of this period is collected."
+          ? t("analytics.strip.allCollected")
           : uncovered.length > 0
-            ? `Not collected yet: ${uncovered.map(range).join(", ")}.`
-            : `${dataQuality?.uncoveredDates.length} day(s) of this period are not collected yet.`}{" "}
-        The latest days (from {formatDisplayDateUtc(overview.provisionalFromDate)}) are preliminary: YouTube keeps adjusting them and they are
-        refreshed automatically.
+            ? t("analytics.strip.notCollectedRanges", { ranges: uncovered.map(range).join(", ") })
+            : t("analytics.strip.notCollectedDays", { count: dataQuality?.uncoveredDates.length ?? 0 })}{" "}
+        {t("analytics.strip.provisional", { date: formatDisplayDateUtc(overview.provisionalFromDate) })}
       </p>
 
       {history && (
         <p>
           {filling
-            ? `Filling earlier history: ${history.remainingVideos} video${history.remainingVideos === 1 ? "" : "s"} left${
-                history.hasChannelGap ? " and the channel totals" : ""
-              } — ${backfillRunning ? "running now" : "continues automatically"}.`
-            : "Earlier history is complete."}
+            ? t(history.hasChannelGap ? "analytics.strip.historyFillingWithChannel" : "analytics.strip.historyFilling", {
+                count: history.remainingVideos,
+                state: t(backfillRunning ? "analytics.strip.historyRunning" : "analytics.strip.historyContinues"),
+              })
+            : t("analytics.strip.historyComplete")}
         </p>
       )}
 
       {(dataQuality?.videosWithSkips.length ?? 0) > 0 && (
         <p className="text-amber-300">
-          {dataQuality?.videosWithSkips.length} video{dataQuality?.videosWithSkips.length === 1 ? "" : "s"} had a collection failure in the most
-          recent collection run covering this period.
+          {t("analytics.strip.skips", { count: dataQuality?.videosWithSkips.length ?? 0 })}
         </p>
       )}
     </div>

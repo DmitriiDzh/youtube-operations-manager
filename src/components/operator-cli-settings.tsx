@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { ToggleSwitch } from "./toggle-switch";
+import { useT } from "./ui-text-provider";
 
 /**
  * Phase 12 (`docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.5, AC-P12-10) -- "Operator CLI access":
@@ -14,6 +15,7 @@ import { ToggleSwitch } from "./toggle-switch";
  * fields present in a POST body).
  */
 export function OperatorCliSettings() {
+  const t = useT();
   const [saved, setSaved] = useState<boolean | null>(null);
   const [draft, setDraft] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
@@ -45,7 +47,7 @@ export function OperatorCliSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
         return;
       }
       setSaved(data.operatorCliEnabled);
@@ -64,21 +66,16 @@ export function OperatorCliSettings() {
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          Operator CLI access
-          <InfoTooltip>
-            Off by default. While it is off, the command-line tool refuses every command. AI agents do not use it:
-            they connect through the app&apos;s MCP endpoint with a channel token. Turn it on only while you use the CLI
-            yourself, for example `auth login` or `asset register`. While it is on, anything on this computer that
-            can run the CLI has full operator access to every channel.
-          </InfoTooltip>
+          {t("settingsCards.operatorCli.title")}
+          <InfoTooltip>{t("settingsCards.operatorCli.info")}</InfoTooltip>
         </h3>
         <div className="mt-2 flex items-center gap-2">
           <ToggleSwitch
-            label="Allow the operator CLI"
+            label={t("settingsCards.operatorCli.toggle")}
             checked={draft}
             onChange={(checked) => (checked ? setConfirming(true) : setDraft(false))}
           />
-          <span className="text-sm text-zinc-300">Allow the operator CLI</span>
+          <span className="text-sm text-zinc-300">{t("settingsCards.operatorCli.toggle")}</span>
         </div>
       </div>
 
@@ -90,20 +87,20 @@ export function OperatorCliSettings() {
           disabled={saving || !dirty}
           className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save / Apply"}
+          {saving ? t("common.saving") : t("settingsCards.saveApply")}
         </button>
         {dirty && (
           <button onClick={() => setDraft(saved)} className="text-xs text-zinc-500 hover:text-zinc-300">
-            Discard changes
+            {t("settingsCards.discardChanges")}
           </button>
         )}
       </div>
 
       {confirming && (
         <ConfirmDialog
-          title="Allow the operator CLI?"
-          description="Any process on this computer that runs the CLI will act as the operator, across every channel. The channel wall between agents does not apply to it. Turn this back off when you are done."
-          confirmLabel="Allow"
+          title={t("settingsCards.operatorCli.confirmTitle")}
+          description={t("settingsCards.operatorCli.confirmBody")}
+          confirmLabel={t("settingsCards.operatorCli.confirmAllow")}
           confirmVariant="danger"
           onCancel={() => setConfirming(false)}
           onConfirm={() => {

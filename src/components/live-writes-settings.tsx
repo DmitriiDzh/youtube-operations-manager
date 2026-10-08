@@ -8,6 +8,7 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
+import { useT } from "./ui-text-provider";
 
 type Settings = {
   liveWritesEnabled: boolean;
@@ -26,6 +27,7 @@ type Settings = {
  * stepping on each other.
  */
 export function LiveWritesSettings() {
+  const t = useT();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -58,12 +60,12 @@ export function LiveWritesSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
         return;
       }
       setSettings(data);
       setDraft(data);
-      setSavedNotice("Saved.");
+      setSavedNotice(t("common.saved"));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -81,17 +83,12 @@ export function LiveWritesSettings() {
         left={
           <div>
             <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-              Live writes
-              <InfoTooltip>
-                Off by default every session. When on, a Batch you create can be a real
-                (non-dry-run) one, and the Batches tab gets an actual &ldquo;Execute&rdquo; action
-                that writes to YouTube. This is layer 1 of a two-layer barrier -- turning it on
-                does not by itself send anything.
-              </InfoTooltip>
+              {t("settingsCard.liveWrites")}
+              <InfoTooltip>{t("settingsCards.liveWrites.info")}</InfoTooltip>
             </h3>
             <div className="mt-2 flex items-center gap-2">
               <ToggleSwitch
-                label="Enable live writes for this session"
+                label={t("settingsCards.liveWrites.toggle")}
                 checked={draft.liveWritesEnabled}
                 onChange={(checked) => {
                   if (checked) {
@@ -101,7 +98,7 @@ export function LiveWritesSettings() {
                   }
                 }}
               />
-              <span className="text-sm text-zinc-300">Enable live writes for this session</span>
+              <span className="text-sm text-zinc-300">{t("settingsCards.liveWrites.toggle")}</span>
             </div>
           </div>
         }
@@ -128,20 +125,20 @@ export function LiveWritesSettings() {
           disabled={saving || !dirty}
           className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save / Apply"}
+          {saving ? t("common.saving") : t("settingsCards.saveApply")}
         </button>
         {dirty && (
           <button onClick={() => setDraft(settings)} className="text-xs text-zinc-500 hover:text-zinc-300">
-            Discard changes
+            {t("settingsCards.discardChanges")}
           </button>
         )}
       </div>
 
       {confirmingLiveWrites && (
         <ConfirmDialog
-          title="Enable real YouTube writes?"
-          description="A Batch you create while this is on can be a real, non-dry-run one, and the Batches tab will offer an actual Execute action. This does not send anything by itself -- but it removes the safety barrier that currently makes that impossible. Turn it back off any time; it also resets to off automatically the next time the app restarts."
-          confirmLabel="Enable"
+          title={t("settingsCards.liveWrites.confirmTitle")}
+          description={t("settingsCards.liveWrites.confirmBody")}
+          confirmLabel={t("settingsCards.enable")}
           confirmVariant="danger"
           onCancel={() => setConfirmingLiveWrites(false)}
           onConfirm={() => {

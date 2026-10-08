@@ -179,3 +179,22 @@ export type UiMessage = { key: UiTextKey; params?: UiTextParams } | { text: stri
 export function uiMessageText(t: Translate, message: UiMessage): string {
   return "key" in message ? t(message.key, message.params) : message.text;
 }
+
+/**
+ * BL-152 slice 4: a failed API answer in the interface language. Routes answer `{ error: <code>, message: <English text> }`
+ * (`DomainError`), or `{ error: <text> }`. In English the server's own message is shown exactly as before
+ * (`message ?? error ?? fallback`). In another language a known code is shown in words (`errors.<code>`), with the
+ * server's message kept as the detail; an unknown code falls back to the server's text. MCP and API bodies stay English
+ * for agents and scripts (AGENTS.md §B) -- only the UI translates.
+ */
+export function apiErrorText(language: UiLanguage, body: unknown, fallback: string): string {
+  const b = typeof body === "object" && body !== null ? (body as { error?: unknown; message?: unknown }) : {};
+  const code = typeof b.error === "string" ? b.error : undefined;
+  const message = typeof b.message === "string" && b.message.trim() ? b.message : undefined;
+  const serverText = message ?? code ?? fallback;
+  if (language === "en" || code === undefined) return serverText;
+  const key = `errors.${code}`;
+  if (!isUiTextKey(key)) return serverText;
+  const text = translate(language, key);
+  return message ? translate(language, "common.errorDetail", { text, detail: message }) : text;
+}

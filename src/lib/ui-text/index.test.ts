@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatMessage, formatNumber, languageFromAcceptLanguage, resolveUiLanguage, translate, uiMessageText, createTranslator } from "./index";
+import { apiErrorText, formatMessage, formatNumber, languageFromAcceptLanguage, resolveUiLanguage, translate, uiMessageText, createTranslator } from "./index";
 
 // BL-152 (docs/roadmap/plans/UI_LANGUAGE_PLAN.md; owner, Telegram 2026-10-08, msg 2032). Expected values come from the
 // owner's decisions, RFC 9110 §12.5.4 (Accept-Language) and the CLDR plural rules, not from running the code.
@@ -64,4 +64,21 @@ test("translate falls back to English for a key a locale lacks at runtime, and m
   const t = createTranslator("ru");
   assert.equal(uiMessageText(t, { key: "common.save" }), "Сохранить");
   assert.equal(uiMessageText(t, { text: "token revoked" }), "token revoked");
+});
+
+test("slice 4: a failed API answer -- English unchanged; another language names a known code in words, keeping the detail", () => {
+  const body = { error: "live_writes_disabled", message: "Real YouTube write execution is disabled" };
+  // English: exactly what the UI showed before (message, else error, else the fallback).
+  assert.equal(apiErrorText("en", body, "Failed"), "Real YouTube write execution is disabled");
+  assert.equal(apiErrorText("en", { error: "Unauthorized" }, "Failed"), "Unauthorized");
+  assert.equal(apiErrorText("en", null, "Failed"), "Failed");
+  // Russian: the code in words, the server's text as the detail.
+  assert.equal(
+    apiErrorText("ru", body, "x"),
+    "Запись в YouTube выключена (Настройки → API → Запись в YouTube). Подробности: Real YouTube write execution is disabled"
+  );
+  assert.equal(apiErrorText("ru", { error: "live_writes_disabled" }, "x"), "Запись в YouTube выключена (Настройки → API → Запись в YouTube).");
+  // Unknown code or plain text: the server's text as it is; nothing at all: the (translated) fallback.
+  assert.equal(apiErrorText("ru", { error: "SOMETHING_NEW", message: "m" }, "x"), "m");
+  assert.equal(apiErrorText("ru", "garbage", "Не удалось"), "Не удалось");
 });

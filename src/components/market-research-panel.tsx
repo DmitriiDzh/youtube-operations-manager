@@ -10,6 +10,8 @@ import { BlockingDialog } from "./blocking-dialog";
 import { DrawerSection, SideDrawer } from "./side-drawer";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { LoadingIndicator } from "./operation-progress";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useUiText } from "./ui-text-provider";
 
 type ResearchEvidence = {
   evidenceId: string;
@@ -45,11 +47,11 @@ type RecentVideo = { videoId: string; title: string | null; publishedAt: string 
 /** "needs_attention" is every status but "current" -- the same set the summary line's warning count covers. */
 export type WatchlistStatusFilter = "" | "needs_attention" | ChannelStatus;
 
-export const CHANNEL_STATUS_LABELS: Record<ChannelStatus, string> = {
-  current: "Up to date",
-  attention: "Stale or partial",
-  failed: "Collection failed",
-  never_collected: "Never collected",
+export const CHANNEL_STATUS_LABELS: Record<ChannelStatus, UiTextKey> = {
+  current: "watchlist.status.current",
+  attention: "watchlist.status.attention",
+  failed: "watchlist.status.failed",
+  never_collected: "watchlist.status.neverCollected",
 };
 
 const STATUS_PILL: Record<ChannelStatus, string> = {
@@ -76,16 +78,6 @@ export function filterWatchlistRows(
   });
 }
 
-// hiddenSubscriberCount is an explicit boolean (9A), never inferred from subscriberCount === null -- a null for some
-// other reason (e.g. no data yet) must not be mislabeled "hidden" (AC-9A-09b's own distinction).
-function formatSubscribers(observation: NonNullable<WatchlistRow["latestObservation"]>): string {
-  if (observation.subscriberCount !== null) return observation.subscriberCount.toLocaleString("en-US");
-  return observation.hiddenSubscriberCount ? "hidden by channel" : "—";
-}
-
-function formatCount(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString("en-US");
-}
 
 // Phase 9 slices 2-3 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global (not channel-scoped) market research watchlist,
 // shown since BL-140 R3 as a table with a side panel per channel. Adding a channel and recording evidence are both
@@ -106,6 +98,14 @@ export function MarketResearchPanel({
   /** A status filter set from outside (the summary line's warning link); a new nonce re-applies the same status. */
   statusFilterRequest?: { status: WatchlistStatusFilter; nonce: number } | null;
 } = {}) {
+  const { t, formatNumber } = useUiText();
+  // hiddenSubscriberCount is an explicit boolean (9A), never inferred from subscriberCount === null -- a null for some
+  // other reason (e.g. no data yet) must not be mislabeled "hidden" (AC-9A-09b's own distinction).
+  const formatSubscribers = (observation: NonNullable<WatchlistRow["latestObservation"]>): string => {
+    if (observation.subscriberCount !== null) return formatNumber(observation.subscriberCount);
+    return observation.hiddenSubscriberCount ? t("watchlist.subscribersHidden") : "—";
+  };
+  const formatCount = (value: number | null): string => (value === null ? "—" : formatNumber(value));
   const [rows, setRows] = useState<WatchlistRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -165,17 +165,17 @@ export function MarketResearchPanel({
       const res = await fetch("/api/market-intelligence/watchlist-table");
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLoadError(data.message ?? "Failed to load the watchlist");
+        setLoadError(data.message ?? t("watchlist.loadFailed"));
         return;
       }
       setLoadError(null);
       setRows(data.channels ?? []);
     } catch {
-      setLoadError("Failed to load the watchlist");
+      setLoadError(t("watchlist.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void fetchRows();
@@ -203,14 +203,14 @@ export function MarketResearchPanel({
       const data = await res.json();
       if (drawerRequestChannelIdRef.current !== channelId) return;
       if (!res.ok) {
-        setEvidenceError(data.message ?? "Failed to load evidence");
+        setEvidenceError(data.message ?? t("watchlist.evidenceLoadFailed"));
         return;
       }
       setEvidence(data.evidence ?? []);
     } finally {
       if (drawerRequestChannelIdRef.current === channelId) setEvidenceLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const fetchRecentVideos = useCallback(async (channelId: string) => {
     setRecentVideos(null);
@@ -221,15 +221,15 @@ export function MarketResearchPanel({
       const data = await res.json().catch(() => ({}));
       if (drawerRequestChannelIdRef.current !== channelId) return;
       if (!res.ok) {
-        setRecentVideosError(data.message ?? "Failed to load videos");
+        setRecentVideosError(data.message ?? t("watchlist.videosLoadFailed"));
         return;
       }
       setRecentVideos(data.rows ?? []);
       setRecentVideosTotal(data.total ?? 0);
     } catch {
-      if (drawerRequestChannelIdRef.current === channelId) setRecentVideosError("Failed to load videos");
+      if (drawerRequestChannelIdRef.current === channelId) setRecentVideosError(t("watchlist.videosLoadFailed"));
     }
-  }, []);
+  }, [t]);
 
   function resetDrawerState() {
     setEvidence([]);
@@ -283,7 +283,7 @@ export function MarketResearchPanel({
         setVideoHistory(data.snapshots ?? []);
       } else {
         const data = await res.json().catch(() => ({}));
-        setVideoHistoryError(data.message ?? "Failed to load video history");
+        setVideoHistoryError(data.message ?? t("watchlist.historyLoadFailed"));
       }
     } finally {
       if (videoHistoryRequestIdRef.current === videoId) setVideoHistoryLoading(false);
@@ -298,7 +298,7 @@ export function MarketResearchPanel({
   async function handleAddToWatchlist() {
     setAddError(null);
     if (!newChannelId || !newReason) {
-      setAddError("Channel id and reason are required");
+      setAddError(t("watchlist.addRequired"));
       return;
     }
     setAdding(true);
@@ -329,7 +329,7 @@ export function MarketResearchPanel({
         setAddError(
           fieldMessages.length > 0
             ? fieldMessages.join("; ")
-            : (data.message ?? "Failed to add channel to the watchlist")
+            : (data.message ?? t("watchlist.addFailed"))
         );
         return;
       }
@@ -354,7 +354,7 @@ export function MarketResearchPanel({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setRemoveError(data.message ?? "Failed to remove channel from the watchlist");
+        setRemoveError(data.message ?? t("watchlist.removeFailed"));
         return;
       }
       if (selectedChannelId === removeTarget.channelId) {
@@ -381,7 +381,7 @@ export function MarketResearchPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setSnapshotError(data.message ?? "Failed to fetch a public snapshot");
+        setSnapshotError(data.message ?? t("watchlist.snapshotFailed"));
         return;
       }
       await Promise.all([fetchRows(), fetchEvidence(channelId)]);
@@ -395,7 +395,7 @@ export function MarketResearchPanel({
     if (!selectedChannelId) return;
     setEvidenceError(null);
     if (!newObservation || !newSource) {
-      setEvidenceError("Observation and source are required");
+      setEvidenceError(t("watchlist.evidenceRequired"));
       return;
     }
     setRecordingEvidence(true);
@@ -411,7 +411,7 @@ export function MarketResearchPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setEvidenceError(data.message ?? "Failed to record evidence");
+        setEvidenceError(data.message ?? t("watchlist.evidenceFailed"));
         return;
       }
       setNewObservation("");
@@ -430,13 +430,8 @@ export function MarketResearchPanel({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-            Watchlist
-            <InfoTooltip>
-              Channels you track for market context. You add them by hand or approve an agent&rsquo;s request; nothing
-              here is private analytics of a channel you don&rsquo;t own. Per YouTube API policy, data about other
-              people&rsquo;s channels is kept for 30 days (refreshed by collection) and nothing is derived from it
-              &mdash; only the observed values, each with its date.
-            </InfoTooltip>
+            {t("watchlist.title")}
+            <InfoTooltip>{t("watchlist.tooltip")}</InfoTooltip>
           </h3>
         </div>
         <button
@@ -444,51 +439,51 @@ export function MarketResearchPanel({
           onClick={() => setAddOpen(true)}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
         >
-          Add channel
+          {t("watchlist.addChannel")}
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2" aria-label="Watchlist filters">
-        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search channels" aria-label="Search channels" className={`${inputClass} w-56`} />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as WatchlistStatusFilter)} aria-label="Status" className={inputClass}>
-          <option value="">Any status</option>
-          <option value="needs_attention">Needs attention</option>
+      <div className="flex flex-wrap items-center gap-2" aria-label={t("watchlist.filtersAria")}>
+        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("watchlist.searchChannels")} aria-label={t("watchlist.searchChannels")} className={`${inputClass} w-56`} />
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as WatchlistStatusFilter)} aria-label={t("watchlist.statusAria")} className={inputClass}>
+          <option value="">{t("watchlist.anyStatus")}</option>
+          <option value="needs_attention">{t("watchlist.needsAttention")}</option>
           {(Object.keys(CHANNEL_STATUS_LABELS) as ChannelStatus[]).map((status) => (
-            <option key={status} value={status}>{CHANNEL_STATUS_LABELS[status]}</option>
+            <option key={status} value={status}>{t(CHANNEL_STATUS_LABELS[status])}</option>
           ))}
         </select>
         {connectedChannels.length > 0 && (
-          <select value={visibleTo} onChange={(e) => setVisibleTo(e.target.value)} aria-label="Visible to" className={inputClass}>
-            <option value="">Visible to anyone</option>
+          <select value={visibleTo} onChange={(e) => setVisibleTo(e.target.value)} aria-label={t("watchlist.visibleToAria")} className={inputClass}>
+            <option value="">{t("watchlist.visibleToAnyone")}</option>
             {connectedChannels.map((c) => (
-              <option key={c.channelId} value={c.channelId}>Visible to {c.title}</option>
+              <option key={c.channelId} value={c.channelId}>{t("watchlist.visibleToChannel", { channel: c.title })}</option>
             ))}
           </select>
         )}
         {!loading && rows.length > 0 && (
           <span className="text-xs text-zinc-500">
-            {filtered ? `${visibleRows.length} of ${rows.length}` : `${rows.length}`} channel{rows.length === 1 ? "" : "s"}
+            {filtered ? t("watchlist.countFiltered", { shown: visibleRows.length, count: rows.length }) : t("watchlist.count", { count: rows.length })}
           </span>
         )}
       </div>
 
       {loading && <LoadingIndicator className="text-sm text-zinc-500" />}
       {loadError && <p className="text-sm text-red-400">{loadError}</p>}
-      {!loading && !loadError && rows.length === 0 && <p className="text-sm text-zinc-500">No channels on the watchlist yet.</p>}
-      {!loading && rows.length > 0 && visibleRows.length === 0 && <p className="text-sm text-zinc-500">No channels match these filters.</p>}
+      {!loading && !loadError && rows.length === 0 && <p className="text-sm text-zinc-500">{t("watchlist.empty")}</p>}
+      {!loading && rows.length > 0 && visibleRows.length === 0 && <p className="text-sm text-zinc-500">{t("watchlist.noMatch")}</p>}
 
       {visibleRows.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-left text-xs">
             <thead>
               <tr className="text-zinc-500">
-                <th className="pb-1 pr-3 font-medium">Channel</th>
-                <th className="pb-1 pr-3 font-medium">Reason</th>
-                <th className="pb-1 pr-3 font-medium">Subscribers (as of)</th>
-                <th className="pb-1 pr-3 font-medium">Videos observed</th>
-                <th className="pb-1 pr-3 font-medium">Last collected</th>
-                <th className="pb-1 pr-3 font-medium">Status</th>
-                <th className="pb-1 font-medium">Visible to</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.channel")}</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.reason")}</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.subscribers")}</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.videosObserved")}</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.lastCollected")}</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.status")}</th>
+                <th className="pb-1 font-medium">{t("watchlist.col.visibleTo")}</th>
               </tr>
             </thead>
             <tbody>
@@ -515,10 +510,10 @@ export function MarketResearchPanel({
                       "—"
                     )}
                   </td>
-                  <td className="py-1.5 pr-3 text-zinc-400">{row.videosObserved.toLocaleString("en-US")}</td>
+                  <td className="py-1.5 pr-3 text-zinc-400">{formatNumber(row.videosObserved)}</td>
                   <td className="whitespace-nowrap py-1.5 pr-3 text-zinc-400">{row.latestRun?.ranAt ? formatDisplayDateTime(row.latestRun.ranAt) : "—"}</td>
                   <td className="py-1.5 pr-3">
-                    <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 ${STATUS_PILL[row.status]}`}>{CHANNEL_STATUS_LABELS[row.status]}</span>
+                    <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 ${STATUS_PILL[row.status]}`}>{t(CHANNEL_STATUS_LABELS[row.status])}</span>
                   </td>
                   <td className="py-1.5">
                     <VisibleToPill channelIds={assignments.get(row.channelId) ?? []} connectedChannels={connectedChannels} />
@@ -535,28 +530,36 @@ export function MarketResearchPanel({
           title={selected.handleOrUrl ?? selected.channelId}
           subtitle={
             <>
-              {selected.channelId} · added {formatDisplayDateTime(selected.addedAt)}
+              {t("watchlist.drawer.added", { channelId: selected.channelId, date: formatDisplayDateTime(selected.addedAt) })}
               <span className="mt-1 block text-zinc-400">{selected.reason}</span>
             </>
           }
           onClose={closeDrawer}
         >
-          <DrawerSection title="Latest observation">
+          <DrawerSection title={t("watchlist.drawer.latest")}>
             <div className="space-y-1 text-xs text-zinc-400">
               <p>
-                <span className={`rounded-full border px-2 py-0.5 ${STATUS_PILL[selected.status]}`}>{CHANNEL_STATUS_LABELS[selected.status]}</span>
+                <span className={`rounded-full border px-2 py-0.5 ${STATUS_PILL[selected.status]}`}>{t(CHANNEL_STATUS_LABELS[selected.status])}</span>
                 {selected.dataQualityFlags.length > 0 && <span className="ml-2 text-zinc-500">{selected.dataQualityFlags.join(", ")}</span>}
               </p>
               {selected.latestObservation ? (
                 <p>
-                  Observed {formatDisplayDateTime(selected.latestObservation.observedAt)} &middot; subscribers: {formatSubscribers(selected.latestObservation)}{" "}
-                  &middot; views: {formatCount(selected.latestObservation.viewCount)} &middot; videos: {formatCount(selected.latestObservation.videoCount)}
+                  {t("watchlist.drawer.observed", {
+                    date: formatDisplayDateTime(selected.latestObservation.observedAt),
+                    subscribers: formatSubscribers(selected.latestObservation),
+                    views: formatCount(selected.latestObservation.viewCount),
+                    videos: formatCount(selected.latestObservation.videoCount),
+                  })}
                 </p>
               ) : (
-                <p>No channel snapshot recorded yet.</p>
+                <p>{t("watchlist.drawer.noSnapshot")}</p>
               )}
               <p>
-                Last collection: {selected.latestRun ? `${selected.latestRun.status}${selected.latestRun.ranAt ? `, ${formatDisplayDateTime(selected.latestRun.ranAt)}` : ""}` : "never"}
+                {!selected.latestRun
+                  ? t("watchlist.drawer.lastCollectionNever")
+                  : selected.latestRun.ranAt
+                    ? t("watchlist.drawer.lastCollectionAt", { status: selected.latestRun.status, date: formatDisplayDateTime(selected.latestRun.ranAt) })
+                    : t("watchlist.drawer.lastCollection", { status: selected.latestRun.status })}
               </p>
             </div>
             <button
@@ -565,32 +568,42 @@ export function MarketResearchPanel({
               disabled={fetchingSnapshot}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
             >
-              {fetchingSnapshot ? "Fetching..." : "Fetch public snapshot"}
+              {fetchingSnapshot ? t("watchlist.drawer.fetching") : t("watchlist.drawer.fetchSnapshot")}
             </button>
             {snapshotError && <p className="text-xs text-red-400">{snapshotError}</p>}
           </DrawerSection>
 
-          <DrawerSection title={`Recent videos${recentVideos && recentVideosTotal > 0 ? ` (${Math.min(recentVideos.length, recentVideosTotal)} of ${recentVideosTotal})` : ""}`}>
+          <DrawerSection
+            title={
+              recentVideos && recentVideosTotal > 0
+                ? t("watchlist.drawer.recentVideosOf", { shown: Math.min(recentVideos.length, recentVideosTotal), total: recentVideosTotal })
+                : t("watchlist.drawer.recentVideos")
+            }
+          >
             {recentVideos === null && !recentVideosError && <LoadingIndicator className="text-xs text-zinc-500" />}
             {recentVideosError && <p className="text-xs text-red-400">{recentVideosError}</p>}
-            {recentVideos && recentVideos.length === 0 && <p className="text-xs text-zinc-500">No video snapshots recorded yet.</p>}
+            {recentVideos && recentVideos.length === 0 && <p className="text-xs text-zinc-500">{t("watchlist.drawer.noVideoSnapshots")}</p>}
             {recentVideos && recentVideos.length > 0 && (
               <div className="space-y-1 text-xs text-zinc-400">
                 {recentVideos.map((v) => (
                   <div key={v.videoId} className="border-t border-zinc-800 pt-1">
                     <button type="button" onClick={() => handleToggleVideoHistory(selected.channelId, v.videoId)} className="text-left hover:text-zinc-200">
-                      <span className="text-zinc-200">{v.title ?? v.videoId}</span> &middot; views {formatCount(v.viewCount)} (as of{" "}
-                      {formatDisplayDateTime(v.observedAt)})
+                      <span className="text-zinc-200">{v.title ?? v.videoId}</span> &middot;{" "}
+                      {t("watchlist.drawer.videoViews", { views: formatCount(v.viewCount), date: formatDisplayDateTime(v.observedAt) })}
                     </button>
                     {expandedVideoId === v.videoId && (
                       <div className="ml-3 mt-1 space-y-0.5">
-                        {videoHistoryLoading && <p>Loading history...</p>}
+                        {videoHistoryLoading && <p>{t("watchlist.drawer.loadingHistory")}</p>}
                         {!videoHistoryLoading && videoHistoryError && <p className="text-red-400">{videoHistoryError}</p>}
                         {!videoHistoryLoading &&
                           videoHistory.map((snap, i) => (
                             <p key={i}>
-                              {formatDisplayDateTime(snap.observedAt)}: views {formatCount(snap.viewCount)}, likes {formatCount(snap.likeCount)}, comments{" "}
-                              {formatCount(snap.commentCount)}
+                              {t("watchlist.drawer.historyLine", {
+                                date: formatDisplayDateTime(snap.observedAt),
+                                views: formatCount(snap.viewCount),
+                                likes: formatCount(snap.likeCount),
+                                comments: formatCount(snap.commentCount),
+                              })}
                             </p>
                           ))}
                       </div>
@@ -608,35 +621,36 @@ export function MarketResearchPanel({
                 }}
                 className="text-xs text-indigo-300 hover:text-indigo-200"
               >
-                Show all in Videos →
+                {t("watchlist.drawer.showAllInVideos")}
               </button>
             )}
           </DrawerSection>
 
-          <DrawerSection title="Evidence">
-            {evidenceLoading && <p className="text-xs text-zinc-500">Loading evidence...</p>}
-            {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">No evidence recorded yet for this channel.</p>}
+          <DrawerSection title={t("watchlist.drawer.evidence")}>
+            {evidenceLoading && <p className="text-xs text-zinc-500">{t("watchlist.drawer.loadingEvidence")}</p>}
+            {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">{t("watchlist.drawer.noEvidence")}</p>}
             {!evidenceLoading &&
               evidence.map((e) => (
                 <div key={e.evidenceId} className="rounded-md border border-zinc-800 p-2">
                   <p className="text-sm text-zinc-200">{e.observation}</p>
                   <p className="text-xs text-zinc-500">
-                    Source: {e.source}
-                    {e.confidence ? ` · Confidence: ${e.confidence}` : ""} · {formatDisplayDateTime(e.collectedAt)}
+                    {e.confidence
+                      ? t("watchlist.drawer.evidenceSourceConfidence", { source: e.source, confidence: e.confidence, date: formatDisplayDateTime(e.collectedAt) })
+                      : t("watchlist.drawer.evidenceSource", { source: e.source, date: formatDisplayDateTime(e.collectedAt) })}
                   </p>
                 </div>
               ))}
             <div className="grid grid-cols-2 gap-2">
               <label className="col-span-2 block">
-                <span className="text-xs text-zinc-400">Observation</span>
+                <span className="text-xs text-zinc-400">{t("watchlist.drawer.observation")}</span>
                 <input value={newObservation} onChange={(ev) => setNewObservation(ev.target.value)} className={`mt-1 w-full ${inputClass}`} />
               </label>
               <label className="block">
-                <span className="text-xs text-zinc-400">Source</span>
+                <span className="text-xs text-zinc-400">{t("watchlist.drawer.source")}</span>
                 <input value={newSource} onChange={(ev) => setNewSource(ev.target.value)} className={`mt-1 w-full ${inputClass}`} />
               </label>
               <label className="block">
-                <span className="text-xs text-zinc-400">Confidence (optional)</span>
+                <span className="text-xs text-zinc-400">{t("watchlist.drawer.confidenceOptional")}</span>
                 <input value={newConfidence} onChange={(ev) => setNewConfidence(ev.target.value)} className={`mt-1 w-full ${inputClass}`} />
               </label>
             </div>
@@ -647,18 +661,18 @@ export function MarketResearchPanel({
               disabled={recordingEvidence}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              {recordingEvidence ? "Recording..." : "Record evidence"}
+              {recordingEvidence ? t("watchlist.drawer.recording") : t("watchlist.drawer.recordEvidence")}
             </button>
           </DrawerSection>
 
-          <DrawerSection title="Collection depth">
-            <FeatureErrorBoundary label="Collection depth">
+          <DrawerSection title={t("depth.title")}>
+            <FeatureErrorBoundary label={t("depth.title")}>
               <MarketChannelCollectionDepth channelId={selected.channelId} />
             </FeatureErrorBoundary>
           </DrawerSection>
 
-          <DrawerSection title="Visible to agents of">
-            <FeatureErrorBoundary label="Channel assignment">
+          <DrawerSection title={t("assignment.drawerTitle")}>
+            <FeatureErrorBoundary label={t("assignment.boundary")}>
               <MarketChannelAssignment
                 recordKind="research_channel"
                 recordId={selected.channelId}
@@ -667,13 +681,13 @@ export function MarketResearchPanel({
             </FeatureErrorBoundary>
           </DrawerSection>
 
-          <DrawerSection title="Remove">
+          <DrawerSection title={t("watchlist.drawer.remove")}>
             <button
               type="button"
               onClick={() => setRemoveTarget(selected)}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-red-400 hover:bg-zinc-800"
             >
-              Remove from watchlist
+              {t("watchlist.drawer.removeFromWatchlist")}
             </button>
             {removeError && <p className="text-xs text-red-400">{removeError}</p>}
           </DrawerSection>
@@ -681,19 +695,19 @@ export function MarketResearchPanel({
       )}
 
       {addOpen && (
-        <BlockingDialog label="Add a channel to the watchlist" busy={adding}>
-          <p className="text-sm font-medium text-zinc-100">Add a channel to the watchlist</p>
+        <BlockingDialog label={t("watchlist.add.title")} busy={adding}>
+          <p className="text-sm font-medium text-zinc-100">{t("watchlist.add.title")}</p>
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="text-xs text-zinc-400">YouTube channel id (e.g. UC...)</span>
+              <span className="text-xs text-zinc-400">{t("watchlist.add.channelId")}</span>
               <input value={newChannelId} onChange={(e) => setNewChannelId(e.target.value)} className={`mt-1 w-full ${inputClass}`} autoFocus />
             </label>
             <label className="block">
-              <span className="text-xs text-zinc-400">Handle/URL (optional, informational only)</span>
+              <span className="text-xs text-zinc-400">{t("watchlist.add.handle")}</span>
               <input value={newHandleOrUrl} onChange={(e) => setNewHandleOrUrl(e.target.value)} className={`mt-1 w-full ${inputClass}`} />
             </label>
             <label className="col-span-2 block">
-              <span className="text-xs text-zinc-400">Reason for tracking this channel</span>
+              <span className="text-xs text-zinc-400">{t("watchlist.add.reason")}</span>
               <input value={newReason} onChange={(e) => setNewReason(e.target.value)} className={`mt-1 w-full ${inputClass}`} />
             </label>
           </div>
@@ -705,7 +719,7 @@ export function MarketResearchPanel({
               disabled={adding}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
             >
-              Cancel
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -713,7 +727,7 @@ export function MarketResearchPanel({
               disabled={adding}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              {adding ? "Adding..." : "Add to watchlist"}
+              {adding ? t("watchlist.add.adding") : t("watchlist.add.submit")}
             </button>
           </div>
         </BlockingDialog>
@@ -721,9 +735,9 @@ export function MarketResearchPanel({
 
       {confirmSnapshotChannelId && (
         <ConfirmDialog
-          title="Fetch a public snapshot now?"
-          description="This makes one YouTube Data API call (channels.list, 1 quota unit) for this channel and records its current public counts."
-          confirmLabel="Fetch"
+          title={t("watchlist.snapshotConfirm.title")}
+          description={t("watchlist.snapshotConfirm.description")}
+          confirmLabel={t("watchlist.snapshotConfirm.confirm")}
           onCancel={() => setConfirmSnapshotChannelId(null)}
           onConfirm={handleFetchPublicSnapshot}
         />
@@ -731,9 +745,9 @@ export function MarketResearchPanel({
 
       {removeTarget && (
         <ConfirmDialog
-          title="Remove from watchlist?"
-          description={`This removes "${removeTarget.handleOrUrl ?? removeTarget.channelId}" and every evidence row recorded against it. This cannot be undone.`}
-          confirmLabel={removing ? "Removing..." : "Remove"}
+          title={t("watchlist.removeConfirm.title")}
+          description={t("watchlist.removeConfirm.description", { name: removeTarget.handleOrUrl ?? removeTarget.channelId })}
+          confirmLabel={removing ? t("watchlist.removeConfirm.removing") : t("watchlist.removeConfirm.confirm")}
           confirmVariant="danger"
           onCancel={() => setRemoveTarget(null)}
           onConfirm={handleConfirmRemove}

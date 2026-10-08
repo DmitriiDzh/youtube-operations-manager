@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
+import { useT } from "./ui-text-provider";
 
 /**
  * The snapshot-sync conflict, explained (owner, Telegram 2026-10-06, msg 1758: the bell asked to
@@ -23,29 +26,39 @@ type Preview = {
   tables: Array<{ table: string; section: string } & Totals>;
 };
 
-const SECTION_HINT: Record<string, string> = {
-  Batches: "prepared and executed Batches and their per-video rows",
-  Audit: "the record of YouTube writes",
-  Research: "Market Intelligence: research channels and their collected snapshots",
-  Decisions: "hypotheses and experiments",
-  Other: "other transferred data",
+/** Section ids come from the server (`s.section`); known ones get a translated name and hint, an unknown one shows as is. */
+const SECTION_NAME: Record<string, UiTextKey> = {
+  Batches: "divergence.section.batches",
+  Audit: "divergence.section.audit",
+  Research: "divergence.section.research",
+  Decisions: "divergence.section.decisions",
+  Other: "divergence.section.other",
 };
+
+const SECTION_HINT: Record<string, UiTextKey> = {
+  Batches: "divergence.sectionHint.batches",
+  Audit: "divergence.sectionHint.audit",
+  Research: "divergence.sectionHint.research",
+  Decisions: "divergence.sectionHint.decisions",
+  Other: "divergence.sectionHint.other",
+};
+
+function sectionName(t: Translate, section: string): string {
+  return SECTION_NAME[section] ? t(SECTION_NAME[section]) : section;
+}
 
 const POLL_MS = 30_000;
 
-function formatTime(iso: string | null | undefined): string {
-  if (!iso) return "unknown time";
+function formatTime(t: Translate, iso: string | null | undefined): string {
+  if (!iso) return t("divergence.unknownTime");
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "unknown time" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? t("divergence.unknownTime") : formatDisplayDateTime(date);
 }
 
 const shortId = (id: string) => id.slice(0, 8);
 
-function rowsLabel(n: number): string {
-  return `${n} row${n === 1 ? "" : "s"}`;
-}
-
 export function DeviceSyncDivergenceCard() {
+  const t = useT();
   const [notice, setNotice] = useState<Notice | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -77,7 +90,7 @@ export function DeviceSyncDivergenceCard() {
       const res = await fetch(`/api/device-sync/divergence?snapshotId=${encodeURIComponent(id)}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setPreviewError(data.message ?? `Error ${res.status}`);
+        setPreviewError(data.message ?? t("common.errorStatus", { status: String(res.status) }));
         return null;
       }
       setPreviewError(null);
@@ -87,7 +100,7 @@ export function DeviceSyncDivergenceCard() {
       setPreviewError(String(e));
       return null;
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     setPreview(null);
@@ -116,7 +129,7 @@ export function DeviceSyncDivergenceCard() {
         body: JSON.stringify({ choice, snapshotId }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) setError(data.message ?? data.error ?? `Error ${res.status}`);
+      if (!res.ok) setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -134,81 +147,90 @@ export function DeviceSyncDivergenceCard() {
 
   return (
     <div className="rounded-xl border border-red-800 bg-red-950/20 p-4">
-      <h2 className="text-lg font-semibold">Data differs between the two computers</h2>
-      <p className="mt-1 text-sm text-zinc-300">
-        This is the snapshot sync of Batches, the audit trail, Research and Decisions &mdash; whole copies, one
-        history. Since the two computers last agreed, both changed this data, so one version has to be chosen.
-        Change Sets, profiles and AI connections are not affected (their conflicts are listed below).
-      </p>
+      <h2 className="text-lg font-semibold">{t("divergence.title")}</h2>
+      <p className="mt-1 text-sm text-zinc-300">{t("divergence.intro")}</p>
 
       <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
         <div className="rounded-lg border border-zinc-700 bg-zinc-950 p-3">
-          <p className="font-medium text-zinc-100">This computer</p>
+          <p className="font-medium text-zinc-100">{t("divergence.thisComputer")}</p>
           <p className="text-xs text-zinc-400">
-            device {preview ? shortId(preview.local.deviceId) : "…"}
-            {preview?.local.lastExportAt ? ` · last published ${formatTime(preview.local.lastExportAt)}` : ""}
+            {t("divergence.device", { id: preview ? shortId(preview.local.deviceId) : "…" })}
+            {preview?.local.lastExportAt
+              ? ` · ${t("divergence.lastPublished", { time: formatTime(t, preview.local.lastExportAt) })}`
+              : ""}
           </p>
-          {preview?.local.unpublishedChanges && <p className="text-xs text-amber-300">Has changes not published yet.</p>}
+          {preview?.local.unpublishedChanges && <p className="text-xs text-amber-300">{t("divergence.unpublished")}</p>}
         </div>
         <div className="rounded-lg border border-zinc-700 bg-zinc-950 p-3">
-          <p className="font-medium text-zinc-100">The other computer</p>
+          <p className="font-medium text-zinc-100">{t("divergence.otherComputer")}</p>
           <p className="text-xs text-zinc-400">
-            device {shortId(notice.sourceDeviceId ?? preview?.peer.sourceDeviceId ?? "unknown")} · published{" "}
-            {formatTime(notice.createdAt ?? preview?.peer.createdAt)}
+            {t("divergence.device", {
+              id: (() => {
+                const peerDevice = notice.sourceDeviceId ?? preview?.peer.sourceDeviceId;
+                return peerDevice ? shortId(peerDevice) : t("divergence.unknownDevice");
+              })(),
+            })}{" "}
+            · {t("divergence.published", { time: formatTime(t, notice.createdAt ?? preview?.peer.createdAt) })}
           </p>
         </div>
       </div>
       {preview?.commonBase && (
         <p className="mt-2 text-xs text-zinc-400">
-          Both continue from the version of {formatTime(preview.commonBase.createdAt)}; everything below changed after it.
+          {t("divergence.commonBase", { time: formatTime(t, preview.commonBase.createdAt) })}
         </p>
       )}
 
       <div className="mt-3">
-        {!preview && !previewError && <p className="text-sm text-zinc-400">Comparing the two versions...</p>}
-        {previewError && <p className="text-sm text-red-300">Could not compare the two versions: {previewError}</p>}
+        {!preview && !previewError && <p className="text-sm text-zinc-400">{t("divergence.comparing")}</p>}
+        {previewError && <p className="text-sm text-red-300">{t("divergence.compareFailed", { error: previewError })}</p>}
         {preview && differing.length === 0 && preview.peerTips === 1 && (
-          <p className="text-sm text-zinc-300">The two versions now hold the same data; this resolves itself on the next sync.</p>
+          <p className="text-sm text-zinc-300">{t("divergence.nowSame")}</p>
         )}
         {preview && preview.peerTips > 1 && (
-          <p className="text-sm text-amber-300">
-            {preview.peerTips} other versions are in conflict; this compares with the newest one only. &ldquo;Keep this
-            computer&apos;s data&rdquo; replaces all of them.
-          </p>
+          <p className="text-sm text-amber-300">{t("divergence.manyTips", { count: preview.peerTips })}</p>
         )}
         {preview && differing.length > 0 && (
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-zinc-400">
               <tr>
-                <th className="py-1 pr-3 font-medium">Section</th>
-                <th className="py-1 pr-3 font-medium">Only on this computer</th>
-                <th className="py-1 pr-3 font-medium">Only on the other</th>
-                <th className="py-1 font-medium">On both, but different</th>
+                <th className="py-1 pr-3 font-medium">{t("divergence.column.section")}</th>
+                <th className="py-1 pr-3 font-medium">{t("divergence.column.onlyHere")}</th>
+                <th className="py-1 pr-3 font-medium">{t("divergence.column.onlyThere")}</th>
+                <th className="py-1 font-medium">{t("divergence.column.changed")}</th>
               </tr>
             </thead>
             <tbody>
               {differing.map((s) => (
                 <tr key={s.section} className="border-t border-zinc-800 align-top">
                   <td className="py-1.5 pr-3">
-                    <p className="text-zinc-100">{s.section}</p>
-                    <p className="text-xs text-zinc-500">{SECTION_HINT[s.section] ?? ""}</p>
+                    <p className="text-zinc-100">{sectionName(t, s.section)}</p>
+                    <p className="text-xs text-zinc-500">{SECTION_HINT[s.section] ? t(SECTION_HINT[s.section]) : ""}</p>
                     <p className="font-mono text-[11px] text-zinc-500">
                       {preview.tables
-                        .filter((t) => t.section === s.section)
-                        .map((t) => `${t.table}: +${t.onlyHere} here / +${t.onlyThere} there / ${t.changed} changed`)
+                        .filter((table) => table.section === s.section)
+                        .map((table) =>
+                          t("divergence.tableCounts", {
+                            table: table.table,
+                            here: table.onlyHere,
+                            there: table.onlyThere,
+                            changed: table.changed,
+                          })
+                        )
                         .join(" · ")}
                     </p>
                   </td>
-                  <td className="py-1.5 pr-3 text-zinc-200">{rowsLabel(s.onlyHere)}</td>
-                  <td className="py-1.5 pr-3 text-zinc-200">{rowsLabel(s.onlyThere)}</td>
-                  <td className="py-1.5 text-zinc-200">{rowsLabel(s.changed)}</td>
+                  <td className="py-1.5 pr-3 text-zinc-200">{t("divergence.rows", { count: s.onlyHere })}</td>
+                  <td className="py-1.5 pr-3 text-zinc-200">{t("divergence.rows", { count: s.onlyThere })}</td>
+                  <td className="py-1.5 text-zinc-200">{t("divergence.rows", { count: s.changed })}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
         {preview && same.length > 0 && (
-          <p className="mt-2 text-xs text-zinc-400">Identical on both computers: {same.map((s) => s.section).join(", ")}.</p>
+          <p className="mt-2 text-xs text-zinc-400">
+            {t("divergence.identical", { sections: same.map((s) => sectionName(t, s.section)).join(", ") })}
+          </p>
         )}
       </div>
 
@@ -221,11 +243,10 @@ export function DeviceSyncDivergenceCard() {
             onClick={() => void openConfirm("keep_mine")}
             className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            Keep this computer&apos;s data
+            {t("divergence.keepMine")}
           </button>
           <p className="text-xs text-zinc-400">
-            The other computer switches to this version.
-            {preview ? ` It loses ${rowsLabel(lostIfKeep)} (kept there in a backup).` : ""}
+            {preview ? t("divergence.keepMineHintLoses", { count: lostIfKeep }) : t("divergence.keepMineHint")}
           </p>
         </div>
         <div className="space-y-2">
@@ -234,24 +255,27 @@ export function DeviceSyncDivergenceCard() {
             onClick={() => void openConfirm("take_theirs")}
             className="w-full rounded-md border border-zinc-600 px-3 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-50"
           >
-            Take the other computer&apos;s data
+            {t("divergence.takeTheirs")}
           </button>
           <p className="text-xs text-zinc-400">
-            This computer switches to the other version.
-            {preview ? ` It loses ${rowsLabel(lostIfTake)} (a backup is saved first).` : ""}
+            {preview ? t("divergence.takeTheirsHintLoses", { count: lostIfTake }) : t("divergence.takeTheirsHint")}
           </p>
         </div>
       </div>
 
       {confirm && (
         <ConfirmDialog
-          title={confirm === "keep_mine" ? "Keep this computer's data?" : "Take the other computer's data?"}
+          title={confirm === "keep_mine" ? t("divergence.confirmKeep.title") : t("divergence.confirmTake.title")}
           description={
             confirm === "keep_mine"
-              ? `This computer's Batches, audit trail, Research and Decisions data will replace the other computer's the next time it syncs.${preview ? ` The other computer loses ${rowsLabel(lostIfKeep)} listed above; they stay in a backup there.` : ""}`
-              : `This computer's Batches, audit trail, Research and Decisions data will be replaced by the other computer's.${preview ? ` This computer loses ${rowsLabel(lostIfTake)} listed above.` : ""} A backup of this computer's current data is saved first.`
+              ? preview
+                ? t("divergence.confirmKeep.bodyLoses", { count: lostIfKeep })
+                : t("divergence.confirmKeep.body")
+              : preview
+                ? t("divergence.confirmTake.bodyLoses", { count: lostIfTake })
+                : t("divergence.confirmTake.body")
           }
-          confirmLabel={confirm === "keep_mine" ? "Keep mine" : "Take theirs"}
+          confirmLabel={confirm === "keep_mine" ? t("divergence.confirmKeep.confirm") : t("divergence.confirmTake.confirm")}
           confirmVariant="danger"
           onCancel={() => setConfirm(null)}
           onConfirm={() => {

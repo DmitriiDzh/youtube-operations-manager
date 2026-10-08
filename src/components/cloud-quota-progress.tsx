@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ProgressBar } from "./progress-bar";
 import { QuotaHistoryDialog } from "./quota-history-dialog";
 import { QuotaResetTime } from "./quota-reset-time";
+import { translateWithSlots } from "./quota-block-dialog";
+import { useT } from "./ui-text-provider";
 
 export type ServiceQuotaStatusView = {
   limit: number;
@@ -24,11 +26,12 @@ export type ServiceQuotaStatusView = {
 /** Shown in place of a quota bar whose numbers are unknown because the Cloud grant expired (BL-126). The link starts the
  * existing Cloud consent flow (a full-page redirect, GET, same as the Settings card's own Connect button). */
 export function CloudConnectionExpiredNotice() {
+  const t = useT();
   return (
     <p className="mt-1 text-xs text-amber-400">
-      Google Cloud connection expired — quota numbers are hidden.{" "}
+      {t("quota.cloudExpired")}{" "}
       <a href="/api/cloud-connection/start" className="font-medium text-indigo-300 underline hover:text-indigo-200">
-        Reconnect Google Cloud
+        {t("relogin.reconnectCloud")}
       </a>
     </p>
   );
@@ -48,6 +51,7 @@ export function CloudQuotaProgress({
   /** BL-117: when set, a small clock button next to the bar opens the quota-spend history popup for that API. */
   historyService?: "data" | "analytics";
 }) {
+  const t = useT();
   const [historyOpen, setHistoryOpen] = useState(false);
   if (!status) {
     return tokenRefreshFailed ? <CloudConnectionExpiredNotice /> : null;
@@ -62,22 +66,20 @@ export function CloudQuotaProgress({
           max={status.limit}
           size={size}
           underlayValue={status.ledgerUnits}
-          label={`Google Cloud quota (${sinceReset ? "since reset" : "24h"}): ${status.usedLast24h.toLocaleString()} / ${status.limit.toLocaleString()}`}
+          label={t(sinceReset ? "quota.bar.sinceReset" : "quota.bar.last24h", { used: status.usedLast24h, limit: status.limit })}
         />
         {status.ledgerUnits !== undefined && (
-          <p className="mt-0.5 text-[11px] text-zinc-500">
-            Dim layer: our log of all devices, {status.ledgerUnits.toLocaleString()} units. Google&apos;s figure lags by minutes and catches up.
-          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-500">{t("quota.bar.ledgerLayer", { count: status.ledgerUnits })}</p>
         )}
         {status.resetsAt && (
-          <p className="mt-0.5 text-[11px] text-zinc-500">Resets <QuotaResetTime iso={status.resetsAt} /> (midnight Pacific Time)</p>
+          <p className="mt-0.5 text-[11px] text-zinc-500">{translateWithSlots(t, "quota.bar.resets", {}, { time: <QuotaResetTime iso={status.resetsAt} /> })}</p>
         )}
       </div>
       {historyService && (
         <button
           onClick={() => setHistoryOpen(true)}
-          aria-label="Quota history"
-          title="Quota history"
+          aria-label={t("quota.historyButton")}
+          title={t("quota.historyButton")}
           className="mt-0.5 shrink-0 rounded-md border border-zinc-700 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -108,6 +110,7 @@ export function CloudQuotaProgressPerMinute({
   status: PerMinuteQuotaStatusView | undefined;
   size?: "sm" | "lg";
 }) {
+  const t = useT();
   if (!status) return null;
 
   return (
@@ -116,7 +119,7 @@ export function CloudQuotaProgressPerMinute({
       max={status.limit}
       color="indigo"
       size={size}
-      label={`Google Cloud quota (per minute): ${status.usedLastMinute.toLocaleString()} / ${status.limit.toLocaleString()}`}
+      label={t("quota.bar.perMinute", { used: status.usedLastMinute, limit: status.limit })}
     />
   );
 }

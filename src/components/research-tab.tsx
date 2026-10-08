@@ -1,6 +1,7 @@
 "use client";
 
 import { useT } from "./ui-text-provider";
+import type { Translate } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketResearchPanel, type WatchlistStatusFilter } from "./market-research-panel";
@@ -33,20 +34,20 @@ const SUMMARY_POLL_MS = 30_000;
 /** The summary line's parts, in reading order; a part whose source failed is left out. Exported for its test. */
 type SummaryPart = { text: string; tone: "plain" | "warn"; goTo?: ResearchSubTab; filter?: WatchlistStatusFilter };
 
-export function describeResearchSummary(summary: ResearchSummary): SummaryPart[] {
+export function describeResearchSummary(t: Translate, summary: ResearchSummary): SummaryPart[] {
   const parts: SummaryPart[] = [];
-  if (summary.watchlistCount !== null) parts.push({ text: `${summary.watchlistCount} channel${summary.watchlistCount === 1 ? "" : "s"} tracked`, tone: "plain", goTo: "channels" });
-  if (summary.warningCount) parts.push({ text: `${summary.warningCount} channel${summary.warningCount === 1 ? " needs" : "s need"} attention`, tone: "warn", goTo: "channels", filter: "needs_attention" });
-  if (summary.newDiscoveryCount) parts.push({ text: `${summary.newDiscoveryCount} new discover${summary.newDiscoveryCount === 1 ? "y" : "ies"}`, tone: "plain", goTo: "discover" });
+  if (summary.watchlistCount !== null) parts.push({ text: t("research.summary.tracked", { count: summary.watchlistCount }), tone: "plain", goTo: "channels" });
+  if (summary.warningCount) parts.push({ text: t("research.summary.attention", { count: summary.warningCount }), tone: "warn", goTo: "channels", filter: "needs_attention" });
+  if (summary.newDiscoveryCount) parts.push({ text: t("research.summary.newDiscoveries", { count: summary.newDiscoveryCount }), tone: "plain", goTo: "discover" });
   if (summary.collectionBudget) {
     const b = summary.collectionBudget;
     parts.push({
-      text: b.dailyBudgetUnits === null ? "Automatic collection is off (no daily budget in Settings → API)" : `Collection budget today: ${b.unitsSpentToday} of ${b.dailyBudgetUnits} units`,
+      text: b.dailyBudgetUnits === null ? t("research.summary.collectionOff") : t("research.summary.budget", { spent: b.unitsSpentToday, budget: b.dailyBudgetUnits }),
       tone: b.dailyBudgetUnits === null ? "warn" : "plain",
     });
   }
-  if (summary.searches) parts.push({ text: `Searches left today: ${Math.max(0, summary.searches.dailyLimit - summary.searches.usedToday)} of ${summary.searches.dailyLimit}`, tone: "plain" });
-  if (summary.pending.total > 0) parts.push({ text: `${summary.pending.total} request${summary.pending.total === 1 ? "" : "s"} waiting for you`, tone: "warn", goTo: "inbox" });
+  if (summary.searches) parts.push({ text: t("research.summary.searchesLeft", { left: Math.max(0, summary.searches.dailyLimit - summary.searches.usedToday), limit: summary.searches.dailyLimit }), tone: "plain" });
+  if (summary.pending.total > 0) parts.push({ text: t("research.summary.pending", { count: summary.pending.total }), tone: "warn", goTo: "inbox" });
   return parts;
 }
 
@@ -144,8 +145,8 @@ export function ResearchTab({
   return (
     <div className="space-y-4">
       {summary && (
-        <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-zinc-400" aria-label="Research summary">
-          {describeResearchSummary(summary).map((part) =>
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-zinc-400" aria-label={t("research.summary.aria")}>
+          {describeResearchSummary(t, summary).map((part) =>
             part.goTo ? (
               <button
                 key={part.text}
@@ -169,7 +170,7 @@ export function ResearchTab({
         </div>
       )}
 
-      <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label="Research sections">
+      <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("research.sections.aria")}>
         {RESEARCH_TABS.map((item) => (
           <button
             key={item.value}
@@ -188,16 +189,16 @@ export function ResearchTab({
       </div>
 
       <div className={tab === "inbox" ? "space-y-6" : "hidden"}>
-        <p className="text-sm text-zinc-400">Agents&rsquo; requests that wait for your decision. Approving may spend quota; each request shows its cost.</p>
-        <FeatureErrorBoundary label="Research — Requests">
+        <p className="text-sm text-zinc-400">{t("research.inbox.intro")}</p>
+        <FeatureErrorBoundary label={t("research.boundary.requests")}>
           <MarketResearchRequestsPanel onChanged={onChanged} />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Research — Collection requests">
+        <FeatureErrorBoundary label={t("research.boundary.collectionRequests")}>
           <MarketCollectionRequestsPanel onChanged={onChanged} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "channels" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Research — Watchlist">
+        <FeatureErrorBoundary label={t("research.boundary.watchlist")}>
           <MarketResearchPanel
             active={tab === "channels"}
             onChanged={onChanged}
@@ -210,25 +211,25 @@ export function ResearchTab({
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "videos" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Research — Videos">
+        <FeatureErrorBoundary label={t("research.boundary.videos")}>
           <MarketVideosPanel active={tab === "videos"} channelFilter={videosChannelFilter?.channelId ?? null} channelFilterNonce={videosChannelFilter?.nonce} />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "discover" ? "space-y-6" : "hidden"}>
-        <FeatureErrorBoundary label="Research — Discovery">
+        <FeatureErrorBoundary label={t("research.boundary.discovery")}>
           <MarketDiscoveryPanel active={tab === "discover"} onChanged={onChanged} statusFilterRequest={discoverStatusRequest} />
         </FeatureErrorBoundary>
-        <FeatureErrorBoundary label="Research — Music chart">
+        <FeatureErrorBoundary label={t("research.boundary.musicChart")}>
           <MusicChartPanel />
         </FeatureErrorBoundary>
       </div>
       <div className={tab === "topics" ? "space-y-6" : "hidden"}>
         {/* Plan §4.6: the two lists side by side, stacked on narrow screens. */}
         <div className="grid items-start gap-6 xl:grid-cols-2">
-          <FeatureErrorBoundary label="Research — Topics">
+          <FeatureErrorBoundary label={t("research.boundary.topics")}>
             <MarketTopicsPanel />
           </FeatureErrorBoundary>
-          <FeatureErrorBoundary label="Research — Trends">
+          <FeatureErrorBoundary label={t("research.boundary.trends")}>
             <MarketTrendsPanel />
           </FeatureErrorBoundary>
         </div>

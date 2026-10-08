@@ -1,3 +1,4 @@
+import { createTranslator, type Translate } from "@/lib/ui-text";
 import { waitForOperation } from "./operation-progress/wait-for-operation";
 
 type SyncResponseLike = { ok: boolean; status: number };
@@ -25,10 +26,13 @@ export async function postChannelSync(
     onConflict: "retry" | "skip";
     fetchImpl?: typeof fetch;
     wait?: (operationId: string) => Promise<"finished" | "gone" | "timeout">;
+    /** BL-152: the interface language for the one message this helper writes itself (the timeout); English by default. */
+    t?: Translate;
   }
 ): Promise<ChannelSyncOutcome> {
   const doFetch = options.fetchImpl ?? fetch;
   const wait = options.wait ?? ((operationId: string) => waitForOperation(operationId));
+  const t = options.t ?? createTranslator("en");
 
   const post = async () => {
     const res = await doFetch("/api/channels/sync", {
@@ -48,7 +52,7 @@ export async function postChannelSync(
   if (waited === "timeout") {
     return {
       res: { ok: false, status: 409 },
-      data: { error: "operation_already_running", message: "Another sync is still running and did not finish in time. Try again in a moment." },
+      data: { error: "operation_already_running", message: t("content.sync.otherStillRunning") },
       waitedForOther: true,
     };
   }

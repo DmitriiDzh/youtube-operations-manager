@@ -4,6 +4,7 @@ import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
+import { useT } from "./ui-text-provider";
 
 type WorkspaceSettings = {
   operationsWorkspacePath: string | null;
@@ -21,6 +22,7 @@ type WorkspaceSettings = {
  * absolute, existing directory that does not overlap this application's own app-data directory.
  */
 export function OperationsWorkspaceSettings() {
+  const t = useT();
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
   const [draft, setDraft] = useState<string>("");
   const [saving, setSaving] = useState(false);
@@ -52,14 +54,14 @@ export function OperationsWorkspaceSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to save");
+        setError(data.message ?? t("settings.saveFailed"));
         return;
       }
       setSettings(data);
       setDraft(data.operationsWorkspacePath ?? "");
-      setSavedNotice("Saved.");
+      setSavedNotice(t("common.saved"));
     } catch {
-      setError("Failed to save");
+      setError(t("settings.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -79,20 +81,14 @@ export function OperationsWorkspaceSettings() {
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
-          Codex operations workspace
-          <InfoTooltip>
-            An absolute path to a folder OUTSIDE this repository holding Codex&apos;s own operating
-            instructions. This app never creates or edits anything in that folder -- it only reads
-            .md/.txt/.json/.yaml/.yml files from it (never dotfiles) and lets the connected agent
-            list/read them. Leave empty to disable. The folder must not be inside this app&apos;s own
-            data directory.
-          </InfoTooltip>
+          {t("settingsCards.opsWorkspace.title")}
+          <InfoTooltip>{t("settingsCards.opsWorkspace.info")}</InfoTooltip>
         </h3>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-1 min-w-64 flex-col gap-1 text-xs text-zinc-400">
-          Workspace folder path
+          {t("settingsCards.opsWorkspace.pathLabel")}
           <input
             type="text"
             value={draft}
@@ -106,7 +102,7 @@ export function OperationsWorkspaceSettings() {
           disabled={saving || !dirty}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? t("common.saving") : t("common.save")}
         </button>
       </div>
 

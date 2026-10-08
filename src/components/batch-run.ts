@@ -1,4 +1,5 @@
 import { deriveBatchStage, ledgerRowToItem, summarizeBatchRows, type ProgressLedgerRow } from "./batch-progress";
+import type { Translate } from "@/lib/ui-text";
 import type { OperationController } from "./operation-progress";
 import { parseQuotaBlock, type QuotaBlock } from "./quota-block-dialog";
 
@@ -32,13 +33,15 @@ export async function runBatchWithProgress(args: {
   failureMessage: string;
   acknowledgeUnknownQuota?: boolean;
   failOnUnwrittenRows?: boolean;
+  /** BL-152: the interface language's translator, for the stage/row/summary texts. */
+  t: Translate;
 }): Promise<BatchRunResult> {
-  const { channelId, batchId, kind, op, title, failureMessage } = args;
+  const { channelId, batchId, kind, op, title, failureMessage, t } = args;
   const base = `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}`;
   const dryRun = kind === "prepare";
   // Only a live execution can be cancelled (ADR 0016); a dry run writes nothing and is short.
   op.start({ title, cancellable: kind === "execute", quotaServices: ["dataApi"] });
-  op.setStage(dryRun ? deriveBatchStage([], true) : "Preparing: identity, backup and conflict checks");
+  op.setStage(dryRun ? deriveBatchStage([], true, t) : t("batches.progress.stagePreparing"));
 
   let polling = false;
   async function poll() {
@@ -49,8 +52,8 @@ export async function runBatchWithProgress(args: {
       if (!res.ok) return;
       const data = await res.json();
       const rows = (data.ledgerRows ?? []) as ProgressLedgerRow[];
-      op.setItems(rows.map(ledgerRowToItem));
-      op.setStage(deriveBatchStage(rows, dryRun));
+      op.setItems(rows.map((row) => ledgerRowToItem(row, t)));
+      op.setStage(deriveBatchStage(rows, dryRun, t));
     } catch {
       // A missed poll only delays the display; the request below is the source of truth.
     } finally {
@@ -81,8 +84,8 @@ export async function runBatchWithProgress(args: {
     const finalRes = await fetch(base);
     const finalRows = finalRes.ok ? (((await finalRes.json()).ledgerRows ?? []) as ProgressLedgerRow[]) : [];
     // Synchronous with finish below, so a poll still in flight can never overwrite the final state.
-    op.setItems(finalRows.map(ledgerRowToItem));
-    const summary = summarizeBatchRows(finalRows, dryRun);
+    op.setItems(finalRows.map((row) => ledgerRowToItem(row, t)));
+    const summary = summarizeBatchRows(finalRows, dryRun, t);
     if (args.failOnUnwrittenRows && finalRows.some((row) => NOT_WRITTEN_STATUSES.includes(row.status))) {
       op.finish({ error: true, message: summary });
     } else {

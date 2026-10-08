@@ -6,6 +6,8 @@ import { BlockingDialog } from "./blocking-dialog";
 import { QuotaResetTime } from "./quota-reset-time";
 import { LoadingIndicator } from "./operation-progress";
 import { formatTimeUntil } from "@/lib/quota-history/format";
+import { translateWithSlots } from "./quota-block-dialog";
+import { useUiText } from "./ui-text-provider";
 import type { QuotaHistoryResult } from "@/lib/quota-history";
 
 /**
@@ -14,6 +16,7 @@ import type { QuotaHistoryResult } from "@/lib/quota-history";
  * usage this device's log does not explain (another device on the shared Cloud project, or calls the log missed).
  */
 export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "analytics"; onClose: () => void }) {
+  const { t, formatNumber } = useUiText();
   const [data, setData] = useState<QuotaHistoryResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [now] = useState(() => Date.now());
@@ -23,7 +26,7 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
     (async () => {
       try {
         const res = await fetch(`/api/quota/history?service=${service}`);
-        if (!res.ok) throw new Error("bad status");
+        if (!res.ok) throw new Error("bad status"); // ui-text-ignore: internal, never shown
         const body = (await res.json()) as QuotaHistoryResult;
         if (!cancelled) setData(body);
       } catch {
@@ -43,18 +46,18 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const title = service === "data" ? "YouTube Data API quota history" : "YouTube Analytics API quota history";
+  const title = t(service === "data" ? "quota.history.titleData" : "quota.history.titleAnalytics");
 
   return (
     <BlockingDialog label={title} maxWidthClass="max-w-2xl">
       <div className="flex items-center gap-2">
         <p className="text-sm font-medium text-zinc-100">{title}</p>
         <button onClick={onClose} className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
-          Close
+          {t("common.close")}
         </button>
       </div>
 
-      {failed && <p className="text-xs text-red-400">Could not load the history.</p>}
+      {failed && <p className="text-xs text-red-400">{t("quota.history.loadFailed")}</p>}
       {!data && !failed && <LoadingIndicator className="text-xs text-zinc-500" />}
 
       {data && (
@@ -62,57 +65,63 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
           <div className="space-y-1 text-xs text-zinc-400">
             {data.cloud.connected && data.cloud.used !== null && data.cloud.limit !== null ? (
               <p>
-                Used {data.cloud.window === "since_reset" ? "since the last reset" : "in the last 24 hours"}:{" "}
-                <span className="text-zinc-200">{data.cloud.used.toLocaleString()} / {data.cloud.limit.toLocaleString()}</span> units
+                {translateWithSlots(t, data.cloud.window === "since_reset" ? "quota.history.usedSinceReset" : "quota.history.usedLast24h", {}, {
+                  amount: (
+                    <span className="text-zinc-200">
+                      {formatNumber(data.cloud.used)} / {formatNumber(data.cloud.limit)}
+                    </span>
+                  ),
+                })}
               </p>
             ) : (
-              <p className="text-amber-400">Google Cloud is not connected (or did not answer), so Google&apos;s own usage figure is not shown.</p>
+              <p className="text-amber-400">{t("quota.history.cloudMissing")}</p>
             )}
             {data.cloud.resetsAt ? (
               <p>
-                Quota resets at <span className="text-zinc-200"><QuotaResetTime iso={data.cloud.resetsAt} /></span> (midnight Pacific
-                Time), in <span className="text-zinc-200">{formatTimeUntil(Date.parse(data.cloud.resetsAt) - now)}</span>.
+                {translateWithSlots(t, "quota.history.resetsAt", {}, {
+                  time: (
+                    <span className="text-zinc-200">
+                      <QuotaResetTime iso={data.cloud.resetsAt} />
+                    </span>
+                  ),
+                  wait: <span className="text-zinc-200">{formatTimeUntil(Date.parse(data.cloud.resetsAt) - now)}</span>,
+                })}
               </p>
             ) : (
-              <p>Reset time for this API is not confirmed.</p>
+              <p>{t("quota.history.resetUnknown")}</p>
             )}
           </div>
 
           {data.entries.length === 0 ? (
-            <p className="text-sm text-zinc-500">
-              Nothing recorded yet. Quota spending is logged from now on; earlier calls cannot be reconstructed.
-            </p>
+            <p className="text-sm text-zinc-500">{t("quota.history.empty")}</p>
           ) : (
             <ul className="max-h-80 space-y-1 overflow-auto rounded-md border border-zinc-800 p-2 text-xs">
               {data.entries.map((entry) => (
                 <li key={`${entry.kind}-${entry.contextId ?? ""}-${entry.startedAt}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-zinc-800/60 py-1 last:border-0">
                   <span className="text-zinc-500">{formatDisplayDateTime(entry.startedAt)}</span>
                   <span className="font-medium text-zinc-200">{entry.label}</span>
-                  {entry.onOtherDevice && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">other device</span>}
+                  {entry.onOtherDevice && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">{t("quota.history.otherDevice")}</span>}
                   <span className="text-zinc-400">
                     {entry.changedVideos !== null
-                      ? `${entry.changedVideos} video(s) changed`
+                      ? t("quota.history.videosChanged", { count: entry.changedVideos })
                       : entry.writeCalls > 0
-                        ? `${entry.writeCalls} change(s)`
-                        : `${entry.calls} call(s)`}
+                        ? t("quota.history.changes", { count: entry.writeCalls })
+                        : t("quota.history.calls", { count: entry.calls })}
                   </span>
-                  <span className="ml-auto tabular-nums text-zinc-100">{entry.units.toLocaleString()} units</span>
-                  {entry.failedCalls > 0 && <span className="text-amber-400">{entry.failedCalls} failed</span>}
-                  {entry.unknownUnitCalls > 0 && <span className="text-zinc-500">{entry.unknownUnitCalls} of unknown cost</span>}
+                  <span className="ml-auto tabular-nums text-zinc-100">{t("quota.units", { count: entry.units })}</span>
+                  {entry.failedCalls > 0 && <span className="text-amber-400">{t("quota.history.failed", { count: entry.failedCalls })}</span>}
+                  {entry.unknownUnitCalls > 0 && <span className="text-zinc-500">{t("quota.history.unknownCost", { count: entry.unknownUnitCalls })}</span>}
                 </li>
               ))}
               {data.otherUnits !== null && data.otherUnits > 0 && (
                 <li className="flex gap-3 py-1 text-zinc-400">
-                  <span>Not attributed (a computer that shares no log, or earlier calls)</span>
-                  <span className="ml-auto tabular-nums">{data.otherUnits.toLocaleString()} units</span>
+                  <span>{t("quota.history.notAttributed")}</span>
+                  <span className="ml-auto tabular-nums">{t("quota.units", { count: data.otherUnits })}</span>
                 </li>
               )}
             </ul>
           )}
-          <p className="text-[11px] text-zinc-600">
-            Costs come from Google&apos;s published quota table; a failed call is counted as 1 unit at least. The log covers this computer;
-            the Google figure covers the whole Cloud project.
-          </p>
+          <p className="text-[11px] text-zinc-600">{t("quota.history.footer")}</p>
         </>
       )}
     </BlockingDialog>

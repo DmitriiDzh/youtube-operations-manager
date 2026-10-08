@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { translate } from "@/lib/ui-text";
+import { createTranslator, formatNumber, translate, type UiTextKey } from "@/lib/ui-text";
+import { research as researchArea } from "@/lib/ui-text/locales/en/research";
 import { describeResearchSummary, RESEARCH_TABS, shouldOpenInbox, type ResearchSummary } from "./research-tab";
 import { videosQueryParams } from "./market-videos-panel";
 import { isAnotherModalOpen } from "./side-drawer";
@@ -11,6 +12,13 @@ import { CANDIDATE_FILTERS, defaultTrackReason } from "./market-discovery-panel"
 import { describeVisibleTo } from "./market-channel-assignment";
 
 // BL-140 (docs/roadmap/plans/RESEARCH_TAB_REDESIGN_PLAN.md §4, §7 R1; owner decisions msg 1827).
+
+// BL-152: the Research shell, Channels and Discover texts are interface-text keys; the requirement checked here is their
+// English wording. `en` translates helper output; `sourceInEnglish` turns `{t("key")}` in a component's source into its
+// English wording as a quoted attribute value, so the source checks below keep their English expectations.
+const en = createTranslator("en");
+const enUi = { t: en, formatNumber: (value: number, options?: Intl.NumberFormatOptions) => formatNumber("en", value, options) };
+const sourceInEnglish = (source: string) => source.replace(/\{t\("([^"]+)"\)\}/g, (_m, key: string) => JSON.stringify(translate("en", key as UiTextKey)));
 
 test("AC-R1-1: Research has five sub-tabs in this order: Inbox, Channels, Videos, Discover, Topics & trends", () => {
   assert.deepEqual(RESEARCH_TABS.map((t) => translate("en", t.labelKey)), ["Inbox", "Channels", "Videos", "Discover", "Topics & trends"]);
@@ -50,7 +58,7 @@ const full: ResearchSummary = {
 };
 
 test("AC-R1-4: the summary line names counts, warnings, budget, searches and pending requests, each linking where it belongs", () => {
-  assert.deepEqual(describeResearchSummary(full), [
+  assert.deepEqual(describeResearchSummary(en, full), [
     { text: "38 channels tracked", tone: "plain", goTo: "channels" },
     // Plan §4.1: "warnings open Channels filtered to stale/failed". R1 had no filter to open yet; R3 added it.
     { text: "2 channels need attention", tone: "warn", goTo: "channels", filter: "needs_attention" },
@@ -63,7 +71,7 @@ test("AC-R1-4: the summary line names counts, warnings, budget, searches and pen
 
 test("the summary line leaves out what is zero or unavailable, and says when automatic collection is off", () => {
   assert.deepEqual(
-    describeResearchSummary({
+    describeResearchSummary(en, {
       watchlistCount: null,
       warningCount: 0,
       newDiscoveryCount: 0,
@@ -86,7 +94,8 @@ test("AC-R2-1: the Videos request always asks the server for one page of 50, wit
 
 test("AC-R2-3: the Videos table has no derived-metric columns", async () => {
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-videos-panel.tsx"), "utf8");
-  const headers = [...panel.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1]);
+  // BL-152: the headers are interface-text keys now; the requirement checked here is the English wording.
+  const headers = [...panel.matchAll(/<th[^>]*>\{t\("([^"]+)"\)\}<\/th>/g)].map((m) => translate("en", m[1] as UiTextKey));
   assert.deepEqual(headers, ["Title", "Channel", "Published", "Views (as of)", "Topic"]);
   assert.doesNotMatch(panel, /formatFieldVelocity|formatBreakout|\.velocity|\.breakout/);
 });
@@ -132,9 +141,9 @@ test("§4.3/decision 3: 'visible to channel X' keeps only channels assigned to X
 });
 
 test("AC-R3-1/R3-3: Channels is a table read from the watchlist-table route, the add form is a dialog, no chip rows in the list", async () => {
-  const panel = await readFile(path.join(process.cwd(), "src", "components", "market-research-panel.tsx"), "utf8");
+  const panel = sourceInEnglish(await readFile(path.join(process.cwd(), "src", "components", "market-research-panel.tsx"), "utf8"));
   assert.match(panel, /fetch\("\/api\/market-intelligence\/watchlist-table"\)/);
-  const headers = [...panel.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1]);
+  const headers = [...panel.matchAll(/<th[^>]*>"([^<"]+)"<\/th>/g)].map((m) => m[1]);
   assert.deepEqual(headers, ["Channel", "Reason", "Subscribers (as of)", "Videos observed", "Last collected", "Status", "Visible to"]);
   assert.match(panel, /\{addOpen && \(\s*<BlockingDialog label="Add a channel to the watchlist"/);
   // The chip editor appears exactly once, inside the drawer's "Visible to agents of" section.
@@ -144,11 +153,14 @@ test("AC-R3-1/R3-3: Channels is a table read from the watchlist-table route, the
 });
 
 test("AC-R3-2: the drawer holds every action, and Fetch public snapshot asks before spending quota", async () => {
-  const panel = await readFile(path.join(process.cwd(), "src", "components", "market-research-panel.tsx"), "utf8");
+  const panel = sourceInEnglish(await readFile(path.join(process.cwd(), "src", "components", "market-research-panel.tsx"), "utf8"));
   const drawer = panel.slice(panel.indexOf("<SideDrawer"), panel.indexOf("</SideDrawer>"));
-  for (const title of ["Latest observation", "Recent videos", "Evidence", "Collection depth", "Visible to agents of", "Remove"]) {
+  for (const title of ["Latest observation", "Evidence", "Collection depth", "Visible to agents of", "Remove"]) {
     assert.match(drawer, new RegExp(`<DrawerSection title=\\{?[\`"]${title}`), title);
   }
+  // "Recent videos" picks between two keys (with and without its count), so its title is a choice, not one string.
+  assert.match(drawer, /<DrawerSection\s+title=\{[\s\S]*?t\("watchlist\.drawer\.recentVideos"\)/);
+  assert.equal(en("watchlist.drawer.recentVideos"), "Recent videos");
   // The button only opens the confirm, for the channel it was clicked on; the POST happens in the confirm's handler.
   assert.match(drawer, /onClick=\{\(\) => setConfirmSnapshotChannelId\(selected\.channelId\)\}/);
   assert.match(panel, /\{confirmSnapshotChannelId && \(\s*<ConfirmDialog[\s\S]*?onConfirm=\{handleFetchPublicSnapshot\}/);
@@ -172,7 +184,7 @@ test("§4.3: 'Show all in Videos' opens Videos filtered to the channel, and the 
 test("AC-R4-1: Discover lists candidates by status, New by default, one server page at a time", async () => {
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
   // BL-145 (owner, msg 1904): Watch is gone; Promote is "Track"; the old "watching" status shows only for older data.
-  assert.deepEqual(CANDIDATE_FILTERS.map((f) => f.label), ["New", "Tracked", "Ignored", "Archived", "Shortlisted (old)"]);
+  assert.deepEqual(CANDIDATE_FILTERS.map((f) => en(f.labelKey)), ["New", "Tracked", "Ignored", "Archived", "Shortlisted (old)"]);
   assert.match(panel, /useState<DiscoveryCandidateStatus>\("new"\)/);
   // The chip editor is only in the drawer; the rows carry the pill.
   assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1);
@@ -182,11 +194,16 @@ test("AC-R4-1: Discover lists candidates by status, New by default, one server p
 
 test("AC-R4-2: the search counter, confirm and tooltip all speak of the separate 100-searches-per-day limit", async () => {
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
-  assert.match(panel, /\{searchesLeft\} of \{searchUsage\.dailyLimit\} searches left today/);
-  assert.match(panel, /This uses 1 of YouTube's 100 searches per day \(a separate quota/);
-  assert.match(panel, /uses 1 of YouTube&rsquo;s 100 searches per day, a separate quota from the daily units budget/);
+  // BL-152: the panel shows each text by its key; the key's English says what the requirement asks.
+  assert.match(panel, /t\("discover\.searchesLeft", \{ left: searchesLeft \?\? 0, limit: searchUsage\.dailyLimit \}\)/);
+  assert.equal(en("discover.searchesLeft", { left: 97, limit: 100 }), "97 of 100 searches left today");
+  assert.match(panel, /t\("discover\.confirm\.channels"/);
+  assert.match(en("discover.confirm.channels", { query: "q" }), /This uses 1 of YouTube's 100 searches per day \(a separate quota/);
+  assert.match(panel, /<InfoTooltip>\{t\("discover\.tooltip"\)\}<\/InfoTooltip>/);
+  assert.match(en("discover.tooltip"), /uses 1 of YouTube’s 100 searches per day, a separate quota from the daily units budget/);
   // The old, wrong tooltip: searches do not cost 100 units of the same daily budget.
-  assert.doesNotMatch(panel, /Costs 100 YouTube API units|same daily budget/);
+  const confirms = [en("discover.confirm.genre", { query: "q" }), en("discover.confirm.genreWithin", { query: "q", days: 30 }), en("discover.confirm.channels", { query: "q" })];
+  for (const text of [panel, en("discover.tooltip"), ...confirms]) assert.doesNotMatch(text, /Costs 100 YouTube API units|same daily budget/);
 });
 
 test("AC-R4-3: the Music chart is fetched only from the Show chart button", async () => {
@@ -203,17 +220,21 @@ test("§4.7: the 'Visible to' pill names no channel, the one channel, or how man
     { channelId: "UCa", title: "Lofi Den" },
     { channelId: "UCb", title: "Jazz Room" },
   ];
-  assert.equal(describeVisibleTo([], connected), "No channels");
-  assert.equal(describeVisibleTo(["UCb"], connected), "Jazz Room");
-  assert.equal(describeVisibleTo(["UCgone"], connected), "1 channel");
-  assert.equal(describeVisibleTo(["UCa", "UCb"], connected), "2 channels");
+  assert.equal(describeVisibleTo(en, [], connected), "No channels");
+  assert.equal(describeVisibleTo(en, ["UCb"], connected), "Jazz Room");
+  assert.equal(describeVisibleTo(en, ["UCgone"], connected), "1 channel");
+  assert.equal(describeVisibleTo(en, ["UCa", "UCb"], connected), "2 channels");
 });
 
 // BL-140 R5 (plan §4.6, §2.4, AC-R5-1/2).
 
+// BL-152: the panels' texts are interface-text keys now; `{t("key")}` is resolved to its English wording as a quoted
+// attribute value, so the checks below still assert the English requirement unchanged.
+const inEnglish = (source: string) => source.replace(/\{t\("([^"]+)"\)\}/g, (_m, key: string) => JSON.stringify(translate("en", key as UiTextKey)));
+
 test("AC-R5-1: Topics and Trend candidates are compact lists; details, actions and visibility open in a side panel", async () => {
   for (const file of ["market-topics-panel.tsx", "market-trends-panel.tsx"]) {
-    const panel = await readFile(path.join(process.cwd(), "src", "components", file), "utf8");
+    const panel = inEnglish(await readFile(path.join(process.cwd(), "src", "components", file), "utf8"));
     assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1, file);
     const drawer = panel.slice(panel.indexOf("<SideDrawer"), panel.indexOf("</SideDrawer>"));
     assert.match(drawer, /<DrawerSection title="Visible to agents of">[\s\S]*<MarketChannelAssignment/, file);
@@ -222,7 +243,7 @@ test("AC-R5-1: Topics and Trend candidates are compact lists; details, actions a
   const topics = await readFile(path.join(process.cwd(), "src", "components", "market-topics-panel.tsx"), "utf8");
   const topicDrawer = topics.slice(topics.indexOf("<SideDrawer"), topics.indexOf("</SideDrawer>"));
   for (const action of ["<TopicWikipediaSignals", "handleAssign(", "handleRemoveAssignment(", "setDeleteTarget("]) assert.ok(topicDrawer.includes(action), action);
-  const trends = await readFile(path.join(process.cwd(), "src", "components", "market-trends-panel.tsx"), "utf8");
+  const trends = inEnglish(await readFile(path.join(process.cwd(), "src", "components", "market-trends-panel.tsx"), "utf8"));
   const trendDrawer = trends.slice(trends.indexOf("<SideDrawer"), trends.indexOf("</SideDrawer>"));
   for (const action of ["handleAddEvidence(", "handleUpdateStatus(", "Reason for this status change"]) assert.ok(trendDrawer.includes(action), action);
   // Status filter on the list, the add form in a dialog.
@@ -231,7 +252,7 @@ test("AC-R5-1: Topics and Trend candidates are compact lists; details, actions a
 });
 
 test("AC-R5-1: Topics & trends shows the two lists side by side on wide screens", async () => {
-  const shell = await readFile(path.join(process.cwd(), "src", "components", "research-tab.tsx"), "utf8");
+  const shell = sourceInEnglish(await readFile(path.join(process.cwd(), "src", "components", "research-tab.tsx"), "utf8"));
   const topics = shell.slice(shell.indexOf('tab === "topics"'));
   assert.match(topics, /<div className="grid items-start gap-6 xl:grid-cols-2">\s*<FeatureErrorBoundary label="Research — Topics">/);
 });
@@ -243,6 +264,8 @@ test("AC-R5-2: no stale text is left in the Research components (§2.4)", async 
     const source = await readFile(path.join(dir, file), "utf8");
     assert.doesNotMatch(source, /\bbelow\b|never automatically discovered|Costs 100 YouTube API units|same daily budget/, file);
   }
+  // BL-152: the shell's, Channels' and Discover's English now lives in their interface-text area.
+  assert.doesNotMatch(Object.values(researchArea).join("\n"), /\bbelow\b|never automatically discovered|Costs 100 YouTube API units|same daily budget/);
   // The Overview panel is gone entirely, not only unmounted.
   await assert.rejects(readFile(path.join(dir, "market-overview-panel.tsx"), "utf8"));
 });
@@ -274,7 +297,7 @@ test("each summary link opens its list showing what it counted, and sub-tabs ref
 // BL-145 (owner, Telegram 2026-10-07, msg 1904): one Track button adds the channel to the regularly collected list, with a
 // reason already filled from the search (editable); there is no separate Watch any more.
 test("BL-145: Track pre-fills the reason from the search query; no Watch button is offered", async () => {
-  assert.equal(defaultTrackReason({ discoveryQuery: "bossa nova cafe" }), 'Found by the search "bossa nova cafe"');
+  assert.equal(defaultTrackReason(en, { discoveryQuery: "bossa nova cafe" }), 'Found by the search "bossa nova cafe"');
   const panel = await readFile(path.join(process.cwd(), "src", "components", "market-discovery-panel.tsx"), "utf8");
   assert.doesNotMatch(panel, />\s*Watch\s*</);
   assert.doesNotMatch(panel, /handleUpdateStatus\([^)]*"watching"\)/);
@@ -284,26 +307,26 @@ test("BL-145: a found channel's counts read as one short line; hidden subscriber
   const { describeCandidateStats } = await import("./market-discovery-panel");
   const at = "2026-10-07T01:00:00.000Z";
   assert.equal(
-    describeCandidateStats({ subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 4_560_000, channelPublishedAt: "2019-05-01T00:00:00Z", observedAt: at }),
+    describeCandidateStats(enUi, { subscriberCount: 12300, hiddenSubscriberCount: false, videoCount: 42, viewCount: 4_560_000, channelPublishedAt: "2019-05-01T00:00:00Z", observedAt: at }),
     "12K subscribers · 42 videos · 4.6M views · since 2019"
   );
   assert.equal(
-    describeCandidateStats({ subscriberCount: null, hiddenSubscriberCount: true, videoCount: 1, viewCount: 950, channelPublishedAt: null, observedAt: at }),
+    describeCandidateStats(enUi, { subscriberCount: null, hiddenSubscriberCount: true, videoCount: 1, viewCount: 950, channelPublishedAt: null, observedAt: at }),
     "subscribers hidden · 1 video · 950 views"
   );
-  assert.equal(describeCandidateStats({ subscriberCount: 1500, hiddenSubscriberCount: false, videoCount: null, viewCount: null, channelPublishedAt: null, observedAt: at }), "1.5K subscribers");
-  assert.equal(describeCandidateStats(null), null);
+  assert.equal(describeCandidateStats(enUi, { subscriberCount: 1500, hiddenSubscriberCount: false, videoCount: null, viewCount: null, channelPublishedAt: null, observedAt: at }), "1.5K subscribers");
+  assert.equal(describeCandidateStats(enUi, null), null);
 });
 
 test("BL-145 genre: the result line and a channel's match line say what was found, in plain words", async () => {
   const { describeSearchResult, describeCandidateMatch } = await import("./market-discovery-panel");
   assert.equal(
-    describeSearchResult({ mode: "genre", videosFound: 50, candidatesFound: 31, candidatesNew: 29, topicChannelsSkipped: 4 }),
+    describeSearchResult(en, { mode: "genre", videosFound: 50, candidatesFound: 31, candidatesNew: 29, topicChannelsSkipped: 4 }),
     'Found 50 music videos from 31 channels, 29 new. Left out 4 auto-generated "- Topic" channels.'
   );
-  assert.equal(describeSearchResult({ mode: "genre", videosFound: 1, candidatesFound: 1, candidatesNew: 0, topicChannelsSkipped: 0 }), "Found 1 music video from 1 channel, 0 new.");
-  assert.equal(describeSearchResult({ mode: "channels", candidatesFound: 25, candidatesNew: 24 }), "Found 25, 24 new.");
-  assert.equal(describeCandidateMatch({ query: "q", videoCount: 3, viewCount: 1_234_000 }), "3 matching videos · 1.2M views on them");
-  assert.equal(describeCandidateMatch({ query: "q", videoCount: 1, viewCount: null }), "1 matching video");
-  assert.equal(describeCandidateMatch(null), null);
+  assert.equal(describeSearchResult(en, { mode: "genre", videosFound: 1, candidatesFound: 1, candidatesNew: 0, topicChannelsSkipped: 0 }), "Found 1 music video from 1 channel, 0 new.");
+  assert.equal(describeSearchResult(en, { mode: "channels", candidatesFound: 25, candidatesNew: 24 }), "Found 25, 24 new.");
+  assert.equal(describeCandidateMatch(enUi, { query: "q", videoCount: 3, viewCount: 1_234_000 }), "3 matching videos · 1.2M views on them");
+  assert.equal(describeCandidateMatch(enUi, { query: "q", videoCount: 1, viewCount: null }), "1 matching video");
+  assert.equal(describeCandidateMatch(enUi, null), null);
 });

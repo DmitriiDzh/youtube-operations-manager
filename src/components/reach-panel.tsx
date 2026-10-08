@@ -8,6 +8,7 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { ReachStatusBlock, type ReachStatusData } from "./reach-status-block";
 import { useVideoTitles } from "./use-video-titles";
+import { useUiText } from "./ui-text-provider";
 
 type ReachState = "no_job" | "waiting_for_first_report" | "ready";
 
@@ -34,6 +35,8 @@ type SyncOutcome =
  * never shown as zero: the card says whether there is no job, a job still waiting for Google's first file, or data.
  */
 export function ReachPanel({ channelId, periodDays }: { channelId: string; periodDays: number }) {
+  const { t, formatNumber } = useUiText();
+  const formatCtrPercent = (v: number) => t("chart.value.ctrShort", { value: formatNumber(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
   const op = useOperation();
   const { runBlocking } = op;
   const [data, setData] = useState<ReachData | null>(null);
@@ -84,15 +87,15 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
       );
       const body = await res.json();
       if (!res.ok) {
-        setError(body.message ?? "Failed to load impressions data");
+        setError(body.message ?? t("reach.loadFailed"));
         return;
       }
       setError(null);
       setData(body as ReachData);
     } catch {
-      setError("Failed to load impressions data");
+      setError(t("reach.loadFailed"));
     }
-  }, [channelId, periodDays]);
+  }, [channelId, periodDays, t]);
 
   // The status block is secondary: if it cannot load, the data above still shows.
   const loadStatus = useCallback(async () => {
@@ -125,31 +128,31 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
     setError(null);
     try {
       const { res, body } = await runBlocking({
-        title: "Importing reach reports from YouTube",
-        stage: "Downloading the YouTube Reporting API files",
+        title: t("reach.syncTitle"),
+        stage: t("reach.syncStage"),
         request: async () => {
           const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach/sync`, { method: "POST" });
           return { res, body: (await res.json()) as SyncOutcome & { message?: string } };
         },
-        failureOf: ({ res, body }) => (res.ok ? null : (body.message ?? "Sync failed")),
-        summarize: ({ body }) => (body.skipped ? "Nothing new to import." : `${body.filesImported} new report file(s) imported.`),
+        failureOf: ({ res, body }) => (res.ok ? null : (body.message ?? t("reach.syncFailed"))),
+        summarize: ({ body }) => (body.skipped ? t("reach.nothingNew") : t("reach.filesImported", { count: body.filesImported })),
       });
       if (!res.ok) {
-        setError(body.message ?? "Sync failed");
+        setError(body.message ?? t("reach.syncFailed"));
         await loadStatus(); // a failed sync is recorded; show it
         return;
       }
       if (!body.skipped) {
         const parts = [
-          body.jobCreated ? "Reporting job created." : null,
-          `${body.filesImported} new report file(s) imported.`,
-          body.failures.length > 0 ? `${body.failures.length} file(s) failed and will be retried.` : null,
+          body.jobCreated ? t("reach.jobCreated") : null,
+          t("reach.filesImported", { count: body.filesImported }),
+          body.failures.length > 0 ? t("reach.filesFailed", { count: body.failures.length }) : null,
         ].filter(Boolean);
         setNotice(parts.join(" "));
       }
       await Promise.all([load(), loadStatus()]);
     } catch {
-      setError("Sync failed");
+      setError(t("reach.syncFailed"));
       await loadStatus();
     } finally {
       setSyncing(false);
@@ -160,13 +163,13 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <OperationOverlay state={op.state} onClose={op.reset} />
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-medium text-zinc-300">Impressions and click-through rate</h4>
+        <h4 className="text-sm font-medium text-zinc-300">{t("reach.title")}</h4>
         <button
           onClick={syncNow}
           disabled={syncing}
           className="rounded-md border border-zinc-700 px-3 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
         >
-          {syncing ? "Syncing..." : "Sync now"}
+          {syncing ? t("common.syncing") : t("common.syncNow")}
         </button>
       </div>
 
@@ -176,29 +179,24 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
       {!data ? (
         !error && <LoadingIndicator className="text-sm text-zinc-500" />
       ) : data.state === "no_job" ? (
-        <p className="text-sm text-zinc-500">
-          Not set up yet. YouTube provides impressions and CTR only as daily report files; &ldquo;Sync now&rdquo; creates
-          the report subscription for this channel. The first file arrives within about 48 hours.
-        </p>
+        <p className="text-sm text-zinc-500">{t("reach.notSetUp")}</p>
       ) : data.state === "waiting_for_first_report" ? (
         <p className="text-sm text-zinc-500">
-          Waiting for YouTube&rsquo;s first report file
-          {data.jobCreatedAt ? ` (subscription created ${formatDisplayDateTime(data.jobCreatedAt)})` : ""}. This is
-          not zero impressions &mdash; there is simply no data yet. It can take up to 48 hours.
+          {data.jobCreatedAt ? t("reach.waitingSince", { date: formatDisplayDateTime(data.jobCreatedAt) }) : t("reach.waiting")}
         </p>
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap gap-6 text-sm">
             <div>
-              <div className="text-xs text-zinc-500">Impressions</div>
+              <div className="text-xs text-zinc-500">{t("reach.impressions")}</div>
               <div className="text-lg font-semibold text-zinc-100">{formatImpressions(data.totals.impressions)}</div>
             </div>
             <div>
-              <div className="text-xs text-zinc-500">Click-through rate</div>
+              <div className="text-xs text-zinc-500">{t("reach.ctr")}</div>
               <div className="text-lg font-semibold text-zinc-100">{formatCtr(data.totals.ctr)}</div>
             </div>
             <div>
-              <div className="text-xs text-zinc-500">Data available</div>
+              <div className="text-xs text-zinc-500">{t("reach.dataAvailable")}</div>
               <div className="text-sm text-zinc-300">
                 {data.coverage.firstDate} &ndash; {data.coverage.lastDate}
               </div>
@@ -206,20 +204,20 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
           </div>
 
           {data.daily.length === 0 ? (
-            <p className="text-sm text-zinc-500">No impressions data inside this period yet.</p>
+            <p className="text-sm text-zinc-500">{t("reach.noDailyData")}</p>
           ) : (
             <>
               <AnalyticsLineChart
                 data={data.daily.map((d) => ({ date: d.date, value: d.impressions }))}
-                formatValue={(v) => `${formatImpressions(v)} impressions`}
+                formatValue={(v) => t("chart.value.impressions", { count: v })}
                 formatDate={formatChartDate}
               />
               {data.daily.some((d) => d.ctr !== null) && (
                 <>
-                  <div className="text-xs text-zinc-500">Click-through rate by day</div>
+                  <div className="text-xs text-zinc-500">{t("reach.ctrByDay")}</div>
                   <AnalyticsLineChart
                     data={data.daily.filter((d) => d.ctr !== null).map((d) => ({ date: d.date, value: (d.ctr as number) * 100 }))}
-                    formatValue={(v) => `${v.toFixed(2)}% CTR`}
+                    formatValue={formatCtrPercent}
                     formatDate={formatChartDate}
                     colorClassName="text-emerald-400"
                     height={120}
@@ -233,9 +231,9 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-zinc-500">
-                  <th className="py-1 font-medium">Video</th>
-                  <th className="py-1 text-right font-medium">Impressions</th>
-                  <th className="py-1 text-right font-medium">CTR</th>
+                  <th className="py-1 font-medium">{t("reach.column.video")}</th>
+                  <th className="py-1 text-right font-medium">{t("reach.impressions")}</th>
+                  <th className="py-1 text-right font-medium">{t("reach.ctrShort")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -257,37 +255,37 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
               </tbody>
             </table>
           )}
-          {data.videos.length > 0 && !selectedVideoId && <p className="text-xs text-zinc-500">Click a video to see its impressions and CTR day by day.</p>}
+          {data.videos.length > 0 && !selectedVideoId && <p className="text-xs text-zinc-500">{t("reach.clickHint")}</p>}
 
           {selectedVideoId && (
             <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 truncate text-sm font-medium text-zinc-200">{titles.get(selectedVideoId)?.title ?? selectedVideoId}</div>
                 <button onClick={() => selectVideo(null)} className="shrink-0 text-xs text-zinc-400 hover:text-zinc-200">
-                  Close
+                  {t("common.close")}
                 </button>
               </div>
               {videoDetailError ? (
-                <p className="text-sm text-red-400">Failed to load this video&apos;s daily data.</p>
+                <p className="text-sm text-red-400">{t("reach.videoLoadFailed")}</p>
               ) : !videoDetail ? (
                 <LoadingIndicator className="text-sm text-zinc-500" />
               ) : !videoDetail.videoDaily || videoDetail.videoDaily.length === 0 ? (
-                <p className="text-sm text-zinc-500">No impressions data for this video inside the period.</p>
+                <p className="text-sm text-zinc-500">{t("reach.videoNoData")}</p>
               ) : (
                 <>
                   <div className="text-xs text-zinc-500">
-                    Impressions {formatImpressions(videoDetail.totals.impressions)} · CTR {formatCtr(videoDetail.totals.ctr)} in this period
+                    {t("reach.videoSummary", { impressions: formatImpressions(videoDetail.totals.impressions), ctr: formatCtr(videoDetail.totals.ctr) })}
                   </div>
                   <AnalyticsLineChart
                     data={videoDetail.videoDaily.map((d) => ({ date: d.date, value: d.impressions }))}
-                    formatValue={(v) => `${formatImpressions(v)} impressions`}
+                    formatValue={(v) => t("chart.value.impressions", { count: v })}
                     formatDate={formatChartDate}
                     height={140}
                   />
                   {videoDetail.videoDaily.some((d) => d.ctr !== null) && (
                     <AnalyticsLineChart
                       data={videoDetail.videoDaily.filter((d) => d.ctr !== null).map((d) => ({ date: d.date, value: (d.ctr as number) * 100 }))}
-                      formatValue={(v) => `${v.toFixed(2)}% CTR`}
+                      formatValue={formatCtrPercent}
                       formatDate={formatChartDate}
                       colorClassName="text-emerald-400"
                       height={110}

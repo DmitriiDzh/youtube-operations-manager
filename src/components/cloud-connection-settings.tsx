@@ -7,6 +7,8 @@ import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-tr
 import { InfoTooltip } from "./info-tooltip";
 import { useConnectionHealth } from "./use-connection-health";
 import { SettingsSectionRow } from "./settings-section-row";
+import type { Translate } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
 
@@ -14,22 +16,22 @@ type Status = { connected: false } | { connected: true; connectedEmail: string; 
 // (`src/app/api/cloud-connection/callback/route.ts`) can set -- kept in sync manually since the
 // route is server-only and this component is client-only, so they cannot literally share the
 // type. An unrecognized/missing reason falls back to the generic message below.
-function cloudConnectionFailureMessage(reason: string | null): string {
+function cloudConnectionFailureMessage(t: Translate, reason: string | null): string {
   switch (reason) {
     case "oauth_denied":
-      return "Google declined or cancelled the request (e.g. consent was not granted).";
+      return t("settingsCards.cloud.fail.oauthDenied");
     case "missing_callback_params":
-      return "Google's redirect back to this app was missing expected parameters. Try connecting again.";
+      return t("settingsCards.cloud.fail.missingParams");
     case "state_cookie_missing":
-      return "The connection attempt expired or its cookie was blocked. Try connecting again (don't wait too long on Google's consent screen).";
+      return t("settingsCards.cloud.fail.stateCookie");
     case "AUTH_CALLBACK_INVALID":
-      return "The callback could not be verified (state mismatch). Try connecting again from a fresh click, not a reused/bookmarked link.";
+      return t("settingsCards.cloud.fail.callbackInvalid");
     case "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED":
-      return "Google rejected the token exchange. This usually means this app's Cloud connection redirect URI isn't registered in Google Cloud Console's OAuth client yet (see docs/decisions/0008-cloud-connection.md), or the authorization code already expired.";
+      return t("settingsCards.cloud.fail.tokenExchange");
     case "encryption_key_not_configured":
-      return "CLOUD_CONNECTION_ENCRYPTION_KEY is not configured on this server. Set it and restart the app.";
+      return t("settingsCards.cloud.fail.encryptionKey");
     default:
-      return "Connection failed. Please try again.";
+      return t("settingsCards.cloud.fail.generic");
   }
 }
 
@@ -45,6 +47,7 @@ function cloudConnectionFailureMessage(reason: string | null): string {
  * `cloud_monitoring_reads` traffic count.
  */
 export function CloudConnectionSettings() {
+  const t = useT();
   const [status, setStatus] = useState<Status | null>(null);
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
   const [monitoringQuota, setMonitoringQuota] = useState<PerMinuteQuotaStatusView | undefined>(undefined);
@@ -92,12 +95,12 @@ export function CloudConnectionSettings() {
       const res = await fetch("/api/cloud-connection/disconnect", { method: "POST" });
       const data = (await res.json()) as Status | { error?: string; message?: string };
       if (!res.ok) {
-        setError("message" in data && data.message ? data.message : "Disconnect failed");
+        setError("message" in data && data.message ? data.message : t("settingsCards.disconnectFailed"));
         return;
       }
       setStatus(data as Status);
     } catch {
-      setError("Disconnect failed");
+      setError(t("settingsCards.disconnectFailed"));
     } finally {
       setDisconnecting(false);
     }
@@ -109,21 +112,16 @@ export function CloudConnectionSettings() {
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          Google Cloud connection
-          <InfoTooltip>
-            A single, device-persistent grant powering the real Google Cloud quota numbers shown
-            under the toggles above. Independent of the YouTube channel login above: connecting or
-            disconnecting here does not affect which channel is active, and switching channels
-            never revokes this grant.
-          </InfoTooltip>
+          {t("settingsCards.cloud.title")}
+          <InfoTooltip>{t("settingsCards.cloud.info")}</InfoTooltip>
         </h3>
       </div>
 
       {callbackResult === "connected" && (
-        <p className="text-xs text-emerald-400">Connected.</p>
+        <p className="text-xs text-emerald-400">{t("settingsCards.cloud.connected")}</p>
       )}
       {callbackResult === "error" && (
-        <p className="text-xs text-red-400">{cloudConnectionFailureMessage(callbackReason)}</p>
+        <p className="text-xs text-red-400">{cloudConnectionFailureMessage(t, callbackReason)}</p>
       )}
 
       {status.connected ? (
@@ -131,19 +129,19 @@ export function CloudConnectionSettings() {
           left={
             <div className="space-y-2">
               <p className="text-sm text-zinc-300">
-                Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
+                {t("settingsCards.cloud.connectedAs")} <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
               </p>
-              <p className="text-xs text-zinc-500">Since {formatDisplayDateTime(status.connectedAt)}</p>
+              <p className="text-xs text-zinc-500">{t("settingsCards.cloud.since", { date: formatDisplayDateTime(status.connectedAt) })}</p>
               {cloudHealth?.state === "reauth_required" && (
                 <p className="text-xs text-red-400">
-                  Connection expired — Google no longer accepts the saved grant, so the quota numbers are hidden. Reconnect below.
+                  {t("settingsCards.cloud.expired")}
                 </p>
               )}
               {cloudHealth?.state === "expiring_soon" && (
                 <p className="text-xs text-amber-400">
                   {cloudHealth.daysLeft !== null && cloudHealth.daysLeft > 1
-                    ? `Connection expires in about ${cloudHealth.daysLeft} days — reconnect before then.`
-                    : "Connection expires within a day — reconnect before then."}
+                    ? t("settingsCards.cloud.expiresInDays", { count: cloudHealth.daysLeft })
+                    : t("settingsCards.cloud.expiresWithinDay")}
                 </p>
               )}
               {(cloudHealth?.state === "reauth_required" || cloudHealth?.state === "expiring_soon") && (
@@ -151,7 +149,7 @@ export function CloudConnectionSettings() {
                   href="/api/cloud-connection/start"
                   className="inline-block rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
                 >
-                  Reconnect Google Cloud
+                  {t("settingsCards.cloud.reconnect")}
                 </a>
               )}
               <button
@@ -159,7 +157,7 @@ export function CloudConnectionSettings() {
                 disabled={disconnecting}
                 className="rounded-md border border-red-900 bg-red-950/50 px-4 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950 disabled:opacity-50"
               >
-                {disconnecting ? "Disconnecting..." : "Disconnect"}
+                {disconnecting ? t("settingsCards.disconnecting") : t("settingsCards.disconnect")}
               </button>
             </div>
           }
@@ -178,7 +176,7 @@ export function CloudConnectionSettings() {
           href="/api/cloud-connection/start"
           className="inline-block rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
         >
-          Connect Google Cloud
+          {t("settingsCards.cloud.connect")}
         </a>
       )}
 

@@ -8,6 +8,8 @@ import { LoadingIndicator, OperationOverlay, useOperation } from "./operation-pr
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
+import { useUiText } from "./ui-text-provider";
 
 type DiscoveryCandidateStatus = "new" | "watching" | "ignored" | "archived" | "promoted";
 
@@ -39,37 +41,51 @@ export type SearchResult =
   | { mode: "channels"; candidatesFound: number; candidatesNew: number }
   | { mode: "genre"; videosFound: number; candidatesFound: number; candidatesNew: number; topicChannelsSkipped: number };
 
+/** BL-152: what the pure helpers in this file need to write a line in the interface language (`useUiText()` provides both). */
+export type UiFormat = { t: Translate; formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string };
+
 /** BL-145: the line shown after a search. Exported for its test. */
-export function describeSearchResult(r: SearchResult): string {
+export function describeSearchResult(t: Translate, r: SearchResult): string {
   if (r.mode === "genre") {
-    const skipped = r.topicChannelsSkipped > 0 ? ` Left out ${r.topicChannelsSkipped} auto-generated "- Topic" channel${r.topicChannelsSkipped === 1 ? "" : "s"}.` : "";
-    return `Found ${r.videosFound} music video${r.videosFound === 1 ? "" : "s"} from ${r.candidatesFound} channel${r.candidatesFound === 1 ? "" : "s"}, ${r.candidatesNew} new.${skipped}`;
+    return t("discover.result.genre", { videos: r.videosFound, channels: r.candidatesFound, fresh: r.candidatesNew, skipped: r.topicChannelsSkipped });
   }
-  return `Found ${r.candidatesFound}, ${r.candidatesNew} new.`;
+  return t("discover.result.channels", { found: r.candidatesFound, fresh: r.candidatesNew });
 }
 
 /** BL-145: "3 matching videos · 600 views on them" for a channel a genre search found. Exported for its test. */
-export function describeCandidateMatch(match: DiscoveryCandidate["match"]): string | null {
+export function describeCandidateMatch(ui: UiFormat, match: DiscoveryCandidate["match"]): string | null {
   if (!match) return null;
-  const videos = `${match.videoCount} matching video${match.videoCount === 1 ? "" : "s"}`;
-  return match.viewCount === null ? videos : `${videos} · ${compact(match.viewCount)} views on them`;
+  return match.viewCount === null
+    ? ui.t("discover.match.videos", { count: match.videoCount })
+    : ui.t("discover.match.videosViews", { count: match.videoCount, views: compact(ui, match.viewCount) });
 }
 
-/** 1234 → "1.2K", 4560000 → "4.6M" (display only; the stored value is exact). */
-function compact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "")}K`;
-  return String(n);
+/** 1234 → "1.2K", 4560000 → "4.6M" (display only; the stored value is exact). BL-152: in the language's own short form (ru "1,2 тыс."). */
+function compact(ui: UiFormat, n: number): string {
+  return ui.formatNumber(n, { notation: "compact" });
+}
+
+/**
+ * The count that picks a word's plural form next to a `compact` number: from 1000 up the shown number is "12K"/"12 тыс.",
+ * so the word must agree with that, not with the exact count (Russian 12341 would otherwise read "12 тыс. подписчик").
+ */
+function pluralCount(n: number): number {
+  return n >= 1000 ? 1000 : n;
 }
 
 /** BL-145: one line of a found channel's observed counts, e.g. "12.3K subscribers · 42 videos · 456K views · since 2019". Exported for its test. */
-export function describeCandidateStats(stats: CandidateStats | null): string | null {
+export function describeCandidateStats(ui: UiFormat, stats: CandidateStats | null): string | null {
   if (!stats) return null;
+  const { t } = ui;
   const parts = [
-    stats.hiddenSubscriberCount ? "subscribers hidden" : stats.subscriberCount !== null ? `${compact(stats.subscriberCount)} subscribers` : null,
-    stats.videoCount !== null ? `${compact(stats.videoCount)} video${stats.videoCount === 1 ? "" : "s"}` : null,
-    stats.viewCount !== null ? `${compact(stats.viewCount)} views` : null,
-    stats.channelPublishedAt ? `since ${stats.channelPublishedAt.slice(0, 4)}` : null,
+    stats.hiddenSubscriberCount
+      ? t("discover.stats.subscribersHidden")
+      : stats.subscriberCount !== null
+        ? t("discover.stats.subscribers", { count: pluralCount(stats.subscriberCount), n: compact(ui, stats.subscriberCount) })
+        : null,
+    stats.videoCount !== null ? t("discover.stats.videos", { count: pluralCount(stats.videoCount), n: compact(ui, stats.videoCount) }) : null,
+    stats.viewCount !== null ? t("discover.stats.views", { count: pluralCount(stats.viewCount), n: compact(ui, stats.viewCount) }) : null,
+    stats.channelPublishedAt ? t("discover.stats.since", { year: stats.channelPublishedAt.slice(0, 4) }) : null,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
@@ -80,17 +96,17 @@ export function describeCandidateStats(stats: CandidateStats | null): string | n
 // BL-145 (owner, Telegram 2026-10-07, msg 1904): "Watch" now means what it sounds like -- the channel joins the tracked
 // list that is collected regularly (the promote action, now called Track). The old "watching" status is no longer
 // offered; it appears as a filter only while some candidate still has it (older data).
-export const CANDIDATE_FILTERS: { value: DiscoveryCandidateStatus; label: string }[] = [
-  { value: "new", label: "New" },
-  { value: "promoted", label: "Tracked" },
-  { value: "ignored", label: "Ignored" },
-  { value: "archived", label: "Archived" },
-  { value: "watching", label: "Shortlisted (old)" },
+export const CANDIDATE_FILTERS: { value: DiscoveryCandidateStatus; labelKey: UiTextKey; emptyKey: UiTextKey }[] = [
+  { value: "new", labelKey: "discover.filter.new", emptyKey: "discover.empty.new" },
+  { value: "promoted", labelKey: "discover.filter.promoted", emptyKey: "discover.empty.promoted" },
+  { value: "ignored", labelKey: "discover.filter.ignored", emptyKey: "discover.empty.ignored" },
+  { value: "archived", labelKey: "discover.filter.archived", emptyKey: "discover.empty.archived" },
+  { value: "watching", labelKey: "discover.filter.watching", emptyKey: "discover.empty.watching" },
 ];
 
 /** The reason a Track pre-fills, editable before saving. Exported for its test. */
-export function defaultTrackReason(candidate: { discoveryQuery: string }): string {
-  return `Found by the search "${candidate.discoveryQuery}"`;
+export function defaultTrackReason(t: Translate, candidate: { discoveryQuery: string }): string {
+  return t("discover.trackReason", { query: candidate.discoveryQuery });
 }
 const PAGE_SIZE = 25;
 type CandidatesPage = { candidates: DiscoveryCandidate[]; total: number; page: number; limit: number; counts: Record<DiscoveryCandidateStatus, number> };
@@ -111,6 +127,8 @@ export function MarketDiscoveryPanel({
   /** A status set from outside (the summary's "new discoveries" link); a new nonce re-applies the same status. */
   statusFilterRequest?: { status: DiscoveryCandidateStatus; nonce: number } | null;
 } = {}) {
+  const ui = useUiText();
+  const { t, formatNumber } = ui;
   const op = useOperation();
   const { runBlocking } = op;
   const [statusFilter, setStatusFilter] = useState<DiscoveryCandidateStatus>("new");
@@ -163,7 +181,7 @@ export function MarketDiscoveryPanel({
       const res = await fetch(`/api/market-intelligence/discovery-candidates?${params.toString()}`);
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLoadError(body.message ?? "Failed to load candidates");
+        setLoadError(body.message ?? t("discover.loadFailed"));
         return;
       }
       setLoadError(null);
@@ -174,11 +192,11 @@ export function MarketDiscoveryPanel({
       }
       setData(body);
     } catch {
-      setLoadError("Failed to load candidates");
+      setLoadError(t("discover.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter]);
+  }, [page, statusFilter, t]);
 
   useEffect(() => {
     void fetchCandidates();
@@ -213,8 +231,8 @@ export function MarketDiscoveryPanel({
     setLastResult(null);
     try {
       const { res, data } = await runBlocking({
-        title: "Searching YouTube for channels",
-        stage: "Running a YouTube search (uses the separate daily search quota)",
+        title: t("discover.op.title"),
+        stage: t("discover.op.stage"),
         request: async () => {
           const res = await fetch("/api/market-intelligence/discover", {
             method: "POST",
@@ -225,11 +243,11 @@ export function MarketDiscoveryPanel({
           });
           return { res, data: await res.json() };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? "Discovery failed")),
-        summarize: () => "Search finished.",
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? t("discover.searchFailed"))),
+        summarize: () => t("discover.op.finished"),
       });
       if (!res.ok) {
-        setSearchError(data.message ?? "Discovery failed");
+        setSearchError(data.message ?? t("discover.searchFailed"));
         return;
       }
       setLastResult(data);
@@ -237,7 +255,7 @@ export function MarketDiscoveryPanel({
       void refreshSearchUsage();
       onChanged?.();
     } catch {
-      setSearchError("Discovery failed");
+      setSearchError(t("discover.searchFailed"));
     } finally {
       setSearching(false);
     }
@@ -254,7 +272,7 @@ export function MarketDiscoveryPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setActionError(data.message ?? "Failed to update status");
+        setActionError(data.message ?? t("discover.statusFailed"));
         return;
       }
       await fetchCandidates();
@@ -275,7 +293,7 @@ export function MarketDiscoveryPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setActionError(data.message ?? "Failed to promote");
+        setActionError(data.message ?? t("discover.promoteFailed"));
         return;
       }
       setPromotingChannelId(null);
@@ -292,25 +310,18 @@ export function MarketDiscoveryPanel({
       <OperationOverlay state={op.state} onClose={op.reset} />
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          Discover channels
-          <InfoTooltip>
-            By genre: searches music videos with these words and shows the channels that published them, with how many of their
-            videos matched (auto-generated &ldquo;- Topic&rdquo; channels are left out, recognised by that name ending). By channel
-            name: matches channel names and descriptions. Run only when you click Search -- never automatic. Each search
-            uses 1 of YouTube&rsquo;s 100 searches per day, a separate quota from the daily units budget in Settings →
-            API; it resets at midnight Pacific time. A result already on your watchlist is skipped; everything else
-            becomes a candidate you can Track (add to the tracked channels that are collected regularly), ignore or archive.
-          </InfoTooltip>
+          {t("discover.title")}
+          <InfoTooltip>{t("discover.tooltip")}</InfoTooltip>
         </h3>
       </div>
 
-      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Search by">
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label={t("discover.mode.aria")}>
         {(
           [
-            ["genre", "By genre (music videos)"],
-            ["channels", "By channel name"],
+            ["genre", "discover.mode.genre"],
+            ["channels", "discover.mode.channels"],
           ] as const
-        ).map(([value, label]) => (
+        ).map(([value, labelKey]) => (
           <button
             key={value}
             type="button"
@@ -319,7 +330,7 @@ export function MarketDiscoveryPanel({
             onClick={() => setSearchMode(value)}
             className={`rounded-md px-2.5 py-1 text-xs font-medium ${searchMode === value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
           >
-            {label}
+            {t(labelKey)}
           </button>
         ))}
       </div>
@@ -328,17 +339,17 @@ export function MarketDiscoveryPanel({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={searchMode === "genre" ? "Genre words, e.g. bossa nova cafe, japanese city pop" : "Words in the channel's name or description"}
-          aria-label="Search query"
+          placeholder={searchMode === "genre" ? t("discover.query.genrePlaceholder") : t("discover.query.channelsPlaceholder")}
+          aria-label={t("discover.query.aria")}
           className="min-w-64 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
         />
         {searchMode === "genre" && (
-          <select value={withinDays} onChange={(e) => setWithinDays(e.target.value as typeof withinDays)} aria-label="Published within" className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200">
-            <option value="">Any time</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 3 months</option>
-            <option value="180">Last 6 months</option>
-            <option value="365">Last 12 months</option>
+          <select value={withinDays} onChange={(e) => setWithinDays(e.target.value as typeof withinDays)} aria-label={t("discover.within.aria")} className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200">
+            <option value="">{t("discover.within.any")}</option>
+            <option value="30">{t("discover.within.30")}</option>
+            <option value="90">{t("discover.within.90")}</option>
+            <option value="180">{t("discover.within.180")}</option>
+            <option value="365">{t("discover.within.365")}</option>
           </select>
         )}
         <button
@@ -346,24 +357,24 @@ export function MarketDiscoveryPanel({
           disabled={searching || query.trim().length === 0 || searchesLeft === 0}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
-          {searching ? "Searching..." : "Search"}
+          {searching ? t("discover.searching") : t("discover.search")}
         </button>
         {searchUsage && (
           <span className={`text-xs ${searchesLeft === 0 ? "text-amber-300" : "text-zinc-500"}`}>
-            {searchesLeft} of {searchUsage.dailyLimit} searches left today
+            {t("discover.searchesLeft", { left: searchesLeft ?? 0, limit: searchUsage.dailyLimit })}
           </span>
         )}
       </div>
 
       {lastResult && (
         <p className="text-xs text-zinc-400">
-          {describeSearchResult(lastResult)}
+          {describeSearchResult(t, lastResult)}
         </p>
       )}
       {searchError && <p className="text-sm text-red-400">{searchError}</p>}
       {actionError && <p className="text-sm text-red-400">{actionError}</p>}
 
-      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Candidate status">
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label={t("discover.statusAria")}>
         {CANDIDATE_FILTERS.filter((f) => f.value !== "watching" || (data?.counts.watching ?? 0) > 0 || statusFilter === "watching").map((f) => (
           <button
             key={f.value}
@@ -376,7 +387,7 @@ export function MarketDiscoveryPanel({
             }}
             className={`rounded-md px-2.5 py-1 text-xs font-medium ${statusFilter === f.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
           >
-            {f.label}
+            {t(f.labelKey)}
             {data && <span className="ml-1 text-zinc-500">{data.counts[f.value]}</span>}
           </button>
         ))}
@@ -386,7 +397,7 @@ export function MarketDiscoveryPanel({
       {loadError && <p className="text-sm text-red-400">{loadError}</p>}
       {data && data.total === 0 && (
         <p className="text-sm text-zinc-500">
-          {statusFilter === "new" ? "No new candidates. Run a search to find channels." : `No ${(CANDIDATE_FILTERS.find((f) => f.value === statusFilter)?.label ?? statusFilter).toLowerCase()} candidates.`}
+          {t(CANDIDATE_FILTERS.find((f) => f.value === statusFilter)?.emptyKey ?? "discover.empty.new")}
         </p>
       )}
 
@@ -398,12 +409,12 @@ export function MarketDiscoveryPanel({
                 <button type="button" onClick={() => setOpenChannelId(candidate.channelId)} className="min-w-0 flex-1 text-left">
                   <p className="truncate text-sm font-medium text-zinc-100 hover:underline">
                     {candidate.title || candidate.channelId}
-                    {!candidate.title && <span className="ml-2 text-xs font-normal text-zinc-500">(title expired, see details)</span>}
+                    {!candidate.title && <span className="ml-2 text-xs font-normal text-zinc-500">{t("discover.titleExpired")}</span>}
                   </p>
-                  {describeCandidateStats(candidate.stats) && <p className="truncate text-xs text-zinc-300">{describeCandidateStats(candidate.stats)}</p>}
-                  {describeCandidateMatch(candidate.match) && <p className="truncate text-xs text-emerald-300/80">{describeCandidateMatch(candidate.match)}</p>}
+                  {describeCandidateStats(ui, candidate.stats) && <p className="truncate text-xs text-zinc-300">{describeCandidateStats(ui, candidate.stats)}</p>}
+                  {describeCandidateMatch(ui, candidate.match) && <p className="truncate text-xs text-emerald-300/80">{describeCandidateMatch(ui, candidate.match)}</p>}
                   <p className="truncate text-xs text-zinc-500">
-                    query &ldquo;{candidate.discoveryQuery}&rdquo; &middot; last seen {formatDisplayDateTime(candidate.lastSeenAt)}
+                    {t("discover.queryLine", { query: candidate.discoveryQuery, date: formatDisplayDateTime(candidate.lastSeenAt) })}
                   </p>
                 </button>
                 <span className="text-xs">
@@ -417,7 +428,7 @@ export function MarketDiscoveryPanel({
                         disabled={updatingChannelId === candidate.channelId}
                         className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
                       >
-                        Ignore
+                        {t("discover.ignore")}
                       </button>
                     )}
                     {candidate.status !== "archived" && (
@@ -426,19 +437,19 @@ export function MarketDiscoveryPanel({
                         disabled={updatingChannelId === candidate.channelId}
                         className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
                       >
-                        Archive
+                        {t("discover.archive")}
                       </button>
                     )}
                     <button
                       onClick={() => {
                         setPromotingChannelId(candidate.channelId);
-                        setPromoteReason(defaultTrackReason(candidate));
+                        setPromoteReason(defaultTrackReason(t, candidate));
                       }}
                       disabled={updatingChannelId === candidate.channelId}
-                      title="Add to the tracked channels that are collected regularly"
+                      title={t("discover.trackTitle")}
                       className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                     >
-                      Track
+                      {t("discover.track")}
                     </button>
                   </div>
                 )}
@@ -449,8 +460,8 @@ export function MarketDiscoveryPanel({
                   <input
                     value={promoteReason}
                     onChange={(e) => setPromoteReason(e.target.value)}
-                    placeholder="Reason for tracking this channel"
-                    aria-label="Reason for tracking"
+                    placeholder={t("discover.reasonPlaceholder")}
+                    aria-label={t("discover.reasonAria")}
                     className="min-w-72 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
                   />
                   <button
@@ -458,13 +469,13 @@ export function MarketDiscoveryPanel({
                     disabled={updatingChannelId === candidate.channelId || promoteReason.trim().length === 0}
                     className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                   >
-                    Track channel
+                    {t("discover.trackChannel")}
                   </button>
                   <button
                     onClick={() => setPromotingChannelId(null)}
                     className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
                   >
-                    Cancel
+                    {t("common.cancel")}
                   </button>
                 </div>
               )}
@@ -475,23 +486,19 @@ export function MarketDiscoveryPanel({
 
       {data && data.total > data.limit && (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-          <span>
-            Showing {(data.page - 1) * data.limit + 1}–{Math.min(data.total, data.page * data.limit)} of {data.total}
-          </span>
+          <span>{t("discover.paging.showing", { from: (data.page - 1) * data.limit + 1, to: Math.min(data.total, data.page * data.limit), total: data.total })}</span>
           <span className="flex items-center gap-2">
             <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="rounded-md border border-zinc-700 px-2 py-1 text-zinc-300 disabled:opacity-40">
-              ‹ Previous
+              {t("discover.paging.previous")}
             </button>
-            <span>
-              Page {data.page} of {Math.ceil(data.total / data.limit)}
-            </span>
+            <span>{t("discover.paging.page", { page: data.page, pages: Math.ceil(data.total / data.limit) })}</span>
             <button
               type="button"
               onClick={() => setPage((p) => p + 1)}
               disabled={page >= Math.ceil(data.total / data.limit)}
               className="rounded-md border border-zinc-700 px-2 py-1 text-zinc-300 disabled:opacity-40"
             >
-              Next ›
+              {t("discover.paging.next")}
             </button>
           </span>
         </div>
@@ -499,41 +506,42 @@ export function MarketDiscoveryPanel({
 
       {openCandidate && (
         <SideDrawer title={openCandidate.title || openCandidate.channelId} subtitle={`${openCandidate.channelId} · ${openCandidate.status}`} onClose={() => setOpenChannelId(null)}>
-          <DrawerSection title="Channel">
+          <DrawerSection title={t("discover.drawer.channel")}>
             <div className="space-y-1 text-xs text-zinc-400">
               {openCandidate.stats ? (
                 <>
                   <p>
-                    Subscribers:{" "}
-                    {openCandidate.stats.hiddenSubscriberCount ? "hidden by the channel" : (openCandidate.stats.subscriberCount?.toLocaleString("en-US") ?? "—")}
-                    {" "}&middot; videos: {openCandidate.stats.videoCount?.toLocaleString("en-US") ?? "—"} &middot; views:{" "}
-                    {openCandidate.stats.viewCount?.toLocaleString("en-US") ?? "—"}
+                    {t("discover.drawer.counts", {
+                      subscribers: openCandidate.stats.hiddenSubscriberCount
+                        ? t("discover.drawer.subscribersHidden")
+                        : openCandidate.stats.subscriberCount === null
+                          ? "—"
+                          : formatNumber(openCandidate.stats.subscriberCount),
+                      videos: openCandidate.stats.videoCount === null ? "—" : formatNumber(openCandidate.stats.videoCount),
+                      views: openCandidate.stats.viewCount === null ? "—" : formatNumber(openCandidate.stats.viewCount),
+                    })}
                   </p>
-                  {openCandidate.stats.channelPublishedAt && <p>Created {formatDisplayDateTime(openCandidate.stats.channelPublishedAt)}</p>}
-                  <p className="text-zinc-500">As of {formatDisplayDateTime(openCandidate.stats.observedAt)}</p>
+                  {openCandidate.stats.channelPublishedAt && <p>{t("discover.drawer.created", { date: formatDisplayDateTime(openCandidate.stats.channelPublishedAt) })}</p>}
+                  <p className="text-zinc-500">{t("discover.drawer.asOf", { date: formatDisplayDateTime(openCandidate.stats.observedAt) })}</p>
                 </>
               ) : (
-                <p>No counts observed for this channel.</p>
+                <p>{t("discover.drawer.noCounts")}</p>
               )}
             </div>
           </DrawerSection>
-          <DrawerSection title="How it was found">
+          <DrawerSection title={t("discover.drawer.howFound")}>
             <div className="space-y-1 text-xs text-zinc-400">
-              <p>
-                Query &ldquo;{openCandidate.discoveryQuery}&rdquo; ({openCandidate.discoverySource})
-              </p>
+              <p>{t("discover.drawer.query", { query: openCandidate.discoveryQuery, source: openCandidate.discoverySource })}</p>
               {openCandidate.reasonDiscovered && <p>{openCandidate.reasonDiscovered}</p>}
-              <p>
-                First seen {formatDisplayDateTime(openCandidate.firstSeenAt)} &middot; last seen {formatDisplayDateTime(openCandidate.lastSeenAt)}
-              </p>
-              {!openCandidate.title && <p>The title expired under YouTube&rsquo;s 30-day rule; it refreshes when a search finds the channel again.</p>}
+              <p>{t("discover.drawer.seen", { first: formatDisplayDateTime(openCandidate.firstSeenAt), last: formatDisplayDateTime(openCandidate.lastSeenAt) })}</p>
+              {!openCandidate.title && <p>{t("discover.drawer.titleExpired")}</p>}
               <a href={`https://www.youtube.com/channel/${openCandidate.channelId}`} target="_blank" rel="noreferrer" className="text-indigo-300 hover:text-indigo-200">
-                Open on YouTube ↗
+                {t("discover.drawer.openOnYoutube")}
               </a>
             </div>
           </DrawerSection>
-          <DrawerSection title="Visible to agents of">
-            <FeatureErrorBoundary label="Channel assignment">
+          <DrawerSection title={t("assignment.drawerTitle")}>
+            <FeatureErrorBoundary label={t("assignment.boundary")}>
               <MarketChannelAssignment
                 recordKind="discovery_candidate"
                 recordId={openCandidate.channelId}
@@ -546,13 +554,15 @@ export function MarketDiscoveryPanel({
 
       {confirmingSearch && (
         <ConfirmDialog
-          title="Run this search?"
+          title={t("discover.confirm.title")}
           description={
             searchMode === "genre"
-              ? `Searches music videos for "${query}"${withinDays ? ` published in the last ${withinDays} days` : ""} and groups them by channel. Uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) plus up to 2 units of the daily 10,000 for video views and channel counts.`
-              : `This uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) for the query "${query}", plus 1 unit of the daily 10,000 for the channels' counts.`
+              ? withinDays
+                ? t("discover.confirm.genreWithin", { query, days: Number(withinDays) })
+                : t("discover.confirm.genre", { query })
+              : t("discover.confirm.channels", { query })
           }
-          confirmLabel="Search"
+          confirmLabel={t("discover.search")}
           onCancel={() => setConfirmingSearch(false)}
           onConfirm={handleConfirmSearch}
         />

@@ -27,6 +27,8 @@ import { ToggleSwitch } from "./toggle-switch";
 import { describeSessionJobCounts, fromSharedProgress, JobProgress } from "./media-job-progress";
 import type { SharedSessionJobs } from "@/lib/sync-gateway";
 import { VolumeUsageBar, volumeUsageBreakdown } from "./volume-usage-bar";
+import { useUiText } from "./ui-text-provider";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
 // enters RunPod keys here (stored encrypted per device, never shown again), picks datacenter / GPU /
@@ -60,8 +62,25 @@ type TestResult = { runpod: { ok: true } | { ok: false; message: string }; s3: {
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const data = await res.json().catch(() => ({}));
+  // ui-text-ignore: technical fallback naming the endpoint, shown only when the server sends no message of its own
   if (!res.ok) throw new Error((data as { message?: string }).message ?? `Request to ${url} failed (${res.status})`);
   return data as T;
+}
+
+const MONEY: Intl.NumberFormatOptions = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+type FormatNumber = (value: number, options?: Intl.NumberFormatOptions) => string;
+
+/** A byte count as GB / MB / B in the interface language. */
+function sizeLabel(t: Translate, formatNumber: FormatNumber, bytes: number): string {
+  if (bytes >= 1024 ** 3) return t("unit.gb", { value: formatNumber(bytes / 1024 ** 3, MONEY) });
+  if (bytes >= 1024 ** 2) return t("media.size.mb", { value: formatNumber(bytes / 1024 ** 2, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+  return t("media.size.bytes", { value: bytes });
+}
+
+/** The interface text plus this file's two number shapes: dollars with cents, and byte sizes. */
+function useMediaText() {
+  const { t, formatNumber } = useUiText();
+  return { t, formatNumber, usd: (value: number) => formatNumber(value, MONEY), gb: (bytes: number) => sizeLabel(t, formatNumber, bytes) };
 }
 
 const inputClass = "w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 focus:border-zinc-500 focus:outline-none";
@@ -113,6 +132,7 @@ export function onlyChangedSettings(patch: Record<string, unknown>, loaded: Sett
 }
 
 export function useMediaOverview() {
+  const { t } = useUiText();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
@@ -127,10 +147,10 @@ export function useMediaOverview() {
           setLoadError(null);
         },
         (err: unknown) => {
-          setLoadError(err instanceof Error ? err.message : "Failed to load media settings");
+          setLoadError(err instanceof Error ? err.message : t("media.overview.loadFailed"));
         }
       ),
-    []
+    [t]
   );
 
   // Traffic stats are decorative; the cards work without them.
@@ -157,13 +177,14 @@ export function useMediaOverview() {
 
 /** Settings → RunPod (slice 6): only the connection -- the API keys and their test. */
 export function RunpodConnectionSettings() {
+  const { t } = useUiText();
   const { overview, loadError, refresh } = useMediaOverview();
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
-  if (!overview) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!overview) return <p className="text-sm text-zinc-500">{t("common.loading")}</p>;
   return (
     <div className="space-y-6">
       <CredentialsCard status={overview.credentials} onChanged={refresh} />
-      <p className="text-xs text-zinc-500">Compute, network volume, limits, sessions, models, workflow templates and jobs are in the Production section.</p>
+      <p className="text-xs text-zinc-500">{t("media.connection.restInProduction")}</p>
     </div>
   );
 }
@@ -188,15 +209,12 @@ type ModelPull = {
 };
 const MODEL_FOLDERS = ["checkpoints", "diffusion_models", "text_encoders", "vae", "loras", "clip_vision", "audio_encoders", "upscale_models", "controlnet", "embeddings"];
 
-function gb(bytes: number): string {
-  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${bytes} B`;
-}
-
 // Phase 14 slice 4 (owner decision D5): the models on the network volume, and "add from Hugging Face"
 // through a cheap CPU pod attached to the volume (terminated as soon as the file is there). Every
 // listing is one S3 call, made each time the Models tab is opened (owner, Telegram 2026-10-06, msg 1793) or on Refresh;
 // while a pull runs the card refreshes itself.
 export function ModelsCard({ configured, active }: { configured: boolean; active: boolean }) {
+  const { t, usd, gb } = useMediaText();
   const [models, setModels] = useState<ModelFile[] | null>(null);
   const [pulls, setPulls] = useState<ModelPull[]>([]);
   const [repoId, setRepoId] = useState("");
@@ -231,7 +249,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
             setEvents(data.events);
             setError(null);
           },
-          (err: unknown) => setError(err instanceof Error ? err.message : "Failed to list the volume")
+          (err: unknown) => setError(err instanceof Error ? err.message : t("media.models.listFailed"))
         ),
         // The volume's size comes from RunPod, not S3: a failure there must not hide the listing.
         requestJson<{ storage: MediaStorageStatus }>("/api/media-generation/storage").then(
@@ -239,7 +257,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
             setStorage(data.storage);
             setStorageError(null);
           },
-          (err: unknown) => setStorageError(err instanceof Error ? err.message : "Could not read the volume's size")
+          (err: unknown) => setStorageError(err instanceof Error ? err.message : t("media.models.sizeFailed"))
         ),
         // BL-136: the whole volume's use (one S3 listing); its failure leaves the bar with the model files only.
         withUsage
@@ -250,7 +268,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
               },
               (err: unknown) => {
                 setUsage(null);
-                setUsageError(err instanceof Error ? err.message : "Could not list the whole volume");
+                setUsageError(err instanceof Error ? err.message : t("media.models.usageFailed"));
               }
             )
           : Promise.resolve(),
@@ -260,7 +278,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
           if (withUsage) setLoading(false);
         });
     },
-    []
+    [t]
   );
 
   // Every Production tab stays mounted (hidden by CSS), so "the owner opened Models" is `active` turning true.
@@ -296,7 +314,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
       setTargetName("");
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start the pull");
+      setError(err instanceof Error ? err.message : t("media.models.pullFailed"));
     } finally {
       setBusy(false);
     }
@@ -308,7 +326,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
       await requestJson(`/api/media-generation/models/pull/${encodeURIComponent(pull.pullId)}/cancel`, { method: "POST" });
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel the pull");
+      setError(err instanceof Error ? err.message : t("media.models.cancelPullFailed"));
     } finally {
       setBusy(false);
     }
@@ -323,56 +341,62 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
       await requestJson("/api/media-generation/models", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: target.key }) });
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete the model");
+      setError(err instanceof Error ? err.message : t("media.models.deleteFailed"));
     } finally {
       setBusy(false);
     }
   }
 
   const totalBytes = (models ?? []).reduce((sum, m) => sum + m.bytes, 0);
+  const usedByText = (m: ModelFile) =>
+    m.usedBy.map((u) => t(u.source === "owner" ? "media.models.usedByLocal" : "media.models.usedByEntry", { template: u.templateId, version: String(u.version) })).join(", ");
 
   return (
     <Card
-      title="Models on the volume"
-      help="The files under models/ on the network volume, read through RunPod's S3 API (no pod needed). 'Pull from Hugging Face' first checks the file on Hugging Face (size, SHA-256, free space; public repositories only), then starts a small CPU pod attached to the volume that downloads that exact commit, checks the SHA-256 and only then moves the file into models/<folder>/; a mismatch deletes it and fails the pull. The pod is terminated as soon as it is done (a few cents per pull); a GPU session cannot start while a pull is writing. ComfyUI finds the folders through extra_model_paths.yaml."
+      title={t("media.models.title")}
+      help={t("media.models.help")}
     >
       {!configured ? (
-        <p className="text-xs text-zinc-500">Save credentials and choose a network volume first.</p>
+        <p className="text-xs text-zinc-500">{t("media.models.notConfigured")}</p>
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => void load()} disabled={busy || loading} className={secondaryButton}>
-              {loading ? "Loading..." : models ? "Refresh" : "Load models"}
+              {loading ? t("common.loading") : models ? t("media.common.refresh") : t("media.models.load")}
             </button>
             {models && (
               <span className="text-xs text-zinc-500">
-                {models.length} file(s), {gb(totalBytes)} ≈ ${((totalBytes / 1024 ** 3) * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2)}/month of the volume&rsquo;s price
+                {t("media.models.summary", { count: models.length, size: gb(totalBytes), usd: usd((totalBytes / 1024 ** 3) * NETWORK_VOLUME_USD_PER_GB_MONTH) })}
               </span>
             )}
           </div>
           {storage && models && <VolumeUsageBar breakdown={volumeUsageBreakdown({ rentedGb: storage.sizeGb, models, usage })} />}
-          {usageError && <p className="text-xs text-amber-400">Volume listing: {usageError}</p>}
+          {usageError && <p className="text-xs text-amber-400">{t("media.models.usageError", { error: usageError })}</p>}
           {storage && (
             <p className="text-xs text-zinc-400">
-              Volume {storage.volumeId}
-              {storage.dataCenterId ? ` (${storage.dataCenterId})` : ""}: {storage.sizeGb} GB rented
-              {storage.usedGb !== null ? ` · ${storage.usedGb} GB used · ${storage.freeGb} GB free` : ""} · ${storage.monthlyUsd.toFixed(2)}/month
+              {t("media.models.storageLine", {
+                volume: storage.volumeId,
+                dataCenter: storage.dataCenterId ? ` (${storage.dataCenterId})` : "",
+                size: storage.sizeGb,
+                usage: storage.usedGb !== null ? t("media.models.storageUsage", { used: storage.usedGb, free: storage.freeGb ?? 0 }) : "",
+                usd: usd(storage.monthlyUsd),
+              })}
             </p>
           )}
-          {storageError && <p className="text-xs text-amber-400">Volume size: {storageError}</p>}
+          {storageError && <p className="text-xs text-amber-400">{t("media.models.sizeError", { error: storageError })}</p>}
           {models && registry.state === "unavailable" && (
-            <p className="text-xs text-amber-400">The factory template registry cannot be read on this device, so &ldquo;used by&rdquo; shows only this device&rsquo;s templates ({registry.error}).</p>
+            <p className="text-xs text-amber-400">{t("media.models.registryUnavailable", { error: registry.error ?? "" })}</p>
           )}
           {models && models.length > 0 && (
             <div className="overflow-x-auto">
               <table className="min-w-[560px] w-full text-left text-xs text-zinc-400">
                 <thead>
                   <tr className="text-zinc-500">
-                    <th className="py-1 pr-3">Folder</th>
-                    <th className="py-1 pr-3">File</th>
-                    <th className="py-1 pr-3">Size</th>
-                    <th className="py-1 pr-3">SHA-256</th>
-                    <th className="py-1 pr-3">Used by</th>
+                    <th className="py-1 pr-3">{t("media.models.colFolder")}</th>
+                    <th className="py-1 pr-3">{t("media.models.colFile")}</th>
+                    <th className="py-1 pr-3">{t("media.models.colSize")}</th>
+                    <th className="py-1 pr-3">{t("media.models.colSha")}</th>
+                    <th className="py-1 pr-3">{t("media.models.colUsedBy")}</th>
                     <th className="py-1"></th>
                   </tr>
                 </thead>
@@ -382,15 +406,15 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
                       <td className="py-1 pr-3">{m.folder}</td>
                       <td className="py-1 pr-3 font-mono">{m.name}</td>
                       <td className="py-1 pr-3 whitespace-nowrap">{gb(m.bytes)}</td>
-                      <td className="py-1 pr-3 font-mono" title={m.sha256 ?? "not verified by a pull on this device"}>
+                      <td className="py-1 pr-3 font-mono" title={m.sha256 ?? t("media.models.shaNotVerified")}>
                         {m.sha256 ? `${m.sha256.slice(0, 12)}…` : "—"}
                       </td>
                       <td className="py-1 pr-3">
-                        {m.usedBy.length === 0 ? "—" : m.usedBy.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")}
+                        {m.usedBy.length === 0 ? "—" : usedByText(m)}
                       </td>
                       <td className="py-1">
                         <button type="button" onClick={() => setDeleteTarget(m)} disabled={busy} className={dangerButton}>
-                          Delete
+                          {t("media.common.delete")}
                         </button>
                       </td>
                     </tr>
@@ -410,14 +434,14 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
                     {" → "}
                     {p.expectedKey}
                     {p.bytes !== null ? ` · ${gb(p.bytes)}` : ""}
-                    {p.actualSha256 && p.status === "done" ? ` · SHA-256 verified ${p.actualSha256.slice(0, 12)}…` : ""}
-                    {p.requestedBy === "factory" ? " · requested by the Factory Operator" : ""}
+                    {p.actualSha256 && p.status === "done" ? t("media.models.pullShaVerified", { hash: p.actualSha256.slice(0, 12) }) : ""}
+                    {p.requestedBy === "factory" ? t("media.models.pullByFactory") : ""}
                     {p.error ? ` · ${p.error}` : ""}
-                    {p.podId ? ` · pod ${p.podId}` : " · reserving a pod…"}
+                    {p.podId ? t("media.models.pullPod", { pod: p.podId }) : t("media.models.pullReserving")}
                   </span>
                   {p.status === "running" && (
                     <button type="button" onClick={() => cancelPull(p)} disabled={busy} className={secondaryButton}>
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   )}
                 </li>
@@ -426,15 +450,16 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
           )}
           <div className="grid gap-2 sm:grid-cols-4">
             <label className="block text-xs text-zinc-400">
-              Hugging Face repo
+              {t("media.models.repo")}
+              {/* ui-text-ignore: a sample Hugging Face repository id */}
               <input type="text" value={repoId} onChange={(e) => setRepoId(e.target.value)} className={inputClass} placeholder="Comfy-Org/flux1-schnell" />
             </label>
             <label className="block text-xs text-zinc-400">
-              File in the repo
+              {t("media.models.fileInRepo")}
               <input type="text" value={file} onChange={(e) => setFile(e.target.value)} className={inputClass} placeholder="flux1-schnell-fp8.safetensors" />
             </label>
             <label className="block text-xs text-zinc-400">
-              Folder
+              {t("media.models.folder")}
               <select value={folder} onChange={(e) => setFolder(e.target.value)} className={inputClass}>
                 {MODEL_FOLDERS.map((f) => (
                   <option key={f} value={f}>
@@ -444,31 +469,31 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
               </select>
             </label>
             <label className="block text-xs text-zinc-400">
-              Revision (optional)
+              {t("media.models.revision")}
               <input type="text" value={revision} onChange={(e) => setRevision(e.target.value)} className={inputClass} placeholder="main" />
             </label>
             <label className="block text-xs text-zinc-400 sm:col-span-2">
-              Expected SHA-256 (optional: Hugging Face&rsquo;s own hash is used and checked on the pod)
-              <input type="text" value={sha256} onChange={(e) => setSha256(e.target.value)} className={`${inputClass} font-mono`} placeholder="64 hex characters" />
+              {t("media.models.expectedSha")}
+              <input type="text" value={sha256} onChange={(e) => setSha256(e.target.value)} className={`${inputClass} font-mono`} placeholder={t("media.models.shaPlaceholder")} />
             </label>
             <label className="block text-xs text-zinc-400">
-              File name on the volume (optional)
-              <input type="text" value={targetName} onChange={(e) => setTargetName(e.target.value)} className={`${inputClass} font-mono`} placeholder={file.trim() ? (file.trim().split("/").filter(Boolean).pop() ?? "") : "the file's own name"} />
+              {t("media.models.targetName")}
+              <input type="text" value={targetName} onChange={(e) => setTargetName(e.target.value)} className={`${inputClass} font-mono`} placeholder={file.trim() ? (file.trim().split("/").filter(Boolean).pop() ?? "") : t("media.models.targetNamePlaceholder")} />
             </label>
             <div className="flex items-end">
               <button type="button" onClick={startPull} disabled={busy || pulling || !repoId.trim() || !file.trim()} className={primaryButton}>
-                {pulling ? "Pull running…" : "Pull from Hugging Face"}
+                {pulling ? t("media.models.pullRunning") : t("media.models.pull")}
               </button>
             </div>
           </div>
-          <p className="text-xs text-zinc-500">Check each model&rsquo;s licence for your use before pulling it; this app takes no position.</p>
+          <p className="text-xs text-zinc-500">{t("media.models.licence")}</p>
           {events.length > 0 && (
             <details className="text-xs text-zinc-400">
-              <summary className="cursor-pointer text-zinc-500">Recent model and template actions ({events.length})</summary>
+              <summary className="cursor-pointer text-zinc-500">{t("media.models.events", { count: events.length })}</summary>
               <ul className="mt-1 space-y-0.5">
                 {events.map((e, i) => (
                   <li key={`${e.at}-${i}`}>
-                    {new Date(e.at).toLocaleString()} · {e.actor === "factory" ? "Factory Operator" : e.actor === "sync" ? "automatic sync" : "you"} · {e.action.replace(/_/g, " ")} · <span className="font-mono">{e.subject}</span>
+                    {formatDisplayDateTime(e.at)} · {e.actor === "factory" ? t("media.actor.factory") : e.actor === "sync" ? t("media.actor.sync") : t("media.actor.you")} · {e.action.replace(/_/g, " ")} · <span className="font-mono">{e.subject}</span>
                   </li>
                 ))}
               </ul>
@@ -479,15 +504,15 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
       {error && <p className="text-xs text-red-400">{error}</p>}
       {deleteTarget && (
         <ConfirmDialog
-          title={`Delete ${deleteTarget.name} from the volume?`}
+          title={t("media.models.deleteTitle", { name: deleteTarget.name })}
           description={
             deleteTarget.usedBy.length > 0
-              ? `Used by ${deleteTarget.usedBy.map((u) => `${u.templateId} v${u.version}${u.source === "owner" ? " (local)" : ""}`).join(", ")} — jobs of these templates will fail until it is pulled again. There is no undo except pulling it again.`
+              ? t("media.models.deleteUsed", { templates: usedByText(deleteTarget) })
               : registry.state === "unavailable"
-                ? "The factory template registry cannot be read here, so it cannot be checked whether a factory template needs this file. There is no undo except pulling it again."
-                : "No template uses this file. It is removed from the network volume; pull it again if a workflow needs it."
+                ? t("media.models.deleteUnchecked")
+                : t("media.models.deleteUnused")
           }
-          confirmLabel="Delete"
+          confirmLabel={t("media.common.delete")}
           confirmVariant="danger"
           onCancel={() => setDeleteTarget(null)}
           onConfirm={remove}
@@ -503,6 +528,7 @@ type WorkflowTemplate = MediaWorkflowTemplate;
 // graph (Save As (API Format) in ComfyUI) plus the parameters an agent may set. Prompts are job
 // parameters, never part of a template.
 export function WorkflowTemplatesCard() {
+  const { t } = useUiText();
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [name, setName] = useState("");
   const [workflowText, setWorkflowText] = useState("");
@@ -523,9 +549,9 @@ export function WorkflowTemplatesCard() {
           setTemplates(data.templates);
           setLastSync(sync.lastSync);
         },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load templates")
+        (err: unknown) => setError(err instanceof Error ? err.message : t("media.templates.loadFailed"))
       ),
-    []
+    [t]
   );
 
   async function syncNow() {
@@ -535,7 +561,7 @@ export function WorkflowTemplatesCard() {
       await requestJson("/api/media-generation/workflow-templates/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       await fetchTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to sync the templates");
+      setError(err instanceof Error ? err.message : t("media.templates.syncFailed"));
     } finally {
       setBusy(false);
     }
@@ -555,7 +581,7 @@ export function WorkflowTemplatesCard() {
         workflow = JSON.parse(workflowText);
         parameters = JSON.parse(parametersText);
       } catch {
-        throw new Error("Workflow and parameters must be valid JSON");
+        throw new Error(t("media.templates.invalidJson"));
       }
       await requestJson("/api/media-generation/workflow-templates", {
         method: "POST",
@@ -567,7 +593,7 @@ export function WorkflowTemplatesCard() {
       setShowImport(false);
       await fetchTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to import the template");
+      setError(err instanceof Error ? err.message : t("media.templates.importFailed"));
     } finally {
       setBusy(false);
     }
@@ -582,7 +608,7 @@ export function WorkflowTemplatesCard() {
       await requestJson(`/api/media-generation/workflow-templates/${encodeURIComponent(target.templateId)}`, { method: "DELETE" });
       await fetchTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete the template");
+      setError(err instanceof Error ? err.message : t("media.templates.deleteFailed"));
     } finally {
       setBusy(false);
     }
@@ -590,24 +616,27 @@ export function WorkflowTemplatesCard() {
 
   return (
     <Card
-      title="Workflow templates"
-      help="A template is a ComfyUI workflow exported in API format (ComfyUI → Workflow → Export (API)) plus the parameters a job may set: each parameter names a node id and an input of that node, with a type and optional bounds. Every Save node's filename_prefix is rewritten per job so outputs land in that job's folder. Prompts are job parameters, not template content. Factory templates come from the factory template registry (Settings → logical path media_templates), are checked every minute and are read-only here; templates you import yourself stay local and are never touched by the sync."
+      title={t("media.templates.title")}
+      help={t("media.templates.help")}
     >
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={syncNow} disabled={busy} className={secondaryButton}>
-          Sync templates
+          {t("media.templates.sync")}
         </button>
         {lastSync && (
           <span className="text-xs text-zinc-500">
-            Last sync {new Date(lastSync.at).toLocaleString()} ({lastSync.trigger === "auto" ? "automatic" : lastSync.trigger === "factory" ? "by the Factory Operator" : "by you"}):{" "}
+            {t("media.templates.lastSync", {
+              date: formatDisplayDateTime(lastSync.at),
+              trigger: lastSync.trigger === "auto" ? t("media.templates.triggerAuto") : lastSync.trigger === "factory" ? t("media.templates.triggerFactory") : t("media.templates.triggerYou"),
+            })}{" "}
             {lastSync.outcome === "unavailable"
-              ? `registry unavailable — ${lastSync.error}`
+              ? t("media.templates.registryUnavailable", { error: lastSync.error ?? "" })
               : [
-                  `${lastSync.installed.length} installed`,
-                  `${lastSync.updated.length} updated`,
-                  `${lastSync.removed.length} removed`,
-                  lastSync.pending.length ? `${lastSync.pending.length} waiting for files` : null,
-                  lastSync.invalid.length ? `${lastSync.invalid.length} refused` : null,
+                  t("media.templates.installed", { count: lastSync.installed.length }),
+                  t("media.templates.updated", { count: lastSync.updated.length }),
+                  t("media.templates.removed", { count: lastSync.removed.length }),
+                  lastSync.pending.length ? t("media.templates.pending", { count: lastSync.pending.length }) : null,
+                  lastSync.invalid.length ? t("media.templates.refused", { count: lastSync.invalid.length }) : null,
                 ]
                   .filter(Boolean)
                   .join(", ")}
@@ -624,25 +653,25 @@ export function WorkflowTemplatesCard() {
         </ul>
       )}
       {templates.length === 0 ? (
-        <p className="text-xs text-zinc-500">No templates yet.</p>
+        <p className="text-xs text-zinc-500">{t("media.templates.none")}</p>
       ) : (
         <ul className="space-y-1 text-sm text-zinc-300">
-          {templates.map((t) => (
-            <li key={t.templateId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
+          {templates.map((tpl) => (
+            <li key={tpl.templateId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
               <span>
-                <span className="font-medium text-zinc-100">{t.name}</span>{" "}
-                <span className={t.source === "factory" ? "rounded bg-sky-950 px-1.5 text-xs text-sky-300" : "rounded bg-zinc-800 px-1.5 text-xs text-zinc-400"}>{t.source === "factory" ? "factory" : "local"}</span>{" "}
-                <span className="text-xs text-zinc-500">v{t.version} · {t.nodeCount} nodes · {t.outputNodeIds.length} output node(s) · id {t.templateId}</span>
+                <span className="font-medium text-zinc-100">{tpl.name}</span>{" "}
+                <span className={tpl.source === "factory" ? "rounded bg-sky-950 px-1.5 text-xs text-sky-300" : "rounded bg-zinc-800 px-1.5 text-xs text-zinc-400"}>{tpl.source === "factory" ? t("media.templates.sourceFactory") : t("media.templates.sourceLocal")}</span>{" "}
+                <span className="text-xs text-zinc-500">{t("media.templates.meta", { version: String(tpl.version), nodes: tpl.nodeCount, outputs: tpl.outputNodeIds.length, id: tpl.templateId })}</span>
                 <br />
                 <span className="text-xs text-zinc-500">
-                  {t.parameters.map((p) => `${p.name}${p.required ? "*" : ""}: ${p.type}`).join(", ") || "no parameters"}
+                  {tpl.parameters.map((p) => `${p.name}${p.required ? "*" : ""}: ${p.type}`).join(", ") || t("media.templates.noParameters")}
                 </span>
               </span>
-              {t.source === "factory" ? (
-                <span className="text-xs text-zinc-500">managed by the factory registry</span>
+              {tpl.source === "factory" ? (
+                <span className="text-xs text-zinc-500">{t("media.templates.managedByFactory")}</span>
               ) : (
-                <button type="button" onClick={() => setDeleteTarget(t)} disabled={busy} className={dangerButton}>
-                  Delete
+                <button type="button" onClick={() => setDeleteTarget(tpl)} disabled={busy} className={dangerButton}>
+                  {t("media.common.delete")}
                 </button>
               )}
             </li>
@@ -652,37 +681,39 @@ export function WorkflowTemplatesCard() {
       {showImport ? (
         <div className="space-y-2">
           <label className="block text-xs text-zinc-400">
-            Name
+            {t("media.templates.name")}
+            {/* ui-text-ignore: a sample template name */}
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} placeholder="txt2img FLUX" />
           </label>
           <label className="block text-xs text-zinc-400">
-            Workflow JSON (API format)
+            {t("media.templates.workflowJson")}
+            {/* ui-text-ignore: a JSON format sample */}
             <textarea value={workflowText} onChange={(e) => setWorkflowText(e.target.value)} className={`${inputClass} h-40 font-mono text-xs`} placeholder='{"3": {"class_type": "KSampler", "inputs": {...}}, ...}' />
           </label>
           <label className="block text-xs text-zinc-400">
-            Parameters JSON
+            {t("media.common.parametersJson")}
             <textarea value={parametersText} onChange={(e) => setParametersText(e.target.value)} className={`${inputClass} h-28 font-mono text-xs`} />
           </label>
           <div className="flex gap-2">
             <button type="button" onClick={importTemplate} disabled={busy || !name.trim() || !workflowText.trim()} className={primaryButton}>
-              {busy ? "Importing…" : "Import"}
+              {busy ? t("media.common.importing") : t("media.common.import")}
             </button>
             <button type="button" onClick={() => setShowImport(false)} disabled={busy} className={secondaryButton}>
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
         </div>
       ) : (
         <button type="button" onClick={() => setShowImport(true)} className={secondaryButton}>
-          Import a template
+          {t("media.templates.importOpen")}
         </button>
       )}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {deleteTarget && (
         <ConfirmDialog
-          title={`Delete the template "${deleteTarget.name}"?`}
-          description="Finished jobs keep their own provenance; new jobs can no longer use it."
-          confirmLabel="Delete"
+          title={t("media.templates.deleteTitle", { name: deleteTarget.name })}
+          description={t("media.templates.deleteDescription")}
+          confirmLabel={t("media.common.delete")}
           confirmVariant="danger"
           onCancel={() => setDeleteTarget(null)}
           onConfirm={remove}
@@ -697,6 +728,7 @@ type Job = MediaJob;
 // Phase 14 slice 3: the operator's own manual job (an agent's arrives through MCP in slice 5) and the
 // job list; the exchange janitor is run by hand here (dry run first) and daily by the server.
 export function JobsCard({ activeChannelId }: { activeChannelId: string | null }) {
+  const { t } = useUiText();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   // Slice 6: several sessions may run at once; a job goes to one RUNNING session of the active channel, chosen here.
@@ -716,9 +748,9 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
     () =>
       requestJson<{ jobs: Job[] }>("/api/media-generation/jobs").then(
         (j) => setJobs(j.jobs),
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load jobs")
+        (err: unknown) => setError(err instanceof Error ? err.message : t("media.jobs.loadFailed"))
       ),
-    []
+    [t]
   );
   const fetchContext = useCallback(
     () =>
@@ -726,13 +758,13 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
         requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates"),
         requestJson<{ limits: { openSessions: Array<{ sessionId: string; status: string; channelId: string; podId: string | null; createdAt: string }> } }>("/api/media-generation/sessions"),
       ]).then(
-        ([t, s]) => {
-          setTemplates(t.templates);
+        ([tpl, s]) => {
+          setTemplates(tpl.templates);
           setOpenSessions(s.limits.openSessions);
         },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load jobs")
+        (err: unknown) => setError(err instanceof Error ? err.message : t("media.jobs.loadFailed"))
       ),
-    []
+    [t]
   );
   const fetchAll = useCallback(() => Promise.all([fetchJobs(), fetchContext()]).then(() => undefined), [fetchJobs, fetchContext]);
 
@@ -762,7 +794,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
       try {
         params = JSON.parse(paramsText || "{}");
       } catch {
-        throw new Error("Parameters must be valid JSON");
+        throw new Error(t("media.jobs.invalidJson"));
       }
       await requestJson("/api/media-generation/jobs", {
         method: "POST",
@@ -771,7 +803,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
       });
       await fetchAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to submit the job");
+      setError(err instanceof Error ? err.message : t("media.jobs.submitFailed"));
     } finally {
       setBusy(false);
     }
@@ -783,7 +815,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
       await requestJson(`/api/media-generation/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
       await fetchAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel the job");
+      setError(err instanceof Error ? err.message : t("media.jobs.cancelFailed"));
     } finally {
       setBusy(false);
     }
@@ -799,9 +831,13 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ dryRun }),
       });
-      setJanitorReport(`${dryRun ? `Would delete ${report.wouldDelete.length}` : `Deleted ${report.deleted.length}`} of ${report.scanned} object(s); kept ${report.kept.length}.`);
+      setJanitorReport(
+        dryRun
+          ? t("media.jobs.janitorDryRun", { count: report.wouldDelete.length, scanned: report.scanned, kept: report.kept.length })
+          : t("media.jobs.janitorDeleted", { count: report.deleted.length, scanned: report.scanned, kept: report.kept.length })
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Janitor failed");
+      setError(err instanceof Error ? err.message : t("media.jobs.janitorFailed"));
     } finally {
       setBusy(false);
     }
@@ -815,52 +851,53 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
 
   return (
     <Card
-      title="Jobs"
-      help="A job fills a template's parameters, submits the prompt to the running session's ComfyUI and, once it finishes, pulls every output over the S3 API into <workspace>/99 Data Exchange/From YTM/media/<jobId>/, deletes it from the volume and registers it in the asset catalog with its provenance. The janitor removes leftovers of finished jobs from the volume (dry run first)."
+      title={t("media.jobs.title")}
+      help={t("media.jobs.help")}
     >
       {!canRun ? (
         <p className="text-xs text-zinc-500">
           {!activeChannelId
-            ? "Select an active channel."
+            ? t("media.jobs.selectChannel")
             : targetSession === null
               ? runningElsewhere
-                ? "The running sessions belong to other channels; switch the active channel, or request and approve a session for this one (Sessions tab)."
-                : "Start a session for this channel first (Sessions tab)."
-              : "Import a workflow template first (Workflow templates tab)."}
+                ? t("media.jobs.runningElsewhere")
+                : t("media.jobs.startSessionFirst")
+              : t("media.jobs.importTemplateFirst")}
         </p>
       ) : (
         <div className="space-y-2">
           <div className="grid gap-2 sm:grid-cols-2">
             {runningHere.length > 1 && (
               <label className="block text-xs text-zinc-400 sm:col-span-2">
-                Session
+                {t("media.jobs.session")}
                 <select value={targetSession?.sessionId ?? ""} onChange={(e) => setChosenSessionId(e.target.value)} className={inputClass}>
                   {runningHere.map((s) => (
                     <option key={s.sessionId} value={s.sessionId}>
-                      {s.podId ?? s.sessionId} · requested {formatDisplayDateTime(s.createdAt)}
+                      {t("media.jobs.sessionOption", { pod: s.podId ?? s.sessionId, date: formatDisplayDateTime(s.createdAt) })}
                     </option>
                   ))}
                 </select>
               </label>
             )}
             <label className="block text-xs text-zinc-400">
-              Template
+              {t("media.jobs.template")}
               <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputClass}>
-                <option value="">— choose —</option>
-                {templates.map((t) => (
-                  <option key={t.templateId} value={t.templateId}>
-                    {t.name} v{t.version}
+                <option value="">{t("media.jobs.chooseOption")}</option>
+                {templates.map((tpl) => (
+                  <option key={tpl.templateId} value={tpl.templateId}>
+                    {tpl.name} v{tpl.version}
                   </option>
                 ))}
               </select>
             </label>
             <label className="block text-xs text-zinc-400">
-              Parameters JSON
+              {t("media.common.parametersJson")}
+              {/* ui-text-ignore: a JSON format sample */}
               <textarea value={paramsText} onChange={(e) => setParamsText(e.target.value)} className={`${inputClass} h-20 font-mono text-xs`} placeholder='{"prompt": "..."}' />
             </label>
           </div>
           <button type="button" onClick={run} disabled={busy || !templateId} className={primaryButton}>
-            {busy ? "Working…" : "Run job"}
+            {busy ? t("media.common.working") : t("media.jobs.run")}
           </button>
         </div>
       )}
@@ -870,11 +907,11 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
           <table className="min-w-[640px] w-full text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
-                <th className="py-1 pr-3">When</th>
-                <th className="py-1 pr-3">Status</th>
-                <th className="py-1 pr-3">By</th>
-                <th className="py-1 pr-3">Outputs</th>
-                <th className="py-1 pr-3">Error / notes</th>
+                <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
+                <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
+                <th className="py-1 pr-3">{t("media.common.colBy")}</th>
+                <th className="py-1 pr-3">{t("media.jobs.colOutputs")}</th>
+                <th className="py-1 pr-3">{t("media.jobs.colNotes")}</th>
                 <th className="py-1"></th>
               </tr>
             </thead>
@@ -888,13 +925,13 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
                   </td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
                   <td className="py-1 pr-3 font-mono">
-                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split(/[\\/]/).slice(-2).join("/") : `${o.filename} (${o.note ?? "pending"})`)).join(", ")}
+                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split(/[\\/]/).slice(-2).join("/") : `${o.filename} (${o.note ?? t("media.jobs.outputPending")})`)).join(", ")}
                   </td>
                   <td className="py-1 pr-3">{j.error ?? ""}</td>
                   <td className="py-1">
                     {["queued", "submitted", "generating"].includes(j.status) && (
                       <button type="button" onClick={() => cancel(j)} disabled={busy} className={secondaryButton}>
-                        Cancel
+                        {t("common.cancel")}
                       </button>
                     )}
                   </td>
@@ -907,19 +944,19 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
 
       <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3">
         <button type="button" onClick={() => janitor(true)} disabled={busy} className={secondaryButton}>
-          Janitor: dry run
+          {t("media.jobs.janitorDryRunButton")}
         </button>
         <button type="button" onClick={() => setConfirmJanitor(true)} disabled={busy} className={dangerButton}>
-          Janitor: delete leftovers
+          {t("media.jobs.janitorDeleteButton")}
         </button>
         {janitorReport && <span className="text-xs text-zinc-400">{janitorReport}</span>}
       </div>
       {error && <p className="text-xs text-red-400">{error}</p>}
       {confirmJanitor && (
         <ConfirmDialog
-          title="Delete finished jobs' leftovers from the volume?"
-          description="Only objects under exchange/ that this device's ledger says are already in your workspace are deleted (by ledger only). Leftovers of failed or cancelled jobs are KEPT -- they may be the only copy of a finished generation -- for you to pull or remove by hand (scripts/media/s3.sh). Models and reference inputs are never touched."
-          confirmLabel="Delete leftovers"
+          title={t("media.jobs.janitorConfirmTitle")}
+          description={t("media.jobs.janitorConfirmDescription")}
+          confirmLabel={t("media.jobs.janitorConfirmLabel")}
           confirmVariant="danger"
           onCancel={() => setConfirmJanitor(false)}
           onConfirm={() => janitor(false)}
@@ -938,33 +975,36 @@ const TRANSITIONAL_STATUSES = new Set(["approved", "starting", "stopping"]);
 const SESSIONS_FAST_POLL_MS = 5_000;
 const SESSIONS_SLOW_POLL_MS = 15_000;
 
-function minutesLabel(seconds: number | null): string {
+function minutesLabel(t: Translate, seconds: number | null): string {
   if (seconds === null) return "—";
-  return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+  return t("media.duration.minutesSeconds", { m: Math.floor(seconds / 60), s: seconds % 60 });
 }
 
-function sinceLabel(iso: string | null, nowMs: number): string {
+function sinceLabel(t: Translate, iso: string | null, nowMs: number): string {
   if (!iso) return "";
   const seconds = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 1000));
-  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min`;
+  return seconds < 60 ? t("unit.seconds", { value: seconds }) : t("unit.minutes", { value: Math.floor(seconds / 60) });
 }
 
 /** What a row's status means right now, in the operator's words (the start runs in the background since slice 6). */
-function statusDetail(s: Session, nowMs: number): string {
+function statusDetail(t: Translate, s: Session, nowMs: number): string {
   switch (s.status) {
     case "pending":
-      return "waiting for your approval";
+      return t("media.sessions.detailPending");
     case "approved":
-      return `creating the pod… ${sinceLabel(s.approvedAt, nowMs)}`;
+      return t("media.sessions.detailApproved", { since: sinceLabel(t, s.approvedAt, nowMs) });
     case "waiting_capacity":
       // BL-133: no GPU could be placed yet -- no pod, nothing billed; retried until the wait ends.
-      return `no free GPU yet (no pod, no cost) · ${s.capacity?.attempts ?? 0} round(s)${s.capacity?.waitUntil ? ` · gives up at ${formatDisplayDateTime(s.capacity.waitUntil)}` : ""}`;
+      return t("media.sessions.detailWaitingCapacity", {
+        count: s.capacity?.attempts ?? 0,
+        giveUp: s.capacity?.waitUntil ? t("media.sessions.detailGivesUp", { date: formatDisplayDateTime(s.capacity.waitUntil) }) : "",
+      });
     case "starting":
-      return `pod created, waiting for ComfyUI… ${sinceLabel(s.startedAt, nowMs)}`;
+      return t("media.sessions.detailStarting", { since: sinceLabel(t, s.startedAt, nowMs) });
     case "running":
-      return `ready${s.lastActivityAt ? ` · last activity ${sinceLabel(s.lastActivityAt, nowMs)} ago` : ""}`;
+      return s.lastActivityAt ? t("media.sessions.detailReadyActive", { since: sinceLabel(t, s.lastActivityAt, nowMs) }) : t("media.sessions.detailReady");
     case "stopping":
-      return "terminating the pod…";
+      return t("media.sessions.detailStopping");
     default:
       return "";
   }
@@ -1006,6 +1046,7 @@ export function nowRunningOn(sessionId: string, jobs: MediaJob[]): { current: Me
 }
 
 export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: boolean; activeChannelId: string | null; onLimits?: (limits: SessionLimits) => void }) {
+  const { t, usd } = useMediaText();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [limits, setLimits] = useState<SessionLimits | null>(null);
   const [maxMinutesText, setMaxMinutesText] = useState<string>("");
@@ -1026,9 +1067,9 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
           setNowMs(Date.now());
           onLimits?.(data.limits);
         },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load sessions")
+        (err: unknown) => setError(err instanceof Error ? err.message : t("media.sessions.loadFailed"))
       ),
-    [onLimits]
+    [onLimits, t]
   );
 
   useEffect(() => {
@@ -1076,8 +1117,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     if (!runningIds || !missingTemplate) return;
     let cancelled = false;
     requestJson<{ templates: WorkflowTemplate[] }>("/api/media-generation/workflow-templates").then(
-      (t) => {
-        if (!cancelled) setTemplateNames(new Map(t.templates.map((x) => [x.templateId, `${x.name} v${x.version}`])));
+      (list) => {
+        if (!cancelled) setTemplateNames(new Map(list.templates.map((x) => [x.templateId, `${x.name} v${x.version}`])));
       },
       () => {}
     );
@@ -1090,12 +1131,12 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     if (!activeChannelId) return;
     const parsedMaxUsd = maxUsd.trim() ? parseMoney(maxUsd) : null;
     if (maxUsd.trim() && parsedMaxUsd === null) {
-      setError("Max USD must be a positive amount like 2.5");
+      setError(t("media.sessions.maxUsdInvalid"));
       return;
     }
     const maxMinutes = maxMinutesText.trim() ? parseInteger(maxMinutesText, { min: 1, max: 1440 }) : null;
     if (maxMinutesText.trim() && maxMinutes === null) {
-      setError("Max minutes must be a whole number between 1 and 1440");
+      setError(t("media.sessions.maxMinutesInvalid"));
       return;
     }
     setRequesting(true);
@@ -1113,7 +1154,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
       });
       await fetchAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to request a session");
+      setError(err instanceof Error ? err.message : t("media.sessions.requestFailed"));
     } finally {
       setRequesting(false);
     }
@@ -1130,7 +1171,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
         ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${action} the session`);
+      setError(err instanceof Error ? err.message : t(action === "approve" ? "media.sessions.approveFailed" : action === "reject" ? "media.sessions.rejectFailed" : "media.sessions.stopFailed"));
     } finally {
       setBusyId(null);
       await fetchAll();
@@ -1148,12 +1189,12 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
       const approve = confirming.action === "approve";
       return (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-zinc-300">{approve ? `Start a pod? up to $${s.estimateUsd.toFixed(2)} for ${s.maxMinutes} min` : "Terminate the pod now? Running jobs are cut off."}</span>
+          <span className="text-xs text-zinc-300">{approve ? t("media.sessions.confirmStartText", { usd: usd(s.estimateUsd), minutes: s.maxMinutes }) : t("media.sessions.confirmStopText")}</span>
           <button type="button" onClick={() => act(s, confirming.action)} disabled={busy} className={approve ? primaryButton : dangerButton}>
-            {approve ? "Confirm start" : "Confirm stop"}
+            {approve ? t("media.sessions.confirmStart") : t("media.sessions.confirmStop")}
           </button>
           <button type="button" onClick={() => setConfirming(null)} className={secondaryButton}>
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
       );
@@ -1165,13 +1206,13 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
             type="button"
             onClick={() => setConfirming({ sessionId: s.sessionId, action: "approve" })}
             disabled={busy || !ready || atLimit}
-            title={atLimit ? `${activeCount} of ${maxConcurrent} sessions are active (Setup → Limits)` : undefined}
+            title={atLimit ? t("media.sessions.atLimit", { active: activeCount, max: maxConcurrent }) : undefined}
             className={primaryButton}
           >
-            Approve
+            {t("media.sessions.approve")}
           </button>
           <button type="button" onClick={() => act(s, "reject")} disabled={busy} className={secondaryButton}>
-            Reject
+            {t("media.sessions.reject")}
           </button>
         </div>
       );
@@ -1179,22 +1220,22 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
     // An `approved` row with no error is still inside createPod in the background: the server refuses a Stop then (it would
     // orphan the pod), so none is offered until the pod exists or the start has reported a problem on the row.
     // After 15 min (start + stop budgets) the start is abandoned by age and the server accepts a Stop again.
-    if (s.status === "approved" && !s.error && nowMs - Date.parse(s.approvedAt ?? s.createdAt) < 15 * 60_000) return <span className="text-zinc-500">starting…</span>;
+    if (s.status === "approved" && !s.error && nowMs - Date.parse(s.approvedAt ?? s.createdAt) < 15 * 60_000) return <span className="text-zinc-500">{t("media.sessions.starting")}</span>;
     return (
       <button type="button" onClick={() => setConfirming({ sessionId: s.sessionId, action: "stop" })} disabled={busy} className={dangerButton}>
-        Stop
+        {t("media.sessions.stop")}
       </button>
     );
   }
 
   return (
     <Card
-      title="Sessions"
-      help="A session is one RunPod pod running ComfyUI; several may run at once, up to the limit in Setup. Agents request sessions through MCP (or you do, below); requesting costs nothing. Approving creates the pod in the background (billed per second from that moment) -- the row shows its progress. A pod is terminated when its session is stopped, idle, over its minutes or over its USD cap, or when today's cap is reached -- never 'stopped' (that would keep billing its disk)."
+      title={t("media.sessions.title")}
+      help={t("media.sessions.help")}
     >
       {limits && (
         <p className="text-xs text-zinc-500">
-          Active {activeCount} of {maxConcurrent} · spent today ${limits.spentTodayUsd.toFixed(2)} of ${limits.maxUsdPerDay.toFixed(2)} · idle timeout {limits.idleMinutes} min
+          {t("media.sessions.limitsLine", { active: activeCount, max: maxConcurrent, spent: usd(limits.spentTodayUsd), cap: usd(limits.maxUsdPerDay), idle: limits.idleMinutes })}
         </p>
       )}
 
@@ -1203,44 +1244,45 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
           <table className="w-full min-w-[760px] text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
-                <th className="py-1 pr-3">Requested</th>
-                <th className="py-1 pr-3">Channel</th>
-                <th className="py-1 pr-3">Status</th>
-                <th className="py-1 pr-3">By / reason</th>
-                <th className="py-1 pr-3">Caps</th>
-                <th className="py-1 pr-3">Pod</th>
-                <th className="py-1 pr-3">Cost so far</th>
-                <th className="py-1">Actions</th>
+                <th className="py-1 pr-3">{t("media.sessions.colRequested")}</th>
+                <th className="py-1 pr-3">{t("media.common.colChannel")}</th>
+                <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
+                <th className="py-1 pr-3">{t("media.sessions.colByReason")}</th>
+                <th className="py-1 pr-3">{t("media.sessions.colCaps")}</th>
+                <th className="py-1 pr-3">{t("media.common.colPod")}</th>
+                <th className="py-1 pr-3">{t("media.sessions.colCostSoFar")}</th>
+                <th className="py-1">{t("media.sessions.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {openSessions.map((s) => (
                 <tr key={s.sessionId} className="border-t border-zinc-800 align-top">
                   <td className="py-2 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
-                  <td className="py-2 pr-3 font-mono">{s.channelId === activeChannelId ? "this channel" : s.channelId}</td>
+                  <td className="py-2 pr-3 font-mono">{s.channelId === activeChannelId ? t("media.sessions.thisChannel") : s.channelId}</td>
                   <td className="py-2 pr-3">
                     <span className={`font-medium ${statusTone[s.status] ?? ""}`}>{s.status}</span>
-                    <div className="text-zinc-500">{statusDetail(s, nowMs)}</div>
+                    <div className="text-zinc-500">{statusDetail(t, s, nowMs)}</div>
                     {s.error && <div className="text-amber-400">{s.error}</div>}
                   </td>
                   <td className="py-2 pr-3">
-                    {s.requestedBy === "factory" ? "Factory Operator" : s.requestedBy}
-                    {s.approvedBy === "factory" ? <div className="text-sky-300">approved by the factory (within its limits)</div> : null}
+                    {s.requestedBy === "factory" ? t("media.actor.factory") : s.requestedBy}
+                    {s.approvedBy === "factory" ? <div className="text-sky-300">{t("media.sessions.approvedByFactory")}</div> : null}
                     {s.reason ? <div className="text-zinc-500">{s.reason}</div> : null}
                   </td>
                   <td className="py-2 pr-3 whitespace-nowrap">
-                    {s.maxMinutes} min{s.maxUsd !== null ? ` / $${s.maxUsd}` : ""}
+                    {t("unit.minutes", { value: s.maxMinutes })}
+                    {s.maxUsd !== null ? ` / ${t("unit.usd", { value: String(s.maxUsd) })}` : ""}
                     <div className="text-zinc-500">
-                      est. ${s.estimateUsd.toFixed(2)}
-                      {s.fitsToday ? "" : " · over today's cap"}
+                      {t("media.sessions.estimate", { usd: usd(s.estimateUsd) })}
+                      {s.fitsToday ? "" : t("media.sessions.overTodaysCap")}
                     </div>
                   </td>
                   <td className="py-2 pr-3 font-mono">
                     {s.podId ?? "—"}
                     {s.gpuTypeId && <div className="font-sans text-zinc-500">{s.gpuTypeId}</div>}
-                    {s.costPerHr !== null && <div className="font-sans text-zinc-500">${s.costPerHr}/h</div>}
+                    {s.costPerHr !== null && <div className="font-sans text-zinc-500">{t("unit.usdPerHour", { value: String(s.costPerHr) })}</div>}
                   </td>
-                  <td className="py-2 pr-3 whitespace-nowrap">{s.startedAt ? `${minutesLabel(s.secondsUsed)} ≈ $${(s.usdCharged ?? 0).toFixed(2)}` : "—"}</td>
+                  <td className="py-2 pr-3 whitespace-nowrap">{s.startedAt ? `${minutesLabel(t, s.secondsUsed)} ≈ ${t("unit.usd", { value: usd(s.usdCharged ?? 0) })}` : "—"}</td>
                   <td className="py-2">{actions(s)}</td>
                 </tr>
               )).flatMap((row, index) => {
@@ -1252,21 +1294,21 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                   <tr key={`${s.sessionId}-now`} className="align-top">
                     <td colSpan={8} className="pb-3 pl-4 pr-3">
                       <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-3 py-2">
-                        <span className="text-zinc-500">Now: </span>
+                        <span className="text-zinc-500">{t("media.sessions.now")} </span>
                         {now.current ? (
                           <>
                             <span className="text-zinc-200">{templateNames.get(now.current.templateId) ?? now.current.templateId}</span>
                             <span className="text-zinc-500">
                               {" "}
-                              · job {now.current.jobId.slice(0, 8)} · {now.current.status}
-                              {now.current.submittedAt ? ` since ${formatDisplayDateTime(now.current.submittedAt)}` : ""}
+                              {t("media.sessions.nowJob", { job: now.current.jobId.slice(0, 8), status: now.current.status })}
+                              {now.current.submittedAt ? t("media.sessions.nowSince", { date: formatDisplayDateTime(now.current.submittedAt) }) : ""}
                             </span>
                             {now.current.progress && <JobProgress progress={now.current.progress} />}
                           </>
                         ) : (
-                          <span className="text-zinc-400">no job running</span>
+                          <span className="text-zinc-400">{t("media.sessions.noJobRunning")}</span>
                         )}
-                        {now.waiting > 0 && <div className="mt-1 text-zinc-400">{now.waiting} more job{now.waiting === 1 ? "" : "s"} waiting</div>}
+                        {now.waiting > 0 && <div className="mt-1 text-zinc-400">{t("media.sessions.moreWaiting", { count: now.waiting })}</div>}
                       </div>
                     </td>
                   </tr>,
@@ -1276,27 +1318,27 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
           </table>
         </div>
       ) : (
-        <p className="text-xs text-zinc-500">No open sessions. Requests from agents appear here automatically.</p>
+        <p className="text-xs text-zinc-500">{t("media.sessions.noneOpen")}</p>
       )}
 
       <div className="space-y-2 border-t border-zinc-800 pt-3">
         {!activeChannelId ? (
-          <p className="text-xs text-zinc-500">Select an active channel to request a session yourself.</p>
+          <p className="text-xs text-zinc-500">{t("media.sessions.selectChannel")}</p>
         ) : !ready ? (
-          <p className="text-xs text-zinc-500">Finish Settings → RunPod and Production → Setup to request a session.</p>
+          <p className="text-xs text-zinc-500">{t("media.sessions.notReady")}</p>
         ) : (
           <div className="grid gap-2 sm:grid-cols-3">
             <label className="block text-xs text-zinc-400">
-              Max minutes
-              <input type="text" inputMode="numeric" value={maxMinutesText} onChange={(e) => setMaxMinutesText(e.target.value)} className={inputClass} placeholder={`default ${limits?.defaultMaxMinutes ?? 60}`} />
+              {t("media.sessions.maxMinutes")}
+              <input type="text" inputMode="numeric" value={maxMinutesText} onChange={(e) => setMaxMinutesText(e.target.value)} className={inputClass} placeholder={t("media.sessions.maxMinutesPlaceholder", { value: limits?.defaultMaxMinutes ?? 60 })} />
             </label>
             <label className="block text-xs text-zinc-400">
-              Max USD (optional)
-              <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder="no cap (e.g. 2.5)" />
+              {t("media.sessions.maxUsd")}
+              <input type="text" inputMode="decimal" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} className={inputClass} placeholder={t("media.sessions.maxUsdPlaceholder")} />
             </label>
             <div className="flex items-end">
               <button type="button" onClick={request} disabled={requesting} className={secondaryButton}>
-                {requesting ? "Requesting…" : "Request a session for this channel"}
+                {requesting ? t("media.sessions.requesting") : t("media.sessions.request")}
               </button>
             </div>
           </div>
@@ -1305,17 +1347,17 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
 
       {recent.length > 0 && (
         <div className="overflow-x-auto">
-          <p className="mb-1 text-xs font-medium text-zinc-400">Recent</p>
+          <p className="mb-1 text-xs font-medium text-zinc-400">{t("media.sessions.recent")}</p>
           <table className="w-full min-w-[640px] text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
-                <th className="py-1 pr-3">When</th>
-                <th className="py-1 pr-3">Status</th>
-                <th className="py-1 pr-3">By</th>
-                <th className="py-1 pr-3">Pod</th>
-                <th className="py-1 pr-3">Used</th>
-                <th className="py-1 pr-3">Cost</th>
-                <th className="py-1">Reason / error</th>
+                <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
+                <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
+                <th className="py-1 pr-3">{t("media.common.colBy")}</th>
+                <th className="py-1 pr-3">{t("media.common.colPod")}</th>
+                <th className="py-1 pr-3">{t("media.sessions.colUsed")}</th>
+                <th className="py-1 pr-3">{t("media.common.colCost")}</th>
+                <th className="py-1">{t("media.sessions.colReasonError")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1325,8 +1367,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                   <td className={`py-1 pr-3 ${statusTone[s.status] ?? ""}`}>{s.status}</td>
                   <td className="py-1 pr-3">{s.requestedBy}</td>
                   <td className="py-1 pr-3 font-mono">{s.podId ?? "—"}</td>
-                  <td className="py-1 pr-3 whitespace-nowrap">{minutesLabel(s.secondsUsed)}</td>
-                  <td className="py-1 pr-3">{s.usdCharged !== null ? `$${s.usdCharged.toFixed(2)}` : "—"}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{minutesLabel(t, s.secondsUsed)}</td>
+                  <td className="py-1 pr-3">{s.usdCharged !== null ? t("unit.usd", { value: usd(s.usdCharged) }) : "—"}</td>
                   <td className="py-1">{s.error ?? s.stopReason ?? ""}</td>
                 </tr>
               ))}
@@ -1372,11 +1414,11 @@ type SharedSessionRow = {
   jobs?: SharedSessionJobs;
 };
 
-const LIVE_LABEL: Record<OtherDevicesResponse["devices"][number]["sessions"][number]["live"], string> = {
-  pod_running: "pod running",
-  pod_gone: "pod gone (RunPod no longer has it)",
-  no_pod_yet: "no pod yet",
-  ended: "ended",
+const LIVE_LABEL: Record<OtherDevicesResponse["devices"][number]["sessions"][number]["live"], UiTextKey> = {
+  pod_running: "media.devices.livePodRunning",
+  pod_gone: "media.devices.livePodGone",
+  no_pod_yet: "media.devices.liveNoPodYet",
+  ended: "media.devices.liveEnded",
 };
 
 /** Active elsewhere = a peer's session with a running pod (like this device's own count, a pending request is not active). */
@@ -1386,22 +1428,23 @@ export function countActiveElsewhere(view: Pick<OtherDevicesResponse, "devices">
 
 /** BL-148 (owner msg 1976): the jobs of another device's open session, with their live progress as that device last reported it. */
 function PeerSessionJobsRow({ jobs, nowMs }: { jobs: SharedSessionJobs; nowMs: number }) {
+  const { t } = useUiText();
   return (
     <tr>
       <td colSpan={7} className="pb-2 pl-3">
-        <p className="text-zinc-400">Jobs: {describeSessionJobCounts(jobs)}</p>
+        <p className="text-zinc-400">{t("media.devices.jobs", { counts: describeSessionJobCounts(t, jobs) })}</p>
         {jobs.current.map((j) => (
           <div key={j.jobId} className="mt-1 flex flex-wrap items-start gap-x-3">
             <span className="font-mono text-zinc-300">{j.templateId}</span>
-            {j.planItemKey && <span className="text-zinc-500">item {j.planItemKey}</span>}
+            {j.planItemKey && <span className="text-zinc-500">{t("media.devices.planItem", { item: j.planItemKey })}</span>}
             <span className="text-zinc-500">{j.status}</span>
             {j.progress ? (
               <div>
                 <JobProgress progress={fromSharedProgress(j.progress)} />
-                <div className="text-zinc-600">as of {sinceLabel(j.progress.updatedAt, nowMs)} ago</div>
+                <div className="text-zinc-600">{t("media.devices.asOf", { since: sinceLabel(t, j.progress.updatedAt, nowMs) })}</div>
               </div>
             ) : (
-              j.status !== "queued" && <span className="text-zinc-600">no live progress reported</span>
+              j.status !== "queued" && <span className="text-zinc-600">{t("media.devices.noLiveProgress")}</span>
             )}
           </div>
         ))}
@@ -1411,6 +1454,7 @@ function PeerSessionJobsRow({ jobs, nowMs }: { jobs: SharedSessionJobs; nowMs: n
 }
 
 export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean; onActiveElsewhere?: (count: number) => void }) {
+  const { t, usd } = useMediaText();
   const [view, setView] = useState<OtherDevicesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -1433,14 +1477,14 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
       });
       setNotice(
         result.alreadyGone
-          ? `Pod ${result.podId} was already gone.`
+          ? t("media.devices.podAlreadyGone", { pod: result.podId })
           : result.confirmed
-            ? `Pod ${result.podId} terminated. ${target.hostname ?? "That device"} marks the session interrupted when it next checks.`
-            : `Terminate sent for pod ${result.podId}; RunPod has not confirmed it yet.`
+            ? t("media.devices.podTerminated", { pod: result.podId, device: target.hostname ?? t("media.devices.thatDevice") })
+            : t("media.devices.terminateSent", { pod: result.podId })
       );
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Stop failed");
+      setError(err instanceof Error ? err.message : t("media.devices.stopFailed"));
     } finally {
       setStopping(false);
     }
@@ -1455,9 +1499,9 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
           setNowMs(Date.now());
           onActiveElsewhere?.(countActiveElsewhere(data));
         },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Could not read the other devices' sessions")
+        (err: unknown) => setError(err instanceof Error ? err.message : t("media.devices.loadFailed"))
       ),
-    [onActiveElsewhere]
+    [onActiveElsewhere, t]
   );
 
   useEffect(() => {
@@ -1471,32 +1515,35 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
   const devices = view?.devices ?? [];
   return (
     <Card
-      title="Other devices"
-      help="RunPod sessions started on your other computers, as each one last reported them through the sync folder (about a minute behind; a device that is off shows its last report as stale). An open session also shows its jobs and the running job's progress as that device reported it. Each session is checked against RunPod's live pod list: 'pod gone' means RunPod no longer has its pod. Pods named ytm-media-* that no device reports are listed separately: they cost money and nobody shows them."
+      title={t("media.devices.title")}
+      help={t("media.devices.help")}
     >
       {error && <p className="text-xs text-red-400">{error}</p>}
-      {view?.podsError && <p className="text-xs text-amber-400">RunPod&rsquo;s pod list could not be read ({view.podsError}): the states below are what the devices reported.</p>}
-      {view && devices.length === 0 && <p className="text-xs text-zinc-500">No other device has reported its sessions yet.</p>}
+      {view?.podsError && <p className="text-xs text-amber-400">{t("media.devices.podsError", { error: view.podsError })}</p>}
+      {view && devices.length === 0 && <p className="text-xs text-zinc-500">{t("media.devices.none")}</p>}
       {devices.map((d) => (
         <div key={d.deviceId} className="space-y-1">
           <p className="text-xs text-zinc-300">
-            <span className="font-medium text-zinc-100">{d.hostname ?? d.deviceId}</span> · reported {sinceLabel(d.updatedAt, nowMs)} · ${d.spentTodayUsd.toFixed(2)} today
-            {d.stale && <span className="text-amber-400"> · stale (the device may be off)</span>}
-            {!d.sameAccount && <span className="text-zinc-500"> · another or unknown RunPod account</span>}
+            <span className="font-medium text-zinc-100">{d.hostname ?? d.deviceId}</span>
+            {t("media.devices.reportLine", { since: sinceLabel(t, d.updatedAt, nowMs), usd: usd(d.spentTodayUsd) })}
+            {d.stale && <span className="text-amber-400">{t("media.devices.stale")}</span>}
+            {!d.sameAccount && <span className="text-zinc-500">{t("media.devices.otherAccount")}</span>}
           </p>
           {d.sessions.length === 0 ? (
-            <p className="text-xs text-zinc-500">No sessions in the last day.</p>
+            <p className="text-xs text-zinc-500">{t("media.devices.noSessions")}</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px] text-left text-xs text-zinc-400">
                 <thead>
                   <tr className="text-zinc-500">
-                    <th className="py-1 pr-3">Status</th>
+                    <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
+                    {/* ui-text-ignore: product name as a column header */}
                     <th className="py-1 pr-3">RunPod</th>
-                    <th className="py-1 pr-3">Channel</th>
+                    <th className="py-1 pr-3">{t("media.common.colChannel")}</th>
+                    {/* ui-text-ignore: the hardware acronym, the same in every language */}
                     <th className="py-1 pr-3">GPU</th>
-                    <th className="py-1 pr-3">Started</th>
-                    <th className="py-1 pr-3">Cost</th>
+                    <th className="py-1 pr-3">{t("media.devices.colStarted")}</th>
+                    <th className="py-1 pr-3">{t("media.common.colCost")}</th>
                     <th className="py-1"></th>
                   </tr>
                 </thead>
@@ -1505,11 +1552,11 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                     <Fragment key={s.sessionId}>
                     <tr className="border-t border-zinc-800">
                       <td className="py-1 pr-3 text-zinc-200">{s.status}</td>
-                      <td className={`py-1 pr-3 ${s.live === "pod_gone" ? "text-amber-400" : ""}`}>{LIVE_LABEL[s.live]}</td>
+                      <td className={`py-1 pr-3 ${s.live === "pod_gone" ? "text-amber-400" : ""}`}>{t(LIVE_LABEL[s.live])}</td>
                       <td className="py-1 pr-3 font-mono">{s.channelId}</td>
                       <td className="py-1 pr-3">{s.gpuTypeId ?? "—"}</td>
                       <td className="py-1 pr-3">{s.startedAt ? formatDisplayDateTime(s.startedAt) : "—"}</td>
-                      <td className="py-1 pr-3">{s.usdCharged !== null ? `$${s.usdCharged.toFixed(2)}` : "—"}</td>
+                      <td className="py-1 pr-3">{s.usdCharged !== null ? t("unit.usd", { value: usd(s.usdCharged) }) : "—"}</td>
                       <td className="py-1 text-right">
                         {s.live === "pod_running" && d.sameAccount && (
                           <button
@@ -1518,7 +1565,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                             disabled={stopping}
                             className={dangerButton}
                           >
-                            Stop
+                            {t("media.sessions.stop")}
                           </button>
                         )}
                       </td>
@@ -1535,9 +1582,9 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
       {stopTarget && (
         <ConfirmDialog
-          title={`Stop the session on ${stopTarget.hostname ?? stopTarget.deviceId}?`}
-          description={`The session's pod is terminated through RunPod now (channel ${stopTarget.channelId}); any job still running on it is lost. ${stopTarget.hostname ?? "That device"} marks the session interrupted when it next checks.`}
-          confirmLabel="Stop session"
+          title={t("media.devices.stopTitle", { device: stopTarget.hostname ?? stopTarget.deviceId })}
+          description={t("media.devices.stopDescription", { channel: stopTarget.channelId, device: stopTarget.hostname ?? t("media.devices.thatDevice") })}
+          confirmLabel={t("media.devices.stopConfirm")}
           confirmVariant="danger"
           onCancel={() => setStopTarget(null)}
           onConfirm={stop}
@@ -1545,12 +1592,12 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
       )}
       {view?.unknownPods && view.unknownPods.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs text-amber-400">Session pods on RunPod that no device reports (they are billed):</p>
+          <p className="text-xs text-amber-400">{t("media.devices.unknownPods")}</p>
           <ul className="text-xs text-zinc-300">
             {view.unknownPods.map((p) => (
               <li key={p.podId}>
                 {p.name} · {p.podId} · {p.status}
-                {p.costPerHr !== null ? ` · $${p.costPerHr.toFixed(2)}/h` : ""}
+                {p.costPerHr !== null ? ` · ${t("unit.usdPerHour", { value: usd(p.costPerHr) })}` : ""}
               </li>
             ))}
           </ul>
@@ -1561,11 +1608,13 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
 }
 
 export function ReadinessBanner({ overview }: { overview: Overview }) {
-  if (overview.ready) return <p className="text-xs text-emerald-400">Media generation is configured: agents can request sessions; approve them in Sessions, then jobs run.</p>;
-  return <p className="text-xs text-zinc-500">Not ready yet — missing: {overview.missing.join(", ")}.</p>;
+  const { t } = useUiText();
+  if (overview.ready) return <p className="text-xs text-emerald-400">{t("media.readiness.ready")}</p>;
+  return <p className="text-xs text-zinc-500">{t("media.readiness.missing", { missing: overview.missing.join(", ") })}</p>;
 }
 
 export function CredentialsCard({ status, onChanged }: { status: CredentialsStatus; onChanged: () => Promise<void> }) {
+  const { t } = useUiText();
   const [editing, setEditing] = useState(!status.configured);
   const [runpodApiKey, setRunpodApiKey] = useState("");
   const [s3AccessKeyId, setS3AccessKeyId] = useState("");
@@ -1599,10 +1648,10 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
       setS3SecretAccessKey("");
       setEditing(false);
       setTestResult(null);
-      setNotice("Saved (encrypted on this device).");
+      setNotice(t("media.credentials.saved"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -1616,7 +1665,7 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
       setTestResult(await requestJson<TestResult>("/api/media-generation/credentials/test", { method: "POST" }));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Test failed");
+      setError(err instanceof Error ? err.message : t("media.credentials.testFailed"));
     } finally {
       setBusy(false);
     }
@@ -1629,10 +1678,10 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
     try {
       await requestJson("/api/media-generation/credentials", { method: "DELETE" });
       setTestResult(null);
-      setNotice("Credentials removed.");
+      setNotice(t("media.credentials.removed"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to clear");
+      setError(err instanceof Error ? err.message : t("media.credentials.clearFailed"));
     } finally {
       setBusy(false);
     }
@@ -1640,17 +1689,17 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
 
   return (
     <Card
-      title="RunPod credentials"
-      help="The RunPod API key (console → Settings → API Keys; a Restricted key for pods and storage is enough) and, optionally, an S3 API key pair for the network volume (console → Settings → S3 API Keys). Stored encrypted on this computer under a key the app creates itself; never shown again, never sent to an agent."
+      title={t("media.credentials.title")}
+      help={t("media.credentials.help")}
     >
       {!status.configured && status.reason === "key_file_missing" && (
-        <p className="text-xs text-amber-400">Credentials exist in the database but this computer has no matching key file (for example after copying the database). Enter them again.</p>
+        <p className="text-xs text-amber-400">{t("media.credentials.keyFileMissing")}</p>
       )}
       {!status.configured && status.reason === "key_file_invalid" && (
         <div className="space-y-2">
-          <p className="text-xs text-red-400">This computer&rsquo;s key file is unreadable (truncated or edited), so the stored credentials cannot be decrypted. Reset removes both; then enter the keys again.</p>
+          <p className="text-xs text-red-400">{t("media.credentials.keyFileInvalid")}</p>
           <button type="button" onClick={() => setConfirmClear(true)} disabled={busy} className={dangerButton}>
-            Reset credentials and key file
+            {t("media.credentials.reset")}
           </button>
         </div>
       )}
@@ -1658,28 +1707,29 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
       {status.configured && !editing && (
         <div className="space-y-2">
           <p className="text-sm text-zinc-300">
-            RunPod key <span className="font-mono text-zinc-100">{status.runpodKeyPrefix}</span>
+            {t("media.credentials.runpodKey")} <span className="font-mono text-zinc-100">{status.runpodKeyPrefix}</span>
             {status.s3AccessKeyId ? (
               <>
-                {" · "}S3 key <span className="font-mono text-zinc-100">{status.s3AccessKeyId}</span>
+                {" · "}
+                {t("media.credentials.s3Key")} <span className="font-mono text-zinc-100">{status.s3AccessKeyId}</span>
               </>
             ) : (
-              <span className="text-zinc-500"> · no S3 key pair</span>
+              <span className="text-zinc-500">{t("media.credentials.noS3")}</span>
             )}
           </p>
           <p className="text-xs text-zinc-500">
-            Saved {formatDisplayDateTime(status.updatedAt)}
-            {status.verifiedAt ? ` · last verified ${formatDisplayDateTime(status.verifiedAt)}` : " · not verified yet"}
+            {t("media.credentials.savedAt", { date: formatDisplayDateTime(status.updatedAt) })}
+            {status.verifiedAt ? t("media.credentials.lastVerified", { date: formatDisplayDateTime(status.verifiedAt) }) : t("media.credentials.notVerified")}
           </p>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={test} disabled={busy} className={primaryButton}>
-              {busy ? "Working…" : "Test"}
+              {busy ? t("media.common.working") : t("media.credentials.test")}
             </button>
             <button type="button" onClick={() => setEditing(true)} disabled={busy} className={secondaryButton}>
-              Replace
+              {t("media.credentials.replace")}
             </button>
             <button type="button" onClick={() => setConfirmClear(true)} disabled={busy} className={dangerButton}>
-              Clear
+              {t("media.credentials.clear")}
             </button>
           </div>
         </div>
@@ -1688,26 +1738,26 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
       {editing && (
         <div className="space-y-2">
           <label className="block text-xs text-zinc-400">
-            RunPod API key
+            {t("media.credentials.runpodApiKey")}
             <input type="password" autoComplete="off" value={runpodApiKey} onChange={(e) => setRunpodApiKey(e.target.value)} className={inputClass} placeholder="rpa_…" />
           </label>
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="block text-xs text-zinc-400">
-              S3 access key id (optional)
+              {t("media.credentials.s3AccessKeyId")}
               <input type="text" autoComplete="off" value={s3AccessKeyId} onChange={(e) => setS3AccessKeyId(e.target.value)} className={inputClass} placeholder="user_…" />
             </label>
             <label className="block text-xs text-zinc-400">
-              S3 secret access key (optional)
+              {t("media.credentials.s3Secret")}
               <input type="password" autoComplete="off" value={s3SecretAccessKey} onChange={(e) => setS3SecretAccessKey(e.target.value)} className={inputClass} placeholder="rps_…" />
             </label>
           </div>
           <div className="flex gap-2">
             <button type="button" onClick={save} disabled={busy || runpodApiKey.trim().length < 16} className={primaryButton}>
-              {busy ? "Saving…" : "Save"}
+              {busy ? t("common.saving") : t("common.save")}
             </button>
             {status.configured && (
               <button type="button" onClick={() => setEditing(false)} disabled={busy} className={secondaryButton}>
-                Cancel
+                {t("common.cancel")}
               </button>
             )}
           </div>
@@ -1718,9 +1768,13 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
 
       {testResult && (
         <div className="space-y-1 text-xs">
-          <p className={testResult.runpod.ok ? "text-emerald-400" : "text-red-400"}>RunPod API: {testResult.runpod.ok ? "OK" : testResult.runpod.message}</p>
+          <p className={testResult.runpod.ok ? "text-emerald-400" : "text-red-400"}>
+            {t("media.credentials.testRunpod", { result: testResult.runpod.ok ? t("media.credentials.ok") : testResult.runpod.message })}
+          </p>
           <p className={"skipped" in testResult.s3 ? "text-zinc-500" : testResult.s3.ok ? "text-emerald-400" : "text-red-400"}>
-            S3 API: {"skipped" in testResult.s3 ? `skipped (${testResult.s3.reason})` : testResult.s3.ok ? "OK" : testResult.s3.message}
+            {t("media.credentials.testS3", {
+              result: "skipped" in testResult.s3 ? t("media.credentials.skipped", { reason: testResult.s3.reason }) : testResult.s3.ok ? t("media.credentials.ok") : testResult.s3.message,
+            })}
           </p>
         </div>
       )}
@@ -1729,13 +1783,13 @@ export function CredentialsCard({ status, onChanged }: { status: CredentialsStat
 
       {confirmClear && (
         <ConfirmDialog
-          title={!status.configured && status.reason === "key_file_invalid" ? "Reset the RunPod credentials and this computer's key file?" : "Remove the RunPod credentials from this computer?"}
+          title={!status.configured && status.reason === "key_file_invalid" ? t("media.credentials.resetTitle") : t("media.credentials.removeTitle")}
           description={
             !status.configured && status.reason === "key_file_invalid"
-              ? "The stored credentials cannot be decrypted with the unreadable key file, so both are removed; a fresh key file is created when you enter the keys again."
-              : "Sessions cannot start without them. The per-device key file stays in place."
+              ? t("media.credentials.resetDescription")
+              : t("media.credentials.removeDescription")
           }
-          confirmLabel="Remove"
+          confirmLabel={t("media.credentials.remove")}
           confirmVariant="danger"
           onCancel={() => setConfirmClear(false)}
           onConfirm={clear}
@@ -1753,6 +1807,7 @@ export function credentialsFileName(now: Date): string {
 // BL-137 (owner, Telegram 2026-10-06, variant A): carry the credentials to another device as a file encrypted under a password
 // typed on both ends. The password lives only in these fields; the server never stores it.
 function CredentialsTransfer({ configured, disabled, onImported }: { configured: boolean; disabled: boolean; onImported: () => Promise<void> }) {
+  const { t } = useUiText();
   const [mode, setMode] = useState<"idle" | "export" | "import">("idle");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -1791,9 +1846,9 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
       // Some WebKit versions drop the download when the blob URL is revoked in the same tick (review).
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       reset("idle");
-      setNotice(`Downloaded ${link.download}. Move it to the other device and import it there with the same password.`);
+      setNotice(t("media.transfer.downloaded", { file: link.download }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Export failed");
+      setError(err instanceof Error ? err.message : t("media.transfer.exportFailed"));
     } finally {
       setBusy(false);
     }
@@ -1809,7 +1864,7 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
       try {
         parsed = JSON.parse(await file.text());
       } catch {
-        throw new Error("This is not a credentials file exported by YT Manager.");
+        throw new Error(t("media.transfer.notAFile"));
       }
       await requestJson("/api/media-generation/credentials/import", {
         method: "POST",
@@ -1817,10 +1872,10 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
         body: JSON.stringify({ file: parsed, password }),
       });
       reset("idle");
-      setNotice("Imported and saved (encrypted on this device); RunPod accepted the API key. Press Test to check the S3 key pair too.");
+      setNotice(t("media.transfer.imported"));
       await onImported();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(err instanceof Error ? err.message : t("media.transfer.importFailed"));
     } finally {
       setBusy(false);
     }
@@ -1830,36 +1885,35 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
   return (
     <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-zinc-400">Another device:</span>
+        <span className="text-xs text-zinc-400">{t("media.transfer.anotherDevice")}</span>
         {configured && (
           <button type="button" onClick={() => reset(mode === "export" ? "idle" : "export")} disabled={disabled || busy} className={secondaryButton}>
-            Export credentials…
+            {t("media.transfer.export")}
           </button>
         )}
         <button type="button" onClick={() => reset(mode === "import" ? "idle" : "import")} disabled={disabled || busy} className={secondaryButton}>
-          Import credentials…
+          {t("media.transfer.import")}
         </button>
       </div>
       {mode === "export" && (
         <div className="space-y-2">
           <p className="text-xs text-zinc-500">
-            The file is encrypted with this password (scrypt + AES-256-GCM); without it the file is useless. The password is not saved anywhere: remember it.
-            Anyone with the file and the password has your RunPod key.
+            {t("media.transfer.exportExplanation")}
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
-            <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="password, at least 12 characters" />
-            <input type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputClass} placeholder="repeat the password" />
+            <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("media.transfer.passwordPlaceholder")} />
+            <input type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputClass} placeholder={t("media.transfer.repeatPlaceholder")} />
           </div>
-          {confirmPassword && confirmPassword !== password && <p className="text-xs text-amber-400">The passwords differ.</p>}
+          {confirmPassword && confirmPassword !== password && <p className="text-xs text-amber-400">{t("media.transfer.passwordsDiffer")}</p>}
           <button type="button" onClick={doExport} disabled={busy || tooShort || password !== confirmPassword} className={primaryButton}>
-            {busy ? "Encrypting…" : "Download encrypted file"}
+            {busy ? t("media.transfer.encrypting") : t("media.transfer.download")}
           </button>
         </div>
       )}
       {mode === "import" && (
         <div className="space-y-2">
           <p className="text-xs text-zinc-500">
-            A .ytmkeys file exported on another device. The key is checked with RunPod before it replaces anything stored here.
+            {t("media.transfer.importExplanation")}
           </p>
           <input
             ref={fileInputRef}
@@ -1868,9 +1922,9 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-700 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:text-zinc-300"
           />
-          <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="the password used for the export" />
+          <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder={t("media.transfer.importPasswordPlaceholder")} />
           <button type="button" onClick={doImport} disabled={busy || !file || !password} className={primaryButton}>
-            {busy ? "Importing…" : "Import"}
+            {busy ? t("media.common.importing") : t("media.common.import")}
           </button>
         </div>
       )}
@@ -1881,6 +1935,7 @@ function CredentialsTransfer({ configured, disabled, onImported }: { configured:
 }
 
 export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview: Overview; gatewayTraffic: GatewayTrafficWindowView[] | undefined; onChanged: () => Promise<void> }) {
+  const { t, usd } = useMediaText();
   const { settings, credentials } = overview;
   const [catalog, setCatalog] = useState<{ gpus: Gpu[]; dataCenters: DataCenter[] } | null>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
@@ -1904,7 +1959,7 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
       setCatalog(cat);
       setTemplates(tpl.templates);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load the RunPod catalog");
+      setError(err instanceof Error ? err.message : t("media.compute.loadFailed"));
     } finally {
       setBusy(false);
     }
@@ -1925,10 +1980,10 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
           templateId: draft.templateId || null,
         }, overview.settings, overview.settings.gpuTypeId !== null && overview.settings.gpuOnDemandPricePerHr === null ? ["gpuTypeId"] : [])),
       });
-      setNotice("Saved.");
+      setNotice(t("common.saved"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -1940,7 +1995,7 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
       await requestJson("/api/media-generation/gateway", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled }) });
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update the toggle");
+      setError(err instanceof Error ? err.message : t("media.compute.toggleFailed"));
     }
   }
 
@@ -1949,97 +2004,99 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
 
   return (
     <Card
-      title="Compute"
-      help="Which RunPod datacenter and GPU a generation session uses, and the pod template it starts from. The lists come from RunPod's live catalog on 'Load' (two API calls). The media gateway toggle gates every RunPod, S3 and ComfyUI call this app makes."
+      title={t("media.compute.title")}
+      help={t("media.compute.help")}
     >
       <SettingsSectionRow
         left={
           <div className="flex items-center gap-3">
-            <ToggleSwitch label="Enable the media gateway" checked={overview.gatewayEnabled} onChange={toggleGateway} />
-            <span className="text-sm text-zinc-300">Media gateway (RunPod API, S3 API, ComfyUI, Hugging Face Hub)</span>
+            <ToggleSwitch label={t("media.compute.gatewayToggle")} checked={overview.gatewayEnabled} onChange={toggleGateway} />
+            <span className="text-sm text-zinc-300">{t("media.compute.gateway")}</span>
           </div>
         }
         right={
           <div>
             <GatewayTrafficStats size="lg" window={traffic("runpod_api")} />
             <p className="text-xs text-zinc-500">
-              S3: {traffic("runpod_s3")?.totalAttempts ?? 0} · ComfyUI: {traffic("comfyui_api")?.totalAttempts ?? 0} · Hugging Face: {traffic("huggingface_api")?.totalAttempts ?? 0} attempts (24h)
+              {t("media.compute.traffic", { s3: traffic("runpod_s3")?.totalAttempts ?? 0, comfy: traffic("comfyui_api")?.totalAttempts ?? 0, hf: traffic("huggingface_api")?.totalAttempts ?? 0 })}
             </p>
           </div>
         }
       />
 
       {!credentials.configured ? (
-        <p className="text-xs text-zinc-500">Save RunPod credentials first to load the catalog.</p>
+        <p className="text-xs text-zinc-500">{t("media.compute.noCredentials")}</p>
       ) : (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <button type="button" onClick={load} disabled={busy} className={secondaryButton}>
-              {busy ? "Loading…" : catalog ? "Reload from RunPod" : "Load from RunPod"}
+              {busy ? t("common.loading") : catalog ? t("media.compute.reload") : t("media.compute.load")}
             </button>
             {!catalog && (settings.datacenterId || settings.gpuTypeId) && (
               <span className="text-xs text-zinc-500">
-                Saved: {settings.datacenterId ?? "—"} · {settings.gpuTypeId ?? "—"} · {settings.cloudType} · template {settings.templateId ?? "—"}
+                {t("media.compute.savedLine", { dc: settings.datacenterId ?? "—", gpu: settings.gpuTypeId ?? "—", cloud: settings.cloudType, template: settings.templateId ?? "—" })}
               </span>
             )}
           </div>
           {catalog && (
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="block text-xs text-zinc-400">
-                Cloud type
+                {t("setupField.cloudType")}
                 <select value={draft.cloudType} onChange={(e) => setDraft({ ...draft, cloudType: e.target.value as "SECURE" | "COMMUNITY" })} className={inputClass}>
-                  <option value="SECURE">Secure Cloud (network volumes supported)</option>
-                  <option value="COMMUNITY">Community Cloud (cheaper, no network volumes)</option>
+                  <option value="SECURE">{t("media.compute.secureCloud")}</option>
+                  <option value="COMMUNITY">{t("media.compute.communityCloud")}</option>
                 </select>
               </label>
               <label className="block text-xs text-zinc-400">
-                Datacenter
+                {t("setupField.datacenterId")}
                 <select value={draft.datacenterId} onChange={(e) => setDraft({ ...draft, datacenterId: e.target.value })} className={inputClass}>
-                  <option value="">— not set —</option>
+                  <option value="">{t("media.common.notSetOption")}</option>
                   {catalog.dataCenters.map((dc) => (
                     <option key={dc.id} value={dc.id}>
                       {dc.id}
                       {dc.region ? ` · ${dc.region.toLowerCase().replace(/_/g, " ")}` : ""}
-                      {dc.networkVolumeTypes.length > 0 ? ` · volumes: ${dc.networkVolumeTypes.join(", ").toLowerCase().replace(/_/g, " ")}` : " · no network volumes"}
+                      {dc.networkVolumeTypes.length > 0 ? t("media.compute.dcVolumes", { types: dc.networkVolumeTypes.join(", ").toLowerCase().replace(/_/g, " ") }) : t("media.compute.dcNoVolumes")}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block text-xs text-zinc-400 sm:col-span-2">
-                GPU type
+                {t("setupField.gpuTypeId")}
                 <select value={draft.gpuTypeId} onChange={(e) => setDraft({ ...draft, gpuTypeId: e.target.value })} className={inputClass}>
-                  <option value="">— not set —</option>
+                  <option value="">{t("media.common.notSetOption")}</option>
                   {gpuOptions.map((g) => (
                     <option key={g.id} value={g.id}>
                       {g.displayName}
-                      {g.memoryInGb ? ` · ${g.memoryInGb} GB` : ""}
-                      {g.onDemandPricePerHr !== null ? ` · $${g.onDemandPricePerHr.toFixed(2)}/h` : ""}
+                      {g.memoryInGb ? ` · ${t("unit.gb", { value: g.memoryInGb })}` : ""}
+                      {g.onDemandPricePerHr !== null ? ` · ${t("unit.usdPerHour", { value: usd(g.onDemandPricePerHr) })}` : ""}
                       {draft.datacenterId
                         ? (() => {
                             const here = g.dataCenters.find((dc) => dc.id === draft.datacenterId);
-                            return here ? ` · ${(here.estimatedAvailability ?? "available").toLowerCase()} in ${draft.datacenterId}` : ` · not available in ${draft.datacenterId} now`;
+                            return here
+                              ? t("media.compute.availableIn", { availability: here.estimatedAvailability?.toLowerCase() ?? t("media.compute.available"), dc: draft.datacenterId })
+                              : t("media.compute.notAvailableIn", { dc: draft.datacenterId });
                           })()
                         : g.estimatedAvailability
-                          ? ` · ${g.estimatedAvailability.toLowerCase()} availability`
+                          ? t("media.compute.availability", { availability: g.estimatedAvailability.toLowerCase() })
                           : ""}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block text-xs text-zinc-400 sm:col-span-2">
-                Pod template
+                {t("setupField.templateId")}
                 <select value={draft.templateId} onChange={(e) => setDraft({ ...draft, templateId: e.target.value })} className={inputClass}>
-                  <option value="">— not set —</option>
-                  {(templates ?? []).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} ({t.id})
+                  <option value="">{t("media.common.notSetOption")}</option>
+                  {(templates ?? []).map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.name} ({tpl.id})
                     </option>
                   ))}
                 </select>
               </label>
               <div className="sm:col-span-2">
                 <button type="button" onClick={save} disabled={busy} className={primaryButton}>
-                  {busy ? "Saving…" : "Save compute settings"}
+                  {busy ? t("common.saving") : t("media.compute.save")}
                 </button>
               </div>
             </div>
@@ -2053,6 +2110,7 @@ export function ComputeCard({ overview, gatewayTraffic, onChanged }: { overview:
 }
 
 export function VolumeCard({ overview, onChanged }: { overview: Overview; onChanged: () => Promise<void> }) {
+  const { t, usd } = useMediaText();
   const { settings, credentials } = overview;
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2077,7 +2135,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     try {
       setVolumes((await requestJson<{ volumes: Volume[] }>("/api/media-generation/network-volumes")).volumes);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load volumes");
+      setError(err instanceof Error ? err.message : t("media.volume.loadFailed"));
     } finally {
       setBusy(false);
     }
@@ -2093,10 +2151,10 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
         headers: { "content-type": "application/json" },
         body: JSON.stringify(onlyChangedSettings({ networkVolumeId: selected || null }, overview.settings)),
       });
-      setNotice("Saved.");
+      setNotice(t("common.saved"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -2113,11 +2171,11 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: newName, datacenterId: settings.datacenterId, sizeGb: newSize }),
       });
-      setNotice(`Created ${volume.name} (${volume.id}).`);
+      setNotice(t("media.volume.created", { name: volume.name, id: volume.id }));
       await load();
       setSelected(volume.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create the volume");
+      setError(err instanceof Error ? err.message : t("media.volume.createFailed"));
     } finally {
       setBusy(false);
     }
@@ -2135,11 +2193,11 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ volumeId: selectedVolume.id, sizeGb: growSize }),
       });
-      setNotice(`${volume.name} is now ${volume.sizeGb} GB.`);
+      setNotice(t("media.volume.resized", { name: volume.name, size: volume.sizeGb }));
       setGrowSizeText("");
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to resize the volume");
+      setError(err instanceof Error ? err.message : t("media.volume.resizeFailed"));
     } finally {
       setBusy(false);
     }
@@ -2154,11 +2212,11 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
     setNotice(null);
     try {
       await requestJson("/api/media-generation/network-volumes", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ volumeId: target.id }) });
-      setNotice(`Deleted ${target.name} (${target.id}).`);
+      setNotice(t("media.volume.deleted", { name: target.name, id: target.id }));
       if (selected === target.id) setSelected(settings.networkVolumeId ?? "");
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete the volume");
+      setError(err instanceof Error ? err.message : t("media.volume.deleteFailed"));
     } finally {
       setBusy(false);
     }
@@ -2167,29 +2225,29 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
   const selectedVolume = volumes?.find((v) => v.id === selected);
   // BL-136: every volume except the one the app uses can be deleted (the server also refuses one a pod has mounted).
   const unusedVolumes = (volumes ?? []).filter((v) => v.id !== settings.networkVolumeId);
-  const monthly = (gb: number) => (gb * NETWORK_VOLUME_USD_PER_GB_MONTH).toFixed(2);
+  const monthly = (sizeGb: number) => usd(sizeGb * NETWORK_VOLUME_USD_PER_GB_MONTH);
   // RunPod only grows a network volume (its API refuses a smaller size), so the field accepts current + 1 GB and up.
   const growSize = selectedVolume && selectedVolume.sizeGb < 4000 ? parseInteger(growSizeText, { min: selectedVolume.sizeGb + 1, max: 4000 }) : null;
 
   return (
     <Card
-      title="Network volume"
-      help="The RunPod network volume that holds the models (and the exchange folder). Billed by RunPod monthly per GB from creation until deletion, whether or not a pod is running. Must be in the chosen datacenter."
+      title={t("setupField.networkVolumeId")}
+      help={t("media.volume.help")}
     >
       {!credentials.configured ? (
-        <p className="text-xs text-zinc-500">Save RunPod credentials first.</p>
+        <p className="text-xs text-zinc-500">{t("media.volume.noCredentials")}</p>
       ) : (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={load} disabled={busy} className={secondaryButton}>
-              {busy ? "Loading…" : volumes ? "Reload volumes" : "Load volumes"}
+              {busy ? t("common.loading") : volumes ? t("media.volume.reload") : t("media.volume.load")}
             </button>
-            {!volumes && <span className="text-xs text-zinc-500">Saved: {settings.networkVolumeId ?? "—"}</span>}
+            {!volumes && <span className="text-xs text-zinc-500">{t("media.volume.savedLine", { id: settings.networkVolumeId ?? "—" })}</span>}
           </div>
           {volumes && (
             <div className="space-y-2">
               <label className="block text-xs text-zinc-400">
-                Volume
+                {t("media.volume.volume")}
                 <select
                   value={selected}
                   onChange={(e) => {
@@ -2198,27 +2256,31 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
                   }}
                   className={inputClass}
                 >
-                  <option value="">— not set —</option>
+                  <option value="">{t("media.common.notSetOption")}</option>
                   {volumes.map((v) => (
                     <option key={v.id} value={v.id}>
-                      {v.name} · {v.dataCenterId} · {v.sizeGb} GB{v.usedSizeGb !== null ? ` (${v.usedSizeGb} used)` : ""} · ${monthly(v.sizeGb)}/month
+                      {t("media.volume.option", { name: v.name, dc: v.dataCenterId, size: v.sizeGb, used: v.usedSizeGb !== null ? t("media.volume.usedSuffix", { used: v.usedSizeGb }) : "", usd: monthly(v.sizeGb) })}
                     </option>
                   ))}
                 </select>
               </label>
               {selectedVolume && settings.datacenterId && selectedVolume.dataCenterId !== settings.datacenterId && (
                 <p className="text-xs text-amber-400">
-                  This volume is in {selectedVolume.dataCenterId}; the chosen datacenter is {settings.datacenterId}. Saving will be refused.
+                  {t("media.volume.dcMismatch", { volumeDc: selectedVolume.dataCenterId, dc: settings.datacenterId })}
                 </p>
               )}
               <button type="button" onClick={saveSelection} disabled={busy} className={primaryButton}>
-                {busy ? "Saving…" : "Save volume"}
+                {busy ? t("common.saving") : t("media.volume.save")}
               </button>
               {selectedVolume && (
                 <div className="mt-3 border-t border-zinc-800 pt-3">
                   <p className="mb-2 text-xs text-zinc-400">
-                    Grow {selectedVolume.name}: now {selectedVolume.sizeGb} GB{selectedVolume.usedSizeGb !== null ? ` (${selectedVolume.usedSizeGb} used)` : ""} · ${monthly(selectedVolume.sizeGb)}/month. RunPod can only make a
-                    network volume larger, never smaller.
+                    {t("media.volume.growIntro", {
+                      name: selectedVolume.name,
+                      size: selectedVolume.sizeGb,
+                      used: selectedVolume.usedSizeGb !== null ? t("media.volume.usedSuffix", { used: selectedVolume.usedSizeGb }) : "",
+                      usd: monthly(selectedVolume.sizeGb),
+                    })}
                   </p>
                   <div className="grid gap-2 sm:grid-cols-3">
                     <input
@@ -2227,26 +2289,30 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
                       value={growSizeText}
                       onChange={(e) => setGrowSizeText(e.target.value)}
                       className={inputClass}
-                      placeholder={selectedVolume.sizeGb < 4000 ? `new size, ${selectedVolume.sizeGb + 1}–4000 GB` : "already at 4000 GB"}
+                      placeholder={selectedVolume.sizeGb < 4000 ? t("media.volume.growPlaceholder", { min: String(selectedVolume.sizeGb + 1) }) : t("media.volume.growAtMaxPlaceholder")}
                       disabled={selectedVolume.sizeGb >= 4000}
                     />
                     <button type="button" onClick={() => setConfirmGrow(true)} disabled={busy || growSize === null} className={secondaryButton}>
-                      {selectedVolume.sizeGb >= 4000 ? "At the 4000 GB maximum" : `Grow (${growSize === null ? `size ${selectedVolume.sizeGb + 1}–4000 GB` : `$${monthly(growSize)}/month`})`}
+                      {selectedVolume.sizeGb >= 4000
+                        ? t("media.volume.growAtMax")
+                        : growSize === null
+                          ? t("media.volume.growButtonRange", { min: String(selectedVolume.sizeGb + 1) })
+                          : t("media.volume.growButtonPrice", { usd: monthly(growSize) })}
                     </button>
                   </div>
                 </div>
               )}
               {unusedVolumes.length > 0 && (
                 <div className="mt-3 border-t border-zinc-800 pt-3">
-                  <p className="mb-2 text-xs text-zinc-400">Volumes the app does not use (billed until deleted):</p>
+                  <p className="mb-2 text-xs text-zinc-400">{t("media.volume.unused")}</p>
                   <ul className="space-y-1">
                     {unusedVolumes.map((v) => (
                       <li key={v.id} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
                         <span>
-                          {v.name} · {v.id} · {v.dataCenterId} · {v.sizeGb} GB · ${monthly(v.sizeGb)}/month
+                          {t("media.volume.unusedItem", { name: v.name, id: v.id, dc: v.dataCenterId, size: v.sizeGb, usd: monthly(v.sizeGb) })}
                         </span>
                         <button type="button" onClick={() => setDeleteVolume(v)} disabled={busy} className={dangerButton}>
-                          Delete
+                          {t("media.common.delete")}
                         </button>
                       </li>
                     ))}
@@ -2254,12 +2320,12 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
                 </div>
               )}
               <div className="mt-3 border-t border-zinc-800 pt-3">
-                <p className="mb-2 text-xs text-zinc-400">Create a new volume in {settings.datacenterId ?? "the chosen datacenter (set it under Compute first)"}:</p>
+                <p className="mb-2 text-xs text-zinc-400">{t("media.volume.createIn", { dc: settings.datacenterId ?? t("media.volume.chosenDc") })}</p>
                 <div className="grid gap-2 sm:grid-cols-3">
-                  <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className={inputClass} placeholder="name" />
+                  <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className={inputClass} placeholder={t("media.volume.namePlaceholder")} />
                   <input type="text" inputMode="numeric" value={newSizeText} onChange={(e) => setNewSizeText(e.target.value)} className={inputClass} placeholder="10–4000" />
                   <button type="button" onClick={() => setConfirmCreate(true)} disabled={busy || !settings.datacenterId || !newName.trim() || newSize === null} className={secondaryButton}>
-                    Create ({newSize === null ? "size 10–4000 GB" : `$${monthly(newSize)}/month`})
+                    {newSize === null ? t("media.volume.createButtonRange") : t("media.volume.createButtonPrice", { usd: monthly(newSize) })}
                   </button>
                 </div>
               </div>
@@ -2271,27 +2337,27 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
       {error && <p className="text-xs text-red-400">{error}</p>}
       {confirmCreate && (
         <ConfirmDialog
-          title={`Create a ${newSize} GB network volume in ${settings.datacenterId}?`}
-          description={`RunPod bills about $${monthly(newSize ?? 0)} per month for it from now until you delete it in the RunPod console.`}
-          confirmLabel="Create volume"
+          title={t("media.volume.createTitle", { size: newSize ?? 0, dc: settings.datacenterId ?? "" })}
+          description={t("media.volume.createDescription", { usd: monthly(newSize ?? 0) })}
+          confirmLabel={t("media.volume.createConfirm")}
           onCancel={() => setConfirmCreate(false)}
           onConfirm={create}
         />
       )}
       {deleteVolume && (
         <ConfirmDialog
-          title={`Delete ${deleteVolume.name} (${deleteVolume.sizeGb} GB)?`}
-          description={`RunPod deletes the volume ${deleteVolume.id} and every file on it permanently; it cannot be recovered. Its billing ($${monthly(deleteVolume.sizeGb)}/month) stops.`}
-          confirmLabel="Delete volume"
+          title={t("media.volume.deleteTitle", { name: deleteVolume.name, size: deleteVolume.sizeGb })}
+          description={t("media.volume.deleteDescription", { id: deleteVolume.id, usd: monthly(deleteVolume.sizeGb) })}
+          confirmLabel={t("media.volume.deleteConfirm")}
           onCancel={() => setDeleteVolume(null)}
           onConfirm={removeVolume}
         />
       )}
       {confirmGrow && selectedVolume && growSize !== null && (
         <ConfirmDialog
-          title={`Grow ${selectedVolume.name} from ${selectedVolume.sizeGb} GB to ${growSize} GB?`}
-          description={`RunPod bills about $${monthly(growSize)} per month for it from now on (+$${monthly(growSize - selectedVolume.sizeGb)}). This cannot be undone: RunPod never shrinks a network volume.`}
-          confirmLabel="Grow volume"
+          title={t("media.volume.growTitle", { name: selectedVolume.name, from: selectedVolume.sizeGb, to: growSize })}
+          description={t("media.volume.growDescription", { usd: monthly(growSize), delta: monthly(growSize - selectedVolume.sizeGb) })}
+          confirmLabel={t("media.volume.growConfirm")}
           onCancel={() => setConfirmGrow(false)}
           onConfirm={grow}
         />
@@ -2301,6 +2367,7 @@ export function VolumeCard({ overview, onChanged }: { overview: Overview; onChan
 }
 
 export function LimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  const { t } = useUiText();
   // Every field is a controlled text input parsed on save (parseInteger / parseMoney): never a native number widget
   // (locale-dependent, and a cleared field would silently become 0).
   const [draft, setDraft] = useState({
@@ -2329,7 +2396,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
   async function save() {
     const maxUsdPerDay = parseMoney(maxUsdPerDayText);
     if (maxUsdPerDay === null) {
-      setError("Max USD per day must be a positive amount like 10 or 2.5");
+      setError(t("media.limits.maxUsdInvalid"));
       return;
     }
     const defaultMaxMinutes = parseInteger(draft.defaultMaxMinutes, { min: 1, max: 1440 });
@@ -2337,9 +2404,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
     const watchIntervalSeconds = parseInteger(draft.watchIntervalSeconds, { min: 15, max: 3600 });
     const maxConcurrentSessions = parseInteger(draft.maxConcurrentSessions, MAX_CONCURRENT_SESSIONS_RANGE);
     if (defaultMaxMinutes === null || idleMinutes === null || watchIntervalSeconds === null || maxConcurrentSessions === null) {
-      setError(
-        `Session length and idle timeout must be whole minutes (1–1440); the watch interval whole seconds (15–3600); concurrent sessions a whole number (${MAX_CONCURRENT_SESSIONS_RANGE.min}–${MAX_CONCURRENT_SESSIONS_RANGE.max})`
-      );
+      setError(t("media.limits.invalid", { min: String(MAX_CONCURRENT_SESSIONS_RANGE.min), max: String(MAX_CONCURRENT_SESSIONS_RANGE.max) }));
       return;
     }
     setBusy(true);
@@ -2347,10 +2412,10 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
     setNotice(null);
     try {
       await requestJson("/api/media-generation/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(onlyChangedSettings({ maxUsdPerDay, defaultMaxMinutes, idleMinutes, watchIntervalSeconds, maxConcurrentSessions, ownerReleaseWhenDone }, settings)) });
-      setNotice("Saved.");
+      setNotice(t("common.saved"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -2365,27 +2430,25 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
 
   return (
     <Card
-      title="Limits"
-      help="Daily spend cap across all sessions; the default length of a session request; how long a running session may sit without jobs before its pod is terminated; and how often the watcher checks (at least every 15 seconds); and how many sessions may hold a pod at the same time (each is its own pod, billed separately; an approve beyond the limit is refused and the request stays pending)."
+      title={t("media.limits.title")}
+      help={t("media.limits.help")}
     >
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="block text-xs text-zinc-400">
-          Max USD per day
-          <input type="text" inputMode="decimal" value={maxUsdPerDayText} onChange={(e) => setMaxUsdPerDayText(e.target.value)} className={inputClass} placeholder="e.g. 10" />
+          {t("media.limits.maxUsdPerDay")}
+          <input type="text" inputMode="decimal" value={maxUsdPerDayText} onChange={(e) => setMaxUsdPerDayText(e.target.value)} className={inputClass} placeholder={t("media.limits.maxUsdPerDayPlaceholder")} />
         </label>
-        {field("Default session length (minutes)", "defaultMaxMinutes", { min: 1, max: 1440 })}
-        {field("Idle timeout (minutes)", "idleMinutes", { min: 1, max: 1440 })}
-        {field("Watch interval (seconds)", "watchIntervalSeconds", { min: 15, max: 3600 })}
-        {field("Concurrent sessions (pods at once)", "maxConcurrentSessions", MAX_CONCURRENT_SESSIONS_RANGE)}
+        {field(t("media.limits.defaultMaxMinutes"), "defaultMaxMinutes", { min: 1, max: 1440 })}
+        {field(t("media.limits.idleMinutes"), "idleMinutes", { min: 1, max: 1440 })}
+        {field(t("media.limits.watchIntervalSeconds"), "watchIntervalSeconds", { min: 15, max: 3600 })}
+        {field(t("media.limits.maxConcurrentSessions"), "maxConcurrentSessions", MAX_CONCURRENT_SESSIONS_RANGE)}
       </div>
       <div className="flex items-center gap-2">
-        <ToggleSwitch label="Stop by itself when the jobs are done" checked={ownerReleaseWhenDone} onChange={setOwnerReleaseWhenDone} />
-        <span className="text-xs text-zinc-400">
-          Every session stops its pod by itself one minute after the last job finished (instead of waiting for the idle timeout) &mdash; yours, agents&rsquo; and the Factory Operator&rsquo;s, unless the request says otherwise.
-        </span>
+        <ToggleSwitch label={t("media.limits.releaseToggle")} checked={ownerReleaseWhenDone} onChange={setOwnerReleaseWhenDone} />
+        <span className="text-xs text-zinc-400">{t("media.limits.releaseExplanation")}</span>
       </div>
       <button type="button" onClick={save} disabled={busy} className={primaryButton}>
-        {busy ? "Saving…" : "Save limits"}
+        {busy ? t("common.saving") : t("media.limits.save")}
       </button>
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
       {error && <p className="text-xs text-red-400">{error}</p>}
@@ -2397,6 +2460,7 @@ export function LimitsCard({ settings, onChanged }: { settings: Settings; onChan
 // itself. Within all of them (and the device limits above) a factory start is approved by the factory; otherwise it waits in
 // the Sessions table for you. On by default (owner, 2026-10-06); switch it off to make every factory start wait for you.
 export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  const { t } = useUiText();
   const initial = () => ({
     perSessionUsd: String(settings.factoryMaxUsdPerSession),
     perSessionMinutes: String(settings.factoryMaxMinutesPerSession),
@@ -2421,7 +2485,7 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
     const factoryMaxUsdPerDay = parseMoney(draft.perDayUsd);
     const factoryMaxUsdPerMonth = parseMoney(draft.perMonthUsd);
     if (factoryMaxUsdPerSession === null || factoryMaxUsdPerDay === null || factoryMaxUsdPerMonth === null || factoryMaxMinutesPerSession === null) {
-      setError("USD limits must be positive amounts like 2 or 2.5; minutes a whole number 1–1440");
+      setError(t("media.factory.invalid"));
       return;
     }
     setBusy(true);
@@ -2433,10 +2497,10 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
         headers: { "content-type": "application/json" },
         body: JSON.stringify(onlyChangedSettings({ factorySessionsEnabled: nextEnabled, factoryMaxUsdPerSession, factoryMaxMinutesPerSession, factoryMaxUsdPerDay, factoryMaxUsdPerMonth }, settings)),
       });
-      setNotice("Saved.");
+      setNotice(t("common.saved"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -2451,12 +2515,12 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
 
   return (
     <Card
-      title="Factory Operator limits"
-      help="Sessions the Factory Operator starts itself (to test models and templates). Within ALL of these limits -- and the device limits above -- its start is approved by the factory and the pod starts without you; above any of them the request waits in Sessions for your approval. The factory can stop only the sessions it started. Day and month are this computer's calendar day and month; a running factory session counts with its full USD cap until it ends."
+      title={t("media.factory.title")}
+      help={t("media.factory.help")}
     >
       <div className="flex items-center gap-3">
         <ToggleSwitch
-          label="Let the Factory Operator start sessions within these limits"
+          label={t("media.factory.toggle")}
           checked={enabled}
           onChange={(next) => {
             setEnabled(next);
@@ -2464,16 +2528,16 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
           }}
           disabled={busy}
         />
-        <span className="text-sm text-zinc-300">Factory Operator may start sessions within these limits</span>
+        <span className="text-sm text-zinc-300">{t("media.factory.toggleText")}</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
-        {field("Per session, USD", "perSessionUsd", "decimal")}
-        {field("Per session, minutes", "perSessionMinutes", "numeric")}
-        {field("Per day, USD (factory sessions)", "perDayUsd", "decimal")}
-        {field("Per month, USD (factory sessions)", "perMonthUsd", "decimal")}
+        {field(t("media.factory.perSessionUsd"), "perSessionUsd", "decimal")}
+        {field(t("media.factory.perSessionMinutes"), "perSessionMinutes", "numeric")}
+        {field(t("media.factory.perDayUsd"), "perDayUsd", "decimal")}
+        {field(t("media.factory.perMonthUsd"), "perMonthUsd", "decimal")}
       </div>
       <button type="button" onClick={() => void save()} disabled={busy} className={primaryButton}>
-        {busy ? "Saving…" : "Save factory limits"}
+        {busy ? t("common.saving") : t("media.factory.save")}
       </button>
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
       {error && <p className="text-xs text-red-400">{error}</p>}
@@ -2484,6 +2548,7 @@ export function FactoryLimitsCard({ settings, onChanged }: { settings: Settings;
 // BL-133 (plan §2.3/§2.4, owner O5): further GPU types tried in order when the chosen one cannot be placed in the volume's
 // datacenter -- for every session, yours too -- and how long a session waits for a free GPU.
 export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; onChanged: () => Promise<void> }) {
+  const { t } = useUiText();
   const [fallbackText, setFallbackText] = useState(settings.gpuFallbackIds.join("\n"));
   const [minVram, setMinVram] = useState(settings.gpuMinVramGb === null ? "" : String(settings.gpuMinVramGb));
   const [maxPrice, setMaxPrice] = useState(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
@@ -2513,7 +2578,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
     const capacityRetrySeconds = parseInteger(retrySeconds, { min: 15, max: 3600 });
     const capacityWaitMinutes = parseInteger(waitMinutes, { min: 1, max: 1440 });
     if ((minVram.trim() && gpuMinVramGb === null) || (maxPrice.trim() && gpuMaxPricePerHr === null) || capacityRetrySeconds === null || capacityWaitMinutes === null || gpuFallbackIds.length > 10) {
-      setError("Up to 10 GPU types; minimum VRAM whole GB; price cap a positive amount; retry 15–3600 s; wait 1–1440 min");
+      setError(t("media.fallback.invalid"));
       return;
     }
     setBusy(true);
@@ -2525,10 +2590,10 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
         headers: { "content-type": "application/json" },
         body: JSON.stringify(onlyChangedSettings({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes }, settings)),
       });
-      setNotice("Saved.");
+      setNotice(t("common.saved"));
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : t("media.common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -2536,33 +2601,34 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
 
   return (
     <Card
-      title="GPU fallback and capacity wait"
-      help="When the GPU chosen above cannot be placed in the volume's datacenter, these GPU types are tried in order (RunPod catalog ids, one per line, e.g. NVIDIA GeForce RTX 5090). A type under the minimum VRAM, over the price cap or not offered in the datacenter is skipped. When none is free, the session waits with no pod (nothing is billed), is retried every few seconds as set here, and fails with 'no capacity' after the wait. A template from the factory registry may bring its own list."
+      title={t("media.fallback.title")}
+      help={t("media.fallback.help")}
     >
       <label className="block text-xs text-zinc-400">
-        Fallback GPU types, in order
+        {t("media.fallback.types")}
+        {/* ui-text-ignore: sample RunPod GPU type ids */}
         <textarea value={fallbackText} onChange={(e) => setFallbackText(e.target.value)} className={`${inputClass} h-24 font-mono text-xs`} placeholder={"NVIDIA GeForce RTX 5090\nNVIDIA L40S"} />
       </label>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="block text-xs text-zinc-400">
-          Minimum VRAM, GB (optional)
-          <input type="text" inputMode="numeric" value={minVram} onChange={(e) => setMinVram(e.target.value)} className={inputClass} placeholder="no minimum" />
+          {t("media.fallback.minVram")}
+          <input type="text" inputMode="numeric" value={minVram} onChange={(e) => setMinVram(e.target.value)} className={inputClass} placeholder={t("media.fallback.noMinimum")} />
         </label>
         <label className="block text-xs text-zinc-400">
-          Price cap, USD per hour (optional)
-          <input type="text" inputMode="decimal" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} className={inputClass} placeholder="no cap" />
+          {t("media.fallback.maxPrice")}
+          <input type="text" inputMode="decimal" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} className={inputClass} placeholder={t("media.fallback.noCap")} />
         </label>
         <label className="block text-xs text-zinc-400">
-          Retry every (seconds, 15–3600)
+          {t("media.fallback.retry")}
           <input type="text" inputMode="numeric" value={retrySeconds} onChange={(e) => setRetrySeconds(e.target.value)} className={inputClass} />
         </label>
         <label className="block text-xs text-zinc-400">
-          Give up after (minutes, 1–1440)
+          {t("media.fallback.wait")}
           <input type="text" inputMode="numeric" value={waitMinutes} onChange={(e) => setWaitMinutes(e.target.value)} className={inputClass} />
         </label>
       </div>
       <button type="button" onClick={save} disabled={busy} className={primaryButton}>
-        {busy ? "Saving…" : "Save GPU fallback"}
+        {busy ? t("common.saving") : t("media.fallback.save")}
       </button>
       {notice && <p className="text-xs text-emerald-400">{notice}</p>}
       {error && <p className="text-xs text-red-400">{error}</p>}
@@ -2572,6 +2638,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
 
 // BL-133 (plan §2.5): every pod start attempt -- which GPU, where, placed or not. Read on demand.
 export function CapacityLogCard() {
+  const { t } = useUiText();
   const [attempts, setAttempts] = useState<MediaCapacityAttempt[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(
@@ -2581,25 +2648,26 @@ export function CapacityLogCard() {
           setAttempts(data.attempts);
           setError(null);
         },
-        (err: unknown) => setError(err instanceof Error ? err.message : "Failed to load the capacity log")
+        (err: unknown) => setError(err instanceof Error ? err.message : t("media.capacity.loadFailed"))
       ),
-    []
+    [t]
   );
   return (
-    <Card title="Pod start attempts" help="Every attempt to create a session's pod in the last 90 days: the GPU type, the datacenter, the price, and whether RunPod placed it. 'no capacity' means no such GPU was free there at that moment.">
+    <Card title={t("media.capacity.title")} help={t("media.capacity.help")}>
       <button type="button" onClick={load} className={secondaryButton}>
-        {attempts ? "Refresh" : "Load attempts"}
+        {attempts ? t("media.common.refresh") : t("media.capacity.load")}
       </button>
-      {attempts && attempts.length === 0 && <p className="text-xs text-zinc-500">No attempts yet.</p>}
+      {attempts && attempts.length === 0 && <p className="text-xs text-zinc-500">{t("media.capacity.none")}</p>}
       {attempts && attempts.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[560px] text-left text-xs text-zinc-400">
             <thead>
               <tr className="text-zinc-500">
-                <th className="py-1 pr-3">When</th>
+                <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
+                {/* ui-text-ignore: the hardware acronym, the same in every language */}
                 <th className="py-1 pr-3">GPU</th>
-                <th className="py-1 pr-3">Datacenter</th>
-                <th className="py-1 pr-3">Result</th>
+                <th className="py-1 pr-3">{t("setupField.datacenterId")}</th>
+                <th className="py-1 pr-3">{t("media.capacity.colResult")}</th>
               </tr>
             </thead>
             <tbody>
@@ -2608,7 +2676,7 @@ export function CapacityLogCard() {
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(a.at)}</td>
                   <td className="py-1 pr-3">
                     {a.gpuTypeId}
-                    {a.pricePerHr !== null ? <span className="text-zinc-500"> · ${a.pricePerHr}/h</span> : null}
+                    {a.pricePerHr !== null ? <span className="text-zinc-500"> · {t("unit.usdPerHour", { value: String(a.pricePerHr) })}</span> : null}
                   </td>
                   <td className="py-1 pr-3">{a.datacenterId ?? "—"}</td>
                   <td className="py-1 pr-3">

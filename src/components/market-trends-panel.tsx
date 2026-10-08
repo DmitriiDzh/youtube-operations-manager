@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { LoadingIndicator } from "./operation-progress";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type TrendCandidateStatus = "emerging" | "growing" | "established" | "declining" | "stale";
 type TrendEvidenceType = "supporting_channel" | "supporting_video" | "signal";
@@ -38,12 +40,27 @@ type MarketTrendEvidence = {
 const STATUS_OPTIONS: TrendCandidateStatus[] = ["emerging", "growing", "established", "declining", "stale"];
 const EVIDENCE_TYPE_OPTIONS: TrendEvidenceType[] = ["signal", "supporting_channel", "supporting_video"];
 
+const STATUS_LABELS: Record<TrendCandidateStatus, UiTextKey> = {
+  emerging: "trends.status.emerging",
+  growing: "trends.status.growing",
+  established: "trends.status.established",
+  declining: "trends.status.declining",
+  stale: "trends.status.stale",
+};
+
+const EVIDENCE_TYPE_LABELS: Record<TrendEvidenceType, UiTextKey> = {
+  signal: "trends.evidenceType.signal",
+  supporting_channel: "trends.evidenceType.supporting_channel",
+  supporting_video: "trends.evidenceType.supporting_video",
+};
+
 // Phase 9 slice 9E, part B (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md §14) -- manual/structural
 // trend candidates. Creation always requires at least one evidence item, and any status change
 // requires a reason (written as its own evidence row) -- both enforced by the service layer, this
 // component only surfaces the required fields. BL-140 R5: a list with a status filter; a candidate's evidence, status
 // change and visibility open in a side panel, and the add form in a dialog.
 export function MarketTrendsPanel() {
+  const t = useT();
   const [trendCandidates, setTrendCandidates] = useState<MarketTrendCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<TrendCandidateStatus | "">("");
@@ -131,8 +148,8 @@ export function MarketTrendsPanel() {
     void fetchEvidence(trendCandidate.trendCandidateId);
   }
 
-  const visibleTrends = statusFilter ? trendCandidates.filter((t) => t.status === statusFilter) : trendCandidates;
-  const openTrend = trendCandidates.find((t) => t.trendCandidateId === expandedTrendId) ?? null;
+  const visibleTrends = statusFilter ? trendCandidates.filter((trend) => trend.status === statusFilter) : trendCandidates;
+  const openTrend = trendCandidates.find((trend) => trend.trendCandidateId === expandedTrendId) ?? null;
 
   async function handleCreate() {
     setCreating(true);
@@ -153,7 +170,7 @@ export function MarketTrendsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setCreateError(data.message ?? "Failed to create trend candidate");
+        setCreateError(data.message ?? t("trends.createFailed"));
         return;
       }
       setNewTitle("");
@@ -178,7 +195,7 @@ export function MarketTrendsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatusError(data.message ?? "Failed to update status");
+        setStatusError(data.message ?? t("trends.updateStatusFailed"));
         return;
       }
       setStatusReason("");
@@ -204,7 +221,7 @@ export function MarketTrendsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setAddEvidenceError(data.message ?? "Failed to record evidence");
+        setAddEvidenceError(data.message ?? t("trends.recordEvidenceFailed"));
         return;
       }
       setAddEvidenceRef("");
@@ -220,46 +237,42 @@ export function MarketTrendsPanel() {
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          Trend candidates
-          <InfoTooltip>
-            A manually-declared list of emerging trends, each backed by at least one piece of
-            evidence. Every status change requires a reason, recorded as its own evidence row --
-            a status can never move without an explanation attached to it.
-          </InfoTooltip>
+          {t("trends.title")}
+          <InfoTooltip>{t("trends.info")}</InfoTooltip>
         </h3>
         <button
           type="button"
           onClick={() => setAddOpen(true)}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
         >
-          Add trend
+          {t("trends.add")}
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2" aria-label="Trend filters">
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TrendCandidateStatus | "")} aria-label="Status" className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200">
-          <option value="">Any status</option>
+      <div className="flex flex-wrap items-center gap-2" aria-label={t("trends.filtersLabel")}>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TrendCandidateStatus | "")} aria-label={t("trends.statusLabel")} className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200">
+          <option value="">{t("trends.anyStatus")}</option>
           {STATUS_OPTIONS.map((option) => (
             <option key={option} value={option}>
-              {option} ({trendCandidates.filter((t) => t.status === option).length})
+              {t("trends.statusOption", { status: t(STATUS_LABELS[option]), count: trendCandidates.filter((trend) => trend.status === option).length })}
             </option>
           ))}
         </select>
       </div>
 
       {addOpen && (
-        <BlockingDialog label="Add a trend candidate" busy={creating}>
-          <p className="text-sm font-medium text-zinc-100">Add a trend candidate</p>
+        <BlockingDialog label={t("trends.addDialogTitle")} busy={creating}>
+          <p className="text-sm font-medium text-zinc-100">{t("trends.addDialogTitle")}</p>
           <input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Trend title"
+            placeholder={t("trends.titlePlaceholder")}
             className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
           />
           <input
             value={newDescription}
             onChange={(e) => setNewDescription(e.target.value)}
-            placeholder="Description (optional)"
+            placeholder={t("trends.descriptionPlaceholder")}
             className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
           />
           <div className="flex flex-wrap items-center gap-2">
@@ -277,7 +290,7 @@ export function MarketTrendsPanel() {
             >
               {EVIDENCE_TYPE_OPTIONS.map((option) => (
                 <option key={option} value={option}>
-                  {option}
+                  {t(EVIDENCE_TYPE_LABELS[option])}
                 </option>
               ))}
             </select>
@@ -285,14 +298,14 @@ export function MarketTrendsPanel() {
               <input
                 value={newEvidenceRef}
                 onChange={(e) => setNewEvidenceRef(e.target.value)}
-                placeholder={newEvidenceType === "supporting_channel" ? "Channel id (UC...)" : "Video id"}
+                placeholder={newEvidenceType === "supporting_channel" ? t("trends.channelIdPlaceholder") : t("trends.videoIdPlaceholder")}
                 className="min-w-40 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
               />
             )}
             <input
               value={newEvidenceDescription}
               onChange={(e) => setNewEvidenceDescription(e.target.value)}
-              placeholder="Initial evidence description"
+              placeholder={t("trends.initialEvidencePlaceholder")}
               className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
             />
           </div>
@@ -307,21 +320,21 @@ export function MarketTrendsPanel() {
               disabled={creating}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
             >
-              Cancel
+              {t("common.cancel")}
             </button>
             <button
               onClick={handleCreate}
               disabled={creating || newTitle.trim().length === 0 || newEvidenceDescription.trim().length === 0}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              {creating ? "Adding..." : "Add trend candidate"}
+              {creating ? t("trends.adding") : t("trends.addCandidate")}
             </button>
           </div>
         </BlockingDialog>
       )}
 
-      {!loading && trendCandidates.length === 0 && <p className="text-sm text-zinc-500">No trend candidates yet.</p>}
-      {!loading && trendCandidates.length > 0 && visibleTrends.length === 0 && <p className="text-sm text-zinc-500">No trend candidates with this status.</p>}
+      {!loading && trendCandidates.length === 0 && <p className="text-sm text-zinc-500">{t("trends.empty")}</p>}
+      {!loading && trendCandidates.length > 0 && visibleTrends.length === 0 && <p className="text-sm text-zinc-500">{t("trends.emptyFiltered")}</p>}
 
       {visibleTrends.length > 0 && (
         <div className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
@@ -335,12 +348,12 @@ export function MarketTrendsPanel() {
               <span className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-medium text-zinc-100">{trendCandidate.title}</span>
                 <span className="flex items-center gap-2 text-xs">
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-300">{trendCandidate.status}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-300">{t(STATUS_LABELS[trendCandidate.status])}</span>
                   <VisibleToPill channelIds={visibility.get(trendCandidate.trendCandidateId) ?? []} connectedChannels={connectedChannels} />
                 </span>
               </span>
               <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-600">
-                Last observed {formatDisplayDateTime(trendCandidate.lastObservedAt)}
+                {t("trends.lastObserved", { date: formatDisplayDateTime(trendCandidate.lastObservedAt) })}
                 <span
                   className={
                     trendCandidate.freshness === "fresh"
@@ -348,7 +361,7 @@ export function MarketTrendsPanel() {
                       : "rounded-full border border-zinc-700 px-1.5 py-0.5 text-zinc-500"
                   }
                 >
-                  {trendCandidate.freshness === "fresh" ? "evidence added recently" : "no recent evidence"}
+                  {trendCandidate.freshness === "fresh" ? t("trends.freshRecent") : t("trends.freshNone")}
                 </span>
               </span>
             </button>
@@ -359,20 +372,24 @@ export function MarketTrendsPanel() {
       {openTrend && (
         <SideDrawer
           title={openTrend.title}
-          subtitle={`${openTrend.status} · first seen ${formatDisplayDateTime(openTrend.firstObservedAt)} · last observed ${formatDisplayDateTime(openTrend.lastObservedAt)}`}
+          subtitle={t("trends.drawerSubtitle", {
+            status: t(STATUS_LABELS[openTrend.status]),
+            first: formatDisplayDateTime(openTrend.firstObservedAt),
+            last: formatDisplayDateTime(openTrend.lastObservedAt),
+          })}
           onClose={closeTrend}
         >
           {openTrend.description && <p className="text-sm text-zinc-400">{openTrend.description}</p>}
-          <DrawerSection title="Evidence and status">
+          <DrawerSection title={t("trends.evidenceAndStatus")}>
             <div>
               <p className="mb-1 text-xs font-medium text-zinc-400">
-                Evidence {evidence.length > 0 && `(${independentChannelCount} independent channel${independentChannelCount === 1 ? "" : "s"})`}
+                {evidence.length > 0 ? t("trends.evidenceWithChannels", { count: independentChannelCount }) : t("trends.evidence")}
               </p>
               {evidenceLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
-              {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">No evidence yet.</p>}
+              {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">{t("trends.noEvidence")}</p>}
               {!evidenceLoading && evidence.some((row) => row.evidenceType === "supporting_video") && (
                 <div className="mb-2">
-                  <p className="text-[11px] uppercase tracking-wide text-zinc-500">Representative videos</p>
+                  <p className="text-[11px] uppercase tracking-wide text-zinc-500">{t("trends.representativeVideos")}</p>
                   <div className="space-y-1">
                     {evidence
                       .filter((row) => row.evidenceType === "supporting_video")
@@ -391,7 +408,7 @@ export function MarketTrendsPanel() {
                   .filter((row) => row.evidenceType !== "supporting_video")
                   .map((row) => (
                     <div key={row.evidenceId} className="text-xs text-zinc-300">
-                      <span className="text-zinc-500">[{row.evidenceType}]</span> {row.description}
+                      <span className="text-zinc-500">[{t(EVIDENCE_TYPE_LABELS[row.evidenceType])}]</span> {row.description}
                       {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
                       <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
                     </div>
@@ -410,7 +427,7 @@ export function MarketTrendsPanel() {
               >
                 {EVIDENCE_TYPE_OPTIONS.map((option) => (
                   <option key={option} value={option}>
-                    {option}
+                    {t(EVIDENCE_TYPE_LABELS[option])}
                   </option>
                 ))}
               </select>
@@ -418,14 +435,14 @@ export function MarketTrendsPanel() {
                 <input
                   value={addEvidenceRef}
                   onChange={(e) => setAddEvidenceRef(e.target.value)}
-                  placeholder={addEvidenceType === "supporting_channel" ? "Channel id (UC...)" : "Video id"}
+                  placeholder={addEvidenceType === "supporting_channel" ? t("trends.channelIdPlaceholder") : t("trends.videoIdPlaceholder")}
                   className="min-w-40 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
                 />
               )}
               <input
                 value={addEvidenceDescription}
                 onChange={(e) => setAddEvidenceDescription(e.target.value)}
-                placeholder="Evidence description"
+                placeholder={t("trends.evidenceDescriptionPlaceholder")}
                 className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
               />
               <button
@@ -433,7 +450,7 @@ export function MarketTrendsPanel() {
                 disabled={addingEvidence || addEvidenceDescription.trim().length === 0}
                 className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
               >
-                Add evidence
+                {t("trends.addEvidence")}
               </button>
             </div>
             {addEvidenceError && <p className="text-xs text-red-400">{addEvidenceError}</p>}
@@ -446,14 +463,14 @@ export function MarketTrendsPanel() {
               >
                 {STATUS_OPTIONS.map((option) => (
                   <option key={option} value={option}>
-                    {option}
+                    {t(STATUS_LABELS[option])}
                   </option>
                 ))}
               </select>
               <input
                 value={statusReason}
                 onChange={(e) => setStatusReason(e.target.value)}
-                placeholder="Reason for this status change"
+                placeholder={t("trends.reasonPlaceholder")}
                 className="min-w-56 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
               />
               <button
@@ -461,13 +478,13 @@ export function MarketTrendsPanel() {
                 disabled={updatingStatus || statusReason.trim().length === 0 || statusChoice === openTrend.status}
                 className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
               >
-                Change status
+                {t("trends.changeStatus")}
               </button>
             </div>
             {statusError && <p className="text-xs text-red-400">{statusError}</p>}
           </DrawerSection>
-          <DrawerSection title="Visible to agents of">
-            <FeatureErrorBoundary label="Channel assignment">
+          <DrawerSection title={t("requests.visibleTo")}>
+            <FeatureErrorBoundary label={t("requests.channelAssignment")}>
               <MarketChannelAssignment
                 recordKind="trend_candidate"
                 recordId={openTrend.trendCandidateId}

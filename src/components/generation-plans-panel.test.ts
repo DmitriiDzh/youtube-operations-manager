@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { describeEvent, describeStage, formatEta } from "./generation-plans-panel";
+import { createTranslator } from "@/lib/ui-text";
+import * as panel from "./generation-plans-panel";
 
 // BL-143 (GENERATION_PLANS_PLAN.md §3): how the Plans tab words the derived numbers.
+
+// BL-152: the words are translated; the requirement checked here is the English wording.
+const t = createTranslator("en");
+const describeStage = (...args: Parameters<typeof panel.describeStage> extends [unknown, ...infer R] ? R : never) => panel.describeStage(t, ...args);
+const formatEta = (seconds: number | null) => panel.formatEta(t, seconds);
+const describeEvent = (event: Parameters<typeof panel.describeEvent>[1]) => panel.describeEvent(t, event);
 
 const counts = (over: Partial<Record<string, number>>) => ({ planned: 10, queued: 0, running: 0, done: 0, failed: 0, interrupted: 0, cancelled: 0, accepted: 0, rejected: 0, ...over });
 
@@ -28,7 +35,7 @@ test("events read as one line: a stopped session says why, a verdict says the ra
 });
 
 test("a report's age reads in minutes, then hours", async () => {
-  const { describeAge } = await import("./generation-plans-panel");
+  const describeAge = (updatedAt: string, at: number) => panel.describeAge(t, updatedAt, at);
   const now = Date.parse("2026-10-07T12:00:00Z");
   assert.equal(describeAge("2026-10-07T11:59:40Z", now), "just now");
   assert.equal(describeAge("2026-10-07T11:53:00Z", now), "7 min ago");
@@ -36,7 +43,7 @@ test("a report's age reads in minutes, then hours", async () => {
 });
 
 test("notices read as short chips with a tone (AC-GP3-01)", async () => {
-  const { describeNotice } = await import("./generation-plans-panel");
+  const describeNotice = (notice: Parameters<typeof panel.describeNotice>[1]) => panel.describeNotice(t, notice);
   assert.deepEqual(describeNotice({ kind: "stage_complete", stageId: "generate", title: "Generate" }), { text: "Generate: complete", tone: "ok" });
   assert.equal(describeNotice({ kind: "budget_100" }).tone, "bad");
   assert.equal(describeNotice({ kind: "review_waiting", count: 3 }).text, "3 waiting for your verdict");

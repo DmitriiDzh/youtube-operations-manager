@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type EditorialContext = {
   targetAudience?: string;
@@ -21,13 +23,13 @@ type EditorialProfile = {
   updatedAt: string;
 };
 
-const FIELDS = [
-  ["targetAudience", "Target audience"],
-  ["toneNotes", "Tone & style guidance"],
-  ["terminologyNotes", "Preferred terminology"],
-  ["titleConstraints", "Title constraints"],
-  ["descriptionConstraints", "Description constraints"],
-] as const;
+const FIELDS: ReadonlyArray<readonly [keyof EditorialContext, UiTextKey]> = [
+  ["targetAudience", "profile.field.targetAudience"],
+  ["toneNotes", "profile.field.toneNotes"],
+  ["terminologyNotes", "profile.field.terminologyNotes"],
+  ["titleConstraints", "profile.field.titleConstraints"],
+  ["descriptionConstraints", "profile.field.descriptionConstraints"],
+];
 
 /**
  * Relocated from the former "AI Localization" tab onto Home (docs/roadmap/plans/
@@ -38,6 +40,7 @@ const FIELDS = [
  * as a prop.
  */
 export function EditorialProfilePanel() {
+  const t = useT();
   const [channelId, setChannelId] = useState("");
   const [profile, setProfile] = useState<EditorialProfile | null>(null);
   const [profileDraft, setProfileDraft] = useState<EditorialContext>({});
@@ -93,7 +96,7 @@ export function EditorialProfilePanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to save editorial profile");
+        setError(data.message ?? t("profile.saveFailed"));
         return;
       }
       setProfile(data.profile);
@@ -108,19 +111,17 @@ export function EditorialProfilePanel() {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between px-4 py-2 text-sm font-medium text-zinc-200"
       >
-        <span>Channel editorial profile {profile ? `(v${profile.version})` : "(none saved)"}</span>
-        <span className="text-xs text-zinc-500">{open ? "Hide" : "Edit"}</span>
+        <span>
+          {profile ? t("profile.titleWithVersion", { version: String(profile.version) }) : t("profile.titleNoneSaved")}
+        </span>
+        <span className="text-xs text-zinc-500">{open ? t("profile.hide") : t("profile.edit")}</span>
       </button>
       {open && (
         <div className="space-y-3 border-t border-zinc-800 p-4">
-          <p className="text-xs text-zinc-500">
-            Optional, per-channel guidance automatically applied whenever AI generates a
-            localization proposal for this channel. Never required; a channel with no saved
-            profile generates normally.
-          </p>
-          {FIELDS.map(([field, label]) => (
+          <p className="text-xs text-zinc-500">{t("profile.intro")}</p>
+          {FIELDS.map(([field, labelKey]) => (
             <label key={field} className="block">
-              <span className="text-xs text-zinc-400">{label}</span>
+              <span className="text-xs text-zinc-400">{t(labelKey)}</span>
               <textarea
                 value={profileDraft[field] ?? ""}
                 onChange={(e) => setProfileDraft((prev) => ({ ...prev, [field]: e.target.value }))}
@@ -135,7 +136,7 @@ export function EditorialProfilePanel() {
             disabled={saving}
             className="rounded-md bg-zinc-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
           >
-            {saving ? "Saving..." : "Save profile"}
+            {saving ? t("common.saving") : t("profile.save")}
           </button>
         </div>
       )}

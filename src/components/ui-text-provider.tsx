@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import {
+  apiErrorText,
   createTranslator,
   formatNumber,
   type Translate,
@@ -19,6 +20,8 @@ type UiTextContextValue = {
   systemLanguage: UiLanguage;
   t: Translate;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
+  /** A failed API answer's text in the interface language (see `apiErrorText`). */
+  errorText: (body: unknown, fallback: string) => string;
 };
 
 const UiTextContext = createContext<UiTextContextValue | null>(null);
@@ -32,6 +35,7 @@ export function UiTextProvider(props: { language: UiLanguage; source: UiLanguage
       systemLanguage,
       t: createTranslator(language),
       formatNumber: (n, options) => formatNumber(language, n, options),
+      errorText: (body, fallback) => apiErrorText(language, body, fallback),
     }),
     [language, source, systemLanguage],
   );
@@ -54,4 +58,5 @@ const FALLBACK: UiTextContextValue = {
   systemLanguage: "en",
   t: createTranslator("en"),
   formatNumber: (n, options) => formatNumber("en", n, options),
+  errorText: (body, fallback) => apiErrorText("en", body, fallback),
 };

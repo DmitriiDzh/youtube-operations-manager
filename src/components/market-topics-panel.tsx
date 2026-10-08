@@ -9,6 +9,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { LoadingIndicator } from "./operation-progress";
+import { useT } from "./ui-text-provider";
 
 type MarketTopic = {
   topicId: string;
@@ -31,6 +32,7 @@ type MarketTopicAssignment = {
 // (owner decision 3's own AI-gating exemption for this exact case). BL-140 R5: a compact list; a topic's
 // assignments, Wikipedia interest and visibility open in a side panel.
 export function MarketTopicsPanel() {
+  const t = useT();
   const [topics, setTopics] = useState<MarketTopic[]>([]);
   const [loading, setLoading] = useState(true);
   const [newTopicName, setNewTopicName] = useState("");
@@ -92,7 +94,7 @@ export function MarketTopicsPanel() {
     void fetchAssignments(topic.topicId);
   }
 
-  const openTopic = topics.find((t) => t.topicId === expandedTopicId) ?? null;
+  const openTopic = topics.find((topic) => topic.topicId === expandedTopicId) ?? null;
   const closeTopic = useCallback(() => {
     setExpandedTopicId(null);
     // The stale-response guard too, so a late reply for the closed topic is dropped.
@@ -110,7 +112,7 @@ export function MarketTopicsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to create topic");
+        setError(data.message ?? t("topics.createFailed"));
         return;
       }
       setNewTopicName("");
@@ -131,7 +133,7 @@ export function MarketTopicsPanel() {
       // no indication anything went wrong.
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.message ?? "Failed to delete topic");
+        setError(data.message ?? t("topics.deleteFailed"));
         return;
       }
       if (expandedTopicId === deleteTarget.topicId) closeTopic();
@@ -153,7 +155,7 @@ export function MarketTopicsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setAssignError(data.message ?? "Failed to assign");
+        setAssignError(data.message ?? t("topics.assignFailed"));
         return;
       }
       setNewSubjectId("");
@@ -168,7 +170,7 @@ export function MarketTopicsPanel() {
     const res = await fetch(`/api/market-intelligence/topic-assignments/${encodeURIComponent(assignmentId)}`, { method: "DELETE" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      setAssignError(data.message ?? "Failed to remove assignment");
+      setAssignError(data.message ?? t("topics.removeAssignmentFailed"));
       return;
     }
     await fetchAssignments(topicId);
@@ -178,12 +180,8 @@ export function MarketTopicsPanel() {
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          Topics
-          <InfoTooltip>
-            A manually-defined list of topic labels (e.g. &ldquo;night jazz bar&rdquo;), which you
-            can tag onto a watchlisted channel or a video id. Manual/keyword-based tagging only --
-            no AI-assisted classification here.
-          </InfoTooltip>
+          {t("topics.title")}
+          <InfoTooltip>{t("topics.info")}</InfoTooltip>
         </h3>
       </div>
 
@@ -191,7 +189,7 @@ export function MarketTopicsPanel() {
         <input
           value={newTopicName}
           onChange={(e) => setNewTopicName(e.target.value)}
-          placeholder="New topic name"
+          placeholder={t("topics.newPlaceholder")}
           className="min-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
         />
         <button
@@ -199,12 +197,12 @@ export function MarketTopicsPanel() {
           disabled={creating || newTopicName.trim().length === 0}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
-          {creating ? "Adding..." : "Add topic"}
+          {creating ? t("topics.adding") : t("topics.add")}
         </button>
       </div>
       {error && <p className="text-sm text-red-400">{error}</p>}
 
-      {!loading && topics.length === 0 && <p className="text-sm text-zinc-500">No topics yet.</p>}
+      {!loading && topics.length === 0 && <p className="text-sm text-zinc-500">{t("topics.empty")}</p>}
 
       {topics.length > 0 && (
         <div className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
@@ -217,7 +215,7 @@ export function MarketTopicsPanel() {
             >
               <span className="text-sm font-medium text-zinc-100">{topic.name}</span>
               <span className="flex items-center gap-2 text-xs text-zinc-500">
-                added {formatDisplayDateTime(topic.addedAt)}
+                {t("topics.added", { date: formatDisplayDateTime(topic.addedAt) })}
                 <VisibleToPill channelIds={visibility.get(topic.topicId) ?? []} connectedChannels={connectedChannels} />
               </span>
             </button>
@@ -226,26 +224,30 @@ export function MarketTopicsPanel() {
       )}
 
       {openTopic && (
-        <SideDrawer title={openTopic.name} subtitle={`Topic · added ${formatDisplayDateTime(openTopic.addedAt)}`} onClose={closeTopic}>
-          <DrawerSection title="Wikipedia interest">
-            <FeatureErrorBoundary label="Research — Wikipedia interest">
+        <SideDrawer title={openTopic.name} subtitle={t("topics.drawerSubtitle", { date: formatDisplayDateTime(openTopic.addedAt) })} onClose={closeTopic}>
+          <DrawerSection title={t("signals.title")}>
+            <FeatureErrorBoundary label={t("topics.wikipediaBoundary")}>
               <TopicWikipediaSignals topicId={openTopic.topicId} />
             </FeatureErrorBoundary>
           </DrawerSection>
 
-          <DrawerSection title="Tagged channels and videos">
+          <DrawerSection title={t("topics.tagged")}>
             {assignmentsLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
-            {!assignmentsLoading && assignments.length === 0 && <p className="text-xs text-zinc-500">Nothing tagged with this topic yet.</p>}
+            {!assignmentsLoading && assignments.length === 0 && <p className="text-xs text-zinc-500">{t("topics.nothingTagged")}</p>}
             {assignments.map((assignment) => (
               <div key={assignment.assignmentId} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
                 <span>
-                  {assignment.subjectType}: {assignment.subjectId} &middot; {formatDisplayDateTime(assignment.assignedAt)}
+                  {t("topics.assignmentRow", {
+                    subjectType: t(assignment.subjectType === "channel" ? "topics.subject.channel" : "topics.subject.video"),
+                    subjectId: assignment.subjectId,
+                    date: formatDisplayDateTime(assignment.assignedAt),
+                  })}
                 </span>
                 <button
                   onClick={() => handleRemoveAssignment(openTopic.topicId, assignment.assignmentId)}
                   className="rounded-md border border-zinc-700 px-2 py-0.5 text-zinc-400 hover:border-red-700 hover:text-red-400"
                 >
-                  Remove
+                  {t("topics.remove")}
                 </button>
               </div>
             ))}
@@ -253,16 +255,16 @@ export function MarketTopicsPanel() {
               <select
                 value={newSubjectType}
                 onChange={(e) => setNewSubjectType(e.target.value as "channel" | "video")}
-                aria-label="Subject type"
+                aria-label={t("topics.subjectTypeLabel")}
                 className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
               >
-                <option value="channel">Channel</option>
-                <option value="video">Video</option>
+                <option value="channel">{t("topics.optionChannel")}</option>
+                <option value="video">{t("topics.optionVideo")}</option>
               </select>
               <input
                 value={newSubjectId}
                 onChange={(e) => setNewSubjectId(e.target.value)}
-                placeholder={newSubjectType === "channel" ? "UC..." : "video id"}
+                placeholder={newSubjectType === "channel" ? "UC..." : t("topics.videoIdPlaceholder")}
                 className="min-w-48 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
               />
               <button
@@ -270,24 +272,24 @@ export function MarketTopicsPanel() {
                 disabled={assigning || newSubjectId.trim().length === 0}
                 className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
               >
-                Assign
+                {t("topics.assign")}
               </button>
             </div>
             {assignError && <p className="text-xs text-red-400">{assignError}</p>}
           </DrawerSection>
 
-          <DrawerSection title="Visible to agents of">
-            <FeatureErrorBoundary label="Channel assignment">
+          <DrawerSection title={t("requests.visibleTo")}>
+            <FeatureErrorBoundary label={t("requests.channelAssignment")}>
               <MarketChannelAssignment recordKind="topic" recordId={openTopic.topicId} onChange={(channelIds) => setVisibility(openTopic.topicId, channelIds)} />
             </FeatureErrorBoundary>
           </DrawerSection>
 
-          <DrawerSection title="Delete">
+          <DrawerSection title={t("topics.deleteSection")}>
             <button
               onClick={() => setDeleteTarget(openTopic)}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-red-700 hover:text-red-400"
             >
-              Delete topic
+              {t("topics.deleteTopic")}
             </button>
             {error && <p className="text-xs text-red-400">{error}</p>}
           </DrawerSection>
@@ -296,9 +298,9 @@ export function MarketTopicsPanel() {
 
       {deleteTarget && (
         <ConfirmDialog
-          title="Delete this topic?"
-          description={`This removes "${deleteTarget.name}" and every assignment tagged with it. Any trend candidate tagged with this topic keeps its own evidence, just without this topic label.`}
-          confirmLabel={deleting ? "Deleting..." : "Delete"}
+          title={t("topics.deleteConfirmTitle")}
+          description={t("topics.deleteConfirmBody", { name: deleteTarget.name })}
+          confirmLabel={deleting ? t("topics.deleting") : t("topics.delete")}
           confirmVariant="danger"
           onCancel={() => setDeleteTarget(null)}
           onConfirm={handleConfirmDelete}

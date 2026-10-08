@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type Connection = {
   id: string;
@@ -36,7 +38,14 @@ const EMPTY_DRAFT: DraftConnection = {
   apiKey: "",
 };
 
+const STATUS_LABEL: Record<Connection["status"], UiTextKey> = {
+  unknown: "settingsCards.ai.status.unknown",
+  ok: "settingsCards.ai.status.ok",
+  error: "settingsCards.ai.status.error",
+};
+
 export function AiConnectionsManager() {
+  const t = useT();
   const [connections, setConnections] = useState<Connection[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftConnection>(EMPTY_DRAFT);
@@ -59,11 +68,11 @@ export function AiConnectionsManager() {
   async function handleCreate() {
     setError(null);
     if (!draft.displayName || !draft.modelId) {
-      setError("Display name and model id are required");
+      setError(t("settingsCards.ai.nameModelRequired"));
       return;
     }
     if (draft.adapterType === "openai_compatible" && !draft.baseUrl) {
-      setError("Base URL is required for an OpenAI-compatible connection");
+      setError(t("settingsCards.ai.baseUrlRequired"));
       return;
     }
 
@@ -84,7 +93,7 @@ export function AiConnectionsManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to create connection");
+        setError(data.message ?? t("settingsCards.ai.createFailed"));
         return;
       }
       setDraft(EMPTY_DRAFT);
@@ -133,10 +142,10 @@ export function AiConnectionsManager() {
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-zinc-800 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-zinc-200">New connection</h3>
+        <h3 className="mb-3 text-sm font-semibold text-zinc-200">{t("settingsCards.ai.newTitle")}</h3>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="text-xs text-zinc-400">Display name</span>
+            <span className="text-xs text-zinc-400">{t("settingsCards.ai.displayName")}</span>
             <input
               value={draft.displayName}
               onChange={(e) => setDraft((d) => ({ ...d, displayName: e.target.value }))}
@@ -144,20 +153,21 @@ export function AiConnectionsManager() {
             />
           </label>
           <label className="block">
-            <span className="text-xs text-zinc-400">Adapter type</span>
+            <span className="text-xs text-zinc-400">{t("settingsCards.ai.adapterType")}</span>
             <select
               value={draft.adapterType}
               onChange={(e) => setDraft((d) => ({ ...d, adapterType: e.target.value as DraftConnection["adapterType"] }))}
               className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
             >
+              {/* ui-text-ignore: a product/protocol name, the same in every language. */}
               <option value="openai_compatible">OpenAI-compatible</option>
-              <option value="mock">Mock (deterministic, no network)</option>
+              <option value="mock">{t("settingsCards.ai.mockOption")}</option>
             </select>
           </label>
           {draft.adapterType === "openai_compatible" && (
             <>
               <label className="block">
-                <span className="text-xs text-zinc-400">Base URL</span>
+                <span className="text-xs text-zinc-400">{t("settingsCards.ai.baseUrl")}</span>
                 <input
                   value={draft.baseUrl}
                   onChange={(e) => setDraft((d) => ({ ...d, baseUrl: e.target.value }))}
@@ -166,23 +176,25 @@ export function AiConnectionsManager() {
                 />
               </label>
               <label className="block">
-                <span className="text-xs text-zinc-400">Structured output</span>
+                <span className="text-xs text-zinc-400">{t("settingsCards.ai.structuredOutput")}</span>
                 <select
                   value={draft.structuredOutput}
                   onChange={(e) => setDraft((d) => ({ ...d, structuredOutput: e.target.value as DraftConnection["structuredOutput"] }))}
                   className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
                 >
+                  {/* ui-text-ignore: API format names, the same in every language. */}
                   <option value="json_object">json_object</option>
+                  {/* ui-text-ignore: API format names, the same in every language. */}
                   <option value="json_schema">json_schema</option>
-                  <option value="none">none (unsupported -- generation will error)</option>
+                  <option value="none">{t("settingsCards.ai.structuredNone")}</option>
                 </select>
               </label>
               <label className="flex items-center gap-2 text-xs text-zinc-400">
                 <input type="checkbox" checked={draft.localInferenceMode} onChange={(e) => setDraft((d) => ({ ...d, localInferenceMode: e.target.checked }))} />
-                Local-inference mode (allows localhost/private-network Base URL; only enable for a trusted local server)
+                {t("settingsCards.ai.localInference")}
               </label>
               <label className="block">
-                <span className="text-xs text-zinc-400">API key (optional, never shown again once saved)</span>
+                <span className="text-xs text-zinc-400">{t("settingsCards.ai.apiKey")}</span>
                 <input
                   type="password"
                   value={draft.apiKey}
@@ -193,7 +205,7 @@ export function AiConnectionsManager() {
             </>
           )}
           <label className="block">
-            <span className="text-xs text-zinc-400">Model id</span>
+            <span className="text-xs text-zinc-400">{t("settingsCards.ai.modelId")}</span>
             <input
               value={draft.modelId}
               onChange={(e) => setDraft((d) => ({ ...d, modelId: e.target.value }))}
@@ -207,7 +219,7 @@ export function AiConnectionsManager() {
           disabled={creating}
           className="mt-3 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {creating ? "Creating..." : "Create connection"}
+          {creating ? t("settingsCards.ai.creating") : t("settingsCards.ai.create")}
         </button>
       </div>
 
@@ -220,24 +232,27 @@ export function AiConnectionsManager() {
                   {c.displayName} <span className="text-xs text-zinc-500">({c.adapterType})</span>
                 </p>
                 <p className="text-xs text-zinc-500">
-                  {c.modelId} {c.baseUrl ? `→ ${c.baseUrl}` : ""} {c.localInferenceMode ? "• local-inference mode" : ""}
+                  {c.modelId} {c.baseUrl ? `→ ${c.baseUrl}` : ""} {c.localInferenceMode ? t("settingsCards.ai.localInferenceBadge") : ""}
                 </p>
                 <p className="text-xs text-zinc-500">
-                  Credential: {c.hasCredential ? "configured" : "none"} • Status: {c.status}
+                  {t("settingsCards.ai.credentialStatus", {
+                    credential: c.hasCredential ? t("settingsCards.ai.credentialConfigured") : t("value.none"),
+                    status: t(STATUS_LABEL[c.status]),
+                  })}
                   {c.statusMessage ? ` (${c.statusMessage})` : ""}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={() => handleToggleEnabled(c)} className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
-                  {c.enabled ? "Disable" : "Enable"}
+                  {c.enabled ? t("settingsCards.ai.disable") : t("settingsCards.enable")}
                 </button>
                 {c.hasCredential && (
                   <button onClick={() => handleClearCredential(c)} className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
-                    Clear credential
+                    {t("settingsCards.ai.clearCredential")}
                   </button>
                 )}
                 <button onClick={() => handleDelete(c)} className="rounded-md border border-red-800 px-3 py-1 text-xs text-red-400 hover:bg-red-950/30">
-                  Delete
+                  {t("settingsCards.ai.delete")}
                 </button>
               </div>
             </div>
@@ -246,13 +261,13 @@ export function AiConnectionsManager() {
               {confirmCostFor === c.id ? (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-amber-300">
-                    {c.adapterType === "mock" ? "This will not incur any cost." : "This will make a real request to the configured endpoint and may incur cost."}
+                    {c.adapterType === "mock" ? t("settingsCards.ai.noCost") : t("settingsCards.ai.mayCost")}
                   </span>
                   <button onClick={() => handleTest(c)} className="rounded-md bg-amber-700 px-3 py-1 text-xs text-white hover:bg-amber-600">
-                    Confirm and test
+                    {t("settingsCards.ai.confirmTest")}
                   </button>
                   <button onClick={() => setConfirmCostFor(null)} className="text-xs text-zinc-500 hover:text-zinc-300">
-                    Cancel
+                    {t("common.cancel")}
                   </button>
                 </div>
               ) : (
@@ -261,7 +276,7 @@ export function AiConnectionsManager() {
                   disabled={testingId === c.id}
                   className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  {testingId === c.id ? "Testing..." : "Test connection"}
+                  {testingId === c.id ? t("settingsCards.ai.testing") : t("settingsCards.ai.test")}
                 </button>
               )}
               {testResults[c.id] && (
@@ -270,7 +285,7 @@ export function AiConnectionsManager() {
             </div>
           </div>
         ))}
-        {connections.length === 0 && <p className="text-sm text-zinc-500">No connections configured yet.</p>}
+        {connections.length === 0 && <p className="text-sm text-zinc-500">{t("settingsCards.ai.none")}</p>}
       </div>
     </div>
   );
