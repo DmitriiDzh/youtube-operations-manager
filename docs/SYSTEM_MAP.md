@@ -541,7 +541,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
     - `/media/*` (`MediaPanel`) — планы, прослушивание и задания только активного канала, строка «сейчас генерируется»; маршруты Media проверяют канал на сервере (ADR 0004 (b)).
     - `/production/...` перенаправляется.
   - **Работа других каналов.**
-    - `channelSummary` и `GET /api/generation-plans/summary` (`channels`) — только числа и названия уведомлений;
+    - `channelSummary` и `GET /api/generation-plans/summary` (`channels`) — только числа и названия (заголовки планов, волн и стадий, виды уведомлений; никогда треки, файлы и оценки);
     - счётчики в переключателе каналов;
     - раздел «Другие каналы» в колокольчике (`components/channel-work.ts`).
   - **Перенос плана:** `factory_plan_move` (Factory API 1.8.0) с проверкой файлов в Sent to YTM нового канала. Выход задания ищется в канале, где шло задание.

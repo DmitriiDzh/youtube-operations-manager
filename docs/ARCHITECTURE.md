@@ -3047,7 +3047,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
   - The plans list and the peer plans list filter on the server. The peers list also filters the verdicts sent from here and
     the other devices' claims to the plans it shows. Jobs use `GET /api/media-generation/jobs?scope=active`.
   - With no active channel, everything is empty or `not_found`.
-- **Other channels' work (exception to ADR 0004: counts only).**
+- **Other channels' work (exception to ADR 0004: counts and names -- plan, wave and stage titles and notice kinds; never
+  tracks, files or verdicts).**
   - `core.channelSummary({ activeChannelId, connectedChannelIds })` returns, per connected channel:
     - waiting passed / rejected;
     - the plans with waiting tracks;

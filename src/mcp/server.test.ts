@@ -6277,6 +6277,8 @@ test("re-review: the agent's plan view drops error texts at any depth and passes
     events: [
       { at: "2026-10-07T09:05:00.000Z", kind: "stage_run", actor: "factory", details: { created: 1, stoppedAt: { itemKey: "C1/F1", seed: 2, error: { code: "media_input_unavailable", message: "/Volumes/SSD/ws/missing.png" } } } },
       { at: "2026-10-07T09:06:00.000Z", kind: "session_stopped", actor: "app", details: { sessionId: "s", stopReason: "start failed: boom" } },
+      // BL-157 (ADR 0004/0031): a move names the other channel -- not this agent's to see.
+      { at: "2026-10-07T09:07:00.000Z", kind: "plan_moved", actor: "factory", details: { from: "UC_other_channel", to: "UC_1", checked: 34 } },
     ],
     more: true,
     cursor: "2026-10-07T09:06:00.000Z",
@@ -6289,6 +6291,8 @@ test("re-review: the agent's plan view drops error texts at any depth and passes
   const out = parseToolJson(await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine" }));
   const text = JSON.stringify(out);
   assert.ok(!text.includes("/Volumes") && !text.includes("boom") && !text.includes("RunPod said"), text);
+  assert.ok(!text.includes("UC_other_channel"), "the move's other channel is not shown to the agent");
+  assert.deepEqual(out.events[2], { at: "2026-10-07T09:07:00.000Z", kind: "plan_moved", actor: "factory", details: { checked: 34 } });
   assert.deepEqual(out.events[0].details.stoppedAt, { itemKey: "C1/F1", seed: 2 });
   assert.equal(out.more, true);
   assert.equal(out.cursor, "2026-10-07T09:06:00.000Z");

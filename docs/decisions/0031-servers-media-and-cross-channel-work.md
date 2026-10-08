@@ -89,6 +89,7 @@ The owner now runs two music channels at once.
 - **Factory API 1.8.0** (additive): `factory_plan_move`, `plan_moved`, `group_reviewed`, `ownerNote`, and `owner_verdict` per
   verdict with `device`.
 - **New error code:** `plan_verdict_exists` (409).
-- **Two devices must run the same version.** Until both do, each shows the other's last version 1 report, then marks it stale.
+- **Two devices must run the same version.** Until both do, the computer still on the older build refuses the other's version 2 report ("update the app"), keeps showing
+  its last version 1 report and then marks it stale; the updated computer reads the older one's version 1 reports as before.
 - **Claims can be missed.** A track opened on both computers within the sync delay can still be rated twice. The second rating
   asks first if the first has arrived, and the history keeps both. See `docs/TECHNICAL_DEBT.md` RISK-114.

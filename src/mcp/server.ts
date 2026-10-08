@@ -1418,7 +1418,16 @@ export function createMcpToolHandlers(
         // Another channel's plan behaves like one that does not exist.
         if (view.plan.channelId !== parsedInput.data.channelId) return notFound();
         // Error texts (a job's error, a session's failure reason) can name local paths: left out for agents.
-        const events = view.events.map((e) => ({ ...e, details: withoutErrorTexts(e.details) as Record<string, unknown> }));
+        // BL-157 (ADR 0004/0031, review round 8): a moved plan's event names both channels -- the other one is not this
+        // agent's to see, so a move reaches it without the channel ids.
+        const events = view.events.map((e) => {
+          const details = withoutErrorTexts(e.details) as Record<string, unknown>;
+          if (e.kind !== "plan_moved") return { ...e, details };
+          const { from: _from, to: _to, ...rest } = details;
+          void _from;
+          void _to;
+          return { ...e, details: rest };
+        });
         return toolSuccessResult({ plan: agentPlanView(view), events, more: view.more, cursor: view.cursor });
       } catch (error) {
         return toolErrorResult(error);

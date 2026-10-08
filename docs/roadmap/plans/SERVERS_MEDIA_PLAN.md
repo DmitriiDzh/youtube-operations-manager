@@ -56,6 +56,8 @@ The merge into `dev` still needs the owner's explicit yes.
   - With `checkOnly: true`, the tool returns the answer and changes nothing, whether or not files are missing.
   - Without `checkOnly`, any missing file refuses the move with `plan_invalid`, and `details` carries `checked` and
     `missing`. Nothing is moved.
+  - Built as `{ planId, from, to, checked, missing (≤ 500 listed), missingCount, unfinishedJobs, moved }`: the list is capped
+    so a plan with hundreds of missing files still answers, `missingCount` gives the full number.
 - **AC-MV-04: the move.**
   - The plan's channel changes through the plan's compare-and-swap.
   - An event `plan_moved { from, to, checked }` is recorded with the caller as actor.
@@ -79,9 +81,10 @@ The merge into `dev` still needs the owner's explicit yes.
     is shown only on the owner device, from that device's own report, so it needs no field of its own.
   - A plan gains `batches` and the groups' `ownerNote`.
   - The report gains `claims`.
-- **AC-RP-02.** A version 2 report that a version 1 build rejects is the known cost. Until both computers run this build,
-  each one keeps showing the other's last version 1 report, then shows it as stale. Both computers must update together. The
-  release note and the owner are told.
+- **AC-RP-02.** A version 2 report that a version 1 build rejects is the known cost. Until both computers run this build, the
+  one still on the older build refuses the other's version 2 report ("update the app"), keeps showing its last version 1
+  report and then shows it as stale; the updated computer reads the older one's version 1 reports as before. Both computers
+  must update together. The release note and the owner are told.
 - **AC-RP-03.** A peer's job audition resolves in the entry's `jobChannelId` when present, else in the plan's channel.
 
 ## C. Servers and Media (FO-REQ-0009 §1, §2)
@@ -128,7 +131,8 @@ plan contents.
     - `channelId`;
     - `waitingReview`, `waitingPassed` and `waitingRejected`;
     - `batches[]` with `{ planId, groupId, title, waiting }` for the waves that have tracks waiting;
-    - `notices[]` with `{ planId, kind, ... }` for each plan of that channel.
+    - `notices[]` for each plan of that channel -- built as `{ planId, planTitle, device, notice: { kind, ... } }`, with
+      `plans[]` (`{ planId, title, device, waiting }`) for the plans that have tracks waiting.
   The counts include other devices' plans of that channel, minus the verdicts already sent from here, as the badge does
   today.
 - **AC-BL-02: Media badge.** It counts the active channel only. The tooltip keeps the passed / rejected split.

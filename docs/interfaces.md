@@ -746,7 +746,7 @@ Key MCP tools:
   - Default `releaseWhenDone` (Agent API 3.7.0, Factory API 1.4.0; DEV-MSG-0001 / FO-MSG-0007, owner 2026-10-07): a session request that omits `releaseWhenDone` -- the owner's, `agent_request_media_session` or `factory_media_start_session` -- takes the owner's Servers → Setup setting (on by default); before, agent and factory requests defaulted to `false`. An explicit `true`/`false` always wins. A session stopped this way has `stopReason` starting with `released after last job`.
   - Generation plans, read-only (Agent API 3.8.0; BL-143 phase 3, ADR 0029).
     - `agent_list_generation_plans` `{ channelId, status? }` → `{ plans: [{ planId, title, status, budget, note, stages, groups, items (no params), progress }] }`.
-    - `agent_get_generation_plan` `{ channelId, planId, since? }` → `{ plan, events, more, cursor }`.
+    - `agent_get_generation_plan` `{ channelId, planId, since? }` → `{ plan, events, more, cursor }`. BL-157: a moved plan shows under its new channel only; its `plan_moved` event reaches the agent without the channel ids (`{ checked }`).
       - Without `since`: the newest 500 events. With it: the page at or after it.
       - Job error texts and session stop reasons are left out.
     - Only the session's active channel; another channel's plan → `plan_not_found`. Classified `bound`, ungated (pure local reads).
@@ -929,7 +929,7 @@ A second agent role, separate from the channel agents. Technical contract only (
       - `POST /api/generation-plans/peers/[deviceId]/[planId]/verdict` (as `.../verdict`): only for an active plan and an attempt in that device's latest report; carried there in this device's sync report;
       - `GET /api/generation-plans/peers/[deviceId]/[planId]/audition`: the file that report names, from this device's copy of the channel workspace, under the same rules as below.
 
-      Sync-gateway family `generation-plans` (Merge tab "Generation plans"): report `ytm-generation-plans` v1.
+      Sync-gateway family `generation-plans` (Merge tab "Generation plans"): report `ytm-generation-plans` v1 -- version 2 since BL-157 (below), which still reads v1.
     - Phase 3:
       - `GET /api/generation-plans/summary` → `{ waitingReview, waitingPassed, waitingRejected, local, otherDevices }` -- replaced by BL-157 (below): the answer is now per channel, `{ activeChannelId, waitingReview, waitingPassed, waitingRejected, channels }`, and `local` / `otherDevices` are gone;
       - `POST /api/generation-plans/[planId]/review-rejected` `{ reviewRejected: boolean }` -- the owner's switch (BL-153), a `plan_updated` event by the owner;
@@ -942,7 +942,7 @@ A second agent role, separate from the channel agents. Technical contract only (
         - `GET /api/media-generation/jobs?scope=active` lists the active channel's jobs.
       - **`GET /api/generation-plans/summary`** → `{ activeChannelId, waitingReview, waitingPassed, waitingRejected, channels }`.
         - The top-level counts are the active channel's. `activeChannelId` names that channel (null when none is active); the bell leaves out exactly that one.
-        - `channels` holds one row per channel connected here: `{ channelId, waitingReview, waitingPassed, waitingRejected, plans: [{ planId, title, device, waiting }], batches: [{ planId, groupId, title, waiting }], notices: [{ planId, planTitle, device, notice }] }`. Counts only, never tracks or files.
+        - `channels` holds one row per channel connected here: `{ channelId, waitingReview, waitingPassed, waitingRejected, plans: [{ planId, title, device, waiting }], batches: [{ planId, groupId, title, waiting }], notices: [{ planId, planTitle, device, notice }] }`. Counts and names only (plan, wave and stage titles, notice kinds, the other device's name), never tracks, files or verdicts.
       - **`POST .../verdict`** (local and peer) takes `replace?: boolean`. Without it, an attempt that already has a verdict is refused with `plan_verdict_exists` (409) and `details.existing: { result, rating, device, at }`. "Already has a verdict" includes one given here, one relayed by the factory, one sent from here, and one on its way from another device.
       - **`POST .../claim`** and **`POST /api/generation-plans/peers/[deviceId]/[planId]/claim`**:
         - The body is `{ scope: attempt|group, itemKey?, attemptRef?, groupId?, release? }`, and the answer is `{ claimId, until }`.
