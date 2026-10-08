@@ -1335,7 +1335,7 @@ export function createMcpToolHandlers(
 
     // -- Phase 14 slice 5: remote media generation (PHASE_14_PLAN.md §2.7) ---------------------------------------------------------
     // Every tool asserts the caller's channelId is the active/bound channel first; a session/job of another channel is reported as
-    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Production → Sessions).
+    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Servers → Sessions).
 
     async agentListMediaTemplates(input: unknown): Promise<ToolResponse> {
       const parsedInput = agentListMediaTemplatesInputSchema.safeParse(input);
@@ -3149,7 +3149,7 @@ export function createMcpServer(
   );
 
   // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7): remote media generation on RunPod/ComfyUI. The agent requests a
-  // SESSION (one GPU pod with caps), a human approves it in Production → Sessions, then the agent submits JOBS freely until the session is
+  // SESSION (one GPU pod with caps), a human approves it in Servers → Sessions, then the agent submits JOBS freely until the session is
   // stopped (idle / minutes / USD cap / human). No tool here can approve, start or stop a session.
   registerTool(
     "agent_list_media_templates",
@@ -3165,7 +3165,7 @@ export function createMcpServer(
     "agent_request_media_session",
     {
       description:
-        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human), releaseWhenDone? (true = the pod is stopped by itself one minute after the session's last job finished; false = it stays up until the idle timeout or your release; omitted = the owner's setting in Production -> Setup, on by default -- pass false when you submit a probe job first and the rest later) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Production -> Sessions; you can neither approve nor start it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. When you are done, end the session yourself with agent_release_media_session (or request it with releaseWhenDone) instead of leaving it to the idle timeout. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Production -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human), releaseWhenDone? (true = the pod is stopped by itself one minute after the session's last job finished; false = it stays up until the idle timeout or your release; omitted = the owner's setting in Servers -> Setup, on by default -- pass false when you submit a probe job first and the rest later) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Servers -> Sessions; you can neither approve nor start it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. When you are done, end the session yourself with agent_release_media_session (or request it with releaseWhenDone) instead of leaving it to the idle timeout. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Servers -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentRequestMediaSessionInputSchema,
     },
     (args) => handlers.agentRequestMediaSession(args)
@@ -3185,7 +3185,7 @@ export function createMcpServer(
     "agent_get_media_limits",
     {
       description:
-        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> RunPod / Production -> Setup), openSessions (this channel's non-terminal sessions, oldest first), openSession (the first of them, kept for compatibility), maxConcurrentSessions (how many sessions may hold a pod at once on this device), activeSessionCount (how many do now, any channel) and deviceHasOpenSession (true when ANY channel has a non-terminal session; informational -- it no longer blocks a request). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> RunPod / Servers -> Setup), openSessions (this channel's non-terminal sessions, oldest first), openSession (the first of them, kept for compatibility), maxConcurrentSessions (how many sessions may hold a pod at once on this device), activeSessionCount (how many do now, any channel) and deviceHasOpenSession (true when ANY channel has a non-terminal session; informational -- it no longer blocks a request). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentGetMediaLimitsInputSchema,
     },
     (args) => handlers.agentGetMediaLimits(args)

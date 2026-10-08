@@ -32,7 +32,8 @@ import {
   AnalyticsIcon,
   BatchesIcon,
   ContentIcon,
-  ProductionIcon,
+  MediaIcon,
+  ServersIcon,
   DecisionsIcon,
   DeviceIcon,
   HomeIcon,
@@ -50,9 +51,11 @@ import {
 const NAV_ITEMS = [
   { value: "home", href: "/home", labelKey: "nav.home", icon: HomeIcon },
   { value: "content", href: "/content", labelKey: "nav.content", icon: ContentIcon },
-  // Phase 14 slice 6 (owner, Telegram 2026-10-05, msg 1549): remote media generation -- sessions, jobs, models,
-  // workflow templates and their setup -- right after Content. The RunPod keys stay in Settings → RunPod.
-  { value: "production", href: "/production", labelKey: "nav.production", icon: ProductionIcon },
+  // Phase 14 slice 6 (owner, msg 1549) put remote media generation right after Content as "Production". BL-157
+  // (SERVERS_MEDIA_PLAN.md AC-SM-01, FO-REQ-0009): it is now two sections -- Media (the active channel's plans, review and
+  // jobs) right after Content, then Servers (the shared sessions, models, templates and setup). RunPod keys stay in Settings.
+  { value: "media", href: "/media", labelKey: "nav.media", icon: MediaIcon },
+  { value: "servers", href: "/servers", labelKey: "nav.servers", icon: ServersIcon },
   { value: "analytics", href: "/analytics", labelKey: "nav.analytics", icon: AnalyticsIcon },
   { value: "languages", href: "/languages", labelKey: "nav.languages", icon: LocalizationsIcon },
   { value: "batches", href: "/batches", labelKey: "nav.batches", icon: BatchesIcon },
@@ -97,7 +100,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const { data: session, status } = useSession();
   const router = useRouter();
   const t = useT();
-  // The section is the first path segment (`/production/plans` → production).
+  // The section is the first path segment (`/media/plans` → media).
   const pathname = usePathname();
   const tab: Tab | null = NAV_ITEMS.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))?.value ?? null;
   // Review finding: each sidebar item leads back to the sub-tab last open in its section (this app load only).
@@ -340,7 +343,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
   // as every visit did before BL-149 (re-review).
   const navItemsWithBadges = NAV_ITEMS.map(({ labelKey, ...item }) => ({ ...item, label: t(labelKey), href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
-    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "production" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item
+    item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "media" ? { ...item, badge: plansWaiting, badgeTitle: plansWaitingRejected > 0 ? t("plans.badgeSplit", { passed: plansWaiting - plansWaitingRejected, rejected: plansWaitingRejected }) : undefined } : item
   );
 
   if (status === "loading") {

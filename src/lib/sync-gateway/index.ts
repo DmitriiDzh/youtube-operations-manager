@@ -65,7 +65,7 @@ export {
 } from "./generation-plans";
 export type { GenerationPlansReport, GenerationPlansShareCore, SharedBatch, SharedClaim, SharedPlan, SharedReviewEntry, SharedVerdict, SharedVerdictHistory } from "./generation-plans";
 export { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
-// BL-150: the shared Production → Setup settings (one global Automerge document, an opaque map of values).
+// BL-150: the shared Servers → Setup settings (one global Automerge document, an opaque map of values).
 export { createMediaSettingsCoreForProduction } from "./media-settings";
 export type { MediaSettingsCore, SettingConflict as MediaSettingConflict, SettingValue as MediaSettingValue } from "./media-settings";
 export { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";

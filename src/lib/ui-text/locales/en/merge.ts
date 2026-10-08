@@ -5,7 +5,7 @@ export const merge = {
   "handoff.family.aiConnections": "AI connections",
   "handoff.family.mediaSessions": "RunPod sessions",
   "handoff.family.generationPlans": "Generation plans",
-  "handoff.family.mediaSettings": "Production settings",
+  "handoff.family.mediaSettings": "Servers settings",
 
   "handoff.requestFailed": "Request to {url} failed ({status})",
   "handoff.justNow": "just now",

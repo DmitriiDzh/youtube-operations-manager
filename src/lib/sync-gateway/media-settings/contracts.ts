@@ -2,7 +2,7 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 
 export { DomainError, isDomainError };
 
-// BL-150 (owner, Telegram 2026-10-07, msg 2008; docs/roadmap/plans/PRODUCTION_SETTINGS_SYNC_PLAN.md): the Production → Setup
+// BL-150 (owner, Telegram 2026-10-07, msg 2008; docs/roadmap/plans/PRODUCTION_SETTINGS_SYNC_PLAN.md): the Servers → Setup
 // settings, the same on every device. One global Automerge document holding an OPAQUE map of setting values: which fields
 // are shared, and how a received value is applied, is media-generation's business (it validates and applies through its own
 // rules); this family only carries the values and reports conflicts. It imports nothing from media-generation (§M).

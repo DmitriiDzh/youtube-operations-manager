@@ -17,7 +17,7 @@ export async function assertMediaGatewayAuthorized(category: MediaGatewayCategor
   await recordGatewayCallOutcome(category, "blocked");
   throw new DomainError({
     code: "media_gateway_disabled",
-    message: 'The media gateway is disabled -- the "Media gateway" toggle in Production → Setup is off.',
+    message: 'The media gateway is disabled -- the "Media gateway" toggle in Servers → Setup is off.',
     details: { category },
   });
 }

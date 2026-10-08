@@ -21,6 +21,7 @@ import {
 } from "@/lib/media-generation/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
+import { useChannelNames } from "./use-channel-names";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
 import { SettingsSectionRow } from "./settings-section-row";
@@ -759,7 +760,8 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
   // needless requests per hour each).
   const fetchJobs = useCallback(
     () =>
-      requestJson<{ jobs: Job[] }>("/api/media-generation/jobs").then(
+      // BL-157 (AC-SM-03): Media → Jobs is the active channel's (the server resolves the channel).
+      requestJson<{ jobs: Job[] }>("/api/media-generation/jobs?scope=active").then(
         (j) => setJobs(j.jobs),
         (err: unknown) => setError(err instanceof Error ? err.message : t("media.jobs.loadFailed"))
       ),
@@ -983,6 +985,8 @@ type Session = MediaSession;
 type SessionLimits = MediaSessionLimits;
 
 const OPEN_STATUSES = new Set(["pending", "approved", "starting", "running", "stopping"]);
+/** BL-157 (AC-SM-06): a session that is getting a pod or generating -- what Media's "now running" line shows. */
+const GENERATING_STATUSES = new Set(["approved", "starting", "running"]);
 const TRANSITIONAL_STATUSES = new Set(["approved", "starting", "stopping"]);
 /** Poll fast while a pod is being created or terminated, slower otherwise (an agent's new request still shows up). */
 const SESSIONS_FAST_POLL_MS = 5_000;
@@ -1060,6 +1064,9 @@ export function nowRunningOn(sessionId: string, jobs: MediaJob[]): { current: Me
 
 export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: boolean; activeChannelId: string | null; onLimits?: (limits: SessionLimits) => void }) {
   const { t, usd } = useMediaText();
+  // BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-05): Servers lists every channel's sessions, each named, with a channel filter.
+  const { nameOf } = useChannelNames();
+  const [channelFilter, setChannelFilter] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [limits, setLimits] = useState<SessionLimits | null>(null);
   const [maxMinutesText, setMaxMinutesText] = useState<string>("");
@@ -1162,7 +1169,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
           channelId: activeChannelId,
           ...(maxMinutes ? { maxMinutes } : {}),
           ...(maxUsd.trim() ? { maxUsd: parsedMaxUsd } : {}),
-          // releaseWhenDone is not sent: the server applies the owner's setting in Production → Setup (msgs 1807/1810).
+          // releaseWhenDone is not sent: the server applies the owner's setting in Servers → Setup (msgs 1807/1810).
         }),
       });
       await fetchAll();
@@ -1194,7 +1201,10 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
   const activeCount = limits?.activeSessionCount ?? 0;
   const maxConcurrent = limits?.maxConcurrentSessions ?? 1;
   const atLimit = activeCount >= maxConcurrent;
-  const recent = sessions.filter((s) => !OPEN_STATUSES.has(s.status)).slice(0, 10);
+  const sessionChannels = [...new Set([...openSessions.map((s) => s.channelId), ...sessions.map((s) => s.channelId)])];
+  const ofFilter = <T extends { channelId: string }>(list: T[]) => (channelFilter === null ? list : list.filter((s) => s.channelId === channelFilter));
+  const shownOpen = ofFilter(openSessions);
+  const recent = ofFilter(sessions.filter((s) => !OPEN_STATUSES.has(s.status))).slice(0, 10);
 
   function actions(s: Session) {
     const busy = busyId === s.sessionId;
@@ -1252,7 +1262,25 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
         </p>
       )}
 
-      {openSessions.length > 0 ? (
+      {sessionChannels.length > 1 && (
+        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("media.sessions.channelFilter")}>
+          {[null, ...sessionChannels].map((channelId) => (
+            <button
+              key={channelId ?? "all"}
+              type="button"
+              role="tab"
+              aria-selected={channelFilter === channelId}
+              onClick={() => setChannelFilter(channelId)}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${channelFilter === channelId ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+            >
+              {/* ui-text-ignore: a channel's own name (data) */}
+              {channelId === null ? t("media.sessions.allChannels") : nameOf(channelId)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {shownOpen.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-left text-xs text-zinc-400">
             <thead>
@@ -1268,10 +1296,13 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               </tr>
             </thead>
             <tbody>
-              {openSessions.map((s) => (
+              {shownOpen.map((s) => (
                 <tr key={s.sessionId} className="border-t border-zinc-800 align-top">
                   <td className="py-2 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
-                  <td className="py-2 pr-3 font-mono">{s.channelId === activeChannelId ? t("media.sessions.thisChannel") : s.channelId}</td>
+                  <td className="py-2 pr-3">
+                    {nameOf(s.channelId)}
+                    {s.channelId === activeChannelId && <div className="text-zinc-500">{t("media.sessions.thisChannel")}</div>}
+                  </td>
                   <td className="py-2 pr-3">
                     <span className={`font-medium ${statusTone[s.status] ?? ""}`}>{mediaStatusLabel(t, s.status)}</span>
                     <div className="text-zinc-500">{statusDetail(t, s, nowMs)}</div>
@@ -1365,6 +1396,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
             <thead>
               <tr className="text-zinc-500">
                 <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
+                <th className="py-1 pr-3">{t("media.common.colChannel")}</th>
                 <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
                 <th className="py-1 pr-3">{t("media.common.colBy")}</th>
                 <th className="py-1 pr-3">{t("media.common.colPod")}</th>
@@ -1377,6 +1409,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               {recent.map((s) => (
                 <tr key={s.sessionId} className="border-t border-zinc-800">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
+                  <td className="py-1 pr-3">{nameOf(s.channelId)}</td>
                   <td className={`py-1 pr-3 ${statusTone[s.status] ?? ""}`}>{mediaStatusLabel(t, s.status)}</td>
                   <td className="py-1 pr-3">{s.requestedBy}</td>
                   <td className="py-1 pr-3 font-mono">{s.podId ?? "—"}</td>
@@ -1468,6 +1501,7 @@ function PeerSessionJobsRow({ jobs, nowMs }: { jobs: SharedSessionJobs; nowMs: n
 
 export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean; onActiveElsewhere?: (count: number) => void }) {
   const { t, usd } = useMediaText();
+  const { nameOf } = useChannelNames();
   const [view, setView] = useState<OtherDevicesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -1566,7 +1600,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                     <tr className="border-t border-zinc-800">
                       <td className="py-1 pr-3 text-zinc-200">{mediaStatusLabel(t, s.status)}</td>
                       <td className={`py-1 pr-3 ${s.live === "pod_gone" ? "text-amber-400" : ""}`}>{t(LIVE_LABEL[s.live])}</td>
-                      <td className="py-1 pr-3 font-mono">{s.channelId}</td>
+                      <td className="py-1 pr-3">{nameOf(s.channelId)}</td>
                       <td className="py-1 pr-3">{s.gpuTypeId ?? "—"}</td>
                       <td className="py-1 pr-3">{s.startedAt ? formatDisplayDateTime(s.startedAt) : "—"}</td>
                       <td className="py-1 pr-3">{s.usdCharged !== null ? t("unit.usd", { value: usd(s.usdCharged) }) : "—"}</td>
@@ -1596,7 +1630,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
       {stopTarget && (
         <ConfirmDialog
           title={t("media.devices.stopTitle", { device: stopTarget.hostname ?? stopTarget.deviceId })}
-          description={t("media.devices.stopDescription", { channel: stopTarget.channelId, device: stopTarget.hostname ?? t("media.devices.thatDevice") })}
+          description={t("media.devices.stopDescription", { channel: nameOf(stopTarget.channelId), device: stopTarget.hostname ?? t("media.devices.thatDevice") })}
           confirmLabel={t("media.devices.stopConfirm")}
           confirmVariant="danger"
           onCancel={() => setStopTarget(null)}
@@ -2723,5 +2757,47 @@ export function CapacityLogCard() {
       )}
       {error && <p className="text-xs text-red-400">{error}</p>}
     </Card>
+  );
+}
+
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-06): Media shows one line per session of the ACTIVE channel that is getting a pod or
+ * generating, linking to the full list in Servers → Sessions. Nothing while none is.
+ */
+export function NowRunningLine({ activeChannelId, sessionsHref }: { activeChannelId: string | null; sessionsHref: string }) {
+  const { t } = useMediaText();
+  const [sessions, setSessions] = useState<Session[]>([]);
+
+  useEffect(() => {
+    if (!activeChannelId) return;
+    let cancelled = false;
+    const load = () =>
+      requestJson<{ sessions: Session[] }>("/api/media-generation/sessions").then(
+        (data) => {
+          if (!cancelled) setSessions(data.sessions);
+        },
+        () => undefined
+      );
+    void load();
+    const timer = setInterval(() => void load(), SESSIONS_SLOW_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeChannelId]);
+
+  const mine = sessions.filter((s) => s.channelId === activeChannelId && GENERATING_STATUSES.has(s.status));
+  if (!activeChannelId || mine.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      {mine.map((s) => (
+        <p key={s.sessionId} className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+          <span>{t("media.nowRunning.line", { gpu: s.gpuTypeId ?? t("media.nowRunning.noGpuYet"), status: mediaStatusLabel(t, s.status) })}</span>
+          <a href={sessionsHref} className="text-emerald-300 underline hover:text-white">
+            {t("media.nowRunning.open")}
+          </a>
+        </p>
+      ))}
+    </div>
   );
 }

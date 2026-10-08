@@ -6,7 +6,7 @@ import { createMediaSettingsCoreForProduction } from "../media-settings";
 import { GLOBAL_DOCUMENT_KEY, isDomainError } from "../media-settings/contracts";
 
 /**
- * BL-150: the shared Production → Setup settings document's own sync cycle -- the generic runner with one constant key, exactly
+ * BL-150: the shared Servers → Setup settings document's own sync cycle -- the generic runner with one constant key, exactly
  * as `ai-connections-catalog-sync` (one global document). Memoized on globalThis for the same single-flight reason.
  */
 const PRODUCTION_KEY = Symbol.for("ytom.syncGateway.mediaSettingsSyncRunner");

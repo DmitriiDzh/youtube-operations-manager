@@ -5,12 +5,13 @@ import type { PlanEvent, PlanNotice, PlanStageCounts, PlanStageKind, PlanView } 
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
+import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
 import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
-// BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Production → Plans. Every number comes from the plans core, which derives
+// BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Media → Plans. Every number comes from the plans core, which derives
 // it from the jobs, sessions and results when read -- this view only shows it. Polls while the tab is open.
 
 const POLL_MS = 10_000;
@@ -301,6 +302,8 @@ export function PlansPanel({
 
 function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; onChanged: () => void; onReview?: (planId: string) => void }) {
   const t = useT();
+  // BL-157 (AC-MV-07): a moved plan's event names both channels.
+  const { nameOf } = useChannelNames();
   const { plan, progress, events } = detail;
   const [closing, setClosing] = useState<"completed" | "cancelled" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -480,7 +483,7 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
               .slice(0, 30)
               .map((e, i) => (
                 <li key={`${e.at}-${i}`}>
-                  {formatDisplayDateTime(e.at)} · {describeEvent(t, e)}
+                  {formatDisplayDateTime(e.at)} · {describeEvent(t, e, nameOf)}
                 </li>
               ))}
           </ul>

@@ -466,7 +466,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_delete_template",
     {
       description:
-        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Production → Models, recent actions).",
+        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Servers → Models, recent actions).",
       inputSchema: templateIdInput,
     },
     async (args) => {
@@ -494,7 +494,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_settings",
     {
       description:
-        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+        "Read the owner's factory settings (Servers → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.getSettings())

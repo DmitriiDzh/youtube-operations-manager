@@ -6,6 +6,6 @@ import { isSectionSubTab } from "@/components/section-tabs";
 // a real 404 (AC-RT-01).
 export default async function SubTabPage({ params }: { params: Promise<{ sub: string }> }) {
   const { sub } = await params;
-  if (!isSectionSubTab("production", sub)) notFound();
+  if (!isSectionSubTab("servers", sub)) notFound();
   return null;
 }

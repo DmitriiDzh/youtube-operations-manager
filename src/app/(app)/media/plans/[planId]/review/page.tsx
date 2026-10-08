@@ -18,7 +18,7 @@ export default function PlanReviewPage() {
       <PlanReviewScreen
         planId={planId}
         source={deviceId ? { deviceId, hostname: query.get("host") } : undefined}
-        onClose={() => router.push("/production/plans")}
+        onClose={() => router.push("/media/plans")}
       />
     </FeatureErrorBoundary>
   );
