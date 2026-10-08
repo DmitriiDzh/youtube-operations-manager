@@ -120,9 +120,22 @@ function closeRaw(raw: Client): void {
   closeSafely(raw);
 }
 
-/** A transaction on its own connection, which it closes as soon as the transaction ends. */
+// Leading whitespace and SQL comments (line comments and block comments), then the first keyword.
+const FIRST_SQL_KEYWORD = /^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*([a-z]*)/i;
+/** Statements that, when they SUCCEED, cannot have ended the surrounding transaction. */
+const CANNOT_END_TRANSACTION = new Set(["select", "insert", "update", "delete", "replace", "with", "values"]);
+
+/**
+ * A transaction on its own connection, which it closes as soon as the transaction ends.
+ *
+ * Statements run strictly one after another, in the order they were issued, even when the caller
+ * does not await each one: every statement waits for the previous one AND for the check that
+ * SQLite still has the transaction open. Without that queue, statements issued in the same tick as
+ * one that makes SQLite roll back would already have run -- in autocommit mode, written for good.
+ */
 class DedicatedConnectionTransaction implements Transaction {
   private finished = false;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly connection: Client) {}
 
@@ -137,6 +150,16 @@ class DedicatedConnectionTransaction implements Transaction {
   private end(): void {
     this.finished = true;
     closeRaw(this.connection);
+  }
+
+  /** Runs `operation` once everything issued before it has completely finished. */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   /**
@@ -157,15 +180,19 @@ class DedicatedConnectionTransaction implements Transaction {
       this.end();
       return;
     }
-    try {
-      await this.connection.execute("ROLLBACK");
-    } finally {
-      this.end();
-    }
+    // The probe's own BEGIN succeeded: undo it. (`close()` may have closed the connection meanwhile.)
+    await this.connection.execute("ROLLBACK").catch(() => undefined);
+    this.end();
   }
 
-  /** Runs one statement, then makes sure the transaction is still the one the caller thinks it is. */
-  private async run(stmt: InStatement): Promise<ResultSet> {
+  /**
+   * Runs one statement (already at the head of the queue), then makes sure the transaction is still
+   * the one the caller thinks it is: after every failed statement, and after every successful one
+   * that is not plainly a query or a data change (COMMIT / END / ROLLBACK end it without any error,
+   * whatever comments precede them). Queries and data changes that succeed are not probed, so the
+   * usual path costs nothing extra.
+   */
+  private async runNow(stmt: InStatement): Promise<ResultSet> {
     this.checkNotClosed();
     let result: ResultSet;
     try {
@@ -174,30 +201,32 @@ class DedicatedConnectionTransaction implements Transaction {
       await this.endIfSqliteEndedIt();
       throw error;
     }
-    // A COMMIT / ROLLBACK / END sent as a plain statement ends the transaction without any error.
-    const sql = typeof stmt === "string" ? stmt : stmt.sql;
-    if (/^\s*(commit|end|rollback)\b/i.test(sql)) await this.endIfSqliteEndedIt();
+    const keyword = FIRST_SQL_KEYWORD.exec(typeof stmt === "string" ? stmt : stmt.sql)?.[1]?.toLowerCase() ?? "";
+    if (!CANNOT_END_TRANSACTION.has(keyword)) await this.endIfSqliteEndedIt();
     return result;
   }
 
-  async execute(stmt: InStatement): Promise<ResultSet> {
-    return this.run(stmt);
+  execute(stmt: InStatement): Promise<ResultSet> {
+    return this.enqueue(() => this.runNow(stmt));
   }
 
-  async batch(stmts: Array<InStatement>): Promise<Array<ResultSet>> {
-    const results: ResultSet[] = [];
-    for (let i = 0; i < stmts.length; i++) {
-      try {
-        results.push(await this.run(stmts[i]));
-      } catch (error) {
-        if (error instanceof LibsqlBatchError) throw error;
-        if (error instanceof LibsqlError) {
-          throw new LibsqlBatchError(error.message, i, error.code, error.extendedCode, error.rawCode, error.cause instanceof Error ? error.cause : undefined);
+  batch(stmts: Array<InStatement>): Promise<Array<ResultSet>> {
+    // One queue entry for the whole batch: nothing issued meanwhile runs between its statements.
+    return this.enqueue(async () => {
+      const results: ResultSet[] = [];
+      for (let i = 0; i < stmts.length; i++) {
+        try {
+          results.push(await this.runNow(stmts[i]));
+        } catch (error) {
+          if (error instanceof LibsqlBatchError) throw error;
+          if (error instanceof LibsqlError) {
+            throw new LibsqlBatchError(error.message, i, error.code, error.extendedCode, error.rawCode, error.cause instanceof Error ? error.cause : undefined);
+          }
+          throw error;
         }
-        throw error;
       }
-    }
-    return results;
+      return results;
+    });
   }
 
   async executeMultiple(): Promise<void> {
@@ -206,34 +235,43 @@ class DedicatedConnectionTransaction implements Transaction {
     throw new LibsqlError("executeMultiple is not supported inside a transaction", "TRANSACTION_EXECUTE_MULTIPLE_UNSUPPORTED");
   }
 
-  async commit(): Promise<void> {
-    this.checkNotClosed();
-    try {
-      await this.connection.execute("COMMIT");
-    } catch (error) {
-      // A failed COMMIT (e.g. SQLITE_BUSY) normally leaves the transaction open for the caller's
-      // rollback; if SQLite has ended it instead, no further statement may run on this connection.
-      await this.endIfSqliteEndedIt();
-      if (this.finished && error instanceof Error && /no transaction is active/i.test(error.message)) {
-        throw new LibsqlError("The transaction is closed", "TRANSACTION_CLOSED");
+  commit(): Promise<void> {
+    return this.enqueue(async () => {
+      this.checkNotClosed();
+      try {
+        await this.connection.execute("COMMIT");
+      } catch (error) {
+        // A failed COMMIT (e.g. SQLITE_BUSY) normally leaves the transaction open for the caller's
+        // rollback; if SQLite has ended it instead, no further statement may run on this connection.
+        await this.endIfSqliteEndedIt();
+        if (this.finished && error instanceof Error && /no transaction is active/i.test(error.message)) {
+          throw new LibsqlError("The transaction is closed", "TRANSACTION_CLOSED");
+        }
+        throw error;
       }
-      throw error;
-    }
-    this.end();
-  }
-
-  async rollback(): Promise<void> {
-    if (this.finished) return;
-    try {
-      await this.connection.execute("ROLLBACK");
-    } catch (error) {
-      // SQLite may already have rolled back on its own (e.g. after SQLITE_FULL); closing below is what matters.
-      if (!(error instanceof Error && /no transaction is active/i.test(error.message))) throw error;
-    } finally {
       this.end();
-    }
+    });
   }
 
+  rollback(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.finished) return;
+      try {
+        await this.connection.execute("ROLLBACK");
+      } catch (error) {
+        // SQLite may already have rolled back on its own (e.g. after SQLITE_FULL); closing below is what matters.
+        if (!(error instanceof Error && /no transaction is active/i.test(error.message))) throw error;
+      } finally {
+        this.end();
+      }
+    });
+  }
+
+  /**
+   * Synchronous, and safe at any moment: the driver runs each statement's SQL synchronously when it
+   * is issued, so whatever is "in flight" has already executed and is only waiting for its result;
+   * everything still queued behind it finds the transaction closed and is refused.
+   */
   close(): void {
     if (this.finished) return;
     // Roll back explicitly: the connection itself is only released once the GC reaches its last

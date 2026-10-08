@@ -144,6 +144,67 @@ test("a ROLLBACK or COMMIT sent as a plain statement ends the transaction too", 
     assert.deepEqual(await values(client), []);
   }));
 
+// Review round 2: statements issued together (not awaited one by one) must behave exactly as if awaited in
+// order. Hand-derived: 666 makes the trigger roll the whole transaction back, so 2 and 3 have no transaction
+// to run in and must be refused -> the table stays empty.
+test("statements issued in the same tick as one that makes SQLite roll back are refused, not written", () =>
+  withClient(async (client) => {
+    await client.execute("CREATE TRIGGER no_666 BEFORE INSERT ON t WHEN NEW.v = 666 BEGIN SELECT RAISE(ROLLBACK, 'no'); END");
+    const tx = await client.transaction("write");
+    const settled = await Promise.allSettled([
+      tx.execute("INSERT INTO t VALUES (666)"),
+      tx.execute("INSERT INTO t VALUES (2)"),
+      tx.execute("INSERT INTO t VALUES (3)"),
+    ]);
+    assert.deepEqual(
+      settled.map((r) => (r.status === "rejected" ? (r.reason as { code?: string }).code : "fulfilled")),
+      ["SQLITE_CONSTRAINT", "TRANSACTION_CLOSED", "TRANSACTION_CLOSED"]
+    );
+    await tx.rollback();
+    assert.deepEqual(await values(client), []);
+  }));
+
+// Hand-derived: rowids are handed out in execution order, so issue order 30, 10, 20 must read back as
+// rowid 1 -> 30, 2 -> 10, 3 -> 20; the failing statement in the middle (unknown table) changes nothing.
+test("concurrently issued statements run one after another in the order they were issued", () =>
+  withClient(async (client) => {
+    const tx = await client.transaction("write");
+    const settled = await Promise.allSettled([
+      tx.execute("INSERT INTO t VALUES (30)"),
+      tx.execute("INSERT INTO missing VALUES (1)"),
+      tx.batch(["INSERT INTO t VALUES (10)", "INSERT INTO t VALUES (20)"]),
+      tx.commit(),
+    ]);
+    assert.deepEqual(settled.map((r) => r.status), ["fulfilled", "rejected", "fulfilled", "fulfilled"]);
+    const rows = (await client.execute("SELECT v FROM t ORDER BY rowid")).rows.map((row) => Number(row.v));
+    assert.deepEqual(rows, [30, 10, 20]);
+  }));
+
+// Hand-derived: 1 is committed by the caller's own COMMIT; 2 must be refused (no transaction any more) -> [1].
+test("a COMMIT hidden behind a leading comment still ends the transaction: the next statement is refused", () =>
+  withClient(async (client) => {
+    const tx = await client.transaction("write");
+    await tx.execute("INSERT INTO t VALUES (1)");
+    await tx.execute("/* done */ -- really\n COMMIT");
+    await assert.rejects(() => tx.execute("INSERT INTO t VALUES (2)"), { code: "TRANSACTION_CLOSED" });
+    await tx.rollback();
+    assert.deepEqual(await values(client), [1]);
+  }));
+
+// Hand-derived: close() discards 1; the statement queued behind the in-flight one never runs -> [].
+test("close() while statements are still queued discards the transaction and refuses the queued ones", () =>
+  withClient(async (client) => {
+    const before = countOpenLibsqlClients();
+    const tx = await client.transaction("write");
+    const first = tx.execute("INSERT INTO t VALUES (1)");
+    const second = tx.execute("INSERT INTO t VALUES (2)");
+    tx.close();
+    assert.equal(countOpenLibsqlClients(), before);
+    const settled = await Promise.allSettled([first, second]);
+    assert.equal(settled[1].status === "rejected" && (settled[1].reason as { code?: string }).code, "TRANSACTION_CLOSED");
+    assert.deepEqual(await values(client), []);
+  }));
+
 // The driver is synchronous: a write that meets this process's own open write transaction waits out the
 // busy timeout (SQLITE_BUSY_TIMEOUT_MS, blocking the event loop meanwhile) and then fails -- it never hangs.
 test("a second write transaction while this process holds one fails with SQLITE_BUSY after the busy timeout, and the first still commits", () =>
