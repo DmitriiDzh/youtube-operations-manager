@@ -188,7 +188,7 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
 }
 
 export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
-  const { t, formatNumber } = useUiText();
+  const { t, formatNumber, language } = useUiText();
   const [entries, setEntries] = useState<PlanReviewEntry[] | null>(null);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
@@ -368,12 +368,18 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     if (audio && chosen) audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
   }, [matchLoudness, chosen, onB]);
 
-  const markers = useMemo<ReviewMarker[]>(() => {
+  const savedMarkers = useMemo<ReviewMarker[]>(() => {
     if (!entry) return [];
     const findings = blind && entry.verdict === null ? [] : findingMarkers(entry);
     const own = [...(entry.verdict?.markers ?? []), ...draft.marks].map((m) => ({ start: m.start, end: m.end, label: m.note, tone: "mark" as const }));
-    return [...findings, ...own, ...(draft.openMark !== null ? [{ start: draft.openMark, end: null, label: t("review.openMark"), tone: "mark" as const }] : [])];
-  }, [blind, draft.marks, draft.openMark, entry, t]);
+    return [...findings, ...own];
+  }, [blind, draft.marks, entry]);
+  // The open mark's label is rebuilt on a language switch (`t` itself keeps one identity, so `language` is in the deps).
+  const markers = useMemo<ReviewMarker[]>(
+    () => (entry && draft.openMark !== null ? [...savedMarkers, { start: draft.openMark, end: null, label: t("review.openMark"), tone: "mark" as const }] : savedMarkers),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `language` re-builds the label after a language switch
+    [savedMarkers, draft.openMark, entry, t, language],
+  );
 
   const lufsOf = entry ? (reportedLufs(entry) ?? (measured && entry && measured.src === `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` ? measured.lufs : null)) : null;
   const src = entry ? `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` : null;
