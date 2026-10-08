@@ -886,7 +886,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (!entry) throw planMismatch(`That device's plan ${input.planId} has nothing to play for ${input.itemKey} ${input.attemptRef}`, { planId: input.planId, itemKey: input.itemKey, attemptRef: input.attemptRef });
       const reported = [...entry.stages].reverse().find((s) => s.auditionFile !== null);
       if (reported?.auditionFile) return { channelId: plan.channelId, kind: "sent", relativePath: reported.auditionFile };
-      if (entry.jobOutput && entry.jobId) return { channelId: plan.channelId, kind: "job", jobId: entry.jobId, localPath: entry.jobOutput };
+      if (entry.jobOutput && entry.jobId) return { channelId: entry.jobChannelId ?? plan.channelId, kind: "job", jobId: entry.jobId, localPath: entry.jobOutput };
       throw planMismatch(`That device reports no file for ${input.itemKey} ${input.attemptRef}`, { planId: input.planId });
     },
 
@@ -1013,7 +1013,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           // `validator` stays out of the shared format (strict on every device; the reader derives it -- `validatorOfEntry`).
           const { validator: _validator, ...shared } = entry;
           void _validator;
-          review.push({ ...shared, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput });
+          // BL-157 (AC-RP-03): the job's output is in the workspace of the channel the job ran on, not the plan's (a moved plan).
+          const jobChannelId = entry.jobId ? (jobs.find((j) => j.id === entry.jobId)?.channelId ?? null) : null;
+          review.push({ ...shared, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput, jobChannelId });
         }
         // A null-prototype map: an item key like "constructor" must be an ordinary key here.
         const itemParams: Record<string, PlanItem["params"]> = Object.create(null) as Record<string, PlanItem["params"]>;

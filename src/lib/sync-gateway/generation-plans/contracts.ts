@@ -42,6 +42,57 @@ const sharedResultRowSchema = z
   })
   .strict();
 
+/** BL-157 (report version 2, SERVERS_MEDIA_PLAN.md AC-TC-05): one owner verdict of an attempt, as the history shows it. */
+export const sharedVerdictHistorySchema = z
+  .object({
+    result: z.enum(["accepted", "rejected"]),
+    rating: z.number().int().min(1).max(10).nullable(),
+    note: z.string().max(2000).nullable(),
+    /** The computer the verdict was given on (its host name, or its device id when it has none). */
+    device: z.string().max(255),
+    at: isoSchema,
+  })
+  .strict();
+
+const paramValueSchema = z.union([z.string().max(500), z.number(), z.boolean()]);
+
+/** BL-157 (report version 2, AC-WV-03): what the owning device knows about one wave (group) for the review's context card. */
+export const sharedBatchSchema = z
+  .object({
+    groupId: z.string().max(40),
+    title: z.string().max(200),
+    /** The factory's context for the wave (`groups[].note`). */
+    note: z.string().max(2000).nullable(),
+    /** The owner's own note on the wave. */
+    ownerNote: z.string().max(2000).nullable(),
+    /** The earliest attempt of the wave. */
+    firstAt: isoSchema.nullable(),
+    templates: z.array(z.string().max(200)).max(20),
+    /** The item params whose values differ between the wave's items, each with its distinct values. */
+    differingParams: z.array(z.object({ name: z.string().max(64), values: z.array(paramValueSchema).max(20) }).strict()).max(60),
+    /** The verdicts at the stage right before the owner's review, over the wave's attempts that have a row there. */
+    validator: z.object({ passed: z.number().int().min(0), rejected: z.number().int().min(0) }).strict(),
+  })
+  .strict();
+
+/**
+ * BL-157 (report version 2, AC-TC-01/AC-WV-06): "being reviewed on this computer" -- a track (`attempt`) or a whole wave
+ * (`group`) of a plan owned by `ownerDeviceId`. Advisory: it reaches the other computers within the sync delay.
+ */
+export const sharedClaimSchema = z
+  .object({
+    claimId: z.string().min(8).max(64),
+    planId: z.string().max(80),
+    ownerDeviceId: z.string().min(1).max(128),
+    scope: z.enum(["attempt", "group"]),
+    itemKey: z.string().max(120).nullable(),
+    attemptRef: z.string().max(120).nullable(),
+    groupId: z.string().max(40).nullable(),
+    since: z.string().datetime({ offset: true }),
+    until: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
 export const sharedReviewEntrySchema = z
   .object({
     itemKey: z.string().max(120),
@@ -55,6 +106,10 @@ export const sharedReviewEntrySchema = z
     playable: z.boolean(),
     /** The job's output to play, relative to the channel workspace's `From YTM`; null when the attempt has none. */
     jobOutput: jobOutputPathSchema.nullable(),
+    /** BL-157 (v2, AC-RP-03): the channel the job ran on -- its output is in THAT channel's workspace; absent = the plan's. */
+    jobChannelId: z.string().max(64).nullable().optional(),
+    /** BL-157 (v2, AC-TC-05): the attempt's owner verdicts, oldest first (the last 10); absent in a version 1 report. */
+    history: z.array(sharedVerdictHistorySchema).max(10).optional(),
   })
   .strict();
 
@@ -71,7 +126,20 @@ export const sharedPlanSchema = z
     updatedAt: isoSchema,
     closedAt: isoSchema.nullable(),
     stages: z.array(z.object({ stageId: z.string().max(40), title: z.string().max(200), kind: z.enum(["in_app", "external", "owner_review"]) }).strict()).max(20),
-    groups: z.array(z.object({ groupId: z.string().max(40), title: z.string().max(200), dependsOn: z.string().max(40).nullable(), note: z.string().max(2000).nullable() }).strict()).max(200),
+    groups: z
+      .array(
+        z
+          .object({
+            groupId: z.string().max(40),
+            title: z.string().max(200),
+            dependsOn: z.string().max(40).nullable(),
+            note: z.string().max(2000).nullable(),
+            /** BL-157 (v2, AC-WV-04): the owner's note on the wave, apart from the factory's `note`. */
+            ownerNote: z.string().max(2000).nullable().optional(),
+          })
+          .strict()
+      )
+      .max(200),
     /** Items without their job params (the progress is what other devices show). */
     items: z.array(z.object({ itemKey: z.string().max(120), groupId: z.string().max(40).nullable(), templateLabel: z.string().max(200).nullable(), targetCount: z.number(), mode: z.enum(["fixed", "until_accepted"]) }).strict()).max(1000),
     /** BL-143 phase 3: the plan's reference tracks for A/B (files relative to the channel's Sent to YTM). */
@@ -85,6 +153,8 @@ export const sharedPlanSchema = z
     progress: looseRecord,
     events: z.array(z.object({ at: isoSchema, kind: z.string().max(40), actor: z.string().max(16), details: looseRecord }).strict()).max(50),
     review: z.array(sharedReviewEntrySchema).max(500),
+    /** BL-157 (v2, AC-WV-03): the waves' context, computed on the owning device; absent in a version 1 report. */
+    batches: z.array(sharedBatchSchema).max(200).optional(),
   })
   .strict();
 
@@ -107,15 +177,23 @@ export const sharedVerdictSchema = z
   })
   .strict();
 
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md §B): the report version this build writes. It still reads version 1 (no job channel,
+ * history, waves or claims). A version 1 build refuses a version 2 report (every level is strict), so both computers update.
+ */
+export const GENERATION_PLANS_REPORT_VERSION = 2;
+
 export const generationPlansReportSchema = z
   .object({
     format: z.literal(GENERATION_PLANS_REPORT_FORMAT),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     deviceId: z.string().min(1).max(128),
     hostname: z.string().max(255).nullable(),
     updatedAt: z.string().datetime({ offset: true }),
     plans: z.array(sharedPlanSchema).max(50),
     verdicts: z.array(sharedVerdictSchema).max(1000),
+    /** BL-157 (v2, AC-TC-01): this device's live review claims, on any device's plans; absent in a version 1 report. */
+    claims: z.array(sharedClaimSchema).max(200).optional(),
   })
   .strict();
 
@@ -123,3 +201,6 @@ export type SharedPlan = z.infer<typeof sharedPlanSchema>;
 export type SharedReviewEntry = z.infer<typeof sharedReviewEntrySchema>;
 export type SharedVerdict = z.infer<typeof sharedVerdictSchema>;
 export type GenerationPlansReport = z.infer<typeof generationPlansReportSchema>;
+export type SharedBatch = z.infer<typeof sharedBatchSchema>;
+export type SharedClaim = z.infer<typeof sharedClaimSchema>;
+export type SharedVerdictHistory = z.infer<typeof sharedVerdictHistorySchema>;

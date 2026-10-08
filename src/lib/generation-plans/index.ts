@@ -6,7 +6,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
-import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT } from "@/lib/sync-gateway";
+import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
 import { createGenerationPlanServices } from "./services";
@@ -77,7 +77,7 @@ export async function publishGenerationPlansShare(): Promise<void> {
   await core.applyPeerVerdicts().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' verdicts: ${error instanceof Error ? error.message : String(error)}`));
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
-    version: 1,
+    version: GENERATION_PLANS_REPORT_VERSION,
     deviceId: config.deviceId,
     hostname: host,
     updatedAt: new Date().toISOString(),

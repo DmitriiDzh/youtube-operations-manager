@@ -676,7 +676,7 @@ function twoDevices() {
   const mac = device("mac", macBase);
   const win = device("win", winBase);
   const publish = async (deviceId: string, services: typeof mac) => {
-    reports[deviceId] = { format: "ytm-generation-plans", version: 1, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts() };
+    reports[deviceId] = { format: "ytm-generation-plans", version: 2, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts() };
   };
   return { mac, win, macBase, winBase, publish, reports };
 }
@@ -1145,4 +1145,18 @@ test("AC-MV-02: without the workspace port (a device that cannot check files) a 
   const m = withMedia([running()], { connected: [CHANNEL, TARGET] });
   await m.services.createPlan(basePlan());
   await assert.rejects(m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET, checkOnly: true }), refused("plan_invalid"));
+});
+
+test("AC-RP-03: another device's job output plays from the channel the job ran on (jobChannelId), else -- a version 1 entry -- the plan's", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  assert.equal(d.reports.mac.plans[0].review[0].jobChannelId, CHANNEL, "the report names the job's channel");
+  // The plan moved to another channel on the Mac: its report names the new channel, the job stays with the old one.
+  d.reports.mac.plans[0].channelId = "UC_target_channel";
+  d.reports.mac.plans[0].review[0].jobOutput = "media/j1/take.mp3";
+  assert.deepEqual(await d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), { channelId: CHANNEL, kind: "job", jobId: "j1", localPath: "media/j1/take.mp3" });
+  delete d.reports.mac.plans[0].review[0].jobChannelId;
+  assert.deepEqual(await d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), { channelId: "UC_target_channel", kind: "job", jobId: "j1", localPath: "media/j1/take.mp3" });
 });

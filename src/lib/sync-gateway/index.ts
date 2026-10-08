@@ -55,8 +55,15 @@ export type { MediaSessionsReport, SharedMediaSession, SharedSessionJobs, Shared
 export { MEDIA_SESSIONS_REPORT_FORMAT, MEDIA_SESSIONS_REPORT_VERSION, SHARED_CURRENT_JOBS_MAX, sharedSessionJobsSchema } from "./media-sessions";
 export { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
 // BL-143 phase 2: generation plans of every device (per-device reports, `./per-device-report`).
-export { createGenerationPlansShareCoreForProduction, createGenerationPlansShareCore, GENERATION_PLANS_REPORT_FORMAT, generationPlansReportSchema, jobOutputPathSchema } from "./generation-plans";
-export type { GenerationPlansReport, GenerationPlansShareCore, SharedPlan, SharedReviewEntry, SharedVerdict } from "./generation-plans";
+export {
+  createGenerationPlansShareCoreForProduction,
+  createGenerationPlansShareCore,
+  GENERATION_PLANS_REPORT_FORMAT,
+  GENERATION_PLANS_REPORT_VERSION,
+  generationPlansReportSchema,
+  jobOutputPathSchema,
+} from "./generation-plans";
+export type { GenerationPlansReport, GenerationPlansShareCore, SharedBatch, SharedClaim, SharedPlan, SharedReviewEntry, SharedVerdict, SharedVerdictHistory } from "./generation-plans";
 export { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 // BL-150: the shared Production → Setup settings (one global Automerge document, an opaque map of values).
 export { createMediaSettingsCoreForProduction } from "./media-settings";
