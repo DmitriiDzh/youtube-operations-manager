@@ -207,6 +207,24 @@ export type PlanNotice =
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
 
+/**
+ * BL-157 (AC-MV-03): a plan move's file check. `checked` = the distinct files checked (every reported `auditionFile` and
+ * every reference file); `missing` lists up to `PLAN_MOVE_MISSING_LISTED` of the `missingCount` not found in the target
+ * channel's Sent to YTM; `unfinishedJobs` = jobs of the plan still queued or running (a move waits for them).
+ */
+export type PlanMoveResult = {
+  planId: string;
+  from: string;
+  to: string;
+  checked: number;
+  missing: string[];
+  missingCount: number;
+  unfinishedJobs: number;
+  moved: boolean;
+};
+
+export const PLAN_MOVE_MISSING_LISTED = 500;
+
 export type PlanTodo = {
   planId: string;
   short: Array<{ itemKey: string; groupId: string | null; missing: number; mode: PlanItemMode }>;

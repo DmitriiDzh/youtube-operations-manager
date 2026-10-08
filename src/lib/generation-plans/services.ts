@@ -3,6 +3,7 @@ import {
   planInvalid,
   planMismatch,
   planNotFound,
+  PLAN_MOVE_MISSING_LISTED,
   validatorOfEntry,
   type GenerationPlan,
   type PlanActor,
@@ -10,6 +11,7 @@ import {
   type PlanEvent,
   type PlanGroup,
   type PlanItem,
+  type PlanMoveResult,
   type PlanReference,
   type PlanResultRow,
   type PlanStage,
@@ -32,6 +34,7 @@ import {
   importFileSchema,
   importInputSchema,
   listPlansInputSchema,
+  movePlanInputSchema,
   ownerVerdictInputSchema,
   parseWithSchema,
   PLAN_LIMITS,
@@ -110,6 +113,11 @@ export type PlanServiceDependencies = {
   media?: PlanMediaPort;
   /** BL-143 phase 2: the other devices' latest plans reports and this device's id (absent = no cross-device view). */
   peers?: { ownDeviceId(): Promise<string>; listPeerReports(): Promise<GenerationPlansReport[]> };
+  /**
+   * BL-157 (AC-MV-02/03): this device's channel workspaces, for a plan move's file check (absent = moves are refused).
+   * `sentFileExists` uses the player's own resolver, so "exists" means "plays" (inside Sent to YTM, no symlink, a file).
+   */
+  files?: { workspaceOf(channelId: string): Promise<string | null>; sentFileExists(workspace: string, relativePath: string): Promise<boolean> };
   generateId?: () => string;
 };
 
@@ -131,6 +139,8 @@ export type PlanRunResult = {
 };
 
 const CAS_RETRIES = 5;
+/** BL-157 (AC-MV-02): a job in one of these may still write its output; a plan does not move while it has one. */
+const UNFINISHED_JOB_STATUSES: ReadonlySet<PlanJobRow["status"]> = new Set(["queued", "submitted", "generating", "transferring"]);
 /** BL-143 phase 2: what goes into this device's plans report for the other devices. */
 type SharedPlanView = SharedPlan;
 const SHARE_CLOSED_FOR_MS = 30 * 24 * 60 * 60_000;
@@ -571,6 +581,49 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       });
       await record(updated.id, "plan_updated", actor);
       return view(updated);
+    },
+
+    /**
+     * BL-157 (FO-REQ-0009 §4, AC-MV-01..04): the plan moves to another connected channel of this device. Every reported
+     * `auditionFile` and every reference must already be in that channel's Sent to YTM (the factory copies them first);
+     * one missing refuses the move with the list, `checkOnly` returns the same answer and changes nothing. Jobs, sessions,
+     * results, verdicts and events stay as they are -- all of them are read by plan id, so progress and spend keep counting.
+     */
+    async movePlan(input: unknown, actor: PlanActor = "factory"): Promise<PlanMoveResult> {
+      const parsed = parseWithSchema(movePlanInputSchema, input, "plan move");
+      return serializedPerPlan(parsed.planId, async () => {
+        const row = await requireActive(parsed.planId);
+        const from = row.channelId;
+        const to = parsed.channelId;
+        if (to === from) throw planInvalid(`Plan ${row.id} is already on channel ${to}`, { planId: row.id, channelId: to });
+        await requireConnected(to);
+        const workspace = deps.files ? await deps.files.workspaceOf(to) : null;
+        if (!deps.files || !workspace) throw planInvalid(`Channel ${to} has no workspace folder on this device (Settings → Channels); a plan's files live there`, { planId: row.id, channelId: to });
+        const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+        const unfinishedJobs = jobs.filter((j) => UNFINISHED_JOB_STATUSES.has(j.status)).length;
+        const files = [...new Set([...results.flatMap((r) => (r.auditionFile ? [r.auditionFile] : [])), ...(row.definition.references ?? []).map((r) => r.file)])].sort();
+        const missing: string[] = [];
+        for (const file of files) if (!(await deps.files.sentFileExists(workspace, file))) missing.push(file);
+        const answer: PlanMoveResult = { planId: row.id, from, to, checked: files.length, missing: missing.slice(0, PLAN_MOVE_MISSING_LISTED), missingCount: missing.length, unfinishedJobs, moved: false };
+        if (parsed.checkOnly) return answer;
+        if (unfinishedJobs > 0) throw planInvalid(`Plan ${row.id} has ${unfinishedJobs} unfinished job(s); move it when they have finished`, { planId: row.id, unfinishedJobs });
+        if (missing.length > 0) {
+          throw planInvalid(`${missing.length} of ${files.length} file(s) of plan ${row.id} are not in channel ${to}'s Sent to YTM; copy them there first`, {
+            planId: row.id,
+            from,
+            to,
+            checked: files.length,
+            missing: answer.missing,
+            missingCount: missing.length,
+          });
+        }
+        await mutate(row.id, (current) => {
+          if (current.channelId !== from) throw planInvalid(`Plan ${row.id} moved to channel ${current.channelId} meanwhile`, { planId: row.id, channelId: current.channelId });
+          return { channelId: to };
+        });
+        await record(row.id, "plan_moved", actor, { from, to, checked: files.length });
+        return { ...answer, moved: true };
+      });
     },
 
     /** AC-GP-05: the status only -- no job, session or file is touched. */
@@ -1066,7 +1119,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const outputs = deps.media ? await deps.media.getJobOutputs(job.id) : [];
       const playable = outputs.find((o) => o.localPath && (o.kind === "audio" || o.kind === "video" || o.kind === "image")) ?? outputs.find((o) => o.localPath);
       if (!playable?.localPath) throw planMismatch(`Job ${job.id} has no output on this device`, { jobId: job.id });
-      return { channelId: row.channelId, kind: "job", jobId: job.id, localPath: playable.localPath };
+      // BL-157 (AC-MV-05): a job's output is in the workspace of the channel it ran on, also after the plan moved.
+      return { channelId: job.channelId, kind: "job", jobId: job.id, localPath: playable.localPath };
     },
 
     /** BL-143 phase 3 (FO-MSG-0009): a plan reference's file for A/B -- named only by the plan, never by the request. */

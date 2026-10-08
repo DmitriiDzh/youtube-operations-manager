@@ -29,6 +29,7 @@ const session = (over: Partial<PlanSessionRow>): PlanSessionRow => ({ id: "s", s
 const job = (id: string, sessionId: string, seconds: number): PlanJobRow => ({
   id,
   sessionId,
+  channelId: "UC_x",
   stageId: "generate",
   itemKey: "A/1",
   seed: null,

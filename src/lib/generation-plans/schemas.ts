@@ -207,6 +207,9 @@ export const peerVerdictInputSchema = z
 
 export const referenceInputSchema = z.object({ planId: planIdSchema, id: z.string().min(1).max(64) }).strict();
 
+/** BL-157 (FO-REQ-0009 §4): an active plan moves to another connected channel; `checkOnly` only checks its files there. */
+export const movePlanInputSchema = z.object({ planId: planIdSchema, channelId: z.string().min(1).max(64), checkOnly: z.boolean().optional() }).strict();
+
 export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
 
 export const rerunRequestInputSchema = z.object({ planId: planIdSchema, itemKey: itemKeySchema, attemptRef: attemptRefSchema.optional(), note: noteSchema.nullable().optional() }).strict();

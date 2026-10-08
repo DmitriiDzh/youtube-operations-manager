@@ -25,9 +25,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * 1.6.0 (BL-153, FO-REQ-0008): validator-rejected attempts in the owner's review queue (`reviewRejected`);
  * 1.7.0 (BL-155, FO-REQ-0007): jobs carry `errorCode` (`media_gpu_host_incompatible` when the error says the host's CUDA driver
  * is too old), a start on incompatible hosts fails with `media_gpu_host_incompatible`, release-when-done of a session whose
- * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`.
+ * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`;
+ * 1.8.0 (BL-157, FO-REQ-0009): `factory_plan_move` moves an active plan to another connected channel (its files checked in
+ * that channel's Sent to YTM first, `checkOnly` to check only); the event `plan_moved`.
  */
-export const FACTORY_API_VERSION = "1.7.0";
+export const FACTORY_API_VERSION = "1.8.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -68,6 +70,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_plan_run_stage",
   "factory_plan_rerun",
   "factory_plan_clone_group",
+  // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
+  "factory_plan_move",
 ] as const;
 
 /**
@@ -95,6 +99,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_run_stage",
   "factory_plan_rerun",
   "factory_plan_clone_group",
+  // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
+  "factory_plan_move",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -149,6 +155,7 @@ export type FactoryToolDeps = {
     runStage(input: unknown): Promise<Record<string, unknown>>;
     rerun(input: unknown): Promise<Record<string, unknown>>;
     cloneGroup(input: unknown): Promise<Record<string, unknown>>;
+    move(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -624,6 +631,12 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       })
       .strict(),
     (input) => deps.plans.update(input)
+  );
+  planWrite(
+    "factory_plan_move",
+    "Move an active plan to another channel connected on this computer (1.8.0): { planId, channelId, checkOnly?: boolean } -> { planId, from, to, checked, missing, missingCount, unfinishedJobs, moved }. Copy the plan's files into the new channel's '99 Data Exchange/Sent to YTM/' first: every auditionFile reported on the plan and every reference file is checked there (checked = how many distinct files; missing lists up to 500 of the missingCount not found). checkOnly: true only checks and changes nothing. Without it, a missing file or an unfinished job of the plan (queued or running) refuses the move with plan_invalid (details: checked, missing, missingCount / unfinishedJobs) and nothing changes. After the move, the auditionFiles and references play from the new channel; an attempt with no auditionFile plays its job's output from the channel the job ran on; runs and plan-linked sessions need the new channel. Jobs, sessions, results, verdicts, events and spend stay with the plan (same planId). Event plan_moved { from, to, checked }. Errors: plan_closed, plan_invalid (same channel, channel not connected, no workspace folder, files missing, unfinished jobs), plan_not_found.",
+    z.object({ planId: z.string(), channelId: z.string(), checkOnly: z.boolean().optional() }).strict(),
+    (input) => deps.plans.move(input)
   );
   planWrite(
     "factory_plan_close",

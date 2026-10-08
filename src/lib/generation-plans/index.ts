@@ -1,6 +1,9 @@
 import { hostname } from "node:os";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
+import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT } from "@/lib/sync-gateway";
@@ -25,6 +28,18 @@ export function createGenerationPlansCore() {
     peers: {
       ownDeviceId: async () => (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
       listPeerReports: () => createGenerationPlansShareCoreForProduction().listPeerReports(),
+    },
+    // BL-157 (AC-MV-03): a plan move checks its files with the same resolver the player uses.
+    files: {
+      async workspaceOf(channelId) {
+        const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
+        return workspace.configured ? workspace.path : null;
+      },
+      sentFileExists: (workspace, relativePath) =>
+        resolveSentToYtmFile({ workspace, relativePath, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }).then(
+          () => true,
+          () => false
+        ),
     },
     media: {
       async getSession(sessionId) {

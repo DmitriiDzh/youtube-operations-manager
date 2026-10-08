@@ -22,6 +22,8 @@ import type {
 export type PlanJobRow = {
   id: string;
   sessionId: string;
+  /** BL-157 (AC-MV-05): the channel the job ran on -- its output lives in that channel's workspace, whatever the plan's now. */
+  channelId: string;
   stageId: string | null;
   itemKey: string | null;
   seed: number | null;

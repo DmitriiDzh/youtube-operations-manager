@@ -3,7 +3,7 @@ import test from "node:test";
 import { isDomainError, type PlanEvent, type PlanResultRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
 import type { GenerationPlansReport, SharedVerdict } from "@/lib/sync-gateway";
-import { createGenerationPlanServices, type PlanStore, type StoredPlan } from "./services";
+import { createGenerationPlanServices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 
 // BL-143 acceptance criteria AC-GP-01..07 (docs/roadmap/plans/GENERATION_PLANS_PLAN.md §4), written before the services.
 // Expected values are stated from the plan's rules, not from running the code.
@@ -45,7 +45,7 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
       events.push({ ...event, planId });
     },
     listEvents: async (planId) => events.filter((e) => e.planId === planId).map((e) => without(e, "planId")),
-    listJobs: async (planId) => jobs.filter((j) => j.planId === planId).map((j) => without(j, "planId", "channelId")),
+    listJobs: async (planId) => jobs.filter((j) => j.planId === planId).map((j) => without(j, "planId")),
     async linkJob(jobId, link) {
       const job = jobs.find((j) => j.id === jobId);
       if (!job || job.planId !== null || job.channelId !== link.channelId) return false;
@@ -371,7 +371,17 @@ test("a re-run request and a group note are recorded for the factory; nothing is
 type FakeSession = { sessionId: string; status: string; channelId: string; requestedBy: string; planId: string | null };
 
 /** A media port that behaves like the media core's contract: params checked against a template; created jobs become rows. */
-function withMedia(seedSessions: FakeSession[], opts: { templates?: Record<string, string[]>; failCreateAfter?: number; outputs?: Record<string, Array<{ kind: string; localPath: string | null; filename: string }>> } = {}) {
+function withMedia(
+  seedSessions: FakeSession[],
+  opts: {
+    templates?: Record<string, string[]>;
+    failCreateAfter?: number;
+    outputs?: Record<string, Array<{ kind: string; localPath: string | null; filename: string }>>;
+    /** BL-157: the channels connected on this device (default: the plan's channel only). */
+    connected?: string[];
+    files?: PlanServiceDependencies["files"];
+  } = {}
+) {
   const s = setup();
   const sessions = new Map(seedSessions.map((x) => [x.sessionId, { ...x }]));
   const templates = opts.templates ?? { "tpl-ace": ["prompt", "duration", "seed"], "tpl-noseed": ["prompt"] };
@@ -379,8 +389,9 @@ function withMedia(seedSessions: FakeSession[], opts: { templates?: Record<strin
   let n = 0;
   const services = createGenerationPlanServices({
     store: s.store,
-    channels: { isConnected: async (id) => id === CHANNEL },
+    channels: { isConnected: async (id) => (opts.connected ?? [CHANNEL]).includes(id) },
     clock: { now: () => new Date((clockMs += 1000)) },
+    ...(opts.files ? { files: opts.files } : {}),
     media: {
       getSession: async (id) => sessions.get(id) ?? null,
       async linkSession(id, planId) {
@@ -978,4 +989,160 @@ test("import keeps groups[].title (dependsOn, note) from the file -- by groupId 
     ["C10B", "Wave C10B", "C9", null],
     ["C11", "C11", null, null],
   ]);
+});
+
+// -- BL-157 (SERVERS_MEDIA_PLAN.md §A, FO-REQ-0009 §4, FO-MSG-0011): moving a plan to another channel ----------------------
+// Expected values are stated from AC-MV-01..06, not from running the code.
+
+const TARGET = "UC_target_channel";
+const TARGET_WS = "/ws/target";
+
+/** A plan on CHANNEL with two reported audition files (one of them on two rows) and one reference: three distinct files. */
+async function movablePlan(present: string[], over: { connected?: string[]; workspaces?: Record<string, string>; sessions?: FakeSession[] } = {}) {
+  const checkedFiles: Array<[string, string]> = [];
+  const m = withMedia(over.sessions ?? [running()], {
+    connected: over.connected ?? [CHANNEL, TARGET],
+    outputs: { "job-1": [{ kind: "audio", localPath: "/ws/plan/99 Data Exchange/From YTM/media/job-1/out.mp3", filename: "out.mp3" }] },
+    files: {
+      workspaceOf: async (channelId) => (over.workspaces ?? { [CHANNEL]: "/ws/plan", [TARGET]: TARGET_WS })[channelId] ?? null,
+      async sentFileExists(workspace, relativePath) {
+        checkedFiles.push([workspace, relativePath]);
+        return present.includes(relativePath);
+      },
+    },
+  });
+  await m.services.createPlan({ ...basePlan(), references: [{ id: "ref-1", label: "Koto reference", file: "reference/koto-01.mp3" }] });
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  for (const j of m.jobs) j.status = "done";
+  await m.services.report({
+    planId: "R-0001-S1-music",
+    rows: [
+      { stageId: "postprocess", itemKey: "C1/F1", attemptRef: "job:job-1", result: "done", auditionFile: "R-0001-S1-music/C1/a.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "job:job-1", result: "accepted", auditionFile: "R-0001-S1-music/C1/a.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:b", result: "rejected", auditionFile: "R-0001-S1-music/C1/b.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "job:job-2", result: "accepted" },
+    ],
+  });
+  await m.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-1", result: "accepted", rating: 8 });
+  return { ...m, checkedFiles };
+}
+
+const ALL_FILES = ["R-0001-S1-music/C1/a.mp3", "R-0001-S1-music/C1/b.mp3", "reference/koto-01.mp3"];
+
+test("AC-MV-03: checkOnly checks every distinct auditionFile of every row and every reference in the TARGET channel's workspace, and changes nothing", async () => {
+  const m = await movablePlan(["R-0001-S1-music/C1/a.mp3", "reference/koto-01.mp3"]);
+  const eventsBefore = m.events.length;
+  const answer = await m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET, checkOnly: true });
+  assert.deepEqual(answer, { planId: "R-0001-S1-music", from: CHANNEL, to: TARGET, checked: 3, missing: ["R-0001-S1-music/C1/b.mp3"], missingCount: 1, unfinishedJobs: 0, moved: false });
+  assert.deepEqual(m.checkedFiles.map(([ws]) => ws), [TARGET_WS, TARGET_WS, TARGET_WS], "checked in the target's workspace only");
+  assert.deepEqual(m.checkedFiles.map(([, file]) => file).sort(), ALL_FILES, "each distinct file once");
+  assert.equal(m.plans.get("R-0001-S1-music")!.channelId, CHANNEL);
+  assert.equal(m.events.length, eventsBefore, "no event");
+});
+
+test("AC-MV-03: a move with a missing file is refused with plan_invalid listing it, and nothing changes", async () => {
+  const m = await movablePlan(["R-0001-S1-music/C1/a.mp3", "reference/koto-01.mp3"]);
+  const revision = m.plans.get("R-0001-S1-music")!.revision;
+  await assert.rejects(
+    m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET }),
+    (e: unknown) => isDomainError(e) && e.code === "plan_invalid" && JSON.stringify((e.details as Record<string, unknown> | undefined)?.missing) === JSON.stringify(["R-0001-S1-music/C1/b.mp3"]) && (e.details as Record<string, unknown> | undefined)?.checked === 3 && (e.details as Record<string, unknown> | undefined)?.missingCount === 1
+  );
+  assert.equal(m.plans.get("R-0001-S1-music")!.channelId, CHANNEL);
+  assert.equal(m.plans.get("R-0001-S1-music")!.revision, revision);
+  assert.equal(m.events.some((e) => e.kind === "plan_moved"), false);
+});
+
+test("AC-MV-04: with every file in place the plan moves; results, verdicts, progress and spend are untouched; plan_moved { from, to, checked } is recorded", async () => {
+  const m = await movablePlan(ALL_FILES);
+  const before = await m.services.getPlan({ planId: "R-0001-S1-music" });
+  const resultsBefore = structuredClone([...m.results.values()]);
+  const answer = await m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET });
+  assert.deepEqual(answer, { planId: "R-0001-S1-music", from: CHANNEL, to: TARGET, checked: 3, missing: [], missingCount: 0, unfinishedJobs: 0, moved: true });
+  const after = await m.services.getPlan({ planId: "R-0001-S1-music" });
+  assert.equal(after.plan.channelId, TARGET);
+  assert.deepEqual([...m.results.values()], resultsBefore, "result rows and the owner verdict unchanged");
+  assert.deepEqual(after.progress.stages, before.progress.stages);
+  assert.deepEqual(after.progress.items, before.progress.items);
+  assert.deepEqual(after.progress.spend, before.progress.spend);
+  const moved = m.events.filter((e) => e.kind === "plan_moved");
+  assert.deepEqual(moved.map((e) => [e.actor, e.details]), [["factory", { from: CHANNEL, to: TARGET, checked: 3 }]]);
+  assert.equal(m.jobs.every((j) => j.channelId === CHANNEL), true, "the jobs stay with the channel they ran on");
+});
+
+test("AC-MV-02: refused without a change -- closed plan, same channel, target not connected, target without a workspace, an unfinished job", async () => {
+  const sameChannel = await movablePlan(ALL_FILES);
+  await assert.rejects(sameChannel.services.movePlan({ planId: "R-0001-S1-music", channelId: CHANNEL }), refused("plan_invalid"), "same channel");
+  await assert.rejects(sameChannel.services.movePlan({ planId: "nope-plan", channelId: TARGET }), refused("plan_not_found"));
+
+  const notConnected = await movablePlan(ALL_FILES, { connected: [CHANNEL] });
+  await assert.rejects(notConnected.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET }), refused("plan_invalid"), "target not connected");
+
+  const noWorkspace = await movablePlan(ALL_FILES, { workspaces: { [CHANNEL]: "/ws/plan" } });
+  await assert.rejects(noWorkspace.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET }), refused("plan_invalid"), "no workspace");
+
+  const busy = await movablePlan(ALL_FILES);
+  busy.jobs[0].status = "generating";
+  const check = await busy.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET, checkOnly: true });
+  assert.equal(check.unfinishedJobs, 1, "checkOnly still answers and reports the unfinished job");
+  await assert.rejects(
+    busy.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET }),
+    (e: unknown) => isDomainError(e) && e.code === "plan_invalid" && (e.details as Record<string, unknown> | undefined)?.unfinishedJobs === 1,
+    "an unfinished job"
+  );
+
+  const closed = await movablePlan(ALL_FILES);
+  await closed.services.closePlan({ planId: "R-0001-S1-music", status: "completed" });
+  await assert.rejects(closed.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET }), refused("plan_closed"), "closed plan");
+
+  for (const m of [sameChannel, notConnected, noWorkspace, busy, closed]) {
+    assert.equal(m.plans.get("R-0001-S1-music")!.channelId, CHANNEL);
+    assert.equal(m.events.some((e) => e.kind === "plan_moved"), false);
+  }
+  await assert.rejects(sameChannel.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET, extra: 1 }), refused("validation_failed"), "unknown field");
+});
+
+test("AC-MV-05: after the move, auditionFiles and references resolve in the new channel; a job's own output in the channel the job ran on", async () => {
+  const m = await movablePlan(ALL_FILES);
+  await m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET });
+  assert.deepEqual(await m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:b" }), { channelId: TARGET, kind: "sent", relativePath: "R-0001-S1-music/C1/b.mp3" });
+  assert.deepEqual(await m.services.resolveReference({ planId: "R-0001-S1-music", id: "ref-1" }), { channelId: TARGET, kind: "sent", relativePath: "reference/koto-01.mp3" });
+  // job-1's reported auditionFile (a job attempt) also resolves in the new channel: a reported file wins over the job output.
+  assert.deepEqual(await m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-1" }), { channelId: TARGET, kind: "sent", relativePath: "R-0001-S1-music/C1/a.mp3" });
+});
+
+test("AC-MV-05: an attempt with no auditionFile plays its job's output from the channel the job ran on, after the move", async () => {
+  const checked: string[] = [];
+  const m = withMedia([running()], {
+    connected: [CHANNEL, TARGET],
+    outputs: { "job-2": [{ kind: "audio", localPath: "/ws/plan/99 Data Exchange/From YTM/media/job-2/out.mp3", filename: "out.mp3" }] },
+    files: { workspaceOf: async (id) => (id === TARGET ? TARGET_WS : "/ws/plan"), sentFileExists: async (_ws, file) => (checked.push(file), true) },
+  });
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C1" });
+  for (const j of m.jobs) j.status = "done";
+  await m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET });
+  assert.deepEqual(checked, [], "no auditionFile and no reference: nothing to check");
+  assert.deepEqual(await m.services.resolveAudition({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:job-2" }), {
+    channelId: CHANNEL,
+    kind: "job",
+    jobId: "job-2",
+    localPath: "/ws/plan/99 Data Exchange/From YTM/media/job-2/out.mp3",
+  });
+});
+
+test("AC-MV-06: after the move, runs and plan-linked sessions need the new channel; a session of the old channel is refused", async () => {
+  const m = await movablePlan(ALL_FILES, { sessions: [running(), running({ sessionId: "s-new", channelId: TARGET })] });
+  await m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET });
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1", groupId: "C2" }), (e: unknown) => isDomainError(e), "the old channel's session");
+  await assert.rejects(m.services.checkSessionLink({ planId: "R-0001-S1-music", channelId: CHANNEL }), refused("plan_mismatch"));
+  await m.services.checkSessionLink({ planId: "R-0001-S1-music", channelId: TARGET });
+  const run = await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s-new", groupId: "C2" });
+  assert.ok(run.created.length > 0, "a session of the new channel runs the plan");
+  assert.equal(m.jobs.filter((j) => j.sessionId === "s-new").every((j) => j.channelId === TARGET), true, "its jobs are of the new channel");
+});
+
+test("AC-MV-02: without the workspace port (a device that cannot check files) a move is refused", async () => {
+  const m = withMedia([running()], { connected: [CHANNEL, TARGET] });
+  await m.services.createPlan(basePlan());
+  await assert.rejects(m.services.movePlan({ planId: "R-0001-S1-music", channelId: TARGET, checkOnly: true }), refused("plan_invalid"));
 });

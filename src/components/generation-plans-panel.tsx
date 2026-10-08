@@ -123,7 +123,8 @@ const JOB_EVENT_KEYS: Record<string, UiTextKey> = {
   job_cancelled: "plans.event.jobCancelled",
 };
 
-export function describeEvent(t: Translate, event: PlanEvent): string {
+/** `channelName` (BL-157): a connected channel's name for a channel id; an unknown channel shows its id. */
+export function describeEvent(t: Translate, event: PlanEvent, channelName: (channelId: string) => string = (id) => id): string {
   const d = event.details as Record<string, unknown>;
   // The item key, the seed, the GPU, a stop reason and an error are data, shown as they are.
   const item = typeof d.itemKey === "string" ? ` ${d.itemKey}` : "";
@@ -155,6 +156,8 @@ export function describeEvent(t: Translate, event: PlanEvent): string {
       return t("plans.event.groupNote", { group: String(d.groupId) });
     case "stage_run":
       return t("plans.event.stageRun", { count: String(d.created) });
+    case "plan_moved":
+      return t("plans.event.planMoved", { from: channelName(String(d.from)), to: channelName(String(d.to)) });
     default:
       return event.kind.replace(/_/g, " ");
   }

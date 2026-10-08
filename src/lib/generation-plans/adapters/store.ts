@@ -124,6 +124,7 @@ export function createPlanStore(): PlanStore {
       (await listMediaJobsByPlan(planId)).map((j) => ({
         id: j.id,
         sessionId: j.sessionId,
+        channelId: j.channelId,
         stageId: j.planStageId ?? null,
         itemKey: j.planItemKey ?? null,
         seed: j.planSeed ?? null,

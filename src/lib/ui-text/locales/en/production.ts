@@ -143,6 +143,7 @@ export const production = {
   "plans.event.peerVerdict": "verdict from {device}{item}: {result}",
   "plans.event.groupNote": "note on {group}",
   "plans.event.stageRun": "stage run: {count} job(s)",
+  "plans.event.planMoved": "moved from {from} to {to}",
   "plans.closeFailed": "Failed to close the plan",
   "plans.ownerYou": "you",
   "plans.created": "created {date}",

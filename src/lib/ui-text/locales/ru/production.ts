@@ -144,6 +144,7 @@ export const production: Record<keyof typeof en, string> = {
   "plans.event.peerVerdict": "вердикт с {device}{item}: {result}",
   "plans.event.groupNote": "заметка к {group}",
   "plans.event.stageRun": "запуск стадии: заданий — {count}",
+  "plans.event.planMoved": "перенесён из {from} в {to}",
   "plans.closeFailed": "Не удалось закрыть план",
   "plans.ownerYou": "вы",
   "plans.created": "создан {date}",
