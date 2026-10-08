@@ -1,4 +1,5 @@
-import { startIdleShutdownWatcher } from "@/lib/idle-shutdown";
+import { createIdleHandler, resolveIdleAction, startIdleShutdownWatcher } from "@/lib/idle-shutdown";
+import { createDefaultLogger } from "@/lib/shared-logger";
 
 const DEVICE_SYNC_BOOT_DELAY_MS = 5_000;
 const DRAFT_SYNC_INTERVAL_MS = 60_000;
@@ -296,7 +297,29 @@ async function startServerSession() {
   // a held export/import/migration lock, or a RUNNING Batch defers the exit (idle-shutdown.ts caps the deferral).
   const { getOperationRegistry } = await import("@/lib/operation-progress");
   const { getOperationLock } = await import("@/lib/operation-lock");
+  // BL-158: the macOS system service (YTOM_SERVICE_MODE=1) is never stopped by idleness -- the same window ends the
+  // browser session instead: Live writes are reset (RISK-09: they live only as long as a session), the process stays.
+  // Pods keep running under the media watcher's own caps; the sync loop keeps publishing, so no final export is needed.
+  const idleAction = resolveIdleAction();
+  const idleLogger = createDefaultLogger();
+  const onIdle = createIdleHandler(idleAction, {
+    resetLiveWrites: () => resetLiveWritesForNewServerSession(),
+    // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
+    stopPods: () => media.stopForShutdown(),
+    flush: async () => {
+      await (ticking ?? undefined);
+      await tickQuietly({ force: true, exportOnly: true });
+    },
+    exit: () => process.exit(0),
+    onSessionEnded: () => idleLogger.info({ event: "idle_shutdown.session_ended", context: { liveWritesReset: true } }),
+    onSessionEndFailed: (error) =>
+      idleLogger.error({
+        event: "idle_shutdown.session_end_failed",
+        context: { reason: error instanceof Error ? error.message : String(error), retry: "next idle check" },
+      }),
+  });
   startIdleShutdownWatcher({
+    action: idleAction,
     isBusy: async () => {
       if (getOperationRegistry().hasActive()) return true;
       if ((await getOperationLock(rawSqlClient)) !== null) return true;
@@ -307,12 +330,6 @@ async function startServerSession() {
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },
-    onIdle: () =>
-      void resetQuietly()
-        // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
-        .then(() => media.stopForShutdown())
-        .then(() => ticking ?? undefined)
-        .then(() => tickQuietly({ force: true, exportOnly: true }))
-        .finally(() => process.exit(0)),
+    onIdle,
   });
 }

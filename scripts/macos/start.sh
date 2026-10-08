@@ -27,10 +27,109 @@ if [ ! -f ".env.local" ]; then
   exit 1
 fi
 
+# Exit codes: 0 = running and opened; 1 = failed; 3 (service only) = running and opened, with a warning to read.
+# BL-158: with the system service installed, launchd owns the server -- it runs from power-on and is started again
+# whenever it stops. Then this script never starts a second instance and never builds under a running server: it
+# waits for the server, restarts the service once if the checked-out commit changed (the service rebuilds before
+# starting), and opens the browser.
+. "$SCRIPT_DIR/service-env.sh"
+if service_installed; then
+  echo "The application runs as a system service on this Mac."
+  if ! launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
+    echo "[ERROR] The service is installed but not loaded. Run install-service.command again,"
+    echo "        or uninstall-service.command to go back to starting the server with this launcher."
+    exit 1
+  fi
+  SERVICE_LOG="$HOME/Library/Logs/YouTubeOperationsManager/service.log"
+  LOG_START=0
+  if [ -f "$SERVICE_LOG" ]; then LOG_START=$(wc -c < "$SERVICE_LOG"); fi
+  # Nothing answering and the folder not on an accepted branch: the runner refuses it, so say why right away.
+  if [ -z "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
+    BRANCH_RC=0; BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+    if [ "$BRANCH_RC" -eq 4 ]; then
+      echo "[ERROR] The repository folder is on $BRANCH, not on dev or main, so the service does not build or run it."
+      echo "        Switch back (git switch dev); the service retries within 5 minutes."
+      exit 1
+    elif [ "$BRANCH_RC" -ne 0 ]; then
+      echo "[ERROR] The service cannot tell the repository folder's branch: $BRANCH"
+      exit 1
+    fi
+  fi
+  RESTARTED=""
+  WARNED="" # set when a warning was printed (stale build kept, or the service cannot restart): exit 3 keeps it on screen
+  OLD_PIDS="" # after a restart, only a new process counts as ready
+  echo "Waiting for http://localhost:$PORT ..."
+  ATTEMPT=0
+  while [ "$ATTEMPT" -lt 900 ]; do
+    LISTEN_PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"
+    if [ -n "$LISTEN_PIDS" ] && [ "$LISTEN_PIDS" != "$OLD_PIDS" ] && curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+      # Checked once the server answers (also after a build that was running when this started): restart at most once,
+      # and only onto an accepted branch -- otherwise the service would refuse it and both accounts would lose the app.
+      if [ -z "$RESTARTED" ] && ! "$SCRIPT_DIR/build-if-stale.sh" --check; then
+        RESTARTED=1
+        BRANCH_RC=0; BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+        if [ "$BRANCH_RC" -eq 0 ]; then
+          echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first, a few minutes)..."
+          OLD_PIDS="$LISTEN_PIDS"
+          STOP_RC=0
+          "$SCRIPT_DIR/stop.sh" || STOP_RC=$?
+          if [ "$STOP_RC" -eq 0 ] || [ "$STOP_RC" -eq 1 ]; then
+            # 1 = signalled but still draining: the service starts the new build once it has stopped.
+            continue
+          fi
+          # 2 = refused before signalling anything (an operation is running): keep using the running build.
+          echo "[WARN] Not restarted now; the new commit loads on the next start, once that operation has finished."
+          WARNED=1
+        elif [ "$BRANCH_RC" -eq 4 ]; then
+          echo "[WARN] The repository folder is on $BRANCH, not on dev or main: the service keeps running its last build."
+          echo "       Switch back (git switch dev) and run this again to load the new commit."
+          WARNED=1
+        else
+          echo "[WARN] Cannot tell the repository folder's branch ($BRANCH): the service keeps running its last build."
+          WARNED=1
+        fi
+      fi
+      # Even with a current build: the service restarts and rebuilds only on an accepted branch with a working git.
+      if [ -z "$WARNED" ]; then
+        BRANCH_RC=0; BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+        if [ "$BRANCH_RC" -eq 4 ]; then
+          echo "[WARN] The repository folder is on $BRANCH: the service will not restart or rebuild it until it is back on"
+          echo "       dev or main (git switch dev)."
+          WARNED=1
+        elif [ "$BRANCH_RC" -ne 0 ]; then
+          echo "[WARN] git cannot run ($BRANCH): the service cannot restart or rebuild until it works again"
+          echo "       (after a macOS update: xcode-select --install)."
+          WARNED=1
+        fi
+      fi
+      if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
+        open "http://localhost:$PORT"
+      fi
+      if [ -n "$WARNED" ]; then
+        echo "The application is running -- read the warning above."
+        exit 3
+      fi
+      echo "The application is running -- you can close this window."
+      exit 0
+    fi
+    # The runner logs why it cannot start (wrong branch, failed build, no disk access): show that instead of waiting.
+    if tail -c +$((LOG_START + 1)) "$SERVICE_LOG" 2>/dev/null | grep -qE "\[ERROR\]|EPERM"; then
+      echo "[ERROR] The service cannot start the server ($SERVICE_LOG):"
+      tail -c +$((LOG_START + 1)) "$SERVICE_LOG" | grep -E "\[ERROR\]|EPERM" | tail -n 3 | sed 's/^/        /'
+      exit 1
+    fi
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep 1
+  done
+  echo "[ERROR] The server did not answer within 15 minutes. See $SERVICE_LOG"
+  echo "        and $LOG."
+  exit 1
+fi
+
 # Already running? Stop the old instance first (same principle as scripts/windows/start.bat): a second
 # instance cannot bind the port, and the browser would otherwise open the OLD server -- possibly on
 # a stale build. stop.sh waits for any running export/import/migration before stopping, and refuses
-# (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
+# (non-zero exit) if one does not finish; then nothing is started or rebuilt over it.
 # Note: whatever listens on port 3000 is stopped, exactly as stop.sh has always done.
 if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   echo "Port $PORT is already in use - stopping the running instance first..."
@@ -40,51 +139,8 @@ if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   fi
 fi
 
-if [ ! -d "node_modules" ]; then
-  echo "Installing dependencies (first run only, this can take a few minutes)..."
-  npm install
-fi
-
-# Rebuild-staleness check. This script no longer touches the network, the remote, or the working
-# tree in any way (it previously ran `git pull --ff-only` itself before this check -- removed
-# 2026-09-21 at the project owner's explicit request: "за актуальностью гита я буду следить сам"
-# -- keeping git entirely up to the operator, not this script).
-#
-# In an actual git checkout of the repository, compare the currently checked-out commit against
-# a marker file recording which commit `.next` was actually built from, so a build the operator
-# did on an earlier commit (e.g. before their own `git pull`) is detected and rebuilt
-# automatically -- rather than relying on ".next merely exists" as the only signal, which cannot
-# tell a stale build apart from a current one. A standalone published/<version>/ release copy has
-# no `.git` and no commit to compare against -- `update.sh` remains its one, explicit,
-# human-triggered rebuild step (docs/RELEASE_LAYOUT.md §1, AGENTS.md §K.4).
-BUILD_MARKER=".next-build-commit.txt"
-CURRENT_REV=""
-if [ -d ".git" ] && command -v git >/dev/null 2>&1; then
-  CURRENT_REV="$(git rev-parse HEAD 2>/dev/null || echo "")"
-fi
-
-NEED_BUILD=""
-if [ ! -d ".next" ]; then
-  NEED_BUILD=1
-fi
-if [ -n "$CURRENT_REV" ]; then
-  BUILT_REV=""
-  if [ -f "$BUILD_MARKER" ]; then
-    BUILT_REV="$(cat "$BUILD_MARKER" 2>/dev/null || echo "")"
-  fi
-  if [ "$CURRENT_REV" != "$BUILT_REV" ]; then
-    NEED_BUILD=1
-  fi
-fi
-
-if [ -n "$NEED_BUILD" ]; then
-  echo "Installing dependencies and building the application (no build found, or the checked-out commit changed since the last build)..."
-  npm install
-  npm run build
-  if [ -n "$CURRENT_REV" ]; then
-    echo "$CURRENT_REV" > "$BUILD_MARKER"
-  fi
-fi
+# Install/build when needed -- the one shared rule (build-if-stale.sh; the system service uses it too).
+"$SCRIPT_DIR/build-if-stale.sh"
 
 echo "Starting YouTube Operations Manager on http://localhost:$PORT ..."
 : > "$LOG"

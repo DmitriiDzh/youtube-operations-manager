@@ -15,13 +15,21 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+# BL-158: under the system service a stopped server is started again at once, so building here would race it.
+. "$SCRIPT_DIR/service-env.sh"
+if service_installed; then
+  echo "[ERROR] The application runs as a system service on this Mac. In a git checkout it rebuilds by itself when"
+  echo "        the checked-out commit changes -- run stop.sh to restart it now. For a release folder without git:"
+  echo "        uninstall-service.command, then this script, then install-service.command again."
+  exit 1
+fi
+
 "$SCRIPT_DIR/stop.sh" || exit 1
 
-echo "Installing dependencies for this version..."
-npm install
-
-echo "Rebuilding..."
-npm run build
+echo "Installing dependencies and rebuilding this version..."
+# The one build rule, forced: off the real database while building (RISK-63), the marker written only after a complete
+# build, so an interrupted update is rebuilt by the next start instead of being served.
+"$SCRIPT_DIR/build-if-stale.sh" --force
 
 echo ""
 echo "Update complete. Run start.sh to launch the updated application."
