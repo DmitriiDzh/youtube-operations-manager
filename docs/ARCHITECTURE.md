@@ -2382,7 +2382,9 @@ shown; a holder that looks alive needs `force` plus the typed word CLEAR. See RI
 
 **Not done, by design.**
 - No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released
-  operation lock. The idle shutdown does flush, since nothing is in flight.
+  operation lock. The idle shutdown does flush, since nothing is in flight. Under the macOS system
+  service (BL-158, ADR 0032) idleness only ends the session (Live writes reset) and the process
+  stays, so there is no final flush; the regular sync tick keeps exporting.
 - No concurrent editing.
 
 See RISK-89.

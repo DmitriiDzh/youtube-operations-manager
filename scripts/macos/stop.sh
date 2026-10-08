@@ -7,7 +7,8 @@
 # any RUNNING operation to finish (`operation-lock wait-idle`; refuse to stop if it does not within
 # 2 minutes), (3) stop the process, (4) confirm the port is actually free. Exit code 0 = nothing
 # left running, 1 = not stopped (start.sh/update.sh must not go on).
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 PIDFILE="$(pwd)/.launcher.pid"
 PORT="${PORT:-3000}"
 
@@ -39,6 +40,29 @@ else
 fi
 
 rm -f "$PIDFILE"
+
+# BL-158: under the system service launchd starts the server again at once (rebuilding first if the checked-out commit
+# changed), so the port does not stay free -- here "stopped" means the old process has exited, and stopping is how the
+# service is restarted. Removing the service for good is uninstall-service.command.
+. "$SCRIPT_DIR/service-env.sh"
+if [ -n "$PORT_PIDS" ] && service_installed; then
+  ATTEMPT=0
+  while [ "$ATTEMPT" -lt 30 ]; do
+    ALIVE=""
+    for PID in $PORT_PIDS; do
+      if kill -0 "$PID" 2>/dev/null; then ALIVE=1; fi
+    done
+    if [ -z "$ALIVE" ]; then
+      echo "Done -- the server process has exited. The system service starts it again by itself"
+      echo "(uninstall-service.command removes the service for good)."
+      exit 0
+    fi
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep 1
+  done
+  echo "[WARN] The server process is still running after 30 s -- it may need more time."
+  exit 1
+fi
 
 if [ -n "$PORT_PIDS" ]; then
   # Shutdown is asynchronous (SIGTERM is a request, not instant) -- wait briefly for the port to

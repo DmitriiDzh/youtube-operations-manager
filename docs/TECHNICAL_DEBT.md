@@ -280,6 +280,8 @@ Verified: `npm test`, lint, build, and a production-server smoke test (`/`, `/ap
     (`live_writes_session_lease_at`) is fresh.
   - The web server renews the lease every 30 s (`src/instrumentation.ts`) and resets the toggle
     at start and on graceful end.
+  - Under the macOS system service (BL-158, ADR 0032) the process does not end by idleness, so the
+    idle window itself ends the session: it resets the toggle and the process stays (RISK-115).
   - The lease TTL is 3 min.
   - Previously the toggle was reset on every process's database initialization. That let every
     MCP/CLI process switch the operator's toggle off mid-session and could strand a Batch in
@@ -1851,3 +1853,14 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Accepted because:** there is no shared server between the computers, and a lock over files would either block the owner when the other computer is off or still be only a hint (ADR 0031). The owner asked for claims as markers plus a confirmation, not a lock.
 - **Re-evaluate:** if the devices ever share a live connection, or if double ratings show up in the history in practice.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-115 — macOS system service: node holds Full Disk Access, the server runs all the time — OPEN, 2026-10-08
+
+- **What:** BL-158 (ADR 0032). The optional launchd daemon runs the server as the owner's account from power-on, so another Mac account can use the app.
+  - macOS lets a launchd job into `~/Documents` (the repository) and the external drive (the sync folder) only with Full Disk Access, and judges by the job's executable. The owner grants it to node's binary. Any launchd job that runs this node then has full disk access.
+  - A Homebrew node upgrade replaces the binary and silently drops the grant. The service then cannot read the repository and keeps retrying (every 30 s while node cannot load the runner, every 5 min after a failed check or build), logged in `~/Library/Logs/YouTubeOperationsManager/service.log`.
+  - The server is reachable on `127.0.0.1:3000` from every account on the Mac, all the time (it was reachable from every account before too, but only while the owner had it running). Each account still signs in with Google in its own browser, and what it sees follows that Google user (ADR 0004); signing in with the same Google accounts as the owner shows the owner's channels.
+  - Live writes: unchanged rule (RISK-09) — the 10-minute idle window that used to stop the server now ends the session and switches Live writes off.
+- **Bounded by:** the second account on this Mac is an administrator anyway (it can read every file); the grant is the same kind the Syncthing daemon on this Mac already has; the service is opt-in and removed with `uninstall-service.command`.
+- **Re-evaluate:** if the Mac gets an account that is not trusted with the channels, or if node upgrades keep breaking the service (then pin a node binary for the service).
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner chose start at power-on, 2026-10-08, msg 2154).

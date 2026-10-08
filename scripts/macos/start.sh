@@ -27,6 +27,43 @@ if [ ! -f ".env.local" ]; then
   exit 1
 fi
 
+# BL-158: with the system service installed, launchd owns the server -- it runs from power-on and is started again
+# whenever it stops. Then this script never starts a second instance and never builds under a running server: it
+# restarts the service when the checked-out commit changed (the service rebuilds before starting), waits, and opens
+# the browser.
+. "$SCRIPT_DIR/service-env.sh"
+if service_installed; then
+  echo "The application runs as a system service on this Mac."
+  if ! launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
+    echo "[ERROR] The service is installed but not running. Run install-service.command again,"
+    echo "        or uninstall-service.command to go back to starting the server with this launcher."
+    exit 1
+  fi
+  if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ] && ! "$SCRIPT_DIR/build-if-stale.sh" --check; then
+    echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first)..."
+    if ! "$SCRIPT_DIR/stop.sh"; then
+      echo "[ERROR] The running server could not be stopped safely - it keeps running on the old build."
+      exit 1
+    fi
+  fi
+  echo "Waiting for http://localhost:$PORT (a rebuild takes a few minutes)..."
+  ATTEMPT=0
+  while [ "$ATTEMPT" -lt 900 ]; do
+    if curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+      if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
+        open "http://localhost:$PORT"
+      fi
+      echo "The application is running -- you can close this window."
+      exit 0
+    fi
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep 1
+  done
+  echo "[ERROR] The server did not answer within 15 minutes. See ~/Library/Logs/YouTubeOperationsManager/service.log"
+  echo "        and $LOG."
+  exit 1
+fi
+
 # Already running? Stop the old instance first (same principle as scripts/windows/start.bat): a second
 # instance cannot bind the port, and the browser would otherwise open the OLD server -- possibly on
 # a stale build. stop.sh waits for any running export/import/migration before stopping, and refuses
@@ -40,51 +77,8 @@ if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   fi
 fi
 
-if [ ! -d "node_modules" ]; then
-  echo "Installing dependencies (first run only, this can take a few minutes)..."
-  npm install
-fi
-
-# Rebuild-staleness check. This script no longer touches the network, the remote, or the working
-# tree in any way (it previously ran `git pull --ff-only` itself before this check -- removed
-# 2026-09-21 at the project owner's explicit request: "за актуальностью гита я буду следить сам"
-# -- keeping git entirely up to the operator, not this script).
-#
-# In an actual git checkout of the repository, compare the currently checked-out commit against
-# a marker file recording which commit `.next` was actually built from, so a build the operator
-# did on an earlier commit (e.g. before their own `git pull`) is detected and rebuilt
-# automatically -- rather than relying on ".next merely exists" as the only signal, which cannot
-# tell a stale build apart from a current one. A standalone published/<version>/ release copy has
-# no `.git` and no commit to compare against -- `update.sh` remains its one, explicit,
-# human-triggered rebuild step (docs/RELEASE_LAYOUT.md §1, AGENTS.md §K.4).
-BUILD_MARKER=".next-build-commit.txt"
-CURRENT_REV=""
-if [ -d ".git" ] && command -v git >/dev/null 2>&1; then
-  CURRENT_REV="$(git rev-parse HEAD 2>/dev/null || echo "")"
-fi
-
-NEED_BUILD=""
-if [ ! -d ".next" ]; then
-  NEED_BUILD=1
-fi
-if [ -n "$CURRENT_REV" ]; then
-  BUILT_REV=""
-  if [ -f "$BUILD_MARKER" ]; then
-    BUILT_REV="$(cat "$BUILD_MARKER" 2>/dev/null || echo "")"
-  fi
-  if [ "$CURRENT_REV" != "$BUILT_REV" ]; then
-    NEED_BUILD=1
-  fi
-fi
-
-if [ -n "$NEED_BUILD" ]; then
-  echo "Installing dependencies and building the application (no build found, or the checked-out commit changed since the last build)..."
-  npm install
-  npm run build
-  if [ -n "$CURRENT_REV" ]; then
-    echo "$CURRENT_REV" > "$BUILD_MARKER"
-  fi
-fi
+# Install/build when needed -- the one shared rule (build-if-stale.sh; the system service uses it too).
+"$SCRIPT_DIR/build-if-stale.sh"
 
 echo "Starting YouTube Operations Manager on http://localhost:$PORT ..."
 : > "$LOG"

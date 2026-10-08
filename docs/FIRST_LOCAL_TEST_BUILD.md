@@ -126,12 +126,28 @@ double-clickable delegate for `stop.sh`/`update.sh` below.
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`), or
 double-click `stop.command`. You also don't strictly need to remember this: a production server
 (`start.sh`/`start.command`, i.e. `npm run start`) started via these scripts shuts itself down
-automatically after 60 minutes with no web request at all (owner instruction, 2026-09-25, widened
-from an original 5 minutes on 2026-09-29 -- `src/lib/idle-shutdown.ts`) -- scoped to this one
+automatically 10 minutes after the last open window (owner instruction, 2026-09-25; 5 → 60 minutes
+on 2026-09-29, 60 → 10 with the page heartbeat on 2026-10-03, BL-116 -- `src/lib/idle-shutdown.ts`) -- scoped to this one
 server process only; an MCP or CLI session stays
 unaffected either way, since neither depends on this server being up (each reads the local
 database directly). This auto-shutdown never arms during `next dev`, only in a real production
 process.
+
+**Optional: run it as a system service (BL-158, ADR 0032).** So that another account on the same Mac
+can use the app without you being logged in, the server can run as a launchd daemon under your
+account, started when the Mac is switched on (with FileVault: once anyone unlocks it):
+
+1. Give node Full Disk Access: System Settings → Privacy & Security → Full Disk Access → "+" →
+   Cmd+Shift+G → the real node binary (e.g. `/opt/homebrew/Cellar/node/<version>/bin/node`) → enable
+   it. Repeat after every node upgrade.
+2. Double-click `scripts/macos/install-service.command` and enter an administrator password.
+
+The other account then opens `http://localhost:3000` and signs in with Google in its own browser.
+Under the service the server is never stopped by idleness — 10 minutes without an open window only
+switch Live writes off. `start.command` still opens the app (and restarts the service when the
+checked-out commit changed), `stop.command` restarts it, `update.command` refuses.
+`uninstall-service.command` removes the service and returns to the behavior above. Logs:
+`~/Library/Logs/YouTubeOperationsManager/service.log` (the service) and `.launcher.log` (the server).
 
 **To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh` (or
 double-click `update.command`), then `start.sh`/`start.command`. A git checkout running directly

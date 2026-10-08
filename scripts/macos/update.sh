@@ -15,6 +15,15 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+# BL-158: under the system service a stopped server is started again at once, so building here would race it.
+. "$SCRIPT_DIR/service-env.sh"
+if service_installed; then
+  echo "[ERROR] The application runs as a system service on this Mac. In a git checkout it rebuilds by itself when"
+  echo "        the checked-out commit changes -- run stop.sh to restart it now. For a release folder without git:"
+  echo "        uninstall-service.command, then this script, then install-service.command again."
+  exit 1
+fi
+
 "$SCRIPT_DIR/stop.sh" || exit 1
 
 echo "Installing dependencies for this version..."

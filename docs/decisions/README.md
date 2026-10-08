@@ -81,3 +81,6 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0028](0028-media-sessions-across-devices.md) | RunPod sessions visible across devices (sync-gateway `media-sessions` family, per-device JSON reports checked against live pods), Stop from any device, shared limits per RunPod account id | Accepted |
 | [0027](0027-runpod-credentials-transfer.md) | RunPod credentials carried to another device as a password-encrypted file (scrypt + AES-256-GCM), checked with RunPod on import; Web UI only | Accepted |
 | [0029](0029-generation-plans.md) | Generation plans: progress derived from media jobs (no mirroring), factory-driven stage runs inside its own sessions, owner review in the app with a waveform player; Factory API 1.5.0 | Accepted |
+| [0030](0030-media-settings-sync.md) | Production → Setup settings shared between devices; every conflict decided at startup | Accepted |
+| [0031](0031-servers-media-and-cross-channel-work.md) | Servers and Media, other channels' work, plan move, reviewing from two computers | Accepted |
+| [0032](0032-macos-system-service.md) | macOS: the server as a launchd system service (as the owner's account, node as the job's executable for Full Disk Access) started at power-on; idleness ends the session (Live writes reset) instead of the process | Accepted |
