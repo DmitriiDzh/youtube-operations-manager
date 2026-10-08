@@ -142,7 +142,8 @@ account, started when the Mac is switched on (with FileVault: once anyone unlock
    it. Repeat after every node upgrade.
 2. Double-click `scripts/macos/install-service.command` and enter an administrator password.
 
-The other account then opens `http://localhost:3000` and signs in with Google in its own browser.
+The other account then opens `http://localhost:3000` and signs in with Google in its own browser. The service builds
+and runs only while this folder is on the `dev` or `main` branch.
 Under the service the server is never stopped by idleness — 10 minutes without an open window only
 switch Live writes off. `start.command` still opens the app (and restarts the service when the
 checked-out commit changed), `stop.command` restarts it, `update.command` refuses.

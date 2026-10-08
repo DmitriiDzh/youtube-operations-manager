@@ -29,32 +29,62 @@ NODE_REAL="$("$NODE" -p 'require("fs").realpathSync(process.execPath)')"
 JOB_PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin"
 LOG_DIR="$RUN_HOME/Library/Logs/YouTubeOperationsManager"
 SERVICE_LOG="$LOG_DIR/service.log"
+as_user() { sudo -u "$RUN_USER" env PATH="$JOB_PATH" HOME="$RUN_HOME" "$@"; }
+listening() { [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; }
+loaded() { launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; }
 
 echo "=== YouTube Operations Manager - install the system service ==="
-echo "  account:    $RUN_USER"
-echo "  program:    $ROOT"
-echo "  node:       $NODE_REAL"
+echo "  account:     $RUN_USER"
+echo "  program:     $ROOT"
+echo "  node:        $NODE_REAL"
 echo "  service log: $SERVICE_LOG"
 
-# Reinstall: stop the old service first.
-if launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
-  echo "Removing the previously installed service..."
-  launchctl bootout "system/$SERVICE_LABEL" 2>/dev/null || true
+# Another account's service is never replaced silently (its data lives in that account).
+if service_installed; then
+  OLD_USER="$(/usr/libexec/PlistBuddy -c 'Print :UserName' "$SERVICE_PLIST" 2>/dev/null || true)"
+  if [ -n "$OLD_USER" ] && [ "$OLD_USER" != "$RUN_USER" ]; then
+    echo "[ERROR] The service is installed for the account '$OLD_USER'. Run uninstall-service.command first."
+    exit 1
+  fi
 fi
-rm -f "$SERVICE_PLIST"
 
-# A server started by start.sh is stopped the safe way (it waits for a running export/import/migration).
-if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
+# Nothing running may be cut short -- checked before anything is torn down (the same check stop.sh makes).
+if listening; then
+  echo "Checking that no export, import or database migration is running..."
+  if ! (cd "$ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
+    echo "[ERROR] Nothing was changed: a running operation did not finish (or could not be checked)."
+    exit 1
+  fi
+fi
+
+# Stop what runs now: the previously installed service, or a server started by start.sh.
+if loaded; then
+  echo "Stopping the previously installed service..."
+  launchctl bootout "system/$SERVICE_LABEL" 2>/dev/null || true
+  ATTEMPT=0
+  while loaded && [ "$ATTEMPT" -lt 330 ]; do
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep 1
+  done
+  if loaded; then
+    echo "[ERROR] The previous service did not stop within 5 minutes; nothing was changed. Try again later."
+    exit 1
+  fi
+elif listening; then
   echo "Stopping the server that is running now..."
-  if ! sudo -u "$RUN_USER" env PATH="$JOB_PATH" HOME="$RUN_HOME" "$SCRIPT_DIR/stop.sh"; then
+  if ! as_user "$SCRIPT_DIR/stop.sh"; then
     echo "[ERROR] The running server could not be stopped safely -- nothing was installed."
     exit 1
   fi
 fi
 
-sudo -u "$RUN_USER" mkdir -p "$LOG_DIR"
+as_user mkdir -p "$LOG_DIR"
 
+# ExitTimeOut: launchd waits this long after SIGTERM before SIGKILL (default 20 s), so a stop drains like stop.sh's.
+# WorkingDirectory is the home folder, not the repository: launchd enters it before node runs, so it must not depend
+# on node's Full Disk Access (the runner uses absolute paths).
 xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+rm -f "$SERVICE_PLIST"
 cat > "$SERVICE_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -68,7 +98,7 @@ cat > "$SERVICE_PLIST" <<EOF
   </array>
   <key>UserName</key><string>$(xml "$RUN_USER")</string>
   <key>GroupName</key><string>staff</string>
-  <key>WorkingDirectory</key><string>$(xml "$ROOT")</string>
+  <key>WorkingDirectory</key><string>$(xml "$RUN_HOME")</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$(xml "$JOB_PATH")</string>
@@ -78,6 +108,7 @@ cat > "$SERVICE_PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
+  <key>ExitTimeOut</key><integer>300</integer>
   <key>StandardOutPath</key><string>$(xml "$SERVICE_LOG")</string>
   <key>StandardErrorPath</key><string>$(xml "$SERVICE_LOG")</string>
 </dict>
@@ -87,7 +118,10 @@ chown root:wheel "$SERVICE_PLIST"
 chmod 644 "$SERVICE_PLIST"
 plutil -lint "$SERVICE_PLIST" >/dev/null
 
-launchctl bootstrap system "$SERVICE_PLIST"
+if ! launchctl bootstrap system "$SERVICE_PLIST" 2>/dev/null; then
+  sleep 3 # launchd may still be letting the previous instance go
+  launchctl bootstrap system "$SERVICE_PLIST"
+fi
 echo "Service installed. Waiting for the server (the first start can rebuild the application: a few minutes)..."
 
 ATTEMPT=0
@@ -97,6 +131,7 @@ while [ "$ATTEMPT" -lt 900 ]; do
     echo "Done. The server runs as a system service and starts when the Mac is switched on."
     echo "  - Any account on this Mac opens it at http://localhost:$PORT"
     echo "  - It is never stopped by idleness; 10 minutes without an open window only switch Live writes off."
+    echo "  - It builds and runs only the dev or main branch of $ROOT."
     echo "  - To restart it (e.g. to load a new commit): stop.sh. To remove the service: uninstall-service.command."
     exit 0
   fi
@@ -110,5 +145,5 @@ done
 echo "[WARN] The service is installed but the server did not answer within 15 minutes. Last lines of $SERVICE_LOG:"
 tail -n 20 "$SERVICE_LOG" 2>/dev/null | sed 's/^/    /'
 echo "If they say 'Operation not permitted' (EPERM): give Full Disk Access to $NODE_REAL"
-echo "(System Settings > Privacy & Security > Full Disk Access), then run install-service.command again."
+echo "(System Settings > Privacy & Security > Full Disk Access). The service retries by itself."
 exit 1

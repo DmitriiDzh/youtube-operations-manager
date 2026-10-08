@@ -29,37 +29,50 @@ fi
 
 # BL-158: with the system service installed, launchd owns the server -- it runs from power-on and is started again
 # whenever it stops. Then this script never starts a second instance and never builds under a running server: it
-# restarts the service when the checked-out commit changed (the service rebuilds before starting), waits, and opens
-# the browser.
+# waits for the server, restarts the service once if the checked-out commit changed (the service rebuilds before
+# starting), and opens the browser.
 . "$SCRIPT_DIR/service-env.sh"
 if service_installed; then
   echo "The application runs as a system service on this Mac."
   if ! launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
-    echo "[ERROR] The service is installed but not running. Run install-service.command again,"
+    echo "[ERROR] The service is installed but not loaded. Run install-service.command again,"
     echo "        or uninstall-service.command to go back to starting the server with this launcher."
     exit 1
   fi
-  if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ] && ! "$SCRIPT_DIR/build-if-stale.sh" --check; then
-    echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first)..."
-    if ! "$SCRIPT_DIR/stop.sh"; then
-      echo "[ERROR] The running server could not be stopped safely - it keeps running on the old build."
-      exit 1
-    fi
-  fi
-  echo "Waiting for http://localhost:$PORT (a rebuild takes a few minutes)..."
+  SERVICE_LOG="$HOME/Library/Logs/YouTubeOperationsManager/service.log"
+  LOG_START=0
+  if [ -f "$SERVICE_LOG" ]; then LOG_START=$(wc -c < "$SERVICE_LOG"); fi
+  RESTARTED=""
+  echo "Waiting for http://localhost:$PORT ..."
   ATTEMPT=0
   while [ "$ATTEMPT" -lt 900 ]; do
     if curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+      # Checked once the server answers (also after a build that was running when this started): restart at most once.
+      if [ -z "$RESTARTED" ] && ! "$SCRIPT_DIR/build-if-stale.sh" --check; then
+        echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first, a few minutes)..."
+        if ! "$SCRIPT_DIR/stop.sh"; then
+          echo "[ERROR] The running server could not be stopped safely - it keeps running on the old build."
+          exit 1
+        fi
+        RESTARTED=1
+        continue
+      fi
       if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
         open "http://localhost:$PORT"
       fi
       echo "The application is running -- you can close this window."
       exit 0
     fi
+    # The runner logs why it cannot start (wrong branch, failed build, no disk access): show that instead of waiting.
+    if tail -c +$((LOG_START + 1)) "$SERVICE_LOG" 2>/dev/null | grep -qE "\[ERROR\]|EPERM"; then
+      echo "[ERROR] The service cannot start the server ($SERVICE_LOG):"
+      tail -c +$((LOG_START + 1)) "$SERVICE_LOG" | grep -E "\[ERROR\]|EPERM" | tail -n 3 | sed 's/^/        /'
+      exit 1
+    fi
     ATTEMPT=$((ATTEMPT + 1))
     sleep 1
   done
-  echo "[ERROR] The server did not answer within 15 minutes. See ~/Library/Logs/YouTubeOperationsManager/service.log"
+  echo "[ERROR] The server did not answer within 15 minutes. See $SERVICE_LOG"
   echo "        and $LOG."
   exit 1
 fi

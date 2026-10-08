@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS,
+  createIdleHandler,
   decideIdleShutdown,
   resolveIdleAction,
   resolveIdleTimeoutMs,
@@ -163,7 +164,18 @@ test("startIdleShutdownWatcher: onIdle runs once even when the exit sequence out
 // ---- BL-158: the macOS system service (owner, Telegram 2026-10-08, msgs 2150-2154) ----
 // Requirement: started at Mac power-on for the second Mac account too, the server is never stopped by idleness.
 // Gate B rule (docs/TECHNICAL_DEBT.md RISK-09): Live writes live only as long as a session -- so in service mode the
-// same idle window ENDS THE SESSION (onIdle resets Live writes) instead of exiting, once per idle period.
+// same idle window ENDS THE SESSION (Live writes reset) instead of exiting, once per idle period.
+
+// Waits for a condition instead of a fixed sleep, so a loaded machine cannot make these tests flaky (BL-156).
+async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return condition();
+}
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 test("resolveIdleAction: exit by default; end-session only for YTOM_SERVICE_MODE=1 (anything else keeps today's exit)", () => {
   assert.equal(resolveIdleAction({}), "exit");
@@ -175,13 +187,18 @@ test("service mode: onIdle once per idle period -- not again while nothing new h
   recordActivity(new Date(Date.now() - 500));
   let calls = 0;
   const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, onIdle: () => { calls += 1; } });
-  await new Promise((r) => setTimeout(r, 120)); // many checks after the first expiry
-  assert.equal(calls, 1, "one session end for one idle period");
+  try {
+    assert.ok(await waitFor(() => calls >= 1), "the first idle period ends the session");
+    await pause(100); // many more checks with no new activity
+    assert.equal(calls, 1, "one session end for one idle period");
 
-  recordActivity(new Date()); // somebody opened the app again: a new session
-  await new Promise((r) => setTimeout(r, 120)); // ...which goes idle too
-  stop();
-  assert.equal(calls, 2, "the new session ends as well -- the watcher never stops by itself in service mode");
+    recordActivity(new Date()); // somebody opened the app again: a new session
+    assert.ok(await waitFor(() => calls >= 2), "the new session ends as well -- the watcher never stops by itself in service mode");
+    await pause(100);
+    assert.equal(calls, 2);
+  } finally {
+    stop();
+  }
 });
 
 test("service mode: running work defers the session end exactly like it defers the exit", async () => {
@@ -189,21 +206,99 @@ test("service mode: running work defers the session end exactly like it defers t
   let busy = true;
   let calls = 0;
   const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, isBusy: () => busy, onIdle: () => { calls += 1; } });
-  await new Promise((r) => setTimeout(r, 80));
-  assert.equal(calls, 0, "no session end while work is running");
-  busy = false;
-  await new Promise((r) => setTimeout(r, 80));
-  stop();
-  assert.equal(calls, 1, "the session ends once the work is done");
+  try {
+    await pause(100);
+    assert.equal(calls, 0, "no session end while work is running");
+    busy = false;
+    assert.ok(await waitFor(() => calls >= 1), "the session ends once the work is done");
+    await pause(100);
+    assert.equal(calls, 1);
+  } finally {
+    stop();
+  }
+});
+
+test("service mode: work still running at the deferral cap ends the session once, then nothing until new activity", async () => {
+  recordActivity(new Date(Date.now() - 500)); // the window (20 ms) and the cap (50 ms after it) are both long past
+  let calls = 0;
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, maxDeferralMs: 50, checkIntervalMs: 10, isBusy: () => true, onIdle: () => { calls += 1; } });
+  try {
+    assert.ok(await waitFor(() => calls >= 1), "the cap applies in service mode too");
+    await pause(100);
+    assert.equal(calls, 1, "still busy, but the same idle period is not ended twice");
+  } finally {
+    stop();
+  }
 });
 
 test("default mode is unchanged by BL-158: one onIdle, even when new activity arrives afterwards", async () => {
   recordActivity(new Date(Date.now() - 500));
   let calls = 0;
   const stop = startIdleShutdownWatcher({ timeoutMs: 20, checkIntervalMs: 10, onIdle: () => { calls += 1; } });
-  await new Promise((r) => setTimeout(r, 60));
-  recordActivity(new Date());
-  await new Promise((r) => setTimeout(r, 80));
-  stop();
-  assert.equal(calls, 1, "the exit sequence starts once; the process is going away");
+  try {
+    assert.ok(await waitFor(() => calls >= 1));
+    recordActivity(new Date());
+    await pause(100);
+    assert.equal(calls, 1, "the exit sequence starts once; the process is going away");
+  } finally {
+    stop();
+  }
+});
+
+test("activity that arrives while the busy check runs is not overruled by the stale timestamp", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let returnedAt = 0;
+  const endedAt: number[] = [];
+  const stop = startIdleShutdownWatcher({
+    action: "end-session",
+    timeoutMs: 20,
+    checkIntervalMs: 10,
+    isBusy: async () => {
+      if (returnedAt === 0) {
+        returnedAt = Date.now(); // the user comes back during the first check
+        recordActivity(new Date(returnedAt));
+      }
+      return false;
+    },
+    onIdle: () => { endedAt.push(Date.now()); },
+  });
+  try {
+    assert.ok(await waitFor(() => endedAt.length >= 1));
+    assert.ok(endedAt[0] - returnedAt >= 20, "the returning user's session ends only after its own idle window, not on the old timestamp");
+  } finally {
+    stop();
+  }
+});
+
+// The handler itself (what instrumentation.ts runs on an expired window).
+function recordingSteps(failStopPods = false) {
+  const calls: string[] = [];
+  return {
+    calls,
+    steps: {
+      resetLiveWrites: async () => { calls.push("resetLiveWrites"); },
+      stopPods: async () => { calls.push("stopPods"); if (failStopPods) throw new Error("RunPod unreachable"); },
+      flush: async () => { calls.push("flush"); },
+      exit: () => { calls.push("exit"); },
+      onSessionEnded: () => { calls.push("sessionEnded"); },
+    },
+  };
+}
+
+test("createIdleHandler end-session: switches Live writes off and reports it -- never stops pods, flushes or exits", async () => {
+  const { calls, steps } = recordingSteps();
+  await createIdleHandler("end-session", steps)();
+  assert.deepEqual(calls, ["resetLiveWrites", "sessionEnded"]);
+});
+
+test("createIdleHandler exit: Live writes off, pods stopped, changes published, then exit -- in that order", async () => {
+  const { calls, steps } = recordingSteps();
+  await createIdleHandler("exit", steps)();
+  assert.deepEqual(calls, ["resetLiveWrites", "stopPods", "flush", "exit"]);
+});
+
+test("createIdleHandler exit: the process still exits when stopping the pods fails", async () => {
+  const { calls, steps } = recordingSteps(true);
+  await createIdleHandler("exit", steps)().catch(() => undefined);
+  assert.deepEqual(calls, ["resetLiveWrites", "stopPods", "exit"]);
 });

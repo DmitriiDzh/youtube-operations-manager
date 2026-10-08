@@ -1,7 +1,7 @@
 #!/bin/sh
 # YouTube Operations Manager - macOS: install dependencies and build the application when needed.
 # The ONE implementation of the launcher's build-staleness rule (AGENTS.md §D), used by start.sh and by the system
-# service's runner (service-run.cjs, BL-158). Works on the repository root wherever it is called from.
+# service's runner (service-run.mjs, BL-158). Works on the repository root wherever it is called from.
 #   build-if-stale.sh          install/build when needed; exit 0 = a current build is in place
 #   build-if-stale.sh --check  change nothing; exit 0 = the build is current, 3 = a build is needed
 set -e

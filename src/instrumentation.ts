@@ -1,4 +1,4 @@
-import { resolveIdleAction, startIdleShutdownWatcher } from "@/lib/idle-shutdown";
+import { createIdleHandler, resolveIdleAction, startIdleShutdownWatcher } from "@/lib/idle-shutdown";
 import { createDefaultLogger } from "@/lib/shared-logger";
 
 const DEVICE_SYNC_BOOT_DELAY_MS = 5_000;
@@ -301,6 +301,18 @@ async function startServerSession() {
   // browser session instead: Live writes are reset (RISK-09: they live only as long as a session), the process stays.
   // Pods keep running under the media watcher's own caps; the sync loop keeps publishing, so no final export is needed.
   const idleAction = resolveIdleAction();
+  const onIdle = createIdleHandler(idleAction, {
+    resetLiveWrites: resetQuietly,
+    // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
+    stopPods: () => media.stopForShutdown(),
+    flush: async () => {
+      await (ticking ?? undefined);
+      await tickQuietly({ force: true, exportOnly: true });
+    },
+    exit: () => process.exit(0),
+    onSessionEnded: () =>
+      createDefaultLogger().info({ event: "idle_shutdown.session_ended", context: { liveWritesReset: true } }),
+  });
   startIdleShutdownWatcher({
     action: idleAction,
     isBusy: async () => {
@@ -313,18 +325,6 @@ async function startServerSession() {
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },
-    onIdle:
-      idleAction === "end-session"
-        ? () =>
-            void resetQuietly().then(() =>
-              createDefaultLogger().info({ event: "idle_shutdown.session_ended", context: { liveWritesReset: true } })
-            )
-        : () =>
-            void resetQuietly()
-              // A running generation pod is terminated BEFORE the process goes away (AC-P14-09; bounded inside).
-              .then(() => media.stopForShutdown())
-              .then(() => ticking ?? undefined)
-              .then(() => tickQuietly({ force: true, exportOnly: true }))
-              .finally(() => process.exit(0)),
+    onIdle: () => void onIdle(),
   });
 }

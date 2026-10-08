@@ -33,32 +33,43 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
 2. **node is the job's executable.** The daemon runs `node scripts/macos/service-run.mjs`, so the Full Disk Access the
    owner gives node covers the job and everything it starts (the build script, npm, the server). A shell as the
    executable would make that grant useless.
-3. **One build rule.** `service-run.mjs` builds through `build-if-stale.sh`, the rule `start.sh` uses too (extracted from
-   it), then runs `npm run start` in the foreground. When the server exits, the run exits and launchd starts the next one,
-   which rebuilds first when the checked-out commit changed. So `stop.sh` is the restart.
+3. **One build rule, accepted branches only.** `service-run.mjs` builds through `build-if-stale.sh`, the rule `start.sh`
+   uses too (extracted from it), then runs `npm run start` in the foreground. When the server exits, the run exits and
+   launchd starts the next one, which rebuilds first when the checked-out commit changed. So `stop.sh` is the restart.
+   Nobody watches these builds, and a build migrates the real database, so the runner builds and runs only when the
+   repository folder is on `dev` or `main` (a folder without git builds as before); on any other branch it logs why and
+   retries every 5 minutes. A start, check or build that fails also waits 5 minutes before the next run.
 4. **Idleness ends the session, not the process.** `YTOM_SERVICE_MODE=1` (set only by the daemon's runner) makes the
    idle watcher call its handler once per idle period and keep watching. The handler resets Live writes. This keeps the
    Gate B rule that Live writes live only as long as a session (RISK-09): the same 10 minutes without an open window or
    an agent request that used to stop the server now end the session. Running work defers it exactly as before.
    Generation pods keep running under the media watcher's own caps (they no longer need stopping because the process
-   stays).
+   stays). The handler is `createIdleHandler` in `idle-shutdown.ts`, tested per action.
 5. **The launcher scripts know the service.** With the service installed, `start.sh` never starts a second server and
    never builds under a running one: it restarts the service when the build is stale, waits, and opens the browser.
    `stop.sh` reports the old process gone (the port does not stay free). `update.sh` refuses.
 6. **Install and remove are explicit, one admin password each.** `install-service.command` / `uninstall-service.command`
-   (double-click). Uninstalling waits for a running export/import/migration, stops the server and removes the daemon;
-   `start.command` then works as before.
+   (double-click). Both first wait for a running export/import/migration (as `stop.sh` does) and change nothing if it does
+   not finish; a reinstall waits until the old instance is gone before loading the new one, and never replaces a service
+   installed for another account. launchd gives the server 5 minutes after SIGTERM before killing it (`ExitTimeOut`), so
+   a stop drains like `stop.sh`'s. The job's working directory is the home folder, not the repository, so launchd can
+   enter it without node's Full Disk Access. After uninstalling, `start.command` works as before.
 
 ## Consequences
 
 - The server runs all the time on the Mac. The second account works without the owner logged in.
-- Full Disk Access is granted to node's binary. A Homebrew node upgrade changes the binary, so the grant must be given
-  again; until then the service cannot read the repository (logged in `~/Library/Logs/YouTubeOperationsManager/service.log`).
-  RISK-115.
+- Full Disk Access is granted to node's binary. The daemon runs node through Homebrew's `/opt/homebrew/bin/node` link,
+  so after a node upgrade it runs the new binary, which has no grant yet: node then cannot load the runner ("EPERM ...
+  service-run.mjs" in `~/Library/Logs/YouTubeOperationsManager/service.log`). Granting the new binary is enough; no
+  reinstall. RISK-115.
 - Live writes once enabled stay on while anyone keeps a window open or an agent keeps working, and switch off 10 minutes
   after the last activity, as before.
 - External drives mount only at the first login. Until someone logs in after a restart, sync reports the folder as
   unavailable and retries; the app itself runs.
+- The second account working on the Mac while the owner works on Windows is the same as two computers working at once:
+  the existing rules for that apply (sync families, review claims and confirmation, ADR 0029/0031).
+- A window left open in a background account (fast user switching) keeps sending the heartbeat, so the session does not
+  end and Live writes stay as they are until that window closes — the same as a window the owner leaves open today.
 - Windows is unchanged.
 
 ## Alternatives rejected

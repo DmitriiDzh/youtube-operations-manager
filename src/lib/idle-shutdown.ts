@@ -70,6 +70,31 @@ export function resolveIdleAction(env: Record<string, string | undefined> = proc
   return env.YTOM_SERVICE_MODE === "1" ? "end-session" : "exit";
 }
 
+/**
+ * The handler an expired idle window runs (`src/instrumentation.ts`), built here so each action's behaviour is tested.
+ * `end-session` (BL-158): reset Live writes, then report -- it never stops pods, flushes or exits; the process goes on.
+ * `exit` (BL-116): reset Live writes, stop a running generation pod (AC-P14-09), publish unexported changes, then exit --
+ * in that order, and the exit happens even when an earlier step fails.
+ */
+export function createIdleHandler(
+  action: IdleAction,
+  steps: {
+    resetLiveWrites: () => Promise<void>;
+    stopPods: () => Promise<unknown>;
+    flush: () => Promise<unknown>;
+    exit: () => void;
+    onSessionEnded: () => void;
+  }
+): () => Promise<unknown> {
+  if (action === "end-session") return () => steps.resetLiveWrites().then(() => steps.onSessionEnded());
+  return () =>
+    steps
+      .resetLiveWrites()
+      .then(() => steps.stopPods())
+      .then(() => steps.flush())
+      .finally(() => steps.exit());
+}
+
 export type IdleDecision = "stay" | "defer" | "exit";
 
 /**
@@ -129,6 +154,8 @@ export function startIdleShutdownWatcher(
             busy = true; // cannot tell: do not cut work short
           }
         }
+        // Activity that arrived while isBusy was being checked starts a new window: never act on the stale stamp.
+        if (getLastActivityAt() !== lastActivityAt) return;
         const decision = decideIdleShutdown({ lastActivityAt, now: new Date(), timeoutMs, busy, maxDeferralMs: opts.maxDeferralMs });
         if (decision === "exit") {
           if (action === "end-session") endedSessionActivityAt = lastActivityAt;
