@@ -439,14 +439,15 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const submit = useCallback(
     async (result: "accepted" | "rejected", replace = false) => {
       if (!entry || busy) return;
-      // BL-157 (AC-TC-04): a track that already has a verdict asks first.
-      if (!replace && entry.verdict) {
-        const sentHere = entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ?? false;
+      // BL-157 (AC-TC-04): a track that already has a verdict asks first. A verdict sent from this computer is asked about by
+      // the server (its 409 names this computer, which the screen cannot name itself -- review round 6).
+      const sentHere = entry.verdict?.note?.startsWith(SENT_NOTE_PREFIX) ?? false;
+      if (!replace && entry.verdict && !sentHere) {
         setConfirmReplace({
           result,
           itemKey: entry.itemKey,
           attemptRef: entry.attemptRef,
-          existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? (sentHere ? null : (historyEntryOfVerdict(entry.history, entry.verdict)?.device ?? null)), at: entry.verdict.at },
+          existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? historyEntryOfVerdict(entry.history, entry.verdict)?.device ?? null, at: entry.verdict.at },
         });
         return;
       }
@@ -491,8 +492,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
   // moving on moves the claim, leaving the screen gives them up. Claims are advisory: a failure is ignored.
-  // A track another computer is on is not claimed from here as well (review round 5) -- opening it by hand is the owner's call.
-  const claimKey = entry && entry.verdict === null && claimOf(entry, claims, nowMs) === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
+  // Always claimed while open and waiting, whatever the other computer claims (review round 6: dropping a claim already held
+  // when the other computer's claim arrives let both walk onto the same track). Claim ids are per device, so they never
+  // collide; the "next wave" offer already avoids leading onto another computer's tracks (`nextOpenWave`).
+  const claimKey = entry && entry.verdict === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
   useEffect(() => {
     if (!claimKey) return;
     const [itemKey, attemptRef] = claimKey.split("\u0000");
