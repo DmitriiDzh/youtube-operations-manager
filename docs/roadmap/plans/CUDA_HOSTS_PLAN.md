@@ -28,12 +28,13 @@
 - **AC-CU-01: minimum CUDA setting.**
   - Production → Setup gets `minCudaVersion` ("12.8" by default, matching the template image `…-cuda12.8`).
   - It is shared between computers (sync family `media-settings`).
-  - An empty value means no filter, which is today's behaviour.
+  - An empty value means no create-pod filter and no host-version check (today's behaviour for placement); the CUDA-device
+    check of AC-CU-02 always applies (review round 2).
   - Every pod creation then sends `gpu.allowedCudaVersions` = every known version ≥ the minimum.
   - A host without a matching driver is treated like no capacity: the fallback list, then waiting for capacity, as today.
 - **AC-CU-02: host check before `running`.**
-  - After the pod is RUNNING, the app reads the host's `cudaVersion` (GraphQL). When `/system_stats` answers, it also requires
-    a `cuda` device with VRAM > 0.
+  - After the pod is RUNNING, the app reads the host's `cudaVersion` (GraphQL; only when a minimum is set). When
+    `/system_stats` answers, it also requires a `cuda` device with VRAM > 0 -- always, with or without a minimum.
   - If the host's CUDA is below the minimum, or ComfyUI sees no CUDA device, the pod is terminated. The capacity log gets
     `result: error`, detail "CUDA driver too old: host 12.4 < 12.8" (or "no CUDA device"). The start then tries a new
     placement: the candidate list again, at most 2 extra placements per session.

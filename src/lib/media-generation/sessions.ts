@@ -508,7 +508,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: reason, stoppedAt: latest.terminateSentAt }, orphanFacts ?? {});
       return "reconciled";
     }
-    const gone = alreadyGone ? lastKnownAlive(effective, now) : now;
+    // BL-155 review 2: a row a re-placement left `approved` (window open since the first pod, no live pod recorded) with no
+    // orphan found has billed nothing since its last pod died: closed at that pod's DELETE (kept through the re-placement),
+    // else its last sighting -- never at `now`, which may be hours later (the machine was off, RunPod was down).
+    const windowClosedAt = !podId && open.startedAt ? (open.terminateSentAt ?? lastKnownAlive(open, now)) : null;
+    const gone = windowClosedAt ?? (alreadyGone ? lastKnownAlive(effective, now) : now);
     await finish(open, [...MEDIA_SESSION_NON_TERMINAL_STATUSES], outcome, { stopReason: reason, error: alreadyGone ? `${reason}; ${goneNote(effective, gone)}` : reason, stoppedAt: gone }, orphanFacts ?? {});
     return "reconciled";
   }
@@ -881,6 +885,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           startedAt,
           // BL-155 review: each placement restarts the abandoned-start clock at its own pod (startAttemptSince).
           ...(placement > 0 ? { approvedAt: placedAt } : {}),
+          // The replaced pod's DELETE time is kept on the `approved` row (a crash then closes the window there); the new pod
+          // has none yet.
+          terminateSentAt: null,
           gpuTypeId: used.gpuTypeId,
           costPerHr: windowPrice,
           capacityNextAttemptAt: null,
@@ -1047,7 +1054,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // Back to `approved` with no pod BEFORE the next createPod: a crash from here on is reconciled by the name search like
       // any start (a `starting` row would point at the dead pod and orphan the new one). `approvedAt` restarts the
       // abandoned-start clock for this placement; no `error` (that would mark the start abandoned while this request works).
-      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, approvedAt: deps.clock.now(), terminateSentAt: null, error: null });
+      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, approvedAt: deps.clock.now(), error: null });
       // An operator Stop (or the watcher) took the row meanwhile: its outcome stands, nothing new is placed.
       if (!back) return toPublicSession(await requireRow(sessionId), deps.clock.now());
       current = back;

@@ -549,7 +549,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_media_get_job",
     {
-      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools, including the live `progress` from ComfyUI while a job generates (BL-144), plus errorCode (1.7.0): 'media_gpu_host_incompatible' when the job's error says the GPU host's CUDA driver is too old (start a new session; the pod's host could not run the image), else null. Read-only.",
+      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools, including the live `progress` from ComfyUI while a job generates (BL-144), plus errorCode (1.7.0): 'media_gpu_host_incompatible' when the job's error says the GPU host's CUDA driver is too old ('CUDA driver version is insufficient', 'NVIDIA driver on your system is too old'; start a new session, the pod's host could not run the image), else null -- also for 'no kernel image is available', a GPU-architecture mismatch another host of that GPU type repeats. Read-only.",
       inputSchema: getJobInput,
     },
     async (args) => successResult(await deps.media.getJob(parseInput(getJobInput, args)))

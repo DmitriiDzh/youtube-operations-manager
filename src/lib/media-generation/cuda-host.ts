@@ -49,8 +49,12 @@ export function comfyCudaDevice(stats: Record<string, unknown>): "ok" | "none" |
   return usable ? "ok" : "none";
 }
 
-/** What the CUDA runtime / PyTorch print when the host driver is older than the image's CUDA, or the GPU has no kernel for it. */
-const HOST_INCOMPATIBLE = [/CUDA driver version is insufficient/i, /NVIDIA driver on your system is too old/i, /no kernel image is available for execution on the device/i];
+/**
+ * What the CUDA runtime / PyTorch print when the host driver is older than the image's CUDA. Not "no kernel image is available
+ * for execution on the device": that is a GPU architecture the image was not built for -- another host of the same GPU type
+ * fails the same way, so it must not invite a new session on it (review round 2).
+ */
+const HOST_INCOMPATIBLE = [/CUDA driver version is insufficient/i, /NVIDIA driver on your system is too old/i];
 
 /** AC-CU-04: a job's error code, derived from its error text (nothing stored); null for every other failure. */
 export function jobErrorCode(error: string | null): Extract<DomainErrorCode, "media_gpu_host_incompatible"> | null {

@@ -2193,3 +2193,41 @@ test("BL-155 review: a rejected RunPod key during the host read is not 'unknown'
   assert.equal(runpod.pods.size, 0);
   assert.equal(runpod.createInputs.length, 1);
 });
+
+// -- BL-155 independent review round 2 -------------------------------------------------------------------------------------
+// Expected: a row left `approved` by a re-placement (window open since the first pod, no live pod recorded) that is reconciled
+// with no orphan found bills to the last confirmed DELETE of its earlier pod (else its last sighting) -- never to the moment
+// of the reconcile, which may be hours later (the machine was off, RunPod was down).
+test("BL-155 review 2: a re-placement row reconciled with no pod found is billed to the last terminate (or sighting), not to now", async () => {
+  for (const [terminateSentAt, expectedStop, expectedSeconds] of [
+    [new Date("2026-10-05T09:10:30Z"), "2026-10-05T09:10:30.000Z", 630],
+    [null, "2026-10-05T09:10:00.000Z", 600],
+  ] as const) {
+    const f = fixture();
+    const requested = await f.services.requestSession(operatorRequest);
+    f.mem.rows.set(requested.sessionId, {
+      ...f.mem.rows.get(requested.sessionId)!,
+      status: "approved",
+      approvedAt: new Date("2026-10-05T09:10:30Z"),
+      startedAt: new Date("2026-10-05T09:00:00Z"),
+      lastSeenAliveAt: new Date("2026-10-05T09:10:00Z"),
+      terminateSentAt,
+      costPerHr: 2.0,
+      podId: null,
+    });
+    f.advance(5 * 60 * 60_000); // the machine was off for five hours
+    await f.services.bootSweep();
+    const row = f.mem.rows.get(requested.sessionId)!;
+    assert.equal(row.status, "interrupted");
+    assert.equal(row.stoppedAt?.toISOString(), expectedStop);
+    assert.equal(row.secondsUsed, expectedSeconds);
+  }
+});
+
+test("BL-155 review 2: the re-placement's next pod starts with no stale terminateSentAt from the pod it replaced", async () => {
+  const runpod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.podId, "pod2");
+  assert.equal(f.mem.rows.get(running.sessionId)?.terminateSentAt, null);
+});

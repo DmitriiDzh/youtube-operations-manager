@@ -50,10 +50,11 @@ test("AC-CU-02: ComfyUI's /system_stats must list a cuda device with VRAM; an un
 });
 
 test("AC-CU-04: a job error saying the CUDA driver is too old carries media_gpu_host_incompatible; any other error none", () => {
-  // The three texts the CUDA runtime / PyTorch print for a driver older than the image's CUDA.
+  // The two texts the CUDA runtime / PyTorch print for a driver older than the image's CUDA.
   assert.equal(jobErrorCode("ComfyUI reported an error: RuntimeError: CUDA error: CUDA driver version is insufficient for CUDA runtime version"), "media_gpu_host_incompatible");
   assert.equal(jobErrorCode("The NVIDIA driver on your system is too old (found version 12040). Please update your GPU driver"), "media_gpu_host_incompatible");
-  assert.equal(jobErrorCode("CUDA error: no kernel image is available for execution on the device"), "media_gpu_host_incompatible");
+  // A GPU architecture the image has no kernel for is not a driver age problem: another host of that GPU type fails alike.
+  assert.equal(jobErrorCode("CUDA error: no kernel image is available for execution on the device"), null);
   assert.equal(jobErrorCode("cuda DRIVER VERSION IS INSUFFICIENT"), "media_gpu_host_incompatible", "case does not matter");
   assert.equal(jobErrorCode("CUDA out of memory. Tried to allocate 2.00 GiB"), null);
   assert.equal(jobErrorCode("Prompt outputs failed validation"), null);
