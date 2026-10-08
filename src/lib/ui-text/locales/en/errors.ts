@@ -91,6 +91,7 @@ export const errors = {
   "errors.media_daily_cap_reached": "Today's spend cap does not cover this session.",
   "errors.media_session_start_failed": "The session could not be started.",
   "errors.media_no_capacity": "RunPod has no free GPU of the chosen kind right now.",
+  "errors.media_gpu_host_incompatible": "The GPU host's CUDA driver is too old for the template, or it has no usable CUDA GPU.",
   "errors.media_template_not_found": "The workflow template was not found.",
   "errors.media_template_invalid": "The workflow template is not valid.",
   "errors.media_job_not_found": "The job was not found.",

@@ -412,3 +412,4 @@ export type {
   MediaWorkflowTemplate,
 } from "./contracts";
 export { DEFAULT_MEDIA_SETTINGS, NETWORK_VOLUME_USD_PER_GB_MONTH } from "./contracts";
+export { jobErrorCode, withJobErrorCode } from "./cuda-host";

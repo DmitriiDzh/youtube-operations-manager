@@ -27,6 +27,7 @@ export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" 
   factoryMaxUsdPerDay: { labelKey: "setupField.factoryMaxUsdPerDay", unit: "usd" },
   factoryMaxUsdPerMonth: { labelKey: "setupField.factoryMaxUsdPerMonth", unit: "usd" },
   ownerReleaseWhenDone: { labelKey: "setupField.ownerReleaseWhenDone" },
+  minCudaVersion: { labelKey: "setupField.minCudaVersion" },
 };
 
 export function settingLabel(t: Translate, field: string): string {

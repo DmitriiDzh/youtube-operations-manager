@@ -21,9 +21,13 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * lands under the file's base name by default (before: its repo path); files already on the volume stay where they are;
  * 1.4.0 (DEV-MSG-0001 / FO-MSG-0007): `factory_media_start_session` without `releaseWhenDone` follows the owner's setting
  * (before: false);
- * 1.5.0 (BL-143, ADR 0029): generation plans (`factory_plan_*`).
+ * 1.5.0 (BL-143, ADR 0029): generation plans (`factory_plan_*`);
+ * 1.6.0 (BL-153, FO-REQ-0008): validator-rejected attempts in the owner's review queue (`reviewRejected`);
+ * 1.7.0 (BL-155, FO-REQ-0007): jobs carry `errorCode` (`media_gpu_host_incompatible` when the error says the host's CUDA driver
+ * is too old), a start on incompatible hosts fails with `media_gpu_host_incompatible`, release-when-done of a session whose
+ * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`.
  */
-export const FACTORY_API_VERSION = "1.6.0";
+export const FACTORY_API_VERSION = "1.7.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -483,7 +487,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_settings",
     {
       description:
-        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.getSettings())
@@ -495,7 +499,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_start_session",
     {
       description:
-        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Poll factory_media_get_session.",
+        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Pods are placed only on hosts whose CUDA driver supports the owner's minimum (gpu.minCudaVersion in factory_media_get_settings, 12.8 by default); before running, the host is checked again (its CUDA version, and a cuda device in ComfyUI) -- an incompatible pod is terminated and placed again at most twice, then the session fails with media_gpu_host_incompatible (1.7.0). With release-when-done, a session whose every job failed stops with stopReason 'all jobs failed (release when done)' (1.7.0). Poll factory_media_get_session.",
       inputSchema: startSessionInput,
     },
     async (args) => {
@@ -545,7 +549,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   registerTool(
     "factory_media_get_job",
     {
-      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools, including the live `progress` from ComfyUI while a job generates (BL-144). Read-only.",
+      description: "One job of YOUR sessions by jobId ({ job }), or the jobs of one of your sessions ({ jobs }, sessionId required then). Same job shape as the channel tools, including the live `progress` from ComfyUI while a job generates (BL-144), plus errorCode (1.7.0): 'media_gpu_host_incompatible' when the job's error says the GPU host's CUDA driver is too old (start a new session; the pod's host could not run the image), else null. Read-only.",
       inputSchema: getJobInput,
     },
     async (args) => successResult(await deps.media.getJob(parseInput(getJobInput, args)))

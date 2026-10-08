@@ -13,6 +13,7 @@ import {
   type MediaSessionStatus,
   type MediaSettings,
 } from "./contracts";
+import { allowedCudaVersionsFor, comfyCudaDevice, hostCudaTooOld } from "./cuda-host";
 import { classifyCreatePodFailure, resolveGpuCandidates, type GpuCandidate } from "./gpu-plan";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import { describeVolumeLockHolder, type VolumeLock } from "./volume-lock";
@@ -138,7 +139,7 @@ export type SessionServiceDependencies = {
   /** BL-133: the capacity log -- one call per createPod attempt (best effort: a failed record never fails a start). */
   capacityLog?: { record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null }): Promise<void> };
   /** BL-135: the session's jobs, for "release when done" (late-bound to the job services in `index.ts`). */
-  jobSummary?(sessionId: string): Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
+  jobSummary?(sessionId: string): Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
 };
 
 /** BL-135: how long a `releaseWhenDone` session may sit with every job finished before its pod is stopped. */
@@ -157,6 +158,8 @@ const DEFAULT_STOP_TIMEOUT_MS = 90_000;
 const ABANDONED_START_GRACE_MS = 5 * 60_000;
 /** Consecutive RunPod failures tolerated while waiting for a new pod (the same tolerance the job poller has). */
 const MAX_START_POLL_FAILURES = 5;
+/** BL-155 (CUDA_HOSTS_PLAN.md AC-CU-02): new placements after a pod landed on an incompatible host, per start. */
+export const MAX_EXTRA_PLACEMENTS = 2;
 
 const isActive = (row: StoredSessionRow) => (MEDIA_SESSION_ACTIVE_STATUSES as readonly MediaSessionStatus[]).includes(row.status);
 
@@ -394,12 +397,22 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   }
 
   /**
+   * When the current start attempt began: the later of the pod's creation and the approval. A BL-155 re-placement restarts
+   * `approvedAt` while `startedAt` keeps the first pod's (billing) time, and each placement has its own start budget; otherwise
+   * approvedAt ≤ startedAt, as before.
+   */
+  function startAttemptSince(row: StoredSessionRow): Date {
+    if (row.startedAt && row.approvedAt) return row.approvedAt > row.startedAt ? row.approvedAt : row.startedAt;
+    return row.startedAt ?? row.approvedAt ?? row.createdAt;
+  }
+
+  /**
    * The ONE rule for "no approve request owns this `approved`/`starting` row any more" (review round 16): either that
    * request already reported its death on the row (`error`), or the row is older than the request's whole budget.
    */
   function isStartAbandoned(row: StoredSessionRow, now: Date): boolean {
     if (row.error !== null) return true;
-    const since = row.startedAt ?? row.approvedAt ?? row.createdAt;
+    const since = startAttemptSince(row);
     return now.getTime() - since.getTime() >= startTimeoutMs + stopTimeoutMs + ABANDONED_START_GRACE_MS;
   }
 
@@ -680,258 +693,348 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       await finish(approved, ["approved"], "failed", { error: `no GPU candidate qualifies: ${detail}` });
       throw new DomainError({ code: "media_session_start_failed", message: `No GPU candidate qualifies: ${detail}.`, details: { sessionId, skipped } });
     }
-    let pod: RunpodPod | null = null;
-    let used: GpuCandidate | null = null;
+    // BL-155 (CUDA_HOSTS_PLAN.md AC-CU-02): a pod on a host whose CUDA driver is too old (or where ComfyUI sees no CUDA device)
+    // is terminated and the start places the session again -- the candidate list again, at most MAX_EXTRA_PLACEMENTS more
+    // times. The billing window starts at the FIRST pod's creation and runs on across re-placements (one row = one window): the
+    // seconds between a confirmed terminate and the next pod are counted too, and the price is the dearer of the two -- an
+    // over-count of seconds, never a dropped pod.
     let startedAt = deps.clock.now();
-    const failures: string[] = [];
-    // A pod an EARLIER attempt created behind a failed answer (a timeout) carries this session's name (independent review):
-    // before every createPod after the first -- and before the first of a capacity-retry round -- look for it, so a second pod
-    // is never created next to a first one nobody would ever terminate.
-    const adoptExisting = async (): Promise<RunpodPod | undefined> => {
-      try {
-        return await findLivePodByName(client, podNameFor(sessionId));
-      } catch (lookupError) {
-        const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
-        await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `RunPod could not be asked whether a pod of this session already exists (${detail}); the watcher re-checks` });
-        throw new DomainError({ code: "media_session_start_failed", message: `RunPod could not confirm whether a pod already exists for this session; it stays approved until the watcher can check.`, details: { sessionId, status: "approved" } });
-      }
-    };
-    const candidateOf = (existing: RunpodPod, fallback: GpuCandidate): GpuCandidate => candidates.find((c) => c.gpuTypeId === existing.gpuTypeId) ?? fallback;
-    for (const [index, candidate] of candidates.entries()) {
-      startedAt = deps.clock.now();
-      if (index > 0 || (approved.capacityAttempts ?? 0) > 0) {
-        const existing = await adoptExisting();
-        if (existing) {
-          log(`[media] pod ${existing.id} of session ${sessionId} already exists (an earlier attempt); continuing with it`);
-          pod = existing;
-          used = candidateOf(existing, candidate);
-          await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt");
-          break;
-        }
-      }
-      try {
-        pod = await client.createPod({
-          name: podNameFor(sessionId),
-          templateId: settings.templateId ?? undefined,
-          gpu: { id: candidate.gpuTypeId, count: 1 },
-          cloud: settings.cloudType,
-          dataCenterId: settings.datacenterId ?? undefined,
-          mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
-          ports: [`${COMFY_PROXY_PORT}/http`],
-          env: { COMFY_TOKEN: token },
-        });
-        used = candidate;
-        await recordAttempt(sessionId, settings, candidate, "placed", null);
-        break;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
-        let orphan: RunpodPod | undefined;
+    let current = approved;
+    /** Pods of this start terminated and confirmed gone: never adopted again by the name search. */
+    const retired = new Set<string>();
+    let lastTerminatedAt: Date | null = null;
+    let lastMismatch: string | null = null;
+
+    const placeOnce = async (row: StoredSessionRow, placement: number): Promise<MediaSession | { replace: string }> => {
+      let pod: RunpodPod | null = null;
+      let used: GpuCandidate | null = null;
+      let placedAt = deps.clock.now();
+      const failures: string[] = [];
+      // After a re-placement the row's window is already open: an early end is billed to the last confirmed terminate.
+      const endedEarly = () => (placement > 0 && lastTerminatedAt ? { stoppedAt: lastTerminatedAt } : {});
+      // A pod an EARLIER attempt created behind a failed answer (a timeout) carries this session's name (independent review):
+      // before every createPod after the first -- and before the first of a capacity-retry round or a re-placement -- look for
+      // it, so a second pod is never created next to a first one nobody would ever terminate.
+      const adoptExisting = async (): Promise<RunpodPod | undefined> => {
         try {
-          orphan = await findLivePodByName(client, podNameFor(sessionId));
+          return await findLivePodByName(client, podNameFor(sessionId), retired);
         } catch (lookupError) {
-          // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
-          // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
-          // repeats the name search once RunPod answers (review round 9).
           const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
-          await recordAttempt(sessionId, settings, candidate, "error", message);
-          await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
-          throw new DomainError({
-            code: "media_session_start_failed",
-            message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
-            details: { sessionId, status: "approved" },
-          });
+          await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `RunPod could not be asked whether a pod of this session already exists (${detail}); the watcher re-checks` });
+          throw new DomainError({ code: "media_session_start_failed", message: `RunPod could not confirm whether a pod already exists for this session; it stays approved until the watcher can check.`, details: { sessionId, status: "approved" } });
         }
-        if (orphan) {
-          log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
-          pod = orphan;
-          used = candidateOf(orphan, candidate);
-          await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`);
+      };
+      const candidateOf = (existing: RunpodPod, fallback: GpuCandidate): GpuCandidate => candidates.find((c) => c.gpuTypeId === existing.gpuTypeId) ?? fallback;
+      const allowedCudaVersions = allowedCudaVersionsFor(settings.minCudaVersion);
+      for (const [index, candidate] of candidates.entries()) {
+        placedAt = deps.clock.now();
+        if (placement === 0) startedAt = placedAt;
+        if (index > 0 || (row.capacityAttempts ?? 0) > 0 || placement > 0) {
+          const existing = await adoptExisting();
+          if (existing) {
+            log(`[media] pod ${existing.id} of session ${sessionId} already exists (an earlier attempt); continuing with it`);
+            pod = existing;
+            used = candidateOf(existing, candidate);
+            await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt");
+            break;
+          }
+        }
+        try {
+          pod = await client.createPod({
+            name: podNameFor(sessionId),
+            templateId: settings.templateId ?? undefined,
+            // BL-155 (AC-CU-01): only hosts whose driver supports CUDA ≥ the minimum; none matching = RunPod's "no capacity".
+            gpu: { id: candidate.gpuTypeId, count: 1, ...(allowedCudaVersions ? { allowedCudaVersions } : {}) },
+            cloud: settings.cloudType,
+            dataCenterId: settings.datacenterId ?? undefined,
+            mounts: settings.networkVolumeId ? { network: [{ volumeId: settings.networkVolumeId, path: "/workspace" }] } : undefined,
+            ports: [`${COMFY_PROXY_PORT}/http`],
+            env: { COMFY_TOKEN: token },
+          });
+          used = candidate;
+          await recordAttempt(sessionId, settings, candidate, "placed", null);
           break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // The call can fail AFTER RunPod created the pod (timeout, dropped connection): the deterministic name finds it.
+          let orphan: RunpodPod | undefined;
+          try {
+            orphan = await findLivePodByName(client, podNameFor(sessionId), retired);
+          } catch (lookupError) {
+            // RunPod unreachable for the lookup too: the pod MAY exist and bill. Never free the slot (or the volume lock)
+            // on a guess -- the row stays `approved` with the error, and the watcher's abandoned-start reconciliation
+            // repeats the name search once RunPod answers (review round 9).
+            const detail = lookupError instanceof Error ? lookupError.message : String(lookupError);
+            await recordAttempt(sessionId, settings, candidate, "error", message);
+            await deps.store.transition(sessionId, ["approved"], { status: "approved", error: `pod creation failed (${message}) and RunPod could not be asked whether the pod exists (${detail}); the watcher re-checks` });
+            throw new DomainError({
+              code: "media_session_start_failed",
+              message: `Pod creation failed (${message}) and RunPod could not confirm whether a pod was created; the session stays approved until the watcher can check.`,
+              details: { sessionId, status: "approved" },
+            });
+          }
+          if (orphan) {
+            log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
+            pod = orphan;
+            used = candidateOf(orphan, candidate);
+            await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`);
+            break;
+          }
+          const kind = classifyCreatePodFailure(error);
+          await recordAttempt(sessionId, settings, candidate, kind === "no_capacity" ? "no_capacity" : "error", message);
+          if (kind === "fatal") {
+            await finish(row, ["approved"], "failed", { error: `pod creation failed: ${message}`, ...endedEarly() });
+            throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
+          }
+          failures.push(`${candidate.gpuTypeId}: ${message}`);
         }
-        const kind = classifyCreatePodFailure(error);
-        await recordAttempt(sessionId, settings, candidate, kind === "no_capacity" ? "no_capacity" : "error", message);
-        if (kind === "fatal") {
-          await finish(approved, ["approved"], "failed", { error: `pod creation failed: ${message}` });
-          throw new DomainError({ code: "media_session_start_failed", message: `Pod creation failed: ${message}`, details: { sessionId } });
-        }
-        failures.push(`${candidate.gpuTypeId}: ${message}`);
       }
-    }
-    if (!pod || !used) return waitForCapacity(approved, settings, failures);
-    // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
-    // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
-    const abortStart = async (lastDetail: string): Promise<MediaSession> => {
-      onStage("Terminating the pod");
-      let terminated: { confirmed: boolean; lastStatus: string | null };
+      if (!pod || !used) {
+        if (placement === 0) return waitForCapacity(row, settings, failures);
+        // A re-placement never WAITS: the row's billing window is open (it started with the first pod), so a wait would bill
+        // the idle minutes. The session fails with the reason it had to be placed again.
+        const message = `${lastMismatch ?? "incompatible GPU host"}; no other host could be placed (${failures.join("; ")})`;
+        await finish(row, ["approved"], "failed", { error: `media_gpu_host_incompatible: ${message}`, ...endedEarly() });
+        throw new DomainError({ code: "media_gpu_host_incompatible", message: `The session could not start on a compatible GPU host: ${message}.`, details: { sessionId, placements: placement } });
+      }
+      // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
+      // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
+      const terminateStartPod = async (): Promise<TerminateOutcome> => {
+        try {
+          return await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
+            if (!alreadyGone) await deps.store.transition(sessionId, ["approved", "starting"], { status: (await requireRow(sessionId)).status as "approved" | "starting", podId: pod.id, startedAt, terminateSentAt: at });
+          });
+        } catch (error) {
+          return { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})`, alreadyGone: false };
+        }
+      };
+      const abortStart = async (lastDetail: string, code: "media_session_start_failed" | "media_gpu_host_incompatible" = "media_session_start_failed", alreadyTerminated?: TerminateOutcome): Promise<MediaSession> => {
+        onStage("Terminating the pod");
+        const terminated = alreadyTerminated ?? (await terminateStartPod());
+        const prefix = code === "media_session_start_failed" ? "start failed" : code;
+        // An operator Stop (or the watcher/boot sweep) may have taken the row meanwhile: never overwrite its outcome.
+        const latest = await requireRow(sessionId);
+        if (latest.status === "approved" || latest.status === "starting") {
+          // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
+          const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
+          if (terminated.confirmed) {
+            await finish(latest, ["approved", "starting"], "failed", { error: `${prefix}: ${lastDetail}` }, podFacts);
+          } else {
+            await deps.store.transition(sessionId, ["approved", "starting"], {
+              status: "stopping",
+              ...podFacts,
+              stopReason: `${prefix}: ${lastDetail}`,
+              stoppingOutcome: "failed",
+              error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
+            });
+          }
+        }
+        // An operator Stop (or the watcher/boot sweep) ended the session on purpose while it was starting: that is the
+        // session's outcome, not a start failure to report as an error (review round 19).
+        const final = await requireRow(sessionId);
+        if (latest.status !== "approved" && latest.status !== "starting") return toPublicSession(final, deps.clock.now());
+        throw new DomainError({
+          code,
+          message: `The session could not start: ${lastDetail}.`,
+          details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: final.status },
+        });
+      };
+      /** BL-155: the host cannot run the image -- terminate, log it, and either place again or end the start. */
+      const incompatible = async (detail: string): Promise<MediaSession | { replace: string }> => {
+        log(`[media] session ${sessionId}: pod ${pod.id} is on an incompatible host (${detail}); terminating it`);
+        onStage("Terminating the pod");
+        const terminated = await terminateStartPod();
+        await recordAttempt(sessionId, settings, used, "error", detail);
+        if (terminated.confirmed) {
+          retired.add(pod.id);
+          lastTerminatedAt = deps.clock.now();
+        }
+        // Never a second pod next to one that may still bill: an unconfirmed terminate ends here (`stopping`, watcher retries).
+        if (!terminated.confirmed) return abortStart(detail, "media_gpu_host_incompatible", terminated);
+        if (placement >= MAX_EXTRA_PLACEMENTS) return abortStart(`${detail} (${placement + 1} placements, no compatible host)`, "media_gpu_host_incompatible", terminated);
+        return { replace: detail };
+      };
+
+      let comfyUiProxyUrl: string;
+      let starting: StoredSessionRow | null;
       try {
-        terminated = await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
-          if (!alreadyGone) await deps.store.transition(sessionId, ["approved", "starting"], { status: (await requireRow(sessionId)).status as "approved" | "starting", podId: pod.id, startedAt, terminateSentAt: at });
+        comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
+        const price = pod.costPerHr ?? used.pricePerHr ?? row.costPerHr;
+        starting = await deps.store.transition(sessionId, ["approved"], {
+          status: "starting",
+          podId: pod.id,
+          comfyUiProxyUrl,
+          startedAt,
+          // BL-133: what it actually got -- the candidate (its catalog price when the pod does not report one). After a
+          // re-placement the window spans both pods: the dearer price (BL-155).
+          gpuTypeId: used.gpuTypeId,
+          costPerHr: placement > 0 && price !== null && row.costPerHr !== null ? Math.max(price, row.costPerHr) : price,
+          capacityNextAttemptAt: null,
         });
       } catch (error) {
-        terminated = { confirmed: false, lastStatus: `unknown (${error instanceof Error ? error.message : String(error)})` };
+        return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
       }
-      // An operator Stop (or the watcher/boot sweep) may have taken the row meanwhile: never overwrite its outcome.
-      const latest = await requireRow(sessionId);
-      if (latest.status === "approved" || latest.status === "starting") {
-        // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
-        const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
-        if (terminated.confirmed) {
-          await finish(latest, ["approved", "starting"], "failed", { error: `start failed: ${lastDetail}` }, podFacts);
+      if (!starting) {
+        // Swept or stopped meanwhile: never leave the pod behind -- and never DISCARD an unconfirmed terminate either
+        // (review round 15): the pod and its cost are written onto whatever row state the other party left, so the
+        // operator's listing shows the pod to terminate by hand.
+        let outcome: TerminateOutcome | null = null;
+        let failure: string | null = null;
+        try {
+          outcome = await terminateAndConfirm(client, pod.id);
+        } catch (cause) {
+          failure = cause instanceof Error ? cause.message : String(cause);
+        }
+        const latest = await requireRow(sessionId);
+        const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
+        if (!outcome?.confirmed) {
+          const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
+          log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
+          await deps.store.transition(sessionId, [latest.status], {
+            status: latest.status,
+            ...facts,
+            error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and its terminate could not be confirmed (${detail}): terminate it by hand (media pod-terminate ${pod.id})`,
+          });
         } else {
-          await deps.store.transition(sessionId, ["approved", "starting"], {
-            status: "stopping",
-            ...podFacts,
-            stopReason: `start failed: ${lastDetail}`,
-            stoppingOutcome: "failed",
-            error: `pod still ${terminated.lastStatus} after terminate; the watcher retries`,
+          // Confirmed gone -- but it billed from `startedAt` until now, on no row so far: record the pod and its cost on
+          // whatever row the other party left, so the daily cap sees the spend (AC-P14-17, review round 19).
+          const stoppedAt = deps.clock.now();
+          const cost = finalCost({ ...latest, ...facts }, stoppedAt);
+          await deps.store.transition(sessionId, [latest.status], {
+            status: latest.status,
+            ...facts,
+            ...(MEDIA_SESSION_NON_TERMINAL_STATUSES.includes(latest.status) ? {} : { stoppedAt, secondsUsed: cost.secondsUsed, usdCharged: cost.usdCharged }),
+            error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and was terminated (${cost.secondsUsed} s billed)`,
           });
         }
+        throw invalidState(sessionId, "approved", latest.status);
       }
-      // An operator Stop (or the watcher/boot sweep) ended the session on purpose while it was starting: that is the
-      // session's outcome, not a start failure to report as an error (review round 19).
-      const final = await requireRow(sessionId);
-      if (latest.status !== "approved" && latest.status !== "starting") return toPublicSession(final, deps.clock.now());
-      throw new DomainError({
-        code: "media_session_start_failed",
-        message: `The session could not start: ${lastDetail}.`,
-        details: { sessionId, podId: pod.id, podTerminated: terminated.confirmed, status: final.status },
-      });
-    };
 
-    let comfyUiProxyUrl: string;
-    let starting: StoredSessionRow | null;
-    try {
-      comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
-      starting = await deps.store.transition(sessionId, ["approved"], {
-        status: "starting",
-        podId: pod.id,
-        comfyUiProxyUrl,
-        startedAt,
-        // BL-133: what it actually got -- the candidate (its catalog price when the pod does not report one).
-        gpuTypeId: used.gpuTypeId,
-        costPerHr: pod.costPerHr ?? used.pricePerHr ?? approved.costPerHr,
-        capacityNextAttemptAt: null,
-      });
-    } catch (error) {
-      return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (!starting) {
-      // Swept or stopped meanwhile: never leave the pod behind -- and never DISCARD an unconfirmed terminate either
-      // (review round 15): the pod and its cost are written onto whatever row state the other party left, so the
-      // operator's listing shows the pod to terminate by hand.
-      let outcome: TerminateOutcome | null = null;
-      let failure: string | null = null;
+      onStage("Waiting for the pod to run");
+      // Each placement gets the whole start budget from its own pod's creation (BL-155): a host found incompatible late (no
+      // CUDA device, seen only once ComfyUI answers) must not leave the next pod no time to download the image.
+      const deadline = placedAt.getTime() + startTimeoutMs;
+      const comfy = deps.createComfyClient({ baseUrl: comfyUiProxyUrl, token });
+      let phase: "pod" | "comfy" = "pod";
+      let lastDetail = "";
+      let mismatch: string | null = null;
+      let hostChecked = false;
+      // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
+      // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
+      let pollFailures = 0;
+      const getPodTolerant = async (): Promise<{ ok: true; pod: RunpodPod | null } | { ok: false }> => {
+        try {
+          const current = await client.getPod(pod.id);
+          pollFailures = 0;
+          return { ok: true, pod: current };
+        } catch (error) {
+          if (++pollFailures >= MAX_START_POLL_FAILURES) throw error;
+          lastDetail = `RunPod unreachable (${pollFailures}×): ${error instanceof Error ? error.message : String(error)}`;
+          return { ok: false };
+        }
+      };
+      /** BL-155: the host's CUDA version once the pod runs (null = unknown, which never blocks). */
+      const readHostCuda = async (): Promise<string | null> => {
+        try {
+          return await client.getPodHostCudaVersion(pod.id);
+        } catch (error) {
+          log(`[media] could not read the CUDA version of pod ${pod.id}'s host: ${error instanceof Error ? error.message : String(error)}`);
+          return null;
+        }
+      };
+      const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
       try {
-        outcome = await terminateAndConfirm(client, pod.id);
-      } catch (cause) {
-        failure = cause instanceof Error ? cause.message : String(cause);
-      }
-      const latest = await requireRow(sessionId);
-      const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
-      if (!outcome?.confirmed) {
-        const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
-        log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
-        await deps.store.transition(sessionId, [latest.status], {
-          status: latest.status,
-          ...facts,
-          error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and its terminate could not be confirmed (${detail}): terminate it by hand (media pod-terminate ${pod.id})`,
-        });
-      } else {
-        // Confirmed gone -- but it billed from `startedAt` until now, on no row so far: record the pod and its cost on
-        // whatever row the other party left, so the daily cap sees the spend (AC-P14-17, review round 19).
-        const stoppedAt = deps.clock.now();
-        const cost = finalCost({ ...latest, ...facts }, stoppedAt);
-        await deps.store.transition(sessionId, [latest.status], {
-          status: latest.status,
-          ...facts,
-          ...(MEDIA_SESSION_NON_TERMINAL_STATUSES.includes(latest.status) ? {} : { stoppedAt, secondsUsed: cost.secondsUsed, usdCharged: cost.usdCharged }),
-          error: `${latest.error ? `${latest.error}; ` : ""}pod ${pod.id} was created after the session ended and was terminated (${cost.secondsUsed} s billed)`,
-        });
-      }
-      throw invalidState(sessionId, "approved", latest.status);
-    }
-
-    onStage("Waiting for the pod to run");
-    const deadline = startedAt.getTime() + startTimeoutMs;
-    const comfy = deps.createComfyClient({ baseUrl: comfyUiProxyUrl, token });
-    let phase: "pod" | "comfy" = "pod";
-    let lastDetail = "";
-    // One RunPod 502 / 30 s timeout on getPod must not terminate a healthy, almost-ready pod (review round 17): a run of
-    // consecutive failures is tolerated like the job poller's; the deadline still bounds the whole wait.
-    let pollFailures = 0;
-    const getPodTolerant = async (): Promise<{ ok: true; pod: RunpodPod | null } | { ok: false }> => {
-      try {
-        const current = await client.getPod(pod.id);
-        pollFailures = 0;
-        return { ok: true, pod: current };
-      } catch (error) {
-        if (++pollFailures >= MAX_START_POLL_FAILURES) throw error;
-        lastDetail = `RunPod unreachable (${pollFailures}×): ${error instanceof Error ? error.message : String(error)}`;
-        return { ok: false };
-      }
-    };
-    const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
-    try {
-      for (;;) {
-        const polled = await getPodTolerant();
-        if (!polled.ok) {
+        for (;;) {
+          const polled = await getPodTolerant();
+          if (!polled.ok) {
+            if (deps.clock.now().getTime() >= deadline) {
+              lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
+              break;
+            }
+            await deps.sleep(pollMs);
+            continue;
+          }
+          if (phase === "pod") {
+            const current = polled.pod;
+            if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
+              lastDetail = `pod ${current?.status ?? "gone"}`;
+              break;
+            }
+            await seenAlive(); // billed at least until here (AC-P14-17)
+            // BL-155 (AC-CU-02): RunPod has put the pod on a machine once it is RUNNING -- read that host's CUDA once, before
+            // the image download is waited for, so a too-old driver costs seconds, not minutes.
+            if (current.status === "RUNNING" && !hostChecked && settings.minCudaVersion !== null) {
+              hostChecked = true;
+              const host = await readHostCuda();
+              if (hostCudaTooOld(host, settings.minCudaVersion)) {
+                mismatch = `CUDA driver too old: host ${host} < ${settings.minCudaVersion}`;
+                break;
+              }
+            }
+            // RunPod says RUNNING while the image still downloads; the container is up only once `runtime` appears
+            // (slice 0). Until then the honest stage is "downloading the image", and a timeout says the container never started.
+            if (current.status === "RUNNING" && current.containerUptimeSec !== null) {
+              phase = "comfy";
+              onStage("Waiting for ComfyUI to answer");
+            } else if (current.status === "RUNNING") {
+              lastDetail = "the container never started on the host (image download or host problem)";
+              onStage("Downloading the image and starting the container");
+            }
+          } else {
+            // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
+            const current = polled.pod;
+            if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
+              lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
+              break;
+            }
+            await seenAlive();
+            try {
+              const stats = await comfy.getSystemStats();
+              // BL-155 (AC-CU-02): ComfyUI must see a CUDA GPU with VRAM -- on a host whose driver is too old it falls back to
+              // the CPU (or lists no GPU), and every job would fail. An unreadable device list is unknown and does not block.
+              if (comfyCudaDevice(stats) === "none") {
+                mismatch = "no CUDA device";
+                break;
+              }
+              const ready = deps.clock.now();
+              const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null });
+              if (!running) {
+                lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
+                break;
+              }
+              return toPublicSession(running, ready);
+            } catch (error) {
+              if (error instanceof DomainError && error.code !== "comfyui_unavailable" && error.code !== "comfyui_rejected") throw error;
+              lastDetail = error instanceof Error ? error.message : String(error);
+            }
+          }
           if (deps.clock.now().getTime() >= deadline) {
             lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
             break;
           }
           await deps.sleep(pollMs);
-          continue;
         }
-        if (phase === "pod") {
-          const current = polled.pod;
-          if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
-            lastDetail = `pod ${current?.status ?? "gone"}`;
-            break;
-          }
-          await seenAlive(); // billed at least until here (AC-P14-17)
-          // RunPod says RUNNING while the image still downloads; the container is up only once `runtime` appears
-          // (slice 0). Until then the honest stage is "downloading the image", and a timeout says the container never started.
-          if (current.status === "RUNNING" && current.containerUptimeSec !== null) {
-            phase = "comfy";
-            onStage("Waiting for ComfyUI to answer");
-          } else if (current.status === "RUNNING") {
-            lastDetail = "the container never started on the host (image download or host problem)";
-            onStage("Downloading the image and starting the container");
-          }
-        } else {
-          // The pod can still die while ComfyUI boots (pod-start.sh failing, container ERROR): never wait the full budget for that.
-          const current = polled.pod;
-          if (!current || current.status === "TERMINATED" || current.status === "EXITED" || current.status === "ERROR") {
-            lastDetail = `pod ${current?.status ?? "gone"} while waiting for ComfyUI`;
-            break;
-          }
-          await seenAlive();
-          try {
-            await comfy.getSystemStats();
-            const ready = deps.clock.now();
-            const running = await deps.store.transition(sessionId, ["starting"], { status: "running", readyAt: ready, lastActivityAt: ready, lastSeenAliveAt: ready, error: null });
-            if (!running) {
-              lastDetail = `session was ${(await requireRow(sessionId)).status} when ComfyUI answered`;
-              break;
-            }
-            return toPublicSession(running, ready);
-          } catch (error) {
-            if (error instanceof DomainError && error.code !== "comfyui_unavailable" && error.code !== "comfyui_rejected") throw error;
-            lastDetail = error instanceof Error ? error.message : String(error);
-          }
-        }
-        if (deps.clock.now().getTime() >= deadline) {
-          lastDetail = `not ready after ${Math.round(startTimeoutMs / 60000)} min (${lastDetail || phase})`;
-          break;
-        }
-        await deps.sleep(pollMs);
+      } catch (error) {
+        // A gateway/API failure mid-poll (RunPod 5xx, the toggle switched off, ...): the pod still exists.
+        return abortStart(`${error instanceof Error ? error.message : String(error)}`);
       }
-    } catch (error) {
-      // A gateway/API failure mid-poll (RunPod 5xx, the toggle switched off, ...): the pod still exists.
-      return abortStart(`${error instanceof Error ? error.message : String(error)}`);
+      if (mismatch) return incompatible(mismatch);
+      return abortStart(lastDetail);
+    };
+
+    for (let placement = 0; ; placement++) {
+      const outcome = await placeOnce(current, placement);
+      if (!("replace" in outcome)) return outcome;
+      lastMismatch = outcome.replace;
+      // Back to `approved` with no pod BEFORE the next createPod: a crash from here on is reconciled by the name search like
+      // any start (a `starting` row would point at the dead pod and orphan the new one). `approvedAt` restarts the
+      // abandoned-start clock for this placement; no `error` (that would mark the start abandoned while this request works).
+      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, approvedAt: deps.clock.now(), terminateSentAt: null, error: null });
+      // An operator Stop (or the watcher) took the row meanwhile: its outcome stands, nothing new is placed.
+      if (!back) return toPublicSession(await requireRow(sessionId), deps.clock.now());
+      current = back;
+      onStage("Placing the session on another host");
     }
-    return abortStart(lastDetail);
   }
 
   /** One session's watcher step (see `watchTick`). */
@@ -1003,7 +1106,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     }
     if (open.status === "approved" || open.status === "starting") {
       if (!isStartAbandoned(open, now)) return { action: "none", sessionId: open.id, reason: null };
-      const since = open.startedAt ?? open.approvedAt ?? open.createdAt;
+      const since = startAttemptSince(open);
       const reason = `start abandoned: still ${open.status} ${Math.round((now.getTime() - since.getTime()) / 60_000)} min after approval (the approving request did not finish)`;
       const result = await reconcileAbandoned(open, reason, "failed");
       return { action: result === "reconciled" ? "stopped" : result === "retrying" ? "retried_stop" : "none", sessionId: open.id, reason };
@@ -1041,7 +1144,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // job being submitted right now is never cut off).
       const jobs = await deps.jobSummary(open.id);
       const quietSince = Math.max(jobs.lastFinishedAt?.getTime() ?? 0, open.lastActivityAt?.getTime() ?? 0);
-      if (jobs.total > 0 && jobs.open === 0 && now.getTime() - quietSince >= RELEASE_WHEN_DONE_GRACE_MS) reason = "released after last job (1 min after the last job finished)";
+      if (jobs.total > 0 && jobs.open === 0 && now.getTime() - quietSince >= RELEASE_WHEN_DONE_GRACE_MS) {
+        // BL-155 (AC-CU-03): a session whose every job failed (an incompatible host, a broken template) is told apart.
+        reason = jobs.failed === jobs.total ? "all jobs failed (release when done)" : "released after last job (1 min after the last job finished)";
+      }
     }
     if (!reason) return { action: "none", sessionId: open.id, reason: null };
     const stopped = await stopRow(open, reason);
@@ -1075,7 +1181,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         limits: { maxUsdPerSession: settings.factoryMaxUsdPerSession, maxMinutesPerSession: settings.factoryMaxMinutesPerSession, maxUsdPerDay: settings.factoryMaxUsdPerDay, maxUsdPerMonth: settings.factoryMaxUsdPerMonth },
         spentOrReservedUsd: { today, thisMonth: month },
         device: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: deviceSpent, maxConcurrentSessions: settings.maxConcurrentSessions, idleMinutes: settings.idleMinutes },
-        gpu: { gpuTypeId: settings.gpuTypeId, fallbackIds: [...settings.gpuFallbackIds], minVramGb: settings.gpuMinVramGb, maxPricePerHr: settings.gpuMaxPricePerHr, onDemandPricePerHr: settings.gpuOnDemandPricePerHr, cloudType: settings.cloudType },
+        gpu: { gpuTypeId: settings.gpuTypeId, fallbackIds: [...settings.gpuFallbackIds], minVramGb: settings.gpuMinVramGb, maxPricePerHr: settings.gpuMaxPricePerHr, onDemandPricePerHr: settings.gpuOnDemandPricePerHr, cloudType: settings.cloudType, minCudaVersion: settings.minCudaVersion },
         capacity: { retrySeconds: settings.capacityRetrySeconds, waitMinutes: settings.capacityWaitMinutes },
       };
     },

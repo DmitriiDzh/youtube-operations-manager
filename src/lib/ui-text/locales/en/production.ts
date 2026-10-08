@@ -21,6 +21,7 @@ export const production = {
   "setupField.factoryMaxUsdPerDay": "Factory: max per day",
   "setupField.factoryMaxUsdPerMonth": "Factory: max per month",
   "setupField.ownerReleaseWhenDone": "Release a session after its last job",
+  "setupField.minCudaVersion": "Minimum CUDA version of the GPU host",
 
   "settingsSync.intro": "These settings are the same on all your computers: a change here reaches the others within about a minute (RunPod keys stay on each computer).",
   "settingsSync.fromOther": "From the other computer: {fields} ({time}).",

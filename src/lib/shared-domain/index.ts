@@ -133,6 +133,8 @@ export type DomainErrorCode =
   | "media_session_start_failed"
   // BL-133: no GPU candidate could be placed in the volume's datacenter within the capacity wait.
   | "media_no_capacity"
+  // BL-155: every placement landed on a host whose CUDA driver is too old (or with no CUDA device); also a job's errorCode.
+  | "media_gpu_host_incompatible"
   // Phase 14 slice 3 -- workflow templates, jobs and the exchange folder.
   | "media_template_not_found"
   | "media_template_invalid"

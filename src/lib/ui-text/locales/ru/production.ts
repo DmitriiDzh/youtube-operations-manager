@@ -22,6 +22,7 @@ export const production: Record<keyof typeof en, string> = {
   "setupField.factoryMaxUsdPerDay": "Factory: максимум в день",
   "setupField.factoryMaxUsdPerMonth": "Factory: максимум в месяц",
   "setupField.ownerReleaseWhenDone": "Освобождать сессию после последнего задания",
+  "setupField.minCudaVersion": "Минимальная версия CUDA на GPU-сервере",
 
   "settingsSync.intro": "Эти настройки одинаковы на всех ваших компьютерах: изменение здесь доходит до остальных примерно за минуту (ключи RunPod остаются на каждом компьютере свои).",
   "settingsSync.fromOther": "С другого компьютера: {fields} ({time}).",

@@ -90,6 +90,7 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.media_daily_cap_reached": "Дневной лимит расходов не покрывает эту сессию.",
   "errors.media_session_start_failed": "Не удалось запустить сессию.",
   "errors.media_no_capacity": "Сейчас у RunPod нет свободного GPU нужного типа.",
+  "errors.media_gpu_host_incompatible": "На GPU-сервере слишком старый драйвер CUDA для шаблона или нет пригодного GPU с CUDA.",
   "errors.media_template_not_found": "Шаблон процесса не найден.",
   "errors.media_template_invalid": "Шаблон процесса неверный.",
   "errors.media_job_not_found": "Задание не найдено.",

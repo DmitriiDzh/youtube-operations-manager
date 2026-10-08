@@ -101,8 +101,11 @@ function fakeRunpod(
     createThenLoseAnswer?: (input: { gpu?: { id: string } }) => boolean;
     /** BL-133 review: listPods answers [] for the first N calls (RunPod's listing lagging behind a just-created pod), then the truth. */
     listLagCalls?: number;
+    /** BL-155: the host CUDA version GraphQL reports for a pod (default 12.9, a compatible host); an Error = the read fails. */
+    hostCuda?: (podId: string) => string | null | Error;
   } = {}
 ) {
+  const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] } }> = [];
   const names = new Map<string, { name: string; gpu: string }>();
   let listCalls = 0;
   const pods = new Map<string, PodState>();
@@ -127,7 +130,8 @@ function fakeRunpod(
     raw: {},
   });
   const client = {
-    async createPod(input: { env?: Record<string, string>; gpu?: { id: string } }) {
+    async createPod(input: { env?: Record<string, string>; gpu?: { id: string; allowedCudaVersions?: string[] } }) {
+      createInputs.push(input);
       calls.push(`createPod:${input.gpu?.id ?? ""}`);
       calls.push("createPod");
       // BL-133 changed what a failed createPod means: "no capacity" and 5xx now WAIT for capacity; only a fatal answer
@@ -166,6 +170,12 @@ function fakeRunpod(
       const existed = pods.delete(id);
       return { terminated: true as const, alreadyGone: !existed };
     },
+    async getPodHostCudaVersion(id: string) {
+      calls.push(`hostCuda:${id}`);
+      const answer = opts.hostCuda ? opts.hostCuda(id) : "12.9";
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
     async listPods() {
       listCalls++;
       if (opts.listLagCalls === undefined || listCalls <= opts.listLagCalls) return [];
@@ -174,10 +184,13 @@ function fakeRunpod(
         .map(([id]) => ({ ...pod(id), name: names.get(id)?.name ?? "ytm", gpuTypeId: names.get(id)?.gpu ?? "NVIDIA GeForce RTX 4090" }));
     },
   } as unknown as RunpodApiClient;
-  return { client, calls, pods, setStatus: (id: string, status: string) => pods.set(id, { ...(pods.get(id) ?? { costPerHr: 0.69 }), status }) };
+  return { client, calls, pods, createInputs, setStatus: (id: string, status: string) => pods.set(id, { ...(pods.get(id) ?? { costPerHr: 0.69 }), status }) };
 }
 
-function fakeComfy(opts: { readyAfter?: number; never?: boolean } = {}) {
+/** ComfyUI's documented `/system_stats` shape on a GPU host (BL-155 checks for a `cuda` device with VRAM). */
+const CUDA_STATS = { system: { os: "posix", python_version: "3.12" }, devices: [{ name: "cuda:0 NVIDIA GeForce RTX 4090 : cudaMallocAsync", type: "cuda", index: 0, vram_total: 25_386_352_640, vram_free: 24_000_000_000 }] };
+
+function fakeComfy(opts: { readyAfter?: number; never?: boolean; stats?: (baseUrl: string) => Record<string, unknown> } = {}) {
   let attempts = 0;
   const created: Array<{ baseUrl: string; token: string }> = [];
   const factory = (args: { baseUrl: string; token: string }) => {
@@ -189,7 +202,7 @@ function fakeComfy(opts: { readyAfter?: number; never?: boolean } = {}) {
           const { DomainError } = await import("./contracts");
           throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI returned HTTP 502" });
         }
-        return { ok: true };
+        return opts.stats ? opts.stats(args.baseUrl) : CUDA_STATS;
       },
     } as unknown as ComfyUiClient;
   };
@@ -202,7 +215,7 @@ function fixture(opts: {
   runpod?: ReturnType<typeof fakeRunpod>;
   comfy?: ReturnType<typeof fakeComfy>;
   now?: Date;
-  jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
+  jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
   accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
 } = {}) {
   const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
@@ -1633,7 +1646,7 @@ test("BL-135: another channel's session is not found, a finished one is refused,
 });
 
 test("BL-135: with releaseWhenDone the watcher stops the pod one minute after the last job finished -- never while a job is open, never without a job", async () => {
-  let summary = { total: 0, open: 0, lastFinishedAt: null as Date | null };
+  let summary = { total: 0, open: 0, failed: 0, lastFinishedAt: null as Date | null };
   const f = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
   const pending = await f.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
   assert.equal(pending.releaseWhenDone, true);
@@ -1641,10 +1654,10 @@ test("BL-135: with releaseWhenDone the watcher stops the pod one minute after th
   await started;
   f.advance(5 * 60_000);
   assert.equal((await tick1(f.services)).action, "none", "no job yet: keep waiting for the first one");
-  summary = { total: 1, open: 1, lastFinishedAt: null };
+  summary = { total: 1, open: 1, failed: 0, lastFinishedAt: null };
   f.advance(5 * 60_000);
   assert.equal((await tick1(f.services)).action, "none", "a job is running");
-  summary = { total: 1, open: 0, lastFinishedAt: f.getNow() };
+  summary = { total: 1, open: 0, failed: 0, lastFinishedAt: f.getNow() };
   f.advance(59_000);
   assert.equal((await tick1(f.services)).action, "none", "inside the minute");
   f.advance(2_000);
@@ -1657,7 +1670,7 @@ test("BL-135: with releaseWhenDone the watcher stops the pod one minute after th
 });
 
 test("BL-135: activity after the last finish (a new job being submitted) restarts the minute; a session without the flag is not released", async () => {
-  const summary = { total: 2, open: 0, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
+  const summary = { total: 2, open: 0, failed: 0, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
   const flagged = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
   const p = await flagged.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
   await (await flagged.services.approveSession({ sessionId: p.sessionId })).started;
@@ -1938,6 +1951,7 @@ test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choi
   assert.equal(before.gpu.gpuTypeId, FOUR);
   assert.equal(before.gpu.minVramGb, 24);
   assert.equal(before.gpu.maxPricePerHr, 1.2);
+  assert.equal(before.gpu.minCudaVersion, "12.8", "BL-155: the owner's minimum CUDA (default 12.8) is part of the factory's settings read");
   assert.deepEqual(before.capacity, { retrySeconds: 30, waitMinutes: 20 });
   assert.deepEqual({ maxUsdPerDay: before.device.maxUsdPerDay, maxConcurrentSessions: before.device.maxConcurrentSessions, idleMinutes: before.device.idleMinutes }, { maxUsdPerDay: 10, maxConcurrentSessions: 3, idleMinutes: 10 });
 
@@ -1949,4 +1963,132 @@ test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choi
   const after = await f.services.getFactorySettings();
   assert.deepEqual(after.spentOrReservedUsd, { today: 2, thisMonth: 2 });
   assert.doesNotMatch(JSON.stringify(after), /apiKey|secret|token|password/i);
+});
+
+// -- BL-155 (docs/roadmap/plans/CUDA_HOSTS_PLAN.md, AC-CU-01/02/03; FO-REQ-0007) ----------------------------------------
+// Expected from the plan, written before the code: every pod creation asks RunPod for hosts whose driver supports CUDA ≥ the
+// minimum (12.8 by default -> 12.8, 12.9, 13.0); after RUNNING the host's CUDA is read and ComfyUI must report a cuda device
+// with VRAM; a mismatch terminates the pod, logs `error` with the reason and places again (at most 2 extra placements), then
+// the session fails with media_gpu_host_incompatible. An unknown host version does not block. With release-when-done, a
+// session whose every job failed says so in its stopReason.
+
+test("AC-CU-01: every createPod carries gpu.allowedCudaVersions = the known versions ≥ the minimum (12.8 -> 12.8/12.9/13.0)", async () => {
+  const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => input.gpu?.id === FOUR }) });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.deepEqual(
+    f.runpod.createInputs.map((i) => [i.gpu?.id, i.gpu?.allowedCudaVersions]),
+    [
+      [FOUR, ["12.8", "12.9", "13.0"]],
+      [FIVE, ["12.8", "12.9", "13.0"]],
+    ]
+  );
+});
+
+test("AC-CU-01: with no minimum (null) createPod sends no CUDA filter -- today's behaviour", async () => {
+  const f = fixture({ settings: { minCudaVersion: null } });
+  await startRunning(f);
+  assert.equal(f.runpod.createInputs.length, 1);
+  assert.equal("allowedCudaVersions" in (f.runpod.createInputs[0].gpu ?? {}), false);
+  assert.equal(f.runpod.calls.some((c) => c.startsWith("hostCuda:")), false, "no minimum = no host read");
+});
+
+test("AC-CU-01: no host with a matching driver is answered like no capacity -- the fallback list, then waiting_capacity (no pod)", async () => {
+  const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => Boolean((input as { gpu?: { allowedCudaVersions?: string[] } }).gpu?.allowedCudaVersions) }) });
+  const waiting = await startRunning(f);
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.podId, null);
+  assert.deepEqual(f.capacityLog.map((a) => [a.gpuTypeId, a.result]), [[FOUR, "no_capacity"], [FIVE, "no_capacity"]]);
+});
+
+test("AC-CU-02: a host whose CUDA is below the minimum -> pod terminated, capacity log `error` with the reason, a new placement runs", async () => {
+  const runpod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.equal(runpod.pods.has("pod1"), false, "the old-driver pod is gone");
+  assert.deepEqual(
+    f.capacityLog.map((a) => [a.gpuTypeId, a.result, a.detail]),
+    [
+      [FOUR, "placed", null],
+      [FOUR, "error", "CUDA driver too old: host 12.4 < 12.8"],
+      [FOUR, "placed", null],
+    ]
+  );
+  // pod1 is confirmed gone BEFORE pod2 is created (never two pods of one session at once).
+  const creates = runpod.calls.map((c, i) => [c, i] as const).filter(([c]) => c.startsWith("createPod:"));
+  assert.ok(runpod.calls.indexOf("terminate:pod1") < creates[1][1]);
+  // The session is billed from the first pod's creation (nothing of pod1's time is dropped).
+  assert.equal(running.startedAt, "2026-10-05T10:00:00.000Z");
+  assert.equal(running.error, null);
+});
+
+test("AC-CU-02: ComfyUI reporting no cuda device -> 'no CUDA device', terminated, placed again", async () => {
+  const comfy = fakeComfy({ stats: (baseUrl) => (baseUrl.includes("pod1-") ? { system: {}, devices: [{ name: "cpu", type: "cpu", index: null, vram_total: 0 }] } : CUDA_STATS) });
+  const runpod = fakeRunpod();
+  const f = fixture({ runpod, comfy, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.equal(runpod.pods.has("pod1"), false);
+  assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "no CUDA device"], ["placed", null]]);
+});
+
+test("AC-CU-02: three incompatible hosts (the first + 2 extra placements) -> failed with media_gpu_host_incompatible, every pod gone", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", runningAfterPolls: 3 });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^media_gpu_host_incompatible: .*CUDA driver too old: host 12\.4 < 12\.8/);
+  assert.equal(runpod.pods.size, 0, "no pod left behind");
+  assert.equal(runpod.createInputs.length, 3, "1 + at most 2 extra placements");
+  assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed", "error", "placed", "error", "placed", "error"]);
+  // Billed from pod1's creation (10:00:00) to the last confirmed termination: pod1 reached RUNNING after two 5 s polls, the
+  // later pods at once (the fake's poll counter is shared), so 10 s in all.
+  assert.equal(row.startedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.secondsUsed, 10);
+});
+
+test("AC-CU-02: an unknown host CUDA version (the read failed or answered nothing) does not block the start", async () => {
+  for (const hostCuda of [() => new Error("RunPod GraphQL returned errors"), () => null]) {
+    const runpod = fakeRunpod({ hostCuda });
+    const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+    const running = await startRunning(f);
+    assert.equal(running.status, "running");
+    assert.equal(running.podId, "pod1");
+    assert.equal(runpod.createInputs.length, 1);
+    assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed"]);
+  }
+});
+
+test("AC-CU-02: when the incompatible pod's termination cannot be confirmed, no second pod is created -- the session stays stopping for the watcher", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", terminateSticks: true });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod1");
+  assert.equal(row.stoppingOutcome, "failed");
+  assert.equal(runpod.createInputs.length, 1, "never a second pod next to one that may still bill");
+});
+
+test("AC-CU-03: release-when-done of a session whose every job failed says 'all jobs failed'; a mixed one keeps today's text", async () => {
+  for (const [failed, expected] of [
+    [3, "all jobs failed (release when done)"],
+    [2, "released after last job (1 min after the last job finished)"],
+  ] as const) {
+    const summary = { total: 3, open: 0, failed, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
+    const f = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
+    const p = await f.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
+    await (await f.services.approveSession({ sessionId: p.sessionId })).started;
+    f.advance(61_000);
+    const tick = await tick1(f.services);
+    assert.equal(tick.action, "stopped");
+    assert.equal(tick.reason, expected);
+    assert.equal(f.mem.rows.get(p.sessionId)?.stopReason, expected);
+  }
 });

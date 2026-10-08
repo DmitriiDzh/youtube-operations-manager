@@ -8323,13 +8323,14 @@ export async function deleteMediaWorkflowTemplate(id: string, database: AppDb = 
   return rows.length > 0;
 }
 
-/** BL-135: how many jobs a session has, how many are not finished, and when the last one finished. */
-export async function getMediaSessionJobSummary(sessionId: string, database: AppDb = db): Promise<{ total: number; open: number; lastFinishedAt: Date | null }> {
+/** BL-135: how many jobs a session has, how many are not finished, how many failed (BL-155), and when the last one finished. */
+export async function getMediaSessionJobSummary(sessionId: string, database: AppDb = db): Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }> {
   const rows = await database.select({ status: mediaJobs.status, finishedAt: mediaJobs.finishedAt }).from(mediaJobs).where(eq(mediaJobs.sessionId, sessionId));
   const finished = rows.map((r) => r.finishedAt).filter((d): d is Date => d instanceof Date);
   return {
     total: rows.length,
     open: rows.filter((r) => !["done", "failed", "cancelled"].includes(r.status)).length,
+    failed: rows.filter((r) => r.status === "failed").length,
     lastFinishedAt: finished.length > 0 ? new Date(Math.max(...finished.map((d) => d.getTime()))) : null,
   };
 }
