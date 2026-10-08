@@ -7,8 +7,9 @@
 # listener on port $PORT, (2) wait for
 # any RUNNING operation to finish (`operation-lock wait-idle`; refuse to stop if it does not within
 # 2 minutes), (3) stop the process, (4) confirm the port is actually free. Exit code 0 = nothing
-# left running, 1 = not stopped (start.sh/update.sh must not go on), 2 = refused before signalling
-# anything because an operation is running (also "not stopped"; BL-158's start.sh keeps that server).
+# left running, 1 = not stopped (start.sh/update.sh must not go on; under the BL-158 service: signalled but
+# not exited yet), 2 = refused before signalling anything because an operation is running (also "not
+# stopped"; BL-158's start.sh keeps that server).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 PIDFILE="$(pwd)/.launcher.pid"

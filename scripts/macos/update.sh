@@ -26,12 +26,10 @@ fi
 
 "$SCRIPT_DIR/stop.sh" || exit 1
 
-echo "Installing dependencies for this version..."
-npm install
-
-echo "Rebuilding..."
-# Off the real database while building, like build-if-stale.sh (RISK-63); the start migrates it.
-NODE_TEST_CONTEXT=1 npm run build
+echo "Installing dependencies and rebuilding this version..."
+# The one build rule, forced: off the real database while building (RISK-63), the marker written only after a complete
+# build, so an interrupted update is rebuilt by the next start instead of being served.
+"$SCRIPT_DIR/build-if-stale.sh" --force
 
 echo ""
 echo "Update complete. Run start.sh to launch the updated application."

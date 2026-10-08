@@ -113,8 +113,13 @@ From the project root:
 
 Same behavior as the Windows script: checks Node.js and `.env.local`, installs dependencies if
 needed, then runs the same rebuild-staleness check described in §3 step 4 (git-commit-marker
-comparison in a checkout, falling back to "rebuild only if `.next` is missing" otherwise), starts
-the server, opens your default browser, and prints where its data lives. Never touches git, the
+comparison in a checkout), starts
+the server, opens your default browser, and prints where its data lives. Since BL-158 the macOS
+rule (`scripts/macos/build-if-stale.sh`, shared by `start.sh`, `update.sh` and the system service)
+is stricter than Windows': a folder without git also gets a marker (`no-git`), missing
+`node_modules` or a missing marker always means a full install and build, the marker is removed
+before building and written only after a complete build (an interrupted install or build is never
+served), and `next build` runs with `NODE_TEST_CONTEXT=1` so it never opens the real database. Never touches git, the
 network, or your working tree — no `git pull`, nothing (see §3's note on why, and what changed
 2026-09-21).
 
