@@ -133,7 +133,8 @@ function createToolDeps(): FactoryToolDeps {
         };
         // BL-157 (review round 2): a plan-linked job is checked and created under the plan's lock, so a plan move cannot
         // pass between them and leave the moved plan with a job still running on the old channel.
-        return planId && itemKey ? withPlanLock(planId, create) : create();
+        // Locked on the id the plans module will use (it trims it) -- review round 3.
+        return planId && itemKey ? withPlanLock(planId.trim(), create) : create();
       },
       getJob: async ({ jobId, sessionId }) => {
         const core = createMediaGenerationCore();

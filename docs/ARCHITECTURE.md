@@ -3077,7 +3077,10 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     `{ checked, missing (≤ 500), missingCount, unfinishedJobs, moved }`. `checkOnly` writes nothing.
   - On success it records `plan_moved { from, to, checked }`.
   - A plan changed during the check (its revision moved) is refused, to be asked again. The factory's plan-linked
-    `create_job` runs under the same lock (`withPlanLock`), so a move cannot pass between its check and the job's creation.
+    `create_job` runs under the same lock (`withPlanLock`, on the trimmed plan id), so a move cannot pass between its check and
+    the job's creation.
+  - Only the factory links a job to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field, and the operator's
+    `POST /api/media-generation/jobs` drops it.
   - `PlanJobRow.channelId` (`media_jobs.channel_id`) makes `resolveAudition` of a job output use the job's channel. The report's
     `jobChannelId` does the same for the other device.
 - **Plans report version 2** (`GENERATION_PLANS_REPORT_VERSION`; the reader accepts 1 and 2, and every level stays strict).
@@ -3101,9 +3104,10 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     - `recordOwnerVerdict` appends a row with `deviceLabel`, the host name.
     - `applyPeerVerdicts` appends a row with the sending device and the verdict's own note. A peer verdict older than the
       stored one is not applied but is still appended, and is recorded once as `peer_verdict { superseded: true }`.
-    - `seedHistory`: before the first history row of an attempt, a current verdict stored before v69 goes in first. Its device is
-      read from the note's ` (from <device>)` suffix, else this device. A replacement or an older peer verdict therefore never
-      hides it.
+    - `seedHistory`: before the first history row of an attempt, a current verdict stored before v69 goes in first. Its device
+      is read from the note's ` (from <device>)` suffix only when a `peer_verdict` event from that device on that item proves the
+      relay. Otherwise it is this device, and the note is kept whole. A replacement or an older peer verdict therefore never hides
+      it. History rows are clamped to the report's bounds when they are shared.
     - `planEvents(..., history)` emits one `owner_verdict` per history row, with `device`. A key with no history row gets one
       event from the result row.
   - **Claims (schema v70, `generation_plan_review_claims`, this device's own).**

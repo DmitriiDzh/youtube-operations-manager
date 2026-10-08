@@ -1545,6 +1545,8 @@ test("AC-TC-05: replacing a verdict stored before the history existed keeps it i
   await s.services.createPlan(basePlan());
   await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", auditionFile: "a.mp3" }] });
   await s.store.upsertResults("R-0001-S1-music", [{ stageId: "owner_review", itemKey: "C1/F1", attemptRef: "ext:a", result: "rejected", reportedBy: "owner", note: "too thin (from Windows PC)", rating: 4, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: "2026-10-07T09:00:00.000Z" }]);
+  // As every applied peer verdict did (round 3: the suffix names a device only when such an event proves it).
+  await s.store.insertEvent("R-0001-S1-music", { at: "2026-10-07T09:00:01.000Z", kind: "peer_verdict", actor: "owner", details: { verdictId: "v-old", fromDevice: "Windows PC", itemKey: "C1/F1", result: "rejected" } });
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", rating: 9, replace: true });
   const history = await s.store.listVerdictHistory("R-0001-S1-music");
   // The old verdict names Windows in its note; the new one was given here (no device label wired: the device id).
@@ -1569,4 +1571,29 @@ test("AC-TC-01: a release needs no plan -- it works after the plan closed (only 
   await d.mac.closePlan({ planId: "R-0001-S1-music", status: "completed" });
   await d.mac.claimReview({ planId: "R-0001-S1-music", scope: "group", groupId: "C1", release: true });
   assert.deepEqual(await d.mac.ownClaims(), []);
+});
+
+// Review round 3 fixes (BL-157).
+test("AC-TC-05: two verdicts from the other computer on one attempt applied in the same tick give two history rows, not three", async () => {
+  const d = await twoDevicesWithTrack();
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", rating: 3 });
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 7, replace: true });
+  await d.publish("win", d.win);
+  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 2, skipped: 0 });
+  const history = await d.macBase.store.listVerdictHistory("R-0001-S1-music");
+  assert.deepEqual(history.map((h) => [h.device, h.result, h.rating]), [["Windows PC", "rejected", 3], ["Windows PC", "accepted", 7]]);
+  assert.equal((await d.mac.getPlan({ planId: "R-0001-S1-music" })).events.filter((e) => e.kind === "owner_verdict").length, 2);
+});
+
+test("AC-TC-05: a note that only ends like '(from …)' is the owner's own words -- the seeded verdict is this computer's, the note kept whole", async () => {
+  const long = `clipping (from ${"x".repeat(300)})`;
+  for (const note of ["clipping (from 1:20)", long]) {
+    const t = setup();
+    await t.services.createPlan(basePlan());
+    await t.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", auditionFile: "a.mp3" }] });
+    await t.store.upsertResults("R-0001-S1-music", [{ stageId: "owner_review", itemKey: "C1/F1", attemptRef: "ext:a", result: "rejected", reportedBy: "owner", note, rating: 4, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: "2026-10-07T09:00:00.000Z" }]);
+    await t.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", replace: true });
+    const [seeded] = await t.store.listVerdictHistory("R-0001-S1-music");
+    assert.deepEqual([seeded.device, seeded.note], ["this-device", note], note.slice(0, 30));
+  }
 });

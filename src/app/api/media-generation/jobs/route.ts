@@ -30,7 +30,10 @@ export function createJobsPostHandler(deps: MediaRouteDeps = defaultMediaRouteDe
     if (!body.ok) return body.response;
     const input = bodyRecord(body.body);
     await assertConnectedChannel(routeDeps, input.channelId);
-    return NextResponse.json({ job: await core.createJob({ ...input, createdBy: "operator" }) }, { status: 201 });
+    // BL-157 (review round 3): only the factory links a job to a plan (checked, under the plan's lock); never from here.
+    const { plan: _plan, ...own } = input;
+    void _plan;
+    return NextResponse.json({ job: await core.createJob({ ...own, createdBy: "operator" }) }, { status: 201 });
   });
 }
 

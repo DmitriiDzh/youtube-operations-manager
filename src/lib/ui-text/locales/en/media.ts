@@ -155,7 +155,7 @@ export const media = {
   "media.sessions.thisChannel": "this channel",
   "media.sessions.allChannels": "All channels",
   "media.sessions.channelFilter": "Filter sessions by channel",
-  "media.nowRunning.line": "Generating now for this channel: {gpu} · {status}",
+  "media.nowRunning.line": "Generating now for this channel: session {session} · {gpu} · {status}",
   "media.nowRunning.noGpuYet": "a GPU is being found",
   "media.nowRunning.open": "Open in Servers →",
   "media.sessions.approvedByFactory": "approved by the factory (within its limits)",

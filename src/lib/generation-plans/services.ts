@@ -506,7 +506,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     return history
       .filter((h) => h.itemKey === itemKey && h.attemptRef === attemptRef)
       .slice(-HISTORY_SHOWN)
-      .map((h) => ({ result: h.result, rating: h.rating, note: h.note, device: h.device, at: h.at }));
+      // Within the shared report's bounds whatever is stored, so one odd row never stops this device's report (review round 3).
+      .map((h) => ({ result: h.result, rating: h.rating, note: h.note === null ? null : h.note.slice(0, 2000), device: h.device.slice(0, 255), at: h.at.slice(0, 40) }));
   }
 
   /**
@@ -517,7 +518,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   async function seedHistory(planId: string, history: PlanVerdictHistoryRow[], current: PlanResultRow | undefined): Promise<void> {
     if (!current || current.reportedBy !== "owner" || (current.result !== "accepted" && current.result !== "rejected")) return;
     if (history.some((h) => h.itemKey === current.itemKey && h.attemptRef === current.attemptRef)) return;
-    const from = current.note ? /^([\s\S]*?)\s*\(from ([^()]+)\)$/.exec(current.note) : null;
+    // A note that only ends like "(from 1:20)" is the owner's own words: the suffix names a device only when a peer verdict
+    // from that device on this item was applied here (review round 3).
+    const match = current.note ? /^([\s\S]*?)\s*\(from ([^()]{1,255})\)$/.exec(current.note) : null;
+    const relayed = match
+      ? (await deps.store.listEvents(planId)).some((e) => e.kind === "peer_verdict" && e.details.superseded !== true && e.details.fromDevice === match[2] && e.details.itemKey === current.itemKey)
+      : false;
+    const from = relayed ? match : null;
     const row: PlanVerdictHistoryRow = {
       itemKey: current.itemKey,
       attemptRef: current.attemptRef,
@@ -892,7 +899,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const result = resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString());
       await seedHistory(row.id, history, current);
       await deps.store.upsertResults(row.id, [result]);
-      await deps.store.insertVerdictHistory(row.id, {
+      const given: PlanVerdictHistoryRow = {
         itemKey: result.itemKey,
         attemptRef: result.attemptRef,
         result: parsed.result,
@@ -902,7 +909,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         note: result.note,
         device: await ownLabel(),
         at: result.at,
-      });
+      };
+      await deps.store.insertVerdictHistory(row.id, given);
+      history.push(given);
       await endTrackClaim(await ownDeviceId(), row.id, result.itemKey, result.attemptRef);
       await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
       return result;
@@ -1329,7 +1338,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               // BL-157 (AC-TC-05, review round 1): a verdict older than the stored one does not replace it, but the history
               // keeps it -- the double rating claims and the confirmation exist for must not lose either verdict. Recorded as
               // handled, so the next tick does not weigh it again.
-              await deps.store.insertVerdictHistory(row.id, {
+              const keptRow: PlanVerdictHistoryRow = {
                 itemKey: verdict.itemKey,
                 attemptRef: verdict.attemptRef,
                 result: verdict.result,
@@ -1339,7 +1348,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
                 note: verdict.note,
                 device: from,
                 at: verdict.at,
-              });
+              };
+              await deps.store.insertVerdictHistory(row.id, keptRow);
+              history.push(keptRow);
               await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: from, itemKey: verdict.itemKey, result: verdict.result, superseded: true });
               k++;
               continue;
@@ -1362,8 +1373,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               at: verdict.at,
             };
             await deps.store.upsertResults(row.id, [row2]);
-            // BL-157 (AC-TC-05): the history keeps the verdict as given there, with the device it came from.
-            await deps.store.insertVerdictHistory(row.id, {
+            // BL-157 (AC-TC-05): the history keeps the verdict as given there, with the device it came from -- also in the list
+            // held for this tick, so a second verdict on the attempt in the same tick does not seed it again (review round 3).
+            const appliedRow: PlanVerdictHistoryRow = {
               itemKey: verdict.itemKey,
               attemptRef: verdict.attemptRef,
               result: verdict.result,
@@ -1373,7 +1385,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               note: verdict.note,
               device: from,
               at: verdict.at,
-            });
+            };
+            await deps.store.insertVerdictHistory(row.id, appliedRow);
+            history.push(appliedRow);
             current.set(key, row2);
             await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: from, itemKey: verdict.itemKey, result: verdict.result });
             a++;

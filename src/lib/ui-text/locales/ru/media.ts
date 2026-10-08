@@ -156,7 +156,7 @@ export const media: Record<keyof typeof en, string> = {
   "media.sessions.thisChannel": "этот канал",
   "media.sessions.allChannels": "Все каналы",
   "media.sessions.channelFilter": "Фильтр сессий по каналу",
-  "media.nowRunning.line": "Сейчас генерируется для этого канала: {gpu} · {status}",
+  "media.nowRunning.line": "Сейчас генерируется для этого канала: сессия {session} · {gpu} · {status}",
   "media.nowRunning.noGpuYet": "подбирается GPU",
   "media.nowRunning.open": "Открыть в «Серверах» →",
   "media.sessions.approvedByFactory": "одобрено фабрикой (в пределах её лимитов)",

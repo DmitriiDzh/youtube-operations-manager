@@ -253,7 +253,9 @@ const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdS
 const agentRequestMediaSessionInputSchema = requestSessionInputSchema.omit({ requestedBy: true });
 const agentGetMediaSessionInputSchema = z.object({ channelId: mediaChannelIdSchema, sessionId: z.string().min(1).max(64).optional() }).strict();
 const agentGetMediaLimitsInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
-const agentCreateMediaJobInputSchema = createJobInputSchema.omit({ createdBy: true });
+// BL-157 (review round 3): a job is linked to a generation plan only by the factory, checked by the plans module and under
+// the plan's lock (ADR 0029 §4, ADR 0031) -- never by a channel agent, so `plan` is not the agent's to set.
+const agentCreateMediaJobInputSchema = createJobInputSchema.omit({ createdBy: true, plan: true });
 const agentGetMediaJobInputSchema = z
   .object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() })
   .strict();

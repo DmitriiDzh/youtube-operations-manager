@@ -1333,7 +1333,8 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                   <td className="py-2">{actions(s)}</td>
                 </tr>
               )).flatMap((row, index) => {
-                const s = openSessions[index];
+                // The same (filtered) list the rows came from (review round 3).
+                const s = shownOpen[index];
                 if (s.status !== "running") return [row];
                 const now = nowRunningOn(s.sessionId, liveJobs);
                 return [
@@ -2797,7 +2798,8 @@ export function NowRunningLine({ activeChannelId, sessionsHref }: { activeChanne
     <div className="space-y-1">
       {mine.map((s) => (
         <p key={s.sessionId} className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
-          <span>{t("media.nowRunning.line", { gpu: s.gpuTypeId ?? t("media.nowRunning.noGpuYet"), status: mediaStatusLabel(t, s.status) })}</span>
+          {/* AC-SM-06: the session (its short id), its GPU and its state. */}
+          <span>{t("media.nowRunning.line", { session: s.sessionId.slice(0, 8), gpu: s.gpuTypeId ?? t("media.nowRunning.noGpuYet"), status: mediaStatusLabel(t, s.status) })}</span>
           <Link href={sessionsHref} className="text-emerald-300 underline hover:text-white">
             {t("media.nowRunning.open")}
           </Link>

@@ -254,16 +254,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     const { ok } = await activateStoredChannel(channelId);
     if (!ok) setOpenAfterSwitch(null);
   }, [channel?.id, router]);
-  // Nor does it outlive the switch window: the channel never arriving (or a channel that cannot be read) drops it.
+  // Nor does it outlive the switch window: a channel that never arrives drops it after 30 s (as the switch overlay ends).
   useEffect(() => {
     if (!openAfterSwitch) return;
-    if (channelUnavailable) {
-      queueMicrotask(() => setOpenAfterSwitch(null));
-      return;
-    }
     const timer = setTimeout(() => setOpenAfterSwitch(null), 30_000);
     return () => clearTimeout(timer);
-  }, [openAfterSwitch, channelUnavailable]);
+  }, [openAfterSwitch]);
   useEffect(() => {
     if (!openAfterSwitch || channel?.id !== openAfterSwitch.channelId) return;
     const { href } = openAfterSwitch;
@@ -385,6 +381,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       clearInterval(id);
+      // The old channel's counts are not shown as the new one's while its answer is on the way (review round 3).
+      setChannelWork([]);
+      setSummaryActiveChannelId(null);
+      setPlansWaiting(0);
+      setPlansWaitingRejected(0);
     };
     // BL-157: read again when the active channel changes -- the badge is that channel's.
   }, [userId, activeChannelId]);

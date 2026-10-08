@@ -320,7 +320,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const [claims, setClaims] = useState<PlanReviewClaim[]>([]);
   const [showClaimed, setShowClaimed] = useState(false);
   const [waveTaken, setWaveTaken] = useState<string | null>(null);
-  const [confirmReplace, setConfirmReplace] = useState<{ result: "accepted" | "rejected"; existing: PlanExistingVerdict } | null>(null);
+  // The attempt the question is about travels with it: "Replace" confirms exactly that track (review round 3).
+  const [confirmReplace, setConfirmReplace] = useState<{ result: "accepted" | "rejected"; existing: PlanExistingVerdict; itemKey: string; attemptRef: string } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const freshClaims = useRef<PlanReviewClaim[]>([]);
   // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06) and wave (BL-157).
@@ -431,6 +432,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         const sentHere = entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ?? false;
         setConfirmReplace({
           result,
+          itemKey: entry.itemKey,
+          attemptRef: entry.attemptRef,
           existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? (sentHere ? null : (entry.history?.at(-1)?.device ?? null)), at: entry.verdict.at },
         });
         return;
@@ -462,7 +465,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         if (error instanceof RequestError && error.code === "plan_verdict_exists") {
           const existing = (error.details as { existing?: PlanExistingVerdict } | undefined)?.existing;
           if (existing) {
-            setConfirmReplace({ result, existing });
+            setConfirmReplace({ result, existing, itemKey: entry.itemKey, attemptRef: entry.attemptRef });
             return;
           }
         }
@@ -1021,9 +1024,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           confirmLabel={t("review.replace.confirm")}
           onCancel={() => setConfirmReplace(null)}
           onConfirm={() => {
-            const { result } = confirmReplace;
+            const { result, itemKey, attemptRef } = confirmReplace;
             setConfirmReplace(null);
-            void submit(result, true);
+            // Only the track the question named; if the screen moved meanwhile, nothing is sent.
+            if (entry?.itemKey === itemKey && entry.attemptRef === attemptRef) void submit(result, true);
           }}
         />
       )}

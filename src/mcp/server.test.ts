@@ -6098,6 +6098,16 @@ test("MCP agent_create_media_job stamps createdBy:agent; request/create/cancel a
   }
 });
 
+// BL-157 (review round 3; ADR 0029 §4, ADR 0031): only the factory links a job to a generation plan (checked by the plans module,
+// under the plan's lock). A channel agent's job naming a plan is refused before anything is created.
+test("MCP agent_create_media_job refuses a `plan` link (only the factory links a job to a plan)", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const refused = await handlers.agentCreateMediaJob({ channelId: "UC_1", sessionId: "ms-1", templateId: "t1", plan: { planId: "R-0001-S1-music", stageId: "generate", itemKey: "C1/F1" } });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "validation_failed");
+  assert.deepEqual(calls, []);
+});
+
 // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4, AC-FO-05/09/13) -- agent_list_logical_paths and
 // agent_get_logical_path. Positional args up to the trailing logicalPathsCore parameter (index 16 since the Phase 14 merge put mediaGenerationCore at 15).
 function makeLogicalPathHandlers(logicalPathsCore: Parameters<typeof createMcpToolHandlers>[16]) {
