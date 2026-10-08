@@ -455,7 +455,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           </button>
         </div>
       </div>
-      {filterCounts.anyRejected && (
+      {/* Kept while a filter other than All is chosen, so a queue whose rejects went away never hides its way back. */}
+      {(filterCounts.anyRejected || filter !== "all") && (
         <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
           {(["all", "passed", "rejected"] as const).map((f) => (
             <button
