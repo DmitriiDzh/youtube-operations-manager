@@ -1133,6 +1133,22 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       return { channelId: row.channelId, kind: "sent", relativePath: reference.file };
     },
 
+    /**
+     * BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-03, ADR 0004 (b)): the owner's Web UI shows only the active channel's plans. A plan
+     * of another channel -- or any plan while no channel is active -- is "not found", like an unknown one.
+     */
+    async assertPlanOfChannel(planId: string, channelId: string | null): Promise<void> {
+      const row = await deps.store.getPlan(planId);
+      if (!row || !channelId || row.channelId !== channelId) throw planNotFound(planId);
+    },
+
+    /** The same for another device's plan, judged by the channel that device's latest report names. */
+    async assertPeerPlanOfChannel(deviceId: string, planId: string, channelId: string | null): Promise<void> {
+      const report = deps.peers ? (await deps.peers.listPeerReports()).find((r) => r.deviceId === deviceId) : undefined;
+      const plan = report?.plans.find((p) => p.planId === planId);
+      if (!plan || !channelId || plan.channelId !== channelId) throw planNotFound(planId);
+    },
+
     /** A session started for a plan (`factory_media_start_session` with planId): the plan is active and of that channel. */
     async checkSessionLink(input: { planId: string; channelId: string }): Promise<void> {
       const row = await requireActive(input.planId);

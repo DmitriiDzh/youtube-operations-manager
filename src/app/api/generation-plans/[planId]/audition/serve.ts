@@ -52,6 +52,8 @@ export function parseRange(header: string | null, size: number): { start: number
 
 export type AuditionDeps = {
   getSession(): Promise<{ user?: { id?: string | null } } | null>;
+  /** BL-157 (AC-SM-03): refuses (plan_not_found) a plan that is not the session's active channel's. */
+  assertVisible(userId: string, planId: string): Promise<void>;
   resolveAudition(input: { planId: string; itemKey: string; attemptRef: string }): Promise<{ channelId: string } & ({ kind: "sent"; relativePath: string } | { kind: "job"; jobId: string; localPath: string })>;
   /** The channel's workspace folder on this device, or null. */
   workspaceOf(channelId: string): Promise<string | null>;
@@ -77,9 +79,11 @@ function createPlanFileGetHandler(deps: Omit<AuditionDeps, "resolveAudition">, n
     // A local file leaves this route only for a browser on this computer (ADR 0029 §5): loopback Host and Origin.
     if (!isLoopbackRequest(request.headers)) return NextResponse.json({ error: "forbidden", message: "Local files are served only to this computer" }, { status: 403 });
     const session = await deps.getSession();
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const userId = session?.user?.id;
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     try {
       const { planId } = await context.params;
+      await deps.assertVisible(userId, planId);
       const url = new URL(request.url);
       const extra = [...url.searchParams.keys()].filter((k) => !names.includes(k));
       if (extra.length > 0) return NextResponse.json({ error: "validation_failed", message: `Unknown query parameter ${extra[0]}: only ${names.join(" and ")}` }, { status: 400 });

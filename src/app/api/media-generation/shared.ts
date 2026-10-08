@@ -63,7 +63,7 @@ export async function assertConnectedChannel(deps: MediaRouteDeps, channelId: un
 /** Wraps a handler: 401 without a session, DomainError mapping, 500 otherwise. */
 export function mediaHandler(
   deps: MediaRouteDeps,
-  run: (args: { core: MediaGenerationCore; request: Request; deps: MediaRouteDeps }) => Promise<NextResponse>
+  run: (args: { core: MediaGenerationCore; request: Request; deps: MediaRouteDeps; userId: string }) => Promise<NextResponse>
 ): (request: Request) => Promise<NextResponse> {
   return async function handler(request: Request) {
     const session = await deps.getSession();
@@ -71,7 +71,7 @@ export function mediaHandler(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     try {
-      return await run({ core: deps.core, request, deps });
+      return await run({ core: deps.core, request, deps, userId: session.user.id });
     } catch (error) {
       return mediaErrorResponse(error);
     }

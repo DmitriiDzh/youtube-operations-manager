@@ -1160,3 +1160,23 @@ test("AC-RP-03: another device's job output plays from the channel the job ran o
   delete d.reports.mac.plans[0].review[0].jobChannelId;
   assert.deepEqual(await d.win.resolvePeerAudition({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1" }), { channelId: "UC_target_channel", kind: "job", jobId: "j1", localPath: "media/j1/take.mp3" });
 });
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-03, ADR 0004 (b)): the owner's routes show only the active channel's plans.
+test("AC-SM-03: a plan is visible only to its own channel; another channel, no active channel or an unknown plan is plan_not_found", async () => {
+  const s = setup();
+  await s.services.createPlan(basePlan());
+  await s.services.assertPlanOfChannel("R-0001-S1-music", CHANNEL);
+  await assert.rejects(s.services.assertPlanOfChannel("R-0001-S1-music", "UC_other"), refused("plan_not_found"));
+  await assert.rejects(s.services.assertPlanOfChannel("R-0001-S1-music", null), refused("plan_not_found"));
+  await assert.rejects(s.services.assertPlanOfChannel("nope-plan", CHANNEL), refused("plan_not_found"));
+});
+
+test("AC-SM-03: another device's plan is visible only to the channel its report names", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.publish("mac", d.mac);
+  await d.win.assertPeerPlanOfChannel("mac", "R-0001-S1-music", CHANNEL);
+  await assert.rejects(d.win.assertPeerPlanOfChannel("mac", "R-0001-S1-music", "UC_other"), refused("plan_not_found"));
+  await assert.rejects(d.win.assertPeerPlanOfChannel("mac", "R-0001-S1-music", null), refused("plan_not_found"));
+  await assert.rejects(d.win.assertPeerPlanOfChannel("linux", "R-0001-S1-music", CHANNEL), refused("plan_not_found"));
+});

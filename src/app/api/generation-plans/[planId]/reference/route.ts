@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
+import { activeChannelOf } from "../../shared";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createReferenceGetHandler } from "../audition/serve";
@@ -14,6 +15,7 @@ const unavailable = (reason: string) => new Error(reason);
 /** BL-143 phase 3 (FO-MSG-0009): a plan reference track for A/B (`?id=`), from the channel's Sent to YTM, with Range. */
 export const GET = createReferenceGetHandler({
   getSession: () => getServerSession(authOptions),
+  assertVisible: async (userId, planId) => createGenerationPlansCore().assertPlanOfChannel(planId, await activeChannelOf(userId)),
   resolveReference: (input) => createGenerationPlansCore().resolveReference(input),
   async workspaceOf(channelId) {
     const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });
