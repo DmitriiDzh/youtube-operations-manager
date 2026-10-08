@@ -51,7 +51,7 @@ export const batches: Record<keyof typeof en, string> = {
   "batches.noAudit": "Событий аудита пока нет — выполните пробный запуск выше.",
   "batches.confirmSendAll.title": "Действительно отправить все одобренные изменения в YouTube?",
   "batches.confirmSendAll.body":
-    "Канал: {channel}. {count, plural, one {# одобренное изменение} few {# одобренных изменения} many {# одобренных изменений} other {# одобренного изменения}} для {videos, plural, one {# видео} few {# видео} many {# видео} other {# видео}} будут собраны в один пакет с записью и выполнены сейчас. Каждое видео перед записью всё равно проходит проверку канала, свежую проверку конфликтов и автоматическое резервное копирование; отправляются только переводы названий и описаний. Отменить это в приложении нельзя.",
+    "Канал: {channel}. В один пакет с записью будут собраны и сейчас выполнены одобренные изменения: {count, plural, one {#} few {#} many {#} other {#}} для {videos, plural, one {# видео} few {# видео} many {# видео} other {# видео}}. Каждое видео перед записью всё равно проходит проверку канала, свежую проверку конфликтов и автоматическое резервное копирование; отправляются только переводы названий и описаний. Отменить это в приложении нельзя.",
   "batches.confirmSendAll.confirm": "Отправить все",
   "batches.confirmResend.title":
     "{count, plural, one {Записать # отменённое видео в YouTube?} few {Записать # отменённых видео в YouTube?} many {Записать # отменённых видео в YouTube?} other {Записать # отменённого видео в YouTube?}}",
@@ -70,7 +70,7 @@ export const batches: Record<keyof typeof en, string> = {
 
   // Progress window of a running batch
   "batches.progress.cancelled": "Отменено",
-  "batches.progress.unknownOutcome": "UNKNOWN — результат не подтверждён",
+  "batches.progress.unknownOutcome": "Неизвестно — результат не подтверждён",
   "batches.progress.stageDryRun": "Пробный запуск: проверка канала, резервной копии и конфликтов — ничего не записывается",
   "batches.progress.stageWriting": "Запись в YouTube — для каждого видео делается резервная копия и сверка",
   "batches.progress.stagePreparing": "Подготовка: проверка канала, резервная копия и проверка конфликтов",

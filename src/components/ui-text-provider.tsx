@@ -1,9 +1,10 @@
 "use client";
 
-import { createContext, Fragment, useContext, useMemo, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useMemo, useState, type ReactNode } from "react";
 import {
   createTranslator,
   formatNumber,
+  translate,
   type Translate,
   type UiLanguage,
   type UiTextKey,
@@ -25,17 +26,38 @@ type UiTextContextValue = {
 
 const UiTextContext = createContext<UiTextContextValue | null>(null);
 
+/** One translator whose language can change underneath it (see the provider). Exported for its test. */
+export class LiveLanguage {
+  private language: UiLanguage;
+  readonly t: Translate;
+  readonly formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
+
+  constructor(language: UiLanguage) {
+    this.language = language;
+    const t = ((key: UiTextKey, params?: UiTextParams) => translate(this.language, key, params)) as Translate;
+    Object.defineProperty(t, "language", { get: () => this.language });
+    this.t = t;
+    this.formatNumber = (value, options) => formatNumber(this.language, value, options);
+  }
+
+  set(language: UiLanguage) {
+    this.language = language;
+  }
+}
+
 export function UiTextProvider(props: { language: UiLanguage; source: UiLanguageSource; systemLanguage: UiLanguage; children: ReactNode }) {
   const { language, source, systemLanguage } = props;
+  // Review round 4: `t` and `formatNumber` keep ONE identity for the provider's lifetime and read the current language
+  // when called. Components list `t` in their fetch callbacks' dependencies; if `t` changed with the language, switching
+  // it (Settings → General) would refetch every mounted panel and overwrite unsaved form drafts, which `router.refresh()`
+  // otherwise keeps. Consumers still re-render on a change -- the context value below changes with `language` -- and then
+  // every `t(...)` call returns the new language. Updating it during render is safe: the value is derived only from props,
+  // so a discarded render cannot leave it wrong for the committed tree.
+  const [live] = useState(() => new LiveLanguage(language));
+  live.set(language);
   const value = useMemo<UiTextContextValue>(
-    () => ({
-      language,
-      source,
-      systemLanguage,
-      t: createTranslator(language),
-      formatNumber: (n, options) => formatNumber(language, n, options),
-    }),
-    [language, source, systemLanguage],
+    () => ({ language, source, systemLanguage, t: live.t, formatNumber: live.formatNumber }),
+    [language, source, systemLanguage, live],
   );
   return <UiTextContext.Provider value={value}>{props.children}</UiTextContext.Provider>;
 }

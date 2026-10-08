@@ -177,7 +177,7 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.ai.newTitle": "Новое подключение",
   "settingsCards.ai.displayName": "Отображаемое имя",
   "settingsCards.ai.adapterType": "Тип адаптера",
-  "settingsCards.ai.mockOption": "Mock (детерминированный, без сети)",
+  "settingsCards.ai.mockOption": "Тестовый (детерминированный, без сети)",
   "settingsCards.ai.baseUrl": "Base URL",
   "settingsCards.ai.structuredOutput": "Структурированный вывод",
   "settingsCards.ai.structuredNone": "нет (не поддерживается — генерация завершится ошибкой)",
