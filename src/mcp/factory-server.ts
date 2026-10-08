@@ -32,7 +32,8 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * 1.9.0 (BL-159, FO-REQ-0011): `factory_media_start_session` takes `minCudaVersion` (a registry template may declare one too),
  * which may only raise the owner's setting; sessions show `minCudaVersion`, `usedMinCudaVersion` and `hostCudaVersion`, a
  * capacity-log `placed` entry shows `hostCudaVersion`, the settings read lists `gpu.cudaVersions`, and a job or plan run whose
- * template needs a newer host CUDA than the session's known host is refused with `media_gpu_host_incompatible`.
+ * template needs a newer host CUDA than the session's known host is refused with `media_gpu_host_incompatible`; a start's
+ * `templateId` is looked up even when `gpu` is given (an unknown one is `media_template_not_found`); templates list `minCudaVersion`.
  */
 export const FACTORY_API_VERSION = "1.9.0";
 
@@ -448,7 +449,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_list_templates",
     {
       description:
-        "List this computer's media workflow templates: { templates: [{ templateId, version, source ('factory' from the registry, 'owner' = local), name, description, parameters, models, modelsMissing, updatedAt }], lastSync }. modelsMissing = declared models not on the volume (null when the volume could not be listed). Read-only.",
+        "List this computer's media workflow templates: { templates: [{ templateId, version, source ('factory' from the registry, 'owner' = local), name, description, parameters, models, modelsMissing, minCudaVersion (1.9.0: the lowest host CUDA the template needs, null = none), updatedAt }], lastSync }. modelsMissing = declared models not on the volume (null when the volume could not be listed). Read-only.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.listTemplates())

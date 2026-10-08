@@ -8103,23 +8103,19 @@ export type MediaControlEventRow = { id: number; at: Date; actor: string; action
 
 /** BL-132: appends one audit row (model pull/cancel/delete, template install/update/remove/sync). Never updated or deleted. */
 /** BL-133: one createPod attempt; rows older than 90 days are pruned on the way. */
+/** Returns the new row's id (BL-159: the host's CUDA is written onto that `placed` row once known). */
 export async function insertMediaCapacityAttempt(
   row: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: string; detail: string | null; hostCudaVersion?: string | null },
   database: AppDb = db
-): Promise<void> {
-  await database.insert(mediaCapacityAttempts).values(row);
+): Promise<number> {
+  const [inserted] = await database.insert(mediaCapacityAttempts).values(row).returning({ id: mediaCapacityAttempts.id });
   await database.delete(mediaCapacityAttempts).where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)));
+  return inserted.id;
 }
 
-/** BL-159: the host's CUDA version, once known, on the session's latest `placed` entry (a no-op if there is none). */
-export async function setMediaCapacityPlacedHostCuda(sessionId: string, hostCudaVersion: string, database: AppDb = db): Promise<void> {
-  const [latest] = await database
-    .select({ id: mediaCapacityAttempts.id })
-    .from(mediaCapacityAttempts)
-    .where(and(eq(mediaCapacityAttempts.sessionId, sessionId), eq(mediaCapacityAttempts.result, "placed")))
-    .orderBy(desc(mediaCapacityAttempts.at), desc(mediaCapacityAttempts.id))
-    .limit(1);
-  if (latest) await database.update(mediaCapacityAttempts).set({ hostCudaVersion }).where(eq(mediaCapacityAttempts.id, latest.id));
+/** BL-159: the host's CUDA version, once the host check reads it, on that placement's own capacity-log row. */
+export async function setMediaCapacityAttemptHostCuda(id: number, hostCudaVersion: string, database: AppDb = db): Promise<void> {
+  await database.update(mediaCapacityAttempts).set({ hostCudaVersion }).where(eq(mediaCapacityAttempts.id, id));
 }
 
 /** Newest first, optionally since a time and for one GPU type. */

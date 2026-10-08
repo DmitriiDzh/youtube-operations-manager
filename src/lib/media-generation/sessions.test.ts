@@ -109,6 +109,8 @@ function fakeRunpod(
     podPrice?: (gpuId: string) => number;
     /** BL-155 review 4: a RUNNING pod reports no runtime (image still downloading) for its first N RUNNING polls. */
     uptimeAfterRunningPolls?: number;
+    /** BL-159 review: called as each createPod begins (0 = the first), to look at the session row between placements. */
+    onCreate?: (index: number) => void;
   } = {}
 ) {
   const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] } }> = [];
@@ -139,6 +141,7 @@ function fakeRunpod(
   });
   const client = {
     async createPod(input: { env?: Record<string, string>; gpu?: { id: string; allowedCudaVersions?: string[] } }) {
+      opts.onCreate?.(createInputs.length);
       createInputs.push(input);
       calls.push(`createPod:${input.gpu?.id ?? ""}`);
       calls.push("createPod");
@@ -219,6 +222,8 @@ function fakeComfy(opts: { readyAfter?: number; never?: boolean; stats?: (baseUr
 }
 
 function fixture(opts: {
+  /** BL-159 review: the capacity-log record with this index (0 = the first) fails, as a DB hiccup would. */
+  capacityRecordFailsAt?: number;
   settings?: Partial<MediaSettings>;
   ready?: boolean;
   runpod?: ReturnType<typeof fakeRunpod>;
@@ -230,6 +235,7 @@ function fixture(opts: {
   proxyUrl?: (podId: string, port: number) => string;
 } = {}) {
   const capacityLog: Array<{ sessionId?: string; gpuTypeId: string; result: string; detail: string | null; hostCudaVersion?: string | null }> = [];
+  let recordCalls = 0;
   const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
   const settings = { ...READY_SETTINGS, ...opts.settings };
   const runpod = opts.runpod ?? fakeRunpod();
@@ -265,11 +271,14 @@ function fixture(opts: {
     ...(opts.jobSummary ? { jobSummary: opts.jobSummary } : {}),
     ...(opts.accountWide ? { accountWide: opts.accountWide } : {}),
     capacityLog: {
-      record: async (a) => void capacityLog.push({ sessionId: a.sessionId, gpuTypeId: a.gpuTypeId, result: a.result, detail: a.detail, hostCudaVersion: a.hostCudaVersion ?? null }),
-      // BL-159: like the DB helper -- the session's latest `placed` entry.
-      setPlacedHostCuda: async (sessionId, host) => {
-        const latest = [...capacityLog].reverse().find((e) => e.sessionId === sessionId && e.result === "placed");
-        if (latest) latest.hostCudaVersion = host;
+      // Like the DB helper: the entry's id (here its index) comes back, and the host's CUDA is set on that entry.
+      record: async (a) => {
+        if (recordCalls++ === opts.capacityRecordFailsAt) throw new Error("database is locked");
+        return capacityLog.push({ sessionId: a.sessionId, gpuTypeId: a.gpuTypeId, result: a.result, detail: a.detail, hostCudaVersion: a.hostCudaVersion ?? null }) - 1;
+      },
+      setHostCuda: async (attemptId, host) => {
+        const entry = capacityLog[attemptId];
+        if (entry) entry.hostCudaVersion = host;
       },
     },
     events: { record: async (e) => void events.push(e) },
@@ -2568,4 +2577,53 @@ test("AC-SC-01: a minimum that is not an accepted version is refused at input, a
     await assert.rejects(f.services.requestSession({ ...operatorRequest, minCudaVersion: bad }), (e: unknown) => isDomainError(e), bad);
   }
   assert.equal(f.mem.rows.size, 0);
+});
+
+
+// -- BL-159 review fixes -------------------------------------------------------------------------------------------------
+
+test("AC-SC-01 (review): a session waiting for capacity already shows the minimum its createPod calls asked for", async () => {
+  // `capacity` true = "no capacity" for that createPod (the fake's convention): no 13.0 host can be placed.
+  const f = fixture({ runpod: fakeRunpod({ capacity: () => true }), settings: FACTORY_ON });
+  const result = await f.services.factoryStartSession({ channelId: "UC1", minCudaVersion: "13.0" });
+  await settle();
+  const session = await f.services.getFactorySession({ sessionId: result.session.sessionId });
+  assert.equal(session.status, "waiting_capacity");
+  assert.equal(session.podId, null);
+  assert.equal(session.usedMinCudaVersion, "13.0", "the reason no host was found is visible");
+});
+
+test("AC-SC-02 (review): between placements the session shows no host CUDA -- the dead pod's host is gone before the next pod is created", async () => {
+  const seenBeforeCreate: Array<string | null | undefined> = [];
+  let f: ReturnType<typeof fixture> | null = null;
+  const runpod = fakeRunpod({
+    hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8"),
+    onCreate: () => {
+      const row = f ? [...f.mem.rows.values()][0] : undefined;
+      seenBeforeCreate.push(row ? (row.hostCudaVersion ?? null) : undefined);
+    },
+  });
+  f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.podId, "pod2");
+  assert.deepEqual(seenBeforeCreate, [null, null], "before pod1: nothing known; before pod2: pod1's 12.4 already cleared");
+  assert.equal(running.hostCudaVersion, "12.8");
+});
+
+test("AC-SC-02 (review): when a placement's own log entry could not be written, its host CUDA never lands on an earlier placement's entry", async () => {
+  // Records: 0 = pod1 placed, 1 = pod1 error (12.4 too old), 2 = pod2 placed -- this one fails (best effort, the start goes on).
+  const runpod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR }, capacityRecordFailsAt: 2 });
+  const running = await startRunning(f);
+  assert.equal(running.podId, "pod2");
+  assert.equal(running.hostCudaVersion, "12.8", "the session still shows its real host");
+  assert.deepEqual(f.capacityLog.map((a) => [a.result, a.hostCudaVersion]), [["placed", "12.4"], ["error", null]], "pod1's entry keeps 12.4");
+});
+
+test("AC-SC-02 (review): with no minimum, a host read refused by RunPod (401) is unknown -- it never stops the start", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => new DomainError({ code: "media_credentials_invalid", message: "RunPod rejected the key (401)" }) });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, minCudaVersion: null } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.hostCudaVersion, null);
 });

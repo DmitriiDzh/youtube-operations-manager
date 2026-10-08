@@ -86,6 +86,8 @@ function createToolDeps(): FactoryToolDeps {
             parameters: t.parameters,
             models: t.models,
             modelsMissing: onVolume === null ? null : t.models.filter((m) => m.folder && !onVolume.has(`models/${m.folder}/${m.file}`)),
+            // BL-159: which installed version carries a minimum host CUDA (RISK-116: an older build keeps an older copy).
+            minCudaVersion: t.minCudaVersion,
             updatedAt: t.updatedAt,
           })),
           lastSync,

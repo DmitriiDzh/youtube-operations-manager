@@ -17,3 +17,17 @@ test("the operator's session request is created without any plan link the reques
   assert.equal(res.status, 201);
   assert.deepEqual(requested, [{ channelId: "UC_tropico", maxMinutes: 30, requestedBy: "operator" }]);
 });
+
+// BL-159 (review): a session's own minimum host CUDA is the factory's (factory_media_start_session); the Web UI neither sets
+// nor shows it, so the operator route never passes one on.
+test("the operator's session request never carries a minCudaVersion the request names", async () => {
+  const requested: Array<Record<string, unknown>> = [];
+  const deps: MediaRouteDeps = {
+    getSession: async () => ({ user: { id: "u1" } }),
+    core: { requestSession: async (input: Record<string, unknown>) => (requested.push(input), { sessionId: "s1" }) } as unknown as MediaGenerationCore,
+    isConnectedChannel: async () => true,
+  };
+  const res = await createSessionsPostHandler(deps)(new Request("http://127.0.0.1/api/media-generation/sessions", { method: "POST", body: JSON.stringify({ channelId: "UC_tropico", minCudaVersion: "13.0" }) }));
+  assert.equal(res.status, 201);
+  assert.deepEqual(requested, [{ channelId: "UC_tropico", requestedBy: "operator" }]);
+});

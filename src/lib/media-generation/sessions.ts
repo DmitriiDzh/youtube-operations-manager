@@ -143,9 +143,10 @@ export type SessionServiceDependencies = {
   awaitCapacityRetries?: boolean;
   /** BL-133: the capacity log -- one call per createPod attempt (best effort: a failed record never fails a start). */
   capacityLog?: {
-    record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null; hostCudaVersion?: string | null }): Promise<void>;
-    /** BL-159: the host's CUDA version, once the host check reads it, on the session's latest `placed` entry. */
-    setPlacedHostCuda?(sessionId: string, hostCudaVersion: string): Promise<void>;
+    /** Returns the entry's id when the log keeps one (BL-159: the placement's own row gets the host's CUDA later). */
+    record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null; hostCudaVersion?: string | null }): Promise<number | void>;
+    /** BL-159: the host's CUDA version, once the host check reads it, on that placement's `placed` entry. */
+    setHostCuda?(attemptId: number, hostCudaVersion: string): Promise<void>;
   };
   /** BL-135: the session's jobs, for "release when done" (late-bound to the job services in `index.ts`). */
   jobSummary?(sessionId: string): Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
@@ -668,11 +669,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   }
 
   /** BL-133: one capacity-log row (best effort). */
-  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: "placed" | "no_capacity" | "error", detail: string | null, hostCudaVersion: string | null = null): Promise<void> {
+  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: "placed" | "no_capacity" | "error", detail: string | null, hostCudaVersion: string | null = null): Promise<number | null> {
     try {
-      await deps.capacityLog?.record({ at: deps.clock.now(), sessionId, datacenterId: settings.datacenterId, gpuTypeId: candidate.gpuTypeId, pricePerHr: candidate.pricePerHr, result, detail: detail ? detail.slice(0, 500) : null, hostCudaVersion });
+      const id = await deps.capacityLog?.record({ at: deps.clock.now(), sessionId, datacenterId: settings.datacenterId, gpuTypeId: candidate.gpuTypeId, pricePerHr: candidate.pricePerHr, result, detail: detail ? detail.slice(0, 500) : null, hostCudaVersion });
+      return typeof id === "number" ? id : null;
     } catch (error) {
       log(`[media] could not record a capacity attempt: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -716,6 +719,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     // BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-01): the session's own minimum (call or template) may only raise the owner's. It is
     // computed here, at every start and capacity retry, because the owner's setting is shared and can change meanwhile.
     const minCudaVersion = higherCudaVersion(settings.minCudaVersion, approved.minCudaVersion ?? null);
+    // Shown from the first attempt on (review): a session waiting for capacity or failing without a pod says which minimum its
+    // createPod calls asked for -- the reason a raised minimum can find no host. Best effort; the row may have moved on.
+    await deps.store.transition(approved.id, ["approved"], { status: "approved", usedMinCudaVersion: minCudaVersion }).catch(() => null);
     // An unreadable catalog is not a reason to refuse a start: the listed candidates are then tried as they are.
     const catalog = await Promise.resolve()
       .then(() => client.listGpuTypes({ cloud: settings.cloudType }))
@@ -742,6 +748,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       let pod: RunpodPod | null = null;
       let used: GpuCandidate | null = null;
       let placedAt = deps.clock.now();
+      /** BL-159: this placement's own `placed` capacity-log entry (the host's CUDA goes there once known). */
+      let placedEntryId: number | null = null;
       const failures: string[] = [];
       // After a re-placement the row's window is already open: an early end is billed to the last confirmed terminate.
       const endedEarly = () => (placement > 0 && lastTerminatedAt ? { stoppedAt: lastTerminatedAt } : {});
@@ -768,7 +776,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             log(`[media] pod ${existing.id} of session ${sessionId} already exists (an earlier attempt); continuing with it`);
             pod = existing;
             used = candidateOf(existing, candidate);
-            await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt", existing.cudaVersion ?? null);
+            placedEntryId = await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt", existing.cudaVersion ?? null);
             break;
           }
         }
@@ -785,7 +793,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             env: { COMFY_TOKEN: token },
           });
           used = candidate;
-          await recordAttempt(sessionId, settings, candidate, "placed", null, pod.cudaVersion ?? null);
+          placedEntryId = await recordAttempt(sessionId, settings, candidate, "placed", null, pod.cudaVersion ?? null);
           break;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -810,7 +818,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
             pod = orphan;
             used = candidateOf(orphan, candidate);
-            await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`, orphan.cudaVersion ?? null);
+            placedEntryId = await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`, orphan.cudaVersion ?? null);
             break;
           }
           const kind = classifyCreatePodFailure(error);
@@ -998,7 +1006,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         try {
           return await client.getPodHostCudaVersion(pod.id);
         } catch (error) {
-          if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
+          // BL-159 (review): without a minimum the read is for display only -- nothing it returns may stop a start.
+          if (error instanceof DomainError && error.code === "media_credentials_invalid" && minCudaVersion !== null) throw error;
           log(`[media] could not read the CUDA version of pod ${pod.id}'s host: ${error instanceof Error ? error.message : String(error)}`);
           return null;
         }
@@ -1008,7 +1017,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const recordHostCuda = async (host: string): Promise<void> => {
         try {
           await deps.store.transition(sessionId, ["starting"], { status: "starting", hostCudaVersion: host });
-          await deps.capacityLog?.setPlacedHostCuda?.(sessionId, host);
+          if (placedEntryId !== null) await deps.capacityLog?.setHostCuda?.(placedEntryId, host);
         } catch (error) {
           log(`[media] could not record the host CUDA of session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
         }

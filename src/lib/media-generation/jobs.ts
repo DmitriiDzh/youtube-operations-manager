@@ -858,7 +858,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     if (!hostCudaTooOld(host, needed)) return;
     throw new DomainError({
       code: "media_gpu_host_incompatible",
-      message: `Template ${template.id} needs a host with CUDA ${needed} or newer; session ${session.sessionId} runs on a CUDA ${host} host. Start a session with minCudaVersion ${needed}.`,
+      message: `Template ${template.id} needs a host with CUDA ${needed} or newer; session ${session.sessionId} runs on a CUDA ${host} host. It needs a session placed on such a host (the Factory Operator: factory_media_start_session with minCudaVersion ${needed}, or this template's templateId).`,
       details: { sessionId: session.sessionId, templateId: template.id, hostCudaVersion: host, minCudaVersion: needed },
     });
   }
