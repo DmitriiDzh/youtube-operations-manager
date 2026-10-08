@@ -86,6 +86,8 @@ export const createPlanInputSchema = z
     groups: z.array(groupSchema).max(PLAN_LIMITS.groups).optional(),
     items: z.array(itemSchema).max(PLAN_LIMITS.items).optional(),
     references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
+    /** BL-153: validator-rejected attempts that can be played also wait for the owner. */
+    reviewRejected: z.boolean().optional(),
   })
   .strict();
 export type CreatePlanInput = z.infer<typeof createPlanInputSchema>;
@@ -108,6 +110,8 @@ export const updatePlanInputSchema = z
     /** An id already present replaces that reference. */
     upsertReferences: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
     removeReferenceIds: z.array(z.string().min(1).max(64)).max(PLAN_LIMITS.references).optional(),
+    /** BL-153: switches the review of validator-rejected attempts on or off. */
+    reviewRejected: z.boolean().optional(),
   })
   .strict();
 export type UpdatePlanInput = z.infer<typeof updatePlanInputSchema>;
@@ -244,6 +248,7 @@ export const importFileSchema = z
     note: noteSchema.nullable().optional(),
     stages: z.array(stageSchema).min(1).max(PLAN_LIMITS.stages),
     references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
+    reviewRejected: z.boolean().optional(),
     items: z
       .array(
         z

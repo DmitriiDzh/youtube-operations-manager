@@ -3,6 +3,7 @@ import {
   planInvalid,
   planMismatch,
   planNotFound,
+  validatorOfEntry,
   type GenerationPlan,
   type PlanActor,
   type PlanDefinition,
@@ -18,7 +19,7 @@ import {
   type PlanView,
 } from "./contracts";
 import type { GenerationPlansReport, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
-import { inAppAttempts, planEvents, planProgress, planTodo, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
+import { inAppAttempts, planEvents, planProgress, planTodo, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
   closePlanInputSchema,
@@ -400,21 +401,14 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     return seed === null ? { ...item.params } : { ...item.params, [SEED_PARAMETER]: seed };
   }
 
-  /** The attempts the owner reviews -- every attempt that passed the stage before the owner review -- waiting ones first. */
+  /** The attempts the owner reviews -- `reviewCandidates` decides which and in what order (waiting ones first). */
   function reviewEntries(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): PlanReviewEntry[] {
     const review = row.definition.stages.find((s) => s.kind === "owner_review");
     if (!review) return [];
     const plan = toPublicPlan(row);
-    const index = row.definition.stages.findIndex((s) => s.stageId === review.stageId);
-    const before = index > 0 ? row.definition.stages[index - 1] : null;
     const attempts = inAppAttempts(plan, jobs, results);
     const order = new Map(row.definition.stages.map((s, i) => [s.stageId, i]));
-    const candidates = new Map<string, { itemKey: string; attemptRef: string }>();
-    if (before?.kind === "in_app") for (const a of attempts) if (a.state === "done") candidates.set(`${a.itemKey}\u0000${a.attemptRef}`, a);
-    for (const r of results) {
-      if ((before && before.kind !== "in_app" && r.stageId === before.stageId && (r.result === "accepted" || r.result === "done")) || r.stageId === review.stageId) candidates.set(`${r.itemKey}\u0000${r.attemptRef}`, r);
-    }
-    const entries: PlanReviewEntry[] = [...candidates.values()].map(({ itemKey, attemptRef }) => {
+    return reviewCandidates(plan, attempts, results).map(({ itemKey, attemptRef, validator }) => {
       const item = row.definition.items.find((i) => i.itemKey === itemKey);
       const attempt = attempts.find((a) => a.itemKey === itemKey && a.attemptRef === attemptRef);
       const own = results.filter((r) => r.itemKey === itemKey && r.attemptRef === attemptRef);
@@ -429,10 +423,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         stages,
         verdict: own.find((r) => r.stageId === review.stageId) ?? null,
         playable: Boolean(attempt?.jobId) || stages.some((s) => s.auditionFile !== null),
+        validator,
       };
     });
-    entries.sort((a, b) => Number(a.verdict !== null) - Number(b.verdict !== null) || a.itemKey.localeCompare(b.itemKey) || a.attemptRef.localeCompare(b.attemptRef));
-    return entries;
   }
 
   const api = {
@@ -445,6 +438,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         groups: (parsed.groups ?? []).map(normalizeGroup),
         items: (parsed.items ?? []).map(normalizeItem),
         references: (parsed.references ?? []).map(normalizeReference),
+        ...(parsed.reviewRejected !== undefined ? { reviewRejected: parsed.reviewRejected } : {}),
       };
       validateDefinition(definition);
       const at = now();
@@ -482,6 +476,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         stages: file.stages as PlanStage[],
         groups: groupIds.map((groupId) => normalizeGroup({ groupId })),
         references: (file.references ?? []).map(normalizeReference),
+        ...(typeof file.reviewRejected === "boolean" ? { reviewRejected: file.reviewRejected } : {}),
         items: file.items.map((i) =>
           normalizeItem({ itemKey: i.itemKey, groupId: i.group ?? null, templateLabel: i.templateId ?? null, variant: i.variant, targetCount: i.targetCount, mode: i.mode, maxAttempts: i.maxAttempts, params: i.params, seeds: i.seeds })
         ),
@@ -568,7 +563,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           ...(parsed.budget !== undefined
             ? { budgetUsd: parsed.budget.usd === undefined ? row.budgetUsd : parsed.budget.usd, budgetGpuMinutes: parsed.budget.gpuMinutes === undefined ? row.budgetGpuMinutes : parsed.budget.gpuMinutes }
             : {}),
-          definition: { stages, groups, items, references },
+          definition: { stages, groups, items, references, ...(parsed.reviewRejected !== undefined ? { reviewRejected: parsed.reviewRejected } : d.reviewRejected !== undefined ? { reviewRejected: d.reviewRejected } : {}) },
         };
       });
       await record(updated.id, "plan_updated", actor);
@@ -759,22 +754,28 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * AC-GP3-02: how many attempts wait for the owner -- this device's active plans plus other devices' active plans, minus
      * the verdicts already sent from here (the Production badge).
      */
-    async summary(): Promise<{ waitingReview: number; local: number; otherDevices: number }> {
+    async summary(): Promise<{ waitingReview: number; waitingPassed: number; waitingRejected: number; local: number; otherDevices: number }> {
       let local = 0;
+      let rejected = 0;
       for (const row of await deps.store.listPlans({ status: "active" })) {
         const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-        local += reviewEntries(row, jobs, results).filter((e) => e.verdict === null).length;
+        const waiting = reviewEntries(row, jobs, results).filter((e) => e.verdict === null);
+        local += waiting.length;
+        rejected += waiting.filter((e) => e.validator === "rejected").length;
       }
       let otherDevices = 0;
       if (deps.peers) {
         const sent = new Set((await more.outgoingVerdicts()).map((v) => `${v.ownerDeviceId}\u0000${v.planId}\u0000${v.itemKey}\u0000${v.attemptRef}`));
         for (const report of await deps.peers.listPeerReports()) {
           for (const plan of report.plans.filter((p) => p.status === "active")) {
-            otherDevices += plan.review.filter((e) => e.verdict === null && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`)).length;
+            const waiting = plan.review.filter((e) => e.verdict === null && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
+            otherDevices += waiting.length;
+            rejected += waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
           }
         }
       }
-      return { waitingReview: local + otherDevices, local, otherDevices };
+      const total = local + otherDevices;
+      return { waitingReview: total, waitingPassed: total - rejected, waitingRejected: rejected, local, otherDevices };
     },
 
     /** BL-143 phase 2: the other devices' plans (read-only), each report with its age and whether it is stale. */
@@ -953,7 +954,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
             if (name && /^[^/\\]{1,200}$/.test(name) && name !== "." && name !== ".." && /^[A-Za-z0-9_-]{1,64}$/.test(entry.jobId)) jobOutput = `media/${entry.jobId}/${name}`;
           }
           const shareRow = (r: PlanResultRow) => ({ ...r, referenceIds: r.referenceIds ?? [] });
-          review.push({ ...entry, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput });
+          // `validator` stays out of the shared format (strict on every device; the reader derives it -- `validatorOfEntry`).
+          const { validator: _validator, ...shared } = entry;
+          void _validator;
+          review.push({ ...shared, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput });
         }
         // A null-prototype map: an item key like "constructor" must be an ordinary key here.
         const itemParams: Record<string, PlanItem["params"]> = Object.create(null) as Record<string, PlanItem["params"]>;

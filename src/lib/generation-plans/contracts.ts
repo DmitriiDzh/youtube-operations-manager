@@ -45,7 +45,14 @@ export type PlanItem = {
 };
 /** BL-143 phase 3 (FO-MSG-0009): a reference track for A/B listening, copied by the factory into the channel's Sent to YTM. */
 export type PlanReference = { id: string; label: string; file: string; lufs: number | null; lra: number | null; truePeak: number | null };
-export type PlanDefinition = { stages: PlanStage[]; groups: PlanGroup[]; items: PlanItem[]; references?: PlanReference[] };
+export type PlanDefinition = {
+  stages: PlanStage[];
+  groups: PlanGroup[];
+  items: PlanItem[];
+  references?: PlanReference[];
+  /** BL-153 (FO-REQ-0008): validator-rejected attempts that can be played also wait for the owner's review. Default off. */
+  reviewRejected?: boolean;
+};
 
 export type GenerationPlan = {
   planId: string;
@@ -154,7 +161,26 @@ export type PlanReviewEntry = {
   verdict: PlanResultRow | null;
   /** Something can be played: a reported audition file or a job of this plan. */
   playable: boolean;
+  /**
+   * BL-153: what the stage right before the owner review said -- "passed" (accepted/done, or a finished job when that stage is
+   * in-app) or "rejected"; null when it said nothing (an attempt that only has an owner verdict).
+   */
+  validator: PlanValidatorVerdict | null;
 };
+
+export type PlanValidatorVerdict = "passed" | "rejected";
+
+/**
+ * BL-153: the validator verdict of a review entry from what its stages said -- for an entry that does not carry `validator`
+ * (another device's report: the shared format has no such field, so devices on different versions still read each other).
+ * The last stage row before the review decides, as in `reviewCandidates`.
+ */
+export function validatorOfEntry(entry: { validator?: PlanValidatorVerdict | null; stages: Array<{ result: PlanResultValue }> }): PlanValidatorVerdict | null {
+  if (entry.validator !== undefined) return entry.validator;
+  const last = entry.stages.at(-1);
+  if (!last) return null;
+  return last.result === "rejected" || last.result === "failed" ? "rejected" : "passed";
+}
 
 export type PlanEvent = { at: string; kind: string; actor: string; details: Record<string, unknown> };
 
@@ -176,14 +202,15 @@ export type PlanNotice =
   | { kind: "plan_complete" }
   /** until_accepted items that used up maxAttempts below their target. */
   | { kind: "attempts_exhausted"; count: number }
-  | { kind: "review_waiting"; count: number };
+  /** BL-153: `passed` + `rejected` = `count` (rejected ones wait only when the plan's `reviewRejected` is on). */
+  | { kind: "review_waiting"; count: number; passed: number; rejected: number };
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
 
 export type PlanTodo = {
   planId: string;
   short: Array<{ itemKey: string; groupId: string | null; missing: number; mode: PlanItemMode }>;
-  waitingReview: Array<{ itemKey: string; attemptRef: string }>;
+  waitingReview: Array<{ itemKey: string; attemptRef: string; validator: PlanValidatorVerdict }>;
   rerun: Array<{ itemKey: string; attemptRef: string; state: "failed" | "interrupted" }>;
 };
 
