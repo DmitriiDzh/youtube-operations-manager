@@ -27,6 +27,7 @@ if [ ! -f ".env.local" ]; then
   exit 1
 fi
 
+# Exit codes: 0 = running and opened; 1 = failed; 3 (service only) = running and opened, but on its previous build.
 # BL-158: with the system service installed, launchd owns the server -- it runs from power-on and is started again
 # whenever it stops. Then this script never starts a second instance and never builds under a running server: it
 # waits for the server, restarts the service once if the checked-out commit changed (the service rebuilds before
@@ -55,6 +56,7 @@ if service_installed; then
     fi
   fi
   RESTARTED=""
+  KEPT_OLD="" # set when the running build is kept although it is stale: exit 3 so start.command keeps the warning visible
   OLD_PIDS="" # after a restart, only a new process counts as ready
   echo "Waiting for http://localhost:$PORT ..."
   ATTEMPT=0
@@ -77,15 +79,22 @@ if service_installed; then
           fi
           # 2 = refused before signalling anything (an operation is running): keep using the running build.
           echo "[WARN] Not restarted now; the new commit loads on the next start, once that operation has finished."
+          KEPT_OLD=1
         elif [ "$BRANCH_RC" -eq 4 ]; then
           echo "[WARN] The repository folder is on $BRANCH, not on dev or main: the service keeps running its last build."
           echo "       Switch back (git switch dev) and run this again to load the new commit."
+          KEPT_OLD=1
         else
           echo "[WARN] Cannot tell the repository folder's branch ($BRANCH): the service keeps running its last build."
+          KEPT_OLD=1
         fi
       fi
       if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
         open "http://localhost:$PORT"
+      fi
+      if [ -n "$KEPT_OLD" ]; then
+        echo "The application is running on its previous build (see the warning above)."
+        exit 3
       fi
       echo "The application is running -- you can close this window."
       exit 0
@@ -107,7 +116,7 @@ fi
 # Already running? Stop the old instance first (same principle as scripts/windows/start.bat): a second
 # instance cannot bind the port, and the browser would otherwise open the OLD server -- possibly on
 # a stale build. stop.sh waits for any running export/import/migration before stopping, and refuses
-# (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
+# (non-zero exit) if one does not finish; then nothing is started or rebuilt over it.
 # Note: whatever listens on port 3000 is stopped, exactly as stop.sh has always done.
 if [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
   echo "Port $PORT is already in use - stopping the running instance first..."

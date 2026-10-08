@@ -76,7 +76,7 @@ not this script's).
 when the app is already running: it stops the running instance first (whatever listens on port 3000),
 then starts and rebuilds as usual. `stop` (also used by `start`/`update`) first waits up to 2 minutes
 for any running export/import/database migration to finish (`npm run operation-lock -- wait-idle`)
-and refuses to stop -- exit code 1, nothing started or rebuilt -- if one does not, so the server is
+and refuses to stop -- a non-zero exit code (1 on Windows, 2 on macOS), nothing started or rebuilt -- if one does not, so the server is
 never killed mid-operation (which is what leaves a stuck operation lock); it then confirms the port is
 free. A stale lock left by an earlier interrupted run is reported but never cleared by these scripts
 (see the app's `/recovery` page or `npm run operation-lock -- clear`).

@@ -55,7 +55,8 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
    `stop.sh` reports the old process gone (the port does not stay free). `update.sh` refuses.
 6. **Install and remove are explicit, one admin password each.** `install-service.command` / `uninstall-service.command`
    (double-click). Both first wait for a running export/import/migration (as `stop.sh` does, whether or not the server is
-   up) and change nothing if it does not finish; installing also refuses a folder on another branch first; a reinstall waits until the old instance is gone before loading the new one, and never replaces a service
+   up, checked from the folder the service runs from; skipped only when that folder has no dependencies and nothing
+   listens) and change nothing if it does not finish; installing also refuses a folder on another branch first; a reinstall waits until the old instance is gone before loading the new one, and never replaces a service
    installed for another account. launchd gives the server 5 minutes after SIGTERM before killing it (`ExitTimeOut`), so
    a stop drains like `stop.sh`'s. The job's working directory is the home folder, not the repository, so launchd can
    enter it without node's Full Disk Access. After uninstalling, `start.command` works as before.

@@ -47,13 +47,18 @@ if [ "$1" = "--check" ]; then
   exit 0
 fi
 
+# An interrupted install or build must never read as current later (a stop request may kill one on purpose, BL-158):
+# the marker goes first and comes back only after a complete build of the commit it names.
 if [ ! -d "node_modules" ]; then
+  rm -f "$BUILD_MARKER"
   echo "Installing dependencies (first run only, this can take a few minutes)..."
   npm install
+  NEED_BUILD=1 # no dependencies means no build can be trusted either
 fi
 
 if [ -n "$NEED_BUILD" ]; then
   echo "Installing dependencies and building the application (no build found, or the checked-out commit changed since the last build)..."
+  rm -f "$BUILD_MARKER"
   npm install
   # NODE_TEST_CONTEXT=1 keeps `next build` off the real app-data database: its page-data step loads the app, and
   # without the guard that initializes -- and migrates -- the real database with whatever sources are checked out

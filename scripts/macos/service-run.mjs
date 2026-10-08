@@ -113,8 +113,13 @@ function main() {
     return;
   }
 
+  try {
+    build = spawn("/bin/sh", [path.join(scriptDir, "build-if-stale.sh")], { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
+  } catch (error) {
+    failAfterPause(`Could not run the build: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   phase = "building";
-  build = spawn("/bin/sh", [path.join(scriptDir, "build-if-stale.sh")], { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
   build.on("error", (error) => {
     phase = "done";
     failAfterPause(`Could not run the build: ${error.message}`);

@@ -60,16 +60,27 @@ elif [ "$BRANCH_RC" -ne 0 ]; then
 fi
 
 # Nothing running may be cut short -- checked before anything is torn down (the same check stop.sh makes). Always, not
-# only when the port is busy: the service may be building, and the check reads the database, not the server. Without
-# dependencies installed nothing from this folder can be running an operation (and the check itself needs them).
-if [ -d "$ROOT/node_modules/tsx" ]; then
+# only when the port is busy: the service may be building, and the check reads the account's database, not the server.
+# It runs from the folder the installed service runs from (that may not be this one). Skipped only when that folder has
+# no dependencies and nothing listens: then nothing can be running an operation (and the check itself needs them).
+CHECK_ROOT="$ROOT"
+if service_installed; then
+  OLD_RUNNER="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$SERVICE_PLIST" 2>/dev/null || true)"
+  if [ -n "$OLD_RUNNER" ] && [ -d "$(dirname "$OLD_RUNNER")/../.." ]; then
+    CHECK_ROOT="$(cd "$(dirname "$OLD_RUNNER")/../.." && pwd)"
+  fi
+fi
+if [ -d "$CHECK_ROOT/node_modules/tsx" ]; then
   echo "Checking that no export, import or database migration is running..."
-  if ! (cd "$ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
+  if ! (cd "$CHECK_ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
     echo "[ERROR] Nothing was changed: a running operation did not finish (or could not be checked)."
     exit 1
   fi
+elif listening; then
+  echo "[ERROR] Nothing was changed: a server is running but $CHECK_ROOT has no dependencies to check its operations with."
+  exit 1
 else
-  echo "Dependencies are not installed yet, so nothing from this folder is running -- the service installs them."
+  echo "Nothing is running and dependencies are not installed yet -- the service installs them."
 fi
 
 # Stop what runs now: the previously installed service, or a server started by start.sh.

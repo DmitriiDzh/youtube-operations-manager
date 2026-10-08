@@ -24,14 +24,23 @@ fi
 SERVICE_USER="$(/usr/libexec/PlistBuddy -c 'Print :UserName' "$SERVICE_PLIST")"
 SERVICE_HOME="$(dscl . -read "/Users/$SERVICE_USER" NFSHomeDirectory | awk '{print $2}')"
 
-# Always, not only when the port is busy: the service may be building, and the check reads the database, not the server.
-# Without dependencies installed nothing from this folder can be running an operation (and the check itself needs them).
-if [ -d "$ROOT/node_modules/tsx" ]; then
+# Always, not only when the port is busy: the service may be building, and the check reads the account's database, not
+# the server. It runs from the folder the service runs from (that may not be this one). Skipped only when that folder has
+# no dependencies and nothing listens: then nothing can be running an operation (and the check itself needs them).
+CHECK_ROOT="$ROOT"
+SERVICE_RUNNER="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$SERVICE_PLIST" 2>/dev/null || true)"
+if [ -n "$SERVICE_RUNNER" ] && [ -d "$(dirname "$SERVICE_RUNNER")/../.." ]; then
+  CHECK_ROOT="$(cd "$(dirname "$SERVICE_RUNNER")/../.." && pwd)"
+fi
+if [ -d "$CHECK_ROOT/node_modules/tsx" ]; then
   echo "Checking that no export, import or database migration is running..."
-  if ! (cd "$ROOT" && sudo -u "$SERVICE_USER" env PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$SERVICE_HOME" npm run --silent operation-lock -- wait-idle --timeout 120); then
+  if ! (cd "$CHECK_ROOT" && sudo -u "$SERVICE_USER" env PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$SERVICE_HOME" npm run --silent operation-lock -- wait-idle --timeout 120); then
     echo "[ERROR] The service was NOT removed: a running operation did not finish (or could not be checked)."
     exit 1
   fi
+elif [ -n "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
+  echo "[ERROR] The service was NOT removed: a server is running but $CHECK_ROOT has no dependencies to check its operations with."
+  exit 1
 fi
 
 echo "Stopping the server..."

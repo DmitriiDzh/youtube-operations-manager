@@ -3,7 +3,8 @@
 #
 # Stops the running server -- but never in the middle of an export/import/schema migration: an
 # interrupted one is exactly what leaves a stuck operation lock. Same principles as
-# scripts/windows/stop.bat (keep the two in step): (1) find the listener on port $PORT, (2) wait for
+# scripts/windows/stop.bat (keep the two in step; only the macOS refusal exit code 2 below is BL-158's own): (1) find the
+# listener on port $PORT, (2) wait for
 # any RUNNING operation to finish (`operation-lock wait-idle`; refuse to stop if it does not within
 # 2 minutes), (3) stop the process, (4) confirm the port is actually free. Exit code 0 = nothing
 # left running, 1 = not stopped (start.sh/update.sh must not go on), 2 = refused before signalling
