@@ -131,14 +131,15 @@ plan contents.
   The counts include other devices' plans of that channel, minus the verdicts already sent from here, as the badge does
   today.
 - **AC-BL-02: Media badge.** It counts the active channel only. The tooltip keeps the passed / rejected split.
-- **AC-BL-03: switcher.** Each channel in the switcher with tracks waiting shows "N waiting (P passed, R rejected)". A channel
-  with nothing waiting shows nothing.
+- **AC-BL-03: switcher.** Each channel in the switcher with tracks waiting shows "N waiting (P passed, R rejected)". With no
+  rejected tracks the split is left out ("N waiting"), as the BL-153 badge already does. A channel with nothing waiting shows
+  nothing.
 - **AC-BL-04: bell entries.** The bell gets an "Other channels" part, built from the same summary.
   - Each channel that is not active gets one entry per type of work:
     - **review:** "Media: N tracks waiting for review (P passed, R rejected)", plus the waiting count of each wave, for
       example "C13 47 · C14 38";
     - one entry per plan and notice kind: `stage_complete`, `plan_complete`, `attempts_exhausted`, `budget_80` and
-      `budget_100`.
+      `budget_100`. A plan's completed stages are one entry that names them all.
   - Each entry shows the channel's avatar and name.
   - The counts update in place on every poll. Nothing is posted per track or per event.
 - **AC-BL-05: open the place.**

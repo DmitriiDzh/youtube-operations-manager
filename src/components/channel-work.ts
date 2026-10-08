@@ -55,11 +55,24 @@ export function otherChannelEntries(t: Translate, channels: readonly PlanChannel
         href: only ? planReviewHref(only.planId, only.device) : "/media/plans",
       });
     }
+    // One entry per plan and notice kind (AC-BL-04): a plan's completed stages are one entry naming them all.
+    const stagesDone = new Map<string, string[]>();
+    for (const { planId, device, notice } of work.notices) {
+      if (notice.kind !== "stage_complete") continue;
+      const key = `${device?.deviceId ?? "here"}:${planId}`;
+      stagesDone.set(key, [...(stagesDone.get(key) ?? []), notice.title]);
+    }
+    const listed = new Set<string>();
     for (const { planId, planTitle, device, notice } of work.notices) {
       const plan = planTitle || planId;
+      const planKey = `${device?.deviceId ?? "here"}:${planId}`;
+      if (notice.kind === "stage_complete") {
+        if (listed.has(planKey)) continue;
+        listed.add(planKey);
+      }
       const text =
         notice.kind === "stage_complete"
-          ? t("channelWork.stageComplete", { plan, stage: notice.title })
+          ? t("channelWork.stageComplete", { plan, stage: (stagesDone.get(planKey) ?? [notice.title]).join(", ") })
           : notice.kind === "plan_complete"
             ? t("channelWork.planComplete", { plan })
             : notice.kind === "attempts_exhausted"
@@ -67,8 +80,7 @@ export function otherChannelEntries(t: Translate, channels: readonly PlanChannel
               : notice.kind === "budget_100"
                 ? t("channelWork.budget100", { plan })
                 : t("channelWork.budget80", { plan });
-      const kindKey = notice.kind === "stage_complete" ? `stage_complete:${notice.stageId}` : notice.kind;
-      entries.push({ key: `${work.channelId}:${device?.deviceId ?? "here"}:${planId}:${kindKey}`, channelId: work.channelId, text, href: "/media/plans" });
+      entries.push({ key: `${work.channelId}:${planKey}:${notice.kind}`, channelId: work.channelId, text, href: "/media/plans" });
     }
   }
   return entries;

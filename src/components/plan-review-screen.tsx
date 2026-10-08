@@ -322,6 +322,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const [waveTaken, setWaveTaken] = useState<string | null>(null);
   const [confirmReplace, setConfirmReplace] = useState<{ result: "accepted" | "rejected"; existing: PlanExistingVerdict } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const freshClaims = useRef<PlanReviewClaim[]>([]);
   // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06) and wave (BL-157).
   const entries = useMemo(() => (allEntries ? visibleEntries(allEntries, filter, wave) : null), [allEntries, filter, wave]);
   const [index, setIndex] = useState(0);
@@ -362,7 +363,9 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           const peerPlan = peerDevice ? data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId) : undefined;
           setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
           setBatches(peerDevice ? (peerPlan?.batches ?? []) : (data.batches ?? []));
-          setClaims(claimsFrom(data));
+          const fresh = claimsFrom(data);
+          freshClaims.current = fresh;
+          setClaims(fresh);
           setNowMs(Date.now());
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
@@ -377,13 +380,12 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
 
   // A claimed track is passed over unless the owner asked to see claimed ones too (AC-TC-02).
   const skipClaimed = useCallback((e: PlanReviewEntry) => !showClaimed && e.verdict === null && claimOf(e, claims, nowMs) !== null, [claims, nowMs, showClaimed]);
-  const skipRef = useRef(skipClaimed);
-  useEffect(() => {
-    skipRef.current = skipClaimed;
-  }, [skipClaimed]);
+  /** The same rule against the claims `load` just read -- the state above only catches up on the next render (review round 1). */
+  const skipFresh = useCallback((e: PlanReviewEntry) => !showClaimed && e.verdict === null && claimOf(e, freshClaims.current, Date.now()) !== null, [showClaimed]);
 
   useEffect(() => {
-    void load().then((list) => setIndex(Math.max(0, list.findIndex((e) => e.verdict === null && !skipRef.current(e)))));
+    // First open: the first waiting track no other computer is on (its claims arrive with the same answer).
+    void load().then((list) => setIndex(Math.max(0, list.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null))));
   }, [load]);
 
   // BL-157 (AC-TC-02): the other computers' claims come and go while the screen is open -- read them again now and then
@@ -451,7 +453,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
         const list = visibleEntries(await load(), filter, wave);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
-        const next = nextWaitingIndex(list, here >= 0 ? here : index, skipClaimed);
+        const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
         setDraft(emptyDraft());
         stopB();
         setIndex(next >= 0 ? next : Math.max(0, here));
@@ -469,7 +471,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, filter, index, load, onChanged, skipClaimed, stopB, t, wave]
+    [base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -824,7 +826,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
             ) : null;
           })()}
           {/* BL-157 (AC-TC-05): every verdict of this track, with the computer and the time. */}
-          {entry.history && entry.history.length > 1 && (
+          {entry.history && entry.history.length > 0 && (
             <ul className="space-y-0.5 text-[11px] text-zinc-500">
               {entry.history.map((h, i) => (
                 <li key={`${h.at}-${i}`}>

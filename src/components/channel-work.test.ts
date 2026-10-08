@@ -5,7 +5,8 @@ import { createTranslator } from "@/lib/ui-text";
 import { otherChannelEntries, planReviewHref, waitingLabel } from "./channel-work";
 
 // BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-03/04/05/06, owner msg 2119): the other channels' work in the switcher and the bell.
-// Expected texts are written from the plan's examples (FO-REQ-0009 §3/§3a), not from running the code.
+// Expected texts are written from the plan's examples (FO-REQ-0009 §3/§3a, SERVERS_MEDIA_PLAN.md AC-BL-03/04), not from running
+// the code. With no rejected track the split is left out, as the BL-153 badge and notice already do (recorded in the plan).
 // BL-152: the words are translated; the requirement checked here is the English wording (plus one Russian check).
 const t = createTranslator("en");
 
@@ -46,9 +47,9 @@ test("AC-BL-04/06: only channels that are not active get entries; one review ent
   const fromJapan = otherChannelEntries(t, [japan, tropico], "UC_japan");
   assert.deepEqual(fromJapan, [
     { key: "UC_tropico:review", channelId: "UC_tropico", text: "Media: 5 tracks waiting for review", href: "/media/plans" },
-    { key: "UC_tropico:here:T-1:stage_complete:generate", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, stage “Generate” complete", href: "/media/plans" },
+    { key: "UC_tropico:here:T-1:stage_complete", channelId: "UC_tropico", text: "Media: plan Jazz wave 1, stage complete: Generate", href: "/media/plans" },
   ]);
-  assert.deepEqual(otherChannelEntries(t, [japan, tropico], null).map((e) => e.key), ["UC_japan:review", "UC_tropico:review", "UC_tropico:here:T-1:stage_complete:generate"], "no active channel: every channel");
+  assert.deepEqual(otherChannelEntries(t, [japan, tropico], null).map((e) => e.key), ["UC_japan:review", "UC_tropico:review", "UC_tropico:here:T-1:stage_complete"], "no active channel: every channel");
   assert.deepEqual(otherChannelEntries(t, [work({ channelId: "UC_quiet" })], null), [], "nothing open, no entry");
 });
 
@@ -81,4 +82,19 @@ test("AC-BL-03: the switcher line -- '5 waiting (3 passed, 2 rejected)', '4 wait
 test("AC-BL-05: a review address names another device's plan by its device and host", () => {
   assert.equal(planReviewHref("R-1"), "/media/plans/R-1/review");
   assert.equal(planReviewHref("R 1", { deviceId: "win", hostname: null }), "/media/plans/R%201/review?device=win");
+});
+
+test("AC-BL-04 (review round 1): one entry per plan and notice kind -- a plan's completed stages are one entry naming them all", () => {
+  const work2 = work({
+    channelId: "UC_x",
+    notices: [
+      { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "stage_complete", stageId: "generate", title: "Generate" } },
+      { planId: "P", planTitle: "Plan P", device: null, notice: { kind: "stage_complete", stageId: "validate", title: "Validator" } },
+      { planId: "Q", planTitle: "Plan Q", device: { deviceId: "win", hostname: null }, notice: { kind: "stage_complete", stageId: "generate", title: "Generate" } },
+    ],
+  });
+  assert.deepEqual(otherChannelEntries(t, [work2], null).map((e) => [e.key, e.text]), [
+    ["UC_x:here:P:stage_complete", "Media: plan Plan P, stage complete: Generate, Validator"],
+    ["UC_x:win:Q:stage_complete", "Media: plan Plan Q, stage complete: Generate"],
+  ]);
 });

@@ -65,3 +65,8 @@ test("AC-MV-07: plan_moved names both channels by name when known, by id otherwi
 test("AC-WV-05: group_reviewed names the wave and the owner's counts", () => {
   assert.equal(describeEvent({ at: "", kind: "group_reviewed", actor: "owner", details: { groupId: "C14", accepted: 12, rejected: 28, overridesValidator: 3 } }), "wave C14 reviewed: 12 accepted, 28 rejected");
 });
+
+// BL-157 (review round 1, AC-TC-05): an older verdict from the other computer is kept, not applied -- the log says so.
+test("AC-TC-05: a superseded peer verdict reads as kept in the history", () => {
+  assert.equal(describeEvent({ at: "", kind: "peer_verdict", actor: "owner", details: { fromDevice: "Windows PC", itemKey: "C1/F1", result: "rejected", superseded: true } }), "older verdict from Windows PC C1/F1: rejected (kept in the history; a newer one stands)");
+});

@@ -34,7 +34,9 @@ The owner now runs two music channels at once.
    - `GET /api/generation-plans/summary` returns every connected channel's open Media work: waiting counts, the waves' counts
      and the plans' notices.
    - The channel switcher shows each channel's waiting count. The bell lists the channels that are not active.
-   - Only counts and notice names cross the channel boundary. Tracks, files and plan contents stay behind ADR 0004's filter.
+   - Only counts and names cross the channel boundary: the titles of plans, waves and stages, and the kind of each notice.
+     Tracks, files, verdicts and the rest of the plan stay behind ADR 0004's filter. That includes the verdicts sent from here,
+     which the peers route filters too.
    - The owner asked for this so that another channel never stays silent.
 3. **A plan moves to another channel: `factory_plan_move`, Factory API 1.8.0.**
    - Every reported `auditionFile` and every reference must already exist in the target channel's Sent to YTM. One missing file

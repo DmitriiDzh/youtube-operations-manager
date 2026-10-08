@@ -141,6 +141,7 @@ export const production = {
   "plans.event.resultReported": "{stage}{item}: {result} (Factory Operator)",
   "plans.event.rerunRequested": "re-run asked{item}",
   "plans.event.peerVerdict": "verdict from {device}{item}: {result}",
+  "plans.event.peerVerdictSuperseded": "older verdict from {device}{item}: {result} (kept in the history; a newer one stands)",
   "plans.event.groupNote": "note on {group}",
   "plans.event.stageRun": "stage run: {count} job(s)",
   "plans.event.planMoved": "moved from {from} to {to}",

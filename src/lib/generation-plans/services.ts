@@ -510,7 +510,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   async function pendingPeerVerdicts(row: StoredPlan, events: PlanEvent[], results: PlanResultRow[]): Promise<Map<string, { verdict: SharedVerdict; from: string }>> {
     const pending = new Map<string, { verdict: SharedVerdict; from: string }>();
     const review = row.definition.stages.find((s) => s.kind === "owner_review");
-    if (!deps.peers || !review) return pending;
+    // `applyPeerVerdicts` applies only to an active plan: on a closed one nothing is "being applied" (review round 1).
+    if (!deps.peers || !review || row.status !== "active") return pending;
     const own = await deps.peers.ownDeviceId();
     const applied = new Set(events.filter((e) => e.kind === "peer_verdict" && typeof e.details.verdictId === "string").map((e) => e.details.verdictId as string));
     const stored = new Map(results.filter((r) => r.stageId === review.stageId && r.reportedBy === "owner").map((r) => [keyOf(r.itemKey, r.attemptRef), r]));
@@ -764,6 +765,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         }
         await mutate(row.id, (current) => {
           if (current.channelId !== from) throw planInvalid(`Plan ${row.id} moved to channel ${current.channelId} meanwhile`, { planId: row.id, channelId: current.channelId });
+          // The files were checked against this revision; a plan changed meanwhile (e.g. a new reference) is checked again.
+          if (current.revision !== row.revision) throw planInvalid(`Plan ${row.id} changed while its files were checked; move it again`, { planId: row.id });
           return { channelId: to };
         });
         await record(row.id, "plan_moved", actor, { from, to, checked: files.length });
@@ -1059,7 +1062,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         }
       }
       const active = input.activeChannelId ? work.get(input.activeChannelId) : undefined;
-      return { waitingReview: active?.waitingReview ?? 0, waitingPassed: active?.waitingPassed ?? 0, waitingRejected: active?.waitingRejected ?? 0, channels: [...work.values()] };
+      return {
+        activeChannelId: input.activeChannelId,
+        waitingReview: active?.waitingReview ?? 0,
+        waitingPassed: active?.waitingPassed ?? 0,
+        waitingRejected: active?.waitingRejected ?? 0,
+        channels: [...work.values()],
+      };
     },
 
     /**
@@ -1089,7 +1098,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       }
       const claimId = claimIdOf(parsed.scope, ownerDeviceId, parsed.planId, parsed.groupId);
       if (parsed.release) {
-        await deps.store.deleteClaim(claimId);
+        // A track claim moves with the track: giving up the old track never drops the claim on the one now open (review round 1).
+        const stored = (await deps.store.listClaims(now())).find((c) => c.claimId === claimId);
+        if (stored && (parsed.scope === "group" || (stored.itemKey === (parsed.itemKey ?? null) && stored.attemptRef === (parsed.attemptRef ?? null)))) await deps.store.deleteClaim(claimId);
         return { claimId, until: null };
       }
       if (parsed.scope === "attempt" && !entries.some((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef)) {
@@ -1269,7 +1280,26 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
             const stored = current.get(key);
             // Newest wins; stored times are whole seconds, so a verdict of the same second as the stored one is taken (ids differ).
             const older = stored !== undefined && Math.floor(Date.parse(verdict.at) / 1000) < Math.floor(Date.parse(stored.at) / 1000);
-            if (!known || older || Date.parse(verdict.at) > at + 5 * 60_000) {
+            if (!known || Date.parse(verdict.at) > at + 5 * 60_000) {
+              k++;
+              continue;
+            }
+            if (older) {
+              // BL-157 (AC-TC-05, review round 1): a verdict older than the stored one does not replace it, but the history
+              // keeps it -- the double rating claims and the confirmation exist for must not lose either verdict. Recorded as
+              // handled, so the next tick does not weigh it again.
+              await deps.store.insertVerdictHistory(row.id, {
+                itemKey: verdict.itemKey,
+                attemptRef: verdict.attemptRef,
+                result: verdict.result,
+                rating: verdict.rating,
+                reasons: verdict.reasons,
+                markers: verdict.markers,
+                note: verdict.note,
+                device: from,
+                at: verdict.at,
+              });
+              await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: from, itemKey: verdict.itemKey, result: verdict.result, superseded: true });
               k++;
               continue;
             }

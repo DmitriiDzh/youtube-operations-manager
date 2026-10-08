@@ -124,6 +124,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // BL-153: how many of the waiting tracks the validator rejected (shown when hovering the Production badge).
   const [plansWaitingRejected, setPlansWaitingRejected] = useState(0);
   const [channelWork, setChannelWork] = useState<PlanChannelWork[]>([]);
+  const [summaryActiveChannelId, setSummaryActiveChannelId] = useState<string | null>(null);
   // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDismissed, setStartupDismissed] = useState(false);
@@ -347,23 +348,31 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // BL-143 phase 3 (AC-GP3-02): Production shows how many generated tracks wait for the owner's verdict.
   useEffect(() => {
     if (!userId) return;
+    // An answer that arrives after the channel changed belongs to the old channel: dropped (review round 1).
+    let cancelled = false;
     async function refreshPlansWaiting() {
       try {
         const res = await fetch("/api/generation-plans/summary");
-        if (!res.ok) return;
+        if (!res.ok || cancelled) return;
         // BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01/02): the counts are the active channel's (the Media badge); `channels`
-        // is every connected channel's open work, for the channel switcher and the bell.
-        const data = (await res.json()) as { waitingReview?: number; waitingRejected?: number; channels?: PlanChannelWork[] };
+        // is every connected channel's open work, for the channel switcher and the bell; `activeChannelId` says which
+        // channel the server counted as active, so the bell leaves out exactly that one.
+        const data = (await res.json()) as { waitingReview?: number; waitingRejected?: number; channels?: PlanChannelWork[]; activeChannelId?: string | null };
+        if (cancelled) return;
         setPlansWaiting(data.waitingReview ?? 0);
         setPlansWaitingRejected(data.waitingRejected ?? 0);
         setChannelWork(data.channels ?? []);
+        setSummaryActiveChannelId(data.activeChannelId ?? null);
       } catch {
         // Non-fatal -- the next poll tries again.
       }
     }
     void refreshPlansWaiting();
     const id = setInterval(() => void refreshPlansWaiting(), PLANS_REVIEW_POLL_MS);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
     // BL-157: read again when the active channel changes -- the badge is that channel's.
   }, [userId, activeChannelId]);
 
@@ -391,7 +400,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       activeTab={tab}
       onReviewDeviceSyncDivergence={() => router.push("/merge")}
       channel={channel}
-      activeChannelId={channel?.id ?? null}
+      activeChannelId={summaryActiveChannelId}
       channelWork={channelWork}
       onOpenChannelWork={(channelId, href) => void openChannelWork(channelId, href)}
       channelUnavailable={channelUnavailable}

@@ -142,6 +142,7 @@ export const production: Record<keyof typeof en, string> = {
   "plans.event.resultReported": "{stage}{item}: {result} (Factory Operator)",
   "plans.event.rerunRequested": "запрошен перезапуск{item}",
   "plans.event.peerVerdict": "вердикт с {device}{item}: {result}",
+  "plans.event.peerVerdictSuperseded": "более ранняя оценка с {device}{item}: {result} (сохранена в истории; действует более поздняя)",
   "plans.event.groupNote": "заметка к {group}",
   "plans.event.stageRun": "запуск стадии: заданий — {count}",
   "plans.event.planMoved": "перенесён из {from} в {to}",

@@ -103,7 +103,8 @@ export function rememberablePath(pathname: string): { section: string; path: str
 
 /**
  * BL-157 (AC-SM-02): where an address of the former Production section goes, keeping the rest of the path and the query --
- * plans (and a plan's review) and jobs to Media, everything else to Servers; `/production` itself to Media.
+ * plans (and a plan's review) and jobs to Media, everything else to Servers; `/production` itself to Servers (it opened on
+ * Sessions, which is Servers' first tab -- review round 1).
  */
 export function productionRedirectTarget(segments: readonly string[] | undefined, params: Record<string, string | string[] | undefined>): string {
   const query = new URLSearchParams();
@@ -111,7 +112,7 @@ export function productionRedirectTarget(segments: readonly string[] | undefined
     for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) query.append(key, v);
   }
   const rest = (segments ?? []).map((s) => encodeURIComponent(s));
-  const section = rest.length === 0 || rest[0] === "plans" || rest[0] === "jobs" ? "/media" : "/servers";
+  const section = rest[0] === "plans" || rest[0] === "jobs" ? "/media" : "/servers";
   const target = rest.length > 0 ? `${section}/${rest.join("/")}` : section;
   return query.size > 0 ? `${target}?${query.toString()}` : target;
 }

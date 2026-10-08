@@ -201,7 +201,7 @@ export const shell: Record<keyof typeof en, string> = {
   "channelWork.review": "Медиа: {count, plural, one {# трек ждёт} few {# трека ждут} many {# треков ждут} other {# трека ждут}} прослушивания",
   "channelWork.reviewSplit": "Медиа: {count, plural, one {# трек ждёт} few {# трека ждут} many {# треков ждут} other {# трека ждут}} прослушивания (прошли: {passed}, отбракованы: {rejected})",
   "channelWork.wave": "{wave} {count}",
-  "channelWork.stageComplete": "Медиа: план {plan}, стадия «{stage}» завершена",
+  "channelWork.stageComplete": "Медиа: план {plan}, завершены стадии: {stage}",
   "channelWork.planComplete": "Медиа: план {plan} выполнен",
   "channelWork.attemptsExhausted": "Медиа: план {plan}, попытки исчерпаны у {count, plural, one {# позиции} few {# позиций} many {# позиций} other {# позиции}}",
   "channelWork.budget80": "Медиа: план {plan} израсходовал 80% бюджета",

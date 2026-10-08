@@ -53,8 +53,8 @@ test("only a real sub-tab address is remembered; a review counts as Plans; anyth
 });
 
 // BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-02): every old Production address lands on the same place in its new section.
-test("AC-SM-02: /production → Media; plans (a review too) and jobs → Media; everything else → Servers; the query is kept", () => {
-  assert.equal(productionRedirectTarget(undefined, {}), "/media");
+test("AC-SM-02: plans (a review too) and jobs → Media; everything else -- /production itself too (it opened on Sessions) → Servers; the query is kept", () => {
+  assert.equal(productionRedirectTarget(undefined, {}), "/servers");
   assert.equal(productionRedirectTarget(["plans"], {}), "/media/plans");
   assert.equal(productionRedirectTarget(["plans", "R-0001-S1-music", "review"], { device: "win", host: "DESKTOP-B0UCB4I" }), "/media/plans/R-0001-S1-music/review?device=win&host=DESKTOP-B0UCB4I");
   assert.equal(productionRedirectTarget(["jobs"], {}), "/media/jobs");

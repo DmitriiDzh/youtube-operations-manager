@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSelectedLayoutSegments } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
 import { MEDIA_TABS, MediaPanel } from "@/components/production-panel";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
@@ -22,6 +22,15 @@ export default function MediaLayout({ children }: { children: ReactNode }) {
   // `/media/plans/<planId>/review` (AC-RT-07): the review screen is shown in place of the panel, which stays mounted and
   // hidden meanwhile (review finding: the selected plan and the other sub-tab survive opening and closing a review).
   const reviewing = segment === "plans" && segments[2] === "review";
+  // AC-SM-04 (review round 1): a review open when the channel changes was the other channel's plan -- back to Plans. A bell
+  // entry that switches and opens a review navigates after this (the parent layout's effect runs later), so it still lands.
+  const channelId = channel?.id ?? null;
+  const shownChannel = useRef(channelId);
+  useEffect(() => {
+    const before = shownChannel.current;
+    shownChannel.current = channelId;
+    if (before !== null && channelId !== null && before !== channelId && reviewing) router.replace("/media/plans");
+  }, [channelId, reviewing, router]);
   return (
     <>
       {tab && (

@@ -272,6 +272,8 @@ export type PlanChannelWork = {
 };
 
 export type PlanChannelSummary = {
+  /** The channel these counts treat as active (the bell leaves exactly this one out); null = none. */
+  activeChannelId: string | null;
   /** The ACTIVE channel's waiting tracks (the Media menu badge); zero while no channel is active. */
   waitingReview: number;
   waitingPassed: number;

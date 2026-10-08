@@ -152,7 +152,10 @@ export function describeEvent(t: Translate, event: PlanEvent, channelName: (chan
     case "rerun_requested":
       return t("plans.event.rerunRequested", { item });
     case "peer_verdict":
-      return t("plans.event.peerVerdict", { device: String(d.fromDevice), item, result: resultLabel(t, d.result) });
+      // BL-157 (review round 1): an older verdict from the other computer is kept in the history, not applied.
+      return d.superseded === true
+        ? t("plans.event.peerVerdictSuperseded", { device: String(d.fromDevice), item, result: resultLabel(t, d.result) })
+        : t("plans.event.peerVerdict", { device: String(d.fromDevice), item, result: resultLabel(t, d.result) });
     case "group_note":
       return t("plans.event.groupNote", { group: String(d.groupId) });
     case "stage_run":

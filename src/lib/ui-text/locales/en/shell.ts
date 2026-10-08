@@ -201,7 +201,7 @@ export const shell = {
   "channelWork.review": "Media: {count, plural, one {# track} other {# tracks}} waiting for review",
   "channelWork.reviewSplit": "Media: {count, plural, one {# track} other {# tracks}} waiting for review ({passed} passed, {rejected} rejected)",
   "channelWork.wave": "{wave} {count}",
-  "channelWork.stageComplete": "Media: plan {plan}, stage “{stage}” complete",
+  "channelWork.stageComplete": "Media: plan {plan}, stage complete: {stage}",
   "channelWork.planComplete": "Media: plan {plan} complete",
   "channelWork.attemptsExhausted": "Media: plan {plan}, attempts used up for {count, plural, one {# item} other {# items}}",
   "channelWork.budget80": "Media: plan {plan} has used 80% of its budget",

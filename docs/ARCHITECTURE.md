@@ -3044,7 +3044,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
   - `generation-plans/shared.ts` `planHandler` calls `core.assertPlanOfChannel(planId, activeChannelOf(userId))` first. The
     audition and reference handlers do the same check through `assertVisible`. The peer routes use `assertPeerPlanOfChannel`,
     with the channel named in the report.
-  - The plans list and the peer plans list filter on the server. Jobs use `GET /api/media-generation/jobs?scope=active`.
+  - The plans list and the peer plans list filter on the server. The peers list also filters the verdicts sent from here and
+    the other devices' claims to the plans it shows. Jobs use `GET /api/media-generation/jobs?scope=active`.
   - With no active channel, everything is empty or `not_found`.
 - **Other channels' work (exception to ADR 0004: counts only).**
   - `core.channelSummary({ activeChannelId, connectedChannelIds })` returns, per connected channel:
@@ -3096,7 +3097,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
 - **Two computers.**
   - **History (schema v69, `generation_plan_verdict_history`, device-local on the owning device).**
     - `recordOwnerVerdict` appends a row with `deviceLabel`, the host name.
-    - `applyPeerVerdicts` appends a row with the sending device and the verdict's own note.
+    - `applyPeerVerdicts` appends a row with the sending device and the verdict's own note. A peer verdict older than the
+      stored one is not applied but is still appended, and is recorded once as `peer_verdict { superseded: true }`.
     - `planEvents(..., history)` emits one `owner_verdict` per history row, with `device`. A key with no history row gets one
       event from the result row.
   - **Claims (schema v70, `generation_plan_review_claims`, this device's own).**
