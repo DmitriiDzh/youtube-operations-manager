@@ -5,7 +5,7 @@ import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
-import { createGenerationPlansCore } from "@/lib/generation-plans";
+import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
@@ -127,8 +127,14 @@ function createToolDeps(): FactoryToolDeps {
         const session = await factorySession(sessionId);
         // BL-143: a job that names a plan attempt -- all checked by the plans module before the job exists.
         if ((planId === undefined) !== (itemKey === undefined)) throw new DomainError({ code: "validation_failed", message: "Give planId and itemKey together (seed is optional)." });
-        const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
-        return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) })) };
+        const create = async () => {
+          const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
+          return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) })) };
+        };
+        // BL-157 (review round 2): a plan-linked job is checked and created under the plan's lock, so a plan move cannot
+        // pass between them and leave the moved plan with a job still running on the old channel.
+        // Locked on the id the plans module will use (it trims it) -- review round 3.
+        return planId && itemKey ? withPlanLock(planId.trim(), create) : create();
       },
       getJob: async ({ jobId, sessionId }) => {
         const core = createMediaGenerationCore();
@@ -165,6 +171,7 @@ function createToolDeps(): FactoryToolDeps {
       runStage: async (input) => ({ ...(await createGenerationPlansCore().runStage(input)) }),
       rerun: async (input) => ({ ...(await createGenerationPlansCore().rerun(input)) }),
       cloneGroup: async (input) => ({ ...(await createGenerationPlansCore().cloneGroup(input, "factory")) }),
+      move: async (input) => ({ ...(await createGenerationPlansCore().movePlan(input, "factory")) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

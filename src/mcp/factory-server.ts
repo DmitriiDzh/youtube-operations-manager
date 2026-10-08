@@ -25,9 +25,12 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * 1.6.0 (BL-153, FO-REQ-0008): validator-rejected attempts in the owner's review queue (`reviewRejected`);
  * 1.7.0 (BL-155, FO-REQ-0007): jobs carry `errorCode` (`media_gpu_host_incompatible` when the error says the host's CUDA driver
  * is too old), a start on incompatible hosts fails with `media_gpu_host_incompatible`, release-when-done of a session whose
- * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`.
+ * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`;
+ * 1.8.0 (BL-157, FO-REQ-0009): `factory_plan_move` moves an active plan to another connected channel (its files checked in
+ * that channel's Sent to YTM first, `checkOnly` to check only); the events `plan_moved` and `group_reviewed` (the owner's
+ * verdicts finished a wave); the owner's wave note is `groups[].ownerNote` (the factory's stays `note`).
  */
-export const FACTORY_API_VERSION = "1.7.0";
+export const FACTORY_API_VERSION = "1.8.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -68,6 +71,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_plan_run_stage",
   "factory_plan_rerun",
   "factory_plan_clone_group",
+  // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
+  "factory_plan_move",
 ] as const;
 
 /**
@@ -95,6 +100,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_run_stage",
   "factory_plan_rerun",
   "factory_plan_clone_group",
+  // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
+  "factory_plan_move",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -149,6 +156,7 @@ export type FactoryToolDeps = {
     runStage(input: unknown): Promise<Record<string, unknown>>;
     rerun(input: unknown): Promise<Record<string, unknown>>;
     cloneGroup(input: unknown): Promise<Record<string, unknown>>;
+    move(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -459,7 +467,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_delete_template",
     {
       description:
-        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Production → Models, recent actions).",
+        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Servers → Models, recent actions).",
       inputSchema: templateIdInput,
     },
     async (args) => {
@@ -487,7 +495,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_settings",
     {
       description:
-        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+        "Read the owner's factory settings (Servers → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.getSettings())
@@ -626,6 +634,12 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     (input) => deps.plans.update(input)
   );
   planWrite(
+    "factory_plan_move",
+    "Move an active plan to another channel connected on this computer (1.8.0): { planId, channelId, checkOnly?: boolean } -> { planId, from, to, checked, missing, missingCount, unfinishedJobs, moved }. Copy the plan's files into the new channel's '99 Data Exchange/Sent to YTM/' first: every auditionFile reported on the plan and every reference file is checked there (checked = how many distinct files; missing lists up to 500 of the missingCount not found). checkOnly: true only checks and changes nothing. Without it, a missing file or an unfinished job of the plan (queued or running) refuses the move with plan_invalid (details: checked, missing, missingCount / unfinishedJobs) and nothing changes. After the move, the auditionFiles and references play from the new channel; an attempt with no auditionFile plays its job's output from the channel the job ran on; runs and plan-linked sessions need the new channel. Jobs, sessions, results, verdicts, events and spend stay with the plan (same planId). Event plan_moved { from, to, checked }. Errors: plan_closed, plan_invalid (same channel, channel not connected, no workspace folder, files missing, unfinished jobs), plan_not_found.",
+    z.object({ planId: z.string(), channelId: z.string(), checkOnly: z.boolean().optional() }).strict(),
+    (input) => deps.plans.move(input)
+  );
+  planWrite(
     "factory_plan_close",
     "Close a plan: { planId, status: completed | cancelled, note? } -> { plan, progress }. Only the status changes: running jobs, sessions and files are not touched (cancel jobs with factory_media_cancel_job). A closed plan refuses every change (plan_closed).",
     z.object({ planId: z.string(), status: z.string(), note: z.string().nullable().optional() }).strict(),
@@ -633,7 +647,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planRead(
     "factory_plan_get",
-    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, rerun_requested, plan_*. In-app counts are read from the jobs themselves. Read-only.",
+    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, group_reviewed { groupId, accepted, rejected, overridesValidator } (1.8.0: the owner's verdicts took the wave's waiting count to zero -- recorded once per completion), rerun_requested, plan_moved { from, to, checked } (1.8.0), plan_*. Groups carry ownerNote (1.8.0: the owner's note on the wave; note is the factory's context, never overwritten by the owner). In-app counts are read from the jobs themselves. Read-only.",
     z.object({ planId: z.string(), since: z.string().optional() }).strict(),
     (input) => deps.plans.get(input)
   );

@@ -27,10 +27,14 @@ async function workspaceWithFiles() {
   return { root, outside, ws, jobDir, cleanup: async () => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]) };
 }
 
-function handler(ws: string, targets: Record<string, { kind: "sent"; relativePath: string } | { kind: "job"; jobId: string; localPath: string }>, opts: { session?: boolean } = {}) {
+function handler(ws: string, targets: Record<string, { kind: "sent"; relativePath: string } | { kind: "job"; jobId: string; localPath: string }>, opts: { session?: boolean; activePlans?: string[] } = {}) {
   const unavailable = (reason: string) => new Error(reason);
   return createAuditionGetHandler({
     getSession: async () => (opts.session === false ? null : { user: { id: "u1" } }),
+    // BL-157 (AC-SM-03): only a plan of the session's active channel (by default every plan the test names is).
+    async assertVisible(_userId, planId) {
+      if (opts.activePlans && !opts.activePlans.includes(planId)) throw new DomainError({ code: "plan_not_found", message: `Plan ${planId} not found` });
+    },
     async resolveAudition({ planId, itemKey, attemptRef }) {
       const target = targets[`${planId}|${itemKey}|${attemptRef}`];
       if (!target) throw new DomainError({ code: "plan_mismatch", message: "nothing to play" });
@@ -110,6 +114,7 @@ test("AC-GP3-07: a reference is served by its id only (the plan names the file),
     const unavailable = (reason: string) => new Error(reason);
     const h = createReferenceGetHandler({
       getSession: async () => ({ user: { id: "u1" } }),
+      assertVisible: async () => undefined,
       async resolveReference({ id }) {
         if (id !== "koto") throw new DomainError({ code: "plan_mismatch", message: "no such reference" });
         return { channelId: "UC1", kind: "sent", relativePath: "R-0001/C1/final-1.mp3" };
@@ -127,6 +132,21 @@ test("AC-GP3-07: a reference is served by its id only (the plan names the file),
     assert.equal((await call("id=other")).status, 422);
     assert.equal((await call("id=koto&file=/etc/passwd")).status, 400);
     assert.equal((await call("")).status, 400);
+  } finally {
+    await w.cleanup();
+  }
+});
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-03, ADR 0004 (b)): a plan of a channel that is not the session's active one is not
+// served -- the same 404 as an unknown plan, before any file is looked at.
+test("AC-SM-03: a plan that is not the active channel's is not found (404); the active channel's plays", async () => {
+  const w = await workspaceWithFiles();
+  try {
+    const h = handler(w.ws, { "P1|C1/F1|job:job-1": { kind: "sent", relativePath: "R-0001/C1/final-1.mp3" }, "P2|C1/F1|job:job-1": { kind: "sent", relativePath: "R-0001/C1/final-1.mp3" } }, { activePlans: ["P1"] });
+    assert.equal((await get(h, "itemKey=C1/F1&attemptRef=job:job-1", {}, "P1")).status, 200);
+    const other = await get(h, "itemKey=C1/F1&attemptRef=job:job-1", {}, "P2");
+    assert.equal(other.status, 404);
+    assert.equal(((await other.json()) as { error: string }).error, "plan_not_found");
   } finally {
     await w.cleanup();
   }

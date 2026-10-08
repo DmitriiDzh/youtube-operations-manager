@@ -2,10 +2,13 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { validatorOfEntry, type PlanCheck, type PlanMarker, type PlanReference, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { historyEntryOfVerdict, validatorOfEntry, type PlanCheck, type PlanExistingVerdict, type PlanMarker, type PlanReference, type PlanReviewBatch, type PlanReviewClaim, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
+import { ConfirmDialog } from "./confirm-dialog";
+import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 
@@ -93,13 +96,32 @@ export function reviewKeyAction(key: string): ReviewKeyAction | null {
   }
 }
 
-/** The next attempt still waiting after `from` (wrapping), else -1. Exported for its test. */
-export function nextWaitingIndex(entries: Array<{ verdict: unknown }>, from: number): number {
+/** The next attempt still waiting after `from` (wrapping), else -1; `skip` (BL-157: claimed elsewhere) passes over one. Exported for its test. */
+export function nextWaitingIndex<T extends { verdict: unknown }>(entries: T[], from: number, skip: (entry: T) => boolean = () => false): number {
   for (let step = 1; step <= entries.length; step++) {
     const i = (from + step) % entries.length;
-    if (entries[i].verdict === null) return i;
+    if (entries[i].verdict === null && !skip(entries[i])) return i;
   }
   return -1;
+}
+
+/** BL-157 (AC-TC-02): one step of the arrows/keys from `from` in `direction`, wrapping, passing over skipped entries; `from` when all are. Exported for its test. */
+export function stepIndex<T>(entries: T[], from: number, direction: 1 | -1, skip: (entry: T) => boolean): number {
+  const n = entries.length;
+  for (let step = 1; step < n; step++) {
+    const i = (((from + direction * step) % n) + n) % n;
+    if (!skip(entries[i])) return i;
+  }
+  return from;
+}
+
+/** BL-157 (AC-TC-02, AC-WV-06): another device's live claim on this entry -- on the track itself or on its whole wave. Exported for its test. */
+export function claimOf(entry: Pick<PlanReviewEntry, "itemKey" | "attemptRef" | "groupId">, claims: readonly PlanReviewClaim[], nowMs: number): PlanReviewClaim | null {
+  return (
+    claims.find(
+      (c) => Date.parse(c.until) > nowMs && ((c.scope === "attempt" && c.itemKey === entry.itemKey && c.attemptRef === entry.attemptRef) || (c.scope === "group" && c.groupId !== null && c.groupId === entry.groupId))
+    ) ?? null
+  );
 }
 
 /** AC-GP3-04: the loudness the validator measured for this attempt (the latest stage's `metrics.lufs`), or null. Exported for its test. */
@@ -149,12 +171,27 @@ export function findingMarkers(entry: Pick<PlanReviewEntry, "stages">): ReviewMa
   );
 }
 
-async function postJson(t: Translate, url: string, body: unknown): Promise<unknown> {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { message?: string }).message ?? t("review.requestFailed", { status: String(res.status) }));
+/** A refused request with its code and details (BL-157: `plan_verdict_exists` carries what is already there). */
+class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+    readonly details: unknown
+  ) {
+    super(message);
+  }
+}
+
+async function postJson(t: Translate, url: string, body: unknown, init: { keepalive?: boolean } = {}): Promise<unknown> {
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), ...init });
+  const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string; details?: unknown };
+  if (!res.ok) throw new RequestError(data.message ?? t("review.requestFailed", { status: String(res.status) }), data.error ?? null, data.details);
   return data;
 }
+
+/** BL-157 (AC-TC-01): how often the screen renews its claims and reads the other computer's. */
+const CLAIM_HEARTBEAT_MS = 60_000;
+const CLAIMS_REFRESH_MS = 30_000;
 
 type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
@@ -192,11 +229,73 @@ export function failedChecksOf(entry: Pick<PlanReviewEntry, "stages">): FailedCh
     }));
 }
 
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-01/05): one wave of the queue -- how many of its entries wait (by the validator) and how many were reviewed. */
+export type WaveSummary = {
+  groupId: string;
+  title: string;
+  total: number;
+  reviewed: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** The owner's verdicts in the wave, for the "wave done" summary. */
+  accepted: number;
+  rejected: number;
+  /** Accepted although the validator rejected them. */
+  overridesValidator: number;
+};
+
+/**
+ * The waves that have entries, in the plan's wave order (`batches`), then any wave the batches do not name (an older
+ * report), by first appearance. Entries in no wave are not a wave. Exported for its test.
+ */
+export function waveSummaries(entries: Array<Pick<PlanReviewEntry, "groupId" | "verdict" | "stages"> & { validator?: PlanReviewEntry["validator"] }>, batches: Array<Pick<PlanReviewBatch, "groupId" | "title">>): WaveSummary[] {
+  const order = [...batches.map((b) => b.groupId), ...entries.map((e) => e.groupId).filter((g): g is string => g !== null)];
+  const ids = [...new Set(order)].filter((id) => entries.some((e) => e.groupId === id));
+  return ids.map((groupId) => {
+    const mine = entries.filter((e) => e.groupId === groupId);
+    const waiting = mine.filter((e) => e.verdict === null);
+    const reviewed = mine.filter((e) => e.verdict !== null);
+    const accepted = reviewed.filter((e) => e.verdict?.result === "accepted");
+    const rejectedByValidator = waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
+    return {
+      groupId,
+      title: batches.find((b) => b.groupId === groupId)?.title ?? groupId,
+      total: mine.length,
+      reviewed: reviewed.length,
+      waitingPassed: waiting.length - rejectedByValidator,
+      waitingRejected: rejectedByValidator,
+      accepted: accepted.length,
+      rejected: reviewed.filter((e) => e.verdict?.result === "rejected").length,
+      overridesValidator: accepted.filter((e) => validatorOfEntry(e) === "rejected").length,
+    };
+  });
+}
+
+/**
+ * AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has a waiting track
+ * this computer may take -- review round 5 (AC-WV-06): one whose waiting tracks another computer has all claimed, or took
+ * whole, is not offered (`skip` is the screen's claimed-elsewhere rule). Exported for its test.
+ */
+export function nextOpenWave<E extends Pick<PlanReviewEntry, "groupId" | "verdict">>(waves: WaveSummary[], chosen: WaveSummary | null, entries: E[], skip: (entry: E) => boolean): WaveSummary | null {
+  if (!chosen || chosen.waitingPassed + chosen.waitingRejected > 0) return null;
+  const at = waves.findIndex((w) => w.groupId === chosen.groupId);
+  const open = (w: WaveSummary) => entries.some((e) => e.groupId === w.groupId && e.verdict === null && !skip(e));
+  return [...waves.slice(at + 1), ...waves.slice(0, at)].find((w) => w.waitingPassed + w.waitingRejected > 0 && open(w)) ?? null;
+}
+
+/** The entries the screen walks: the validator filter, then the chosen wave (null = all waves). Exported for its test. */
+export function visibleEntries<T extends Pick<PlanReviewEntry, "stages" | "groupId"> & { validator?: PlanReviewEntry["validator"] }>(entries: T[], filter: ReviewFilter, wave: string | null): T[] {
+  const filtered = filterEntries(entries, filter);
+  return wave === null ? filtered : filtered.filter((e) => e.groupId === wave);
+}
+
 /** BL-143 phase 2: the queue of ANOTHER device's plan, from its report, with the verdicts sent from here still waiting. */
 export type PeerReviewSource = { deviceId: string; hostname: string | null };
 
 type PeerQueueResponse = {
-  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[] }> }>;
+  /** BL-157 (AC-TC-02): the other devices' live claims, with the plan each is on. */
+  claims?: Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }>;
+  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[]; batches?: PlanReviewBatch[] }> }>;
   outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
 };
 
@@ -222,10 +321,23 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
 
 export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
   const { t, formatNumber, language } = useUiText();
+  const { channel } = useAppChannel();
   const [allEntries, setEntries] = useState<PlanReviewEntry[] | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>("all");
-  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06).
-  const entries = useMemo(() => (allEntries ? filterEntries(allEntries, filter) : null), [allEntries, filter]);
+  // BL-157 (AC-WV-01/02): the chosen wave (null = all waves) and each wave's context.
+  const [wave, setWave] = useState<string | null>(null);
+  const [batches, setBatches] = useState<PlanReviewBatch[]>([]);
+  // BL-157 (AC-TC-01..04): the other computers' claims, whether claimed tracks are walked too, the wave this computer took,
+  // and a verdict waiting for "Replace?".
+  const [claims, setClaims] = useState<PlanReviewClaim[]>([]);
+  const [showClaimed, setShowClaimed] = useState(false);
+  const [waveTaken, setWaveTaken] = useState<string | null>(null);
+  // The attempt the question is about travels with it: "Replace" confirms exactly that track (review round 3).
+  const [confirmReplace, setConfirmReplace] = useState<{ result: "accepted" | "rejected"; existing: PlanExistingVerdict; itemKey: string; attemptRef: string } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const freshClaims = useRef<PlanReviewClaim[]>([]);
+  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06) and wave (BL-157).
+  const entries = useMemo(() => (allEntries ? visibleEntries(allEntries, filter, wave) : null), [allEntries, filter, wave]);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [blind, setBlind] = useState(false);
@@ -245,14 +357,29 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const peerName = source?.hostname ?? null;
   const base = peerDevice ? `/api/generation-plans/peers/${encodeURIComponent(peerDevice)}/${encodeURIComponent(planId)}` : `/api/generation-plans/${encodeURIComponent(planId)}`;
 
+  /** BL-157 (AC-TC-02): the other computers' claims on THIS plan, from either answer. */
+  const claimsFrom = useCallback(
+    (data: { claims?: PeerQueueResponse["claims"] | PlanReviewClaim[] }): PlanReviewClaim[] =>
+      peerDevice
+        ? ((data.claims ?? []) as NonNullable<PeerQueueResponse["claims"]>).filter((c) => c.ownerDeviceId === peerDevice && c.planId === planId)
+        : ((data.claims ?? []) as PlanReviewClaim[]),
+    [peerDevice, planId]
+  );
+
   /** The queue, freshest from the server; `[]` (with the message shown) when it cannot be read. */
   const load = useCallback(
     (): Promise<PlanReviewEntry[]> =>
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
-          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; message?: string } & Partial<PeerQueueResponse>;
+          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; batches?: PlanReviewBatch[]; message?: string } & Partial<PeerQueueResponse>;
           if (!res.ok) throw new Error(errorText(t, data, t("review.loadFailedStatus", { status: String(res.status) }), { showErrorField: false }));
-          setReferences(peerDevice ? (data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId)?.references ?? []) : (data.references ?? []));
+          const peerPlan = peerDevice ? data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId) : undefined;
+          setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
+          setBatches(peerDevice ? (peerPlan?.batches ?? []) : (data.batches ?? []));
+          const fresh = claimsFrom(data);
+          freshClaims.current = fresh;
+          setClaims(fresh);
+          setNowMs(Date.now());
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
           return list;
@@ -261,12 +388,33 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.loadFailed") });
           return [];
         }),
-    [base, peerDevice, peerName, planId, t]
+    [base, claimsFrom, peerDevice, peerName, planId, t]
   );
 
+  // A claimed track is passed over unless the owner asked to see claimed ones too (AC-TC-02).
+  const skipClaimed = useCallback((e: PlanReviewEntry) => !showClaimed && e.verdict === null && claimOf(e, claims, nowMs) !== null, [claims, nowMs, showClaimed]);
+  /** The same rule against the claims `load` just read -- the state above only catches up on the next render (review round 1). */
+  const skipFresh = useCallback((e: PlanReviewEntry) => !showClaimed && e.verdict === null && claimOf(e, freshClaims.current, Date.now()) !== null, [showClaimed]);
+
   useEffect(() => {
-    void load().then((list) => setIndex(Math.max(0, list.findIndex((e) => e.verdict === null))));
+    // First open: the first waiting track no other computer is on (its claims arrive with the same answer).
+    void load().then((list) => setIndex(Math.max(0, list.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null))));
   }, [load]);
+
+  // BL-157 (AC-TC-02): the other computers' claims come and go while the screen is open -- read them again now and then
+  // (only the claims: the queue itself is not reloaded under the owner's hands).
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
+        .then(async (res) => (res.ok ? ((await res.json()) as { claims?: PeerQueueResponse["claims"] | PlanReviewClaim[] }) : null))
+        .then((data) => {
+          if (data) setClaims(claimsFrom(data));
+          setNowMs(Date.now());
+        })
+        .catch(() => undefined);
+    }, CLAIMS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [base, claimsFrom, peerDevice]);
 
   const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
   const waiting = entries?.filter((e) => e.verdict === null).length ?? 0;
@@ -289,46 +437,133 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   );
 
   const submit = useCallback(
-    async (result: "accepted" | "rejected") => {
+    async (result: "accepted" | "rejected", replace = false) => {
       if (!entry || busy) return;
+      // BL-157 (AC-TC-04): a track that already has a verdict asks first. A verdict sent from this computer is asked about by
+      // the server (its 409 names this computer, which the screen cannot name itself -- review round 6).
+      const sentHere = entry.verdict?.note?.startsWith(SENT_NOTE_PREFIX) ?? false;
+      if (!replace && entry.verdict && !sentHere) {
+        setConfirmReplace({
+          result,
+          itemKey: entry.itemKey,
+          attemptRef: entry.attemptRef,
+          existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? historyEntryOfVerdict(entry.history, entry.verdict)?.device ?? null, at: entry.verdict.at },
+        });
+        return;
+      }
       setBusy(true);
       try {
         const marks = draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks;
-        await postJson(t, `${base}/verdict`, { itemKey: entry.itemKey, attemptRef: entry.attemptRef, result, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks, ...(draft.note.trim() ? { note: draft.note.trim() } : {}) });
+        await postJson(t, `${base}/verdict`, {
+          itemKey: entry.itemKey,
+          attemptRef: entry.attemptRef,
+          result,
+          ...(replace ? { replace: true } : {}),
+          ...(draft.rating !== null ? { rating: draft.rating } : {}),
+          reasons: draft.reasons,
+          markers: marks,
+          ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+        });
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
-        const list = filterEntries(await load(), filter);
+        const list = visibleEntries(await load(), filter, wave);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
-        const next = nextWaitingIndex(list, here >= 0 ? here : index);
+        const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
         setDraft(emptyDraft());
         stopB();
         setIndex(next >= 0 ? next : Math.max(0, here));
       } catch (error) {
+        // The screen's data was stale: the server found a verdict there -- ask now (AC-TC-04).
+        if (error instanceof RequestError && error.code === "plan_verdict_exists") {
+          const existing = (error.details as { existing?: PlanExistingVerdict } | undefined)?.existing;
+          if (existing) {
+            setConfirmReplace({ result, existing, itemKey: entry.itemKey, attemptRef: entry.attemptRef });
+            return;
+          }
+        }
         setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
       } finally {
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, filter, index, load, onChanged, stopB, t]
+    [base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
   );
+
+  // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
+  // moving on moves the claim, leaving the screen gives them up. Claims are advisory: a failure is ignored.
+  // Always claimed while open and waiting, whatever the other computer claims (review round 6: dropping a claim already held
+  // when the other computer's claim arrives let both walk onto the same track). Claim ids are per device, so they never
+  // collide; the "next wave" offer already avoids leading onto another computer's tracks (`nextOpenWave`).
+  const claimKey = entry && entry.verdict === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
+  useEffect(() => {
+    if (!claimKey) return;
+    const [itemKey, attemptRef] = claimKey.split("\u0000");
+    const send = () => void postJson(t, `${base}/claim`, { scope: "attempt", itemKey, attemptRef }).catch(() => undefined);
+    send();
+    const timer = setInterval(send, CLAIM_HEARTBEAT_MS);
+    return () => {
+      clearInterval(timer);
+      void postJson(t, `${base}/claim`, { scope: "attempt", itemKey, attemptRef, release: true }, { keepalive: true }).catch(() => undefined);
+    };
+  }, [base, claimKey, t]);
+  useEffect(() => {
+    if (!waveTaken) return;
+    const send = () => void postJson(t, `${base}/claim`, { scope: "group", groupId: waveTaken }).catch(() => undefined);
+    const timer = setInterval(send, CLAIM_HEARTBEAT_MS);
+    return () => {
+      clearInterval(timer);
+      void postJson(t, `${base}/claim`, { scope: "group", groupId: waveTaken, release: true }, { keepalive: true }).catch(() => undefined);
+    };
+  }, [base, t, waveTaken]);
+  /** AC-WV-06: take the chosen wave on this computer (the other one skips it), or give it back. */
+  const toggleWaveTaken = useCallback(async () => {
+    if (!wave) return;
+    if (waveTaken === wave) {
+      setWaveTaken(null);
+      return;
+    }
+    try {
+      await postJson(t, `${base}/claim`, { scope: "group", groupId: wave });
+      setWaveTaken(wave);
+    } catch (error) {
+      setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
+    }
+  }, [base, t, wave, waveTaken]);
 
   /** A filter shows its own first waiting attempt. */
   const chooseFilter = useCallback(
     (next: ReviewFilter) => {
       stopB();
       setFilter(next);
-      setIndex(Math.max(0, filterEntries(allEntries ?? [], next).findIndex((e) => e.verdict === null)));
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], next, wave).findIndex((e) => e.verdict === null && !skipClaimed(e))));
       setDraft(emptyDraft());
       setMessage(null);
     },
-    [allEntries, stopB]
+    [allEntries, skipClaimed, stopB, wave]
   );
+  /** BL-157 (AC-WV-02): a wave shows its own first waiting attempt; null = all waves. */
+  const chooseWave = useCallback(
+    (next: string | null) => {
+      stopB();
+      setWave(next);
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], filter, next).findIndex((e) => e.verdict === null && !skipClaimed(e))));
+      setDraft(emptyDraft());
+      setMessage(null);
+    },
+    [allEntries, filter, skipClaimed, stopB]
+  );
+  const waves = useMemo(() => waveSummaries(allEntries ?? [], batches), [allEntries, batches]);
+  const chosenWave = wave === null ? null : (waves.find((w) => w.groupId === wave) ?? null);
+  const chosenBatch = wave === null ? null : (batches.find((b) => b.groupId === wave) ?? null);
+  // AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has something.
+  const nextWave = useMemo(() => nextOpenWave(waves, chosenWave, allEntries ?? [], skipClaimed), [allEntries, chosenWave, skipClaimed, waves]);
+  const entryWaveTitle = (groupId: string | null) => (groupId === null ? null : (batches.find((b) => b.groupId === groupId)?.title ?? groupId));
   const filterCounts = useMemo(() => {
-    const list = allEntries ?? [];
+    const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);
     const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter((e) => e.verdict === null).length;
     return { all: waitingIn("all"), passed: waitingIn("passed"), rejected: waitingIn("rejected"), anyRejected: list.some((e) => validatorOfEntry(e) === "rejected") };
-  }, [allEntries]);
+  }, [allEntries, wave]);
 
   const mark = useCallback(() => {
     const at = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
@@ -379,6 +614,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // BL-157 (AC-TC-04): while "Replace?" is open, the dialog has the keyboard.
+      if (confirmReplace) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -406,14 +643,14 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       }
       else if (action === "accept") void submit("accepted");
       else if (action === "reject") void submit("rejected");
-      else if (action === "next") go(index + 1);
-      else if (action === "previous") go(index - 1);
+      else if (action === "next") go(stepIndex(entries ?? [], index, 1, skipClaimed));
+      else if (action === "previous") go(stepIndex(entries ?? [], index, -1, skipClaimed));
       else if (action === "mark") mark();
       else if (action === "ab") toggleAB();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, index, mark, submit, toggleAB, onB]);
+  }, [confirmReplace, entries, go, index, mark, skipClaimed, submit, toggleAB, onB]);
 
   // The reference's volume follows the loudness switch while it plays.
   useEffect(() => {
@@ -442,7 +679,10 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-base font-semibold text-zinc-100">
+          {/* BL-157 (AC-SM-07): "<channel> · Review · <plan> · <wave>" -- whose track this is, at a glance. */}
+          {channel?.title ? <span className="text-zinc-300">{t("review.titleChannel", { channel: channel.title })}</span> : null}
           {t("review.title", { plan: planId })}
+          {entry && entryWaveTitle(entry.groupId) ? <span className="text-zinc-300">{t("review.titleWave", { wave: entryWaveTitle(entry.groupId) ?? "" })}</span> : null}
           {source ? <span className="ml-2 text-xs font-normal text-zinc-400">{t("review.onDevice", { device: source.hostname ?? source.deviceId })}</span> : null}
         </h3>
         <span className="text-xs text-zinc-400">{entries ? t("review.queueCounts", { waiting, total: entries.length }) : t("common.loading")}</span>
@@ -455,6 +695,92 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           </button>
         </div>
       </div>
+      {/* BL-157 (AC-WV-01): the plan's waves that have entries -- pick one to review it alone. */}
+      {waves.length > 0 && (
+        <div className="flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.wave.label")}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={wave === null}
+            onClick={() => chooseWave(null)}
+            className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${wave === null ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            {t("review.wave.all")}
+          </button>
+          {waves.map((w) => (
+            <button
+              key={w.groupId}
+              type="button"
+              role="tab"
+              aria-selected={wave === w.groupId}
+              onClick={() => chooseWave(w.groupId)}
+              title={t("review.wave.progress", { reviewed: w.reviewed, total: w.total })}
+              className={`rounded-md px-3 py-1 text-left text-xs transition-colors ${wave === w.groupId ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+            >
+              <span className="font-medium">{w.title}</span>
+              {claims.some((c) => c.scope === "group" && c.groupId === w.groupId && Date.parse(c.until) > nowMs) ? <span className="ml-1 text-sky-300">{t("review.wave.takenMark")}</span> : null}
+              <span className="ml-1.5 text-[11px] text-zinc-500">
+                {w.waitingPassed + w.waitingRejected > 0
+                  ? t("review.wave.waiting", { waiting: w.waitingPassed + w.waitingRejected, passed: w.waitingPassed, rejected: w.waitingRejected, reviewed: w.reviewed, total: w.total })
+                  : t("review.wave.progress", { reviewed: w.reviewed, total: w.total })}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {/* AC-WV-03: the chosen wave's context. */}
+      {chosenWave && (
+        <div className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-300">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-medium text-zinc-100">{chosenWave.title}</p>
+            {/* AC-WV-06: a wave another computer took; or take this one here. */}
+            {(() => {
+              const other = claims.find((c) => c.scope === "group" && c.groupId === chosenWave.groupId && Date.parse(c.until) > nowMs);
+              return other ? <span className="text-sky-200">{t("review.wave.takenBy", { device: other.device, time: formatDisplayDateTime(other.since) })}</span> : null;
+            })()}
+            <button type="button" onClick={() => void toggleWaveTaken()} className="ml-auto rounded-md border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-200 hover:border-zinc-500">
+              {waveTaken === chosenWave.groupId ? t("review.wave.release") : t("review.wave.take")}
+            </button>
+          </div>
+          {chosenBatch?.note && <p className="whitespace-pre-wrap text-zinc-300">{chosenBatch.note}</p>}
+          {chosenBatch?.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: chosenBatch.ownerNote })}</p>}
+          <p className="text-zinc-400">
+            {[
+              chosenBatch?.firstAt ? t("review.wave.date", { date: formatDisplayDate(chosenBatch.firstAt) }) : null,
+              chosenBatch && chosenBatch.templates.length > 0 ? t("review.wave.templates", { templates: chosenBatch.templates.join(", ") }) : null,
+              chosenBatch && chosenBatch.validator.passed + chosenBatch.validator.rejected > 0
+                ? t("review.wave.passRate", {
+                    passed: chosenBatch.validator.passed,
+                    total: chosenBatch.validator.passed + chosenBatch.validator.rejected,
+                    percent: Math.round((chosenBatch.validator.passed / (chosenBatch.validator.passed + chosenBatch.validator.rejected)) * 100),
+                  })
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+          {chosenBatch && chosenBatch.differingParams.length > 0 && (
+            <ul className="space-y-0.5 text-zinc-400">
+              {chosenBatch.differingParams.map((p) => (
+                <li key={p.name}>
+                  <span className="font-mono text-zinc-300">{p.name}</span>: {p.values.map((v) => String(v)).join(" | ")}
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
+          {chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
+            <div className="mt-1 flex flex-wrap items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-2 py-1.5 text-emerald-200">
+              <span>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</span>
+              {nextWave && (
+                <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-indigo-600 px-2.5 py-0.5 text-xs font-medium text-white hover:bg-indigo-500">
+                  {t("review.wave.next", { wave: nextWave.title, count: nextWave.waitingPassed + nextWave.waitingRejected })}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {/* Kept while a filter other than All is chosen, so a queue whose rejects went away never hides its way back. */}
       {(filterCounts.anyRejected || filter !== "all") && (
         <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
@@ -472,11 +798,21 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           ))}
         </div>
       )}
+      {/* BL-157 (AC-TC-02): tracks another computer is reviewing are passed over -- unless the owner wants them too. */}
+      {(() => {
+        const claimed = (entries ?? []).filter((e) => e.verdict === null && claimOf(e, claims, nowMs) !== null).length;
+        return claimed > 0 || showClaimed ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-sky-200">
+            <span>{t("review.claimedCount", { count: claimed })}</span>
+            <ToggleSwitch label={t("review.showClaimed")} checked={showClaimed} onChange={setShowClaimed} />
+          </div>
+        ) : null;
+      })()}
       {entries && entries.length === 0 && <p className="text-sm text-zinc-500">{t("review.empty")}</p>}
       {entry && (
         <>
           <div className="flex flex-wrap items-baseline gap-2 text-sm">
-            <button type="button" onClick={() => go(index - 1)} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.previous")}>
+            <button type="button" onClick={() => go(stepIndex(entries ?? [], index, -1, skipClaimed))} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.previous")}>
               ←
             </button>
             <span className="font-mono text-zinc-100">{entry.itemKey}</span>
@@ -485,17 +821,35 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 ? t("review.attemptMetaSeed", { attempt: entry.attemptRef, seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 })
                 : t("review.attemptMeta", { attempt: entry.attemptRef, index: index + 1, total: entries?.length ?? 0 })}
             </span>
-            <button type="button" onClick={() => go(index + 1)} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.next")}>
+            <button type="button" onClick={() => go(stepIndex(entries ?? [], index, 1, skipClaimed))} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.next")}>
               →
             </button>
             {entry.verdict && (
               <span className={`ml-auto text-xs ${entry.verdict.result === "accepted" ? "text-emerald-400" : "text-red-400"}`}>
                 {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
                 {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
+                {entry.pendingFrom ? ` · ${t("review.beingApplied", { device: entry.pendingFrom })}` : ""}
                 {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
               </span>
             )}
           </div>
+          {/* BL-157 (AC-TC-02): another computer is on this track (or its wave) right now. */}
+          {(() => {
+            const claim = claimOf(entry, claims, nowMs);
+            return claim && entry.verdict === null ? (
+              <p className="rounded-md border border-sky-900/60 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-200">{t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) })}</p>
+            ) : null;
+          })()}
+          {/* BL-157 (AC-TC-05): every verdict of this track, with the computer and the time. */}
+          {entry.history && entry.history.length > 0 && (
+            <ul className="space-y-0.5 text-[11px] text-zinc-500">
+              {entry.history.map((h, i) => (
+                <li key={`${h.at}-${i}`}>
+                  {t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" })}
+                </li>
+              ))}
+            </ul>
+          )}
           {!hideFindings && validatorOfEntry(entry) === "rejected" && failedChecksOf(entry).length > 0 && (
             <p className="rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-200">
               <span className="font-medium">{t("review.failedChecks")}</span>{" "}
@@ -669,6 +1023,25 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
             </div>
           </div>
         </>
+      )}
+      {confirmReplace && (
+        <ConfirmDialog
+          title={t("review.replace.title")}
+          description={t(confirmReplace.existing.device ? "review.replace.descriptionDevice" : "review.replace.description", {
+            device: confirmReplace.existing.device ?? "",
+            time: formatDisplayDateTime(confirmReplace.existing.at),
+            result: resultLabel(t, confirmReplace.existing.result),
+            rating: confirmReplace.existing.rating !== null ? ` ${confirmReplace.existing.rating}/10` : "",
+          })}
+          confirmLabel={t("review.replace.confirm")}
+          onCancel={() => setConfirmReplace(null)}
+          onConfirm={() => {
+            const { result, itemKey, attemptRef } = confirmReplace;
+            setConfirmReplace(null);
+            // Only the track the question named; if the screen moved meanwhile, nothing is sent.
+            if (entry?.itemKey === itemKey && entry.attemptRef === attemptRef) void submit(result, true);
+          }}
+        />
       )}
     </div>
   );

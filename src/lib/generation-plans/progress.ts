@@ -4,12 +4,15 @@ import type {
   PlanAttemptState,
   PlanEvent,
   PlanItemProgress,
+  PlanParamValue,
   PlanProgress,
   PlanResultRow,
+  PlanReviewBatch,
   PlanStage,
   PlanStageCounts,
   PlanTodo,
   PlanValidatorVerdict,
+  PlanVerdictHistoryRow,
 } from "./contracts";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +25,8 @@ import type {
 export type PlanJobRow = {
   id: string;
   sessionId: string;
+  /** BL-157 (AC-MV-05): the channel the job ran on -- its output lives in that channel's workspace, whatever the plan's now. */
+  channelId: string;
   stageId: string | null;
   itemKey: string | null;
   seed: number | null;
@@ -361,7 +366,11 @@ export function secondFloor(at: Date): Date {
  * event returned when more remain (so none is skipped -- events of that second may repeat), else null (the caller uses
  * the current second). Stored times have one-second resolution, hence the inclusive bound.
  */
-export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 500): { events: PlanEvent[]; more: boolean; cursor: string | null } {
+/**
+ * `history` (BL-157, AC-TC-05): the owner verdicts' history -- an attempt that has history rows gets one `owner_verdict` per
+ * verdict (with the device it was given on); one without (a verdict from before the history existed) gets one from its row.
+ */
+export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 500, history: PlanVerdictHistoryRow[] = []): { events: PlanEvent[]; more: boolean; cursor: string | null } {
   const events: PlanEvent[] = [];
   for (const j of jobs) {
     const base = { jobId: j.id, sessionId: j.sessionId, itemKey: j.itemKey, seed: j.seed };
@@ -379,8 +388,32 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
   const rejectedEarlier = new Set(results.filter((r) => r.result === "rejected").map((r) => `${r.stageId}\u0000${r.itemKey}\u0000${r.attemptRef}`));
   // BL-153 AC-RR-04: the owner accepted an attempt an earlier stage (the validator) rejected -- a calibration case for the factory.
   const overrides = (r: PlanResultRow) => r.reportedBy === "owner" && r.result === "accepted" && results.some((x) => x.stageId !== r.stageId && x.itemKey === r.itemKey && x.attemptRef === r.attemptRef && rejectedEarlier.has(`${x.stageId}\u0000${x.itemKey}\u0000${x.attemptRef}`));
+  const historyKeys = new Set(history.map((h) => `${h.itemKey}\u0000${h.attemptRef}`));
   for (const r of results) {
     if (r.reportedBy === "import") continue;
+    if (r.reportedBy === "owner" && historyKeys.has(`${r.itemKey}\u0000${r.attemptRef}`)) {
+      for (const h of history.filter((x) => x.itemKey === r.itemKey && x.attemptRef === r.attemptRef)) {
+        const asRow = { ...r, result: h.result };
+        events.push({
+          at: h.at,
+          kind: "owner_verdict",
+          actor: "owner",
+          details: {
+            stageId: r.stageId,
+            itemKey: h.itemKey,
+            attemptRef: h.attemptRef,
+            result: h.result,
+            device: h.device,
+            ...(h.rating !== null ? { rating: h.rating } : {}),
+            ...(h.reasons.length > 0 ? { reasons: h.reasons } : {}),
+            ...(h.markers.length > 0 ? { markers: h.markers } : {}),
+            ...(h.note ? { note: h.note } : {}),
+            ...(overrides(asRow) ? { overridesValidator: true } : {}),
+          },
+        });
+      }
+      continue;
+    }
     events.push({
       at: r.at,
       kind: r.reportedBy === "owner" ? "owner_verdict" : "result_reported",
@@ -407,4 +440,61 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
   // A page that is all one second would never advance: then the next call starts at the following second.
   const stuck = since !== null && lastSecond.getTime() <= secondFloor(since).getTime();
   return { events: page, more: true, cursor: (stuck ? new Date(lastSecond.getTime() + 1000) : lastSecond).toISOString() };
+}
+
+const BATCH_LIMITS = { templates: 20, params: 60, values: 20, valueChars: 500 } as const;
+
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-03): each wave's context for the review -- its title and notes, its earliest attempt,
+ * its templates, the item params that differ between its items, and what the stage right before the owner's review said
+ * about its attempts. In the plan's group order. Pure.
+ */
+export function reviewBatches(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): PlanReviewBatch[] {
+  const reviewIndex = plan.stages.findIndex((s) => s.kind === "owner_review");
+  const before = reviewIndex > 0 ? plan.stages[reviewIndex - 1] : null;
+  const attempts = before?.kind === "in_app" ? inAppAttempts(plan, jobs, results) : [];
+  return plan.groups.map((group) => {
+    const items = plan.items.filter((i) => i.groupId === group.groupId);
+    const keys = new Set(items.map((i) => i.itemKey));
+    const times = [
+      ...jobs.filter((j) => j.itemKey !== null && keys.has(j.itemKey)).map((j) => j.createdAt.getTime()),
+      ...results.filter((r) => keys.has(r.itemKey)).map((r) => Date.parse(r.at)),
+    ].filter((ms) => Number.isFinite(ms));
+    const templates = [...new Set(items.map((i) => i.templateLabel ?? i.templateId).filter((x): x is string => typeof x === "string" && x.length > 0))]
+      .slice(0, BATCH_LIMITS.templates)
+      .map((x) => x.slice(0, 200));
+    const names = [...new Set(items.flatMap((i) => Object.keys(i.params ?? {})))];
+    const differingParams: PlanReviewBatch["differingParams"] = [];
+    for (const name of names) {
+      const values: PlanParamValue[] = [];
+      for (const item of items) {
+        const raw = item.params?.[name];
+        if (raw === undefined) continue;
+        const value = typeof raw === "string" ? raw.slice(0, BATCH_LIMITS.valueChars) : raw;
+        if (!values.some((v) => v === value)) values.push(value);
+      }
+      if (values.length > 1 && differingParams.length < BATCH_LIMITS.params) differingParams.push({ name: name.slice(0, 64), values: values.slice(0, BATCH_LIMITS.values) });
+    }
+    let passed = 0;
+    let rejected = 0;
+    if (before?.kind === "in_app") {
+      passed = attempts.filter((a) => keys.has(a.itemKey) && a.state === "done").length;
+    } else if (before) {
+      for (const r of results) {
+        if (r.stageId !== before.stageId || !keys.has(r.itemKey)) continue;
+        if (r.result === "accepted" || r.result === "done") passed++;
+        else if (r.result === "rejected") rejected++;
+      }
+    }
+    return {
+      groupId: group.groupId,
+      title: group.title,
+      note: group.note,
+      ownerNote: group.ownerNote ?? null,
+      firstAt: times.length > 0 ? new Date(Math.min(...times)).toISOString() : null,
+      templates,
+      differingParams,
+      validator: { passed, rejected },
+    };
+  });
 }

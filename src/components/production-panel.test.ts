@@ -3,44 +3,53 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createTranslator, translate } from "@/lib/ui-text";
-import { describeBalance, PRODUCTION_TABS } from "./production-panel";
+import { describeBalance, MEDIA_TABS, SERVERS_TABS } from "./production-panel";
 
 // AC-P14-26 (PHASE_14_PLAN.md §5.2; owner, Telegram 2026-10-05, msg 1549): Settings keeps only the RunPod connection
 // (sub-tab renamed "RunPod"); a Production section right after Content holds the work, its tabs ordered by frequency
 // of use -- work on the left, setup on the right: Sessions → Jobs → Models → Workflow templates → Setup.
 
 // Changed requirement (BL-143, ADR 0029, AC-GP-15 in GENERATION_PLANS_PLAN.md): a Plans tab after Jobs.
-test("AC-P14-26 / AC-GP-15: Production's tabs are Sessions, Jobs, Plans, Models, Workflow templates (work, left) then Setup (right)", () => {
+// Changed requirement (BL-157, SERVERS_MEDIA_PLAN.md AC-SM-01; FO-REQ-0009 §1–§2, owner msgs 2119/2125): Production is split
+// in two -- Servers (shared: Sessions, Models, Workflow templates; Setup on the right) and Media (the active channel's:
+// Plans, Jobs). The order of the remaining tabs is the AC-P14-26 order.
+test("AC-SM-01: Servers' tabs are Sessions, Models, Workflow templates (work, left) then Setup (right); Media's are Plans, Jobs", () => {
   assert.deepEqual(
-    PRODUCTION_TABS.map((t) => [translate("en", t.labelKey), t.side]),
+    SERVERS_TABS.map((tab) => [translate("en", tab.labelKey), tab.side]),
     [
       ["Sessions", "work"],
-      ["Jobs", "work"],
-      ["Plans", "work"],
       ["Models", "work"],
       ["Workflow templates", "work"],
       ["Setup", "setup"],
     ]
   );
+  assert.deepEqual(
+    MEDIA_TABS.map((tab) => translate("en", tab.labelKey)),
+    ["Plans", "Jobs"]
+  );
 });
 
-test("AC-P14-26: the sidebar has Production right after Content; Settings has a RunPod sub-tab rendering only the connection", async () => {
+test("AC-P14-26 / AC-SM-01: the sidebar has Media right after Content, then Servers; Settings has a RunPod sub-tab rendering only the connection", async () => {
   // BL-149: the sidebar lives in the (app) layout and Settings on its own page (the single dashboard page is gone; the
   // requirement this test checks is unchanged).
   const layout = await readFile(path.join(process.cwd(), "src", "app", "(app)", "layout.tsx"), "utf8");
   const page = await readFile(path.join(process.cwd(), "src", "app", "(app)", "settings", "layout.tsx"), "utf8");
   const navValues = [...layout.slice(layout.indexOf("const NAV_ITEMS"), layout.indexOf("] as const satisfies")).matchAll(/value: "([a-z-]+)"/g)].map((m) => m[1]);
-  assert.equal(navValues[navValues.indexOf("content") + 1], "production");
+  // BL-157: the section that was Production right after Content is now Media, followed by Servers.
+  assert.deepEqual(navValues.slice(navValues.indexOf("content") + 1, navValues.indexOf("content") + 3), ["media", "servers"]);
+  assert.equal(navValues.includes("production"), false);
   // BL-149 review: the sub-tab lists live in one plain module (section-tabs.ts) shared by the server pages and the client.
   const tabs = await readFile(path.join(process.cwd(), "src", "components", "section-tabs.ts"), "utf8");
-  const subTabs = tabs.slice(tabs.indexOf("export const SETTINGS_SUB_TABS"), tabs.indexOf("export type ProductionTab"));
+  // BL-157: the slice ends at the first type after the Settings list (it was ProductionTab); the requirement -- Settings has
+  // no Media sub-tab -- is unchanged.
+  const subTabs = tabs.slice(tabs.indexOf("export const SETTINGS_SUB_TABS"), tabs.indexOf("export type ServersTab"));
   // BL-152: the sub-tab name is an interface-text key; its English text is still "RunPod".
   assert.match(subTabs, /\{ value: "runpod", labelKey: "tabs\.settings\.runpod" \}/);
   assert.equal(translate("en", "tabs.settings.runpod"), "RunPod");
   assert.doesNotMatch(subTabs, /"media"/);
   const runpodBlock = page.slice(page.indexOf('settingsSubTab === "runpod"'), page.indexOf('settingsSubTab === "about"'));
   assert.match(runpodBlock, /<RunpodConnectionSettings \/>/);
-  for (const card of ["SessionsCard", "JobsCard", "ModelsCard", "WorkflowTemplatesCard", "ComputeCard", "VolumeCard", "LimitsCard", "ProductionPanel"]) {
+  for (const card of ["SessionsCard", "JobsCard", "ModelsCard", "WorkflowTemplatesCard", "ComputeCard", "VolumeCard", "LimitsCard", "ServersPanel", "MediaPanel"]) {
     assert.ok(!runpodBlock.includes(card), `${card} must not render under Settings → RunPod`);
   }
 });

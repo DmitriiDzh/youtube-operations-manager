@@ -5,7 +5,7 @@ import type { MediaVolumeUsage } from "@/lib/media-generation/contracts";
 import type { Translate } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 
-// BL-136 (owner, Telegram 2026-10-06, msg 1709): a space bar at the top of Production → Models -- how much is rented, how much
+// BL-136 (owner, Telegram 2026-10-06, msg 1709): a space bar at the top of Servers → Models -- how much is rented, how much
 // is used, and how much each model takes. One horizontal stacked bar (part-to-whole) against the rented size: the largest
 // models get their own segment, the rest fold into "Other models", non-model files (exchange/, pull staging and verdicts)
 // are one segment, the unfilled track is free space. RunPod does not report used space, so "used" is the S3 sum.

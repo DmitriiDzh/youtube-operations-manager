@@ -4,6 +4,8 @@ import { useT } from "./ui-text-provider";
 import { useEffect, useRef, useState } from "react";
 import { signIn } from "next-auth/react";
 import { activateStoredChannel, useConnectedChannels } from "./use-connected-channels";
+import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
+import { waitingLabel } from "./channel-work";
 
 /**
  * Topbar "Switch channel" control (owner instruction, 2026-09-23, following BL-071's Settings
@@ -17,7 +19,7 @@ import { activateStoredChannel, useConnectedChannels } from "./use-connected-cha
  * Connect a new channel" at the bottom of the list; picking an existing row reactivates it the
  * same way Settings → Channels' "Activate" button does.
  */
-export function ChannelSwitcher() {
+export function ChannelSwitcher({ channelWork }: { channelWork?: readonly PlanChannelWork[] } = {}) {
   const { channels, refetch } = useConnectedChannels();
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -79,7 +81,14 @@ export function ChannelSwitcher() {
                   ) : (
                     <div className="h-6 w-6 shrink-0 rounded-full bg-zinc-700" />
                   )}
-                  <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{c.title}</span>
+                    {/* BL-157 (AC-BL-03): the tracks waiting for review in this channel, split passed / rejected. */}
+                    {(() => {
+                      const label = waitingLabel(t, channelWork?.find((w) => w.channelId === c.channelId));
+                      return label ? <span className="block truncate text-[11px] text-amber-300">{label}</span> : null;
+                    })()}
+                  </span>
                   {c.isActive ? (
                     <span className="shrink-0 text-[10px] font-medium text-emerald-400">{t("channelSwitcher.active")}</span>
                   ) : activatingChannelId === c.channelId ? (

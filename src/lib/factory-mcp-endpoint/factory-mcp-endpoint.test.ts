@@ -100,6 +100,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       runStage: async (input) => (mediaCalls.push(`plan.runStage:${(input as { planId: string }).planId}`), { created: [] }),
       rerun: async (input) => (mediaCalls.push(`plan.rerun:${(input as { planId: string }).planId}`), { created: [] }),
       cloneGroup: async (input) => (mediaCalls.push(`plan.cloneGroup:${(input as { planId: string }).planId}`), { plan: {} }),
+      move: async (input) => (mediaCalls.push(`plan.move:${(input as { planId: string }).planId}`), { moved: false }),
     },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
@@ -273,6 +274,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_plan_get",
     "factory_plan_import",
     "factory_plan_list",
+    "factory_plan_move",
     "factory_plan_report",
     "factory_plan_rerun",
     "factory_plan_run_stage",
@@ -298,14 +300,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-133: version 1.2.0 and the seven session/job/capacity tools (four of them writes).
 // FO-REQ-0005: version 1.3.0, delete/adopt a local template (writes) and the settings read. BL-143: 1.5.0 and the plan tools.
 // BL-155 (CUDA_HOSTS_PLAN.md "Contract"): 1.7.0 -- additive fields and an error code, no new tool, so the tool lists are unchanged.
-test("factory_get_capabilities reports the factory API version 1.7.0 (BL-155), READ and WRITE, the tool list and the write tools", async () => {
+// BL-157 (SERVERS_MEDIA_PLAN.md §G): 1.8.0 and the write tool factory_plan_move, last in both lists (declaration order).
+test("factory_get_capabilities reports the factory API version 1.8.0 (BL-157), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.7.0",
+    factoryApiVersion: "1.8.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -340,6 +343,7 @@ test("factory_get_capabilities reports the factory API version 1.7.0 (BL-155), R
       "factory_plan_run_stage",
       "factory_plan_rerun",
       "factory_plan_clone_group",
+      "factory_plan_move",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -361,6 +365,7 @@ test("factory_get_capabilities reports the factory API version 1.7.0 (BL-155), R
       "factory_plan_run_stage",
       "factory_plan_rerun",
       "factory_plan_clone_group",
+      "factory_plan_move",
     ],
   });
 });
@@ -691,6 +696,7 @@ test("BL-143: factory_plan writes pass the device mutation gate first; get/list/
     ["factory_plan_run_stage", { planId: "p1", sessionId: "s1" }, "plan.runStage:p1"],
     ["factory_plan_rerun", { planId: "p1", sessionId: "s1", itemKey: "C1/F1" }, "plan.rerun:p1"],
     ["factory_plan_clone_group", { planId: "p1", groupId: "C1", newGroupId: "C2" }, "plan.cloneGroup:p1"],
+    ["factory_plan_move", { planId: "p1", channelId: "UC_target", checkOnly: true }, "plan.move:p1"],
   ];
   for (const [name, args, reached] of writes) {
     toolDeps.mediaCalls.length = 0;

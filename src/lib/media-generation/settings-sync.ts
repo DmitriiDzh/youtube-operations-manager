@@ -1,7 +1,7 @@
 import type { MediaSettingConflict, MediaSettingValue } from "@/lib/sync-gateway";
 import type { MediaSettings } from "./contracts";
 
-// BL-150 (owner, Telegram 2026-10-07, msgs 2008/2011; docs/roadmap/plans/PRODUCTION_SETTINGS_SYNC_PLAN.md): the Production → Setup
+// BL-150 (owner, Telegram 2026-10-07, msgs 2008/2011; docs/roadmap/plans/PRODUCTION_SETTINGS_SYNC_PLAN.md): the Servers → Setup
 // settings shared through the sync-gateway `media-settings` document. This module decides which shared values this device
 // applies, and applies them through Production's own `updateSettings` (the same validation as an edit in Setup). The document
 // itself is an opaque map; the field list and every rule live here.

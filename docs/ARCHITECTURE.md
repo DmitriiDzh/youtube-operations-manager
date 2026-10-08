@@ -3026,3 +3026,116 @@ The Web UI shows every text in the person's interface language: English or Russi
   - `apiErrorText`: a failed API answer `{ error: <DomainErrorCode>, message }`. English shows the server's message exactly as before; another language shows `errors.<code>` in words with the server's message as the detail; an unknown code shows the server's text.
 - **Choosing the language.** `requestUiLanguage()` (`ui-text/server.ts`) in the root layout: the `ui_language` cookie (set by `PUT /api/ui-language`, `{ language: null }` = system) wins; else the first supported language of `Accept-Language` (the browser on the same computer follows the system language); else English. A cookie and not `app_settings`: the root layout renders every page, the recovery page included, which must work while the database cannot open. The choice is per browser profile on a computer and never syncs between devices. The layout sets `<html lang>` and passes `language`, `source` and `systemLanguage` to `UiTextProvider`; components call `useT()` / `useUiText()`. A change calls `router.refresh()`, so the whole interface re-renders without a reload.
 - **Keeping it complete.** `locales.test.ts` (every language has every key, same placeholders, unique keys across areas, well-formed plurals) and `literal-text.inventory.test.ts` (the scan in `src/test-support/ui-text-literals.ts` fails on English JSX text, text attributes and sentence-like strings in `src/components` / `src/app`; a non-interface string is marked `ui-text-ignore` with a reason).
+
+## 33. Servers and Media, other channels' work, plan move, reviewing from two computers (BL-157, ADR 0031)
+
+Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Branch `feature/servers-media`.
+
+- **Sections.**
+  - `/servers/<tab>` (`ServersPanel`) holds the shared infrastructure:
+    - Sessions, every channel's, named via `useChannelNames`, with a channel filter;
+    - Models and Templates;
+    - Setup, with the capacity log.
+  - `/media/<tab>` (`MediaPanel`) holds the active channel's Plans (and `/media/plans/<id>/review`) and Jobs, plus
+    `NowRunningLine`. It remounts when the channel changes.
+  - `production/[[...rest]]` redirects with `productionRedirectTarget`: plans and jobs go to Media, everything else to Servers.
+  - The tab lists live in `section-tabs.ts` (`SERVERS_TABS`, `MEDIA_TABS`).
+- **Active-channel scoping of Media (ADR 0004 (b)).**
+  - `generation-plans/shared.ts` `planHandler` calls `core.assertPlanOfChannel(planId, activeChannelOf(userId))` first. The
+    audition and reference handlers do the same check through `assertVisible`. The peer routes use `assertPeerPlanOfChannel`,
+    with the channel named in the report.
+  - The plans list and the peer plans list filter on the server. The peers list also filters the verdicts sent from here and
+    the other devices' claims to the plans it shows. Jobs use `GET /api/media-generation/jobs?scope=active`.
+  - With no active channel, everything is empty or `not_found`.
+- **Other channels' work (exception to ADR 0004: counts and names -- plan, wave and stage titles and notice kinds; never
+  tracks, files or verdicts).**
+  - `core.channelSummary({ activeChannelId, connectedChannelIds })` returns, per connected channel:
+    - waiting passed / rejected;
+    - the plans with waiting tracks;
+    - each wave's waiting count;
+    - the plans' notices other than `review_waiting`. Another device's notices are read from its report with `sharedNotices`,
+      which keeps only well-formed known kinds.
+  - Other devices' plans count, minus the verdicts sent from here. A channel not connected here is never counted.
+  - `GET /api/generation-plans/summary` puts the active channel's counts on top (the Media badge) and `channels` beside them.
+    The layout polls it every 60 s and when the channel changes.
+  - The channel switcher shows `waitingLabel`.
+  - The bell (`device-sync-bell.tsx`) shows `otherChannelEntries`:
+    - one entry per non-active channel and type of work, derived on every poll;
+    - entries cannot be dismissed, and the dot is sky blue;
+    - an entry's button runs `activateStoredChannel`, waits until `channel.id` matches, then `router.push`es the place.
+  - The pure rules are in `components/channel-work.ts`.
+- **Plan move (`movePlan`, `factory_plan_move`).**
+  - It is serialized per plan and uses the plan's compare-and-swap.
+  - Refused (`plan_invalid`) when:
+    - the plan is not active (`plan_closed`);
+    - the target is the same channel;
+    - the target is not connected;
+    - the target has no workspace;
+    - the plan has an unfinished job;
+    - any file is missing.
+  - The file check goes through the `files` port: `resolveSentToYtmFile` in the target workspace, the player's own rules. It
+    covers every distinct `auditionFile` of every result row and every reference. The answer reports
+    `{ checked, missing (≤ 500), missingCount, unfinishedJobs, moved }`. `checkOnly` writes nothing.
+  - On success it records `plan_moved { from, to, checked }`.
+  - A plan changed during the check (its revision moved) is refused, to be asked again. The factory's plan-linked
+    `create_job` runs under the same lock (`withPlanLock`, on the trimmed plan id), so a move cannot pass between its check and
+    the job's creation.
+  - Only the factory links a job or a session to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field and
+    `agent_request_media_session` a `planId`. The operator's `POST /api/media-generation/jobs` and `/sessions` and the CLI
+    `media job-create` drop them.
+  - `PlanJobRow.channelId` (`media_jobs.channel_id`) makes `resolveAudition` of a job output use the job's channel. The report's
+    `jobChannelId` does the same for the other device.
+- **Plans report version 2** (`GENERATION_PLANS_REPORT_VERSION`; the reader accepts 1 and 2, and every level stays strict).
+  - On a review entry: `jobChannelId` and `history` (≤ 10).
+  - On a plan: `batches` (`reviewBatches`).
+  - On a group: `ownerNote`.
+  - On the report: `claims` (≤ 200).
+- **Waves.**
+  - `reviewBatches` (pure, in `progress.ts`) returns per group: title, `note`, `ownerNote`, earliest attempt, templates, the
+    params that differ between the group's items, and passed / rejected at the stage before `owner_review`.
+  - `setGroupNote` from the owner writes `ownerNote`; from the factory it writes `note`. An upsert keeps `ownerNote`.
+  - `recordGroupsReviewed` compares the review entries before and after an owner verdict, given here or applied from a peer. A
+    wave that goes from waiting to none records `group_reviewed { groupId, accepted, rejected, overridesValidator }`.
+  - The review screen:
+    - lists the waves (`waveSummaries`);
+    - walks one wave together with the validator filter (`visibleEntries`);
+    - shows the wave's context card, its "done" summary and the next wave;
+    - heads the screen with "<channel> · Review · <plan> · <wave>".
+- **Two computers.**
+  - **History (schema v69, `generation_plan_verdict_history`, device-local on the owning device).**
+    - `recordOwnerVerdict` appends a row with `deviceLabel`, the host name.
+    - `applyPeerVerdicts` appends a row with the sending device and the verdict's own note. A peer verdict older than the
+      stored one is not applied but is still appended, and is recorded once as `peer_verdict { superseded: true }`.
+    - `seedHistory`: before the first history row of an attempt, a current verdict stored before v69 goes in first. Its device
+      is read from the note's ` (from <device>)` suffix only when a `peer_verdict` event from that device on that item proves the
+      relay. Otherwise it is this device, and the note is kept whole. A replacement or an older peer verdict therefore never hides
+      it. History rows are clamped to the report's bounds when they are shared.
+    - `planEvents(..., history)` emits one `owner_verdict` per history row, with `device`. A key with no history row gets one
+      event from the result row.
+  - **Claims (schema v70, `generation_plan_review_claims`, this device's own).**
+    - `claimReview` takes `{ deviceId?, planId, scope: attempt|group, itemKey/attemptRef | groupId, release? }`.
+    - The claim id is a sha256 of (scope, owning device, plan[, group]). That gives one track claim per plan, which moves with
+      the track, and one claim per wave.
+    - A claim lasts 10 minutes. `since` is kept while the same track is renewed. A verdict here ends this device's claim on
+      that track.
+    - The claim routes (`[planId]/claim`, `peers/[deviceId]/[planId]/claim`) publish the report at once.
+    - `claimReview` runs under the plan's lock, so a release and the next claim sent together keep the new claim. A release
+      removes only this device's own claim (the same track) and needs no plan or channel, so it works after a channel switch.
+    - `claimsOn` and `peerClaims` read the peers' live claims. A claim that reaches more than 15 minutes ahead is ignored.
+    - The screen:
+      - renews its claims every 60 s and releases them on leaving (`keepalive`);
+      - reads the others' claims every 30 s without reloading the queue;
+      - passes over claimed tracks (`claimOf`, `stepIndex`, `nextWaitingIndex(skip)`) unless "show them too" is on.
+  - **Pending verdicts.**
+    - On the owning device, `pendingPeerVerdicts` uses the same rules as `applyPeerVerdicts`.
+    - `withPending` overlays a not-yet-applied verdict from another device as given (`pendingFrom`), in the queue, `summary` and
+      `channelSummary` (`ownerQueue`). The owner's plan list and plan card (`listPlans` / `getPlan` with `ownerView`) adjust the
+      items' and waves' waiting counts and the `review_waiting` notice the same way (`ownerProgress`). The factory's reads do not.
+  - **Replace guard.**
+    - `recordOwnerVerdict` and `recordPeerVerdict` refuse an existing verdict without `replace`: one here, relayed, sent from
+      here, or pending from a peer. The error is `plan_verdict_exists` (409, `planVerdictExists`) with
+      `{ existing: { result, rating, device, at } }`.
+    - The screen asks first (`ConfirmDialog`) and asks again on a 409.
+- **Limits** (RISK-114):
+  - claims are advisory and arrive within the sync delay;
+  - both computers must run version 2.

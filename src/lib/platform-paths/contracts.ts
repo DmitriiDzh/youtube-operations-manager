@@ -48,7 +48,7 @@ export type AppPaths = {
    * reasoning `migrationBackupsDir` above already uses for its own whole-database backups).
    */
   changeDraftsDiscardedBackupsDir: string;
-  /** BL-150: the shared Production → Setup settings document (sync-gateway `media-settings`). */
+  /** BL-150: the shared Servers → Setup settings document (sync-gateway `media-settings`). */
   mediaSettingsDocDir: string;
   mediaSettingsSyncFallbackDir: string;
   mediaSettingsDiscardedBackupsDir: string;

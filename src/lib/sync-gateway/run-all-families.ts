@@ -43,7 +43,7 @@ async function runAllOnce() {
     runAndRecord("media_sessions", () => createMediaSessionsSyncRunnerForProduction().runSyncCycle()),
     // BL-143 phase 2: this device's generation plans (and its verdicts on others' plans) out, the other devices' in.
     runAndRecord("generation_plans", () => createGenerationPlansSyncRunnerForProduction().runSyncCycle()),
-    // BL-150: the shared Production → Setup settings (one Automerge document; media-generation applies it on its own tick).
+    // BL-150: the shared Servers → Setup settings (one Automerge document; media-generation applies it on its own tick).
     runAndRecord("media_settings", () => createMediaSettingsSyncRunnerForProduction().runSyncCycle()),
   ]);
   return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings };

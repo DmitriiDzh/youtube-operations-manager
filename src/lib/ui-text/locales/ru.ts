@@ -3,7 +3,7 @@
 //
 // Glossary -- one translation per term, everywhere:
 //   Batch → пакет · Change Set → набор изменений · Live writes → запись в YouTube · Merge (tab) → Слияние ·
-//   Production → Производство · Research → Исследования · Decisions → Решения · Reach → охват ·
+//   Servers → Серверы · Media (the section) → Медиа · Research → Исследования · Decisions → Решения · Reach → охват ·
 //   Session → сессия · Job → задание · Workflow template → шаблон процесса · Device sync → синхронизация компьютеров ·
 //   AI Localization → ИИ-перевод · Watchlist → список наблюдения · Change drafts → черновики изменений ·
 //   Privacy (YouTube's own words) → Открытый доступ / Доступ по ссылке / Ограниченный доступ; private (in running text) → «ограниченный доступ» (e.g. «видео с ограниченным доступом») ·

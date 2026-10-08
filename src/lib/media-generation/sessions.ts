@@ -548,7 +548,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (spent >= settings.maxUsdPerDay || round2(spent + reservedUsd + row.estimateUsd) > settings.maxUsdPerDay) {
       throw new DomainError({
         code: "media_daily_cap_reached",
-        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent${others.otherSpentTodayUsd > 0 ? ` ($${others.otherSpentTodayUsd} of it on your other devices)` : ""}, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
+        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent${others.otherSpentTodayUsd > 0 ? ` ($${others.otherSpentTodayUsd} of it on your other devices)` : ""}, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Servers → Setup, or wait. The request stays pending.`,
         details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, otherDevicesSpentTodayUsd: others.otherSpentTodayUsd, reservedUsd, estimateUsd: row.estimateUsd },
       });
     }
@@ -558,7 +558,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (row.gpuTypeId !== settings.gpuTypeId || row.datacenterId !== settings.datacenterId || row.costPerHr !== settings.gpuOnDemandPricePerHr) {
       throw new DomainError({
         code: "media_settings_invalid",
-        message: `Production → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
+        message: `Servers → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
         details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
       });
     }
@@ -589,7 +589,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const active = (await deps.store.listOpen()).filter(isActive);
       throw new DomainError({
         code: "media_session_conflict",
-        message: `${active.length + others.otherActiveSessions} of ${settings.maxConcurrentSessions} concurrent sessions are already active${others.otherActiveSessions > 0 ? ` (${others.otherActiveSessions} on your other devices)` : ""} (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
+        message: `${active.length + others.otherActiveSessions} of ${settings.maxConcurrentSessions} concurrent sessions are already active${others.otherActiveSessions > 0 ? ` (${others.otherActiveSessions} on your other devices)` : ""} (the limit in Servers → Setup); stop one or wait for one to finish. The request stays pending.`,
         details: { sessionId, activeSessions: active.map((r) => r.id), otherDevicesActiveSessions: others.otherActiveSessions, maxConcurrentSessions: settings.maxConcurrentSessions },
       });
     }
@@ -1274,7 +1274,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
       }
       if (settings.gpuOnDemandPricePerHr === null) {
-        throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Production → Setup." });
+        throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Servers → Setup." });
       }
       const maxMinutes = parsed.maxMinutes ?? settings.defaultMaxMinutes;
       // The upper bound is whichever cap bites first: the minutes at the saved price, or the session's own USD cap.
@@ -1399,7 +1399,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const worst = row.maxUsd ?? row.estimateUsd;
       const [today, month] = await Promise.all([factorySpendUsd(startOfLocalDay(now), now, row.id), factorySpendUsd(startOfLocalMonth(now), now, row.id)]);
       const held = !settings.factorySessionsEnabled
-        ? "Factory sessions are switched off (Production → Setup)"
+        ? "Factory sessions are switched off (Servers → Setup)"
         : row.maxMinutes > settings.factoryMaxMinutesPerSession
           ? `${row.maxMinutes} min is over the factory's ${settings.factoryMaxMinutesPerSession} min per session`
           : worst > settings.factoryMaxUsdPerSession

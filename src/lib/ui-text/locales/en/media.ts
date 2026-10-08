@@ -1,4 +1,4 @@
-// BL-152: Production → Setup and the RunPod connection (media-generation-settings).
+// BL-152: Servers → Setup (Production → Setup before BL-157) and the RunPod connection (media-generation-settings).
 export const media = {
   "media.common.refresh": "Refresh",
   "media.common.delete": "Delete",
@@ -19,7 +19,7 @@ export const media = {
   "media.actor.sync": "automatic sync",
   "media.actor.you": "you",
   "media.overview.loadFailed": "Failed to load media settings",
-  "media.connection.restInProduction": "Compute, network volume, limits, sessions, models, workflow templates and jobs are in the Production section.",
+  "media.connection.restInProduction": "Compute, the network volume, limits, sessions, models and workflow templates are in the Servers section; plans and jobs are in Media.",
   "media.models.listFailed": "Failed to list the volume",
   "media.models.sizeFailed": "Could not read the volume's size",
   "media.models.usageFailed": "Could not list the whole volume",
@@ -153,6 +153,11 @@ export const media = {
   "media.sessions.colCostSoFar": "Cost so far",
   "media.sessions.colActions": "Actions",
   "media.sessions.thisChannel": "this channel",
+  "media.sessions.allChannels": "All channels",
+  "media.sessions.channelFilter": "Filter sessions by channel",
+  "media.nowRunning.line": "Generating now for this channel: session {session} · {gpu} · {status}",
+  "media.nowRunning.noGpuYet": "a GPU is being found",
+  "media.nowRunning.open": "Open in Servers →",
   "media.sessions.approvedByFactory": "approved by the factory (within its limits)",
   "media.sessions.estimate": "est. ${usd}",
   "media.sessions.overTodaysCap": " · over today's cap",
@@ -163,7 +168,7 @@ export const media = {
   "media.sessions.moreWaiting": "{count, plural, one {# more job waiting} other {# more jobs waiting}}",
   "media.sessions.noneOpen": "No open sessions. Requests from agents appear here automatically.",
   "media.sessions.selectChannel": "Select an active channel to request a session yourself.",
-  "media.sessions.notReady": "Finish Settings → RunPod and Production → Setup to request a session.",
+  "media.sessions.notReady": "Finish Settings → RunPod and Servers → Setup to request a session.",
   "media.sessions.maxMinutes": "Max minutes",
   "media.sessions.maxMinutesPlaceholder": "default {value}",
   "media.sessions.maxUsd": "Max USD (optional)",

@@ -6098,6 +6098,25 @@ test("MCP agent_create_media_job stamps createdBy:agent; request/create/cancel a
   }
 });
 
+// BL-157 (review round 3; ADR 0029 §4, ADR 0031): only the factory links a job to a generation plan (checked by the plans module,
+// under the plan's lock). A channel agent's job naming a plan is refused before anything is created.
+// BL-157 (review round 6): the same for a session -- only the factory links a session to a plan (checked by the plans module).
+test("MCP agent_request_media_session refuses a `planId` link (only the factory links a session to a plan)", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const refused = await handlers.agentRequestMediaSession({ channelId: "UC_1", planId: "R-0001-S1-music" });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "validation_failed");
+  assert.deepEqual(calls, []);
+});
+
+test("MCP agent_create_media_job refuses a `plan` link (only the factory links a job to a plan)", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const refused = await handlers.agentCreateMediaJob({ channelId: "UC_1", sessionId: "ms-1", templateId: "t1", plan: { planId: "R-0001-S1-music", stageId: "generate", itemKey: "C1/F1" } });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "validation_failed");
+  assert.deepEqual(calls, []);
+});
+
 // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md F4, AC-FO-05/09/13) -- agent_list_logical_paths and
 // agent_get_logical_path. Positional args up to the trailing logicalPathsCore parameter (index 16 since the Phase 14 merge put mediaGenerationCore at 15).
 function makeLogicalPathHandlers(logicalPathsCore: Parameters<typeof createMcpToolHandlers>[16]) {
@@ -6258,6 +6277,8 @@ test("re-review: the agent's plan view drops error texts at any depth and passes
     events: [
       { at: "2026-10-07T09:05:00.000Z", kind: "stage_run", actor: "factory", details: { created: 1, stoppedAt: { itemKey: "C1/F1", seed: 2, error: { code: "media_input_unavailable", message: "/Volumes/SSD/ws/missing.png" } } } },
       { at: "2026-10-07T09:06:00.000Z", kind: "session_stopped", actor: "app", details: { sessionId: "s", stopReason: "start failed: boom" } },
+      // BL-157 (ADR 0004/0031): a move names the other channel -- not this agent's to see.
+      { at: "2026-10-07T09:07:00.000Z", kind: "plan_moved", actor: "factory", details: { from: "UC_other_channel", to: "UC_1", checked: 34 } },
     ],
     more: true,
     cursor: "2026-10-07T09:06:00.000Z",
@@ -6270,6 +6291,8 @@ test("re-review: the agent's plan view drops error texts at any depth and passes
   const out = parseToolJson(await handlers.agentGetGenerationPlan({ channelId: "UC_1", planId: "mine" }));
   const text = JSON.stringify(out);
   assert.ok(!text.includes("/Volumes") && !text.includes("boom") && !text.includes("RunPod said"), text);
+  assert.ok(!text.includes("UC_other_channel"), "the move's other channel is not shown to the agent");
+  assert.deepEqual(out.events[2], { at: "2026-10-07T09:07:00.000Z", kind: "plan_moved", actor: "factory", details: { checked: 34 } });
   assert.deepEqual(out.events[0].details.stoppedAt, { itemKey: "C1/F1", seed: 2 });
   assert.equal(out.more, true);
   assert.equal(out.cursor, "2026-10-07T09:06:00.000Z");

@@ -427,7 +427,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "The local production-workspace folder path the operator set for a channel on THIS device (Settings -> Channels), returned as an absolute path string, or { configured: false } when none is set (never an empty-string path). Implemented as the `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command (`src/lib/channel-workspaces/`). This application never opens, lists, reads, writes, or re-validates anything inside the folder -- the string is returned exactly as stored, even if the folder has since been moved or deleted. Device-local: never synced or handed off, and a path set on another device is never returned. Read-only: no agent-callable way exists to set or clear it -- only the operator, through the Settings UI (`PUT /api/channel-workspaces`), the same self-authorization concern owner spec §17 raised for `local_path` asset registration. Requires channelId to be the caller's currently-active channel.",
   },
   // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7) -- remote media generation on RunPod/ComfyUI. An agent REQUESTS a
-  // session and READS it; a human approves/starts/stops it in Production → Sessions (Web-only, fenced by session-approval-inventory.test.ts).
+  // session and READS it; a human approves/starts/stops it in Servers → Sessions (Web-only, fenced by session-approval-inventory.test.ts).
   // Inside a running session the agent submits jobs freely; outputs land in the channel's workspace `99 Data Exchange/From YTM/media/`.
   {
     id: "media_generation.list_media_templates",
@@ -443,7 +443,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "media_generation",
     permission: "DRAFT",
     description:
-      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Production -> Sessions; the agent can neither approve, start nor stop it. Several sessions may be open at once; at most maxConcurrentSessions hold a pod at the same time (bounded at approve). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
+      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Servers -> Sessions; the agent can neither approve, start nor stop it. Several sessions may be open at once; at most maxConcurrentSessions hold a pod at the same time (bounded at approve). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
   },
   {
     id: "media_generation.get_media_session",

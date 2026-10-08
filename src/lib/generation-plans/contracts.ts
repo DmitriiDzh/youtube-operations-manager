@@ -25,7 +25,11 @@ export type PlanActor = "factory" | "owner";
 export type PlanParamValue = string | number | boolean;
 
 export type PlanStage = { stageId: string; title: string; kind: PlanStageKind };
-export type PlanGroup = { groupId: string; title: string; dependsOn: string | null; note: string | null };
+/**
+ * `note` is the factory's context for the wave; `ownerNote` (BL-157, SERVERS_MEDIA_PLAN.md AC-WV-04) is the owner's own note on
+ * it, kept apart so neither overwrites the other -- present only once the owner wrote one.
+ */
+export type PlanGroup = { groupId: string; title: string; dependsOn: string | null; note: string | null; ownerNote?: string | null };
 export type PlanItem = {
   itemKey: string;
   groupId: string | null;
@@ -166,6 +170,13 @@ export type PlanReviewEntry = {
    * in-app) or "rejected"; null when it said nothing (an attempt that only has an owner verdict).
    */
   validator: PlanValidatorVerdict | null;
+  /** BL-157 (AC-TC-05): the attempt's owner verdicts, oldest first (the last 10); absent when there are none. */
+  history?: PlanVerdictHistoryEntry[];
+  /**
+   * BL-157 (AC-TC-03): on the device that owns the plan, a verdict another device sent and this one has not applied yet --
+   * shown as "rated on <device>, being applied" and already counted as given (`verdict` carries it).
+   */
+  pendingFrom?: string;
 };
 
 export type PlanValidatorVerdict = "passed" | "rejected";
@@ -180,6 +191,20 @@ export function validatorOfEntry(entry: { validator?: PlanValidatorVerdict | nul
   const last = entry.stages.at(-1);
   if (!last) return null;
   return last.result === "rejected" || last.result === "failed" ? "rejected" : "passed";
+}
+
+/**
+ * BL-157 (AC-TC-04, review round 5): the history row of the CURRENT verdict -- the last one of the same second, result and
+ * rating (the newest-by-time row can be another verdict: a peer verdict of the same second wins). Else the last row.
+ */
+export function historyEntryOfVerdict<T extends { result: string; rating: number | null; at: string }>(history: readonly T[] | undefined, verdict: { result: string; rating: number | null; at: string }): T | undefined {
+  if (!history || history.length === 0) return undefined;
+  const second = Math.floor(Date.parse(verdict.at) / 1000);
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (Math.floor(Date.parse(h.at) / 1000) === second && h.result === verdict.result && h.rating === verdict.rating) return h;
+  }
+  return history.at(-1);
 }
 
 export type PlanEvent = { at: string; kind: string; actor: string; details: Record<string, unknown> };
@@ -207,6 +232,88 @@ export type PlanNotice =
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
 
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-03, FO-REQ-0009 §7.2): one wave (group) of a plan for the review's context card --
+ * computed on the device that owns the plan, carried to the others in the plans report.
+ */
+export type PlanReviewBatch = {
+  groupId: string;
+  title: string;
+  /** The factory's context for the wave. */
+  note: string | null;
+  /** The owner's own note on the wave. */
+  ownerNote: string | null;
+  /** The earliest attempt of the wave (a job's creation, or a reported row's time); null = no attempt yet. */
+  firstAt: string | null;
+  /** The wave's items' templates (label, else id), each once. */
+  templates: string[];
+  /** The item params whose values differ between the wave's items, each with its distinct values in item order. */
+  differingParams: Array<{ name: string; values: PlanParamValue[] }>;
+  /** At the stage right before the owner's review: attempts it passed (accepted / done) and rejected. */
+  validator: { passed: number; rejected: number };
+};
+
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-05): one owner verdict of an attempt, as its history shows it (oldest first). */
+export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string };
+
+/** The full stored row (the history of a plan, every attempt). */
+export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & { itemKey: string; attemptRef: string; reasons: string[]; markers: PlanMarker[] };
+
+/** BL-157 (AC-TC-04): what is already there when a verdict would replace it -- for "Already rated on … Replace?". */
+export type PlanExistingVerdict = { result: string; rating: number | null; device: string | null; at: string };
+
+/** BL-157 (AC-TC-01/02, AC-WV-06): "being reviewed on <device> since <time>" -- another device's claim on a track or a wave. */
+export type PlanReviewClaim = { scope: "attempt" | "group"; itemKey: string | null; attemptRef: string | null; groupId: string | null; device: string; since: string; until: string };
+
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01): another device's plan, named for "open the place" (null = this device's). */
+export type PlanDeviceRef = { deviceId: string; hostname: string | null } | null;
+
+/**
+ * BL-157 (AC-BL-01/04): one connected channel's open Media work -- what its menu badge, the channel switcher and (for a
+ * channel that is not active) the bell show. Counts include other devices' plans of the channel, minus verdicts sent from here.
+ */
+export type PlanChannelWork = {
+  channelId: string;
+  waitingReview: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** The active plans with tracks waiting, in plan order (the bell opens the review when there is one). */
+  plans: Array<{ planId: string; title: string; device: PlanDeviceRef; waiting: number }>;
+  /** One row per wave with tracks waiting (groupId null = tracks in no wave). */
+  batches: Array<{ planId: string; groupId: string | null; title: string; waiting: number }>;
+  /** The active plans' notices other than `review_waiting` (that one is the counts above). */
+  notices: Array<{ planId: string; planTitle: string; device: PlanDeviceRef; notice: Exclude<PlanNotice, { kind: "review_waiting" }> }>;
+};
+
+export type PlanChannelSummary = {
+  /** The channel these counts treat as active (the bell leaves exactly this one out); null = none. */
+  activeChannelId: string | null;
+  /** The ACTIVE channel's waiting tracks (the Media menu badge); zero while no channel is active. */
+  waitingReview: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** Every channel connected on this device, in the order given. */
+  channels: PlanChannelWork[];
+};
+
+/**
+ * BL-157 (AC-MV-03): a plan move's file check. `checked` = the distinct files checked (every reported `auditionFile` and
+ * every reference file); `missing` lists up to `PLAN_MOVE_MISSING_LISTED` of the `missingCount` not found in the target
+ * channel's Sent to YTM; `unfinishedJobs` = jobs of the plan still queued or running (a move waits for them).
+ */
+export type PlanMoveResult = {
+  planId: string;
+  from: string;
+  to: string;
+  checked: number;
+  missing: string[];
+  missingCount: number;
+  unfinishedJobs: number;
+  moved: boolean;
+};
+
+export const PLAN_MOVE_MISSING_LISTED = 500;
+
 export type PlanTodo = {
   planId: string;
   short: Array<{ itemKey: string; groupId: string | null; missing: number; mode: PlanItemMode }>;
@@ -222,6 +329,10 @@ export function planClosed(planId: string, status: PlanStatus): DomainError {
 }
 export function planMismatch(message: string, details: Record<string, unknown>): DomainError {
   return new DomainError({ code: "plan_mismatch", message, details });
+}
+/** BL-157 (AC-TC-04): a verdict on an attempt that already has one, without `replace`. */
+export function planVerdictExists(message: string, existing: PlanExistingVerdict): DomainError {
+  return new DomainError({ code: "plan_verdict_exists", message, details: { existing } });
 }
 export function planInvalid(message: string, details: Record<string, unknown> = {}): DomainError {
   return new DomainError({ code: "plan_invalid", message, details });

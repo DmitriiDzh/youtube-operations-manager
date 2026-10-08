@@ -188,6 +188,8 @@ export const ownerVerdictInputSchema = z
     attemptRef: attemptRefSchema,
     result: z.enum(["accepted", "rejected"]),
     note: noteSchema.nullable().optional(),
+    /** BL-157 (AC-TC-04): true = replace a verdict the attempt already has (the owner confirmed it). */
+    replace: z.boolean().optional(),
     ...verdictFieldsSchema,
   })
   .strict();
@@ -201,11 +203,33 @@ export const peerVerdictInputSchema = z
     attemptRef: attemptRefSchema,
     result: z.enum(["accepted", "rejected"]),
     note: noteSchema.nullable().optional(),
+    /** BL-157 (AC-TC-04): true = replace a verdict the attempt already has (the owner confirmed it). */
+    replace: z.boolean().optional(),
     ...verdictFieldsSchema,
   })
   .strict();
 
 export const referenceInputSchema = z.object({ planId: planIdSchema, id: z.string().min(1).max(64) }).strict();
+
+/**
+ * BL-157 (AC-TC-01/AC-WV-06): this device claims (or, with `release`, gives up) a track or a wave of a plan for review.
+ * `deviceId` = the device that owns the plan (absent = this device's own plan).
+ */
+export const reviewClaimInputSchema = z
+  .object({
+    deviceId: z.string().min(1).max(128).optional(),
+    planId: planIdSchema,
+    scope: z.enum(["attempt", "group"]),
+    itemKey: itemKeySchema.optional(),
+    attemptRef: attemptRefSchema.optional(),
+    groupId: groupIdSchema.optional(),
+    release: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => (v.scope === "attempt" ? Boolean(v.itemKey && v.attemptRef) : Boolean(v.groupId)), "an attempt claim names itemKey and attemptRef; a group claim names groupId");
+
+/** BL-157 (FO-REQ-0009 §4): an active plan moves to another connected channel; `checkOnly` only checks its files there. */
+export const movePlanInputSchema = z.object({ planId: planIdSchema, channelId: z.string().min(1).max(64), checkOnly: z.boolean().optional() }).strict();
 
 export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
 

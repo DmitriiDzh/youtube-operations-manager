@@ -2,14 +2,19 @@
 // plain module (no "use client"), so the server pages validate a sub-tab address (a real 404) and the client components
 // render the same lists -- one owner for each list. Tab names are BL-152 interface-text keys.
 
-export const PRODUCTION_TABS = [
-  { value: "sessions", labelKey: "tabs.production.sessions", side: "work" },
-  { value: "jobs", labelKey: "tabs.production.jobs", side: "work" },
-  // BL-143 (ADR 0029, AC-GP-15): generation plans, next to the jobs they are made of.
-  { value: "plans", labelKey: "tabs.production.plans", side: "work" },
-  { value: "models", labelKey: "tabs.production.models", side: "work" },
-  { value: "templates", labelKey: "tabs.production.templates", side: "work" },
-  { value: "setup", labelKey: "tabs.production.setup", side: "setup" },
+// BL-157 (docs/roadmap/plans/SERVERS_MEDIA_PLAN.md AC-SM-01, FO-REQ-0009 §1–§2): Production is split in two. Servers is the
+// shared GPU and model infrastructure -- the same for every channel; Media is what the owner reviews for the ACTIVE channel.
+export const SERVERS_TABS = [
+  { value: "sessions", labelKey: "tabs.servers.sessions", side: "work" },
+  { value: "models", labelKey: "tabs.servers.models", side: "work" },
+  { value: "templates", labelKey: "tabs.servers.templates", side: "work" },
+  { value: "setup", labelKey: "tabs.servers.setup", side: "setup" },
+] as const;
+
+export const MEDIA_TABS = [
+  // BL-143 (ADR 0029): generation plans and their review; the jobs they are made of next to them.
+  { value: "plans", labelKey: "tabs.media.plans" },
+  { value: "jobs", labelKey: "tabs.media.jobs" },
 ] as const;
 
 export const RESEARCH_TABS = [
@@ -43,13 +48,15 @@ export const SETTINGS_SUB_TABS = [
   { value: "about", labelKey: "tabs.settings.about" },
 ] as const;
 
-export type ProductionTab = (typeof PRODUCTION_TABS)[number]["value"];
+export type ServersTab = (typeof SERVERS_TABS)[number]["value"];
+export type MediaTab = (typeof MEDIA_TABS)[number]["value"];
 export type ResearchSubTab = (typeof RESEARCH_TABS)[number]["value"];
 export type AnalyticsSubTab = (typeof ANALYTICS_SUB_TABS)[number]["key"];
 export type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
 
 const SUB_TABS_BY_SECTION: Record<string, readonly string[]> = {
-  production: PRODUCTION_TABS.map((t) => t.value),
+  servers: SERVERS_TABS.map((t) => t.value),
+  media: MEDIA_TABS.map((t) => t.value),
   research: RESEARCH_TABS.map((t) => t.value),
   analytics: ANALYTICS_SUB_TABS.map((t) => t.key),
   settings: SETTINGS_SUB_TABS.map((t) => t.value),
@@ -89,12 +96,28 @@ export function sectionHref(sectionHref: string, lastPathBySection: Readonly<Rec
 export function rememberablePath(pathname: string): { section: string; path: string } | null {
   const [, section, sub, planId, last, ...rest] = pathname.split("/");
   if (!section || !sub) return null;
-  if (section === "production" && sub === "plans" && planId && last === "review" && rest.length === 0) return { section: "/production", path: "/production/plans" };
+  if (section === "media" && sub === "plans" && planId && last === "review" && rest.length === 0) return { section: "/media", path: "/media/plans" };
   if (planId !== undefined || !isSectionSubTab(section, sub)) return null;
   return { section: `/${section}`, path: pathname };
 }
 
-/** The section (`/production`) a path belongs to, among the given section addresses; null when none. */
+/**
+ * BL-157 (AC-SM-02): where an address of the former Production section goes, keeping the rest of the path and the query --
+ * plans (and a plan's review) and jobs to Media, everything else to Servers; `/production` itself to Servers (it opened on
+ * Sessions, which is Servers' first tab -- review round 1).
+ */
+export function productionRedirectTarget(segments: readonly string[] | undefined, params: Record<string, string | string[] | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) query.append(key, v);
+  }
+  const rest = (segments ?? []).map((s) => encodeURIComponent(s));
+  const section = rest[0] === "plans" || rest[0] === "jobs" ? "/media" : "/servers";
+  const target = rest.length > 0 ? `${section}/${rest.join("/")}` : section;
+  return query.size > 0 ? `${target}?${query.toString()}` : target;
+}
+
+/** The section (`/media`) a path belongs to, among the given section addresses; null when none. */
 export function sectionOf(pathname: string, sectionHrefs: readonly string[]): string | null {
   return sectionHrefs.find((href) => pathname === href || pathname.startsWith(`${href}/`)) ?? null;
 }
