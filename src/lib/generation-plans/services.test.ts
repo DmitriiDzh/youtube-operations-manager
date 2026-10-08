@@ -956,3 +956,26 @@ test("review round 1: without the option the queue keeps its order from before B
   assert.deepEqual((await s.services.reviewQueue({ planId: RR_PLAN })).entries.map((e) => e.itemKey), ["C1/F1", "C2/F1"]);
   assert.deepEqual((await s.services.todo({ planId: RR_PLAN })).waitingReview.map((w) => w.itemKey), ["C2/F1", "C1/F1"], "todo: in the order found, as before");
 });
+
+// FO-MSG-0010 note 1 (BL-154): an imported file's group titles (and dependsOn/note) are kept; a group named only by items
+// keeps its id as its title, as before.
+test("import keeps groups[].title (dependsOn, note) from the file -- by groupId or id; groups only named by items get their id", async () => {
+  const s = setup();
+  await s.services.importPlan({
+    plan: {
+      format: "ytm-generation-plan/1",
+      planId: "imp-groups",
+      title: "I",
+      channelId: CHANNEL,
+      stages: STAGES,
+      groups: [{ groupId: "C9", title: "Wave C9 (XL sft)", note: "loud" }, { id: "C10B", title: "Wave C10B", dependsOn: "C9" }],
+      items: [{ itemKey: "C9/A", group: "C9", targetCount: 1 }, { itemKey: "C10B/A", group: "C10B", targetCount: 1 }, { itemKey: "C11/A", group: "C11", targetCount: 1 }],
+    },
+  });
+  const plan = (await s.services.getPlan({ planId: "imp-groups" })).plan;
+  assert.deepEqual(plan.groups.map((g) => [g.groupId, g.title, g.dependsOn, g.note]), [
+    ["C9", "Wave C9 (XL sft)", null, "loud"],
+    ["C10B", "Wave C10B", "C9", null],
+    ["C11", "C11", null, null],
+  ]);
+});
