@@ -110,7 +110,8 @@ The merge into `dev` still needs the owner's explicit yes.
   - Other devices' sessions show the channel by name too.
 - **AC-SM-06: "now running" in Media.** When a session of the active channel is starting or running, Media shows one line:
   the session, its GPU and its state, with a link to Servers → Sessions.
-- **AC-SM-07: review header.** The review screen's header shows "<channel name> · <plan id> · <wave title>". The wave is the
+- **AC-SM-07: review header.** The review screen's header shows "<channel name> · Review · <plan id> · <wave title>" (the
+  existing "Review · <plan>" title, with the channel before it and the wave after it). The wave is the
   current entry's group; with no group, it is left out.
 - **AC-SM-08: texts.** Every new or moved text is a key in every interface language. User-facing server messages that say
   "Production → X" now say "Servers → X" or "Media → X".

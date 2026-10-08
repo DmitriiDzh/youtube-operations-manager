@@ -250,7 +250,9 @@ function withoutStopReasons(progress: unknown): unknown {
 const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
 // Derived from the core's own schemas (review round 21): the bounds an agent sees are exactly the ones the core enforces;
 // only the caller-identity field (`requestedBy`/`createdBy`) is the server's to set, never the agent's.
-const agentRequestMediaSessionInputSchema = requestSessionInputSchema.omit({ requestedBy: true });
+// BL-157 (review round 6): a session is linked to a generation plan only by the factory, checked by the plans module
+// (ADR 0029 §6) -- never by a channel agent, so `planId` is not the agent's to set (as `plan` on a job, round 3).
+const agentRequestMediaSessionInputSchema = requestSessionInputSchema.omit({ requestedBy: true, planId: true });
 const agentGetMediaSessionInputSchema = z.object({ channelId: mediaChannelIdSchema, sessionId: z.string().min(1).max(64).optional() }).strict();
 const agentGetMediaLimitsInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
 // BL-157 (review round 3): a job is linked to a generation plan only by the factory, checked by the plans module and under

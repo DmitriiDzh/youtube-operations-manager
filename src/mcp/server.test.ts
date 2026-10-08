@@ -6100,6 +6100,15 @@ test("MCP agent_create_media_job stamps createdBy:agent; request/create/cancel a
 
 // BL-157 (review round 3; ADR 0029 §4, ADR 0031): only the factory links a job to a generation plan (checked by the plans module,
 // under the plan's lock). A channel agent's job naming a plan is refused before anything is created.
+// BL-157 (review round 6): the same for a session -- only the factory links a session to a plan (checked by the plans module).
+test("MCP agent_request_media_session refuses a `planId` link (only the factory links a session to a plan)", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const refused = await handlers.agentRequestMediaSession({ channelId: "UC_1", planId: "R-0001-S1-music" });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "validation_failed");
+  assert.deepEqual(calls, []);
+});
+
 test("MCP agent_create_media_job refuses a `plan` link (only the factory links a job to a plan)", async () => {
   const { handlers, calls } = makeMediaHandlers();
   const refused = await handlers.agentCreateMediaJob({ channelId: "UC_1", sessionId: "ms-1", templateId: "t1", plan: { planId: "R-0001-S1-music", stageId: "generate", itemKey: "C1/F1" } });

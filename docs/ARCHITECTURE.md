@@ -3079,8 +3079,9 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
   - A plan changed during the check (its revision moved) is refused, to be asked again. The factory's plan-linked
     `create_job` runs under the same lock (`withPlanLock`, on the trimmed plan id), so a move cannot pass between its check and
     the job's creation.
-  - Only the factory links a job to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field. The operator's
-    `POST /api/media-generation/jobs` and the CLI `media job-create` drop it.
+  - Only the factory links a job or a session to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field and
+    `agent_request_media_session` a `planId`. The operator's `POST /api/media-generation/jobs` and `/sessions` and the CLI
+    `media job-create` drop them.
   - `PlanJobRow.channelId` (`media_jobs.channel_id`) makes `resolveAudition` of a job output use the job's channel. The report's
     `jobChannelId` does the same for the other device.
 - **Plans report version 2** (`GENERATION_PLANS_REPORT_VERSION`; the reader accepts 1 and 2, and every level stays strict).

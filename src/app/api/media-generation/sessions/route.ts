@@ -19,7 +19,10 @@ export function createSessionsPostHandler(deps: MediaRouteDeps = defaultMediaRou
     if (!body.ok) return body.response;
     const input = bodyRecord(body.body);
     await assertConnectedChannel(routeDeps, input.channelId);
-    const session = await core.requestSession({ ...input, requestedBy: "operator" });
+    // BL-157 (review round 6): only the factory links a session to a plan (checked by the plans module) -- never from here.
+    const { planId: _planId, ...own } = input;
+    void _planId;
+    const session = await core.requestSession({ ...own, requestedBy: "operator" });
     return NextResponse.json({ session }, { status: 201 });
   });
 }
