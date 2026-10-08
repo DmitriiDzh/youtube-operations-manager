@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   SCHEMA_CURRENT_VERSION,
   getLatestMarketIntelligenceCollectionRunForChannel,
@@ -22,7 +22,7 @@ import { readSchemaVersion } from "@/lib/schema-versioning";
 
 test("migration v48 applies on a v47 database; existing watchlist and run rows keep working with NULL / false", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-depth-test-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await initializeDatabaseSchema(client);
     // Turn the database back into a v47 one: drop v48's columns, stamp 47, add legacy rows.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sql } from "drizzle-orm";
 import { exportAnalyticsShareRows, importAnalyticsShareRows, initializeDatabaseSchema, type AppDb } from "@/lib/db";
@@ -19,7 +19,7 @@ const NOW = new Date("2026-10-07T12:00:00.000Z");
 const T = Math.floor(NOW.getTime() / 1000);
 
 async function computer(root: string, name: string) {
-  const client = createClient({ url: `file:${path.join(root, `${name}.db`)}` });
+  const client = createLibsqlClient({ url: `file:${path.join(root, `${name}.db`)}` });
   await initializeDatabaseSchema(client);
   const database = drizzle(client) as unknown as AppDb;
   await database.run(sql`INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('UC1', 'Rural Japan', 'UU1')`);

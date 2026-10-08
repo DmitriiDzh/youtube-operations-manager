@@ -2,7 +2,7 @@ import { purgeExpiredApiDataWithinTransaction } from "@/lib/youtube-data-policy"
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { withOperationLock } from "@/lib/operation-lock";
 import {
@@ -151,7 +151,7 @@ export async function importHandoff(params: {
     // the snapshot's own data.db up to this build's version instead (reuses
     // initializeDatabaseSchema unchanged, including its own reject-newer guarantee).
     const workingCopyPath = path.join(params.workingDir, `import-${randomUUID()}.db`);
-    const snapshotDbClient = createClient({
+    const snapshotDbClient = createLibsqlClient({
       url: `file:${path.join(params.snapshotDir, "data.db")}`,
     });
     try {

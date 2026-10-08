@@ -2,14 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema } from "@/lib/db";
 import { withTempDir } from "@/test-support/temp-dir";
 import { EMPTY_RETENTION_STATE, runRetentionOnce, type RetentionState } from "./runner";
 
 // AC-P13-07: the purge only ever runs after a backup exists; a device that may not mutate is skipped.
 
-function deps(client: ReturnType<typeof createClient>, dir: string, opts: { gate?: () => Promise<void> } = {}) {
+function deps(client: ReturnType<typeof createLibsqlClient>, dir: string, opts: { gate?: () => Promise<void> } = {}) {
   let state: RetentionState = { ...EMPTY_RETENTION_STATE };
   const copies: string[] = [];
   return {
@@ -32,7 +32,7 @@ function deps(client: ReturnType<typeof createClient>, dir: string, opts: { gate
 
 test("AC-P13-07: the very first run takes one backup before purging; later runs do not", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     const d = deps(client, dir);
     const first = await runRetentionOnce(d.deps, new Date("2026-10-01T00:00:00Z"));
@@ -46,7 +46,7 @@ test("AC-P13-07: the very first run takes one backup before purging; later runs 
 
 test("a failed backup means no purge at all", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     const d = deps(client, dir);
     d.deps.copyDatabase = async () => {
@@ -61,7 +61,7 @@ test("a failed backup means no purge at all", () =>
 
 test("a device that may not mutate (lock / recovery) is skipped without error", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     const d = deps(client, dir, {
       gate: async () => {
@@ -76,7 +76,7 @@ test("a device that may not mutate (lock / recovery) is skipped without error", 
 
 test("AC-P13-07: the backup is taken while the expiring data still exists (before the purge runs)", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     await client.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UCx', 'r', 'web_ui')");
     await client.execute({
@@ -97,11 +97,11 @@ test("AC-P13-07: the backup is taken while the expiring data still exists (befor
 // Owner instruction (msg 1139, item 2): every run also scrubs the backups directory.
 test("P13: a run scrubs expired API rows from the backup files too", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     const backups = path.join(dir, "backups");
     await mkdir(backups);
-    const old = createClient({ url: `file:${path.join(backups, "pre-migration-x.db")}` });
+    const old = createLibsqlClient({ url: `file:${path.join(backups, "pre-migration-x.db")}` });
     await initializeDatabaseSchema(old);
     await old.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UCx', 'r', 'web_ui')");
     await old.execute({
@@ -112,7 +112,7 @@ test("P13: a run scrubs expired API rows from the backup files too", () =>
     const d = deps(client, backups);
     const state = await runRetentionOnce(d.deps, new Date("2026-10-01T00:00:00Z"));
     assert.equal(state.lastBackupsScrubbed, 1);
-    const check = createClient({ url: `file:${path.join(backups, "pre-migration-x.db")}` });
+    const check = createLibsqlClient({ url: `file:${path.join(backups, "pre-migration-x.db")}` });
     assert.equal(Number((await check.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n), 0);
     assert.equal(Number((await check.execute("SELECT COUNT(*) AS n FROM research_channels")).rows[0].n), 1);
     check.close();
@@ -123,7 +123,7 @@ test("P13: a run scrubs expired API rows from the backup files too", () =>
 // the purge (re-checked inside its write transaction) instead of changing data under it.
 test("P13: the purge pauses, changing nothing, if the device stops being mutable before it writes", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     await client.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UCx', 'r', 'web_ui')");
     await client.execute({
@@ -148,7 +148,7 @@ test("P13: the purge pauses, changing nothing, if the device stops being mutable
 // Review round 9: a backup that cannot be scrubbed keeps expired data -- that must be visible.
 test("P13: a backup file that cannot be scrubbed is recorded, and the others are still scrubbed", () =>
   withTempDir("retention-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "r.db")}` });
     await initializeDatabaseSchema(client);
     const backups = path.join(dir, "backups");
     await mkdir(backups);

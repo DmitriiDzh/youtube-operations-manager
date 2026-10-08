@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   createIsolatedDb,
   getChannelReachCoverage,
@@ -21,7 +22,7 @@ import {
 
 async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: Client) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "reach-store-test-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await initializeDatabaseSchema(client);
     await fn(createIsolatedDb(client), client);

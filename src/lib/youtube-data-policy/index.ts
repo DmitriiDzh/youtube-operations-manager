@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient, SQLITE_BUSY_TIMEOUT_MS } from "@/lib/libsql-client";
 import { appDataPaths, getApiDataRetentionStateJson, setApiDataRetentionStateJson } from "@/lib/db";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
@@ -27,8 +28,8 @@ type GlobalWithClient = typeof globalThis & { [DEDICATED_KEY]?: Client };
 function dedicatedClient(): Client {
   const g = globalThis as GlobalWithClient;
   if (!g[DEDICATED_KEY]) {
-    const client = createClient({ url: `file:${appDataPaths.dbPath}` });
-    void client.execute("PRAGMA busy_timeout = 5000").catch(() => undefined);
+    const client = createLibsqlClient({ url: `file:${appDataPaths.dbPath}` });
+    void client.execute(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`).catch(() => undefined);
     // Review round 6: purged rows are overwritten on disk, not left in free pages.
     void client.execute("PRAGMA secure_delete = ON").catch(() => undefined);
     g[DEDICATED_KEY] = client;

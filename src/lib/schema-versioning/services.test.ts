@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   assertSupportedSchemaVersion,
   readSchemaVersion,
@@ -13,7 +14,7 @@ import { SchemaVersionError } from "./contracts";
 
 async function withTempClient(fn: (client: Client, dir: string) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "schema-versioning-test-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await fn(client, dir);
   } finally {

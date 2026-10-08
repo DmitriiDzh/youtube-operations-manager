@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema } from "@/lib/db";
 import { withTempDir } from "@/test-support/temp-dir";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_DATA_CLASSIFICATION, purgeExpiredApiData, scrubBackupFile } from "./index";
@@ -32,7 +33,7 @@ test("13.1: every Non-Authorized clock column really exists in the schema", () =
   }));
 
 async function makeClient(dir: string): Promise<Client> {
-  const client = createClient({ url: `file:${path.join(dir, "p.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "p.db")}` });
   await initializeDatabaseSchema(client);
   return client;
 }
@@ -172,7 +173,7 @@ test("P13: a backup file has its expired API rows scrubbed; the operator's own d
     const backup = path.join(dir, "p.db");
     assert.deepEqual(await scrubBackupFile(backup, NOW), { changed: true });
     assert.deepEqual(await scrubBackupFile(backup, NOW), { changed: false }, "a second pass finds nothing");
-    const check = createClient({ url: `file:${backup}` });
+    const check = createLibsqlClient({ url: `file:${backup}` });
     const ids = async (sql: string) => (await check.execute(sql)).rows.map((r) => String(Object.values(r)[0])).sort();
     assert.deepEqual(await ids("SELECT id FROM market_channel_snapshots"), ["fresh-api", "old-manual", "old-manual-yt"]);
     assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-ai", "ev-manual"]);
@@ -182,7 +183,7 @@ test("P13: a backup file has its expired API rows scrubbed; the operator's own d
 
 test("P13: a backup that predates the market tables is left alone, not failed", () =>
   withTempDir("data-policy-", async (dir) => {
-    const old = createClient({ url: `file:${path.join(dir, "old.db")}` });
+    const old = createLibsqlClient({ url: `file:${path.join(dir, "old.db")}` });
     await old.execute("CREATE TABLE channels (id TEXT PRIMARY KEY)");
     old.close();
     assert.deepEqual(await scrubBackupFile(path.join(dir, "old.db"), NOW), { changed: false });

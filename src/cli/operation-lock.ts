@@ -1,4 +1,4 @@
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
@@ -147,7 +147,7 @@ if (isMainModule) {
     console.log("No database exists yet, so no operation lock is held.");
     process.exit(0);
   }
-  const client = createClient({ url: `file:${getProductionAppPaths().dbPath}` });
+  const client = createLibsqlClient({ url: `file:${getProductionAppPaths().dbPath}` });
   runOperationLockCli(process.argv.slice(2), client, (line) => console.log(line))
     .then((code) => {
       client.close();

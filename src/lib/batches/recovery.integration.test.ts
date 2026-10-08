@@ -36,7 +36,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   acquireVideoExecutionLock,
   beginAttemptIntent,
@@ -62,7 +63,7 @@ let dbHandle: AppDb;
 
 before(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), "batches-recovery-"));
-  client = createClient({ url: `file:${path.join(tempDir, "test.db")}` });
+  client = createLibsqlClient({ url: `file:${path.join(tempDir, "test.db")}` });
   await initializeDatabaseSchema(client);
   dbHandle = createIsolatedDb(client);
 

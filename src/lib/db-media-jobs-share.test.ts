@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
 import { countMediaJobsForSessionByStatus, getMediaSessionJobSummary, initializeDatabaseSchema, insertMediaJob, listOpenMediaJobsForSession, type AppDb } from "@/lib/db";
 
@@ -13,7 +13,7 @@ import { countMediaJobsForSessionByStatus, getMediaSessionJobSummary, initialize
 
 test("a session's counts cover all its jobs and the running job is listed first even behind 300 newer jobs", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-media-jobs-share-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await initializeDatabaseSchema(client);
     const database = drizzle(client) as unknown as AppDb;
@@ -43,7 +43,7 @@ test("a session's counts cover all its jobs and the running job is listed first 
 // BL-155 (CUDA_HOSTS_PLAN.md AC-CU-03): release-when-done needs to know whether EVERY job of the session failed.
 test("AC-CU-03: the session job summary counts failed jobs next to the total and the open ones", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-media-jobs-summary-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await initializeDatabaseSchema(client);
     const database = drizzle(client) as unknown as AppDb;

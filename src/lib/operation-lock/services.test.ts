@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   acquireOperationLock,
   forceClearOperationLock,
@@ -19,7 +20,7 @@ const CREATE_TABLE_SQL =
 
 async function withTempClient(fn: (client: Client) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "operation-lock-test-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   await client.execute(CREATE_TABLE_SQL);
   try {
     await fn(client);
@@ -41,7 +42,7 @@ async function withTempClient(fn: (client: Client) => Promise<void>) {
 // misreporting the calling process itself as the lock's holder.
 test("acquireOperationLock propagates a missing-table error instead of misattributing lock ownership", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "operation-lock-test-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await assert.rejects(
       () => acquireOperationLock(client, "export"),

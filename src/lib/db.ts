@@ -1,7 +1,8 @@
 import { chmodSync, existsSync, mkdirSync } from "fs";
 import { readFile } from "fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient, SQLITE_BUSY_TIMEOUT_MS } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
@@ -43,8 +44,8 @@ mkdirSync(appPaths.appDataDir, { recursive: true });
 // on every boot, matching the same 0700 mode atomic-json-file already uses for the same reason.
 chmodSync(appPaths.appDataDir, 0o700);
 
-// Captured *before* `createClient()` below -- verified empirically that `@libsql/client`'s
-// `createClient()` synchronously creates an empty file at the given path as a side effect of
+// Captured *before* `createLibsqlClient()` below -- verified empirically that `@libsql/client`'s
+// `createClient()` (which `createLibsqlClient()` calls) synchronously creates an empty file at the given path as a side effect of
 // construction, before any query runs. An earlier version of this file checked
 // `existsSync(appPaths.dbPath)` *after* calling `createClient()`, which made that check always
 // true and silently skipped every legacy migration forever -- a real, previously-shipped bug,
@@ -52,7 +53,7 @@ chmodSync(appPaths.appDataDir, 0o700);
 // needed; everything below is ordered around preserving it correctly.
 const dbAlreadyExistedAtModuleLoad = existsSync(appPaths.dbPath);
 
-const rawClient = createClient({
+const rawClient = createLibsqlClient({
   url: `file:${appPaths.dbPath}`,
 });
 
@@ -3691,7 +3692,7 @@ export async function initializeDatabaseSchema(
   // makes SQLite retry internally for up to 5s before giving up, which is what turns a
   // correct atomic transaction into one that also behaves correctly under real
   // concurrent access from more than one connection.
-  await client.execute("PRAGMA busy_timeout = 5000");
+  await client.execute(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
   // WAL allows one writer and many concurrent readers without them blocking each other
   // at the file-lock level, which is what makes two separate connections' transactions
   // interleave safely instead of racing for the same exclusive rollback-journal lock.
@@ -9265,6 +9266,10 @@ export async function insertMarketDiscoveryCandidate(
     discoveryQuery: string;
     reasonDiscovered?: string | null;
     createdVia: string;
+    /** When given (a search's own clock time), stamps first/last seen with it instead of the insert's wall clock,
+     * so every candidate one search finds shares one `lastSeenAt` (BL-156) -- otherwise a second boundary crossed
+     * mid-search listed a later-inserted, less-matching channel first. */
+    seenAt?: Date;
   },
   database: AppDb = db
 ): Promise<void> {
@@ -9276,6 +9281,7 @@ export async function insertMarketDiscoveryCandidate(
     discoveryQuery: input.discoveryQuery,
     reasonDiscovered: input.reasonDiscovered ?? null,
     createdVia: input.createdVia,
+    ...(input.seenAt ? { firstSeenAt: input.seenAt, lastSeenAt: input.seenAt } : {}),
   });
 }
 

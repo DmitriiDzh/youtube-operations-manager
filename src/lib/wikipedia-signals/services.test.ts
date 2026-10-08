@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   createIsolatedDb,
   deleteTopicWikipediaArticle,
@@ -32,7 +32,7 @@ test("13.8: an article is accepted as a title or a Wikipedia URL, normalized to 
 });
 
 function harness(dir: string, now: Date, fetched: { calls: unknown[]; rows: { date: string; views: number }[] }) {
-  const client = createClient({ url: `file:${path.join(dir, "w.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "w.db")}` });
   const db = createIsolatedDb(client);
   let n = 0;
   const services = createWikipediaSignalsServices({

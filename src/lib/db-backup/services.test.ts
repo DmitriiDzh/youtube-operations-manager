@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { copyDatabaseConsistently, isMissingTableError } from "./services";
 import { DatabaseBackupError } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
@@ -9,7 +9,7 @@ import { withTempDir } from "@/test-support/temp-dir";
 test("copyDatabaseConsistently produces a readable, consistent copy via VACUUM INTO", () =>
   withTempDir("db-backup-test-", async (dir) => {
     const srcPath = path.join(dir, "source.db");
-    const client = createClient({ url: `file:${srcPath}` });
+    const client = createLibsqlClient({ url: `file:${srcPath}` });
     await client.execute("PRAGMA journal_mode = WAL");
     await client.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
     await client.execute({ sql: "INSERT INTO t (value) VALUES (?)", args: ["hello"] });
@@ -18,7 +18,7 @@ test("copyDatabaseConsistently produces a readable, consistent copy via VACUUM I
     const result = await copyDatabaseConsistently(client, destPath);
     assert.equal(result.path, destPath);
 
-    const copyClient = createClient({ url: `file:${destPath}` });
+    const copyClient = createLibsqlClient({ url: `file:${destPath}` });
     const rows = await copyClient.execute("SELECT value FROM t");
     assert.equal(rows.rows.length, 1);
     assert.equal(rows.rows[0].value, "hello");
@@ -30,7 +30,7 @@ test("copyDatabaseConsistently produces a readable, consistent copy via VACUUM I
 test("copyDatabaseConsistently refuses to overwrite an existing destination file", () =>
   withTempDir("db-backup-test-", async (dir) => {
     const srcPath = path.join(dir, "source.db");
-    const client = createClient({ url: `file:${srcPath}` });
+    const client = createLibsqlClient({ url: `file:${srcPath}` });
     await client.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)");
 
     const destPath = path.join(dir, "copy.db");

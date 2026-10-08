@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
 import { getMediaModelPullsJson, initializeDatabaseSchema, releaseMediaVolumeLock, tryAcquireMediaVolumeLock, updateMediaModelPullsJson, type AppDb } from "@/lib/db";
 
@@ -14,8 +14,8 @@ import { getMediaModelPullsJson, initializeDatabaseSchema, releaseMediaVolumeLoc
 test("updateMediaModelPullsJson: two connections interleaving read-modify-write both land (the loser re-applies); the lock row admits one owner", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-media-cas-"));
   const url = `file:${path.join(dir, "test.db")}`;
-  const a = createClient({ url });
-  const b = createClient({ url });
+  const a = createLibsqlClient({ url });
+  const b = createLibsqlClient({ url });
   try {
     await initializeDatabaseSchema(a);
     const dbA = drizzle(a) as unknown as AppDb;

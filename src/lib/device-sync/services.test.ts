@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { readLineageState } from "@/lib/snapshot";
 import { withTempDir } from "@/test-support/temp-dir";
@@ -12,7 +13,7 @@ import { createDeviceSyncRunner, decideSyncAction, pruneAutoImportBackups, prune
 // Acceptance criteria: docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §5 (written before this code).
 
 async function makeClient(dir: string, name: string): Promise<Client> {
-  const client = createClient({ url: `file:${path.join(dir, name)}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, name)}` });
   await initializeDatabaseSchema(client);
   return client;
 }
@@ -749,7 +750,7 @@ test("R2-4: a snapshot whose data needs a newer schema is tried once, then repor
     const id = (await readdir(path.join(root, "sync")))[0];
     const dir = path.join(root, "sync", id);
     // The manifest still claims a readable schema, but the data itself is from a newer build.
-    const c = createClient({ url: `file:${path.join(dir, "data.db")}` });
+    const c = createLibsqlClient({ url: `file:${path.join(dir, "data.db")}` });
     await c.execute("UPDATE schema_meta SET value = '9999' WHERE key = 'schema_version'");
     c.close();
     const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
@@ -795,7 +796,7 @@ test("R4-2 (AC-AS-07): a local write landing after the decision stops the automa
     await addResearchChannel(b.client, "UC-b");
     await b.runner.tick();
 
-    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    const aClient = createLibsqlClient({ url: `file:${path.join(root, "a.db")}` });
     await initializeDatabaseSchema(aClient);
     let injected = false;
     const racing = {
@@ -867,7 +868,7 @@ test("an unplugged drive: a tick never creates the sync folder and does nothing"
 test("R5 note: the in-lock re-check also stops an import on a device that already has a recorded fingerprint", () =>
   withTempDir("device-sync-", async (root) => {
     await mkdir(path.join(root, "sync"), { recursive: true });
-    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    const aClient = createLibsqlClient({ url: `file:${path.join(root, "a.db")}` });
     await initializeDatabaseSchema(aClient);
     let armed = false;
     let injected = false;
@@ -942,7 +943,7 @@ test("round 7: a drive ejected after the tick's first check -> folder_unreachabl
   withTempDir("device-sync-", async (root) => {
     const folder = path.join(root, "sync");
     await mkdir(folder, { recursive: true });
-    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    const aClient = createLibsqlClient({ url: `file:${path.join(root, "a.db")}` });
     await initializeDatabaseSchema(aClient);
     await addResearchChannel(aClient, "UC1");
     let ejected = false;
@@ -979,7 +980,7 @@ test("round 7: a drive ejected after the tick's first check -> folder_unreachabl
 
 test("audit: an export whose copy catches a YouTube write mid-flight is not published", () =>
   withTempDir("device-sync-", async (root) => {
-    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    const aClient = createLibsqlClient({ url: `file:${path.join(root, "a.db")}` });
     await initializeDatabaseSchema(aClient);
     await mkdir(path.join(root, "sync"), { recursive: true });
     await aClient.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
@@ -1213,7 +1214,7 @@ async function migrateLikeABuildUpdate(
   const hooks = options.hooks
     ? createSyncPreservingMigrationHooks(client, {
         migrate: async (file) => {
-          const copy = createClient({ url: `file:${file}` });
+          const copy = createLibsqlClient({ url: `file:${file}` });
           try {
             await copy.execute(ADD_DEFAULTED_COLUMN);
           } finally {
@@ -1277,7 +1278,7 @@ test("AC-FD-07: a write by another process during the migration window stays unp
 test("AC-FD-07: the migration hooks never throw, even on a database with no lineage table", () =>
   withTempDir("device-sync-", async (root) => {
     const { createSyncPreservingMigrationHooks } = await import("@/lib/snapshot");
-    const client = createClient({ url: `file:${path.join(root, "bare.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(root, "bare.db")}` });
     const hooks = createSyncPreservingMigrationHooks(client);
     await hooks.beforeMigrations(path.join(root, "does-not-exist.db"));
     await client.execute("CREATE TABLE unrelated (id TEXT)");

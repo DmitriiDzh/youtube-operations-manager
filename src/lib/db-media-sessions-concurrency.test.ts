@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { drizzle } from "drizzle-orm/libsql";
 import {
   approveMediaSessionGuarded,
@@ -31,8 +31,8 @@ function pendingRow(id: string, createdAt: Date): NewStoredMediaSession {
 async function withTwoConnections(run: (a: AppDb, b: AppDb) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-media-sessions-"));
   const url = `file:${path.join(dir, "test.db")}`;
-  const ca = createClient({ url });
-  const cb = createClient({ url });
+  const ca = createLibsqlClient({ url });
+  const cb = createLibsqlClient({ url });
   try {
     await initializeDatabaseSchema(ca);
     await run(drizzle(ca) as unknown as AppDb, drizzle(cb) as unknown as AppDb);

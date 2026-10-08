@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { withTempDir } from "@/test-support/temp-dir";
 import { EMPTY_DEVICE_SYNC_STATUS, type DeviceSyncStatus } from "./contracts";
@@ -30,7 +31,7 @@ type Device = {
 };
 
 async function makeDevice(root: string, name: string): Promise<Device> {
-  const client = createClient({ url: `file:${path.join(root, `${name}.db`)}` });
+  const client = createLibsqlClient({ url: `file:${path.join(root, `${name}.db`)}` });
   await initializeDatabaseSchema(client);
   const folder = path.join(root, `${name}-sync`);
   const backups = path.join(root, `${name}-backups`);
@@ -127,7 +128,7 @@ async function backupIds(device: Device): Promise<Set<string>> {
     return out;
   }
   for (const name of names.filter((n) => n.endsWith(".db"))) {
-    const c = createClient({ url: `file:${path.join(device.backups, name)}` });
+    const c = createLibsqlClient({ url: `file:${path.join(device.backups, name)}` });
     try {
       for (const id of await ids(c)) out.add(id);
     } catch {
