@@ -264,4 +264,18 @@ export const production: Record<keyof typeof en, string> = {
   "review.player.clear": "Сбросить",
   "review.player.dragHint": "протяните по волне, чтобы выделить фрагмент для повтора",
   "review.player.loading": "Загрузка волны…",
+
+  "plans.notice.reviewWaitingSplit": "ждут вашего вердикта: {count} (прошли: {passed}, отбракованы валидатором: {rejected})",
+  "plans.badgeSplit": "Ждут вашего вердикта: прошли — {passed}, отбракованы валидатором — {rejected}",
+  "plans.reviewRejected": "Слушать и отбракованные",
+  "plans.reviewRejectedInfo": "Треки, отбракованные валидатором, тоже ждут вашего вердикта, если их можно прослушать. Принятый вами отбракованный трек засчитывается в цель пункта и сообщает Factory Operator, что валидатор ошибся; отбракованный трек никогда не задерживает генерацию.",
+  "review.filter.label": "Фильтр по результату валидатора",
+  "review.filter.all": "Все ({count})",
+  "review.filter.passed": "Прошли валидатор ({count})",
+  "review.filter.rejected": "Отбракованы ({count})",
+  "review.failedChecks": "Проваленные проверки:",
+  "review.failedCheck.fail": "{label} {value} при пороге {threshold}",
+  "review.failedCheck.warn": "{label} {value} при пороге {threshold} (предупреждение)",
+  "review.failedCheck.off": "(промах {percent}%)",
+  "review.atRange": "на {start}–{end}",
 };

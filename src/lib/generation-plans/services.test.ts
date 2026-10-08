@@ -329,7 +329,8 @@ test("AC-GP-07: todo lists items short of target, attempts waiting for the owner
     { itemKey: "C1/F1", groupId: "C1", missing: 1, mode: "fixed" },
     { itemKey: "C2/F1", groupId: "C2", missing: 1, mode: "until_accepted" },
   ]);
-  assert.deepEqual(todo.waitingReview, [{ itemKey: "C2/F1", attemptRef: "job:b1" }]);
+  // BL-153 (AC-RR-03, a changed contract): each waiting entry also says what the validator said.
+  assert.deepEqual(todo.waitingReview, [{ itemKey: "C2/F1", attemptRef: "job:b1", validator: "passed" }]);
   assert.deepEqual(todo.rerun, [
     { itemKey: "C1/F1", attemptRef: "job:a2", state: "interrupted" },
     { itemKey: "C2/F1", attemptRef: "job:b3", state: "failed" },
@@ -774,11 +775,12 @@ test("AC-GP3-02: the waiting count is this device's active plans plus other devi
   const d = twoDevices();
   await d.mac.createPlan(basePlan());
   await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
-  assert.deepEqual(await d.mac.summary(), { waitingReview: 1, local: 1, otherDevices: 0 });
+  // BL-153 (AC-RR-03, a changed contract): the summary also splits the count into passed and rejected.
+  assert.deepEqual(await d.mac.summary(), { waitingReview: 1, waitingPassed: 1, waitingRejected: 0, local: 1, otherDevices: 0 });
   await d.publish("mac", d.mac);
-  assert.deepEqual(await d.win.summary(), { waitingReview: 1, local: 0, otherDevices: 1 });
+  assert.deepEqual(await d.win.summary(), { waitingReview: 1, waitingPassed: 1, waitingRejected: 0, local: 0, otherDevices: 1 });
   await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" });
-  assert.deepEqual(await d.win.summary(), { waitingReview: 0, local: 0, otherDevices: 0 }, "sent from here: no longer waiting");
+  assert.deepEqual(await d.win.summary(), { waitingReview: 0, waitingPassed: 0, waitingRejected: 0, local: 0, otherDevices: 0 }, "sent from here: no longer waiting");
 });
 
 // -- phase 3, A/B references (FO-MSG-0009, GENERATION_PLANS_PHASE_3_PLAN.md AC-GP3-07) ----------------------------------
@@ -819,4 +821,138 @@ test("re-review: exactly 50 references are accepted; getPlan latest returns the 
   const latest = await s.services.getPlan({ planId: "R-0001-S1-music", latest: true });
   assert.equal(latest.plan.references?.length, 50);
   assert.equal(latest.events.at(-1)?.details.note, "n2", "the newest event is last");
+});
+
+// -- BL-153 (docs/roadmap/plans/REVIEW_REJECTED_PLAN.md, FO-REQ-0008): validator-rejected attempts in the owner's queue ------
+// Written before the code, from the plan's acceptance criteria AC-RR-01..08.
+
+const RR_PLAN = "R-0001-S1-music";
+const rrJob = (id: string, itemKey: string) => ({ id, sessionId: "s1", stageId: "generate", itemKey, seed: null, status: "done" as const, error: null, createdAt: new Date("2026-10-08T09:00:00Z"), submittedAt: new Date("2026-10-08T09:00:00Z"), finishedAt: new Date("2026-10-08T09:05:00Z"), planId: RR_PLAN, channelId: CHANNEL });
+const failCheck = (id: string, value: number, threshold: number) => ({ id, label: id, value, threshold, pass: false, severity: "fail" as const });
+const warnCheck = (id: string, value: number, threshold: number) => ({ id, label: id, value, threshold, pass: false, severity: "warn" as const });
+
+/** C1/F1 and C2/F1 attempts: p1 passed; r1 rejected with two failed checks (playable job); r2 rejected with one failed check
+ * (playable by its audition file only -- an imported attempt); r3 rejected with no audio and no job; f1 failed at the validator. */
+async function rrSetup(reviewRejected: boolean | undefined) {
+  const s = setup({ jobs: [rrJob("p1", "C2/F1"), rrJob("r1", "C2/F1"), rrJob("f1", "C2/F1")] });
+  await s.services.createPlan({ ...basePlan(), ...(reviewRejected === undefined ? {} : { reviewRejected }) });
+  await s.services.report({
+    planId: RR_PLAN,
+    rows: [
+      { stageId: "validate", itemKey: "C2/F1", attemptRef: "job:p1", result: "accepted", auditionFile: "R-0001/C2/p1.mp3" },
+      { stageId: "validate", itemKey: "C2/F1", attemptRef: "job:r1", result: "rejected", auditionFile: "R-0001/C2/r1.mp3", checks: [failCheck("loop", 0.53, 0.36), failCheck("held", 0.86, 0.84), warnCheck("width", 1, 0.9)] },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:r2", result: "rejected", auditionFile: "R-0001/C1/r2.mp3", checks: [failCheck("loop", 0.4, 0.36)] },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:r3", result: "rejected", checks: [failCheck("loop", 0.9, 0.36)] },
+      { stageId: "validate", itemKey: "C2/F1", attemptRef: "job:f1", result: "failed", auditionFile: "R-0001/C2/f1.mp3" },
+    ],
+  });
+  return s;
+}
+
+test("AC-RR-02: without the option nothing changes -- only the passed attempt waits, even with rejects in the plan", async () => {
+  for (const option of [undefined, false]) {
+    const s = await rrSetup(option);
+    const queue = await s.services.reviewQueue({ planId: RR_PLAN });
+    assert.deepEqual(queue.entries.map((e) => e.attemptRef), ["job:p1"]);
+    assert.deepEqual((await s.services.todo({ planId: RR_PLAN })).waitingReview, [{ itemKey: "C2/F1", attemptRef: "job:p1", validator: "passed" }]);
+    const view = await s.services.getPlan({ planId: RR_PLAN });
+    assert.equal(view.plan.reviewRejected ?? false, false);
+    assert.deepEqual(view.progress.notices.filter((n) => n.kind === "review_waiting"), [{ kind: "review_waiting", count: 1, passed: 1, rejected: 0 }]);
+  }
+});
+
+test("AC-RR-01/02/03/05: with the option, playable rejects wait too -- fewest failed checks first -- split counts everywhere", async () => {
+  const s = await rrSetup(true);
+  const view = await s.services.getPlan({ planId: RR_PLAN });
+  assert.equal(view.plan.reviewRejected, true);
+  const queue = await s.services.reviewQueue({ planId: RR_PLAN });
+  // Waiting: the passed one, then rejects by failed `fail` checks (r2: 1, r1: 2). r3 (nothing to play) and f1 (failed) never wait.
+  assert.deepEqual(queue.entries.map((e) => [e.attemptRef, e.validator]), [["job:p1", "passed"], ["ext:r2", "rejected"], ["job:r1", "rejected"]]);
+  // todo keeps the passed ones in their order from before BL-153 (review round 1), then the rejects in the queue's order.
+  assert.deepEqual((await s.services.todo({ planId: RR_PLAN })).waitingReview, [
+    { itemKey: "C2/F1", attemptRef: "job:p1", validator: "passed" },
+    { itemKey: "C1/F1", attemptRef: "ext:r2", validator: "rejected" },
+    { itemKey: "C2/F1", attemptRef: "job:r1", validator: "rejected" },
+  ]);
+  assert.deepEqual(view.progress.notices.filter((n) => n.kind === "review_waiting"), [{ kind: "review_waiting", count: 3, passed: 1, rejected: 2 }]);
+  assert.deepEqual(view.progress.items.map((i) => [i.itemKey, i.waitingReview]), [["C1/F1", 1], ["C2/F1", 2]]);
+  const summary = await s.services.summary();
+  assert.deepEqual([summary.waitingReview, summary.waitingPassed, summary.waitingRejected], [3, 1, 2]);
+});
+
+test("AC-RR-02: a reject still does not hold up generation -- until_accepted keeps asking for attempts", async () => {
+  const s = await rrSetup(true);
+  // C2/F1: until_accepted, target 2. p1 passed (pending the owner), r1 rejected (not pending), f1 failed -> missing 1, as without the option.
+  const short = (await s.services.todo({ planId: RR_PLAN })).short.find((x) => x.itemKey === "C2/F1");
+  assert.deepEqual(short, { itemKey: "C2/F1", groupId: "C2", missing: 1, mode: "until_accepted" });
+});
+
+test("AC-RR-04: the owner's accept of a reject counts toward the target and its event says overridesValidator; others do not", async () => {
+  const s = await rrSetup(true);
+  await s.services.recordOwnerVerdict({ planId: RR_PLAN, itemKey: "C2/F1", attemptRef: "job:r1", result: "accepted" });
+  await s.services.recordOwnerVerdict({ planId: RR_PLAN, itemKey: "C2/F1", attemptRef: "job:p1", result: "accepted" });
+  await s.services.recordOwnerVerdict({ planId: RR_PLAN, itemKey: "C1/F1", attemptRef: "ext:r2", result: "rejected" });
+  const view = await s.services.getPlan({ planId: RR_PLAN });
+  assert.equal(view.progress.items.find((i) => i.itemKey === "C2/F1")!.accepted, 2, "both owner accepts count, the overridden reject included");
+  const verdicts = view.events.filter((e) => e.kind === "owner_verdict").map((e) => [e.details.attemptRef, e.details.overridesValidator ?? false]);
+  assert.deepEqual(verdicts, [["job:r1", true], ["job:p1", false], ["ext:r2", false]]);
+  // The validator's own row is kept unchanged.
+  assert.equal(s.results.get(`${RR_PLAN}|validate|C2/F1|job:r1`)!.result, "rejected");
+});
+
+test("AC-RR-08: with the option, the plan is complete only once no reject waits either", async () => {
+  const s = setup({ jobs: [rrJob("p1", "C1/F1"), rrJob("p2", "C1/F1"), rrJob("p3", "C2/F1"), rrJob("p4", "C2/F1"), rrJob("r1", "C2/F1")] });
+  await s.services.createPlan({ ...basePlan(), reviewRejected: true });
+  const accepted = ["p1", "p2", "p3", "p4"].map((id) => ({ stageId: "validate", itemKey: id === "p1" || id === "p2" ? "C1/F1" : "C2/F1", attemptRef: `job:${id}`, result: "accepted" as const }));
+  await s.services.report({ planId: RR_PLAN, rows: [...accepted, { stageId: "validate", itemKey: "C2/F1", attemptRef: "job:r1", result: "rejected", auditionFile: "R-0001/C2/r1.mp3" }] });
+  for (const a of accepted) await s.services.recordOwnerVerdict({ planId: RR_PLAN, itemKey: a.itemKey, attemptRef: a.attemptRef, result: "accepted" });
+  const complete = async () => (await s.services.getPlan({ planId: RR_PLAN })).progress.notices.some((n) => n.kind === "plan_complete");
+  assert.equal(await complete(), false, "the reject still waits for the owner");
+  await s.services.recordOwnerVerdict({ planId: RR_PLAN, itemKey: "C2/F1", attemptRef: "job:r1", result: "rejected" });
+  assert.equal(await complete(), true);
+});
+
+test("AC-RR-01: the factory switches the option with update (and import); the owner's switch is recorded as the owner's", async () => {
+  const s = await rrSetup(undefined);
+  await s.services.updatePlan({ planId: RR_PLAN, reviewRejected: true });
+  assert.equal((await s.services.getPlan({ planId: RR_PLAN })).plan.reviewRejected, true);
+  await s.services.updatePlan({ planId: RR_PLAN, reviewRejected: false }, "owner");
+  const view = await s.services.getPlan({ planId: RR_PLAN });
+  assert.equal(view.plan.reviewRejected, false);
+  assert.deepEqual(view.events.filter((e) => e.kind === "plan_updated").map((e) => e.actor), ["factory", "owner"]);
+  const imported = setup();
+  await imported.services.importPlan({ plan: { format: "ytm-generation-plan/1", planId: "imp", title: "I", channelId: CHANNEL, reviewRejected: true, stages: STAGES, items: [{ itemKey: "A/1", targetCount: 1 }] } });
+  assert.equal((await imported.services.getPlan({ planId: "imp" })).plan.reviewRejected, true);
+});
+
+test("AC-RR-03 across devices: a waiting reject of another device's plan counts as rejected here; the shared format is unchanged", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan({ ...basePlan(), reviewRejected: true });
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", auditionFile: "R-0001/C1/j1.mp3" }] });
+  await d.publish("mac", d.mac);
+  // The shared entry carries no `validator` (devices on an older version read the report with a strict schema).
+  const shared = d.reports.mac.plans[0].review[0] as Record<string, unknown>;
+  assert.equal("validator" in shared, false);
+  assert.deepEqual(await d.win.summary(), { waitingReview: 1, waitingPassed: 0, waitingRejected: 1, local: 0, otherDevices: 1 });
+});
+
+test("AC-RR-02 (review round 1): a reject is playable by an audition file reported at an earlier stage, as the screen plays it", async () => {
+  const s = setup();
+  await s.services.createPlan({ ...basePlan(), reviewRejected: true });
+  await s.services.report({
+    planId: RR_PLAN,
+    rows: [
+      { stageId: "postprocess", itemKey: "C1/F1", attemptRef: "ext:a", result: "done", auditionFile: "R-0001/C1/a.mp3" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:a", result: "rejected" },
+    ],
+  });
+  assert.deepEqual((await s.services.reviewQueue({ planId: RR_PLAN })).entries.map((e) => [e.attemptRef, e.validator, e.playable]), [["ext:a", "rejected", true]]);
+});
+
+test("review round 1: without the option the queue keeps its order from before BL-153 -- item key, then attempt", async () => {
+  const s = setup({ jobs: [rrJob("b", "C2/F1"), rrJob("a", "C1/F1")] });
+  await s.services.createPlan({ ...basePlan(), items: [...basePlan().items].reverse() });
+  await s.services.report({ planId: RR_PLAN, rows: [{ stageId: "validate", itemKey: "C2/F1", attemptRef: "job:b", result: "accepted" }, { stageId: "validate", itemKey: "C1/F1", attemptRef: "job:a", result: "accepted" }] });
+  assert.deepEqual((await s.services.reviewQueue({ planId: RR_PLAN })).entries.map((e) => e.itemKey), ["C1/F1", "C2/F1"]);
+  assert.deepEqual((await s.services.todo({ planId: RR_PLAN })).waitingReview.map((w) => w.itemKey), ["C2/F1", "C1/F1"], "todo: in the order found, as before");
 });

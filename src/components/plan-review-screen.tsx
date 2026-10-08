@@ -2,7 +2,7 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PlanCheck, PlanMarker, PlanReference, PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { validatorOfEntry, type PlanCheck, type PlanMarker, type PlanReference, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
@@ -159,6 +159,39 @@ async function postJson(t: Translate, url: string, body: unknown): Promise<unkno
 type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
 
+/** BL-153 (FO-REQ-0008): the review queue's filter by what the validator said. */
+export type ReviewFilter = "all" | "passed" | "rejected";
+
+/** The entries a filter shows, in the queue's order. Exported for its test. */
+export function filterEntries<T extends Pick<PlanReviewEntry, "stages"> & { validator?: PlanReviewEntry["validator"] }>(entries: T[], filter: ReviewFilter): T[] {
+  if (filter === "all") return entries;
+  return entries.filter((e) => (validatorOfEntry(e) === "rejected") === (filter === "rejected"));
+}
+
+export type FailedCheck = { label: string; value: PlanCheck["value"]; threshold: PlanCheck["threshold"]; severity: "fail" | "warn"; atSeconds: [number, number] | null; offPercent: number | null };
+
+/**
+ * BL-153 AC-RR-07: a rejected attempt's failed checks for the line at the top -- `fail` first, then `warn` (each in the
+ * validator's order) -- with how far the value is from the threshold, as a percentage of it, so near-misses stand out.
+ * Exported for its test.
+ */
+export function failedChecksOf(entry: Pick<PlanReviewEntry, "stages">): FailedCheck[] {
+  const row = [...entry.stages].reverse().find((s) => s.result === "rejected") ?? null;
+  if (!row) return [];
+  const failed = row.checks.filter((c) => !c.pass && (c.severity === "fail" || c.severity === "warn"));
+  const order = (c: PlanCheck) => (c.severity === "fail" ? 0 : 1);
+  return [...failed]
+    .sort((a, b) => order(a) - order(b))
+    .map((c) => ({
+      label: c.label ?? c.id,
+      value: c.value,
+      threshold: c.threshold,
+      severity: c.severity as "fail" | "warn",
+      atSeconds: c.atSeconds,
+      offPercent: typeof c.value === "number" && typeof c.threshold === "number" && c.threshold !== 0 ? Math.round((Math.abs(c.value - c.threshold) / Math.abs(c.threshold)) * 100) : null,
+    }));
+}
+
 /** BL-143 phase 2: the queue of ANOTHER device's plan, from its report, with the verdicts sent from here still waiting. */
 export type PeerReviewSource = { deviceId: string; hostname: string | null };
 
@@ -189,7 +222,10 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
 
 export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
   const { t, formatNumber, language } = useUiText();
-  const [entries, setEntries] = useState<PlanReviewEntry[] | null>(null);
+  const [allEntries, setEntries] = useState<PlanReviewEntry[] | null>(null);
+  const [filter, setFilter] = useState<ReviewFilter>("all");
+  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06).
+  const entries = useMemo(() => (allEntries ? filterEntries(allEntries, filter) : null), [allEntries, filter]);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [blind, setBlind] = useState(false);
@@ -262,7 +298,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
-        const list = await load();
+        const list = filterEntries(await load(), filter);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
         const next = nextWaitingIndex(list, here >= 0 ? here : index);
         setDraft(emptyDraft());
@@ -274,8 +310,25 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, index, load, onChanged, stopB, t]
+    [base, busy, draft, entry, filter, index, load, onChanged, stopB, t]
   );
+
+  /** A filter shows its own first waiting attempt. */
+  const chooseFilter = useCallback(
+    (next: ReviewFilter) => {
+      stopB();
+      setFilter(next);
+      setIndex(Math.max(0, filterEntries(allEntries ?? [], next).findIndex((e) => e.verdict === null)));
+      setDraft(emptyDraft());
+      setMessage(null);
+    },
+    [allEntries, stopB]
+  );
+  const filterCounts = useMemo(() => {
+    const list = allEntries ?? [];
+    const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter((e) => e.verdict === null).length;
+    return { all: waitingIn("all"), passed: waitingIn("passed"), rejected: waitingIn("rejected"), anyRejected: list.some((e) => validatorOfEntry(e) === "rejected") };
+  }, [allEntries]);
 
   const mark = useCallback(() => {
     const at = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
@@ -402,6 +455,23 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           </button>
         </div>
       </div>
+      {/* Kept while a filter other than All is chosen, so a queue whose rejects went away never hides its way back. */}
+      {(filterCounts.anyRejected || filter !== "all") && (
+        <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
+          {(["all", "passed", "rejected"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              role="tab"
+              aria-selected={filter === f}
+              onClick={() => chooseFilter(f)}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${filter === f ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+            >
+              {t(f === "all" ? "review.filter.all" : f === "passed" ? "review.filter.passed" : "review.filter.rejected", { count: filterCounts[f] })}
+            </button>
+          ))}
+        </div>
+      )}
       {entries && entries.length === 0 && <p className="text-sm text-zinc-500">{t("review.empty")}</p>}
       {entry && (
         <>
@@ -426,6 +496,22 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
               </span>
             )}
           </div>
+          {!hideFindings && validatorOfEntry(entry) === "rejected" && failedChecksOf(entry).length > 0 && (
+            <p className="rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-200">
+              <span className="font-medium">{t("review.failedChecks")}</span>{" "}
+              {failedChecksOf(entry)
+                .map((c) =>
+                  [
+                    t(c.severity === "fail" ? "review.failedCheck.fail" : "review.failedCheck.warn", { label: c.label, value: String(c.value ?? "—"), threshold: String(c.threshold ?? "—") }),
+                    c.offPercent !== null ? t("review.failedCheck.off", { percent: String(c.offPercent) }) : null,
+                    c.atSeconds ? t("review.atRange", { start: formatPlayerTime(c.atSeconds[0]), end: formatPlayerTime(c.atSeconds[1]) }) : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" ")
+                )
+                .join(" · ")}
+            </p>
+          )}
           {entry.playable && src ? (
             <>
               <MediaReviewPlayer

@@ -867,7 +867,7 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.5.0` since BL-143 (generation plans; `1.4.0` = DEV-MSG-0001, default `releaseWhenDone`; `1.3.0` = FO-REQ-0005, `1.2.0` = BL-133 / ADR 0026, `1.1.0` = BL-132's media tools, `1.0.0` = the first four), independent of `AGENT_API_VERSION`.
+- **Factory API version:** `1.6.0` since BL-153 (validator-rejected attempts in the owner's review queue, FO-REQ-0008; `1.5.0` = BL-143 generation plans; `1.4.0` = DEV-MSG-0001, default `releaseWhenDone`; `1.3.0` = FO-REQ-0005, `1.2.0` = BL-133 / ADR 0026, `1.1.0` = BL-132's media tools, `1.0.0` = the first four), independent of `AGENT_API_VERSION`.
 - **Tools (a closed list; no YouTube call, all inputs `.strict()`):**
   - `factory_get_capabilities` — `{}` → `{ role: "factory_operator", factoryApiVersion, tools: [...], permissions: ["READ", "WRITE"], writeTools: [...] }`.
   - `factory_list_logical_paths` — `{}` → `{ paths: [{ name, description, configured: false } | { name, description, configured: true, path }] }` for every path, with THIS device's value.
@@ -890,13 +890,14 @@ A second agent role, separate from the channel agents. Technical contract only (
       - `factory_plan_create` / `import` take `references: [{ id, label, file (relative to Sent to YTM), lufs?, lra?, truePeak? }]` (≤ 50);
       - `factory_plan_update` takes `upsertReferences` / `removeReferenceIds`;
       - a `factory_plan_report` row takes `referenceIds` (≤ 5 of the plan's references, e.g. the nearest library tracks; unknown → `plan_mismatch`);
-      - `factory_plan_get` progress carries `notices` (stage_complete, budget_80/100, plan_complete, attempts_exhausted, review_waiting), and takes `latest: true` for the newest 500 events.
+      - `factory_plan_get` progress carries `notices` (stage_complete, budget_80/100, plan_complete, attempts_exhausted, review_waiting `{ count, passed, rejected }` since 1.6.0), and takes `latest: true` for the newest 500 events.
+      - 1.6.0 (BL-153): `reviewRejected: boolean` on create/import/update (default false) -- validator-rejected attempts that can be played (an `auditionFile` or a job of the plan) also wait for the owner; they never count as pending, so generation is not held up. `owner_verdict` events carry `overridesValidator: true` when the owner accepts an attempt an earlier stage rejected.
       - `plan_complete` means every item reached its target and nothing is waiting for a later stage.
 
     Reads:
     - `factory_plan_get` `{ planId, since?, latest? }` → `{ plan, progress, events, more, cursor }`. Events are returned oldest first, at or after `since`. Times have one-second resolution, and a complete page's cursor looks back 60 s (some events are stamped just before they are written), so events repeat across calls; dedupe them. `more` means call again with `cursor`. More than 500 events in one second: the excess of that second is skipped;
     - `factory_plan_list` `{ status?, channelId? }` → `{ plans }`;
-    - `factory_plan_todo` `{ planId }` → `{ short, waitingReview, rerun }`.
+    - `factory_plan_todo` `{ planId }` → `{ short, waitingReview: [{ itemKey, attemptRef, validator: passed | rejected }], rerun }`.
 
     Optional `planId` / `itemKey` / `seed` on `factory_media_create_job` and `planId` on `factory_media_start_session` (checked by the plans module). Jobs and sessions report `plan` / `planId`. Errors: `plan_not_found` (404), `plan_closed` (409), `plan_mismatch` (422), `plan_invalid` (422).
   - BL-143 Web routes (session required):
@@ -914,7 +915,8 @@ A second agent role, separate from the channel agents. Technical contract only (
 
       Sync-gateway family `generation-plans` (Merge tab "Generation plans"): report `ytm-generation-plans` v1.
     - Phase 3:
-      - `GET /api/generation-plans/summary` → `{ waitingReview, local, otherDevices }`;
+      - `GET /api/generation-plans/summary` → `{ waitingReview, waitingPassed, waitingRejected, local, otherDevices }`;
+      - `POST /api/generation-plans/[planId]/review-rejected` `{ reviewRejected: boolean }` -- the owner's switch (BL-153), a `plan_updated` event by the owner;
       - `GET .../reference?id=` (and `.../peers/[deviceId]/[planId]/reference?id=`): a plan reference's file, under the same rules as the audition below;
       - `GET .../review` also returns `references`.
     - `GET .../audition?itemKey=&attemptRef=` (loopback Host/Origin only, 403 otherwise): the attempt's file (latest reported `auditionFile`, else the job output), resolved inside the channel workspace; allowlisted audio/image/video types; `Range` → 206, unsatisfiable → 416; not on this device → 404; other type → 415.

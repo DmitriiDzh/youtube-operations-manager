@@ -9,6 +9,7 @@ import type {
   PlanStage,
   PlanStageCounts,
   PlanTodo,
+  PlanValidatorVerdict,
 } from "./contracts";
 
 // ---------------------------------------------------------------------------
@@ -113,17 +114,76 @@ export function finalStage(plan: Pick<GenerationPlan, "stages">): PlanStage | nu
   return plan.stages.find((s) => s.kind === "owner_review") ?? plan.stages.at(-1) ?? null;
 }
 
-/** The stage right before the owner review (what makes an attempt "waiting for review"); null without a review stage. */
-function stageBeforeReview(plan: Pick<GenerationPlan, "stages">): PlanStage | null {
+/** One attempt the owner reviews (or reviewed): what the stage before the review said, and whether the owner already ruled. */
+export type ReviewCandidate = { itemKey: string; attemptRef: string; validator: PlanValidatorVerdict | null; reviewed: boolean; failedChecks: number };
+
+/** `fail`-severity checks that did not pass -- the near-miss order of rejected attempts (BL-153 AC-RR-05). */
+function failedFailChecks(row: PlanResultRow | undefined): number {
+  return row ? row.checks.filter((c) => !c.pass && c.severity === "fail").length : 0;
+}
+
+/**
+ * The one rule for "waiting for the owner" (queue, counts, notices, todo, badge all read it). An attempt waits when it has no
+ * owner verdict and the stage right before `owner_review` passed it -- or, with the plan's `reviewRejected` (BL-153), rejected
+ * it and it can be played (an audition file or a job of this plan). A `failed` row never waits. Attempts with an owner
+ * verdict are listed as reviewed. Order: see the sort below.
+ */
+export function reviewCandidates(
+  plan: Pick<GenerationPlan, "stages" | "items" | "reviewRejected">,
+  attempts: PlanAttempt[],
+  results: PlanResultRow[],
+  /** todo/counts: passed attempts in the order they were found (job order, then stored results -- as before BL-153). */
+  options: { keepFoundOrder?: boolean } = {}
+): ReviewCandidate[] {
   const index = plan.stages.findIndex((s) => s.kind === "owner_review");
-  return index > 0 ? plan.stages[index - 1] : null;
+  if (index < 0) return [];
+  const review = plan.stages[index];
+  const before = index > 0 ? plan.stages[index - 1] : null;
+  const key = (itemKey: string, attemptRef: string) => `${itemKey}\u0000${attemptRef}`;
+  const verdicts = new Set(results.filter((r) => r.stageId === review.stageId).map((r) => key(r.itemKey, r.attemptRef)));
+  const beforeRows = new Map(before && before.kind !== "in_app" ? results.filter((r) => r.stageId === before.stageId).map((r) => [key(r.itemKey, r.attemptRef), r] as const) : []);
+  const jobOf = new Map(attempts.map((a) => [key(a.itemKey, a.attemptRef), a]));
+  // Playable as the review screen plays it: a job of this plan, or an audition file reported at any stage before the review.
+  const withAudio = new Set(results.filter((r) => r.stageId !== review.stageId && r.auditionFile !== null).map((r) => key(r.itemKey, r.attemptRef)));
+  const playable = (itemKey: string, attemptRef: string) => withAudio.has(key(itemKey, attemptRef)) || Boolean(jobOf.get(key(itemKey, attemptRef))?.jobId);
+  const out = new Map<string, ReviewCandidate>();
+  const add = (itemKey: string, attemptRef: string, validator: PlanValidatorVerdict | null) => {
+    const k = key(itemKey, attemptRef);
+    if (!out.has(k)) out.set(k, { itemKey, attemptRef, validator, reviewed: verdicts.has(k), failedChecks: failedFailChecks(beforeRows.get(k)) });
+  };
+  if (before?.kind === "in_app") for (const a of attempts) if (a.state === "done") add(a.itemKey, a.attemptRef, "passed");
+  for (const r of beforeRows.values()) {
+    if (r.result === "accepted" || r.result === "done") add(r.itemKey, r.attemptRef, "passed");
+    else if (r.result === "rejected" && plan.reviewRejected === true && playable(r.itemKey, r.attemptRef)) add(r.itemKey, r.attemptRef, "rejected");
+  }
+  // Attempts the owner already ruled on stay listed (reviewed), whatever the stage before said.
+  for (const r of results) {
+    if (r.stageId !== review.stageId) continue;
+    const row = beforeRows.get(key(r.itemKey, r.attemptRef));
+    add(r.itemKey, r.attemptRef, row ? (row.result === "rejected" || row.result === "failed" ? "rejected" : "passed") : before?.kind === "in_app" ? "passed" : null);
+  }
+  const itemOrder = new Map(plan.items.map((i, n) => [i.itemKey, n]));
+  const rank = (c: ReviewCandidate) => (c.reviewed ? 2 : c.validator === "rejected" ? 1 : 0);
+  if (options.keepFoundOrder) {
+    const found = [...out.values()];
+    return [...found.filter((c) => c.validator !== "rejected" || c.reviewed), ...found.filter((c) => c.validator === "rejected" && !c.reviewed).sort((a, b) => a.failedChecks - b.failedChecks || (itemOrder.get(a.itemKey) ?? Infinity) - (itemOrder.get(b.itemKey) ?? Infinity) || a.attemptRef.localeCompare(b.attemptRef))];
+  }
+  // Passed and reviewed attempts keep the queue's order from before BL-153 (item key, then attempt); waiting rejects follow
+  // the passed ones, fewest failed `fail` checks first, then the plan's item order (AC-RR-05).
+  return [...out.values()].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (rank(a) === 1 ? a.failedChecks - b.failedChecks || (itemOrder.get(a.itemKey) ?? Infinity) - (itemOrder.get(b.itemKey) ?? Infinity) : a.itemKey.localeCompare(b.itemKey)) ||
+      a.attemptRef.localeCompare(b.attemptRef)
+  );
 }
 
 type Derived = {
   attempts: PlanAttempt[];
   byStageResults: Map<string, PlanResultRow[]>;
   items: PlanItemProgress[];
-  waiting: Array<{ itemKey: string; attemptRef: string }>;
+  /** Waiting for the owner, in the plan's item order (see `reviewCandidates`). */
+  waiting: Array<{ itemKey: string; attemptRef: string; validator: PlanValidatorVerdict }>;
 };
 
 function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Derived {
@@ -135,18 +195,9 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
     byStageResults.set(r.stageId, list);
   }
   const final = finalStage(plan);
-  const review = plan.stages.find((s) => s.kind === "owner_review") ?? null;
-  const before = stageBeforeReview(plan);
-  // Attempts that passed the stage before the owner review and have no owner verdict yet.
-  const waiting: Array<{ itemKey: string; attemptRef: string }> = [];
-  if (review && before) {
-    const reviewed = new Set((byStageResults.get(review.stageId) ?? []).map((r) => `${r.itemKey}\u0000${r.attemptRef}`));
-    const passed =
-      before.kind === "in_app"
-        ? attempts.filter((a) => a.state === "done").map((a) => ({ itemKey: a.itemKey, attemptRef: a.attemptRef }))
-        : (byStageResults.get(before.stageId) ?? []).filter((r) => r.result === "accepted" || r.result === "done").map((r) => ({ itemKey: r.itemKey, attemptRef: r.attemptRef }));
-    for (const p of passed) if (!reviewed.has(`${p.itemKey}\u0000${p.attemptRef}`)) waiting.push(p);
-  }
+  const waiting = reviewCandidates(plan, attempts, results, { keepFoundOrder: true })
+    .filter((c) => !c.reviewed)
+    .map((c) => ({ itemKey: c.itemKey, attemptRef: c.attemptRef, validator: c.validator ?? "passed" }));
   const finalRows = final && final.kind !== "in_app" ? (byStageResults.get(final.stageId) ?? []) : [];
   // An attempt is dead once its job failed, or any stage after generation said failed/rejected; accepted once the final stage
   // accepted it; otherwise it may still become accepted (pending).
@@ -260,7 +311,10 @@ function noticesOf(plan: GenerationPlan, stages: Array<PlanStage & { counts: Pla
   const reached = d.items.every((i) => (i.mode === "until_accepted" ? i.accepted >= i.targetCount : i.missing === 0) && i.pending === 0);
   if (plan.items.length > 0 && !open && d.waiting.length === 0 && reached) notices.push({ kind: "plan_complete" });
   if (exhausted > 0) notices.push({ kind: "attempts_exhausted", count: exhausted });
-  if (d.waiting.length > 0) notices.push({ kind: "review_waiting", count: d.waiting.length });
+  if (d.waiting.length > 0) {
+    const rejected = d.waiting.filter((w) => w.validator === "rejected").length;
+    notices.push({ kind: "review_waiting", count: d.waiting.length, passed: d.waiting.length - rejected, rejected });
+  }
   return notices;
 }
 
@@ -322,6 +376,9 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
     if (s.readyAt) events.push({ at: s.readyAt.toISOString(), kind: "session_ready", actor: "app", details: { sessionId: s.id, gpuTypeId: s.gpuTypeId } });
     if (s.stoppedAt) events.push({ at: s.stoppedAt.toISOString(), kind: "session_stopped", actor: "app", details: { sessionId: s.id, stopReason: s.stopReason, usdCharged: s.usdCharged } });
   }
+  const rejectedEarlier = new Set(results.filter((r) => r.result === "rejected").map((r) => `${r.stageId}\u0000${r.itemKey}\u0000${r.attemptRef}`));
+  // BL-153 AC-RR-04: the owner accepted an attempt an earlier stage (the validator) rejected -- a calibration case for the factory.
+  const overrides = (r: PlanResultRow) => r.reportedBy === "owner" && r.result === "accepted" && results.some((x) => x.stageId !== r.stageId && x.itemKey === r.itemKey && x.attemptRef === r.attemptRef && rejectedEarlier.has(`${x.stageId}\u0000${x.itemKey}\u0000${x.attemptRef}`));
   for (const r of results) {
     if (r.reportedBy === "import") continue;
     events.push({
@@ -337,6 +394,7 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
         ...(r.reasons.length > 0 ? { reasons: r.reasons } : {}),
         ...(r.markers.length > 0 ? { markers: r.markers } : {}),
         ...(r.note ? { note: r.note } : {}),
+        ...(overrides(r) ? { overridesValidator: true } : {}),
       },
     });
   }

@@ -263,4 +263,18 @@ export const production = {
   "review.player.clear": "Clear",
   "review.player.dragHint": "drag on the waveform to select a range to loop",
   "review.player.loading": "Loading the waveform…",
+
+  "plans.notice.reviewWaitingSplit": "{count} waiting for your verdict ({passed} passed, {rejected} rejected by the validator)",
+  "plans.badgeSplit": "Waiting for your verdict: {passed} passed, {rejected} rejected by the validator",
+  "plans.reviewRejected": "Review rejected tracks too",
+  "plans.reviewRejectedInfo": "Tracks the validator rejected also wait for your verdict, if they can be played. Accepting one counts toward its item's target and tells the Factory Operator the validator was wrong; a rejected track never holds up generation.",
+  "review.filter.label": "Filter by the validator's result",
+  "review.filter.all": "All ({count})",
+  "review.filter.passed": "Validator passed ({count})",
+  "review.filter.rejected": "Validator rejected ({count})",
+  "review.failedChecks": "Failed checks:",
+  "review.failedCheck.fail": "{label} {value} vs {threshold}",
+  "review.failedCheck.warn": "{label} {value} vs {threshold} (warning)",
+  "review.failedCheck.off": "({percent}% off)",
+  "review.atRange": "at {start}–{end}",
 } as const;

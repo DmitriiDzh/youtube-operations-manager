@@ -7,6 +7,7 @@ import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
+import { ToggleSwitch } from "./toggle-switch";
 import { useT } from "./ui-text-provider";
 
 // BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Production → Plans. Every number comes from the plans core, which derives
@@ -98,7 +99,10 @@ export function describeNotice(t: Translate, notice: PlanNotice): { text: string
     case "plan_complete":
       return { text: t("plans.notice.planComplete"), tone: "ok" };
     case "review_waiting":
-      return { text: t("plans.notice.reviewWaiting", { count: notice.count }), tone: "info" };
+      // BL-153: with rejected tracks in the queue, the two counts (a notice from an older device has neither: all passed).
+      return notice.rejected > 0
+        ? { text: t("plans.notice.reviewWaitingSplit", { count: notice.count, passed: notice.passed ?? notice.count - notice.rejected, rejected: notice.rejected }), tone: "info" }
+        : { text: t("plans.notice.reviewWaiting", { count: notice.count }), tone: "info" };
     case "attempts_exhausted":
       return { text: t("plans.notice.attemptsExhausted", { count: notice.count }), tone: "warn" };
     default: {
@@ -298,6 +302,7 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
   const [closing, setClosing] = useState<"completed" | "cancelled" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showItems, setShowItems] = useState(false);
+  const [savingReviewRejected, setSavingReviewRejected] = useState(false);
   const waiting = waitingCount(detail);
   const base = `/api/generation-plans/${encodeURIComponent(plan.planId)}`;
   const openSession = progress.spend.sessions.find((s) => !s.final);
@@ -311,6 +316,19 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
     } catch (err) {
       setError(err instanceof Error ? err.message : t("plans.closeFailed"));
       setClosing(null);
+    }
+  };
+
+  // BL-153 (FO-REQ-0008): the owner's switch for validator-rejected tracks in the review queue.
+  const setReviewRejected = async (on: boolean) => {
+    setSavingReviewRejected(true);
+    try {
+      await postJson(t, `${base}/review-rejected`, { reviewRejected: on });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.saveFailed"));
+    } finally {
+      setSavingReviewRejected(false);
     }
   };
 
@@ -345,6 +363,10 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
           )}
           {plan.status === "active" && (
             <>
+              <span className="flex items-center gap-1">
+                <ToggleSwitch label={t("plans.reviewRejected")} checked={plan.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
+                <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
+              </span>
               <button type="button" onClick={() => setClosing("completed")} className={secondaryButton}>
                 {t("plans.markCompleted")}
               </button>

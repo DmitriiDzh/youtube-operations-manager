@@ -23,7 +23,7 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * (before: false);
  * 1.5.0 (BL-143, ADR 0029): generation plans (`factory_plan_*`).
  */
-export const FACTORY_API_VERSION = "1.5.0";
+export const FACTORY_API_VERSION = "1.6.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -589,19 +589,19 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   const loose = z.array(z.object({}).passthrough());
   planWrite(
     "factory_plan_create",
-    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds? }], references?: [{ id, label, file (relative to the channel's '99 Data Exchange/Sent to YTM/', e.g. 'reference/koto-01.mp3'), lufs?, lra?, truePeak? }] (reference tracks for the owner's A/B listening, up to 50) } -> { plan, progress }. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group), validation_failed.",
-    z.object({ planId: z.string(), title: z.string(), channelId: z.string(), budget: z.object({}).passthrough().optional(), note: z.string().nullable().optional(), stages: loose, groups: loose.optional(), items: loose.optional(), references: loose.optional() }).strict(),
+    "Create a generation plan on this computer: { planId (2-80 letters, digits, '.', '_', '-'; yours, unique here), title, channelId (a connected channel; its workspace gets the outputs), budget?: { usd?, gpuMinutes? } (a warning only), note?, stages: [{ stageId, title, kind: in_app | external | owner_review }] (at most one in_app -- fed by the plan's jobs -- and one owner_review), groups?: [{ groupId, title?, dependsOn?, note? }] (waves), items?: [{ itemKey, groupId?, templateId?, templateLabel?, variant?, targetCount, mode?: fixed | until_accepted, maxAttempts?, params? (job params as in create_job), seeds? }], references?: [{ id, label, file (relative to the channel's '99 Data Exchange/Sent to YTM/', e.g. 'reference/koto-01.mp3'), lufs?, lra?, truePeak? }] (reference tracks for the owner's A/B listening, up to 50), reviewRejected?: boolean (1.6.0: validator-rejected attempts that can be played -- an auditionFile or a job of the plan -- also wait for the owner's review; default false) } -> { plan, progress }. Errors: plan_invalid (id taken, unknown channel, duplicate ids, unknown group), validation_failed.",
+    z.object({ planId: z.string(), title: z.string(), channelId: z.string(), budget: z.object({}).passthrough().optional(), note: z.string().nullable().optional(), stages: loose, groups: loose.optional(), items: loose.optional(), references: loose.optional(), reviewRejected: z.boolean().optional() }).strict(),
     (input) => deps.plans.create(input)
   );
   planWrite(
     "factory_plan_import",
-    "Import a plan file in the ytm-generation-plan/1 format: { plan: <the file's JSON object> } -> { plan, progress, linkedJobs, importedResults }. Item templateId strings are kept as labels (templateLabel). A generate result 'job:<id>' naming a job of this channel that is in no plan is linked to the plan (its live state then counts); other attempts are kept as imported rows. The planId must be new here.",
+    "Import a plan file in the ytm-generation-plan/1 format: { plan: <the file's JSON object> } -> { plan, progress, linkedJobs, importedResults }. Item templateId strings are kept as labels (templateLabel). A top-level reviewRejected: boolean is kept (1.6.0). A generate result 'job:<id>' naming a job of this channel that is in no plan is linked to the plan (its live state then counts); other attempts are kept as imported rows. The planId must be new here.",
     z.object({ plan: z.object({}).passthrough() }).strict(),
     (input) => deps.plans.importPlan(input)
   );
   planWrite(
     "factory_plan_update",
-    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys?, upsertReferences? (an existing id is replaced), removeReferenceIds? } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
+    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys?, upsertReferences? (an existing id is replaced), removeReferenceIds?, reviewRejected? (1.6.0: true = validator-rejected attempts that can be played also wait for the owner's review) } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
     z
       .object({
         planId: z.string(),
@@ -616,6 +616,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
         removeItemKeys: z.array(z.string()).optional(),
         upsertReferences: loose.optional(),
         removeReferenceIds: z.array(z.string()).optional(),
+        reviewRejected: z.boolean().optional(),
       })
       .strict(),
     (input) => deps.plans.update(input)
@@ -628,7 +629,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planRead(
     "factory_plan_get",
-    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples } }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note), group_note, rerun_requested, plan_*. In-app counts are read from the jobs themselves. Read-only.",
+    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, rerun_requested, plan_*. In-app counts are read from the jobs themselves. Read-only.",
     z.object({ planId: z.string(), since: z.string().optional() }).strict(),
     (input) => deps.plans.get(input)
   );
@@ -640,7 +641,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planRead(
     "factory_plan_todo",
-    "What is left in a plan: { planId } -> { short: [{ itemKey, groupId, missing, mode }] (attempts still needed), waitingReview: [{ itemKey, attemptRef }] (passed the stage before owner review, no verdict yet), rerun: [{ itemKey, attemptRef, state: failed | interrupted }] (only while the item is short) }. Read-only.",
+    "What is left in a plan: { planId } -> { short: [{ itemKey, groupId, missing, mode }] (attempts still needed), waitingReview: [{ itemKey, attemptRef, validator: passed | rejected }] (passed the stage before owner review -- or, with the plan's reviewRejected, was rejected there and can be played -- and has no verdict yet), rerun: [{ itemKey, attemptRef, state: failed | interrupted }] (only while the item is short) }. Read-only.",
     z.object({ planId: z.string() }).strict(),
     (input) => deps.plans.todo(input)
   );
