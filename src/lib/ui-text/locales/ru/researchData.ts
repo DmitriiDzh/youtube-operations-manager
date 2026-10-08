@@ -99,7 +99,7 @@ export const researchData: Record<keyof typeof en, string> = {
   "marketVideos.sortViews": "Больше всего просмотров (по последнему наблюдению)",
   "marketVideos.loadFailed": "Не удалось загрузить видео.",
   "marketVideos.noMatch": "Нет видео, подходящих под эти фильтры.",
-  "marketVideos.noneYet": "Видео пока не собраны — добавьте канал во вкладке «Каналы» и соберите его.",
+  "marketVideos.noneYet": "Видео пока не собраны — добавьте канал на вкладке «Каналы» и соберите его.",
   "marketVideos.col.title": "Название",
   "marketVideos.col.channel": "Канал",
   "marketVideos.col.published": "Опубликовано",

@@ -8,6 +8,7 @@
 //   AI Localization → ИИ-перевод · Watchlist → список наблюдения · Change drafts → черновики изменений ·
 //   Privacy (YouTube's own words) → Открытый доступ / Доступ по ссылке / Ограниченный доступ; private (in running text) → «ограниченный доступ» (e.g. «видео с ограниченным доступом») ·
 //   Default language → язык по умолчанию · AI connections → Подключения к ИИ · Market intelligence → сбор рыночных данных ·
+//   Device → компьютер · Dashboard (opening the app) → приложение («при открытии приложения») · Issue a token → выдать ·
 //   Settings (the section, in running text) → «в Настройках»; tab names in quotes are never declined («на вкладке «Сессии»»). Product and service names stay as they are: YouTube, Google Cloud, MCP, CLI, API,
 //   RunPod, Syncthing, Factory Operator, Operations Manager.
 import type { UiTextKey } from "./en";

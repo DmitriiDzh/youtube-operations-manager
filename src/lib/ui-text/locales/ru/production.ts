@@ -25,7 +25,7 @@ export const production: Record<keyof typeof en, string> = {
 
   "settingsSync.intro": "Эти настройки одинаковы на всех ваших компьютерах: изменение здесь доходит до остальных примерно за минуту (ключи RunPod остаются на каждом компьютере свои).",
   "settingsSync.fromOther": "С другого компьютера: {fields} ({time}).",
-  "settingsSync.conflicts": "На двух компьютерах заданы по-разному: {fields} — выберите во вкладке «Слияние».",
+  "settingsSync.conflicts": "На двух компьютерах заданы по-разному: {fields} — выберите на вкладке «Слияние».",
   "settingsSync.error": "Не удалось проверить общие настройки: {error}",
 
   "production.balance.title": "Баланс RunPod",
