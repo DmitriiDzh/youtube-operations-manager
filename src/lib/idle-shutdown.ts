@@ -137,22 +137,26 @@ export function decideIdleShutdown(args: {
  * needs to call it, since the process is expected to exit once idle). The interval is `unref`'d
  * so it is never itself a reason the process stays alive -- the server's own listening socket is
  * what keeps the process running normally, exactly as intended. */
-export function startIdleShutdownWatcher(
-  opts: {
-    timeoutMs?: number;
-    checkIntervalMs?: number;
-    /** In `end-session` mode a result of false (or a rejection) means "not done": the next check tries again. */
-    onIdle?: () => unknown;
-    /** True while work is running that an exit would cut short (BL-116). A throwing check counts as busy. */
-    isBusy?: () => boolean | Promise<boolean>;
-    maxDeferralMs?: number;
-    /** `end-session` (BL-158): onIdle once per idle period and keep watching. Default `exit`: once, then stop. */
-    action?: IdleAction;
-  } = {}
-): () => void {
+type IdleWatcherCommon = {
+  timeoutMs?: number;
+  checkIntervalMs?: number;
+  /** True while work is running that an exit would cut short (BL-116). A throwing check counts as busy. */
+  isBusy?: () => boolean | Promise<boolean>;
+  maxDeferralMs?: number;
+};
+/** Default `exit`: onIdle once, then stop watching (the process is going away). */
+type ExitIdleWatcher = IdleWatcherCommon & { action?: "exit"; onIdle?: () => unknown };
+/**
+ * `end-session` (BL-158): onIdle once per idle period and keep watching. onIdle must report whether the session really
+ * ended (the Live-writes reset worked): only `true` counts, anything else -- false, a rejection -- is tried again at the
+ * next check. Typed as required so a wrapper that drops the result cannot silently turn the retry off.
+ */
+type EndSessionIdleWatcher = IdleWatcherCommon & { action: "end-session"; onIdle: () => Promise<boolean> };
+
+export function startIdleShutdownWatcher(opts: ExitIdleWatcher | EndSessionIdleWatcher = {}): () => void {
   const timeoutMs = opts.timeoutMs ?? resolveIdleTimeoutMs();
   const checkIntervalMs = opts.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
-  const onIdle = opts.onIdle ?? (() => process.exit(0));
+  const onIdle: () => unknown = opts.onIdle ?? (() => process.exit(0));
   const action = opts.action ?? "exit";
 
   let checking = false;
@@ -180,7 +184,7 @@ export function startIdleShutdownWatcher(
           if (action === "end-session") {
             let ended = false;
             try {
-              ended = (await onIdle()) !== false;
+              ended = (await onIdle()) === true;
             } catch {
               ended = false;
             }

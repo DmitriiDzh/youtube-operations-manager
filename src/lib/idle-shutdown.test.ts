@@ -186,7 +186,7 @@ test("resolveIdleAction: exit by default; end-session only for YTOM_SERVICE_MODE
 test("service mode: onIdle once per idle period -- not again while nothing new happens, again after new activity goes idle", async () => {
   recordActivity(new Date(Date.now() - 500));
   let calls = 0;
-  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, onIdle: () => { calls += 1; } });
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, onIdle: async () => { calls += 1; return true; } });
   try {
     assert.ok(await waitFor(() => calls >= 1), "the first idle period ends the session");
     await pause(100); // many more checks with no new activity
@@ -205,7 +205,7 @@ test("service mode: running work defers the session end exactly like it defers t
   recordActivity(new Date(Date.now() - 500));
   let busy = true;
   let calls = 0;
-  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, isBusy: () => busy, onIdle: () => { calls += 1; } });
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, isBusy: () => busy, onIdle: async () => { calls += 1; return true; } });
   try {
     await pause(100);
     assert.equal(calls, 0, "no session end while work is running");
@@ -221,7 +221,7 @@ test("service mode: running work defers the session end exactly like it defers t
 test("service mode: work still running at the deferral cap ends the session once, then nothing until new activity", async () => {
   recordActivity(new Date(Date.now() - 500)); // the window (20 ms) and the cap (50 ms after it) are both long past
   let calls = 0;
-  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, maxDeferralMs: 50, checkIntervalMs: 10, isBusy: () => true, onIdle: () => { calls += 1; } });
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, maxDeferralMs: 50, checkIntervalMs: 10, isBusy: () => true, onIdle: async () => { calls += 1; return true; } });
   try {
     assert.ok(await waitFor(() => calls >= 1), "the cap applies in service mode too");
     await pause(100);
@@ -260,7 +260,7 @@ test("activity that arrives while the busy check runs is not overruled by the st
       }
       return false;
     },
-    onIdle: () => { endedAt.push(Date.now()); },
+    onIdle: async () => { endedAt.push(Date.now()); return true; },
   });
   try {
     assert.ok(await waitFor(() => endedAt.length >= 1));
@@ -302,6 +302,28 @@ test("createIdleHandler exit: a failed reset does not hold up the exit (the leas
   const { calls, steps } = recordingSteps({ failReset: true });
   await createIdleHandler("exit", steps)();
   assert.deepEqual(calls, ["resetLiveWrites", "stopPods", "flush", "exit"]);
+});
+
+test("service mode: a session-end handler that throws counts as not done and is tried again", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let attempts = 0;
+  const stop = startIdleShutdownWatcher({
+    action: "end-session",
+    timeoutMs: 20,
+    checkIntervalMs: 10,
+    onIdle: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("logger failed");
+      return true;
+    },
+  });
+  try {
+    assert.ok(await waitFor(() => attempts >= 2), "a rejected session end is retried");
+    await pause(100);
+    assert.equal(attempts, 2);
+  } finally {
+    stop();
+  }
 });
 
 test("service mode: a session end that failed is tried again on a later check, and not again once it succeeded", async () => {
