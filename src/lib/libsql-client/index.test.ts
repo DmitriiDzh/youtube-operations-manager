@@ -89,6 +89,76 @@ test("a transaction batch failing on statement 2 reports index 1 and leaves the 
     assert.deepEqual(await values(client), []);
   }));
 
+// Review of BL-156: SQLite can end a transaction on its own (INSERT OR ROLLBACK, RAISE(ROLLBACK), disk full).
+// Whatever the caller does next must never be written outside the transaction it asked for.
+// Hand-derived: t holds 1; 10 is rolled back with the transaction; 20 must be refused -> rows stay [1].
+test("after SQLite itself rolls the transaction back, later statements and commit are refused and nothing more is written", () =>
+  withClient(async (client) => {
+    await client.execute("CREATE TABLE u (v INTEGER UNIQUE)");
+    await client.execute("INSERT INTO u VALUES (1)");
+    const before = countOpenLibsqlClients();
+    const tx = await client.transaction("write");
+    await tx.execute("INSERT INTO u VALUES (10)");
+    await assert.rejects(() => tx.execute("INSERT OR ROLLBACK INTO u VALUES (1)"), { code: "SQLITE_CONSTRAINT" });
+    await assert.rejects(() => tx.execute("INSERT INTO u VALUES (20)"), { code: "TRANSACTION_CLOSED" });
+    await assert.rejects(() => tx.commit(), { code: "TRANSACTION_CLOSED" });
+    assert.equal(tx.closed, true);
+    assert.equal(countOpenLibsqlClients(), before, "the transaction's connection is closed");
+    assert.deepEqual((await client.execute("SELECT v FROM u ORDER BY v")).rows.map((row) => Number(row.v)), [1]);
+  }));
+
+// The opposite boundary: an ordinary failed statement (plain UNIQUE violation) aborts only itself.
+// Hand-derived: 1 was there, 10 and 20 are committed -> [1, 10, 20].
+test("an ordinary constraint error keeps the transaction alive: later statements and commit succeed", () =>
+  withClient(async (client) => {
+    await client.execute("CREATE TABLE u (v INTEGER UNIQUE)");
+    await client.execute("INSERT INTO u VALUES (1)");
+    const tx = await client.transaction("write");
+    await tx.execute("INSERT INTO u VALUES (10)");
+    await assert.rejects(() => tx.execute("INSERT INTO u VALUES (1)"), { code: "SQLITE_CONSTRAINT" });
+    assert.equal(tx.closed, false);
+    await tx.execute("INSERT INTO u VALUES (20)");
+    await tx.commit();
+    assert.deepEqual((await client.execute("SELECT v FROM u ORDER BY v")).rows.map((row) => Number(row.v)), [1, 10, 20]);
+  }));
+
+test("a batch hitting INSERT OR ROLLBACK stops there (index 1), writes nothing, and closes the transaction", () =>
+  withClient(async (client) => {
+    await client.execute("CREATE TABLE u (v INTEGER UNIQUE)");
+    await client.execute("INSERT INTO u VALUES (1)");
+    const tx = await client.transaction("write");
+    await assert.rejects(
+      () => tx.batch(["INSERT INTO u VALUES (10)", "INSERT OR ROLLBACK INTO u VALUES (1)", "INSERT INTO u VALUES (20)"]),
+      { statementIndex: 1 }
+    );
+    await assert.rejects(() => tx.execute("INSERT INTO u VALUES (30)"), { code: "TRANSACTION_CLOSED" });
+    assert.deepEqual((await client.execute("SELECT v FROM u ORDER BY v")).rows.map((row) => Number(row.v)), [1]);
+  }));
+
+test("a ROLLBACK or COMMIT sent as a plain statement ends the transaction too", () =>
+  withClient(async (client) => {
+    const tx = await client.transaction("write");
+    await tx.execute("INSERT INTO t VALUES (1)");
+    await tx.execute("ROLLBACK");
+    await assert.rejects(() => tx.execute("INSERT INTO t VALUES (2)"), { code: "TRANSACTION_CLOSED" });
+    assert.deepEqual(await values(client), []);
+  }));
+
+// The driver is synchronous: a write that meets this process's own open write transaction waits out the
+// busy timeout (SQLITE_BUSY_TIMEOUT_MS, blocking the event loop meanwhile) and then fails -- it never hangs.
+test("a second write transaction while this process holds one fails with SQLITE_BUSY after the busy timeout, and the first still commits", () =>
+  withClient(async (client) => {
+    const first = await client.transaction("write");
+    await first.execute("INSERT INTO t VALUES (1)");
+    const before = countOpenLibsqlClients();
+    const startedAt = Date.now();
+    await assert.rejects(() => client.transaction("write"), { code: "SQLITE_BUSY" });
+    assert.ok(Date.now() - startedAt < 4 * SQLITE_BUSY_TIMEOUT_MS, "must fail, not hang");
+    assert.equal(countOpenLibsqlClients(), before, "the refused transaction's connection is closed");
+    await first.commit();
+    assert.deepEqual(await values(client), [1]);
+  }));
+
 test("the client's own connection keeps its PRAGMAs across a transaction; the transaction's waits SQLITE_BUSY_TIMEOUT_MS", () =>
   withClient(async (client) => {
     await client.execute("PRAGMA busy_timeout = 1234");

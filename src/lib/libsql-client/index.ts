@@ -34,6 +34,14 @@
 // A side effect worth knowing: the client's own connection is no longer swapped out by its first
 // transaction, so per-connection PRAGMAs set on it (`initializeDatabaseSchema`'s `busy_timeout`)
 // now stay in force; each transaction connection gets the same `busy_timeout` itself.
+// Known cost of that timeout (accepted, no in-process lock added): the driver is synchronous, so a
+// statement that waits on a locked database blocks this process's whole event loop while it waits.
+// When the lock is held by THIS process -- a write on the main connection, or a second
+// `transaction("write")`, issued while one of its own write transactions is still open -- the holder
+// cannot make progress during the wait, so the call blocks for the full `SQLITE_BUSY_TIMEOUT_MS`
+// (about 5 s) and then fails with SQLITE_BUSY, where `@libsql/client` alone failed at once (its
+// transaction connections had no busy timeout). Same outcome, later. The gain is across processes
+// (CLI, a second app instance): there the other writer does finish, and the wait succeeds.
 // Re-evaluate all of this on a stable `libsql` >= 0.6 (docs/TECHNICAL_DEBT.md RISK-113).
 // ---------------------------------------------------------------------------
 
@@ -131,17 +139,56 @@ class DedicatedConnectionTransaction implements Transaction {
     closeRaw(this.connection);
   }
 
-  async execute(stmt: InStatement): Promise<ResultSet> {
+  /**
+   * Whether SQLite still has this transaction open. SQLite ends a transaction on its own for
+   * `INSERT OR ROLLBACK`, `RAISE(ROLLBACK)` and some failures (disk full, I/O, out of memory); the
+   * connection is then in autocommit mode and any further statement would be written for good,
+   * outside the transaction the caller asked for. `@libsql/client` does not expose the driver's
+   * `inTransaction`, so this asks SQLite directly: `BEGIN` is refused exactly while a transaction
+   * is open. If it is not, the transaction is over: close the connection so nothing more can run.
+   */
+  private async endIfSqliteEndedIt(): Promise<void> {
+    if (this.finished) return;
+    try {
+      await this.connection.execute("BEGIN");
+    } catch (error) {
+      if (error instanceof Error && /within a transaction/i.test(error.message)) return;
+      // Anything else leaves the state unknown -- refuse further statements rather than risk autocommit.
+      this.end();
+      return;
+    }
+    try {
+      await this.connection.execute("ROLLBACK");
+    } finally {
+      this.end();
+    }
+  }
+
+  /** Runs one statement, then makes sure the transaction is still the one the caller thinks it is. */
+  private async run(stmt: InStatement): Promise<ResultSet> {
     this.checkNotClosed();
-    return this.connection.execute(stmt);
+    let result: ResultSet;
+    try {
+      result = await this.connection.execute(stmt);
+    } catch (error) {
+      await this.endIfSqliteEndedIt();
+      throw error;
+    }
+    // A COMMIT / ROLLBACK / END sent as a plain statement ends the transaction without any error.
+    const sql = typeof stmt === "string" ? stmt : stmt.sql;
+    if (/^\s*(commit|end|rollback)\b/i.test(sql)) await this.endIfSqliteEndedIt();
+    return result;
+  }
+
+  async execute(stmt: InStatement): Promise<ResultSet> {
+    return this.run(stmt);
   }
 
   async batch(stmts: Array<InStatement>): Promise<Array<ResultSet>> {
     const results: ResultSet[] = [];
     for (let i = 0; i < stmts.length; i++) {
       try {
-        this.checkNotClosed();
-        results.push(await this.connection.execute(stmts[i]));
+        results.push(await this.run(stmts[i]));
       } catch (error) {
         if (error instanceof LibsqlBatchError) throw error;
         if (error instanceof LibsqlError) {
@@ -161,8 +208,17 @@ class DedicatedConnectionTransaction implements Transaction {
 
   async commit(): Promise<void> {
     this.checkNotClosed();
-    // A failed COMMIT (e.g. SQLITE_BUSY) leaves the transaction open for the caller's rollback.
-    await this.connection.execute("COMMIT");
+    try {
+      await this.connection.execute("COMMIT");
+    } catch (error) {
+      // A failed COMMIT (e.g. SQLITE_BUSY) normally leaves the transaction open for the caller's
+      // rollback; if SQLite has ended it instead, no further statement may run on this connection.
+      await this.endIfSqliteEndedIt();
+      if (this.finished && error instanceof Error && /no transaction is active/i.test(error.message)) {
+        throw new LibsqlError("The transaction is closed", "TRANSACTION_CLOSED");
+      }
+      throw error;
+    }
     this.end();
   }
 

@@ -29,43 +29,95 @@ async function listSourceFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-// `createClient` named in a non-type import from @libsql/client (any of its entry points).
-const CREATE_CLIENT_IMPORT = /import\s+(?!type\b)\{[^}]*\bcreateClient\b[^}]*\}\s*from\s*["']@libsql\/client(?:\/[^"']*)?["']/;
-// The raw driver, in any import form.
-const RAW_DRIVER_IMPORT = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)["']libsql(?:\/[^"']*)?["']/;
-// Namespace / default / dynamic / require forms of @libsql/client that could reach createClient.
-const INDIRECT_CLIENT_IMPORT =
-  /import\s+\*\s+as\s+\w+\s+from\s*["']@libsql\/client|import\s+\w+\s*(?:,|from)\s*["']@libsql\/client|import\s*\(\s*["']@libsql\/client|require\s*\(\s*["']@libsql\/client/;
+const CLIENT_PACKAGE = String.raw`["'\`]@libsql\/client(?:\/[^"'\`]*)?["'\`]`;
+// Every static `import ... from` / `export ... from` of @libsql/client, with its clause captured.
+const CLIENT_STATIC = new RegExp(String.raw`\b(import|export)\s+([^;"'\`]*?)\s*from\s*${CLIENT_PACKAGE}`, "g");
+// Side-effect import, dynamic import and require of @libsql/client, in any quote style.
+const CLIENT_OTHER = new RegExp(String.raw`\bimport\s*${CLIENT_PACKAGE}|\b(?:import|require)\s*\(\s*${CLIENT_PACKAGE}`);
+// The raw driver, in any import form and quote style.
+const RAW_DRIVER = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["'`]libsql(?:\/[^"'`]*)?["'`]/;
+
+/** A clause is harmless only when nothing in it exists at runtime: `type { ... }`, or `{ type A, type B }`. */
+function isTypeOnlyClause(clause: string): boolean {
+  const trimmed = clause.trim();
+  if (/^type\b/.test(trimmed)) return true;
+  const braces = /^\{([^}]*)\}$/.exec(trimmed);
+  if (!braces) return false;
+  const specifiers = braces[1].split(",").map((part) => part.trim()).filter(Boolean);
+  return specifiers.length > 0 && specifiers.every((specifier) => /^type\s/.test(specifier));
+}
+
+/** `drizzle("file:...")` / `drizzle({ connection })` make drizzle-orm/libsql open its own client. */
+function drizzleOpensItsOwnClient(source: string): boolean {
+  for (const match of source.matchAll(/\bdrizzle\s*\(\s*/g)) {
+    const rest = source.slice(match.index + match[0].length);
+    if (/^["'`]/.test(rest)) return true;
+    if (!rest.startsWith("{")) continue;
+    let depth = 0;
+    let end = rest.length;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "{") depth++;
+      else if (rest[i] === "}" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (/\bconnection\b/.test(rest.slice(0, end))) return true;
+  }
+  return false;
+}
+
+function opensLibsqlConnectionItself(source: string): boolean {
+  for (const match of source.matchAll(CLIENT_STATIC)) {
+    if (!isTypeOnlyClause(match[2])) return true;
+  }
+  return CLIENT_OTHER.test(source) || RAW_DRIVER.test(source) || drizzleOpensItsOwnClient(source);
+}
 
 test("no file outside src/lib/libsql-client/ opens a libSQL connection itself", async () => {
   const offenders: string[] = [];
   for (const root of SCAN_ROOTS) {
     for (const file of await listSourceFiles(path.join(REPO_ROOT, root))) {
       if (!path.relative(THIS_DIR, file).startsWith("..")) continue;
-      const source = await readFile(file, "utf8");
-      if (CREATE_CLIENT_IMPORT.test(source) || RAW_DRIVER_IMPORT.test(source) || INDIRECT_CLIENT_IMPORT.test(source)) {
-        offenders.push(path.relative(REPO_ROOT, file));
-      }
+      if (opensLibsqlConnectionItself(await readFile(file, "utf8"))) offenders.push(path.relative(REPO_ROOT, file));
     }
   }
   assert.deepEqual(offenders, [], "open libSQL connections only through createLibsqlClient (src/lib/libsql-client)");
 });
 
-test("the inventory patterns catch every import form they claim to, and allow type-only imports", () => {
-  for (const line of [
+test("the inventory check catches every form it claims to, and allows type-only imports and drizzle(client)", () => {
+  const forbidden = [
     'import { createClient } from "@libsql/client";',
     'import { type Client, createClient } from "@libsql/client";',
     'import { createClient } from "@libsql/client/sqlite3";',
-  ]) {
-    assert.ok(CREATE_CLIENT_IMPORT.test(line), line);
-  }
-  for (const line of ['import Database from "libsql";', 'const D = require("libsql");', 'await import("libsql/promise");']) {
-    assert.ok(RAW_DRIVER_IMPORT.test(line), line);
-  }
-  for (const line of ['import * as libsql from "@libsql/client";', 'await import("@libsql/client");', 'require("@libsql/client")']) {
-    assert.ok(INDIRECT_CLIENT_IMPORT.test(line), line);
-  }
-  for (const line of ['import type { Client } from "@libsql/client";', 'import { type Client, type ResultSet } from "@libsql/client";']) {
-    assert.ok(!CREATE_CLIENT_IMPORT.test(line) && !RAW_DRIVER_IMPORT.test(line) && !INDIRECT_CLIENT_IMPORT.test(line), line);
-  }
+    'import { LibsqlError } from "@libsql/client";',
+    'import libsql, { type Client } from "@libsql/client";',
+    'import * as libsql from "@libsql/client";',
+    'import "@libsql/client";',
+    'export { createClient } from "@libsql/client";',
+    'export * from "@libsql/client";',
+    'export * as libsql from "@libsql/client";',
+    'await import("@libsql/client");',
+    "await import('@libsql/client');",
+    "await import(`@libsql/client`);",
+    'require("@libsql/client")',
+    'import Database from "libsql";',
+    'const D = require("libsql");',
+    'await import("libsql/promise");',
+    "await import(`libsql`);",
+    'const db = drizzle("file:local.db");',
+    "const db = drizzle(`file:${dbPath}`);",
+    'const db = drizzle({ connection: { url: "file:local.db" } });',
+    "const db = drizzle({ schema: { users }, connection: url });",
+  ];
+  for (const line of forbidden) assert.ok(opensLibsqlConnectionItself(line), line);
+  const allowed = [
+    'import type { Client } from "@libsql/client";',
+    'import { type Client, type ResultSet } from "@libsql/client";',
+    'export type { Client } from "@libsql/client";',
+    "const db = drizzle(client, { schema: dbSchema });",
+    "const db = drizzle({ client, schema });",
+    'import { drizzle } from "drizzle-orm/libsql";',
+  ];
+  for (const line of allowed) assert.ok(!opensLibsqlConnectionItself(line), line);
 });
