@@ -16,7 +16,9 @@ echo "Stopping YouTube Operations Manager..."
 # Build the list of PIDs actually listening on port $PORT right now -- this is the ground truth;
 # a recorded pidfile PID is only trusted once corroborated against it, since PIDs get reused by
 # the OS and a stale pidfile could otherwise point at an unrelated process.
-PORT_PIDS=$(lsof -ti tcp:$PORT 2>/dev/null || true)
+# Only the process LISTENING on the port: without -sTCP:LISTEN lsof also names every client with an open connection to it
+# (a browser tab's helper process), and this script then sent the stop signal to the browser too (seen 2026-10-08).
+PORT_PIDS=$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)
 
 if [ -n "$PORT_PIDS" ]; then
   echo "Checking that no export, import or database migration is running..."
@@ -44,13 +46,13 @@ if [ -n "$PORT_PIDS" ]; then
   # hit EADDRINUSE against a process that is still in the middle of shutting down.
   ATTEMPT=0
   while [ "$ATTEMPT" -lt 10 ]; do
-    if [ -z "$(lsof -ti tcp:$PORT 2>/dev/null)" ]; then
+    if [ -z "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
       echo "Done -- port $PORT is free."
       exit 0
     fi
     ATTEMPT=$((ATTEMPT + 1))
     sleep 1
   done
-  echo "[WARN] Port $PORT is still in use after waiting -- the process may need more time, or a manual kill (lsof -ti tcp:$PORT)."
+  echo "[WARN] Port $PORT is still in use after waiting -- the process may need more time, or a manual kill (lsof -ti tcp:$PORT -sTCP:LISTEN)."
   exit 1
 fi
