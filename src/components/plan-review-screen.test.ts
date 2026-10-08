@@ -221,3 +221,21 @@ test("AC-TC-02: the arrows and 'next waiting' pass over skipped tracks, wrapping
   assert.equal(nextWaitingIndex(entries, 0, skipB), 3, "b is claimed, c is reviewed");
   assert.equal(nextWaitingIndex(entries, 0), 1, "without skipping, as before");
 });
+
+// Review round 5 (BL-157, AC-WV-02/06): "next wave" skips a wave another computer is on -- unless the owner shows claimed ones.
+test("AC-WV-02/06: the next-wave offer -- the next wave with a waiting track this computer may take, in plan order, wrapping", async () => {
+  const { nextOpenWave } = await import("./plan-review-screen");
+  const wave = (groupId: string, waiting: number) => ({ groupId, title: groupId, total: 3, reviewed: 3 - waiting, waitingPassed: waiting, waitingRejected: 0, accepted: 0, rejected: 0, overridesValidator: 0 });
+  const waves = [wave("C1", 0), wave("C2", 2), wave("C3", 1)];
+  const entries = [
+    { id: "c2a", groupId: "C2", verdict: null },
+    { id: "c2b", groupId: "C2", verdict: null },
+    { id: "c3a", groupId: "C3", verdict: null },
+  ];
+  const claimedOnMac = new Set(["c2a", "c2b"]);
+  assert.equal(nextOpenWave(waves, waves[0], entries, () => false)?.groupId, "C2");
+  assert.equal(nextOpenWave(waves, waves[0], entries, (e) => claimedOnMac.has(e.id))?.groupId, "C3", "C2 is all taken by the Mac");
+  assert.equal(nextOpenWave(waves, waves[0], entries, () => true), null, "nothing this computer may take");
+  assert.equal(nextOpenWave(waves, waves[1], entries, () => false), null, "the chosen wave still waits: no offer");
+  assert.equal(nextOpenWave([wave("C1", 1), wave("C2", 0)], wave("C2", 0), [{ id: "x", groupId: "C1", verdict: null }], () => false)?.groupId, "C1", "wraps");
+});

@@ -938,7 +938,7 @@ A second agent role, separate from the channel agents. Technical contract only (
     - BL-157 (ADR 0031, `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md`):
       - **Media is the active channel's.** The channel is resolved on the server (ADR 0004 (b)).
         - `GET /api/generation-plans` and `.../peers` list only plans of the session's active channel; with none active they list nothing.
-        - Every `[planId]` and `peers/[deviceId]/[planId]` route answers a plan of another channel with `plan_not_found` (404).
+        - Every `[planId]` and `peers/[deviceId]/[planId]` route answers a plan of another channel with `plan_not_found` (404). The one exception is a claim release (`release: true`): it only removes this device's own claim, so it needs no channel (it works right after a channel switch).
         - `GET /api/media-generation/jobs?scope=active` lists the active channel's jobs.
       - **`GET /api/generation-plans/summary`** → `{ activeChannelId, waitingReview, waitingPassed, waitingRejected, channels }`.
         - The top-level counts are the active channel's. `activeChannelId` names that channel (null when none is active); the bell leaves out exactly that one.

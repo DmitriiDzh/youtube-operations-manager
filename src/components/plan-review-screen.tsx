@@ -2,7 +2,7 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { validatorOfEntry, type PlanCheck, type PlanExistingVerdict, type PlanMarker, type PlanReference, type PlanReviewBatch, type PlanReviewClaim, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { historyEntryOfVerdict, validatorOfEntry, type PlanCheck, type PlanExistingVerdict, type PlanMarker, type PlanReference, type PlanReviewBatch, type PlanReviewClaim, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
 import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
@@ -271,6 +271,18 @@ export function waveSummaries(entries: Array<Pick<PlanReviewEntry, "groupId" | "
   });
 }
 
+/**
+ * AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has a waiting track
+ * this computer may take -- review round 5 (AC-WV-06): one whose waiting tracks another computer has all claimed, or took
+ * whole, is not offered (`skip` is the screen's claimed-elsewhere rule). Exported for its test.
+ */
+export function nextOpenWave<E extends Pick<PlanReviewEntry, "groupId" | "verdict">>(waves: WaveSummary[], chosen: WaveSummary | null, entries: E[], skip: (entry: E) => boolean): WaveSummary | null {
+  if (!chosen || chosen.waitingPassed + chosen.waitingRejected > 0) return null;
+  const at = waves.findIndex((w) => w.groupId === chosen.groupId);
+  const open = (w: WaveSummary) => entries.some((e) => e.groupId === w.groupId && e.verdict === null && !skip(e));
+  return [...waves.slice(at + 1), ...waves.slice(0, at)].find((w) => w.waitingPassed + w.waitingRejected > 0 && open(w)) ?? null;
+}
+
 /** The entries the screen walks: the validator filter, then the chosen wave (null = all waves). Exported for its test. */
 export function visibleEntries<T extends Pick<PlanReviewEntry, "stages" | "groupId"> & { validator?: PlanReviewEntry["validator"] }>(entries: T[], filter: ReviewFilter, wave: string | null): T[] {
   const filtered = filterEntries(entries, filter);
@@ -434,7 +446,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           result,
           itemKey: entry.itemKey,
           attemptRef: entry.attemptRef,
-          existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? (sentHere ? null : (entry.history?.at(-1)?.device ?? null)), at: entry.verdict.at },
+          existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? (sentHere ? null : (historyEntryOfVerdict(entry.history, entry.verdict)?.device ?? null)), at: entry.verdict.at },
         });
         return;
       }
@@ -479,7 +491,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
   // moving on moves the claim, leaving the screen gives them up. Claims are advisory: a failure is ignored.
-  const claimKey = entry && entry.verdict === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
+  // A track another computer is on is not claimed from here as well (review round 5) -- opening it by hand is the owner's call.
+  const claimKey = entry && entry.verdict === null && claimOf(entry, claims, nowMs) === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
   useEffect(() => {
     if (!claimKey) return;
     const [itemKey, attemptRef] = claimKey.split("\u0000");
@@ -541,11 +554,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const chosenWave = wave === null ? null : (waves.find((w) => w.groupId === wave) ?? null);
   const chosenBatch = wave === null ? null : (batches.find((b) => b.groupId === wave) ?? null);
   // AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has something.
-  const nextWave = useMemo(() => {
-    if (!chosenWave || chosenWave.waitingPassed + chosenWave.waitingRejected > 0) return null;
-    const at = waves.findIndex((w) => w.groupId === chosenWave.groupId);
-    return [...waves.slice(at + 1), ...waves.slice(0, at)].find((w) => w.waitingPassed + w.waitingRejected > 0) ?? null;
-  }, [chosenWave, waves]);
+  const nextWave = useMemo(() => nextOpenWave(waves, chosenWave, allEntries ?? [], skipClaimed), [allEntries, chosenWave, skipClaimed, waves]);
   const entryWaveTitle = (groupId: string | null) => (groupId === null ? null : (batches.find((b) => b.groupId === groupId)?.title ?? groupId));
   const filterCounts = useMemo(() => {
     const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);

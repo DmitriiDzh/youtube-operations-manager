@@ -4,6 +4,7 @@ import {
   planMismatch,
   planNotFound,
   planVerdictExists,
+  historyEntryOfVerdict,
   PLAN_MOVE_MISSING_LISTED,
   validatorOfEntry,
   type GenerationPlan,
@@ -516,16 +517,22 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
    * existed (schema v69) -- that verdict goes in first, so the history and the `owner_verdict` events never lose it. A verdict
    * applied from another device names it in its note (" (from <device>)"); any other was given on this device.
    */
+  /**
+   * A stored owner verdict applied from another device names it in its note (" (from <device>)"). A note that only ends like
+   * "(from 1:20)" is the owner's own words: the suffix names a device only when a peer verdict from that device on this item
+   * was applied here (review round 3). `[note before the suffix, device]`, or null.
+   */
+  async function relayOf(planId: string, current: PlanResultRow): Promise<[string, string] | null> {
+    const match = current.note ? /^([\s\S]*?)\s*\(from ([^()]{1,255})\)$/.exec(current.note) : null;
+    if (!match) return null;
+    const proven = (await deps.store.listEvents(planId)).some((e) => e.kind === "peer_verdict" && e.details.superseded !== true && e.details.fromDevice === match[2] && e.details.itemKey === current.itemKey);
+    return proven ? [match[1], match[2]] : null;
+  }
+
   async function seedHistory(planId: string, history: PlanVerdictHistoryRow[], current: PlanResultRow | undefined): Promise<void> {
     if (!current || current.reportedBy !== "owner" || (current.result !== "accepted" && current.result !== "rejected")) return;
     if (history.some((h) => h.itemKey === current.itemKey && h.attemptRef === current.attemptRef)) return;
-    // A note that only ends like "(from 1:20)" is the owner's own words: the suffix names a device only when a peer verdict
-    // from that device on this item was applied here (review round 3).
-    const match = current.note ? /^([\s\S]*?)\s*\(from ([^()]{1,255})\)$/.exec(current.note) : null;
-    const relayed = match
-      ? (await deps.store.listEvents(planId)).some((e) => e.kind === "peer_verdict" && e.details.superseded !== true && e.details.fromDevice === match[2] && e.details.itemKey === current.itemKey)
-      : false;
-    const from = relayed ? match : null;
+    const from = await relayOf(planId, current);
     const row: PlanVerdictHistoryRow = {
       itemKey: current.itemKey,
       attemptRef: current.attemptRef,
@@ -533,8 +540,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       rating: current.rating,
       reasons: current.reasons,
       markers: current.markers,
-      note: from ? from[1].trim() || null : current.note,
-      device: from ? from[2] : await ownLabel(),
+      note: from ? from[0].trim() || null : current.note,
+      device: from ? from[1] : await ownLabel(),
       at: current.at,
     };
     await deps.store.insertVerdictHistory(planId, row);
@@ -939,7 +946,15 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} was already rated on ${incoming.from}`, { result: incoming.verdict.result, rating: incoming.verdict.rating, device: incoming.from, at: incoming.verdict.at });
         }
         if (current) {
-          const device = historyOf(history, parsed.itemKey, parsed.attemptRef).at(-1)?.device ?? (current.reportedBy === "owner" ? null : current.reportedBy);
+          // The computer of the CURRENT verdict (review round 5): its own history row; a verdict from before the history (v69)
+          // is named the way the history will name it (a proven relay, else this computer).
+          const own = historyOf(history, parsed.itemKey, parsed.attemptRef);
+          const device =
+            current.reportedBy !== "owner"
+              ? current.reportedBy
+              : own.length > 0
+                ? (historyEntryOfVerdict(own, current)?.device ?? null)
+                : ((await relayOf(row.id, current))?.[1] ?? (await ownLabel()));
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} already has a verdict`, { result: current.result, rating: current.rating, device, at: current.at });
         }
       }
@@ -1279,7 +1294,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} was already rated here`, { result: sent.result, rating: sent.rating, device: await ownLabel(), at: sent.at });
         }
         if (theirs) {
-          const device = entry.history?.at(-1)?.device ?? (theirs.reportedBy === "owner" ? (report?.hostname ?? parsed.deviceId) : theirs.reportedBy);
+          const device = theirs.reportedBy !== "owner" ? theirs.reportedBy : (historyEntryOfVerdict(entry.history, theirs)?.device ?? report?.hostname ?? parsed.deviceId);
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} already has a verdict`, { result: theirs.result, rating: theirs.rating, device, at: theirs.at });
         }
       }

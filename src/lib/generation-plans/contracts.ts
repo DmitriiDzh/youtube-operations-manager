@@ -193,6 +193,20 @@ export function validatorOfEntry(entry: { validator?: PlanValidatorVerdict | nul
   return last.result === "rejected" || last.result === "failed" ? "rejected" : "passed";
 }
 
+/**
+ * BL-157 (AC-TC-04, review round 5): the history row of the CURRENT verdict -- the last one of the same second, result and
+ * rating (the newest-by-time row can be another verdict: a peer verdict of the same second wins). Else the last row.
+ */
+export function historyEntryOfVerdict<T extends { result: string; rating: number | null; at: string }>(history: readonly T[] | undefined, verdict: { result: string; rating: number | null; at: string }): T | undefined {
+  if (!history || history.length === 0) return undefined;
+  const second = Math.floor(Date.parse(verdict.at) / 1000);
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (Math.floor(Date.parse(h.at) / 1000) === second && h.result === verdict.result && h.rating === verdict.rating) return h;
+  }
+  return history.at(-1);
+}
+
 export type PlanEvent = { at: string; kind: string; actor: string; details: Record<string, unknown> };
 
 export type PlanProgress = {

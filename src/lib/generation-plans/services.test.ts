@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDomainError, type PlanEvent, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
+import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
 import type { GenerationPlansReport, SharedClaim, SharedVerdict } from "@/lib/sync-gateway";
 import { createGenerationPlanServices, sharedNotices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
@@ -1613,4 +1613,27 @@ test("AC-TC-03: the owner's plan list and plan card no longer count a track whos
   assert.deepEqual(waitingOf((await d.mac.listPlans({}, { ownerView: true }))[0]), [0, 0, false]);
   assert.deepEqual(waitingOf(await d.mac.getPlan({ planId: "R-0001-S1-music" }, { ownerView: true })), [0, 0, false]);
   assert.deepEqual(waitingOf((await d.mac.listPlans({}))[0]), [1, 1, true], "the factory's read is unchanged");
+});
+
+// Review round 5 (BL-157, AC-TC-04): "Already rated on <computer>" names the computer of the CURRENT verdict.
+test("AC-TC-04: the current verdict's history row is the one of its second, result and rating -- not simply the newest", () => {
+  // A peer verdict of the same second wins (AC-TC-06), so the newest row by time can be another verdict.
+  const history = [
+    { device: "Windows PC", result: "rejected", rating: 2, at: "2026-10-08T10:00:05.100Z" },
+    { device: "Mac", result: "accepted", rating: 9, at: "2026-10-08T10:00:05.900Z" },
+  ];
+  assert.equal(historyEntryOfVerdict(history, { result: "rejected", rating: 2, at: "2026-10-08T10:00:05.000Z" })?.device, "Windows PC");
+  assert.equal(historyEntryOfVerdict(history, { result: "accepted", rating: 9, at: "2026-10-08T10:00:05.900Z" })?.device, "Mac");
+  assert.equal(historyEntryOfVerdict(history, { result: "accepted", rating: 4, at: "2026-10-08T11:00:00.000Z" })?.device, "Mac", "no match: the newest");
+  assert.equal(historyEntryOfVerdict([], { result: "accepted", rating: 4, at: "2026-10-08T11:00:00.000Z" }), undefined);
+});
+
+test("AC-TC-04: a verdict from before the history (v69) is named the way the history will name it -- this computer, or a proven relay", async () => {
+  const d = await twoDevicesWithTrack();
+  const ownerRow = (note: string | null): PlanResultRow => ({ stageId: "owner_review", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", reportedBy: "owner", note, rating: 8, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: "2026-10-07T09:00:00.000Z" });
+  await d.macBase.store.upsertResults("R-0001-S1-music", [ownerRow("warm")]);
+  await assert.rejects(d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" }), (e: unknown) => refused("plan_verdict_exists")(e) && existingOf(e)?.device === "Mac");
+  await d.macBase.store.upsertResults("R-0001-S1-music", [ownerRow("warm (from Windows PC)")]);
+  await d.macBase.store.insertEvent("R-0001-S1-music", { at: "2026-10-07T09:00:01.000Z", kind: "peer_verdict", actor: "owner", details: { verdictId: "v-old", fromDevice: "Windows PC", itemKey: "C1/F1", result: "accepted" } });
+  await assert.rejects(d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" }), (e: unknown) => refused("plan_verdict_exists")(e) && existingOf(e)?.device === "Windows PC");
 });
