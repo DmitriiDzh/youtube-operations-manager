@@ -152,3 +152,25 @@ test("review 7: janitor accepts only the bare --delete switch -- a value after i
   assert.equal(await run(["janitor", "--delete"]), 0);
   assert.deepEqual(calls, ["janitor:true", "janitor:false"]);
 });
+
+// BL-157 (review round 4; ADR 0029 §4, ADR 0031): only the factory links a job to a generation plan (checked by the plans
+// module, under the plan's lock). The operator CLI's job never carries a plan link, whatever its file names.
+test("job-create drops a plan link from the file: the job is the operator's own", async () => {
+  const { core, calls } = fakeCore({
+    createJob: async (input: unknown) => {
+      calls.push(`createJob:${JSON.stringify(input)}`);
+      return { jobId: "j1" };
+    },
+  });
+  const out = capture();
+  const code = await runMediaCli({
+    argv: ["job-create", "--file", "job.json"],
+    core,
+    operatorCliEnabled: async () => true,
+    assertDeviceAvailable: async () => {},
+    readFileText: async () => JSON.stringify({ sessionId: "s1", channelId: "UC_japan", templateId: "t1", params: {}, plan: { planId: "R-1", stageId: "generate", itemKey: "A/1" } }),
+    writeStdout: out.writeStdout,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, ['createJob:{"sessionId":"s1","channelId":"UC_japan","templateId":"t1","params":{},"createdBy":"operator"}']);
+});

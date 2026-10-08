@@ -239,7 +239,10 @@ export async function runMediaCli(args: {
         break;
       case "job-create": {
         const body = await readJsonFile(readFileText, parsed.flags);
-        data = await core.createJob({ ...(body && typeof body === "object" ? (body as Record<string, unknown>) : {}), createdBy: "operator" });
+        // BL-157 (review round 4): only the factory links a job to a plan (checked, under the plan's lock) -- never from here.
+        const { plan: _plan, ...own } = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+        void _plan;
+        data = await core.createJob({ ...own, createdBy: "operator" });
         break;
       }
       case "janitor": {

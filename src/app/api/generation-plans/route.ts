@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     // BL-157 (AC-SM-03, ADR 0004): Media lists only the active channel's plans; none while no channel is active.
     const channelId = await activeChannelOf(userId);
     if (!channelId) return NextResponse.json({ plans: [] });
-    return NextResponse.json({ plans: await createGenerationPlansCore().listPlans({ ...(status ? { status } : {}), channelId }) });
+    return NextResponse.json({ plans: await createGenerationPlansCore().listPlans({ ...(status ? { status } : {}), channelId }, { ownerView: true }) });
   } catch (error) {
     return planErrorResponse(error);
   }

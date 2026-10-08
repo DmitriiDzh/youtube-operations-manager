@@ -16,6 +16,7 @@ import {
   type PlanItem,
   type PlanMoveResult,
   type PlanNotice,
+  type PlanProgress,
   type PlanReference,
   type PlanResultRow,
   type PlanReviewBatch,
@@ -582,6 +583,37 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     });
   }
 
+  /**
+   * BL-157 (AC-TC-03, review round 4): the plan's progress as the owner sees it here -- a track whose verdict is on its way
+   * from another device no longer waits (items, waves and the `review_waiting` notice), like the queue and the badge. The
+   * factory's reads keep the plain progress.
+   */
+  async function ownerProgress(row: StoredPlan, progress: PlanProgress, jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanProgress> {
+    if (!deps.peers) return progress;
+    const pending = await pendingPeerVerdicts(row, await deps.store.listEvents(row.id), results);
+    if (pending.size === 0) return progress;
+    const given = reviewEntries(row, jobs, results).filter((e) => e.verdict === null && pending.has(keyOf(e.itemKey, e.attemptRef)));
+    if (given.length === 0) return progress;
+    const perItem = new Map<string, number>();
+    const perGroup = new Map<string, number>();
+    for (const e of given) {
+      perItem.set(e.itemKey, (perItem.get(e.itemKey) ?? 0) + 1);
+      if (e.groupId !== null) perGroup.set(e.groupId, (perGroup.get(e.groupId) ?? 0) + 1);
+    }
+    const rejected = given.filter((e) => e.validator === "rejected").length;
+    const notices = progress.notices.flatMap((n): PlanNotice[] => {
+      if (n.kind !== "review_waiting") return [n];
+      const count = n.count - given.length;
+      return count > 0 ? [{ kind: "review_waiting", count, passed: Math.max(0, n.passed - (given.length - rejected)), rejected: Math.max(0, n.rejected - rejected) }] : [];
+    });
+    return {
+      ...progress,
+      items: progress.items.map((i) => (perItem.has(i.itemKey) ? { ...i, waitingReview: Math.max(0, i.waitingReview - (perItem.get(i.itemKey) ?? 0)) } : i)),
+      groups: progress.groups.map((g) => (perGroup.has(g.groupId) ? { ...g, counts: { ...g.counts, waitingReview: Math.max(0, g.counts.waitingReview - (perGroup.get(g.groupId) ?? 0)) } } : g)),
+      notices,
+    };
+  }
+
   /** This device's queue of one of its own plans as the owner sees it here (history attached, pending verdicts counted). */
   async function ownerQueue(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanReviewEntry[]> {
     const review = row.definition.stages.find((s) => s.kind === "owner_review");
@@ -824,7 +856,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * Events (review A1): times are stored to the second, so `since` is inclusive and the cursor is a whole second --
      * an event in the cursor's own second can come again on the next call (drop ones you already have); none is lost.
      */
-    async getPlan(input: unknown): Promise<PlanView & { events: PlanEvent[]; more: boolean; cursor: string }> {
+    async getPlan(input: unknown, opts: { ownerView?: boolean } = {}): Promise<PlanView & { events: PlanEvent[]; more: boolean; cursor: string }> {
       const parsed = parseWithSchema(getPlanInputSchema, input, "plan id");
       const row = await requirePlan(parsed.planId);
       const [jobs, results, sessions, recorded, history] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
@@ -833,13 +865,28 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const page = parsed.latest
         ? { events: planEvents(jobs, sessions, results, recorded, null, 1_000_000, history).events.slice(-500), more: false, cursor: null }
         : planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null, 500, history);
-      return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: page.events, more: page.more, cursor: page.cursor ?? new Date(secondFloor(at).getTime() - EVENT_CURSOR_LOOKBACK_MS).toISOString() };
+      const progress = planProgress(plan, jobs, results, sessions, at);
+      return {
+        plan,
+        progress: opts.ownerView ? await ownerProgress(row, progress, jobs, results) : progress,
+        events: page.events,
+        more: page.more,
+        cursor: page.cursor ?? new Date(secondFloor(at).getTime() - EVENT_CURSOR_LOOKBACK_MS).toISOString(),
+      };
     },
 
-    async listPlans(input: unknown = {}): Promise<PlanView[]> {
+    /** `ownerView` (BL-157, AC-TC-03): the owner's Web view -- verdicts on their way from another device count as given. */
+    async listPlans(input: unknown = {}, opts: { ownerView?: boolean } = {}): Promise<PlanView[]> {
       const parsed = parseWithSchema(listPlansInputSchema, input, "plan list");
       const rows = await deps.store.listPlans(parsed);
-      return Promise.all(rows.map(view));
+      return Promise.all(
+        rows.map(async (row) => {
+          const v = await view(row);
+          if (!opts.ownerView) return v;
+          const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+          return { ...v, progress: await ownerProgress(row, v.progress, jobs, results) };
+        })
+      );
     },
 
     /** AC-GP-07. */

@@ -1597,3 +1597,20 @@ test("AC-TC-05: a note that only ends like '(from …)' is the owner's own words
     assert.deepEqual([seeded.device, seeded.note], ["this-device", note], note.slice(0, 30));
   }
 });
+
+// Review round 4 (BL-157, AC-TC-03): the owner's plan list and plan card count a verdict on its way from another device as
+// given, like the queue and the badge; the factory's reads keep the plain progress.
+test("AC-TC-03: the owner's plan list and plan card no longer count a track whose verdict is on its way from another device", async () => {
+  const d = await twoDevicesWithTrack();
+  const waitingOf = (v: { progress: { items: Array<{ itemKey: string; waitingReview: number }>; groups: Array<{ groupId: string; counts: { waitingReview: number } }>; notices: Array<{ kind: string }> } }) => [
+    v.progress.items.find((i) => i.itemKey === "C1/F1")?.waitingReview,
+    v.progress.groups.find((g) => g.groupId === "C1")?.counts.waitingReview,
+    v.progress.notices.some((n) => n.kind === "review_waiting"),
+  ];
+  assert.deepEqual(waitingOf((await d.mac.listPlans({}, { ownerView: true }))[0]), [1, 1, true]);
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" });
+  await d.publish("win", d.win);
+  assert.deepEqual(waitingOf((await d.mac.listPlans({}, { ownerView: true }))[0]), [0, 0, false]);
+  assert.deepEqual(waitingOf(await d.mac.getPlan({ planId: "R-0001-S1-music" }, { ownerView: true })), [0, 0, false]);
+  assert.deepEqual(waitingOf((await d.mac.listPlans({}))[0]), [1, 1, true], "the factory's read is unchanged");
+});

@@ -3079,8 +3079,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
   - A plan changed during the check (its revision moved) is refused, to be asked again. The factory's plan-linked
     `create_job` runs under the same lock (`withPlanLock`, on the trimmed plan id), so a move cannot pass between its check and
     the job's creation.
-  - Only the factory links a job to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field, and the operator's
-    `POST /api/media-generation/jobs` drops it.
+  - Only the factory links a job to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field. The operator's
+    `POST /api/media-generation/jobs` and the CLI `media job-create` drop it.
   - `PlanJobRow.channelId` (`media_jobs.channel_id`) makes `resolveAudition` of a job output use the job's channel. The report's
     `jobChannelId` does the same for the other device.
 - **Plans report version 2** (`GENERATION_PLANS_REPORT_VERSION`; the reader accepts 1 and 2, and every level stays strict).
@@ -3127,7 +3127,8 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
   - **Pending verdicts.**
     - On the owning device, `pendingPeerVerdicts` uses the same rules as `applyPeerVerdicts`.
     - `withPending` overlays a not-yet-applied verdict from another device as given (`pendingFrom`), in the queue, `summary` and
-      `channelSummary` (`ownerQueue`).
+      `channelSummary` (`ownerQueue`). The owner's plan list and plan card (`listPlans` / `getPlan` with `ownerView`) adjust the
+      items' and waves' waiting counts and the `review_waiting` notice the same way (`ownerProgress`). The factory's reads do not.
   - **Replace guard.**
     - `recordOwnerVerdict` and `recordPeerVerdict` refuse an existing verdict without `replace`: one here, relayed, sent from
       here, or pending from a peer. The error is `plan_verdict_exists` (409, `planVerdictExists`) with

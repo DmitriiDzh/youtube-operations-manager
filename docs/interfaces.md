@@ -940,8 +940,8 @@ A second agent role, separate from the channel agents. Technical contract only (
         - `GET /api/generation-plans` and `.../peers` list only plans of the session's active channel; with none active they list nothing.
         - Every `[planId]` and `peers/[deviceId]/[planId]` route answers a plan of another channel with `plan_not_found` (404).
         - `GET /api/media-generation/jobs?scope=active` lists the active channel's jobs.
-      - **`GET /api/generation-plans/summary`** → `{ waitingReview, waitingPassed, waitingRejected, channels }`.
-        - The top-level counts are the active channel's.
+      - **`GET /api/generation-plans/summary`** → `{ activeChannelId, waitingReview, waitingPassed, waitingRejected, channels }`.
+        - The top-level counts are the active channel's. `activeChannelId` names that channel (null when none is active); the bell leaves out exactly that one.
         - `channels` holds one row per channel connected here: `{ channelId, waitingReview, waitingPassed, waitingRejected, plans: [{ planId, title, device, waiting }], batches: [{ planId, groupId, title, waiting }], notices: [{ planId, planTitle, device, notice }] }`. Counts only, never tracks or files.
       - **`POST .../verdict`** (local and peer) takes `replace?: boolean`. Without it, an attempt that already has a verdict is refused with `plan_verdict_exists` (409) and `details.existing: { result, rating, device, at }`. "Already has a verdict" includes one given here, one relayed by the factory, one sent from here, and one on its way from another device.
       - **`POST .../claim`** and **`POST /api/generation-plans/peers/[deviceId]/[planId]/claim`**:
@@ -949,6 +949,8 @@ A second agent role, separate from the channel agents. Technical contract only (
         - A claim says "being reviewed on this computer" and lasts 10 minutes; calling again renews it.
         - The report is published at once.
       - **`GET .../review`** also returns `batches` (wave context) and `claims` (the other devices' live claims). Each entry carries `history` and `pendingFrom`.
+      - **`GET /api/generation-plans`** and **`GET .../[planId]`** show the owner's view of progress: a track whose verdict is on its way from another device no longer counts as waiting (items, waves, the `review_waiting` notice). `factory_plan_get` / `factory_plan_list` keep the plain progress.
+      - **Only the factory links a job to a plan.** `agent_create_media_job` refuses a `plan` field (`validation_failed`). `POST /api/media-generation/jobs` and the CLI `media job-create` drop it.
       - **`GET .../peers`** also returns `claims`.
       - Report `ytm-generation-plans` is version 2 (it still reads version 1). A version 1 build refuses version 2 with "update the app".
     - `GET .../audition?itemKey=&attemptRef=` (loopback Host/Origin only, 403 otherwise): the attempt's file (latest reported `auditionFile`, else the job output), resolved inside the channel workspace; allowlisted audio/image/video types; `Range` → 206, unsatisfiable → 416; not on this device → 404; other type → 415.
