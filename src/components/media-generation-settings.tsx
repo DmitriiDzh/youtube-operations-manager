@@ -28,7 +28,19 @@ import { describeSessionJobCounts, fromSharedProgress, JobProgress } from "./med
 import type { SharedSessionJobs } from "@/lib/sync-gateway";
 import { VolumeUsageBar, volumeUsageBreakdown } from "./volume-usage-bar";
 import { useUiText } from "./ui-text-provider";
-import type { Translate, UiTextKey } from "@/lib/ui-text";
+import { isUiTextKey, type Translate, type UiTextKey } from "@/lib/ui-text";
+
+/** A session, job or model-download status in words (`media.status.*`); an unknown status is shown as it came. */
+function mediaStatusLabel(t: Translate, status: string): string {
+  const key = `media.status.${status}`;
+  return isUiTextKey(key) ? t(key) : status;
+}
+
+/** A RunPod pod status in words (`media.podStatus.*`); RunPod may report others, shown as they came. */
+function podStatusLabel(t: Translate, status: string): string {
+  const key = `media.podStatus.${status}`;
+  return isUiTextKey(key) ? t(key) : status;
+}
 
 // Phase 14 slice 1 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6/§2.9, owner decision D5): the operator
 // enters RunPod keys here (stored encrypted per device, never shown again), picks datacenter / GPU /
@@ -428,7 +440,7 @@ export function ModelsCard({ configured, active }: { configured: boolean; active
               {pulls.slice(0, 5).map((p) => (
                 <li key={p.pullId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-1.5">
                   <span>
-                    <span className={p.status === "running" ? "text-amber-400" : p.status === "done" ? "text-emerald-400" : "text-red-400"}>{p.status}</span>
+                    <span className={p.status === "running" ? "text-amber-400" : p.status === "done" ? "text-emerald-400" : "text-red-400"}>{mediaStatusLabel(t, p.status)}</span>
                     {" · "}
                     <span className="font-mono">{p.repoId}/{p.file}</span>
                     {" → "}
@@ -920,7 +932,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
                 <tr key={j.jobId} className="border-t border-zinc-800 align-top">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(j.createdAt)}</td>
                   <td className="py-1 pr-3">
-                    {j.status}
+                    {mediaStatusLabel(t, j.status)}
                     {j.progress && <JobProgress progress={j.progress} />}
                   </td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
@@ -1260,7 +1272,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
                   <td className="py-2 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
                   <td className="py-2 pr-3 font-mono">{s.channelId === activeChannelId ? t("media.sessions.thisChannel") : s.channelId}</td>
                   <td className="py-2 pr-3">
-                    <span className={`font-medium ${statusTone[s.status] ?? ""}`}>{s.status}</span>
+                    <span className={`font-medium ${statusTone[s.status] ?? ""}`}>{mediaStatusLabel(t, s.status)}</span>
                     <div className="text-zinc-500">{statusDetail(t, s, nowMs)}</div>
                     {s.error && <div className="text-amber-400">{s.error}</div>}
                   </td>
@@ -1364,7 +1376,7 @@ export function SessionsCard({ ready, activeChannelId, onLimits }: { ready: bool
               {recent.map((s) => (
                 <tr key={s.sessionId} className="border-t border-zinc-800">
                   <td className="py-1 pr-3 whitespace-nowrap">{formatDisplayDateTime(s.createdAt)}</td>
-                  <td className={`py-1 pr-3 ${statusTone[s.status] ?? ""}`}>{s.status}</td>
+                  <td className={`py-1 pr-3 ${statusTone[s.status] ?? ""}`}>{mediaStatusLabel(t, s.status)}</td>
                   <td className="py-1 pr-3">{s.requestedBy}</td>
                   <td className="py-1 pr-3 font-mono">{s.podId ?? "—"}</td>
                   <td className="py-1 pr-3 whitespace-nowrap">{minutesLabel(t, s.secondsUsed)}</td>
@@ -1437,7 +1449,7 @@ function PeerSessionJobsRow({ jobs, nowMs }: { jobs: SharedSessionJobs; nowMs: n
           <div key={j.jobId} className="mt-1 flex flex-wrap items-start gap-x-3">
             <span className="font-mono text-zinc-300">{j.templateId}</span>
             {j.planItemKey && <span className="text-zinc-500">{t("media.devices.planItem", { item: j.planItemKey })}</span>}
-            <span className="text-zinc-500">{j.status}</span>
+            <span className="text-zinc-500">{mediaStatusLabel(t, j.status)}</span>
             {j.progress ? (
               <div>
                 <JobProgress progress={fromSharedProgress(j.progress)} />
@@ -1551,7 +1563,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
                   {d.sessions.map((s) => (
                     <Fragment key={s.sessionId}>
                     <tr className="border-t border-zinc-800">
-                      <td className="py-1 pr-3 text-zinc-200">{s.status}</td>
+                      <td className="py-1 pr-3 text-zinc-200">{mediaStatusLabel(t, s.status)}</td>
                       <td className={`py-1 pr-3 ${s.live === "pod_gone" ? "text-amber-400" : ""}`}>{t(LIVE_LABEL[s.live])}</td>
                       <td className="py-1 pr-3 font-mono">{s.channelId}</td>
                       <td className="py-1 pr-3">{s.gpuTypeId ?? "—"}</td>
@@ -1596,7 +1608,7 @@ export function OtherDevicesCard({ ready, onActiveElsewhere }: { ready: boolean;
           <ul className="text-xs text-zinc-300">
             {view.unknownPods.map((p) => (
               <li key={p.podId}>
-                {p.name} · {p.podId} · {p.status}
+                {p.name} · {p.podId} · {podStatusLabel(t, p.status)}
                 {p.costPerHr !== null ? ` · ${t("unit.usdPerHour", { value: usd(p.costPerHr) })}` : ""}
               </li>
             ))}

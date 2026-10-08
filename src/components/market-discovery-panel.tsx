@@ -105,6 +105,12 @@ export const CANDIDATE_FILTERS: { value: DiscoveryCandidateStatus; labelKey: UiT
   { value: "watching", labelKey: "discover.filter.watching", emptyKey: "discover.empty.watching" },
 ];
 
+/** A candidate's status in words (the filter's own label); an unknown status is shown as it came. */
+function candidateStatusLabel(t: Translate, status: string): string {
+  const filter = CANDIDATE_FILTERS.find((f) => f.value === status);
+  return filter ? t(filter.labelKey) : status;
+}
+
 /** The reason a Track pre-fills, editable before saving. Exported for its test. */
 export function defaultTrackReason(t: Translate, candidate: { discoveryQuery: string }): string {
   return t("discover.trackReason", { query: candidate.discoveryQuery });
@@ -506,7 +512,7 @@ export function MarketDiscoveryPanel({
       )}
 
       {openCandidate && (
-        <SideDrawer title={openCandidate.title || openCandidate.channelId} subtitle={`${openCandidate.channelId} · ${openCandidate.status}`} onClose={() => setOpenChannelId(null)}>
+        <SideDrawer title={openCandidate.title || openCandidate.channelId} subtitle={`${openCandidate.channelId} · ${candidateStatusLabel(t, openCandidate.status)}`} onClose={() => setOpenChannelId(null)}>
           <DrawerSection title={t("discover.drawer.channel")}>
             <div className="space-y-1 text-xs text-zinc-400">
               {openCandidate.stats ? (

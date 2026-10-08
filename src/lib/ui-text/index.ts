@@ -155,7 +155,9 @@ export function formatNumber(language: UiLanguage, value: number, options?: Intl
 }
 
 export function translate(language: UiLanguage, key: UiTextKey, params?: UiTextParams): string {
-  const message = DICTIONARIES[language][key] ?? en[key] ?? key;
+  // A key that is not in the dictionary (a server value outside a label map, `undefined` from a lookup) shows as itself
+  // instead of crashing the screen -- the same harmless degradation as rendering the raw value used to be.
+  const message = DICTIONARIES[language][key] ?? en[key] ?? (key === undefined || key === null ? "" : String(key));
   return formatMessage(language, message, params);
 }
 

@@ -123,7 +123,7 @@ export const languages = {
   // --- Change Set review (change-set-review.tsx); the source/status labels are also used by the queue above ---
   "changeSet.source.ai": "AI Generated",
   "changeSet.source.deletion": "Deletion",
-  "changeSet.source.xlsx": "XLSX import",
+  "changeSet.source.xlsx": "XLSX Import",
   "changeSet.status.in_review": "in review",
   "changeSet.status.approved": "approved",
   "changeSet.status.partially_approved": "partially approved",
@@ -134,6 +134,7 @@ export const languages = {
   "changeSet.changeType.add": "add",
   "changeSet.changeType.modify": "modify",
   "changeSet.changeType.unchanged": "unchanged",
+  "changeSet.changeType.delete": "delete",
   "changeSet.field.title": "Title",
   "changeSet.field.description": "Description",
 

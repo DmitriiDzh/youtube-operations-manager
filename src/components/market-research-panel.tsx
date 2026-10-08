@@ -11,7 +11,7 @@ import { BlockingDialog } from "./blocking-dialog";
 import { DrawerSection, SideDrawer } from "./side-drawer";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { LoadingIndicator } from "./operation-progress";
-import type { UiTextKey } from "@/lib/ui-text";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 
 type ResearchEvidence = {
@@ -61,6 +61,17 @@ const STATUS_PILL: Record<ChannelStatus, string> = {
   failed: "border-red-800 bg-red-950/40 text-red-300",
   never_collected: "border-zinc-700 bg-zinc-800 text-zinc-400",
 };
+
+/** The last collection run's status in words; an unknown status is shown as it came. */
+const RUN_STATUS_LABELS: Record<NonNullable<WatchlistRow["latestRun"]>["status"], UiTextKey> = {
+  success: "watchlist.runStatus.success",
+  skipped_quota_limited: "watchlist.runStatus.skippedQuotaLimited",
+  failed: "watchlist.runStatus.failed",
+};
+function runStatusLabel(t: Translate, status: string): string {
+  const key = RUN_STATUS_LABELS[status as keyof typeof RUN_STATUS_LABELS];
+  return key ? t(key) : status;
+}
 
 const RECENT_VIDEOS = 20;
 const inputClass = "rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200";
@@ -559,8 +570,8 @@ export function MarketResearchPanel({
                 {!selected.latestRun
                   ? t("watchlist.drawer.lastCollectionNever")
                   : selected.latestRun.ranAt
-                    ? t("watchlist.drawer.lastCollectionAt", { status: selected.latestRun.status, date: formatDisplayDateTime(selected.latestRun.ranAt) })
-                    : t("watchlist.drawer.lastCollection", { status: selected.latestRun.status })}
+                    ? t("watchlist.drawer.lastCollectionAt", { status: runStatusLabel(t, selected.latestRun.status), date: formatDisplayDateTime(selected.latestRun.ranAt) })
+                    : t("watchlist.drawer.lastCollection", { status: runStatusLabel(t, selected.latestRun.status) })}
               </p>
             </div>
             <button

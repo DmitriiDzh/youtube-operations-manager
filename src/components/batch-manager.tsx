@@ -1,6 +1,6 @@
 "use client";
 
-import { errorText } from "@/lib/ui-text";
+import { errorText, isUiTextKey, type Translate } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { runBatchWithProgress } from "./batch-run";
@@ -9,6 +9,12 @@ import { OperationOverlay, useOperation } from "./operation-progress";
 import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
 import { translateWithSlots } from "./ui-text-provider";
 import { useT } from "./ui-text-provider";
+
+/** A batch or ledger-row status in words (`batches.status.*`); an unknown status is shown as it came. */
+function batchStatusLabel(t: Translate, status: string): string {
+  const key = `batches.status.${status}`;
+  return isUiTextKey(key) ? t(key) : status;
+}
 
 type ChangeSetSummary = {
   id: string;
@@ -508,7 +514,7 @@ export function BatchManager({
               <span className="font-mono text-zinc-400">{b.id.slice(0, 8)}</span>{" "}
               <span className="text-zinc-500">
                 {t("batches.batchRow", {
-                  status: b.splitInto ? t("batches.splitForQuota") : b.status,
+                  status: b.splitInto ? t("batches.splitForQuota") : batchStatusLabel(t, b.status),
                   mode: b.dryRun ? t("batches.mode.dryRun") : t("batches.mode.live"),
                   date: formatDisplayDateTime(b.createdAt),
                 })}
@@ -583,7 +589,7 @@ export function BatchManager({
                 <tr key={row.id} className="border-t border-zinc-900">
                   <td className="p-1 font-mono">{row.videoId}</td>
                   <td className="p-1 text-zinc-500">{row.changeIds.length}</td>
-                  <td className="p-1">{row.status}</td>
+                  <td className="p-1">{batchStatusLabel(t, row.status)}</td>
                   <td className="p-1 text-red-400">{row.error ?? ""}</td>
                 </tr>
               ))}
@@ -599,7 +605,7 @@ export function BatchManager({
               <ul className="space-y-0.5 text-xs text-red-400">
                 {batchErrors.map((e, i) => (
                   <li key={i}>
-                    {e.videoId}: {e.status} &mdash; {e.error}
+                    {e.videoId}: {batchStatusLabel(t, e.status)} &mdash; {e.error}
                   </li>
                 ))}
               </ul>

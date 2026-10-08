@@ -49,6 +49,8 @@ const REVIEW_REASON_KEYS: Record<(typeof REVIEW_REASONS)[number], UiTextKey> = {
 export function resultLabel(t: Translate, result: unknown): string {
   if (result === "accepted") return t("plans.result.accepted");
   if (result === "rejected") return t("plans.result.rejected");
+  if (result === "done") return t("plans.result.done");
+  if (result === "failed") return t("plans.result.failed");
   return String(result);
 }
 
@@ -546,7 +548,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                   <div key={stage.stageId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-zinc-200">{stage.stageId}</span>
-                      <span className={stage.result === "accepted" || stage.result === "done" ? "text-emerald-400" : "text-red-400"}>{stage.result}</span>
+                      <span className={stage.result === "accepted" || stage.result === "done" ? "text-emerald-400" : "text-red-400"}>{resultLabel(t, stage.result)}</span>
                     </div>
                     {stage.checks.map((c) => (
                       <div key={c.id} className={c.pass ? "text-zinc-400" : "text-red-300"}>

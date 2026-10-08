@@ -61,6 +61,9 @@ test("numbers use the interface language's marks, never the browser's own locale
 test("translate falls back to English for a key a locale lacks at runtime, and messages from data pass through", () => {
   assert.equal(translate("en", "nav.home"), "Home");
   assert.equal(translate("ru", "nav.home"), "Главная");
+  // Review round 2: a label-map lookup with a value the map does not know must not crash the screen.
+  assert.equal(translate("ru", undefined as unknown as "nav.home"), "");
+  assert.equal(translate("ru", "SOME_SERVER_VALUE" as unknown as "nav.home"), "SOME_SERVER_VALUE");
   const t = createTranslator("ru");
   assert.equal(uiMessageText(t, { key: "common.save" }), "Сохранить");
   assert.equal(uiMessageText(t, { text: "token revoked" }), "token revoked");

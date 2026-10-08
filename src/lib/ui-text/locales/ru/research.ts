@@ -211,4 +211,7 @@ export const research: Record<keyof typeof en, string> = {
   "depth.dateLabel": "Самая ранняя дата публикации (YYYY-MM-DD)",
   "depth.placeholderDefault": "по умолчанию",
   "depth.estimate": "Первый сбор ≈ {first} единиц (до {worst}, если статистику нельзя получить сразу для многих видео); последующие ≈ {steady} единиц.",
+  "watchlist.runStatus.success": "успешно",
+  "watchlist.runStatus.skippedQuotaLimited": "пропущен — исчерпан лимит квоты",
+  "watchlist.runStatus.failed": "ошибка",
 };

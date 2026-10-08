@@ -10,11 +10,11 @@ export const languages: Record<keyof typeof en, string> = {
   "languages.subTab.all": "Все",
 
   "languages.nothingToProposeDeletion":
-    "Для «{language}» предлагать нечего: у всех подходящих видео это их собственный основной язык, а этот механизм его никогда не трогает (пропущено: {skipped}).",
+    "Для «{language}» предлагать нечего: у всех подходящих видео это их собственный язык по умолчанию, а этот механизм его никогда не трогает (пропущено: {skipped}).",
   "languages.deletionProposed":
     `Предложено удалить «{language}» у ${VIDEOS} — новый набор изменений ждёт проверки и одобрения в очереди ниже.`,
   "languages.deletionProposedWithSkipped":
-    `Предложено удалить «{language}» у ${VIDEOS} (пропущено: {skipped} — для них это основной язык). Новый набор изменений ждёт проверки и одобрения в очереди ниже.`,
+    `Предложено удалить «{language}» у ${VIDEOS} (пропущено: {skipped} — для них это язык по умолчанию). Новый набор изменений ждёт проверки и одобрения в очереди ниже.`,
 
   "languages.sync.title": "Синхронизация канала с YouTube",
   "languages.sync.summary": "{count, plural, one {Синхронизировано # видео.} few {Синхронизировано # видео.} many {Синхронизировано # видео.} other {Синхронизировано # видео.}}",
@@ -51,14 +51,14 @@ export const languages: Record<keyof typeof en, string> = {
   "languages.panel.created": "Набор изменений {id} создан — он в очереди ниже.",
 
   "languages.detail.loading": "Загрузка…",
-  "languages.detail.originalLanguage": "Оригинал / основной язык: {language}",
+  "languages.detail.originalLanguage": "Оригинал / язык по умолчанию: {language}",
   "languages.detail.unset": "не задан",
   "languages.detail.noOtherLanguages": "Других отслеживаемых языков нет",
   "languages.detail.addColumnFirst": "Сначала добавьте столбец языка в таблицу.",
   "languages.detail.noTranslationYet": "Перевода на «{language}» для этого видео пока нет.",
-  "languages.detail.generateForLanguage": "Сгенерировать ИИ для этого языка",
+  "languages.detail.generateForLanguage": "Сгенерировать с помощью ИИ для этого языка",
   "languages.detail.loadFailed": "Не удалось загрузить данные.",
-  "languages.detail.generateForVideo": "Сгенерировать ИИ для этого видео",
+  "languages.detail.generateForVideo": "Сгенерировать с помощью ИИ для этого видео",
 
   "languages.noChannel": "Канал ещё не синхронизирован.",
   "languages.recommended.title": "Рекомендуемые языки",
@@ -77,7 +77,7 @@ export const languages: Record<keyof typeof en, string> = {
   "languages.table.videosShown": "{shown} из {total} видео",
   "languages.table.selected": "Выбрано: {count}",
   "languages.table.clear": "Сбросить",
-  "languages.table.generateWithAi": "Сгенерировать ИИ ▾",
+  "languages.table.generateWithAi": "Сгенерировать с помощью ИИ ▾",
   "languages.table.exportXlsx": "Экспорт в XLSX",
   "languages.table.colVideo": "Видео",
   "languages.table.colPublish": "Публикация",
@@ -137,6 +137,7 @@ export const languages: Record<keyof typeof en, string> = {
   "changeSet.changeType.add": "добавление",
   "changeSet.changeType.modify": "изменение",
   "changeSet.changeType.unchanged": "без изменений",
+  "changeSet.changeType.delete": "удаление",
   "changeSet.field.title": "Название",
   "changeSet.field.description": "Описание",
 
@@ -182,7 +183,7 @@ export const languages: Record<keyof typeof en, string> = {
   "sendApproved.selecting": "Отбор одобренных изменений",
   "sendApproved.noBatch": "Сервер не вернул пакет — ничего не отправлено.",
   "sendApproved.liveWritesOff":
-    "Запись в YouTube выключена — ничего не отправлено. Включите «Запись в YouTube» в настройках и отправьте снова.",
+    "Запись в YouTube выключена — ничего не отправлено. Включите «Запись в YouTube» в Настройках и отправьте снова.",
   "sendApproved.prepareFailed": "Не удалось подготовить пакет — ничего не отправлено.",
   "sendApproved.splitFailed": "Не удалось разделить пакет",
   "sendApproved.approveFirst": "Сначала одобрите хотя бы одно изменение",
@@ -213,7 +214,7 @@ export const languages: Record<keyof typeof en, string> = {
   "languageDefaults.saveFirst": "Сначала сохраните языки канала",
   "languageDefaults.fixAll": `Исправить все: ${VIDEOS}`,
   "languageDefaults.allMatch": "Все видео соответствуют языкам по умолчанию",
-  "languageDefaults.differ": "{count} из {total} видео отличаются от языков по умолчанию",
+  "languageDefaults.differ": "Отличаются: {count} из {total} видео",
   "languageDefaults.confirmTitleLanguage": `Задать язык названия и описания «{language}» для ${VIDEOS}?`,
   "languageDefaults.confirmTitleAudio": `Задать язык видео «{audio}» для ${VIDEOS}?`,
   "languageDefaults.confirmTitleBoth":

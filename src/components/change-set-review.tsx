@@ -15,7 +15,7 @@ type Change = {
   field: "title" | "description";
   baselineValue: string;
   proposedValue: string;
-  changeType: "add" | "modify" | "unchanged";
+  changeType: "add" | "modify" | "unchanged" | "delete";
   validationStatus: "valid" | "invalid";
   validationError: string | null;
   conflictStatus: "none" | "conflict";
@@ -43,6 +43,7 @@ const CHANGE_TYPE_LABELS: Record<Change["changeType"], UiTextKey> = {
   add: "changeSet.changeType.add",
   modify: "changeSet.changeType.modify",
   unchanged: "changeSet.changeType.unchanged",
+  delete: "changeSet.changeType.delete",
 };
 
 const APPROVAL_LABELS: Record<Change["approvalStatus"], UiTextKey> = {
@@ -75,6 +76,7 @@ function changeTypeBadge(t: Translate, type: Change["changeType"]) {
     add: "bg-green-900/40 text-green-400",
     modify: "bg-blue-900/40 text-blue-400",
     unchanged: "bg-zinc-800 text-zinc-500",
+    delete: "bg-red-900/40 text-red-300",
   };
   return <span className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${styles[type]}`}>{t(CHANGE_TYPE_LABELS[type])}</span>;
 }

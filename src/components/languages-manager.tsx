@@ -107,7 +107,7 @@ function matchesSubTab(cs: ChangeSetSummary, subTab: SubTab): boolean {
 type GeneratedField = {
   field: "title" | "description";
   proposedValue: string;
-  changeType: "add" | "modify" | "unchanged";
+  changeType: "add" | "modify" | "unchanged" | "delete";
   validationStatus: "valid" | "invalid";
   validationError: string | null;
 };

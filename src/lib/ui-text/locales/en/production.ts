@@ -96,6 +96,8 @@ export const production = {
   "plans.status.cancelled": "cancelled",
   "plans.result.accepted": "accepted",
   "plans.result.rejected": "rejected",
+  "plans.result.done": "done",
+  "plans.result.failed": "failed",
   "plans.spendOf": "${spent} of ${budget}",
   "plans.waitingForYou": "{count} waiting for you",
   "plans.generatedOf": "generated {value} of {total}",

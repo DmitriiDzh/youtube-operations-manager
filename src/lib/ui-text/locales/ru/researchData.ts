@@ -56,7 +56,7 @@ export const researchData: Record<keyof typeof en, string> = {
   "topics.empty": "Тем пока нет.",
   "topics.added": "добавлена {date}",
   "topics.drawerSubtitle": "Тема · добавлена {date}",
-  "topics.wikipediaBoundary": "Исследования — интерес в Википедии",
+  "topics.wikipediaBoundary": "Исследования — интерес в Wikipedia",
   "topics.tagged": "Помеченные каналы и видео",
   "topics.nothingTagged": "Этой темой пока ничего не помечено.",
   "topics.assignmentRow": "{subjectType}: {subjectId} · {date}",
@@ -193,15 +193,15 @@ export const researchData: Record<keyof typeof en, string> = {
   "requests.research.status.executed": "Выполнено",
   "requests.research.status.execution_failed": "Ошибка выполнения",
 
-  // Интерес в Википедии
-  "signals.title": "Интерес в Википедии",
+  // Интерес в Wikipedia
+  "signals.title": "Интерес в Wikipedia",
   "signals.info":
-    "Ежедневные просмотры статей Википедии, которые вы привязали к этой теме, — сигнал интереса за пределами YouTube. Бесплатно (Wikimedia), обновляется раз в несколько часов. Отключается в Настройки → API → Чтение Wikipedia.",
+    "Ежедневные просмотры статей Wikipedia, которые вы привязали к этой теме, — сигнал интереса за пределами YouTube. Бесплатно (Wikimedia), обновляется раз в несколько часов. Отключается в «Настройки → API → Чтение Wikipedia».",
   "signals.row": "{project}: {article} · за 30 дней: {views}",
   "signals.noData": "данных пока нет",
   "signals.change": "({change}% к предыдущим 30)",
   "signals.remove": "Убрать",
-  "signals.articlePlaceholder": "Название или URL статьи Википедии, например Ambient music",
+  "signals.articlePlaceholder": "Название или URL статьи Wikipedia, например Ambient music",
   "signals.link": "Привязать",
 
   // Музыкальный чарт

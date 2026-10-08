@@ -46,7 +46,9 @@ export function OperationLockControl({
 }) {
   const t = useT();
   const [data, setData] = useState<LockResponse | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // `detail` is the HTTP status when the server answered with an error; null for any other failure (shown as the plain
+  // translated "could not read" text instead of a browser's own English error message).
+  const [loadError, setLoadError] = useState<{ detail: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [forceOpen, setForceOpen] = useState(false);
@@ -57,14 +59,18 @@ export function OperationLockControl({
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/operation-lock", { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        // ui-text-ignore: an HTTP status code, shown as the detail of the translated sentence
+        setLoadError({ detail: `HTTP ${response.status}` });
+        return;
+      }
       setData((await response.json()) as LockResponse);
       setFetchedAt(Date.now());
       setLoadError(null);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t("operationLock.loadFailed"));
+    } catch {
+      setLoadError({ detail: null });
     }
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     void refresh();
@@ -123,7 +129,7 @@ export function OperationLockControl({
   }
 
   if (loadError && !data) {
-    return <p className="text-sm text-red-300">{t("operationLock.loadError", { error: loadError })}</p>;
+    return <p className="text-sm text-red-300">{loadError.detail ? t("operationLock.loadError", { error: loadError.detail }) : t("operationLock.loadFailed")}</p>;
   }
   if (!data) return <p className="text-sm text-zinc-500">{t("operationLock.checking")}</p>;
 

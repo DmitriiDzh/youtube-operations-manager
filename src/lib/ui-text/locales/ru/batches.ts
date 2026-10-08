@@ -8,9 +8,9 @@ export const batches: Record<keyof typeof en, string> = {
   "batches.noActiveChannel": "Нет активного канала",
   "batches.noActiveChannelShort": "Нет активного канала.",
   "batches.banner.liveOn":
-    "«Запись в YouTube» включена (Настройки): пакет, созданный ниже с отметкой «Создать как настоящий пакет с записью», после нажатия «Выполнить» действительно запишет изменения в YouTube, без пробного запуска. Если сейчас вы этого не планируете, выключите запись в YouTube в настройках.",
+    "«Запись в YouTube» включена (Настройки): пакет, созданный ниже с отметкой «Создать как настоящий пакет с записью», после нажатия «Выполнить» действительно запишет изменения в YouTube, без пробного запуска. Если сейчас вы этого не планируете, выключите запись в YouTube в Настройках.",
   "batches.banner.liveOff":
-    "Настоящая запись в YouTube сейчас заблокирована защитой на стороне сервера («Запись в YouTube» выключена в настройках). Любой пакет, созданный здесь, выполняется только как пробный запуск — с этой вкладки в YouTube ничего не записывается.",
+    "Настоящая запись в YouTube сейчас заблокирована защитой на стороне сервера («Запись в YouTube» выключена в Настройках). Любой пакет, созданный здесь, выполняется только как пробный запуск — с этой вкладки в YouTube ничего не записывается.",
   "batches.step1": "1. Выберите набор изменений с одобренными изменениями",
   "batches.changeSetButton": "{name} — одобрено: {count}",
   "batches.noChangeSets": "У этого канала пока нет наборов изменений.",
@@ -97,12 +97,12 @@ export const batches: Record<keyof typeof en, string> = {
   "quota.unknown.cloudNoAnswer": "Google Cloud сейчас не вернул остаток квоты.",
   "quota.unknown.cloudNotConnected": "Google Cloud не подключён, поэтому остаток квоты неизвестен.",
   "quota.unknown.needsBatch": `Этому пакету нужно около {units} ед. квоты (${VIDEOS}). Без проверки он может оборваться на середине, если квота закончится.`,
-  "quota.unknown.needsFixAll": `Для «Исправить всё» нужно около {units} ед. квоты (${VIDEOS}). Без проверки операция может оборваться на середине, если квота закончится.`,
+  "quota.unknown.needsFixAll": `Для «Исправить все» нужно около {units} ед. квоты (${VIDEOS}). Без проверки операция может оборваться на середине, если квота закончится.`,
   "quota.unknown.runAnyway": "Всё равно запустить",
   "quota.connectCloud": "Подключить Google Cloud",
   "quota.insufficient.label": "Не хватает квоты",
   "quota.insufficient.titleBatch": "Не хватает квоты YouTube для этого пакета",
-  "quota.insufficient.titleFixAll": "Не хватает квоты YouTube для «Исправить всё»",
+  "quota.insufficient.titleFixAll": "Не хватает квоты YouTube для «Исправить все»",
   "quota.insufficient.needs": `Нужно около {units} ед. (${VIDEOS}), а доступно только {remaining}. Запуск не начинался, поэтому ничего не записано и ничего не оборвётся на середине.`,
   "quota.insufficient.needsWithReset": `Нужно около {units} ед. (${VIDEOS}), а доступно только {remaining} (квота обновится {time}). Запуск не начинался, поэтому ничего не записано и ничего не оборвётся на середине.`,
   "quota.insufficient.canSplit":
@@ -143,4 +143,18 @@ export const batches: Record<keyof typeof en, string> = {
   "quota.history.notAttributed": "Без источника (компьютер, который не делится журналом, или более ранние вызовы)",
   "quota.history.footer":
     "Стоимость берётся из опубликованной таблицы квот Google; неудачный вызов считается минимум за 1 единицу. Журнал охватывает этот компьютер, а цифра Google — весь проект Cloud.",
+  // Статусы пакета и строк журнала
+  "batches.status.PENDING": "Ожидает",
+  "batches.status.RUNNING": "Выполняется",
+  "batches.status.COMPLETED": "Завершено",
+  "batches.status.ABORTED": "Прервано",
+  "batches.status.AWAITING_EXECUTION": "Готово к выполнению",
+  "batches.status.APPLYING": "Записывается",
+  "batches.status.SUCCESS": "Успешно",
+  "batches.status.FAILED": "Ошибка",
+  "batches.status.CONFLICT": "Конфликт",
+  "batches.status.UNKNOWN": "Неизвестно",
+  "batches.status.ABORTED_SYSTEMIC": "Прервано (системная ошибка)",
+  "batches.status.DRY_RUN_COMPLETE": "Пробный запуск завершён",
+  "batches.status.CANCELLED": "Отменено",
 };

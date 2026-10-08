@@ -48,7 +48,7 @@ export const content: Record<keyof typeof en, string> = {
   "video.field.defaultLanguage": "Язык по умолчанию (BCP-47)",
   "video.field.defaultLanguagePlaceholder": "например, en",
   "video.field.recordingDate": "Дата записи",
-  "video.field.publishAt": "Отложенная публикация (только для закрытых, один раз)",
+  "video.field.publishAt": "Отложенная публикация (только для видео с ограниченным доступом, один раз)",
   "video.field.license": "Лицензия",
   "video.field.embeddable": "Разрешить встраивание",
   "video.field.publicStats": "Показывать статистику всем",

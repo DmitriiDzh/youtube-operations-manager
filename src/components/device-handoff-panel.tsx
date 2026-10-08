@@ -1,6 +1,6 @@
 "use client";
 
-import { errorText } from "@/lib/ui-text";
+import { errorText, isUiTextKey } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OperationLockControl } from "@/components/operation-lock-control";
@@ -112,6 +112,12 @@ async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Prom
     throw new Error(errorText(t, data, t("handoff.requestFailed", { url, status: String(res.status) }), { showErrorField: false }));
   }
   return data as T;
+}
+
+/** Why a peer's data was skipped: a known reason code in words (its `errors.<code>` text), otherwise the code as sent. */
+function peerSkipReason(t: Translate, reason: string): string {
+  const key = `errors.${reason}`;
+  return isUiTextKey(key) ? t(key) : reason;
 }
 
 function formatRelativeTime(t: Translate, iso: string | null): string {
@@ -572,7 +578,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
                     family: t(FAMILY_LABELS[p.family]),
                     channel: p.channelId ? ` (${p.channelId})` : "",
                     device: p.deviceId.slice(0, 8),
-                    reason: p.reason,
+                    reason: peerSkipReason(t, p.reason),
                   })}
                   {p.reason === "divergent_document_lineage" &&
                     (p.family === "ai_connections" || p.channelId === channelId ? (

@@ -213,4 +213,7 @@ export const research = {
   "depth.dateLabel": "Earliest publish date (YYYY-MM-DD)",
   "depth.placeholderDefault": "default",
   "depth.estimate": "First collection ≈ {first} units (up to {worst} if batch statistics are unavailable); later collections ≈ {steady} units.",
+  "watchlist.runStatus.success": "succeeded",
+  "watchlist.runStatus.skippedQuotaLimited": "skipped — quota limit reached",
+  "watchlist.runStatus.failed": "failed",
 } as const;

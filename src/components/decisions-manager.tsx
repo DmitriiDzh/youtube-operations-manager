@@ -73,6 +73,12 @@ const EVIDENCE_SOURCE_TYPE_LABELS: Record<EvidenceSourceType, UiTextKey> = {
 };
 
 // BL-152: an experiment's state (badge) and the button that moves it there; Russian distinguishes «Одобрено» from «Одобрить».
+const CRITERIA_LABELS: Record<ExperimentOutcome["criteriaMet"], UiTextKey> = {
+  met: "decisions.criteria.met",
+  not_met: "decisions.criteria.notMet",
+  inconclusive: "decisions.criteria.inconclusive",
+};
+
 const STATUS_LABELS: Record<ExperimentStatus, UiTextKey> = {
   proposed: "decisions.status.proposed",
   approved: "decisions.status.approved",
@@ -992,8 +998,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                 <li key={o.outcomeId} className="rounded border border-zinc-700 p-2 text-sm">
                   <div>{o.outcomeData}</div>
                   <div className="text-xs text-zinc-400">
-                    {/* ui-text-ignore: criteriaMet is the stored enum value (met/not_met/inconclusive), shown as recorded */}
-                    {o.criteriaMet} · {formatDisplayDateTime(o.recordedAt)} · {o.recordedBy}
+                    {CRITERIA_LABELS[o.criteriaMet] ? t(CRITERIA_LABELS[o.criteriaMet]) : o.criteriaMet} · {formatDisplayDateTime(o.recordedAt)} · {o.recordedBy}
                   </div>
                   {o.lessonsLearned && <div className="mt-1 text-xs italic text-zinc-400">{o.lessonsLearned}</div>}
                 </li>

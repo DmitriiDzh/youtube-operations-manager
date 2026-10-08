@@ -6,7 +6,9 @@
 //   Production → Производство · Research → Исследования · Decisions → Решения · Reach → охват ·
 //   Session → сессия · Job → задание · Workflow template → шаблон процесса · Device sync → синхронизация компьютеров ·
 //   AI Localization → ИИ-перевод · Watchlist → список наблюдения · Change drafts → черновики изменений ·
-//   Privacy (YouTube's own words) → Открытый доступ / Доступ по ссылке / Ограниченный доступ. Product and service names stay as they are: YouTube, Google Cloud, MCP, CLI, API,
+//   Privacy (YouTube's own words) → Открытый доступ / Доступ по ссылке / Ограниченный доступ; private (in running text) → «ограниченный доступ» (e.g. «видео с ограниченным доступом») ·
+//   Default language → язык по умолчанию · AI connections → Подключения к ИИ · Market intelligence → сбор рыночных данных ·
+//   Settings (the section, in running text) → «в Настройках»; tab names in quotes are never declined («на вкладке «Сессии»»). Product and service names stay as they are: YouTube, Google Cloud, MCP, CLI, API,
 //   RunPod, Syncthing, Factory Operator, Operations Manager.
 import type { UiTextKey } from "./en";
 import { analytics } from "./ru/analytics";

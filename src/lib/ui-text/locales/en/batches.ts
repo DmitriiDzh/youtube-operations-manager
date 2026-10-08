@@ -141,4 +141,18 @@ export const batches = {
   "quota.history.notAttributed": "Not attributed (a computer that shares no log, or earlier calls)",
   "quota.history.footer":
     "Costs come from Google’s published quota table; a failed call is counted as 1 unit at least. The log covers this computer; the Google figure covers the whole Cloud project.",
+  // Batch and per-video (ledger) status labels; the raw status is shown for any value not listed here.
+  "batches.status.PENDING": "Pending",
+  "batches.status.RUNNING": "Running",
+  "batches.status.COMPLETED": "Completed",
+  "batches.status.ABORTED": "Aborted",
+  "batches.status.AWAITING_EXECUTION": "Awaiting execution",
+  "batches.status.APPLYING": "Applying",
+  "batches.status.SUCCESS": "Success",
+  "batches.status.FAILED": "Failed",
+  "batches.status.CONFLICT": "Conflict",
+  "batches.status.UNKNOWN": "Unknown",
+  "batches.status.ABORTED_SYSTEMIC": "Aborted (system error)",
+  "batches.status.DRY_RUN_COMPLETE": "Dry run complete",
+  "batches.status.CANCELLED": "Cancelled",
 } as const;
