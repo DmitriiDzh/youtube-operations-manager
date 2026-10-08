@@ -2855,8 +2855,8 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   sessions, per local day and month); `stopInner` is shared by the owner's Stop and `factoryStopSession`; `getFactorySession` hides every
   non-factory session from the factory route.
 - **CUDA host check and re-placement (BL-155, `docs/roadmap/plans/CUDA_HOSTS_PLAN.md`, FO-REQ-0007, no schema change).** Setting
-  `minCudaVersion` (12.8 default, null = no create-pod filter and no host-version check; since BL-159 the host's version is still
-  read, for display only) → every createPod sends
+  `minCudaVersion` (12.8 default; null and no session minimum (BL-159) = no create-pod filter and no host-version check -- the
+  host's version is still read, for display only) → every createPod sends
   `gpu.allowedCudaVersions` = the known versions ≥ it (`cuda-host.ts`, pure); no matching host is RunPod's "no capacity". Before
   `running` the start reads the host's CUDA -- first from the pod answer itself (`cudaVersion`, seen live 2026-10-08), else gateway `getPodHostCudaVersion` (GraphQL `pod.machine.machineSystem.cudaVersion`) -- on
   each RUNNING poll until it gets a value or the container is up (then unknown = not blocking), and always requires a `cuda` device

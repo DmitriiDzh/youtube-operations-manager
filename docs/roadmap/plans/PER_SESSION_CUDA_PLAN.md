@@ -34,7 +34,8 @@ minimum; the owner's setting stays the floor** (the image itself is built for CU
   - After the pod is RUNNING its host CUDA version is read whether or not a minimum is set (an unknown version never blocks,
     as before) and stored on the session; a re-placement clears it until the new host is known.
   - Session reads (`factory_media_get_session`, the sessions list, the Agent API's session reads) carry `minCudaVersion`
-    (the session's own, null = none), `usedMinCudaVersion` (the minimum of the last placement, null = no filter) and
+    (the session's own, null = none), `usedMinCudaVersion` (the minimum of the last placement attempt; null = no filter, or none attempted yet -- wording
+    corrected in review round 2: a pending session and the start's own answer show null too) and
     `hostCudaVersion` (null = not known yet).
   - The capacity log's `placed` entry carries `hostCudaVersion`: from the create-pod answer when RunPod gives it, else filled
     in when the host check reads it. Other entries carry null.
