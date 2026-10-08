@@ -27,6 +27,17 @@ export function allowedCudaVersionsFor(minimum: string | null): string[] | null 
   return MEDIA_CUDA_VERSIONS.filter((v) => (compareCudaVersions(v, minimum) ?? -1) >= 0);
 }
 
+/**
+ * BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-01): the minimum a placement uses -- the higher of the owner's setting and the
+ * session's own, so a session (or its template) may only RAISE the owner's floor; a lower value is clamped, never refused.
+ * Either side may be absent (null).
+ */
+export function higherCudaVersion(owner: string | null, own: string | null): string | null {
+  if (owner === null) return own;
+  if (own === null) return owner;
+  return (compareCudaVersions(own, owner) ?? -1) > 0 ? own : owner;
+}
+
 /** True only when the host's version is known AND below the minimum: an unknown host never blocks a start. */
 export function hostCudaTooOld(host: string | null, minimum: string | null): boolean {
   if (host === null || minimum === null) return false;

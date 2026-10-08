@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { DomainError, MEDIA_MODEL_FOLDERS, type MediaModelReference, type MediaTemplateParameter } from "./contracts";
+import { DomainError, MEDIA_CUDA_VERSIONS, MEDIA_MODEL_FOLDERS, type MediaModelReference, type MediaTemplateParameter } from "./contracts";
 import { gpuPlanSchema, templateParameterSchema, workflowGraphSchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,9 @@ const templateFileSchema = z
     models: z.array(modelRefSchema).max(100),
     /** BL-133 (optional): the GPUs this template should run on, tried in order by a factory start that names it. */
     gpu: gpuPlanSchema.optional(),
+    /** BL-159 (optional): the lowest host CUDA version this template needs (a factory start that names it uses it, unless the
+     * call gives its own; it may only raise the owner's setting). A build without BL-159 marks such a file invalid. */
+    minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).optional(),
   })
   .strict();
 

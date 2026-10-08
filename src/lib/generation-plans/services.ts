@@ -114,7 +114,8 @@ export type PlanMediaPort = {
   getSession(sessionId: string): Promise<{ sessionId: string; status: string; channelId: string; requestedBy: string; planId: string | null } | null>;
   /** Sets the session's plan when it has none; `true` when it is (now) this plan's. */
   linkSession(sessionId: string, planId: string): Promise<boolean>;
-  validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean> }): Promise<{ parameterNames: string[] }>;
+  /** With `sessionId` (BL-159) it also refuses (`media_gpu_host_incompatible`) a template needing a newer host CUDA than that session's. */
+  validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean>; sessionId?: string }): Promise<{ parameterNames: string[] }>;
   /** The job's output files as recorded by the media core (`localPath` on this device). */
   getJobOutputs(jobId: string): Promise<Array<{ kind: string; localPath: string | null; filename: string }>>;
   createJob(input: {
@@ -420,14 +421,17 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   type PlannedJob = { item: PlanItem; seed: number | null; params: Record<string, string | number | boolean> };
 
   /** AC-GP-10: every job is checked (template, params, seed parameter) before the first is created; any failure refuses all. */
-  async function checkJobs(planned: PlannedJob[]): Promise<void> {
+  async function checkJobs(planned: PlannedJob[], sessionId: string): Promise<void> {
     const media = requireMedia();
     for (const job of planned) {
       if (!job.item.templateId) throw planMismatch(`Item ${job.item.itemKey} has no templateId`, { itemKey: job.item.itemKey });
       let checked: { parameterNames: string[] };
       try {
-        checked = await media.validateJobParams({ templateId: job.item.templateId, params: job.params });
+        checked = await media.validateJobParams({ templateId: job.item.templateId, params: job.params, sessionId });
       } catch (error) {
+        // BL-159 (AC-SC-04): a host too old for the template is the session's problem, not the plan's -- its own code, so the
+        // factory starts a session with the template's minimum instead of editing the plan.
+        if ((error as { code?: unknown }).code === "media_gpu_host_incompatible") throw error;
         const message = error instanceof Error ? error.message : String(error);
         throw planMismatch(`Item ${job.item.itemKey}: ${message}`, { itemKey: job.item.itemKey, templateId: job.item.templateId, cause: (error as { details?: unknown }).details ?? null });
       }
@@ -1056,7 +1060,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (planned.length > MAX_JOBS_PER_RUN) {
         throw planMismatch(`This run would create ${planned.length} jobs; at most ${MAX_JOBS_PER_RUN} per call -- run it per group or per item`, { planId: row.id, jobs: planned.length, max: MAX_JOBS_PER_RUN });
       }
-      await checkJobs(planned);
+      await checkJobs(planned, parsed.sessionId);
       const result = await createJobs(row, parsed.sessionId, stage.stageId, planned);
       await record(row.id, "stage_run", "factory", { sessionId: parsed.sessionId, created: result.created.length, ...(skipped.length > 0 ? { skipped } : {}), ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
       return { ...result, skipped };
@@ -1080,7 +1084,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const seed = parsed.seed ?? (item.seeds.length > 0 ? (item.seeds.find((s) => !used.has(s)) ?? null) : null);
       if (seed === null && item.seeds.length > 0) throw planMismatch(`Item ${item.itemKey} has no unused seed left; give a seed or add seeds`, { itemKey: item.itemKey });
       const planned: PlannedJob[] = [{ item, seed, params: withSeed(item, seed) }];
-      await checkJobs(planned);
+      await checkJobs(planned, parsed.sessionId);
       const result = await createJobs(row, parsed.sessionId, stage.stageId, planned);
       await record(row.id, "item_rerun", "factory", { sessionId: parsed.sessionId, itemKey: item.itemKey, seed, ...(result.stoppedAt ? { stoppedAt: result.stoppedAt } : {}) });
       return result;

@@ -205,7 +205,7 @@ function completed(outputs: Array<{ nodeId: string; kind: string; filename: stri
   return { promptId: "prompt-1", status: "completed", statusMessages: ["execution_success"], outputs: outputs.map((o) => ({ ...o, type: "output" })), raw: {} };
 }
 
-function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry } = {}) {
+function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<typeof fakeS3>; sessionRunning?: boolean; workspaceFails?: boolean; sentToYtm?: Map<string, { path: string; bytes: number }>; progress?: JobProgressRegistry; hostCudaVersion?: string | null } = {}) {
   const mem = memoryStore();
   const resolvedInputs: string[] = [];
   const comfy = opts.comfy ?? fakeComfy([null, completed([{ nodeId: "9", kind: "images", filename: "ComfyUI_00001_.png", subfolder: "job-1" }])]);
@@ -233,7 +233,7 @@ function fixture(opts: { comfy?: ReturnType<typeof fakeComfy>; s3?: ReturnType<t
     store: mem.store,
     ...(opts.progress ? { progress: opts.progress } : {}),
     sessions: {
-      getRunningSession: async (sessionId) => (opts.sessionRunning === false ? null : { sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69 }),
+      getRunningSession: async (sessionId) => (opts.sessionRunning === false ? null : { sessionId, channelId: "UC1", podId: "pod1", gpuTypeId: "RTX 4090", costPerHr: 0.69, hostCudaVersion: opts.hostCudaVersion ?? null }),
       comfyClientForSession: async () => comfy.client,
       touchActivity: async (sessionId) => {
         activity.push(sessionId);
@@ -1935,4 +1935,45 @@ test("BL-144 review: a dropped stream shows unavailable and is not reopened soon
   await f.runScheduled();
   assert.equal(seen[0], "unavailable");
   assert.equal(opens, 1, "within 15 s of the drop no new connection is attempted");
+});
+
+
+// -- BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-04; FO-REQ-0011 §2.5) ------------------------------------------------------
+// Expected from the plan: a job whose template needs a newer host CUDA than the session's KNOWN host is refused with
+// media_gpu_host_incompatible before anything is submitted; an unknown host, or a host at/above the minimum, is not refused.
+
+async function templateNeeding(f: ReturnType<typeof fixture>, minCudaVersion: string | null) {
+  const t = await importDefault(f.services);
+  // A registry template carries it (template-registry.test.ts); here it is set on the stored row directly.
+  const row = await f.mem.store.templates.get(t.templateId);
+  if (row) row.minCudaVersion = minCudaVersion;
+  return t;
+}
+
+test("AC-SC-04: a template needing CUDA 13.0 on a 12.9 host is refused before anything runs", async () => {
+  const f = fixture({ hostCudaVersion: "12.9" });
+  const t = await templateNeeding(f, "13.0");
+  await assert.rejects(
+    f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" }),
+    (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible" && /13\.0/.test(e.message) && /12\.9/.test(e.message)
+  );
+  assert.equal((await f.mem.store.jobs.list({})).length, 0, "no job created");
+  assert.equal(f.comfy.submits.length, 0, "nothing submitted to ComfyUI");
+});
+
+test("AC-SC-04: an unknown host, a host at the minimum, or a template without one is never refused", async () => {
+  for (const [host, needed] of [[null, "13.0"], ["13.0", "13.0"], ["12.4", null]] as const) {
+    const f = fixture({ hostCudaVersion: host });
+    const t = await templateNeeding(f, needed);
+    const job = await f.services.createJob({ sessionId: "s1", channelId: "UC1", templateId: t.templateId, params: { prompt: "a cat" }, createdBy: "agent" });
+    assert.equal(job.status, "submitted", `host ${host}, template ${needed}`);
+  }
+});
+
+test("AC-SC-04: validateJobParams with a session refuses the same way (what a plan run checks first); without one it only checks params", async () => {
+  const f = fixture({ hostCudaVersion: "12.8" });
+  const t = await templateNeeding(f, "13.0");
+  await assert.rejects(f.services.validateJobParams({ templateId: t.templateId, params: { prompt: "x" }, sessionId: "s1" }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const checked = await f.services.validateJobParams({ templateId: t.templateId, params: { prompt: "x" } });
+  assert.equal(checked.templateId, t.templateId);
 });

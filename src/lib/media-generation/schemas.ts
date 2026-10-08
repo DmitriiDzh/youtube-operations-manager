@@ -89,6 +89,8 @@ export const requestSessionInputSchema = z
     requestedBy: z.enum(["operator", "agent", "factory"]),
     /** BL-143 (ADR 0029): the generation plan this session works for; checked by the plans module before the request. */
     planId: z.string().min(2).max(80).optional(),
+    /** BL-159: the session's own minimum host CUDA version; it may only raise the owner's setting (applied at placement). */
+    minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).optional(),
   })
   .strict();
 

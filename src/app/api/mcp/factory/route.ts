@@ -101,10 +101,13 @@ function createToolDeps(): FactoryToolDeps {
           throw new DomainError({ code: "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED", message: "No connected channel with this id; outputs go to a connected channel's workspace.", details: { channelId: input.channelId } });
         }
         let gpu = input.gpu;
-        if (!gpu && input.templateId) {
+        // BL-159: the template's own minimum host CUDA (the call's, if given, wins in factoryStartSession).
+        let templateMinCudaVersion: string | null = null;
+        if (input.templateId) {
           const template = (await core.listWorkflowTemplates()).find((t) => t.templateId === input.templateId);
           if (!template) throw new DomainError({ code: "media_template_not_found", message: "No workflow template with this id", details: { templateId: input.templateId } });
-          gpu = template.gpu ?? undefined;
+          if (!gpu) gpu = template.gpu ?? undefined;
+          templateMinCudaVersion = template.minCudaVersion ?? null;
         }
         // BL-143: a session for a plan -- the plan must be active and of this channel.
         if (input.planId) await createGenerationPlansCore().checkSessionLink({ planId: input.planId, channelId: input.channelId });
@@ -115,6 +118,8 @@ function createToolDeps(): FactoryToolDeps {
           ...(input.maxUsd !== undefined ? { maxUsd: input.maxUsd } : {}),
           ...(gpu ? { gpu } : {}),
           ...(input.releaseWhenDone !== undefined ? { releaseWhenDone: input.releaseWhenDone } : {}),
+          ...(input.minCudaVersion ? { minCudaVersion: input.minCudaVersion } : {}),
+          templateMinCudaVersion,
         });
       },
       getSession: async ({ sessionId }) => {

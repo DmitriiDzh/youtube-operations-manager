@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_MEDIA_SETTINGS, MEDIA_CUDA_VERSIONS } from "./contracts";
-import { allowedCudaVersionsFor, comfyCudaDevice, compareCudaVersions, hostCudaTooOld, jobErrorCode, withJobErrorCode } from "./cuda-host";
+import { allowedCudaVersionsFor, comfyCudaDevice, compareCudaVersions, higherCudaVersion, hostCudaTooOld, jobErrorCode, withJobErrorCode } from "./cuda-host";
 
 // BL-155 (docs/roadmap/plans/CUDA_HOSTS_PLAN.md, AC-CU-01/02/04), written before the module. Expected values are stated by
 // hand from the plan and RunPod's documented list of CUDA versions (11.8, 12.0-12.9, 13.0; "the host driver's maximum").
@@ -67,4 +67,20 @@ test("AC-CU-04: the factory's job view adds errorCode next to the job's own fiel
   assert.deepEqual(withJobErrorCode(job), { ...job, errorCode: "media_gpu_host_incompatible" });
   assert.deepEqual(withJobErrorCode({ jobId: "j2", status: "done", error: null }), { jobId: "j2", status: "done", error: null, errorCode: null });
   assert.equal("errorCode" in job, false, "the input is not changed");
+});
+
+// ---- BL-159 (FO-REQ-0011; owner, msgs 2188-2189: the operator may only raise the minimum, the owner's value is the floor) ----
+
+test("AC-SC-01: a session's own minimum only raises the owner's -- the plan's examples", () => {
+  assert.equal(higherCudaVersion("12.8", "13.0"), "13.0", "owner 12.8, session 13.0 -> 13.0");
+  assert.equal(higherCudaVersion("12.8", "12.4"), "12.8", "owner 12.8, session 12.4 -> clamped to 12.8, not refused");
+  assert.equal(higherCudaVersion("12.8", null), "12.8", "no session value -> the owner's");
+  assert.equal(higherCudaVersion(null, "13.0"), "13.0", "no owner setting -> the session's alone");
+  assert.equal(higherCudaVersion(null, null), null, "neither -> no filter");
+  assert.equal(higherCudaVersion("12.8", "12.8"), "12.8");
+});
+
+test("AC-SC-01: the comparison is numeric (12.10 is above 12.9), never text order", () => {
+  assert.equal(higherCudaVersion("12.9", "12.10"), "12.10");
+  assert.equal(higherCudaVersion("12.10", "12.9"), "12.10");
 });

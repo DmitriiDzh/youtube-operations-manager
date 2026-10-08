@@ -25,6 +25,7 @@ import {
   type MediaWorkflowTemplate,
 } from "./contracts";
 import type { MediaControlEvent } from "./models";
+import { hostCudaTooOld } from "./cuda-host";
 import {
   adoptTemplateInputSchema,
   checkDeclaredModels,
@@ -76,6 +77,8 @@ export type StoredTemplateRow = {
   modelsJson?: string | null;
   /** Schema v64 (BL-133): a registry template's GPU plan. */
   gpuJson?: string | null;
+  /** Schema v71 (BL-159): the lowest host CUDA version a registry template needs. */
+  minCudaVersion?: string | null;
 };
 
 export type StoredJobRow = {
@@ -111,7 +114,7 @@ export type MediaJobStore = {
     list(): Promise<StoredTemplateRow[]>;
     delete(id: string): Promise<boolean>;
     /** BL-132: install/replace a registry template; `null` = the id belongs to an owner-imported (local) template. */
-    upsertFactory(row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null }): Promise<StoredTemplateRow | null>;
+    upsertFactory(row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null; minCudaVersion: string | null }): Promise<StoredTemplateRow | null>;
   };
   jobs: {
     insert(row: Omit<StoredJobRow, "createdAt"> & { createdAt?: Date }): Promise<StoredJobRow>;
@@ -145,7 +148,8 @@ export type JobServiceDependencies = {
   /** BL-144: live progress from ComfyUI's websocket while a job generates; absent = not watched (tests, CLI). */
   progress?: JobProgressRegistry;
   sessions: {
-    getRunningSession(sessionId: string): Promise<{ sessionId: string; channelId: string; podId: string | null; gpuTypeId: string | null; costPerHr: number | null } | null>;
+    /** `hostCudaVersion` (BL-159): the current pod's host CUDA; absent/null = unknown (never refuses). */
+    getRunningSession(sessionId: string): Promise<{ sessionId: string; channelId: string; podId: string | null; gpuTypeId: string | null; costPerHr: number | null; hostCudaVersion?: string | null } | null>;
     comfyClientForSession(sessionId: string): Promise<ComfyUiClient>;
     touchActivity(sessionId: string): Promise<void>;
   };
@@ -320,6 +324,7 @@ export function toPublicTemplate(row: StoredTemplateRow): MediaWorkflowTemplate 
     source: row.source ?? "owner",
     models: templateModels(row),
     gpu: row.gpuJson ? (JSON.parse(row.gpuJson) as MediaGpuPlan) : null,
+    minCudaVersion: row.minCudaVersion ?? null,
     parameters: JSON.parse(row.parametersJson) as MediaTemplateParameter[],
     outputNodeIds: shape.outputNodeIds,
     nodeCount: shape.nodeCount,
@@ -803,6 +808,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
           registrySha256: sha,
           modelsJson: JSON.stringify(parsed.template.models.map((m) => ({ folder: m.folder, file: m.file, sha256: m.sha256 ?? null }))),
           gpuJson: parsed.template.gpu ? JSON.stringify({ candidates: parsed.template.gpu.candidates, minVramGb: parsed.template.gpu.minVramGb ?? null, maxPricePerHr: parsed.template.gpu.maxPricePerHr ?? null }) : null,
+          minCudaVersion: parsed.template.minCudaVersion ?? null,
         });
         if (!written) {
           invalid("this id belongs to a template imported by hand on this device");
@@ -840,6 +846,21 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
     }
     // Remembered as the state AFTER this sync's own writes, so the next unchanged tick is skipped.
     return finish(dryRun ? "" : fingerprintOf(await deps.store.templates.list(), await adoptionsText()));
+  }
+
+  /**
+   * BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-04): a template that needs a newer host CUDA than the session's KNOWN host is refused
+   * before any GPU time is spent -- the job would fail on the GPU ("CUDA driver version is insufficient"). Unknown = allowed.
+   */
+  function assertHostFitsTemplate(session: { sessionId: string; hostCudaVersion?: string | null }, template: StoredTemplateRow): void {
+    const needed = template.minCudaVersion ?? null;
+    const host = session.hostCudaVersion ?? null;
+    if (!hostCudaTooOld(host, needed)) return;
+    throw new DomainError({
+      code: "media_gpu_host_incompatible",
+      message: `Template ${template.id} needs a host with CUDA ${needed} or newer; session ${session.sessionId} runs on a CUDA ${host} host. Start a session with minCudaVersion ${needed}.`,
+      details: { sessionId: session.sessionId, templateId: template.id, hostCudaVersion: host, minCudaVersion: needed },
+    });
   }
 
   async function requireTemplate(templateId: string): Promise<StoredTemplateRow> {
@@ -1487,6 +1508,7 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
         throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "The session belongs to another channel", details: { sessionId: parsed.sessionId } });
       }
       const template = await requireTemplate(parsed.templateId);
+      assertHostFitsTemplate(session, template);
       const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
       const values = resolveParams(parameters, parsed.params);
       // The outputs can only land in the channel's workspace folder, and only travel over the S3 API: without either,
@@ -1614,8 +1636,13 @@ export function createMediaJobServices(deps: JobServiceDependencies) {
      * BL-143: the template and parameter checks `createJob` makes, without creating anything -- so a plan run can check every
      * job before it creates the first. Returns the full value map (defaults filled in).
      */
-    async validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean> }): Promise<{ templateId: string; templateVersion: number; values: Record<string, string | number | boolean>; parameterNames: string[] }> {
+    /** `sessionId` (BL-159): also refuse a template that needs a newer host CUDA than that running session's known host. */
+    async validateJobParams(input: { templateId: string; params: Record<string, string | number | boolean>; sessionId?: string }): Promise<{ templateId: string; templateVersion: number; values: Record<string, string | number | boolean>; parameterNames: string[] }> {
       const template = await requireTemplate(input.templateId);
+      if (input.sessionId) {
+        const session = await deps.sessions.getRunningSession(input.sessionId);
+        if (session) assertHostFitsTemplate(session, template);
+      }
       const parameters = JSON.parse(template.parametersJson) as MediaTemplateParameter[];
       return { templateId: template.id, templateVersion: template.version, values: resolveParams(parameters, input.params), parameterNames: parameters.map((p) => p.name) };
     },
