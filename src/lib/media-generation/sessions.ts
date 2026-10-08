@@ -1013,7 +1013,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         }
       };
       const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
-      /** BL-159 (AC-SC-02): the host's CUDA on the session and on its latest `placed` capacity entry (best effort, never aborts). */
+      /** BL-159 (AC-SC-02): the host's CUDA on the session and on this placement's own `placed` capacity entry (best effort, never aborts). */
       const recordHostCuda = async (host: string): Promise<void> => {
         try {
           await deps.store.transition(sessionId, ["starting"], { status: "starting", hostCudaVersion: host });

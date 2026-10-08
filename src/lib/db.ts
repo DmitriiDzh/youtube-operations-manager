@@ -8109,7 +8109,11 @@ export async function insertMediaCapacityAttempt(
   database: AppDb = db
 ): Promise<number> {
   const [inserted] = await database.insert(mediaCapacityAttempts).values(row).returning({ id: mediaCapacityAttempts.id });
-  await database.delete(mediaCapacityAttempts).where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)));
+  // The prune is housekeeping: its failure must not hide the new row's id (BL-159 writes the host's CUDA onto it later).
+  await database
+    .delete(mediaCapacityAttempts)
+    .where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)))
+    .catch(() => undefined);
   return inserted.id;
 }
 

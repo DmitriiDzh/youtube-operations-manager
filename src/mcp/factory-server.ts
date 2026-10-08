@@ -529,7 +529,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_session",
     {
       description:
-        "One of YOUR sessions by sessionId ({ session }: status pending|approved|waiting_capacity|starting|running|stopping|done|failed|rejected|interrupted, approvedBy, gpuTypeId it got, costPerHr, capacity { attempts, nextAttemptAt, waitUntil }, usdCharged, error, minCudaVersion (the session's own, null = the owner's only), usedMinCudaVersion (the minimum its last placement used, null = no filter), hostCudaVersion (the current pod's host CUDA, null = not known yet) -- 1.9.0), or your recent sessions ({ sessions }). Sessions you did not start are not visible. Read-only.",
+        "One of YOUR sessions by sessionId ({ session }: status pending|approved|waiting_capacity|starting|running|stopping|done|failed|rejected|interrupted, approvedBy, gpuTypeId it got, costPerHr, capacity { attempts, nextAttemptAt, waitUntil }, usdCharged, error, minCudaVersion (the session's own, null = the owner's only), usedMinCudaVersion (the minimum its last placement attempt used; null = no filter, or none attempted yet -- the start's own answer may still show null), hostCudaVersion (the current pod's host CUDA, null = not known yet) -- 1.9.0), or your recent sessions ({ sessions }). Sessions you did not start are not visible. Read-only.",
       inputSchema: optionalSessionIdInput,
     },
     async (args) => successResult(await deps.media.getSession(parseInput(optionalSessionIdInput, args)))

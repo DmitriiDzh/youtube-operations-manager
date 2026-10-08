@@ -168,7 +168,8 @@ export type MediaSession = {
   gpuPlan: MediaGpuPlan | null;
   /** BL-159: the session's own minimum host CUDA version (from the start call, else its template); null = the owner's setting only. */
   minCudaVersion: string | null;
-  /** BL-159: the minimum the last placement used -- the higher of the owner's setting and the session's own; null = no filter. */
+  /** BL-159: the minimum the last placement attempt used -- the higher of the owner's setting and the session's own; null = no
+   * filter, or no placement attempted yet (a pending session; the immediate answer of a start). */
   usedMinCudaVersion: string | null;
   /** BL-159: the CUDA version of the current pod's host (RunPod: the highest CUDA its driver supports); null = not known yet. */
   hostCudaVersion: string | null;
