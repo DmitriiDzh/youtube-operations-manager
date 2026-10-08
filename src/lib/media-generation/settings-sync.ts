@@ -29,6 +29,7 @@ export const SHARED_SETTING_FIELDS = [
   "factoryMaxUsdPerDay",
   "factoryMaxUsdPerMonth",
   "ownerReleaseWhenDone",
+  "minCudaVersion",
 ] as const satisfies readonly (keyof MediaSettings)[];
 export type SharedSettingField = (typeof SHARED_SETTING_FIELDS)[number];
 

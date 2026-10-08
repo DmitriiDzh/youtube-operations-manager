@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { RUNPOD_DATACENTER_ID_PATTERN } from "@/lib/media-gateway";
-import { MAX_CONCURRENT_SESSIONS_RANGE } from "./contracts";
+import { MAX_CONCURRENT_SESSIONS_RANGE, MEDIA_CUDA_VERSIONS } from "./contracts";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 /** RunPod datacenter ids look like `EU-RO-1`, `EUR-IS-1`, `US-TX-3`. */
@@ -56,6 +56,8 @@ export const mediaSettingsSchema = z
     factoryMaxUsdPerDay: z.number().gt(0).max(10_000),
     factoryMaxUsdPerMonth: z.number().gt(0).max(100_000),
     ownerReleaseWhenDone: z.boolean(),
+    // BL-155: one of RunPod's known versions, or null = no filter.
+    minCudaVersion: z.enum(MEDIA_CUDA_VERSIONS).nullable(),
   })
   .strict();
 

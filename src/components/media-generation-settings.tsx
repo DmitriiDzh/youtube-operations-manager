@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   MAX_CONCURRENT_SESSIONS_RANGE,
+  MEDIA_CUDA_VERSIONS,
   NETWORK_VOLUME_USD_PER_GB_MONTH,
   type MediaCredentialsStatus,
   type MediaGenerationOverview,
@@ -2566,6 +2567,8 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
   const [maxPrice, setMaxPrice] = useState(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
   const [retrySeconds, setRetrySeconds] = useState(String(settings.capacityRetrySeconds));
   const [waitMinutes, setWaitMinutes] = useState(String(settings.capacityWaitMinutes));
+  // BL-155: "" = no filter (null); otherwise one of RunPod's known CUDA versions.
+  const [minCuda, setMinCuda] = useState(settings.minCudaVersion ?? "");
   const [busy, setBusy] = useState(false);
   // Re-read when the settings change (a save, or a value applied from the other computer), like the other Setup cards: a form
   // still showing the old value would send it back with the next save and undo the other computer's change (BL-150 review).
@@ -2576,7 +2579,8 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
     setMaxPrice(settings.gpuMaxPricePerHr === null ? "" : String(settings.gpuMaxPricePerHr));
     setRetrySeconds(String(settings.capacityRetrySeconds));
     setWaitMinutes(String(settings.capacityWaitMinutes));
-  }, [fallbackKey, settings.gpuMinVramGb, settings.gpuMaxPricePerHr, settings.capacityRetrySeconds, settings.capacityWaitMinutes]);
+    setMinCuda(settings.minCudaVersion ?? "");
+  }, [fallbackKey, settings.gpuMinVramGb, settings.gpuMaxPricePerHr, settings.capacityRetrySeconds, settings.capacityWaitMinutes, settings.minCudaVersion]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -2589,6 +2593,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
     const gpuMaxPricePerHr = maxPrice.trim() ? parseMoney(maxPrice) : null;
     const capacityRetrySeconds = parseInteger(retrySeconds, { min: 15, max: 3600 });
     const capacityWaitMinutes = parseInteger(waitMinutes, { min: 1, max: 1440 });
+    const minCudaVersion = MEDIA_CUDA_VERSIONS.find((v) => v === minCuda) ?? null;
     if ((minVram.trim() && gpuMinVramGb === null) || (maxPrice.trim() && gpuMaxPricePerHr === null) || capacityRetrySeconds === null || capacityWaitMinutes === null || gpuFallbackIds.length > 10) {
       setError(t("media.fallback.invalid"));
       return;
@@ -2600,7 +2605,7 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
       await requestJson("/api/media-generation/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(onlyChangedSettings({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes }, settings)),
+        body: JSON.stringify(onlyChangedSettings({ gpuFallbackIds, gpuMinVramGb, gpuMaxPricePerHr, capacityRetrySeconds, capacityWaitMinutes, minCudaVersion }, settings)),
       });
       setNotice(t("common.saved"));
       await onChanged();
@@ -2637,6 +2642,21 @@ export function GpuFallbackCard({ settings, onChanged }: { settings: Settings; o
         <label className="block text-xs text-zinc-400">
           {t("media.fallback.wait")}
           <input type="text" inputMode="numeric" value={waitMinutes} onChange={(e) => setWaitMinutes(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs text-zinc-400">
+          <span className="flex items-center gap-1">
+            {t("media.fallback.minCuda")}
+            <InfoTooltip>{t("media.fallback.minCudaHelp")}</InfoTooltip>
+          </span>
+          <select value={minCuda} onChange={(e) => setMinCuda(e.target.value)} className={inputClass}>
+            <option value="">{t("media.fallback.noCudaFilter")}</option>
+            {MEDIA_CUDA_VERSIONS.map((v) => (
+              <option key={v} value={v}>
+                {/* ui-text-ignore: a CUDA version number */}
+                {`CUDA ${v}`}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
       <button type="button" onClick={save} disabled={busy} className={primaryButton}>

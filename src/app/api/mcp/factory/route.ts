@@ -6,7 +6,7 @@ import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
-import { createMediaGenerationCore, DomainError } from "@/lib/media-generation";
+import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
 import { createFactoryMcpServer, type FactoryToolDeps } from "@/mcp/factory-server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Factory Operator session.
@@ -128,24 +128,25 @@ function createToolDeps(): FactoryToolDeps {
         // BL-143: a job that names a plan attempt -- all checked by the plans module before the job exists.
         if ((planId === undefined) !== (itemKey === undefined)) throw new DomainError({ code: "validation_failed", message: "Give planId and itemKey together (seed is optional)." });
         const plan = planId && itemKey ? await createGenerationPlansCore().checkJobLink({ planId, itemKey, seed: seed ?? null, sessionId, channelId: session.channelId }) : undefined;
-        return { job: await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) }) };
+        return { job: withJobErrorCode(await createMediaGenerationCore().createJob({ sessionId, channelId: session.channelId, templateId, params, createdBy: "factory", ...(plan ? { plan } : {}) })) };
       },
       getJob: async ({ jobId, sessionId }) => {
         const core = createMediaGenerationCore();
         if (jobId !== undefined) {
           const job = await core.getJob({ jobId });
           await factorySession(job.sessionId, () => new DomainError({ code: "media_job_not_found", message: "No job with this id", details: { jobId } }));
-          return { job };
+          // BL-155 (Factory API 1.7.0): errorCode derived from the job's error text.
+          return { job: withJobErrorCode(job) };
         }
         if (sessionId === undefined) throw new DomainError({ code: "validation_failed", message: "Give a jobId, or a sessionId to list its jobs." });
         await factorySession(sessionId);
-        return { jobs: await core.listJobs({ sessionId }) };
+        return { jobs: (await core.listJobs({ sessionId })).map(withJobErrorCode) };
       },
       cancelJob: async ({ jobId }) => {
         const core = createMediaGenerationCore();
         const job = await core.getJob({ jobId });
         await factorySession(job.sessionId, () => new DomainError({ code: "media_job_not_found", message: "No job with this id", details: { jobId } }));
-        return { job: await core.cancelJob({ jobId }) };
+        return { job: withJobErrorCode(await core.cancelJob({ jobId })) };
       },
       capacityLog: async ({ since, gpuTypeId, limit }) => ({
         attempts: await createMediaGenerationCore().listCapacityAttempts({ ...(since ? { since: new Date(since) } : {}), ...(gpuTypeId ? { gpuTypeId } : {}), ...(limit ? { limit } : {}) }),

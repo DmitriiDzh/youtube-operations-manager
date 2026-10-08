@@ -41,7 +41,11 @@ export async function terminateAndConfirm(
   }
 }
 
-/** A live (non-TERMINATED) pod of the account with exactly this name, or undefined (the gateway follows the cursor pagination). */
-export async function findLivePodByName(client: RunpodApiClient, name: string): Promise<RunpodPod | undefined> {
-  return (await client.listPods()).find((p) => p.name === name && p.status !== "TERMINATED");
+/**
+ * A live (non-TERMINATED) pod of the account with exactly this name, or undefined (the gateway follows the cursor pagination).
+ * `exclude`: pods the caller already terminated and confirmed gone (BL-155 re-placement) -- a listing lagging behind must never
+ * hand one back as "the pod an earlier attempt created".
+ */
+export async function findLivePodByName(client: RunpodApiClient, name: string, exclude: ReadonlySet<string> = new Set()): Promise<RunpodPod | undefined> {
+  return (await client.listPods()).find((p) => p.name === name && p.status !== "TERMINATED" && !exclude.has(p.id));
 }

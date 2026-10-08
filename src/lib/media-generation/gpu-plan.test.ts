@@ -77,3 +77,16 @@ test("review: a plan can only TIGHTEN the owner's price cap and VRAM floor, neve
   const bodyOnly = new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400.", details: { status: 400, body: { error: "This GPU and data center combination could not be placed", status: 400 } } });
   assert.equal(classifyCreatePodFailure(bodyOnly), "no_capacity");
 });
+
+// BL-155 (CUDA_HOSTS_PLAN.md AC-CU-01): with allowedCudaVersions a request no host can match is answered like no capacity.
+// RunPod's documented wording for that (v2 POST /pods, 400) must be read as no capacity -- and only a 400 with such a text.
+test("AC-CU-01: RunPod's 'no longer any instances available' answer (400) is no capacity; the same text on a 422 or 402 is not", () => {
+  const text = "There are no longer any instances available with the requested specifications. Please refresh and try again.";
+  const api = (status: number, message: string) => new DomainError({ code: "runpod_api_unavailable", message, details: { status } });
+  assert.equal(classifyCreatePodFailure(api(400, `RunPod API returned HTTP 400: ${text}`)), "no_capacity");
+  assert.equal(classifyCreatePodFailure(new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400.", details: { status: 400, body: { error: text } } })), "no_capacity", "text only in the body");
+  assert.equal(classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: This GPU and data center combination could not be placed.")), "no_capacity");
+  assert.equal(classifyCreatePodFailure(api(422, `RunPod API returned HTTP 422: ${text}`)), "fatal");
+  assert.equal(classifyCreatePodFailure(api(402, `RunPod API returned HTTP 402: ${text}`)), "fatal");
+  assert.equal(classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: allowedCudaVersions[0] must be one of 11.8, 12.0, ...")), "fatal", "a bad request is not capacity");
+});

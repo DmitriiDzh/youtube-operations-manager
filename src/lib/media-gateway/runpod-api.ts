@@ -265,7 +265,7 @@ export function createRunpodApiClient(args: {
     return { status: response.status, body: parsed };
   }
 
-  /** The one legacy-GraphQL read (balance). Errors arrive as HTTP 200 + `errors[]` too; both become DomainErrors. */
+  /** The legacy-GraphQL reads (balance, account id, a pod's host CUDA version). Errors arrive as HTTP 200 + `errors[]` too; both become DomainErrors. */
   async function graphql(query: string): Promise<Record<string, unknown>> {
     await authorize("runpod_api");
     const response = await jsonRequest({
@@ -300,6 +300,23 @@ export function createRunpodApiClient(args: {
     async getAccountId(): Promise<string | null> {
       try {
         return asString(asRecord((await graphql("query { myself { id } }")).myself).id);
+      } catch (error) {
+        if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
+        return null;
+      }
+    },
+
+    /**
+     * BL-155 (CUDA_HOSTS_PLAN.md AC-CU-02; graphql-spec.runpod.io): the CUDA version the pod's host driver supports, read over the
+     * legacy GraphQL API (`pod { machine { machineSystem { cudaVersion } } }`). `null` whenever it cannot be told -- an id that is
+     * not a plain RunPod id (never put into the query), a missing field, GraphQL errors, a timeout: an unknown host never blocks
+     * a start. A rejected key (401) is not degraded, like every other call.
+     */
+    async getPodHostCudaVersion(podId: string): Promise<string | null> {
+      if (!/^[a-z0-9]{6,32}$/i.test(podId)) return null;
+      try {
+        const pod = asRecord((await graphql(`query { pod(input: { podId: ${JSON.stringify(podId)} }) { machine { machineSystem { cudaVersion } } } }`)).pod);
+        return asString(asRecord(asRecord(pod.machine).machineSystem).cudaVersion) || null;
       } catch (error) {
         if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
         return null;

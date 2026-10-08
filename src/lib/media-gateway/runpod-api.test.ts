@@ -379,3 +379,37 @@ test("getAccountId reads myself.id over GraphQL; an unanswerable query is null; 
   const rejected = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401, body: {} })).fetchImpl });
   await assert.rejects(rejected.getAccountId());
 });
+
+// BL-155 (CUDA_HOSTS_PLAN.md AC-CU-02; graphql-spec.runpod.io): the host's CUDA version is `pod { machine { machineSystem {
+// cudaVersion } } }` over the legacy GraphQL API. A missing field or an unanswerable query is null (unknown never blocks a
+// start); a rejected key stays an error like every other call.
+test("BL-155: getPodHostCudaVersion reads pod.machine.machineSystem.cudaVersion; any shape problem is null", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { data: { pod: { machine: { machineSystem: { cudaVersion: "12.4" } } } } } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  assert.equal(await client.getPodHostCudaVersion("abc123xyz"), "12.4");
+  assert.equal(calls[0].url, "https://api.runpod.io/graphql");
+  assert.equal(calls[0].init.method, "POST");
+  const query = String((JSON.parse(String(calls[0].init.body)) as { query: string }).query);
+  assert.match(query, /pod\(input:\s*\{\s*podId:\s*"abc123xyz"\s*\}\)/);
+  assert.match(query, /machine\s*\{\s*machineSystem\s*\{\s*cudaVersion\s*\}\s*\}/);
+  for (const answer of [
+    { status: 200, body: { data: { pod: null } } },
+    { status: 200, body: { data: { pod: { machine: null } } } },
+    { status: 200, body: { data: { pod: { machine: { machineSystem: {} } } } } },
+    { status: 200, body: { data: { pod: { machine: { machineSystem: { cudaVersion: 12.4 } } } } } },
+    { status: 200, body: { errors: [{ message: "Something went wrong" }] } },
+    { status: 500, body: { message: "down" } },
+  ]) {
+    const c = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => answer).fetchImpl });
+    assert.equal(await c.getPodHostCudaVersion("abc123xyz"), null, JSON.stringify(answer));
+  }
+  const rejected = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl: fakeFetch(() => ({ status: 401, body: {} })).fetchImpl });
+  await assert.rejects(rejected.getPodHostCudaVersion("abc123xyz"), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid");
+});
+
+test("BL-155: a pod id that is not a plain RunPod id is never put into the GraphQL query", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { data: {} } }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  assert.equal(await client.getPodHostCudaVersion('x" } ) { myself { id } } #'), null);
+  assert.equal(calls.length, 0);
+});

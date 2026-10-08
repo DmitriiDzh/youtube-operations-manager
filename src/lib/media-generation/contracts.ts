@@ -80,7 +80,17 @@ export type MediaSettings = {
    * themselves one minute after their last job finished (BL-135 releaseWhenDone). Since DEV-MSG-0001 (owner 2026-10-07 msg 1939)
    * it is the default of EVERY request that omits the flag -- agents' and the factory's too; an explicit flag wins. */
   ownerReleaseWhenDone: boolean;
+  /**
+   * BL-155 (docs/roadmap/plans/CUDA_HOSTS_PLAN.md, FO-REQ-0007): the lowest host-driver CUDA version a session pod may land on
+   * (the template image is `...-cuda12.8`). Every createPod asks RunPod for `allowedCudaVersions` = the known versions at or
+   * above it, and the start checks the host before `running`. null = no filter (the behaviour before BL-155).
+   */
+  minCudaVersion: MediaCudaVersion | null;
 };
+
+/** BL-155: the CUDA versions RunPod's create-pod `allowedCudaVersions` accepts (docs.runpod.io POST /pods, 2026-10-08). */
+export const MEDIA_CUDA_VERSIONS = Object.freeze(["11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.7", "12.8", "12.9", "13.0"] as const);
+export type MediaCudaVersion = (typeof MEDIA_CUDA_VERSIONS)[number];
 
 export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   datacenterId: null,
@@ -105,6 +115,7 @@ export const DEFAULT_MEDIA_SETTINGS: MediaSettings = Object.freeze({
   factoryMaxUsdPerDay: 5,
   factoryMaxUsdPerMonth: 50,
   ownerReleaseWhenDone: true,
+  minCudaVersion: "12.8",
 });
 
 /** Bounds of `maxConcurrentSessions` (slice 6): at least one, at most four pods at a time. */
@@ -196,7 +207,8 @@ export type MediaFactorySettingsView = {
   /** The device-wide limits every session (owner's and factory's) is also held to. `spentTodayUsd` is THIS device's spend only
    * (a start also counts other devices on the same RunPod account, BL-138). */
   device: { maxUsdPerDay: number; spentTodayUsd: number; maxConcurrentSessions: number; idleMinutes: number };
-  gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType };
+  /** `minCudaVersion` since BL-155 (Factory API 1.7.0): the lowest host-driver CUDA a pod may land on; null = no filter. */
+  gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType; minCudaVersion: string | null };
   capacity: { retrySeconds: number; waitMinutes: number };
 };
 

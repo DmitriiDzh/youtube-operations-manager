@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { encryptSecret, decryptSecret } from "@/lib/shared-crypto";
 import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gateway";
-import { MEDIA_SESSION_ACTIVE_STATUSES, DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
+import { DomainError, MEDIA_SESSION_ACTIVE_STATUSES, DEFAULT_MEDIA_SETTINGS, isDomainError, type MediaSettings } from "./contracts";
 import { createMediaSessionServices, type MediaSessionStore, type StoredSessionRow } from "./sessions";
 import { createMemoryVolumeLockStore, createVolumeLock } from "./volume-lock";
 
@@ -101,8 +101,16 @@ function fakeRunpod(
     createThenLoseAnswer?: (input: { gpu?: { id: string } }) => boolean;
     /** BL-133 review: listPods answers [] for the first N calls (RunPod's listing lagging behind a just-created pod), then the truth. */
     listLagCalls?: number;
+    /** BL-155: the host CUDA version GraphQL reports for a pod (default 12.9, a compatible host); an Error = the read fails. */
+    hostCuda?: (podId: string) => string | null | Error;
+    /** BL-155 review: the pod's $/h by GPU type (default 0.69). */
+    podPrice?: (gpuId: string) => number;
+    /** BL-155 review 4: a RUNNING pod reports no runtime (image still downloading) for its first N RUNNING polls. */
+    uptimeAfterRunningPolls?: number;
   } = {}
 ) {
+  const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] } }> = [];
+  const runningPolls = new Map<string, number>();
   const names = new Map<string, { name: string; gpu: string }>();
   let listCalls = 0;
   const pods = new Map<string, PodState>();
@@ -120,14 +128,15 @@ function fakeRunpod(
     networkVolumeIds: ["vol-eu"],
     ports: null,
     // Like the live API: `RUNNING` + a runtime once the container is up; `containerNeverStarts` = RUNNING with no runtime.
-    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts ? 5 : null,
+    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts && (runningPolls.get(id) ?? 0) > (opts.uptimeAfterRunningPolls ?? 0) ? 5 : null,
     env: {},
     createdAt: null,
     startedAt: null,
     raw: {},
   });
   const client = {
-    async createPod(input: { env?: Record<string, string>; gpu?: { id: string } }) {
+    async createPod(input: { env?: Record<string, string>; gpu?: { id: string; allowedCudaVersions?: string[] } }) {
+      createInputs.push(input);
       calls.push(`createPod:${input.gpu?.id ?? ""}`);
       calls.push("createPod");
       // BL-133 changed what a failed createPod means: "no capacity" and 5xx now WAIT for capacity; only a fatal answer
@@ -142,7 +151,7 @@ function fakeRunpod(
       }
       created++;
       const id = `pod${created}`;
-      pods.set(id, { status: "PROVISIONING", costPerHr: 0.69 });
+      pods.set(id, { status: "PROVISIONING", costPerHr: opts.podPrice ? opts.podPrice(input.gpu?.id ?? "") : 0.69 });
       names.set(id, { name: (input as { name?: string }).name ?? "ytm", gpu: input.gpu?.id ?? "" });
       if (opts.createThenLoseAnswer?.(input)) throw new Error("RunPod API request failed: The operation was aborted due to timeout");
       calls.push(`env:${input.env?.COMFY_TOKEN ?? ""}`);
@@ -156,6 +165,7 @@ function fakeRunpod(
         polls++;
         if (polls >= (opts.runningAfterPolls ?? 1)) state.status = "RUNNING";
       }
+      if (state.status === "RUNNING") runningPolls.set(id, (runningPolls.get(id) ?? 0) + 1);
       return pod(id);
     },
     async terminatePod(id: string) {
@@ -166,6 +176,12 @@ function fakeRunpod(
       const existed = pods.delete(id);
       return { terminated: true as const, alreadyGone: !existed };
     },
+    async getPodHostCudaVersion(id: string) {
+      calls.push(`hostCuda:${id}`);
+      const answer = opts.hostCuda ? opts.hostCuda(id) : "12.9";
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
     async listPods() {
       listCalls++;
       if (opts.listLagCalls === undefined || listCalls <= opts.listLagCalls) return [];
@@ -174,10 +190,13 @@ function fakeRunpod(
         .map(([id]) => ({ ...pod(id), name: names.get(id)?.name ?? "ytm", gpuTypeId: names.get(id)?.gpu ?? "NVIDIA GeForce RTX 4090" }));
     },
   } as unknown as RunpodApiClient;
-  return { client, calls, pods, setStatus: (id: string, status: string) => pods.set(id, { ...(pods.get(id) ?? { costPerHr: 0.69 }), status }) };
+  return { client, calls, pods, createInputs, setStatus: (id: string, status: string) => pods.set(id, { ...(pods.get(id) ?? { costPerHr: 0.69 }), status }) };
 }
 
-function fakeComfy(opts: { readyAfter?: number; never?: boolean } = {}) {
+/** ComfyUI's documented `/system_stats` shape on a GPU host (BL-155 checks for a `cuda` device with VRAM). */
+const CUDA_STATS = { system: { os: "posix", python_version: "3.12" }, devices: [{ name: "cuda:0 NVIDIA GeForce RTX 4090 : cudaMallocAsync", type: "cuda", index: 0, vram_total: 25_386_352_640, vram_free: 24_000_000_000 }] };
+
+function fakeComfy(opts: { readyAfter?: number; never?: boolean; stats?: (baseUrl: string) => Record<string, unknown> } = {}) {
   let attempts = 0;
   const created: Array<{ baseUrl: string; token: string }> = [];
   const factory = (args: { baseUrl: string; token: string }) => {
@@ -189,7 +208,7 @@ function fakeComfy(opts: { readyAfter?: number; never?: boolean } = {}) {
           const { DomainError } = await import("./contracts");
           throw new DomainError({ code: "comfyui_unavailable", message: "ComfyUI returned HTTP 502" });
         }
-        return { ok: true };
+        return opts.stats ? opts.stats(args.baseUrl) : CUDA_STATS;
       },
     } as unknown as ComfyUiClient;
   };
@@ -202,8 +221,10 @@ function fixture(opts: {
   runpod?: ReturnType<typeof fakeRunpod>;
   comfy?: ReturnType<typeof fakeComfy>;
   now?: Date;
-  jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; lastFinishedAt: Date | null }>;
+  jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
   accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
+  /** BL-155 review 3: the proxy URL builder (default: a fixed test host). */
+  proxyUrl?: (podId: string, port: number) => string;
 } = {}) {
   const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
   const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
@@ -228,7 +249,7 @@ function fixture(opts: {
       openSecret: async (payload) => decryptSecret(payload, KEY),
     },
     createComfyClient: comfy.factory,
-    comfyUiProxyBaseUrl: (podId, port) => `https://${podId}-${port}.example.test`,
+    comfyUiProxyBaseUrl: opts.proxyUrl ?? ((podId, port) => `https://${podId}-${port}.example.test`),
     generateId: () => `session-${++idCounter}`,
     generateToken: () => "tok-abc",
     clock: { now: () => now },
@@ -1633,7 +1654,7 @@ test("BL-135: another channel's session is not found, a finished one is refused,
 });
 
 test("BL-135: with releaseWhenDone the watcher stops the pod one minute after the last job finished -- never while a job is open, never without a job", async () => {
-  let summary = { total: 0, open: 0, lastFinishedAt: null as Date | null };
+  let summary = { total: 0, open: 0, failed: 0, lastFinishedAt: null as Date | null };
   const f = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
   const pending = await f.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
   assert.equal(pending.releaseWhenDone, true);
@@ -1641,10 +1662,10 @@ test("BL-135: with releaseWhenDone the watcher stops the pod one minute after th
   await started;
   f.advance(5 * 60_000);
   assert.equal((await tick1(f.services)).action, "none", "no job yet: keep waiting for the first one");
-  summary = { total: 1, open: 1, lastFinishedAt: null };
+  summary = { total: 1, open: 1, failed: 0, lastFinishedAt: null };
   f.advance(5 * 60_000);
   assert.equal((await tick1(f.services)).action, "none", "a job is running");
-  summary = { total: 1, open: 0, lastFinishedAt: f.getNow() };
+  summary = { total: 1, open: 0, failed: 0, lastFinishedAt: f.getNow() };
   f.advance(59_000);
   assert.equal((await tick1(f.services)).action, "none", "inside the minute");
   f.advance(2_000);
@@ -1657,7 +1678,7 @@ test("BL-135: with releaseWhenDone the watcher stops the pod one minute after th
 });
 
 test("BL-135: activity after the last finish (a new job being submitted) restarts the minute; a session without the flag is not released", async () => {
-  const summary = { total: 2, open: 0, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
+  const summary = { total: 2, open: 0, failed: 0, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
   const flagged = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
   const p = await flagged.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
   await (await flagged.services.approveSession({ sessionId: p.sessionId })).started;
@@ -1938,6 +1959,7 @@ test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choi
   assert.equal(before.gpu.gpuTypeId, FOUR);
   assert.equal(before.gpu.minVramGb, 24);
   assert.equal(before.gpu.maxPricePerHr, 1.2);
+  assert.equal(before.gpu.minCudaVersion, "12.8", "BL-155: the owner's minimum CUDA (default 12.8) is part of the factory's settings read");
   assert.deepEqual(before.capacity, { retrySeconds: 30, waitMinutes: 20 });
   assert.deepEqual({ maxUsdPerDay: before.device.maxUsdPerDay, maxConcurrentSessions: before.device.maxConcurrentSessions, idleMinutes: before.device.idleMinutes }, { maxUsdPerDay: 10, maxConcurrentSessions: 3, idleMinutes: 10 });
 
@@ -1949,4 +1971,445 @@ test("FO-REQ-0005: getFactorySettings shows the switch, the limits, the GPU choi
   const after = await f.services.getFactorySettings();
   assert.deepEqual(after.spentOrReservedUsd, { today: 2, thisMonth: 2 });
   assert.doesNotMatch(JSON.stringify(after), /apiKey|secret|token|password/i);
+});
+
+// -- BL-155 (docs/roadmap/plans/CUDA_HOSTS_PLAN.md, AC-CU-01/02/03; FO-REQ-0007) ----------------------------------------
+// Expected from the plan, written before the code: every pod creation asks RunPod for hosts whose driver supports CUDA ≥ the
+// minimum (12.8 by default -> 12.8, 12.9, 13.0); after RUNNING the host's CUDA is read and ComfyUI must report a cuda device
+// with VRAM; a mismatch terminates the pod, logs `error` with the reason and places again (at most 2 extra placements), then
+// the session fails with media_gpu_host_incompatible. An unknown host version does not block. With release-when-done, a
+// session whose every job failed says so in its stopReason.
+
+test("AC-CU-01: every createPod carries gpu.allowedCudaVersions = the known versions ≥ the minimum (12.8 -> 12.8/12.9/13.0)", async () => {
+  const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => input.gpu?.id === FOUR }) });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.deepEqual(
+    f.runpod.createInputs.map((i) => [i.gpu?.id, i.gpu?.allowedCudaVersions]),
+    [
+      [FOUR, ["12.8", "12.9", "13.0"]],
+      [FIVE, ["12.8", "12.9", "13.0"]],
+    ]
+  );
+});
+
+test("AC-CU-01: with no minimum (null) createPod sends no CUDA filter -- today's behaviour", async () => {
+  const f = fixture({ settings: { minCudaVersion: null } });
+  await startRunning(f);
+  assert.equal(f.runpod.createInputs.length, 1);
+  assert.equal("allowedCudaVersions" in (f.runpod.createInputs[0].gpu ?? {}), false);
+  assert.equal(f.runpod.calls.some((c) => c.startsWith("hostCuda:")), false, "no minimum = no host read");
+});
+
+test("AC-CU-01: no host with a matching driver is answered like no capacity -- the fallback list, then waiting_capacity (no pod)", async () => {
+  const f = fixture({ settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] }, runpod: fakeRunpod({ capacity: (input) => Boolean((input as { gpu?: { allowedCudaVersions?: string[] } }).gpu?.allowedCudaVersions) }) });
+  const waiting = await startRunning(f);
+  assert.equal(waiting.status, "waiting_capacity");
+  assert.equal(waiting.podId, null);
+  assert.deepEqual(f.capacityLog.map((a) => [a.gpuTypeId, a.result]), [[FOUR, "no_capacity"], [FIVE, "no_capacity"]]);
+});
+
+test("AC-CU-02: a host whose CUDA is below the minimum -> pod terminated, capacity log `error` with the reason, a new placement runs", async () => {
+  const runpod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.equal(runpod.pods.has("pod1"), false, "the old-driver pod is gone");
+  assert.deepEqual(
+    f.capacityLog.map((a) => [a.gpuTypeId, a.result, a.detail]),
+    [
+      [FOUR, "placed", null],
+      [FOUR, "error", "CUDA driver too old: host 12.4 < 12.8"],
+      [FOUR, "placed", null],
+    ]
+  );
+  // pod1 is confirmed gone BEFORE pod2 is created (never two pods of one session at once).
+  const creates = runpod.calls.map((c, i) => [c, i] as const).filter(([c]) => c.startsWith("createPod:"));
+  assert.ok(runpod.calls.indexOf("terminate:pod1") < creates[1][1]);
+  // The session is billed from the first pod's creation (nothing of pod1's time is dropped).
+  assert.equal(running.startedAt, "2026-10-05T10:00:00.000Z");
+  assert.equal(running.error, null);
+});
+
+test("AC-CU-02: ComfyUI reporting no cuda device -> 'no CUDA device', terminated, placed again", async () => {
+  const comfy = fakeComfy({ stats: (baseUrl) => (baseUrl.includes("pod1-") ? { system: {}, devices: [{ name: "cpu", type: "cpu", index: null, vram_total: 0 }] } : CUDA_STATS) });
+  const runpod = fakeRunpod();
+  const f = fixture({ runpod, comfy, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.equal(runpod.pods.has("pod1"), false);
+  assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "no CUDA device"], ["placed", null]]);
+});
+
+test("AC-CU-02: three incompatible hosts (the first + 2 extra placements) -> failed with media_gpu_host_incompatible, every pod gone", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", runningAfterPolls: 3 });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^media_gpu_host_incompatible: .*CUDA driver too old: host 12\.4 < 12\.8/);
+  assert.equal(runpod.pods.size, 0, "no pod left behind");
+  assert.equal(runpod.createInputs.length, 3, "1 + at most 2 extra placements");
+  assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed", "error", "placed", "error", "placed", "error"]);
+  // Billed from pod1's creation (10:00:00) to the last confirmed termination: pod1 reached RUNNING after two 5 s polls, the
+  // later pods at once (the fake's poll counter is shared), so 10 s in all.
+  assert.equal(row.startedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.secondsUsed, 10);
+});
+
+test("AC-CU-02: an unknown host CUDA version (the read failed or answered nothing) does not block the start", async () => {
+  for (const hostCuda of [() => new Error("RunPod GraphQL returned errors"), () => null]) {
+    const runpod = fakeRunpod({ hostCuda });
+    const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+    const running = await startRunning(f);
+    assert.equal(running.status, "running");
+    assert.equal(running.podId, "pod1");
+    assert.equal(runpod.createInputs.length, 1);
+    assert.deepEqual(f.capacityLog.map((a) => a.result), ["placed"]);
+  }
+});
+
+test("AC-CU-02: when the incompatible pod's termination cannot be confirmed, no second pod is created -- the session stays stopping for the watcher", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", terminateSticks: true });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod1");
+  assert.equal(row.stoppingOutcome, "failed");
+  assert.equal(runpod.createInputs.length, 1, "never a second pod next to one that may still bill");
+});
+
+test("AC-CU-03: release-when-done of a session whose every job failed says 'all jobs failed'; a mixed one keeps today's text", async () => {
+  for (const [failed, expected] of [
+    [3, "all jobs failed (release when done)"],
+    [2, "released after last job (1 min after the last job finished)"],
+  ] as const) {
+    const summary = { total: 3, open: 0, failed, lastFinishedAt: new Date("2026-10-05T09:00:00Z") };
+    const f = fixture({ settings: { idleMinutes: 1000 }, jobSummary: async () => summary });
+    const p = await f.services.requestSession({ ...operatorRequest, maxMinutes: 600, releaseWhenDone: true });
+    await (await f.services.approveSession({ sessionId: p.sessionId })).started;
+    f.advance(61_000);
+    const tick = await tick1(f.services);
+    assert.equal(tick.action, "stopped");
+    assert.equal(tick.reason, expected);
+    assert.equal(f.mem.rows.get(p.sessionId)?.stopReason, expected);
+  }
+});
+
+// -- BL-155 independent review round 1 -------------------------------------------------------------------------------------
+// Expected: one billing window per start spans every placement, so it is priced at the DEAREST pod it held (never the last,
+// cheaper one); a crash-reconcile keeps the window's earlier start and price; a start is bounded by maxMinutes like a running
+// session; a rejected RunPod key during the host read ends the start (the pod terminated) instead of being taken as "unknown".
+
+test("BL-155 review: after a re-placement on a cheaper GPU the session keeps the dearer price -- running and failed alike", async () => {
+  const price = (id: string) => (id === FOUR ? 2.0 : 0.5);
+  // FOUR ($2.0/h) lands on an old host and has no capacity afterwards; FIVE ($0.5/h) is placed instead.
+  let fourPlaced = 0;
+  const capacity = (input: { gpu?: { id: string } }) => input.gpu?.id === FOUR && fourPlaced++ > 0;
+  const ok = fixture({ runpod: fakeRunpod({ podPrice: price, capacity, hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") }), settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const running = await startRunning(ok);
+  assert.equal(running.status, "running");
+  assert.equal(running.gpuTypeId, FIVE);
+  assert.equal(running.costPerHr, 2.0);
+
+  fourPlaced = 0;
+  const bad = fixture({ runpod: fakeRunpod({ podPrice: price, capacity, hostCuda: () => "12.4" }), settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const requested = await bad.services.requestSession(operatorRequest);
+  await assert.rejects(bad.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = bad.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.costPerHr, 2.0, "the last pod was $0.5/h, but the window also held the $2.0/h pod");
+
+  fourPlaced = 0;
+  const sticky = fixture({ runpod: fakeRunpod({ podPrice: price, capacity, hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.0") }), settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  // The second (cheaper) pod's terminate cannot be confirmed: the `stopping` row still carries the dearer price.
+  const stickyReq = await sticky.services.requestSession(operatorRequest);
+  const terminate = sticky.runpod.client.terminatePod.bind(sticky.runpod.client);
+  (sticky.runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => (id === "pod1" ? terminate(id) : { terminated: true, alreadyGone: false });
+  await assert.rejects(sticky.services.approveAndStartSession({ sessionId: stickyReq.sessionId }));
+  const stopping = sticky.mem.rows.get(stickyReq.sessionId)!;
+  assert.equal(stopping.status, "stopping");
+  assert.equal(stopping.podId, "pod2");
+  assert.equal(stopping.costPerHr, 2.0);
+});
+
+test("BL-155 review: a crash-reconciled approved row (mid re-placement) keeps its earlier start and dearer price when the orphan pod is found", async () => {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const name = `ytm-media-${requested.sessionId.slice(0, 8)}`;
+  const pod = await f.runpod.client.createPod({ name, env: {} } as never);
+  const firstPodAt = new Date("2026-10-05T09:50:00Z");
+  // The row as a re-placement leaves it: back to `approved`, the window open since the first pod at $2.0/h; the new pod
+  // ($0.69/h) was created at 10:00 just before the process died.
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "approved", approvedAt: f.getNow(), startedAt: firstPodAt, costPerHr: 2.0, podId: null });
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ ...pod, name, status: "RUNNING", createdAt: "2026-10-05T10:00:00Z" }];
+  await f.services.bootSweep();
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "interrupted", "AC-P14-08: what a dead process left is interrupted at boot");
+  assert.equal(row.podId, "pod1");
+  assert.equal(row.startedAt?.toISOString(), "2026-10-05T09:50:00.000Z", "min(window start, orphan creation)");
+  assert.equal(row.costPerHr, 2.0, "max(window price, orphan price)");
+  // 10 min at $2.0/h, billed to the boot sweep (10:00): 600 s.
+  assert.equal(row.secondsUsed, 600);
+  assert.equal(row.usdCharged, 0.33);
+});
+
+test("BL-155 review: the watcher stops a session still starting once maxMinutes have passed since its first pod", async () => {
+  const f = fixture({ settings: { idleMinutes: 1000, maxUsdPerDay: 1000 } });
+  const requested = await f.services.requestSession({ ...operatorRequest, maxMinutes: 60 });
+  const pod = await f.runpod.client.createPod({ name: "x", env: {} } as never);
+  // A start on its third placement: the window opened 61 min ago, the current placement 1 min ago (not abandoned).
+  f.mem.rows.set(requested.sessionId, { ...f.mem.rows.get(requested.sessionId)!, status: "starting", podId: pod.id, startedAt: new Date(f.getNow().getTime() - 61 * 60_000), approvedAt: new Date(f.getNow().getTime() - 60_000), costPerHr: 0.01 });
+  const tick = await tick1(f.services);
+  assert.equal(tick.action, "stopped");
+  assert.equal(tick.reason, "max minutes reached (60) while starting");
+  assert.equal(f.runpod.pods.has(pod.id), false);
+
+  // Under the limit: nothing happens.
+  const g = fixture({ settings: { idleMinutes: 1000, maxUsdPerDay: 1000 } });
+  const r2 = await g.services.requestSession({ ...operatorRequest, maxMinutes: 60 });
+  const p2 = await g.runpod.client.createPod({ name: "y", env: {} } as never);
+  g.mem.rows.set(r2.sessionId, { ...g.mem.rows.get(r2.sessionId)!, status: "starting", podId: p2.id, startedAt: new Date(g.getNow().getTime() - 59 * 60_000), approvedAt: new Date(g.getNow().getTime() - 60_000), costPerHr: 0.01 });
+  assert.equal((await tick1(g.services)).action, "none");
+});
+
+test("BL-155 review: each re-placement's `starting` row restarts approvedAt at that placement (the abandoned-start clock)", async () => {
+  const runpod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8"), runningAfterPolls: 3 });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.podId, "pod2");
+  // pod1 reached RUNNING after two 5 s polls (10:00:10) and was replaced then; pod2 was placed at 10:00:10.
+  assert.equal(running.startedAt, "2026-10-05T10:00:00.000Z");
+  assert.equal(running.approvedAt, "2026-10-05T10:00:10.000Z");
+});
+
+test("BL-155 review: a rejected RunPod key during the host read is not 'unknown' -- the start ends and the pod is terminated", async () => {
+  const runpod = fakeRunpod({ hostCuda: () => new DomainError({ code: "media_credentials_invalid", message: "RunPod rejected the API key (HTTP 401)." }) });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /rejected the API key/);
+  assert.equal(runpod.pods.size, 0);
+  assert.equal(runpod.createInputs.length, 1);
+});
+
+// -- BL-155 independent review round 2 -------------------------------------------------------------------------------------
+// Expected: a row left `approved` by a re-placement (window open since the first pod, no live pod recorded) that is reconciled
+// with no orphan found bills to the last confirmed DELETE of its earlier pod (else its last sighting) -- never to the moment
+// of the reconcile, which may be hours later (the machine was off, RunPod was down).
+test("BL-155 review 2: a re-placement row reconciled with no pod found is billed to the last terminate (or sighting), not to now", async () => {
+  for (const [terminateSentAt, expectedStop, expectedSeconds] of [
+    [new Date("2026-10-05T09:10:30Z"), "2026-10-05T09:10:30.000Z", 630],
+    [null, "2026-10-05T09:10:00.000Z", 600],
+  ] as const) {
+    const f = fixture();
+    const requested = await f.services.requestSession(operatorRequest);
+    f.mem.rows.set(requested.sessionId, {
+      ...f.mem.rows.get(requested.sessionId)!,
+      status: "approved",
+      approvedAt: new Date("2026-10-05T09:10:30Z"),
+      startedAt: new Date("2026-10-05T09:00:00Z"),
+      lastSeenAliveAt: new Date("2026-10-05T09:10:00Z"),
+      terminateSentAt,
+      costPerHr: 2.0,
+      podId: null,
+    });
+    f.advance(5 * 60 * 60_000); // the machine was off for five hours
+    await f.services.bootSweep();
+    const row = f.mem.rows.get(requested.sessionId)!;
+    assert.equal(row.status, "interrupted");
+    assert.equal(row.stoppedAt?.toISOString(), expectedStop);
+    assert.equal(row.secondsUsed, expectedSeconds);
+  }
+});
+
+test("BL-155 review 2: the re-placement's next pod starts with no stale terminateSentAt from the pod it replaced", async () => {
+  const runpod = fakeRunpod({ hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.podId, "pod2");
+  assert.equal(f.mem.rows.get(running.sessionId)?.terminateSentAt, null);
+});
+
+// -- BL-155 independent review round 3 -------------------------------------------------------------------------------------
+// Expected: a row that carries the REPLACED pod's DELETE time (kept through a re-placement for the crash case) must never bill a
+// NEW pod's window to that old time. Wherever a new pod's facts are put on the row, the old DELETE time goes with them, and the
+// new pod counts as seen alive when it was found / created -- so a later "already gone" closes the window no earlier than that.
+
+async function replacementRowWithOrphan(terminateFirst: "throws" | "gone") {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const name = `ytm-media-${requested.sessionId.slice(0, 8)}`;
+  const pod = await f.runpod.client.createPod({ name, env: {} } as never);
+  // Left by a re-placement + crash: window open since 09:00, pod1 DELETEd at 09:10:30 (T1); P2 created at 09:20, found at boot (10:00).
+  f.mem.rows.set(requested.sessionId, {
+    ...f.mem.rows.get(requested.sessionId)!,
+    status: "approved",
+    approvedAt: new Date("2026-10-05T09:10:30Z"),
+    startedAt: new Date("2026-10-05T09:00:00Z"),
+    lastSeenAliveAt: new Date("2026-10-05T09:10:00Z"),
+    terminateSentAt: new Date("2026-10-05T09:10:30Z"),
+    costPerHr: 0.69,
+    podId: null,
+  });
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ ...pod, name, status: "RUNNING", createdAt: "2026-10-05T09:20:00Z" }];
+  const terminate = f.runpod.client.terminatePod.bind(f.runpod.client);
+  let calls = 0;
+  (f.runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => {
+    calls++;
+    if (calls === 1 && terminateFirst === "throws") throw new Error("RunPod API request failed: timeout");
+    if (terminateFirst === "gone") {
+      f.runpod.pods.delete(id); // RunPod already lost it: a 404
+      return { terminated: true, alreadyGone: true };
+    }
+    return terminate(id);
+  };
+  return { f, sessionId: requested.sessionId, podId: pod.id };
+}
+
+test("BL-155 review 3: an orphan of a re-placement row whose first terminate fails, then is found gone, is billed past its creation -- never to the replaced pod's DELETE", async () => {
+  const { f, sessionId, podId } = await replacementRowWithOrphan("throws");
+  await f.services.bootSweep();
+  let row = f.mem.rows.get(sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, podId);
+  assert.equal(row.terminateSentAt, null, "the replaced pod's DELETE time does not describe this pod");
+  // Later the pod is gone on its own (404): the window closes at its last sighting -- the boot listing at 10:00.
+  f.runpod.pods.delete(podId);
+  f.advance(30 * 60_000);
+  await tick1(f.services);
+  row = f.mem.rows.get(sessionId)!;
+  assert.equal(row.status, "interrupted");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.ok(row.stoppedAt! >= new Date("2026-10-05T09:20:00Z"));
+});
+
+test("BL-155 review 3: the same orphan found already gone in a single pass (404) is billed to its sighting at boot, not to the old DELETE", async () => {
+  const { f, sessionId } = await replacementRowWithOrphan("gone");
+  await f.services.bootSweep();
+  const row = f.mem.rows.get(sessionId)!;
+  assert.equal(row.status, "interrupted");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.secondsUsed, 3600);
+});
+
+test("BL-155 review 3: a re-placement pod aborted before its `starting` write, terminate unconfirmed, is never billed to the replaced pod's DELETE", async () => {
+  // pod1 (old host) is DELETEd at 10:00:10 (T1); its gone-confirmation takes a minute, so pod2 is placed at 10:01:10.
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", runningAfterPolls: 3 });
+  const f = fixture({
+    runpod,
+    settings: { gpuTypeId: FOUR },
+    proxyUrl: (podId, port) => {
+      if (podId === "pod2") throw new Error("database is locked");
+      return `https://${podId}-${port}.example.test`;
+    },
+  });
+  const getPod = runpod.client.getPod.bind(runpod.client);
+  let slowConfirm = true;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    if (id === "pod1" && !runpod.pods.has("pod1") && slowConfirm) {
+      slowConfirm = false;
+      f.advance(60_000);
+    }
+    return getPod(id);
+  };
+  const terminate = runpod.client.terminatePod.bind(runpod.client);
+  (runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => {
+    if (id === "pod2") throw new Error("RunPod API request failed: timeout");
+    return terminate(id);
+  };
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  let row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod2");
+  assert.equal(row.terminateSentAt, null);
+  // The retry finds pod2 already gone: closed at its creation (its only sighting), not at pod1's DELETE (10:00:10).
+  runpod.pods.delete("pod2");
+  (runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = terminate;
+  f.advance(10 * 60_000);
+  await tick1(f.services);
+  row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:01:10.000Z");
+});
+
+// -- BL-155 independent review round 4 -------------------------------------------------------------------------------------
+// Expected (AC-CU-02): an unknown host version does not block -- but "unknown" is decided only once the container is up; until
+// then a failed or empty read is asked again on the next poll. A re-placement that cannot create a new pod ends the session
+// (never a wait), billed from the first pod's creation to the confirmed terminate of the last one.
+
+test("BL-155 review 4: a host CUDA read that fails while the image downloads is asked again; a later 12.4 still terminates and re-places", async () => {
+  let pod1Reads = 0;
+  const runpod = fakeRunpod({
+    uptimeAfterRunningPolls: 2,
+    hostCuda: (podId) => {
+      if (podId !== "pod1") return "12.8";
+      pod1Reads++;
+      return pod1Reads === 1 ? new Error("RunPod GraphQL request failed: timeout") : pod1Reads === 2 ? null : "12.4";
+    },
+  });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.equal(pod1Reads, 3);
+  assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "CUDA driver too old: host 12.4 < 12.8"], ["placed", null]]);
+});
+
+test("BL-155 review 4: a host version still unknown once the container is up is unknown -- the start continues and stops asking", async () => {
+  const runpod = fakeRunpod({ uptimeAfterRunningPolls: 2, hostCuda: () => null });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod1");
+  // RUNNING without runtime twice, then with runtime: three reads, the last one at the poll the container came up.
+  assert.equal(runpod.calls.filter((c) => c === "hostCuda:pod1").length, 3);
+});
+
+async function replacementThatCannotCreate(second: "no_capacity" | "fatal") {
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", runningAfterPolls: 3 });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const create = runpod.client.createPod.bind(runpod.client);
+  let creates = 0;
+  (runpod.client as { createPod: (input: unknown) => Promise<unknown> }).createPod = async (input: unknown) => {
+    if (++creates === 1) return create(input as never);
+    f.advance(60_000); // each refused create takes a minute: "now" moves past the confirmed terminate
+    throw second === "no_capacity"
+      ? new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400: There are no longer any instances available with the requested specifications. Please refresh and try again.", details: { status: 400 } })
+      : new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 402: insufficient balance", details: { status: 402 } });
+  };
+  const requested = await f.services.requestSession(operatorRequest);
+  return { f, runpod, requested };
+}
+
+test("BL-155 review 4: after an incompatible host, no capacity for every candidate ends the session failed (media_gpu_host_incompatible), never waiting; billed to the confirmed terminate", async () => {
+  const { f, runpod, requested } = await replacementThatCannotCreate("no_capacity");
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^media_gpu_host_incompatible: CUDA driver too old: host 12\.4 < 12\.8; no other host could be placed/);
+  // pod1 created 10:00:00, RUNNING after two 5 s polls, terminate confirmed 10:00:10; the two refused creates took 2 min.
+  assert.equal(row.startedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:10.000Z");
+  assert.equal(row.secondsUsed, 10);
+  assert.equal(runpod.pods.size, 0);
+  assert.deepEqual(f.capacityLog.map((a) => [a.gpuTypeId, a.result]), [[FOUR, "placed"], [FOUR, "error"], [FOUR, "no_capacity"], [FIVE, "no_capacity"]]);
+});
+
+test("BL-155 review 4: after an incompatible host, a fatal createPod answer ends the session failed (media_session_start_failed), billed to the confirmed terminate", async () => {
+  const { f, requested } = await replacementThatCannotCreate("fatal");
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^pod creation failed: .*402/);
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:10.000Z");
+  assert.equal(row.secondsUsed, 10);
 });
