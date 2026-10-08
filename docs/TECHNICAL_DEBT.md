@@ -1838,3 +1838,16 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Accepted because:** the owner asked for it (Telegram 2026-10-06, msgs 1865 and 1874); this is a single-operator, local app where every connected channel is the owner's.
 - **Re-evaluate:** if the app ever serves more than one operator, or a connected channel can belong to someone else.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-114 — Two computers can still rate the same track: review claims are advisory — OPEN, 2026-10-08
+
+- **What:** BL-157 (ADR 0031, FO-REQ-0009 §6). "Being reviewed on <computer>" claims travel in the plans report, which reaches the other computer in 1.5–3 minutes. A track opened on both computers within that window is not marked on either, so it can be rated twice.
+- **Bounded by:**
+  - Replacing a verdict needs `replace`. Any existing verdict counts: given here, relayed, sent from here, or on its way from the other device (`plan_verdict_exists`, 409). The second rating therefore asks first once the first rating has arrived.
+  - The verdict history keeps both ratings, with device and time.
+  - Newest wins, by the time the owner gave the verdict, as before (ADR 0029). A verdict dated more than 5 minutes ahead is refused.
+  - A claim published by this device goes out at once (the report is rewritten on the claim). Only the transport (Syncthing and the 60 s sync tick) is slow.
+- **Also:** the plans report is version 2. A computer on an older build refuses it ("version 2 is newer than this app understands") and keeps showing the other computer's last version 1 report until it updates. This is a one-time cost of the bump, not a lasting gap.
+- **Accepted because:** there is no shared server between the computers, and a lock over files would either block the owner when the other computer is off or still be only a hint (ADR 0031). The owner asked for claims as markers plus a confirmation, not a lock.
+- **Re-evaluate:** if the devices ever share a live connection, or if double ratings show up in the history in practice.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.

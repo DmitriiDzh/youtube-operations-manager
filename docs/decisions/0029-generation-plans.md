@@ -90,3 +90,16 @@ Plan: `docs/roadmap/plans/GENERATION_PLANS_PHASE_3_PLAN.md`.
 - **RISK-109 grows:** one factory call can create several jobs. The bounds stay the session caps and the factory limits.
 - **Schema v67** (phase 2): `generation_plan_peer_verdicts`.
 - **Not changed:** agent tools (phase 3) and the YouTube write and read paths.
+
+## Amendment (2026-10-08, BL-157, ADR 0031)
+
+- **Channel move.** A plan can move to another connected channel with `factory_plan_move`. Its files must already be in the
+  new channel's Sent to YTM. A job's output stays in the channel the job ran on.
+- **Report version 2.** The plans report is version 2. It adds the job channel, the verdict history, the waves' context, the
+  owner's wave note (`ownerNote`) and review claims.
+- **Owner verdicts.**
+  - Each verdict is kept in a history, with its device.
+  - A replacement needs the owner's confirmation (`plan_verdict_exists`).
+  - A verdict sent from another device counts as given on the owning device before its tick applies it.
+- **Media scoping.** The owner's Web routes are scoped to the active channel (Media).
+

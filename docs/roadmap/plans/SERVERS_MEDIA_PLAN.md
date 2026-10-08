@@ -75,7 +75,8 @@ The merge into `dev` still needs the owner's explicit yes.
 
 - **AC-RP-01.** This build writes version 2 and reads versions 1 and 2, following `media-sessions` (BL-148). The new
   fields are optional when reading, and a version 1 report reads exactly as before.
-  - A review entry gains `jobChannelId`, `history` and `pendingVerdict`.
+  - A review entry gains `jobChannelId` and `history`. A verdict that the other device sent and the owner has not applied yet
+    is shown only on the owner device, from that device's own report, so it needs no field of its own.
   - A plan gains `batches` and the groups' `ownerNote`.
   - The report gains `claims`.
 - **AC-RP-02.** A version 2 report that a version 1 build rejects is the known cost. Until both computers run this build,

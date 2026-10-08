@@ -867,7 +867,7 @@ A second agent role, separate from the channel agents. Technical contract only (
   POST only (405), the MCP connection switch (403 `MCP_CONNECTION_DISABLED`), a token (401 `AGENT_TOKEN_REQUIRED`), the token (401 `AGENT_TOKEN_INVALID` for an
   unknown, revoked or wrong-type token, including a channel token; 503 `AGENT_ENDPOINT_UNAVAILABLE` if the database cannot answer). The token is re-verified on
   every tool call, so a revocation applies to the next call. A factory token on `/api/mcp` is rejected the same way.
-- **Factory API version:** `1.7.0` since BL-155 (CUDA host check, FO-REQ-0007: jobs carry `errorCode`, `media_gpu_host_incompatible`, the `all jobs failed (release when done)` stop reason, `gpu.minCudaVersion` in `factory_media_get_settings`; `1.6.0` = BL-153, validator-rejected attempts in the owner's review queue, FO-REQ-0008; `1.5.0` = BL-143 generation plans; `1.4.0` = DEV-MSG-0001, default `releaseWhenDone`; `1.3.0` = FO-REQ-0005, `1.2.0` = BL-133 / ADR 0026, `1.1.0` = BL-132's media tools, `1.0.0` = the first four), independent of `AGENT_API_VERSION`.
+- **Factory API version:** `1.8.0` since BL-157 (FO-REQ-0009: `factory_plan_move`, the events `plan_moved` and `group_reviewed`, `groups[].ownerNote`, `owner_verdict` per verdict with `device`); `1.7.0` = BL-155 (CUDA host check, FO-REQ-0007: jobs carry `errorCode`, `media_gpu_host_incompatible`, the `all jobs failed (release when done)` stop reason, `gpu.minCudaVersion` in `factory_media_get_settings`; `1.6.0` = BL-153, validator-rejected attempts in the owner's review queue, FO-REQ-0008; `1.5.0` = BL-143 generation plans; `1.4.0` = DEV-MSG-0001, default `releaseWhenDone`; `1.3.0` = FO-REQ-0005, `1.2.0` = BL-133 / ADR 0026, `1.1.0` = BL-132's media tools, `1.0.0` = the first four), independent of `AGENT_API_VERSION`.
 - **Tools (a closed list; no YouTube call, all inputs `.strict()`):**
   - `factory_get_capabilities` — `{}` → `{ role: "factory_operator", factoryApiVersion, tools: [...], permissions: ["READ", "WRITE"], writeTools: [...] }`.
   - `factory_list_logical_paths` — `{}` → `{ paths: [{ name, description, configured: false } | { name, description, configured: true, path }] }` for every path, with THIS device's value.
@@ -887,6 +887,21 @@ A second agent role, separate from the channel agents. Technical contract only (
       - The seed goes to the template's `seed` parameter. An item that lists seeds is never run without one; when its seeds run out it is listed in `skipped` (`rerun` refuses).
       - At most 200 jobs per call; runs of one plan are serialized; `rerun` respects `maxAttempts`;
     - `factory_plan_clone_group` `{ planId, groupId, newGroupId, title?, paramsPatch?, seeds? }`.
+    - **BL-157 (Factory API 1.8.0, ADR 0031, `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md`, FO-REQ-0009, FO-MSG-0011, additive).**
+      - **`factory_plan_move`** `{ planId, channelId, checkOnly? }` → `{ planId, from, to, checked, missing (≤ 500), missingCount, unfinishedJobs, moved }`.
+        - Every distinct `auditionFile` of the plan's result rows and every reference `file` is checked in the target channel's `99 Data Exchange/Sent to YTM/` by the player's rules.
+        - `checkOnly` changes nothing.
+        - Refused with `plan_invalid`, nothing changed, when:
+          - a file is missing (`details: { checked, missing, missingCount }`);
+          - a job of the plan is queued or running (`details.unfinishedJobs`);
+          - the target is the same channel, is not connected, or has no workspace here.
+        - Refused with `plan_closed` for a closed plan, and `plan_not_found` for an unknown one.
+        - On success the event `plan_moved { from, to, checked }` is recorded.
+        - Jobs, sessions, results, verdicts, events and spend stay with the plan.
+        - Afterwards `auditionFile`s and references resolve in the new channel. A job output without an `auditionFile` resolves in the channel the job ran on. Runs and plan-linked sessions need the new channel.
+      - **Groups** carry `ownerNote`: the owner's note on the wave. The factory's `note` is never overwritten by it, and `upsertGroups` keeps it.
+      - **New event `group_reviewed { groupId, accepted, rejected, overridesValidator }`.** It is recorded once each time the owner's verdicts take a wave's waiting count to zero, here or applied from another device.
+      - **`owner_verdict` events** now come one per verdict, from the verdict history, each with `device`. A verdict from before 1.8.0 still gives one event from its row.
     - Phase 3 (FO-MSG-0009), A/B references:
       - `factory_plan_create` / `import` take `references: [{ id, label, file (relative to Sent to YTM), lufs?, lra?, truePeak? }]` (≤ 50);
       - `factory_plan_update` takes `upsertReferences` / `removeReferenceIds`;
@@ -920,6 +935,22 @@ A second agent role, separate from the channel agents. Technical contract only (
       - `POST /api/generation-plans/[planId]/review-rejected` `{ reviewRejected: boolean }` -- the owner's switch (BL-153), a `plan_updated` event by the owner;
       - `GET .../reference?id=` (and `.../peers/[deviceId]/[planId]/reference?id=`): a plan reference's file, under the same rules as the audition below;
       - `GET .../review` also returns `references`.
+    - BL-157 (ADR 0031, `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md`):
+      - **Media is the active channel's.** The channel is resolved on the server (ADR 0004 (b)).
+        - `GET /api/generation-plans` and `.../peers` list only plans of the session's active channel; with none active they list nothing.
+        - Every `[planId]` and `peers/[deviceId]/[planId]` route answers a plan of another channel with `plan_not_found` (404).
+        - `GET /api/media-generation/jobs?scope=active` lists the active channel's jobs.
+      - **`GET /api/generation-plans/summary`** → `{ waitingReview, waitingPassed, waitingRejected, channels }`.
+        - The top-level counts are the active channel's.
+        - `channels` holds one row per channel connected here: `{ channelId, waitingReview, waitingPassed, waitingRejected, plans: [{ planId, title, device, waiting }], batches: [{ planId, groupId, title, waiting }], notices: [{ planId, planTitle, device, notice }] }`. Counts only, never tracks or files.
+      - **`POST .../verdict`** (local and peer) takes `replace?: boolean`. Without it, an attempt that already has a verdict is refused with `plan_verdict_exists` (409) and `details.existing: { result, rating, device, at }`. "Already has a verdict" includes one given here, one relayed by the factory, one sent from here, and one on its way from another device.
+      - **`POST .../claim`** and **`POST /api/generation-plans/peers/[deviceId]/[planId]/claim`**:
+        - The body is `{ scope: attempt|group, itemKey?, attemptRef?, groupId?, release? }`, and the answer is `{ claimId, until }`.
+        - A claim says "being reviewed on this computer" and lasts 10 minutes; calling again renews it.
+        - The report is published at once.
+      - **`GET .../review`** also returns `batches` (wave context) and `claims` (the other devices' live claims). Each entry carries `history` and `pendingFrom`.
+      - **`GET .../peers`** also returns `claims`.
+      - Report `ytm-generation-plans` is version 2 (it still reads version 1). A version 1 build refuses version 2 with "update the app".
     - `GET .../audition?itemKey=&attemptRef=` (loopback Host/Origin only, 403 otherwise): the attempt's file (latest reported `auditionFile`, else the job output), resolved inside the channel workspace; allowlisted audio/image/video types; `Range` → 206, unsatisfiable → 416; not on this device → 404; other type → 415.
   - FO-REQ-0005 tools (Factory API 1.3.0). WRITE (device mutation gate first, audited as actor `factory`, no second approval -- agreed with the owner in chat): `factory_media_delete_template` `{ templateId }` → `{ deleted: true }` (a LOCAL template only; a registry one → `media_template_invalid`, unknown → `media_template_not_found`); `factory_media_adopt_template` `{ templateId, newTemplateId }` → `{ localTemplateId, templateId, fileName, indexEntry, template, status: "pending" | "adopted" }` -- `template` is a complete `ytm.media-template` v1 file (models declared from the graph's loader nodes) the factory writes to the registry itself; the local copy is removed by the first sync that has `newTemplateId` installed with the same graph and parameters (`pending`), or at once when it already is (`adopted`); other content under that id never removes it (refused at adopt; listed under the sync's `invalid`); a template a sync would refuse → `media_template_invalid` with `details.problems`. READ: `factory_media_get_settings` `{}` → `{ settings: { factorySessionsEnabled, limits, spentOrReservedUsd: { today, thisMonth }, device (its `spentTodayUsd` is this computer only), gpu, capacity } }` (no secrets). Before 1.3.0 every media refusal (`media_model_in_use`, `media_session_conflict`, ...) and every device-gate refusal came back as `internal_error`; they now keep their codes, the gate's as `operation_lock_held` / `device_in_recovery_mode`.
   - BL-132 media tools (ADR 0025). READ: `factory_media_storage_status` `{}` → `{ storage }` (as `GET /api/media-generation/storage`); `factory_media_list_models` `{}` → `{ models, registry, registryError }` (as the Web GET, `usedBy` includes local templates as `source: "owner"`); `factory_media_get_pull` `{ pullId? }` → `{ pull }` | `{ pulls }` (20 newest); `factory_media_list_templates` `{}` → `{ templates: [{ templateId, version, source, name, description, parameters, models, modelsMissing (declared, not on the volume; null if the volume could not be listed), updatedAt }], lastSync }`. WRITE (no Web approval, audited as actor `factory`, each first passes the device mutation gate -- operation lock / recovery mode): `factory_media_pull_model` `{ repoId, file, folder, revision?, sha256 (required, 64 hex), targetName? }` → `{ pull }` (lands at `models/<folder>/<targetName>`, default the base name of `file` -- the repo's sub-folders are dropped since 1.3.0; an existing key is refused, never overwritten; `targetName` is one file name `[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,199}`; files pulled before keep their old keys); `factory_media_cancel_pull` `{ pullId }` → `{ pull }`; `factory_media_delete_model` `{ key }` → `{ deleted }` (refused `media_model_in_use` while any registry/installed/local template uses it, `media_template_registry_unavailable` when the registry cannot be read here, `media_session_conflict` while a session/pull holds the volume); `factory_media_sync_templates` `{ dryRun? }` → `{ result }` (a dry run is a read).
