@@ -25,10 +25,13 @@ SERVICE_USER="$(/usr/libexec/PlistBuddy -c 'Print :UserName' "$SERVICE_PLIST")"
 SERVICE_HOME="$(dscl . -read "/Users/$SERVICE_USER" NFSHomeDirectory | awk '{print $2}')"
 
 # Always, not only when the port is busy: the service may be building, and the check reads the database, not the server.
-echo "Checking that no export, import or database migration is running..."
-if ! (cd "$ROOT" && sudo -u "$SERVICE_USER" env PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$SERVICE_HOME" npm run --silent operation-lock -- wait-idle --timeout 120); then
-  echo "[ERROR] The service was NOT removed: a running operation did not finish (or could not be checked)."
-  exit 1
+# Without dependencies installed nothing from this folder can be running an operation (and the check itself needs them).
+if [ -d "$ROOT/node_modules/tsx" ]; then
+  echo "Checking that no export, import or database migration is running..."
+  if ! (cd "$ROOT" && sudo -u "$SERVICE_USER" env PATH="$(dirname "$NODE"):/usr/bin:/bin:/usr/sbin:/sbin" HOME="$SERVICE_HOME" npm run --silent operation-lock -- wait-idle --timeout 120); then
+    echo "[ERROR] The service was NOT removed: a running operation did not finish (or could not be checked)."
+    exit 1
+  fi
 fi
 
 echo "Stopping the server..."

@@ -47,27 +47,38 @@ function branchProblem() {
 }
 
 // What the current step is, so a stop request (launchd's SIGTERM on uninstall/reinstall/shutdown) does the right thing:
-// during a build it waits for the build (a killed build can leave a stale lock), during the server it is passed on.
+// the server gets the signal and drains; anything else stops at once. A build may be stopped: it never opens the real
+// database (build-if-stale.sh), and when this process exits launchd ends the rest of the job's process group with it.
 let phase = "checking"; // checking | building | serving | done
 let server = null;
+let build = null;
 let stopRequested = false;
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => {
     stopRequested = true;
-    if (phase === "serving" && server) server.kill(signal); // npm passes it on to the server
-    else if (phase === "building") log(`${signal} received: finishing the build, then stopping without starting the server.`);
-    else process.exit(0);
+    if (phase === "serving" && server) {
+      server.kill(signal); // npm passes it on to the server
+      return;
+    }
+    if (phase === "building" && build) build.kill(signal);
+    process.exit(0);
   });
 }
 
 function startServer() {
   // Same log file as the launcher's server (start.sh), truncated per run.
   const logPath = path.join(root, ".launcher.log");
-  const out = fs.openSync(logPath, "w");
   const startedAt = Date.now();
   // Not detached: the server stays in this job's process group, so launchd cleans it up if this process ever dies.
+  try {
+    const out = fs.openSync(logPath, "w");
+    server = spawn("npm", ["run", "start"], { cwd: root, env: { ...process.env, YTOM_SERVICE_MODE: "1" }, stdio: ["ignore", out, out] });
+  } catch (error) {
+    phase = "done";
+    failAfterPause(`Could not start the server: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   phase = "serving";
-  server = spawn("npm", ["run", "start"], { cwd: root, env: { ...process.env, YTOM_SERVICE_MODE: "1" }, stdio: ["ignore", out, out] });
   log(`Server starting (npm pid ${server.pid}); its output is in ${logPath}.`);
   let spawnFailed = false;
   server.on("error", (error) => {
@@ -103,13 +114,14 @@ function main() {
   }
 
   phase = "building";
-  const build = spawn("/bin/sh", [path.join(scriptDir, "build-if-stale.sh")], { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
+  build = spawn("/bin/sh", [path.join(scriptDir, "build-if-stale.sh")], { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
+  build.on("error", (error) => {
+    phase = "done";
+    failAfterPause(`Could not run the build: ${error.message}`);
+  });
   build.on("exit", (code, signal) => {
+    if (phase !== "building") return; // already handled (spawn error)
     phase = "checking";
-    if (stopRequested) {
-      log("Stopped as requested after the build.");
-      process.exit(0);
-    }
     if (code !== 0) {
       failAfterPause(`Building the application failed (${signal ?? `exit ${code}`}) -- see the output above.`);
       return;

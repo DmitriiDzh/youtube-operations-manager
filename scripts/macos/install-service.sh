@@ -49,17 +49,27 @@ if service_installed; then
 fi
 
 # The service builds and runs only an accepted branch: refuse now, before anything running is stopped.
-if ! BRANCH="$(as_user "$SCRIPT_DIR/accepted-branch.sh")"; then
+BRANCH_RC=0
+BRANCH="$(as_user "$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+if [ "$BRANCH_RC" -eq 4 ]; then
   echo "[ERROR] The repository folder is on $BRANCH, not on dev or main -- nothing was changed. Switch back first."
+  exit 1
+elif [ "$BRANCH_RC" -ne 0 ]; then
+  echo "[ERROR] Cannot tell the repository folder's branch ($BRANCH) -- nothing was changed."
   exit 1
 fi
 
 # Nothing running may be cut short -- checked before anything is torn down (the same check stop.sh makes). Always, not
-# only when the port is busy: the service may be building, and the check reads the database, not the server.
-echo "Checking that no export, import or database migration is running..."
-if ! (cd "$ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
-  echo "[ERROR] Nothing was changed: a running operation did not finish (or could not be checked)."
-  exit 1
+# only when the port is busy: the service may be building, and the check reads the database, not the server. Without
+# dependencies installed nothing from this folder can be running an operation (and the check itself needs them).
+if [ -d "$ROOT/node_modules/tsx" ]; then
+  echo "Checking that no export, import or database migration is running..."
+  if ! (cd "$ROOT" && as_user npm run --silent operation-lock -- wait-idle --timeout 120); then
+    echo "[ERROR] Nothing was changed: a running operation did not finish (or could not be checked)."
+    exit 1
+  fi
+else
+  echo "Dependencies are not installed yet, so nothing from this folder is running -- the service installs them."
 fi
 
 # Stop what runs now: the previously installed service, or a server started by start.sh.

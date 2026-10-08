@@ -6,7 +6,8 @@
 # scripts/windows/stop.bat (keep the two in step): (1) find the listener on port $PORT, (2) wait for
 # any RUNNING operation to finish (`operation-lock wait-idle`; refuse to stop if it does not within
 # 2 minutes), (3) stop the process, (4) confirm the port is actually free. Exit code 0 = nothing
-# left running, 1 = not stopped (start.sh/update.sh must not go on).
+# left running, 1 = not stopped (start.sh/update.sh must not go on), 2 = refused before signalling
+# anything because an operation is running (also "not stopped"; BL-158's start.sh keeps that server).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 PIDFILE="$(pwd)/.launcher.pid"
@@ -26,7 +27,7 @@ if [ -n "$PORT_PIDS" ]; then
   if ! npm run --silent operation-lock -- wait-idle --timeout 120; then
     echo "[ERROR] The application was NOT stopped: a running operation did not finish (or could not be checked)."
     echo "        Stopping it now could leave a stuck lock. Wait and try again, or see the /recovery page."
-    exit 1
+    exit 2
   fi
   for PID in $PORT_PIDS; do
     if kill "$PID" 2>/dev/null; then

@@ -42,6 +42,18 @@ if service_installed; then
   SERVICE_LOG="$HOME/Library/Logs/YouTubeOperationsManager/service.log"
   LOG_START=0
   if [ -f "$SERVICE_LOG" ]; then LOG_START=$(wc -c < "$SERVICE_LOG"); fi
+  # Nothing answering and the folder not on an accepted branch: the runner refuses it, so say why right away.
+  if [ -z "$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null)" ]; then
+    BRANCH_RC=0; BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+    if [ "$BRANCH_RC" -eq 4 ]; then
+      echo "[ERROR] The repository folder is on $BRANCH, not on dev or main, so the service does not build or run it."
+      echo "        Switch back (git switch dev); the service retries within 5 minutes."
+      exit 1
+    elif [ "$BRANCH_RC" -ne 0 ]; then
+      echo "[ERROR] The service cannot tell the repository folder's branch: $BRANCH"
+      exit 1
+    fi
+  fi
   RESTARTED=""
   OLD_PIDS="" # after a restart, only a new process counts as ready
   echo "Waiting for http://localhost:$PORT ..."
@@ -53,16 +65,24 @@ if service_installed; then
       # and only onto an accepted branch -- otherwise the service would refuse it and both accounts would lose the app.
       if [ -z "$RESTARTED" ] && ! "$SCRIPT_DIR/build-if-stale.sh" --check; then
         RESTARTED=1
-        if BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")"; then
+        BRANCH_RC=0; BRANCH="$("$SCRIPT_DIR/accepted-branch.sh")" || BRANCH_RC=$?
+        if [ "$BRANCH_RC" -eq 0 ]; then
           echo "The checked-out commit changed since the last build - restarting the service (it rebuilds first, a few minutes)..."
           OLD_PIDS="$LISTEN_PIDS"
-          if ! "$SCRIPT_DIR/stop.sh"; then
-            echo "The server is still finishing its work; the service starts the new build once it has stopped."
+          STOP_RC=0
+          "$SCRIPT_DIR/stop.sh" || STOP_RC=$?
+          if [ "$STOP_RC" -eq 0 ] || [ "$STOP_RC" -eq 1 ]; then
+            # 1 = signalled but still draining: the service starts the new build once it has stopped.
+            continue
           fi
-          continue
+          # 2 = refused before signalling anything (an operation is running): keep using the running build.
+          echo "[WARN] Not restarted now; the new commit loads on the next start, once that operation has finished."
+        elif [ "$BRANCH_RC" -eq 4 ]; then
+          echo "[WARN] The repository folder is on $BRANCH, not on dev or main: the service keeps running its last build."
+          echo "       Switch back (git switch dev) and run this again to load the new commit."
+        else
+          echo "[WARN] Cannot tell the repository folder's branch ($BRANCH): the service keeps running its last build."
         fi
-        echo "[WARN] The repository folder is on $BRANCH, not on dev or main: the service keeps running its last build."
-        echo "       Switch back (git switch dev) and run this again to load the new commit."
       fi
       if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
         open "http://localhost:$PORT"

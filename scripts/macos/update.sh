@@ -30,7 +30,8 @@ echo "Installing dependencies for this version..."
 npm install
 
 echo "Rebuilding..."
-npm run build
+# Off the real database while building, like build-if-stale.sh (RISK-63); the start migrates it.
+NODE_TEST_CONTEXT=1 npm run build
 
 echo ""
 echo "Update complete. Run start.sh to launch the updated application."

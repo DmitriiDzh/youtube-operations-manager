@@ -42,8 +42,8 @@ This ADR extends BL-116 (detached server, presence-based shutdown; `docs/roadmap
    script, `accepted-branch.sh`, which `start.sh` and `install-service.sh` also consult before they stop a running server
    (on another branch `start.sh` keeps the running build and warns). A start, check or build that fails also waits 5
    minutes before the next run. The build itself runs with `NODE_TEST_CONTEXT=1`, so `next build` never opens the real
-   database (RISK-63's root cause; every route is dynamic, so nothing is prerendered from data) -- for `start.sh` too.
-   If a stop request arrives during a build, the runner lets the build finish and then stops without starting.
+   database (RISK-63's root cause; every route is dynamic, so nothing is prerendered from data) -- for `start.sh` and
+   `update.sh` too. Because of that, a stop request during a build simply stops it.
 4. **Idleness ends the session, not the process.** `YTOM_SERVICE_MODE=1` (set only by the daemon's runner) makes the
    idle watcher call its handler once per idle period and keep watching. The handler resets Live writes. This keeps the
    Gate B rule that Live writes live only as long as a session (RISK-09): the same 10 minutes without an open window or
