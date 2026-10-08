@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS,
   decideIdleShutdown,
+  resolveIdleAction,
   resolveIdleTimeoutMs,
   getLastActivityAt,
   isIdleTimeoutExceeded,
@@ -157,4 +158,52 @@ test("startIdleShutdownWatcher: onIdle runs once even when the exit sequence out
   await new Promise((r) => setTimeout(r, 120)); // many intervals after the first expiry
   stop();
   assert.equal(calls, 1);
+});
+
+// ---- BL-158: the macOS system service (owner, Telegram 2026-10-08, msgs 2150-2154) ----
+// Requirement: started at Mac power-on for the second Mac account too, the server is never stopped by idleness.
+// Gate B rule (docs/TECHNICAL_DEBT.md RISK-09): Live writes live only as long as a session -- so in service mode the
+// same idle window ENDS THE SESSION (onIdle resets Live writes) instead of exiting, once per idle period.
+
+test("resolveIdleAction: exit by default; end-session only for YTOM_SERVICE_MODE=1 (anything else keeps today's exit)", () => {
+  assert.equal(resolveIdleAction({}), "exit");
+  assert.equal(resolveIdleAction({ YTOM_SERVICE_MODE: "1" }), "end-session");
+  for (const other of ["0", "", "true", "yes", "service", " 1"]) assert.equal(resolveIdleAction({ YTOM_SERVICE_MODE: other }), "exit", other);
+});
+
+test("service mode: onIdle once per idle period -- not again while nothing new happens, again after new activity goes idle", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let calls = 0;
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, onIdle: () => { calls += 1; } });
+  await new Promise((r) => setTimeout(r, 120)); // many checks after the first expiry
+  assert.equal(calls, 1, "one session end for one idle period");
+
+  recordActivity(new Date()); // somebody opened the app again: a new session
+  await new Promise((r) => setTimeout(r, 120)); // ...which goes idle too
+  stop();
+  assert.equal(calls, 2, "the new session ends as well -- the watcher never stops by itself in service mode");
+});
+
+test("service mode: running work defers the session end exactly like it defers the exit", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let busy = true;
+  let calls = 0;
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, isBusy: () => busy, onIdle: () => { calls += 1; } });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(calls, 0, "no session end while work is running");
+  busy = false;
+  await new Promise((r) => setTimeout(r, 80));
+  stop();
+  assert.equal(calls, 1, "the session ends once the work is done");
+});
+
+test("default mode is unchanged by BL-158: one onIdle, even when new activity arrives afterwards", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let calls = 0;
+  const stop = startIdleShutdownWatcher({ timeoutMs: 20, checkIntervalMs: 10, onIdle: () => { calls += 1; } });
+  await new Promise((r) => setTimeout(r, 60));
+  recordActivity(new Date());
+  await new Promise((r) => setTimeout(r, 80));
+  stop();
+  assert.equal(calls, 1, "the exit sequence starts once; the process is going away");
 });

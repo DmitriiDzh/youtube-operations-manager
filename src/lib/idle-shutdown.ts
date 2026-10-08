@@ -57,6 +57,19 @@ export function resolveIdleTimeoutMs(env: Record<string, string | undefined> = p
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60_000) : DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS;
 }
 
+/**
+ * What an expired idle window does (BL-158). `exit`: the process ends (the launcher-started server, BL-116).
+ * `end-session`: the macOS system service (owner, 2026-10-08: started at power-on so the second Mac account can work
+ * without the owner) must never stop by idleness, but Live writes still live only as long as a session (RISK-09), so
+ * the same window ends the session instead -- once per idle period, again after new activity goes idle.
+ * Only `YTOM_SERVICE_MODE=1`, set by the service's launchd job, selects it; anything else keeps today's exit.
+ */
+export type IdleAction = "exit" | "end-session";
+
+export function resolveIdleAction(env: Record<string, string | undefined> = process.env): IdleAction {
+  return env.YTOM_SERVICE_MODE === "1" ? "end-session" : "exit";
+}
+
 export type IdleDecision = "stay" | "defer" | "exit";
 
 /**
@@ -89,20 +102,25 @@ export function startIdleShutdownWatcher(
     /** True while work is running that an exit would cut short (BL-116). A throwing check counts as busy. */
     isBusy?: () => boolean | Promise<boolean>;
     maxDeferralMs?: number;
+    /** `end-session` (BL-158): onIdle once per idle period and keep watching. Default `exit`: once, then stop. */
+    action?: IdleAction;
   } = {}
 ): () => void {
   const timeoutMs = opts.timeoutMs ?? resolveIdleTimeoutMs();
   const checkIntervalMs = opts.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
   const onIdle = opts.onIdle ?? (() => process.exit(0));
+  const action = opts.action ?? "exit";
 
   let checking = false;
   let exiting = false; // the exit sequence (flush, then process.exit) must start once, however long it takes
+  let endedSessionActivityAt: number | null = null; // end-session: the idle period already handled
   const interval = setInterval(() => {
     if (checking || exiting) return;
     checking = true;
     void (async () => {
       try {
         const lastActivityAt = getLastActivityAt();
+        if (lastActivityAt === endedSessionActivityAt) return; // no activity since that session ended
         let busy = false;
         if (opts.isBusy && isIdleTimeoutExceeded({ lastActivityAt, now: new Date(), timeoutMs })) {
           try {
@@ -113,7 +131,8 @@ export function startIdleShutdownWatcher(
         }
         const decision = decideIdleShutdown({ lastActivityAt, now: new Date(), timeoutMs, busy, maxDeferralMs: opts.maxDeferralMs });
         if (decision === "exit") {
-          exiting = true;
+          if (action === "end-session") endedSessionActivityAt = lastActivityAt;
+          else exiting = true;
           onIdle();
         }
       } finally {
