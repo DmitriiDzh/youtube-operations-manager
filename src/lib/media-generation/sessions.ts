@@ -446,7 +446,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           // RunPod's createdAt is untrusted input: an unparsable value must never become an Invalid Date that turns the cost
           // (and the daily cap check) into NaN (review round 18).
           const createdMs = orphan.createdAt ? Date.parse(orphan.createdAt) : NaN;
-          orphanFacts = { podId: orphan.id, startedAt: Number.isFinite(createdMs) ? new Date(createdMs) : (open.approvedAt ?? deps.clock.now()), costPerHr: orphan.costPerHr ?? open.costPerHr };
+          const orphanStart = Number.isFinite(createdMs) ? new Date(createdMs) : (open.approvedAt ?? deps.clock.now());
+          const orphanPrice = orphan.costPerHr ?? open.costPerHr;
+          // BL-155 review: a row left `approved` by a re-placement already has an open window (the first pod's start, the
+          // dearest price so far): the orphan widens it, never narrows it.
+          orphanFacts = open.startedAt
+            ? {
+                podId: orphan.id,
+                startedAt: orphanStart < open.startedAt ? orphanStart : open.startedAt,
+                costPerHr: orphanPrice !== null && open.costPerHr !== null ? Math.max(orphanPrice, open.costPerHr) : (orphanPrice ?? open.costPerHr),
+              }
+            : { podId: orphan.id, startedAt: orphanStart, costPerHr: orphanPrice };
         }
       } catch (cause) {
         await deps.store.transition(open.id, ["approved"], {
@@ -799,6 +809,11 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       }
       // From here on a pod EXISTS and bills: every exit path below either confirms its termination or
       // leaves the session non-terminal (`stopping`, podId recorded) so the watcher/boot sweep retries.
+      // The window's price, written everywhere this start records the pod: what it actually got -- the candidate's catalog
+      // price when the pod does not report one (BL-133) -- and after a re-placement the dearer of it and the earlier pods'
+      // (`row.costPerHr`), since one window spans them all (BL-155).
+      const podPrice = pod.costPerHr ?? used.pricePerHr ?? row.costPerHr;
+      const windowPrice = placement > 0 && podPrice !== null && row.costPerHr !== null ? Math.max(podPrice, row.costPerHr) : podPrice;
       const terminateStartPod = async (): Promise<TerminateOutcome> => {
         try {
           return await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
@@ -816,7 +831,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         const latest = await requireRow(sessionId);
         if (latest.status === "approved" || latest.status === "starting") {
           // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
-          const podFacts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
+          const podFacts = { podId: pod.id, startedAt, costPerHr: windowPrice ?? latest.costPerHr };
           if (terminated.confirmed) {
             await finish(latest, ["approved", "starting"], "failed", { error: `${prefix}: ${lastDetail}` }, podFacts);
           } else {
@@ -859,16 +874,15 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       let starting: StoredSessionRow | null;
       try {
         comfyUiProxyUrl = deps.comfyUiProxyBaseUrl(pod.id, COMFY_PROXY_PORT);
-        const price = pod.costPerHr ?? used.pricePerHr ?? row.costPerHr;
         starting = await deps.store.transition(sessionId, ["approved"], {
           status: "starting",
           podId: pod.id,
           comfyUiProxyUrl,
           startedAt,
-          // BL-133: what it actually got -- the candidate (its catalog price when the pod does not report one). After a
-          // re-placement the window spans both pods: the dearer price (BL-155).
+          // BL-155 review: each placement restarts the abandoned-start clock at its own pod (startAttemptSince).
+          ...(placement > 0 ? { approvedAt: placedAt } : {}),
           gpuTypeId: used.gpuTypeId,
-          costPerHr: placement > 0 && price !== null && row.costPerHr !== null ? Math.max(price, row.costPerHr) : price,
+          costPerHr: windowPrice,
           capacityNextAttemptAt: null,
         });
       } catch (error) {
@@ -886,7 +900,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           failure = cause instanceof Error ? cause.message : String(cause);
         }
         const latest = await requireRow(sessionId);
-        const facts = { podId: pod.id, startedAt, costPerHr: pod.costPerHr ?? used.pricePerHr ?? latest.costPerHr };
+        const facts = { podId: pod.id, startedAt, costPerHr: windowPrice ?? latest.costPerHr };
         if (!outcome?.confirmed) {
           const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
           log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);
@@ -933,11 +947,15 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           return { ok: false };
         }
       };
-      /** BL-155: the host's CUDA version once the pod runs (null = unknown, which never blocks). */
+      /**
+       * BL-155: the host's CUDA version once the pod runs (null = unknown, which never blocks). A rejected key is not "unknown":
+       * it propagates like any gateway auth failure in this poll -- the pod is terminated and the start fails.
+       */
       const readHostCuda = async (): Promise<string | null> => {
         try {
           return await client.getPodHostCudaVersion(pod.id);
         } catch (error) {
+          if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
           log(`[media] could not read the CUDA version of pod ${pod.id}'s host: ${error instanceof Error ? error.message : String(error)}`);
           return null;
         }
@@ -1088,8 +1106,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     }
     if (open.status === "starting" && !isStartAbandoned(open, now)) {
       // The pod exists and bills while ComfyUI boots: the day's cap stops it too (§5.2 "every active session", independent
-      // review before the dev merge). An `approved` row has no pod yet and cannot be stopped without orphaning one.
+      // review before the dev merge). An `approved` row has no live pod recorded -- before its first createPod, or between a
+      // BL-155 re-placement's confirmed terminate and the next createPod -- and cannot be stopped without orphaning the pod
+      // being created.
       const settings = await deps.base.getSettings();
+      // BL-155 review: the session's minutes count from its first pod (`startedAt`), so a start that keeps re-placing is
+      // bounded by maxMinutes as a running session is.
+      if (open.startedAt && (now.getTime() - open.startedAt.getTime()) / 60_000 >= open.maxMinutes) {
+        const reason = `max minutes reached (${open.maxMinutes}) while starting`;
+        const stopped = await stopRow(open, reason);
+        return { action: stopped.status === "stopping" ? "retried_stop" : "stopped", sessionId: open.id, reason };
+      }
       // The session's own USD cap bites while ComfyUI boots too (independent review: a dear fallback GPU could pass it
       // during an 8-minute start before the running-state check).
       if (open.maxUsd !== null && (liveUsd(open, now) ?? 0) >= open.maxUsd) {
