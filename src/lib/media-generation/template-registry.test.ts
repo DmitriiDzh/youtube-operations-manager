@@ -330,6 +330,29 @@ test("BL-133: a registry template may declare its GPU plan; it is installed with
   assert.equal(result?.invalid.some((i) => i.templateId === "bad-gpu"), true, "an empty candidate list is invalid");
 });
 
+// -- BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-01; FO-REQ-0011 §2.2) --------------------------------------------------------
+test("BL-159: a registry template may declare minCudaVersion; it is installed with the template and listed; an unknown value is invalid", async () => {
+  const h = harness();
+  h.publish([{ templateId: "lm-codes", version: 1, overrides: { minCudaVersion: "13.0" } }, { templateId: "plain", version: 1 }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  const listed = Object.fromEntries((await h.services.listWorkflowTemplates()).map((t) => [t.templateId, t.minCudaVersion]));
+  assert.deepEqual(listed, { "lm-codes": "13.0", plain: null });
+  h.publish([{ templateId: "bad-cuda", version: 1, overrides: { minCudaVersion: "13.5" } }]);
+  const result = await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  assert.equal(result?.invalid.some((i) => i.templateId === "bad-cuda"), true, "13.5 is not a version RunPod accepts");
+});
+
+test("BL-159: a new version of a template that drops minCudaVersion no longer carries it", async () => {
+  const h = harness();
+  h.publish([{ templateId: "lm-codes", version: 1, overrides: { minCudaVersion: "13.0" } }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  h.publish([{ templateId: "lm-codes", version: 2 }]);
+  await h.services.syncTemplatesFromRegistry({ trigger: "auto" });
+  const t = (await h.services.listWorkflowTemplates()).find((x) => x.templateId === "lm-codes");
+  assert.equal(t?.version, 2);
+  assert.equal(t?.minCudaVersion, null);
+});
+
 // -- FO-REQ-0005 item 2 (owner decision 2026-10-07, msg 1915: both tools) -------------------------------------------------
 // Expected outcomes from FO-REQ-0005's acceptance criterion: after the call the model is no longer `usedBy` the local
 // template and can be deleted; the action is in the audit log as done by the factory. Sync never touches a local template

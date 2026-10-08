@@ -301,14 +301,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // FO-REQ-0005: version 1.3.0, delete/adopt a local template (writes) and the settings read. BL-143: 1.5.0 and the plan tools.
 // BL-155 (CUDA_HOSTS_PLAN.md "Contract"): 1.7.0 -- additive fields and an error code, no new tool, so the tool lists are unchanged.
 // BL-157 (SERVERS_MEDIA_PLAN.md §G): 1.8.0 and the write tool factory_plan_move, last in both lists (declaration order).
-test("factory_get_capabilities reports the factory API version 1.8.0 (BL-157), READ and WRITE, the tool list and the write tools", async () => {
+// BL-159 (PER_SESSION_CUDA_PLAN.md "Contract"): 1.9.0, no new tool.
+test("factory_get_capabilities reports the factory API version 1.9.0 (BL-159), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.8.0",
+    factoryApiVersion: "1.9.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -718,4 +719,23 @@ test("BL-143: factory_plan writes pass the device mutation gate first; get/list/
     assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
     assert.deepEqual(toolDeps.mediaCalls, [reached], name);
   }
+});
+
+// -- BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-01; FO-REQ-0011 §2.1/§2.4): the start takes one of the accepted CUDA versions and
+// passes it on unchanged; anything else is refused at input and never reaches the media core.
+test("BL-159: factory_media_start_session passes minCudaVersion on; a value RunPod does not accept is refused before the media core", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const seen: Array<Record<string, unknown>> = [];
+  toolDeps.deps.media.startSession = async (input) => (seen.push(input as Record<string, unknown>), { session: { sessionId: "s1" }, approved: true, heldBy: null });
+  const ok = await toolResult(await endpoint.handle(rpc(call("factory_media_start_session", { channelId: "UC_A", minCudaVersion: "13.0" }), withToken(token))));
+  assert.equal(ok.isError, false);
+  assert.equal(seen[0]?.minCudaVersion, "13.0");
+  // The shape is checked at the tool; which versions RunPod accepts is the media core's check (sessions.test.ts, AC-SC-01).
+  for (const bad of ["13", "abc", 13, "12.8.1"]) {
+    // An input-schema refusal is the SDK's own error text ("MCP error -32602 ..."), not a JSON payload.
+    const body = await (await endpoint.handle(rpc(call("factory_media_start_session", { channelId: "UC_A", minCudaVersion: bad }), withToken(token)))).json();
+    assert.equal(Boolean(body.result?.isError ?? body.error), true, String(bad));
+  }
+  assert.equal(seen.length, 1, "no refused value reached the media core");
 });

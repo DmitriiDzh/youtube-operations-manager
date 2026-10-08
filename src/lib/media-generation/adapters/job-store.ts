@@ -58,6 +58,7 @@ function templateFromDb(t: StoredMediaWorkflowTemplate): StoredTemplateRow {
     registrySha256: t.registrySha256 ?? null,
     modelsJson: t.modelsJson ?? null,
     gpuJson: t.gpuJson ?? null,
+    minCudaVersion: t.minCudaVersion ?? null,
   };
 }
 

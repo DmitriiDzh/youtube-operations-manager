@@ -824,6 +824,11 @@ export const mediaSessions = sqliteTable(
     capacityWaitUntil: integer("capacity_wait_until", { mode: "timestamp" }),
     /** Schema v66 (BL-143, ADR 0029): the generation plan this session works for (its whole cost counts there). */
     planId: text("plan_id"),
+    // Schema v71 (BL-159, FO-REQ-0011): the session's own minimum host CUDA (call or template), the minimum the last
+    // placement used (the higher of it and the owner's setting), and the current pod's host CUDA (null until known).
+    minCudaVersion: text("min_cuda_version"),
+    usedMinCudaVersion: text("used_min_cuda_version"),
+    hostCudaVersion: text("host_cuda_version"),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -859,6 +864,8 @@ export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
   modelsJson: text("models_json"),
   /** Schema v64 (BL-133): a registry template's GPU plan `{ candidates, minVramGb, maxPricePerHr }`. */
   gpuJson: text("gpu_json"),
+  /** Schema v71 (BL-159): the lowest host CUDA version a registry template needs. */
+  minCudaVersion: text("min_cuda_version"),
 });
 
 export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
@@ -928,6 +935,8 @@ export const mediaCapacityAttempts = sqliteTable(
     pricePerHr: real("price_per_hr"),
     result: text("result").notNull(),
     detail: text("detail"),
+    /** Schema v71 (BL-159): on a `placed` entry, the host's CUDA version once known. */
+    hostCudaVersion: text("host_cuda_version"),
   },
   (table) => [index("media_capacity_attempts_at_idx").on(table.at)]
 );
@@ -3725,6 +3734,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         until INTEGER NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_review_claims_plan_idx ON generation_plan_review_claims (owner_device_id, plan_id)");
+    },
+  },
+  {
+    version: 71,
+    description:
+      "media_sessions.min_cuda_version/used_min_cuda_version/host_cuda_version + media_capacity_attempts.host_cuda_version + media_workflow_templates.min_cuda_version -- BL-159 (FO-REQ-0011, docs/roadmap/plans/PER_SESSION_CUDA_PLAN.md): a session's or template's own minimum host CUDA (only raising the owner's setting) and the host's CUDA shown. Additive nullable columns, device-local",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE media_sessions ADD COLUMN min_cuda_version TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN used_min_cuda_version TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN host_cuda_version TEXT",
+        "ALTER TABLE media_capacity_attempts ADD COLUMN host_cuda_version TEXT",
+        "ALTER TABLE media_workflow_templates ADD COLUMN min_cuda_version TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -8074,12 +8103,23 @@ export type MediaControlEventRow = { id: number; at: Date; actor: string; action
 
 /** BL-132: appends one audit row (model pull/cancel/delete, template install/update/remove/sync). Never updated or deleted. */
 /** BL-133: one createPod attempt; rows older than 90 days are pruned on the way. */
+/** Returns the new row's id (BL-159: the host's CUDA is written onto that `placed` row once known). */
 export async function insertMediaCapacityAttempt(
-  row: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: string; detail: string | null },
+  row: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: string; detail: string | null; hostCudaVersion?: string | null },
   database: AppDb = db
-): Promise<void> {
-  await database.insert(mediaCapacityAttempts).values(row);
-  await database.delete(mediaCapacityAttempts).where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)));
+): Promise<number> {
+  const [inserted] = await database.insert(mediaCapacityAttempts).values(row).returning({ id: mediaCapacityAttempts.id });
+  // The prune is housekeeping: its failure must not hide the new row's id (BL-159 writes the host's CUDA onto it later).
+  await database
+    .delete(mediaCapacityAttempts)
+    .where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)))
+    .catch(() => undefined);
+  return inserted.id;
+}
+
+/** BL-159: the host's CUDA version, once the host check reads it, on that placement's own capacity-log row. */
+export async function setMediaCapacityAttemptHostCuda(id: number, hostCudaVersion: string, database: AppDb = db): Promise<void> {
+  await database.update(mediaCapacityAttempts).set({ hostCudaVersion }).where(eq(mediaCapacityAttempts.id, id));
 }
 
 /** Newest first, optionally since a time and for one GPU type. */
@@ -8371,7 +8411,7 @@ export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<
  * taken by a local template.
  */
 export async function upsertFactoryMediaWorkflowTemplate(
-  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null },
+  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null; minCudaVersion: string | null },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const now = new Date();

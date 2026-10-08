@@ -20,8 +20,10 @@ export function createSessionsPostHandler(deps: MediaRouteDeps = defaultMediaRou
     const input = bodyRecord(body.body);
     await assertConnectedChannel(routeDeps, input.channelId);
     // BL-157 (review round 6): only the factory links a session to a plan (checked by the plans module) -- never from here.
-    const { planId: _planId, ...own } = input;
+    // BL-159 (review): a session's own minimum host CUDA is the factory's too (the Web UI neither sets nor shows it).
+    const { planId: _planId, minCudaVersion: _minCudaVersion, ...own } = input;
     void _planId;
+    void _minCudaVersion;
     const session = await core.requestSession({ ...own, requestedBy: "operator" });
     return NextResponse.json({ session }, { status: 201 });
   });

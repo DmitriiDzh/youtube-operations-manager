@@ -6109,6 +6109,15 @@ test("MCP agent_request_media_session refuses a `planId` link (only the factory 
   assert.deepEqual(calls, []);
 });
 
+// BL-159 (review): a session's own minimum host CUDA is set only through the factory's start -- never by a channel agent.
+test("MCP agent_request_media_session refuses a `minCudaVersion` (only the factory sets a session's own minimum)", async () => {
+  const { handlers, calls } = makeMediaHandlers();
+  const refused = await handlers.agentRequestMediaSession({ channelId: "UC_1", minCudaVersion: "13.0" });
+  assert.equal(refused.isError, true);
+  assert.equal(parseToolJson(refused).error.code, "validation_failed");
+  assert.deepEqual(calls, []);
+});
+
 test("MCP agent_create_media_job refuses a `plan` link (only the factory links a job to a plan)", async () => {
   const { handlers, calls } = makeMediaHandlers();
   const refused = await handlers.agentCreateMediaJob({ channelId: "UC_1", sessionId: "ms-1", templateId: "t1", plan: { planId: "R-0001-S1-music", stageId: "generate", itemKey: "C1/F1" } });

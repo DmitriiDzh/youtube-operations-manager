@@ -1866,3 +1866,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Bounded by:** the second account on this Mac is an administrator anyway (it can read every file); the grant is the same kind the Syncthing daemon on this Mac already has; the service is opt-in and removed with `uninstall-service.command`.
 - **Re-evaluate:** if the Mac gets an account that is not trusted with the channels, or if node upgrades keep breaking the service (then pin a node binary for the service).
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner chose start at power-on, 2026-10-08, msg 2154).
+
+## RISK-116 — A registry template with minCudaVersion is invalid on a build without BL-159 — OPEN, 2026-10-09
+
+- **What:** BL-159 (FO-REQ-0011, `docs/roadmap/plans/PER_SESSION_CUDA_PLAN.md`). Registry template files are validated strictly. A computer on an older build marks a template that declares `minCudaVersion` invalid and keeps the version it had installed, so the new version (and its minimum) is missing there until it updates.
+- **Bounded by:** nothing breaks on the newer build; the older one keeps working with its installed copy. Same one-time cost as the v2 plans report (RISK-114).
+- **What to do:** update both computers before the operator writes `minCudaVersion` into a template file (stated in the release note).
+- **Re-evaluate:** if template files gain more optional fields often enough that a tolerant reader is worth it.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.

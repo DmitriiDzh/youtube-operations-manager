@@ -397,12 +397,15 @@ function withMedia(
     /** BL-157: the channels connected on this device (default: the plan's channel only). */
     connected?: string[];
     files?: PlanServiceDependencies["files"];
+    /** BL-159: a template the session's host is too old for (the media core refuses it when given the session). */
+    hostTooOldFor?: string;
   } = {}
 ) {
   const s = setup();
   const sessions = new Map(seedSessions.map((x) => [x.sessionId, { ...x }]));
   const templates = opts.templates ?? { "tpl-ace": ["prompt", "duration", "seed"], "tpl-noseed": ["prompt"] };
   const createdJobs: Array<{ jobId: string; params: Record<string, unknown>; plan: unknown; sessionId: string }> = [];
+  const validatedWithSession: Array<string | null> = [];
   let n = 0;
   const services = createGenerationPlanServices({
     store: s.store,
@@ -417,7 +420,11 @@ function withMedia(
         x.planId = planId;
         return true;
       },
-      async validateJobParams({ templateId, params }) {
+      async validateJobParams({ templateId, params, sessionId }) {
+        validatedWithSession.push(sessionId ?? null);
+        if (sessionId && templateId === opts.hostTooOldFor) {
+          throw Object.assign(new Error(`Template ${templateId} needs a host with CUDA 13.0 or newer; session ${sessionId} runs on a CUDA 12.9 host.`), { code: "media_gpu_host_incompatible" });
+        }
         const names = templates[templateId];
         if (!names) throw Object.assign(new Error(`No workflow template ${templateId}`), { code: "media_template_not_found" });
         const unknown = Object.keys(params).filter((k) => !names.includes(k));
@@ -434,7 +441,7 @@ function withMedia(
       },
     },
   });
-  return { ...s, services, sessions, createdJobs };
+  return { ...s, services, sessions, createdJobs, validatedWithSession };
 }
 
 const running = (over: Partial<FakeSession> = {}): FakeSession => ({ sessionId: "s1", status: "running", channelId: CHANNEL, requestedBy: "factory", planId: null, ...over });
@@ -1636,4 +1643,26 @@ test("AC-TC-04: a verdict from before the history (v69) is named the way the his
   await d.macBase.store.upsertResults("R-0001-S1-music", [ownerRow("warm (from Windows PC)")]);
   await d.macBase.store.insertEvent("R-0001-S1-music", { at: "2026-10-07T09:00:01.000Z", kind: "peer_verdict", actor: "owner", details: { verdictId: "v-old", fromDevice: "Windows PC", itemKey: "C1/F1", result: "accepted" } });
   await assert.rejects(d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" }), (e: unknown) => refused("plan_verdict_exists")(e) && existingOf(e)?.device === "Windows PC");
+});
+
+
+// -- BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-04; FO-REQ-0011 §2.5) ------------------------------------------------------
+// Expected from the plan: a plan run whose template needs a newer host CUDA than the session's known host is refused with
+// media_gpu_host_incompatible -- the session's problem, not the plan's, so NOT plan_mismatch -- and nothing is created.
+
+test("AC-SC-04: run_stage on a session whose host is too old for the template is refused with media_gpu_host_incompatible, nothing created", async () => {
+  const m = withMedia([running()], { hostTooOldFor: "tpl-ace" });
+  await m.services.createPlan(basePlan());
+  await assert.rejects(m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" }), (e: unknown) => (e as { code?: string }).code === "media_gpu_host_incompatible");
+  assert.equal(m.createdJobs.length, 0);
+  assert.ok(m.validatedWithSession.length > 0 && m.validatedWithSession.every((x) => x === "s1"), "every check names the session");
+});
+
+test("AC-SC-04: rerun is refused the same way", async () => {
+  const m = withMedia([running()], { hostTooOldFor: "tpl-ace" });
+  const plan = basePlan();
+  await m.services.createPlan(plan);
+  const item = plan.items.find((i: { templateId?: string }) => i.templateId === "tpl-ace") as { itemKey: string };
+  await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: item.itemKey }), (e: unknown) => (e as { code?: string }).code === "media_gpu_host_incompatible");
+  assert.equal(m.createdJobs.length, 0);
 });
