@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { formatPlayerTime } from "./media-review-player";
 import { createTranslator } from "@/lib/ui-text";
-import { findingMarkers, nextWaitingIndex, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
+import type { PlanCheck } from "@/lib/generation-plans/contracts";
+import { failedChecksOf, filterEntries, findingMarkers, nextWaitingIndex, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
 
 // BL-152: the spectrogram marks' labels are translated; the requirement checked here is the English wording.
 const t = createTranslator("en");
@@ -110,4 +111,53 @@ test("phase 3 review: only the Hz list of a FAILED ringing check is marked (not 
   assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tone 8.5 kHz")])] }).map((m) => m.hz), [8500]);
   assert.deepEqual(frequencyMarksOf({ stages: [row([check("ring_db", "tones 2751, 8500 Hz", true)])] }), [], "a passing check marks nothing");
   assert.deepEqual(frequencyMarksOf({ stages: [row([check("string_noise", "1000 Hz")])] }), [], "not a ringing check");
+});
+
+// BL-153 (docs/roadmap/plans/REVIEW_REJECTED_PLAN.md AC-RR-06/07), written before the screen code.
+const row = (result: "accepted" | "rejected", checks: Array<Partial<PlanCheck> & { id: string }>) => ({
+  stageId: "validate",
+  itemKey: "A/1",
+  attemptRef: "job:x",
+  result,
+  reportedBy: "factory" as const,
+  note: null,
+  rating: null,
+  reasons: [],
+  markers: [],
+  auditionFile: null,
+  checks: checks.map((c) => ({ label: null, value: null, unit: null, threshold: null, pass: true, severity: "info" as const, atSeconds: null, detail: null, ...c })),
+  metrics: {},
+  at: "2026-10-08T09:00:00Z",
+});
+
+test("AC-RR-06: the filter keeps the queue's order; an entry from another device (no `validator`) is judged by its stage rows", () => {
+  const entries = [
+    { id: 1, validator: "passed" as const, stages: [] },
+    { id: 2, validator: "rejected" as const, stages: [] },
+    { id: 3, stages: [row("rejected", [])] },
+    { id: 4, stages: [row("accepted", [])] },
+  ];
+  assert.deepEqual(filterEntries(entries, "all").map((e) => e.id), [1, 2, 3, 4]);
+  assert.deepEqual(filterEntries(entries, "passed").map((e) => e.id), [1, 4]);
+  assert.deepEqual(filterEntries(entries, "rejected").map((e) => e.id), [2, 3]);
+});
+
+test("AC-RR-07: failed checks -- fail before warn, passing and info ones left out, distance from the threshold in percent", () => {
+  const entry = {
+    stages: [
+      row("rejected", [
+        { id: "width", label: "Stereo width", value: 1, threshold: 0.9, pass: false, severity: "warn" },
+        { id: "loop", label: "Loop", value: 0.53, threshold: 0.36, pass: false, severity: "fail", atSeconds: [28, 31] },
+        { id: "lufs", value: -14, threshold: -16, pass: true, severity: "fail" },
+        { id: "note", value: "x", threshold: null, pass: false, severity: "info" },
+        { id: "held", value: 0.86, threshold: 0.84, pass: false, severity: "fail" },
+      ]),
+    ],
+  };
+  // 0.53 vs 0.36: |0.17| / 0.36 = 47 %; 0.86 vs 0.84: 2 %; 1 vs 0.9: 11 %.
+  assert.deepEqual(
+    failedChecksOf(entry).map((c) => [c.label, c.severity, c.offPercent, c.atSeconds]),
+    [["Loop", "fail", 47, [28, 31]], ["held", "fail", 2, null], ["Stereo width", "warn", 11, null]]
+  );
+  assert.deepEqual(failedChecksOf({ stages: [row("accepted", [{ id: "loop", pass: false, severity: "fail" }])] }), [], "a passed attempt shows no line");
 });

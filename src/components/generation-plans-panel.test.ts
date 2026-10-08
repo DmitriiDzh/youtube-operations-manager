@@ -46,5 +46,7 @@ test("notices read as short chips with a tone (AC-GP3-01)", async () => {
   const describeNotice = (notice: Parameters<typeof panel.describeNotice>[1]) => panel.describeNotice(t, notice);
   assert.deepEqual(describeNotice({ kind: "stage_complete", stageId: "generate", title: "Generate" }), { text: "Generate: complete", tone: "ok" });
   assert.equal(describeNotice({ kind: "budget_100" }).tone, "bad");
-  assert.equal(describeNotice({ kind: "review_waiting", count: 3 }).text, "3 waiting for your verdict");
+  // BL-153 (a changed contract): the notice carries passed/rejected; the plain wording stays while nothing rejected waits.
+  assert.equal(describeNotice({ kind: "review_waiting", count: 3, passed: 3, rejected: 0 }).text, "3 waiting for your verdict");
+  assert.equal(describeNotice({ kind: "review_waiting", count: 12, passed: 5, rejected: 7 }).text, "12 waiting for your verdict (5 passed, 7 rejected by the validator)");
 });

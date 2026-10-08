@@ -2936,7 +2936,7 @@ nothing while a node works before its first step, so such a stretch shows only t
 - **Runs:** `runStage` / `rerun` check everything first: a running session the factory started, of the plan's channel, not
   another plan's; then each job's template and params (`validateJobParams`), and a `seed` parameter when seeds are used. Only
   then do they create jobs one by one. A create failure after the checks returns the jobs created so far and `stoppedAt`.
-- **Review:** `reviewQueue` lists the attempts that passed the stage before `owner_review`. `resolveAudition` picks the latest
+- **Review:** `reviewQueue` lists the attempts that passed the stage before `owner_review` (BL-153: with the plan's `reviewRejected`, also the playable attempts rejected there -- one rule, `reviewCandidates` in `progress.ts`, feeds the queue, `waitingReview`, todo, the notice and the badge; the shared peer report keeps its format and the reader derives passed/rejected with `validatorOfEntry`). `resolveAudition` picks the latest
   reported `auditionFile`, else the job's own output.
   - The audition route resolves that file through `workspace-exchange`: `resolveSentToYtmFile`, or the new
     `resolveFromYtmJobFile`, which accepts a file only inside `From YTM/media/<jobId>` after realpath.
