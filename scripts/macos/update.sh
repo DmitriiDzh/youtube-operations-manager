@@ -1,7 +1,9 @@
 #!/bin/sh
 # YouTube Operations Manager - macOS update (rebuild after replacing program files).
 set -e
-cd "$(dirname "$0")/../.."
+# Absolute script folder, taken before the cd (see start.sh: from update.command "$(dirname "$0")" is ".").
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
 echo "=== YouTube Operations Manager - update (rebuild after replacing program files) ==="
 echo "This only rebuilds the application in this folder. Your database and settings live under"
@@ -13,7 +15,7 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-"$(dirname "$0")/stop.sh" || exit 1
+"$SCRIPT_DIR/stop.sh" || exit 1
 
 echo "Installing dependencies for this version..."
 npm install
