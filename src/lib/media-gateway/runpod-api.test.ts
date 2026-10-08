@@ -413,3 +413,10 @@ test("BL-155: a pod id that is not a plain RunPod id is never put into the Graph
   assert.equal(await client.getPodHostCudaVersion('x" } ) { myself { id } } #'), null);
   assert.equal(calls.length, 0);
 });
+
+// BL-155 (owner msg 2093): the pod answer's `cudaVersion` (seen live on 2026-10-08 as "13.0") is the host's CUDA.
+test("toPod reads the host CUDA version from the pod answer, null when it is absent", () => {
+  assert.equal(toPod({ id: "p", cudaVersion: "13.0" }).cudaVersion, "13.0");
+  assert.equal(toPod({ id: "p", cudaVersion: 12.8 }).cudaVersion, "12.8");
+  assert.equal(toPod({ id: "p" }).cudaVersion, null);
+});

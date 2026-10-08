@@ -103,6 +103,8 @@ function fakeRunpod(
     listLagCalls?: number;
     /** BL-155: the host CUDA version GraphQL reports for a pod (default 12.9, a compatible host); an Error = the read fails. */
     hostCuda?: (podId: string) => string | null | Error;
+    /** The host CUDA version the pod answer itself carries (`cudaVersion`, owner msg 2093); absent by default. */
+    podCuda?: (podId: string) => string | null;
     /** BL-155 review: the pod's $/h by GPU type (default 0.69). */
     podPrice?: (gpuId: string) => number;
     /** BL-155 review 4: a RUNNING pod reports no runtime (image still downloading) for its first N RUNNING polls. */
@@ -128,6 +130,7 @@ function fakeRunpod(
     networkVolumeIds: ["vol-eu"],
     ports: null,
     // Like the live API: `RUNNING` + a runtime once the container is up; `containerNeverStarts` = RUNNING with no runtime.
+    ...(opts.podCuda ? { cudaVersion: opts.podCuda(id) } : {}),
     containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts && (runningPolls.get(id) ?? 0) > (opts.uptimeAfterRunningPolls ?? 0) ? 5 : null,
     env: {},
     createdAt: null,
@@ -2412,4 +2415,20 @@ test("BL-155 review 4: after an incompatible host, a fatal createPod answer ends
   assert.match(row.error ?? "", /^pod creation failed: .*402/);
   assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:10.000Z");
   assert.equal(row.secondsUsed, 10);
+});
+
+// Owner, Telegram 2026-10-08 (msg 2093): RunPod's own pod answer carries the host's CUDA (`cudaVersion`, seen live: "13.0");
+// it is used first, and the separate GraphQL read only when the answer does not say.
+test("BL-155: the host CUDA from the pod answer decides without a GraphQL read; a missing one falls back to the read", async () => {
+  const fromPod = fakeRunpod({ podCuda: (podId) => (podId === "pod1" ? "12.4" : "13.0"), hostCuda: () => new Error("must not be asked") });
+  const f = fixture({ runpod: fromPod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "CUDA driver too old: host 12.4 < 12.8"], ["placed", null]]);
+  assert.equal(fromPod.calls.some((c) => c.startsWith("hostCuda:")), false, "no GraphQL read when the pod answer names the CUDA");
+  const fallback = fakeRunpod({ podCuda: () => null, hostCuda: (podId) => (podId === "pod1" ? "12.4" : "12.8") });
+  const g = fixture({ runpod: fallback, settings: { gpuTypeId: FOUR } });
+  assert.equal((await startRunning(g)).podId, "pod2");
+  assert.equal(fallback.calls.includes("hostCuda:pod1"), true);
 });
