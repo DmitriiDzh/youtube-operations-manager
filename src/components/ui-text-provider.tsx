@@ -1,12 +1,13 @@
 "use client";
 
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useMemo, type ReactNode } from "react";
 import {
-  apiErrorText,
   createTranslator,
   formatNumber,
   type Translate,
   type UiLanguage,
+  type UiTextKey,
+  type UiTextParams,
   type UiLanguageSource,
 } from "@/lib/ui-text";
 
@@ -20,8 +21,6 @@ type UiTextContextValue = {
   systemLanguage: UiLanguage;
   t: Translate;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
-  /** A failed API answer's text in the interface language (see `apiErrorText`). */
-  errorText: (body: unknown, fallback: string) => string;
 };
 
 const UiTextContext = createContext<UiTextContextValue | null>(null);
@@ -35,7 +34,6 @@ export function UiTextProvider(props: { language: UiLanguage; source: UiLanguage
       systemLanguage,
       t: createTranslator(language),
       formatNumber: (n, options) => formatNumber(language, n, options),
-      errorText: (body, fallback) => apiErrorText(language, body, fallback),
     }),
     [language, source, systemLanguage],
   );
@@ -58,5 +56,17 @@ const FALLBACK: UiTextContextValue = {
   systemLanguage: "en",
   t: createTranslator("en"),
   formatNumber: (n, options) => formatNumber("en", n, options),
-  errorText: (body, fallback) => apiErrorText("en", body, fallback),
 };
+
+const SLOT = "\u0000";
+
+/**
+ * BL-152: one translated sentence with React elements inside it (a highlighted number, a reset time): each slot name is a
+ * placeholder in the key's text, so the sentence stays whole and each language places the element where its grammar wants.
+ */
+export function translateWithSlots(t: Translate, key: UiTextKey, params: UiTextParams, slots: Record<string, ReactNode>): ReactNode[] {
+  const markers = Object.fromEntries(Object.keys(slots).map((name) => [name, `${SLOT}${name}${SLOT}`]));
+  return t(key, { ...params, ...markers })
+    .split(SLOT)
+    .map((part, i) => (i % 2 === 1 ? <Fragment key={i}>{slots[part]}</Fragment> : part));
+}

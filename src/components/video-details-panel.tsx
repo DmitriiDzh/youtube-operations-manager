@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
@@ -178,7 +179,7 @@ export function VideoDetailsPanel({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setSnapshot(data);
@@ -228,7 +229,7 @@ export function VideoDetailsPanel({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setDiff(data.diff);
@@ -262,11 +263,11 @@ export function VideoDetailsPanel({
           );
           return { res, data: await res.json() };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }))),
+        failureOf: ({ res, data }) => (res.ok ? null : (errorText(t, data, t("common.errorStatus", { status: String(res.status) })))),
         summarize: () => t("video.saving.done"),
       });
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setSnapshot(data.after);

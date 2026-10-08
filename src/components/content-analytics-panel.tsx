@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useEffect, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { AnalyticsBreakdownCard } from "./analytics-breakdown-card";
@@ -53,7 +54,7 @@ export function ContentAnalyticsPanel() {
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) {
-          setRetentionError(data.message ?? t("contentAnalytics.retentionLoadFailed"));
+          setRetentionError(errorText(t, data, t("contentAnalytics.retentionLoadFailed"), { showErrorField: false }));
           return;
         }
         setRetentionPoints(data.points as RetentionPoint[]);

@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment } from "./market-channel-assignment";
@@ -110,7 +111,7 @@ export function MarketCollectionRequestsPanel({ onChanged }: { onChanged?: () =>
           return { res, data: await res.json() };
         },
         failureOf: ({ res, data }) =>
-          res.ok ? (data.status === "failed" ? runSummary(t, data) : null) : (data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) })),
+          res.ok ? (data.status === "failed" ? runSummary(t, data) : null) : (errorText(t, data, t("common.errorStatus", { status: String(res.status) }))),
         summarize: ({ data }) => runSummary(t, data),
       });
     } catch (e) {
@@ -133,7 +134,7 @@ export function MarketCollectionRequestsPanel({ onChanged }: { onChanged?: () =>
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("requests.rejectFailed"));
+        setError(errorText(t, data, t("requests.rejectFailed"), { showErrorField: false }));
         return;
       }
       setRejectTarget(null);

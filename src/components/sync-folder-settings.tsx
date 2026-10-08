@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import type { Translate } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
@@ -8,7 +9,7 @@ async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Prom
   const res = await fetch(url, init);
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data?.message ?? t("settingsCards.requestFailed", { url, status: String(res.status) }));
+    throw new Error(errorText(t, data, t("settingsCards.requestFailed", { url, status: String(res.status) }), { showErrorField: false }));
   }
   return data as T;
 }

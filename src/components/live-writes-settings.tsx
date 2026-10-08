@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
@@ -60,7 +61,7 @@ export function LiveWritesSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setSettings(data);

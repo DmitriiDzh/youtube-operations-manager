@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useState } from "react";
@@ -79,7 +80,7 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("requests.research.approveFailed"));
+        setError(errorText(t, data, t("requests.research.approveFailed"), { showErrorField: false }));
         return;
       }
       setApproveTarget(null);
@@ -102,7 +103,7 @@ export function MarketResearchRequestsPanel({ onChanged }: { onChanged?: () => v
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("requests.rejectFailed"));
+        setError(errorText(t, data, t("requests.rejectFailed"), { showErrorField: false }));
         return;
       }
       setRejectTarget(null);

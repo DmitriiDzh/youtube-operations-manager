@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useRef, useState } from "react";
 import { runBatchWithProgress } from "./batch-run";
 import { OperationOverlay, useOperation } from "./operation-progress";
@@ -91,7 +92,7 @@ export function SendApprovedButton({
           op.finish({ error: true, message: t("sendApproved.liveWritesOff") });
           return;
         } else {
-          op.finish({ error: true, message: data.message ?? t("sendApproved.prepareFailed") });
+          op.finish({ error: true, message: errorText(t, data, t("sendApproved.prepareFailed"), { showErrorField: false }) });
           return;
         }
       } catch (e) {

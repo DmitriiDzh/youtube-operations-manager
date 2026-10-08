@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { useUiText } from "./ui-text-provider";
@@ -51,7 +52,7 @@ export function TopicWikipediaSignals({ topicId }: { topicId: string }) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.message ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) }), { showErrorField: false }));
         return;
       }
       setArticle("");

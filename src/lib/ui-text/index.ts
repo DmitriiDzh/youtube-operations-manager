@@ -159,10 +159,11 @@ export function translate(language: UiLanguage, key: UiTextKey, params?: UiTextP
   return formatMessage(language, message, params);
 }
 
-export type Translate = (key: UiTextKey, params?: UiTextParams) => string;
+/** `t(key, params)`; it also carries its language, so a helper given only `t` can format for it (`errorText`). */
+export type Translate = ((key: UiTextKey, params?: UiTextParams) => string) & { readonly language: UiLanguage };
 
 export function createTranslator(language: UiLanguage): Translate {
-  return (key, params) => translate(language, key, params);
+  return Object.assign((key: UiTextKey, params?: UiTextParams) => translate(language, key, params), { language });
 }
 
 /** For a text that comes from data (e.g. a server error code), not a literal key: is it a known key? */
@@ -187,14 +188,23 @@ export function uiMessageText(t: Translate, message: UiMessage): string {
  * server's message kept as the detail; an unknown code falls back to the server's text. MCP and API bodies stay English
  * for agents and scripts (AGENTS.md §B) -- only the UI translates.
  */
-export function apiErrorText(language: UiLanguage, body: unknown, fallback: string): string {
+export function apiErrorText(language: UiLanguage, body: unknown, fallback: string, options: { showErrorField?: boolean } = {}): string {
   const b = typeof body === "object" && body !== null ? (body as { error?: unknown; message?: unknown }) : {};
   const code = typeof b.error === "string" ? b.error : undefined;
   const message = typeof b.message === "string" && b.message.trim() ? b.message : undefined;
-  const serverText = message ?? code ?? fallback;
+  // `showErrorField: false` keeps a screen that never showed the bare `error` field (only `message ?? fallback`) as it was.
+  const serverText = message ?? (options.showErrorField === false ? undefined : code) ?? fallback;
   if (language === "en" || code === undefined) return serverText;
   const key = `errors.${code}`;
   if (!isUiTextKey(key)) return serverText;
   const text = translate(language, key);
   return message ? translate(language, "common.errorDetail", { text, detail: message }) : text;
+}
+
+/**
+ * `errorText(t, body, t("…failed"))` -- `apiErrorText` in `t`'s language: what a component shows for a failed API answer.
+ * Pass `{ showErrorField: false }` where the screen showed only `message ?? fallback` before.
+ */
+export function errorText(t: Translate, body: unknown, fallback: string, options?: { showErrorField?: boolean }): string {
+  return apiErrorText(t.language, body, fallback, options);
 }

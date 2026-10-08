@@ -6,7 +6,7 @@ import { BlockingDialog } from "./blocking-dialog";
 import { QuotaResetTime } from "./quota-reset-time";
 import { LoadingIndicator } from "./operation-progress";
 import { formatTimeUntil } from "@/lib/quota-history/format";
-import { translateWithSlots } from "./quota-block-dialog";
+import { translateWithSlots } from "./ui-text-provider";
 import { useUiText } from "./ui-text-provider";
 import type { QuotaHistoryResult } from "@/lib/quota-history";
 
@@ -84,7 +84,7 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
                       <QuotaResetTime iso={data.cloud.resetsAt} />
                     </span>
                   ),
-                  wait: <span className="text-zinc-200">{formatTimeUntil(Date.parse(data.cloud.resetsAt) - now)}</span>,
+                  wait: <span className="text-zinc-200">{formatTimeUntil(Date.parse(data.cloud.resetsAt) - now, t)}</span>,
                 })}
               </p>
             ) : (

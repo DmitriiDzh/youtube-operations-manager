@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import type { UiTextKey } from "@/lib/ui-text";
@@ -139,7 +140,7 @@ export function ContentManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setVideos(data.videos);
@@ -170,12 +171,12 @@ export function ContentManager() {
             quotaServices: ["dataApi"],
             request: () => postChannelSync(channelId, { onConflict, t }),
             failureOf: ({ res, data }) =>
-              res.ok ? null : String(data?.message ?? data?.error ?? t("common.errorStatus", { status: String(res.status) })),
+              res.ok ? null : String(errorText(t, data, t("common.errorStatus", { status: String(res.status) }))),
             summarize: ({ data }) =>
               typeof data?.videoCount === "number" ? t("content.sync.videosSynced", { count: data.videoCount }) : null,
           });
       if (!res.ok) {
-        setError(String(data?.message ?? data?.error ?? t("common.errorStatus", { status: String(res.status) })));
+        setError(String(errorText(t, data, t("common.errorStatus", { status: String(res.status) }))));
         return;
       }
       if (!data) {

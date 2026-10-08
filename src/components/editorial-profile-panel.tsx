@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
@@ -96,7 +97,7 @@ export function EditorialProfilePanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("profile.saveFailed"));
+        setError(errorText(t, data, t("profile.saveFailed"), { showErrorField: false }));
         return;
       }
       setProfile(data.profile);

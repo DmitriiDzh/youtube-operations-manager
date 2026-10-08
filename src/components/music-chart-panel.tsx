@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { MUSIC_CHART_REGIONS } from "@/lib/market-intelligence/music-chart-regions";
@@ -30,7 +31,7 @@ export function MusicChartPanel() {
       const res = await fetch(`/api/market-intelligence/music-chart?region=${encodeURIComponent(code)}`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("common.errorStatus", { status: String(res.status) }));
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) }), { showErrorField: false }));
         return;
       }
       setChart(data as Chart);

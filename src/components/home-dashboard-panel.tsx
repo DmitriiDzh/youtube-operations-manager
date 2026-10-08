@@ -73,7 +73,7 @@ export function HomeDashboardPanel({
   subscriberCount?: string;
   onViewAllContent?: () => void;
 }) {
-  const { t, formatNumber } = useUiText();
+  const { t, formatNumber, language } = useUiText();
   const count = (value: number | null) => formatCount(value, formatNumber);
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loading, setLoading] = useState(true);
@@ -315,7 +315,7 @@ export function HomeDashboardPanel({
             </div>
             <div>
               <div className="text-xs text-zinc-500">{t("home.watchTimeLast28Days")}</div>
-              <div className="font-medium text-zinc-100">{formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}</div>
+              <div className="font-medium text-zinc-100">{formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched, language)}</div>
             </div>
           </div>
         ) : loadingOverview ? (

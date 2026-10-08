@@ -2,7 +2,8 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 
-// BL-152: finds English written straight into the Web UI -- JSX text, text attributes (title, placeholder, aria-label,
+// BL-152: finds English written straight into the Web UI (.tsx and .ts under src/components and src/app, except the API
+// routes) -- JSX text, text attributes (title, placeholder, aria-label,
 // alt, label…), and sentence-like strings anywhere in a .tsx file. Used by `src/lib/ui-text/literal-text.inventory.test.ts`.
 // A string that is not interface text is marked on its line (or the line above) with `ui-text-ignore` and a reason.
 
@@ -22,8 +23,11 @@ export async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...(await sourceFiles(full)));
-    else if (entry.name.endsWith(".tsx") && !entry.name.includes(".test.")) out.push(full);
+    // API routes answer agents and scripts too: their bodies stay English (AGENTS.md §B); the UI translates them by code.
+    if (entry.isDirectory()) {
+      if (path.relative(process.cwd(), full).split(path.sep).join("/") !== "src/app/api") out.push(...(await sourceFiles(full)));
+    }
+    else if (/\.tsx?$/.test(entry.name) && !entry.name.includes(".test.")) out.push(full);
   }
   return out;
 }

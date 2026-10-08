@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { useUiText } from "./ui-text-provider";
@@ -105,7 +106,7 @@ export function AnalyticsManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("analytics.raw.loadFailed"));
+        setError(errorText(t, data, t("analytics.raw.loadFailed"), { showErrorField: false }));
         return;
       }
       setRows(data.rows as MetricRow[]);
@@ -161,7 +162,7 @@ export function AnalyticsManager() {
           return { res, data: await res.json() };
         },
         failureOf: ({ res, data }) =>
-          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? t("analytics.collectionFailed")),
+          res.ok || data.error === "analytics_data_current" ? null : (errorText(t, data, t("analytics.collectionFailed"), { showErrorField: false })),
         summarize: ({ data }) =>
           typeof data.videoCount === "number" ? t("analytics.videosQueried", { count: data.videoCount }) : null,
       });
@@ -169,7 +170,7 @@ export function AnalyticsManager() {
         if (data.error === "analytics_data_current" && data.details?.nextRefreshAt) {
           setNextRefreshAt(new Date(data.details.nextRefreshAt));
         } else {
-          setError(data.message ?? t("analytics.collectionFailed"));
+          setError(errorText(t, data, t("analytics.collectionFailed"), { showErrorField: false }));
         }
         return;
       }

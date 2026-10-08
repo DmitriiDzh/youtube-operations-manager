@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
 import { MarketChannelCollectionDepth } from "./market-channel-collection-depth";
@@ -165,7 +166,7 @@ export function MarketResearchPanel({
       const res = await fetch("/api/market-intelligence/watchlist-table");
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLoadError(data.message ?? t("watchlist.loadFailed"));
+        setLoadError(errorText(t, data, t("watchlist.loadFailed"), { showErrorField: false }));
         return;
       }
       setLoadError(null);
@@ -203,7 +204,7 @@ export function MarketResearchPanel({
       const data = await res.json();
       if (drawerRequestChannelIdRef.current !== channelId) return;
       if (!res.ok) {
-        setEvidenceError(data.message ?? t("watchlist.evidenceLoadFailed"));
+        setEvidenceError(errorText(t, data, t("watchlist.evidenceLoadFailed"), { showErrorField: false }));
         return;
       }
       setEvidence(data.evidence ?? []);
@@ -221,7 +222,7 @@ export function MarketResearchPanel({
       const data = await res.json().catch(() => ({}));
       if (drawerRequestChannelIdRef.current !== channelId) return;
       if (!res.ok) {
-        setRecentVideosError(data.message ?? t("watchlist.videosLoadFailed"));
+        setRecentVideosError(errorText(t, data, t("watchlist.videosLoadFailed"), { showErrorField: false }));
         return;
       }
       setRecentVideos(data.rows ?? []);
@@ -283,7 +284,7 @@ export function MarketResearchPanel({
         setVideoHistory(data.snapshots ?? []);
       } else {
         const data = await res.json().catch(() => ({}));
-        setVideoHistoryError(data.message ?? t("watchlist.historyLoadFailed"));
+        setVideoHistoryError(errorText(t, data, t("watchlist.historyLoadFailed"), { showErrorField: false }));
       }
     } finally {
       if (videoHistoryRequestIdRef.current === videoId) setVideoHistoryLoading(false);
@@ -329,7 +330,7 @@ export function MarketResearchPanel({
         setAddError(
           fieldMessages.length > 0
             ? fieldMessages.join("; ")
-            : (data.message ?? t("watchlist.addFailed"))
+            : (errorText(t, data, t("watchlist.addFailed"), { showErrorField: false }))
         );
         return;
       }
@@ -354,7 +355,7 @@ export function MarketResearchPanel({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setRemoveError(data.message ?? t("watchlist.removeFailed"));
+        setRemoveError(errorText(t, data, t("watchlist.removeFailed"), { showErrorField: false }));
         return;
       }
       if (selectedChannelId === removeTarget.channelId) {
@@ -381,7 +382,7 @@ export function MarketResearchPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setSnapshotError(data.message ?? t("watchlist.snapshotFailed"));
+        setSnapshotError(errorText(t, data, t("watchlist.snapshotFailed"), { showErrorField: false }));
         return;
       }
       await Promise.all([fetchRows(), fetchEvidence(channelId)]);
@@ -411,7 +412,7 @@ export function MarketResearchPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setEvidenceError(data.message ?? t("watchlist.evidenceFailed"));
+        setEvidenceError(errorText(t, data, t("watchlist.evidenceFailed"), { showErrorField: false }));
         return;
       }
       setNewObservation("");

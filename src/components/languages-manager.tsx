@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { LanguageDefaultsPanel } from "@/components/language-defaults-panel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
@@ -331,7 +332,7 @@ export function LanguagesManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(id)}/localizations`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setOverview(data);
@@ -358,7 +359,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setNewTrackedLanguage("");
@@ -408,7 +409,7 @@ export function LanguagesManager() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       await fetchOverview(channelId);
@@ -431,7 +432,7 @@ export function LanguagesManager() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       const { changeSet, affectedVideoIds, skippedDefaultLanguageVideoIds } = data as {
@@ -492,12 +493,12 @@ export function LanguagesManager() {
         track: { channelId, kind: "channel-sync" },
         quotaServices: ["dataApi"],
         request: () => postChannelSync(channelId, { onConflict: "retry", t }),
-        failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? t("common.errorStatus", { status: res.status }))),
+        failureOf: ({ res, data }) => (res.ok ? null : String(errorText(t, data, t("common.errorStatus", { status: res.status })))),
         summarize: ({ data }) =>
           typeof data?.videoCount === "number" ? t("languages.sync.summary", { count: data.videoCount }) : null,
       });
       if (!res.ok) {
-        setError(String(data?.message ?? data?.error ?? t("common.errorStatus", { status: res.status })));
+        setError(String(errorText(t, data, t("common.errorStatus", { status: res.status }))));
         return;
       }
       setLastSyncedAt((data?.channel as { lastSyncedAt?: string } | undefined)?.lastSyncedAt ?? null);
@@ -724,7 +725,7 @@ export function LanguagesManager() {
       const res = await fetch(url);
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.message ?? data?.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
 
@@ -818,7 +819,7 @@ export function LanguagesManager() {
           });
           return { res, data: (await res.json()) as GenerationResponse & { message?: string; cancelled?: boolean; summary?: { targetsGenerated?: number; targetsSkipped?: number } } };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? t("languages.generate.failedShort"))),
+        failureOf: ({ res, data }) => (res.ok ? null : (errorText(t, data, t("languages.generate.failedShort"), { showErrorField: false }))),
         outcomeOf: ({ data }) => (data.cancelled === true ? "cancelled" : "success"),
         summarize: ({ data }) =>
           data.cancelled
@@ -840,7 +841,7 @@ export function LanguagesManager() {
         setError(
           t("languages.generate.failedFor", {
             target: currentRequestLabel(),
-            message: data.message ?? t("languages.generate.failedShort"),
+            message: errorText(t, data, t("languages.generate.failedShort"), { showErrorField: false }),
           })
         );
         return;
@@ -942,7 +943,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("languages.generate.createFailed"));
+        setError(errorText(t, data, t("languages.generate.createFailed"), { showErrorField: false }));
         return;
       }
       setCreatedChangeSetId(data.changeSet.id);
@@ -972,7 +973,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setPreviewSummary(data.summary);
@@ -999,7 +1000,7 @@ export function LanguagesManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setPreviewSummary(null);

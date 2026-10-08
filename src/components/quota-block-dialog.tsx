@@ -1,10 +1,9 @@
 "use client";
 
-import { Fragment, useState, type ReactNode } from "react";
-import type { Translate, UiTextKey, UiTextParams } from "@/lib/ui-text";
+import { useState } from "react";
 import { BlockingDialog } from "./blocking-dialog";
 import { QuotaResetTime } from "./quota-reset-time";
-import { useUiText } from "./ui-text-provider";
+import { translateWithSlots, useUiText } from "./ui-text-provider";
 
 /**
  * What the server said when it refused to START a write run because of quota (BL-117 slice 2, owner decisions 2026-10-03):
@@ -24,19 +23,6 @@ export type QuotaBlock =
   | { code: "quota_unknown"; estimatedUnits: number; rowsToWrite: number; cloudConnected: boolean };
 
 export type SplitOutcome = { fitsBatchId: string | null; restBatchId: string | null; fitRows: number; restRows: number };
-
-const SLOT = "\u0000";
-
-/**
- * BL-152: one translated sentence with React elements inside it (a highlighted number, a reset time): each slot name is a
- * placeholder in the key's text, so the sentence stays whole and each language places the element where its grammar wants.
- */
-export function translateWithSlots(t: Translate, key: UiTextKey, params: UiTextParams, slots: Record<string, ReactNode>): ReactNode[] {
-  const markers = Object.fromEntries(Object.keys(slots).map((name) => [name, `${SLOT}${name}${SLOT}`]));
-  return t(key, { ...params, ...markers })
-    .split(SLOT)
-    .map((part, i) => (i % 2 === 1 ? <Fragment key={i}>{slots[part]}</Fragment> : part));
-}
 
 /** Parses the error body of a refused request into a `QuotaBlock`, or null when it is some other error. */
 export function parseQuotaBlock(body: unknown): QuotaBlock | null {

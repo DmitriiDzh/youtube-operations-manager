@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
@@ -123,7 +124,7 @@ export function ChangeSetReview({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setChangeSet(data.changeSet);
@@ -149,7 +150,7 @@ export function ChangeSetReview({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       await load();
@@ -169,7 +170,7 @@ export function ChangeSetReview({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setConfirmDelete(false);
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       setConfirmDelete(false);
@@ -193,7 +194,7 @@ export function ChangeSetReview({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       await load();

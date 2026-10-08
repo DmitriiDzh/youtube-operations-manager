@@ -1,3 +1,4 @@
+import { formatNumber, numberLocale, type UiLanguage } from "@/lib/ui-text";
 /**
  * Pure calendar-day arithmetic for the Analytics "Overview" tab's period-over-period comparison
  * (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4, Studio's own "+N% vs previous period" cards).
@@ -180,8 +181,9 @@ function formatLocalCalendarDate(date: Date): string {
 
 /** Watch-time hours, formatted to one decimal place -- shared display helper (same duplication
  * finding as `computeDefaultPeriodRange` above). */
-export function formatWatchTimeHours(minutes: number): string {
-  return (minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 1 });
+/** BL-152: in the interface language's marks (was the browser's own locale); English by default. */
+export function formatWatchTimeHours(minutes: number, language: UiLanguage = "en"): string {
+  return formatNumber(language, minutes / 60, { maximumFractionDigits: 1 });
 }
 
 /**
@@ -194,10 +196,11 @@ export function formatWatchTimeHours(minutes: number): string {
  * components directly rather than `new Date(iso)` + local-timezone formatting, so the displayed
  * weekday never shifts by one day depending on the viewer's own timezone offset from UTC.
  */
-export function formatChartDate(isoDate: string): string {
+/** BL-152: weekday and month names in the interface language ("Sun, Sep 6" / "вс, 6 сент."); English by default. */
+export function formatChartDate(isoDate: string, language: UiLanguage = "en"): string {
   const [year, month, day] = isoDate.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
-  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  return date.toLocaleDateString(numberLocale(language), { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 export function zeroFillDailySeries<T extends { date: string }>(

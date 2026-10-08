@@ -230,11 +230,9 @@ test("§4.7: the 'Visible to' pill names no channel, the one channel, or how man
 
 // BL-152: the panels' texts are interface-text keys now; `{t("key")}` is resolved to its English wording as a quoted
 // attribute value, so the checks below still assert the English requirement unchanged.
-const inEnglish = (source: string) => source.replace(/\{t\("([^"]+)"\)\}/g, (_m, key: string) => JSON.stringify(translate("en", key as UiTextKey)));
-
 test("AC-R5-1: Topics and Trend candidates are compact lists; details, actions and visibility open in a side panel", async () => {
   for (const file of ["market-topics-panel.tsx", "market-trends-panel.tsx"]) {
-    const panel = inEnglish(await readFile(path.join(process.cwd(), "src", "components", file), "utf8"));
+    const panel = sourceInEnglish(await readFile(path.join(process.cwd(), "src", "components", file), "utf8"));
     assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1, file);
     const drawer = panel.slice(panel.indexOf("<SideDrawer"), panel.indexOf("</SideDrawer>"));
     assert.match(drawer, /<DrawerSection title="Visible to agents of">[\s\S]*<MarketChannelAssignment/, file);
@@ -243,7 +241,7 @@ test("AC-R5-1: Topics and Trend candidates are compact lists; details, actions a
   const topics = await readFile(path.join(process.cwd(), "src", "components", "market-topics-panel.tsx"), "utf8");
   const topicDrawer = topics.slice(topics.indexOf("<SideDrawer"), topics.indexOf("</SideDrawer>"));
   for (const action of ["<TopicWikipediaSignals", "handleAssign(", "handleRemoveAssignment(", "setDeleteTarget("]) assert.ok(topicDrawer.includes(action), action);
-  const trends = inEnglish(await readFile(path.join(process.cwd(), "src", "components", "market-trends-panel.tsx"), "utf8"));
+  const trends = sourceInEnglish(await readFile(path.join(process.cwd(), "src", "components", "market-trends-panel.tsx"), "utf8"));
   const trendDrawer = trends.slice(trends.indexOf("<SideDrawer"), trends.indexOf("</SideDrawer>"));
   for (const action of ["handleAddEvidence(", "handleUpdateStatus(", "Reason for this status change"]) assert.ok(trendDrawer.includes(action), action);
   // Status filter on the list, the add form in a dialog.

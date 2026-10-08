@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
 import { DrawerSection, SideDrawer } from "./side-drawer";
@@ -112,7 +113,7 @@ export function MarketTopicsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("topics.createFailed"));
+        setError(errorText(t, data, t("topics.createFailed"), { showErrorField: false }));
         return;
       }
       setNewTopicName("");
@@ -133,7 +134,7 @@ export function MarketTopicsPanel() {
       // no indication anything went wrong.
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.message ?? t("topics.deleteFailed"));
+        setError(errorText(t, data, t("topics.deleteFailed"), { showErrorField: false }));
         return;
       }
       if (expandedTopicId === deleteTarget.topicId) closeTopic();
@@ -155,7 +156,7 @@ export function MarketTopicsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setAssignError(data.message ?? t("topics.assignFailed"));
+        setAssignError(errorText(t, data, t("topics.assignFailed"), { showErrorField: false }));
         return;
       }
       setNewSubjectId("");
@@ -170,7 +171,7 @@ export function MarketTopicsPanel() {
     const res = await fetch(`/api/market-intelligence/topic-assignments/${encodeURIComponent(assignmentId)}`, { method: "DELETE" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      setAssignError(data.message ?? t("topics.removeAssignmentFailed"));
+      setAssignError(errorText(t, data, t("topics.removeAssignmentFailed"), { showErrorField: false }));
       return;
     }
     await fetchAssignments(topicId);

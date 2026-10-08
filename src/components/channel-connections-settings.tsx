@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -57,7 +58,7 @@ export function ChannelConnectionsSettings() {
       });
       const data = (await res.json()) as { forceSignOut?: boolean; message?: string };
       if (!res.ok) {
-        setError(data.message ?? t("settingsCards.disconnectFailed"));
+        setError(errorText(t, data, t("settingsCards.disconnectFailed"), { showErrorField: false }));
         return;
       }
       setPendingDisconnect(null);

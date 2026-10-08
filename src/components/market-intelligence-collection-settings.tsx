@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
@@ -73,7 +74,7 @@ export function MarketIntelligenceCollectionSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("settings.saveFailed"));
+        setError(errorText(t, data, t("settings.saveFailed"), { showErrorField: false }));
         return;
       }
       setSettings(data);

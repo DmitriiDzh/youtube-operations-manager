@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -277,7 +278,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("decisions.error.createHypothesis"));
+        setError(errorText(t, data, t("decisions.error.createHypothesis"), { showErrorField: false }));
         return;
       }
       setNewStatement("");
@@ -313,11 +314,11 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
           });
           return { res, data: await res.json() };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? t("decisions.error.generate"))),
+        failureOf: ({ res, data }) => (res.ok ? null : (errorText(t, data, t("decisions.error.generate"), { showErrorField: false }))),
         summarize: () => t("decisions.generate.ready"),
       });
       if (!res.ok) {
-        setGenError(data.message ?? t("decisions.error.generate"));
+        setGenError(errorText(t, data, t("decisions.error.generate"), { showErrorField: false }));
         return;
       }
       setDraft(data.draft);
@@ -348,7 +349,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setGenError(data.message ?? t("decisions.error.saveGenerated"));
+        setGenError(errorText(t, data, t("decisions.error.saveGenerated"), { showErrorField: false }));
         return;
       }
       setDraft(null);
@@ -383,7 +384,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("decisions.error.createExperiment"));
+        setError(errorText(t, data, t("decisions.error.createExperiment"), { showErrorField: false }));
         return;
       }
       setNewTreatment("");
@@ -435,7 +436,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setEvidenceError(data.message ?? t("decisions.error.addEvidence"));
+        setEvidenceError(errorText(t, data, t("decisions.error.addEvidence"), { showErrorField: false }));
         return;
       }
       setEvidenceChannelId("");
@@ -463,7 +464,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("decisions.error.transition"));
+        setError(errorText(t, data, t("decisions.error.transition"), { showErrorField: false }));
         return;
       }
       if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
@@ -489,7 +490,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("decisions.error.changeSet"));
+        setError(errorText(t, data, t("decisions.error.changeSet"), { showErrorField: false }));
         return;
       }
       if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
@@ -510,7 +511,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("decisions.error.execute"));
+        setError(errorText(t, data, t("decisions.error.execute"), { showErrorField: false }));
         return;
       }
       setExecuteResult({ experimentId: executeTarget.experimentId, batchId: data.batchId, videoCount: data.videoCount, dryRun: data.dryRun });
@@ -537,7 +538,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("decisions.error.recordOutcome"));
+        setError(errorText(t, data, t("decisions.error.recordOutcome"), { showErrorField: false }));
         return;
       }
       setOutcomeData("");

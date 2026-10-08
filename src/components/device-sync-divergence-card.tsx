@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
@@ -90,7 +91,7 @@ export function DeviceSyncDivergenceCard() {
       const res = await fetch(`/api/device-sync/divergence?snapshotId=${encodeURIComponent(id)}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setPreviewError(data.message ?? t("common.errorStatus", { status: String(res.status) }));
+        setPreviewError(errorText(t, data, t("common.errorStatus", { status: String(res.status) }), { showErrorField: false }));
         return null;
       }
       setPreviewError(null);
@@ -129,7 +130,7 @@ export function DeviceSyncDivergenceCard() {
         body: JSON.stringify({ choice, snapshotId }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) setError(data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }));
+      if (!res.ok) setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
       await refresh();
     } catch (e) {
       setError(String(e));

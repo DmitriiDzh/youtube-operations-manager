@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DeviceSyncDivergenceCard } from "./device-sync-divergence-card";
 import { SETTING_LABELS, formatValue, listDiff, settingLabel, wordDiff, type DiffToken } from "./conflict-values";
 import { useT } from "./ui-text-provider";
-import type { UiMessage, UiTextKey } from "@/lib/ui-text";
-import { uiMessageText } from "@/lib/ui-text";
+import type { Translate, UiMessage, UiTextKey } from "@/lib/ui-text";
+import { errorText, uiMessageText } from "@/lib/ui-text";
 
 // Owner, Telegram 2026-10-07 (msgs 2011/2013): every difference between the two computers on one screen, decided in one go --
 // shown blocking on the startup window and, without blocking, in Merge. Each conflict is a card with the two versions side by
@@ -39,10 +39,10 @@ const FIELD_LABELS: Record<string, UiTextKey> = {
   descriptionConstraints: "conflicts.field.descriptionConstraints",
 };
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const data = (await res.json().catch(() => ({}))) as T & { message?: string };
-  if (!res.ok && res.status !== 207) throw new Error(data?.message ?? `${url}: HTTP ${res.status}`);
+  if (!res.ok && res.status !== 207) throw new Error(errorText(t, data, `${url}: HTTP ${res.status}`, { showErrorField: false }));
   return data;
 }
 
@@ -68,10 +68,10 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
   const refresh = useCallback(async () => {
     const errors: string[] = [];
     const settled = await Promise.allSettled([
-      fetchJson<{ conflicts?: SettingConflict[] }>("/api/media-generation/settings-sync"),
-      fetchJson<{ notices?: Array<{ kind: string; snapshotId?: string | null }> }>("/api/device-sync/status"),
-      fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>("/api/ai-connections/conflicts"),
-      fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>("/api/channel-connections"),
+      fetchJson<{ conflicts?: SettingConflict[] }>(t, "/api/media-generation/settings-sync"),
+      fetchJson<{ notices?: Array<{ kind: string; snapshotId?: string | null }> }>(t, "/api/device-sync/status"),
+      fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, "/api/ai-connections/conflicts"),
+      fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>(t, "/api/channel-connections"),
     ]);
     const [settingsRes, statusRes, aiRes, channelsRes] = settled;
     if (settingsRes.status === "fulfilled") setSettings(settingsRes.value.conflicts ?? []);
@@ -90,8 +90,8 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
       const perChannel = await Promise.allSettled(
         channelsRes.value.channels.filter((ch) => ch.isActive).map(async (ch) => {
           const [drafts, profile] = await Promise.all([
-            fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(`/api/channels/${ch.channelId}/change-drafts/conflicts`),
-            fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(`/api/channels/${ch.channelId}/editorial-profile/conflicts`),
+            fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/change-drafts/conflicts`),
+            fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/editorial-profile/conflicts`),
           ]);
           return { ch, drafts: drafts.conflicts, profile: profile.conflicts };
         })
@@ -226,7 +226,7 @@ export function ConflictCenter({
     }
   }
 
-  const post = (url: string, body: unknown) => fetchJson(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const post = (url: string, body: unknown) => fetchJson(t, url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
   const keepSetting = (c: SettingConflict, value: unknown) => act(() => post("/api/media-generation/settings-sync/resolve", { field: c.field, value }));
   const keepActor = (c: ActorConflict, actor: string) =>

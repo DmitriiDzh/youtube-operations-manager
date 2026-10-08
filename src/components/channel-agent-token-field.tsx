@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { AgentTokenImportForm } from "./agent-token-import-form";
@@ -70,7 +71,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
       });
       const data = (await res.json()) as { token?: TokenSummary & { token: string }; message?: string };
       if (!res.ok || !data.token) {
-        setError(data.message ?? t("settingsCards.token.issueFailed"));
+        setError(errorText(t, data, t("settingsCards.token.issueFailed"), { showErrorField: false }));
         return;
       }
       const { token, ...summary } = data.token;
@@ -95,7 +96,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
       });
       if (!res.ok) {
         const data = (await res.json()) as { message?: string };
-        setError(data.message ?? t("settingsCards.token.revokeFailed"));
+        setError(errorText(t, data, t("settingsCards.token.revokeFailed"), { showErrorField: false }));
         return;
       }
       setActive(null);

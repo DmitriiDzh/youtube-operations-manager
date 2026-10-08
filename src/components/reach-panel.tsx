@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { computeDefaultPeriodRange, formatChartDate } from "@/lib/analytics/period";
@@ -35,7 +36,7 @@ type SyncOutcome =
  * never shown as zero: the card says whether there is no job, a job still waiting for Google's first file, or data.
  */
 export function ReachPanel({ channelId, periodDays }: { channelId: string; periodDays: number }) {
-  const { t, formatNumber } = useUiText();
+  const { t, formatNumber, language } = useUiText();
   const formatCtrPercent = (v: number) => t("chart.value.ctrShort", { value: formatNumber(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
   const op = useOperation();
   const { runBlocking } = op;
@@ -87,7 +88,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
       );
       const body = await res.json();
       if (!res.ok) {
-        setError(body.message ?? t("reach.loadFailed"));
+        setError(errorText(t, body, t("reach.loadFailed"), { showErrorField: false }));
         return;
       }
       setError(null);
@@ -134,11 +135,11 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
           const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach/sync`, { method: "POST" });
           return { res, body: (await res.json()) as SyncOutcome & { message?: string } };
         },
-        failureOf: ({ res, body }) => (res.ok ? null : (body.message ?? t("reach.syncFailed"))),
+        failureOf: ({ res, body }) => (res.ok ? null : (errorText(t, body, t("reach.syncFailed"), { showErrorField: false }))),
         summarize: ({ body }) => (body.skipped ? t("reach.nothingNew") : t("reach.filesImported", { count: body.filesImported })),
       });
       if (!res.ok) {
-        setError(body.message ?? t("reach.syncFailed"));
+        setError(errorText(t, body, t("reach.syncFailed"), { showErrorField: false }));
         await loadStatus(); // a failed sync is recorded; show it
         return;
       }
@@ -189,11 +190,11 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
           <div className="flex flex-wrap gap-6 text-sm">
             <div>
               <div className="text-xs text-zinc-500">{t("reach.impressions")}</div>
-              <div className="text-lg font-semibold text-zinc-100">{formatImpressions(data.totals.impressions)}</div>
+              <div className="text-lg font-semibold text-zinc-100">{formatImpressions(data.totals.impressions, language)}</div>
             </div>
             <div>
               <div className="text-xs text-zinc-500">{t("reach.ctr")}</div>
-              <div className="text-lg font-semibold text-zinc-100">{formatCtr(data.totals.ctr)}</div>
+              <div className="text-lg font-semibold text-zinc-100">{formatCtr(data.totals.ctr, language)}</div>
             </div>
             <div>
               <div className="text-xs text-zinc-500">{t("reach.dataAvailable")}</div>
@@ -210,7 +211,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
               <AnalyticsLineChart
                 data={data.daily.map((d) => ({ date: d.date, value: d.impressions }))}
                 formatValue={(v) => t("chart.value.impressions", { count: v })}
-                formatDate={formatChartDate}
+                formatDate={(d) => formatChartDate(d, language)}
               />
               {data.daily.some((d) => d.ctr !== null) && (
                 <>
@@ -218,7 +219,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
                   <AnalyticsLineChart
                     data={data.daily.filter((d) => d.ctr !== null).map((d) => ({ date: d.date, value: (d.ctr as number) * 100 }))}
                     formatValue={formatCtrPercent}
-                    formatDate={formatChartDate}
+                    formatDate={(d) => formatChartDate(d, language)}
                     colorClassName="text-emerald-400"
                     height={120}
                   />
@@ -248,8 +249,8 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
                     <td className="max-w-[26rem] truncate py-1.5" title={titles.get(video.videoId)?.title ?? video.videoId}>
                       {titles.get(video.videoId)?.title ?? <span className="font-mono text-xs">{video.videoId}</span>}
                     </td>
-                    <td className="py-1 text-right">{formatImpressions(video.impressions)}</td>
-                    <td className="py-1 text-right">{formatCtr(video.ctr)}</td>
+                    <td className="py-1 text-right">{formatImpressions(video.impressions, language)}</td>
+                    <td className="py-1 text-right">{formatCtr(video.ctr, language)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -274,19 +275,19 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
               ) : (
                 <>
                   <div className="text-xs text-zinc-500">
-                    {t("reach.videoSummary", { impressions: formatImpressions(videoDetail.totals.impressions), ctr: formatCtr(videoDetail.totals.ctr) })}
+                    {t("reach.videoSummary", { impressions: formatImpressions(videoDetail.totals.impressions, language), ctr: formatCtr(videoDetail.totals.ctr, language) })}
                   </div>
                   <AnalyticsLineChart
                     data={videoDetail.videoDaily.map((d) => ({ date: d.date, value: d.impressions }))}
                     formatValue={(v) => t("chart.value.impressions", { count: v })}
-                    formatDate={formatChartDate}
+                    formatDate={(d) => formatChartDate(d, language)}
                     height={140}
                   />
                   {videoDetail.videoDaily.some((d) => d.ctr !== null) && (
                     <AnalyticsLineChart
                       data={videoDetail.videoDaily.filter((d) => d.ctr !== null).map((d) => ({ date: d.date, value: (d.ctr as number) * 100 }))}
                       formatValue={formatCtrPercent}
-                      formatDate={formatChartDate}
+                      formatDate={(d) => formatChartDate(d, language)}
                       colorClassName="text-emerald-400"
                       height={110}
                     />

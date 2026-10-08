@@ -54,7 +54,9 @@ test("AC-P14-25: the balance header shows the GraphQL balance, or says the balan
   });
   const degraded = describeBalance(t, { source: "billing", balanceUsd: null, spentUsd: 3.75, podsUsd: 0.25, networkVolumesUsd: 3.5, from: "2026-09-05T00:00:00Z", to: "2026-10-06T00:00:00Z", balanceError: "RunPod GraphQL returned HTTP 500." });
   assert.equal(degraded.headline, "balance unavailable");
-  assert.equal(degraded.detail, "RunPod spend (2026-09-05 – 2026-10-06): $3.75 (pods $0.25, network volumes $3.50). The balance read failed: RunPod GraphQL returned HTTP 500.");
+  // Owner's standing rule (Telegram 2026-09-26): every date the app shows is DD.MM.YYYY -- this billing window was the
+  // last place still showing the API's raw YYYY-MM-DD (found during BL-152). The window bounds are UTC calendar days.
+  assert.equal(degraded.detail, "RunPod spend (05.09.2026 – 06.10.2026): $3.75 (pods $0.25, network volumes $3.50). The balance read failed: RunPod GraphQL returned HTTP 500.");
 });
 
 // Owner, Telegram 2026-10-06 (msg 1793): Production → Models → "Models on the volume" refreshes by itself every time the

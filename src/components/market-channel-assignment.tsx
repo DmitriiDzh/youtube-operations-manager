@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import type { Translate } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
@@ -93,7 +94,7 @@ export function MarketChannelAssignment({
       });
       const data = (await res.json()) as { assignment?: Assignment; message?: string };
       if (!res.ok || !data.assignment) {
-        setError(data.message ?? t("assignment.saveFailed"));
+        setError(errorText(t, data, t("assignment.saveFailed"), { showErrorField: false }));
         return;
       }
       setAssigned(data.assignment.channelIds);

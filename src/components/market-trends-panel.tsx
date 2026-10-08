@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
 import { BlockingDialog } from "./blocking-dialog";
@@ -170,7 +171,7 @@ export function MarketTrendsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setCreateError(data.message ?? t("trends.createFailed"));
+        setCreateError(errorText(t, data, t("trends.createFailed"), { showErrorField: false }));
         return;
       }
       setNewTitle("");
@@ -195,7 +196,7 @@ export function MarketTrendsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatusError(data.message ?? t("trends.updateStatusFailed"));
+        setStatusError(errorText(t, data, t("trends.updateStatusFailed"), { showErrorField: false }));
         return;
       }
       setStatusReason("");
@@ -221,7 +222,7 @@ export function MarketTrendsPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setAddEvidenceError(data.message ?? t("trends.recordEvidenceFailed"));
+        setAddEvidenceError(errorText(t, data, t("trends.recordEvidenceFailed"), { showErrorField: false }));
         return;
       }
       setAddEvidenceRef("");

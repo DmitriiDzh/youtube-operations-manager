@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useRef, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { useT } from "./ui-text-provider";
@@ -64,7 +65,7 @@ export function AgentTokenImportForm<TSummary>({
       });
       const data = (await res.json()) as { token?: TSummary; message?: string };
       if (!res.ok || !data.token) {
-        setError(data.message ?? t("settingsCards.tokenImport.failed"));
+        setError(errorText(t, data, t("settingsCards.tokenImport.failed"), { showErrorField: false }));
         return;
       }
       onImported(data.token);

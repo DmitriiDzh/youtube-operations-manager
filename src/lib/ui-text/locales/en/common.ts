@@ -40,4 +40,9 @@ export const common = {
 
   "errorBoundary.title": "Something went wrong in {label}.",
   "errorBoundary.body": "The rest of the app is unaffected. You can try again, or switch to another tab.",
+
+  "timeUntil.now": "now",
+  "timeUntil.lessThanMinute": "less than a minute",
+  "timeUntil.hoursMinutes": "{h} h {m} min",
+  "timeUntil.minutes": "{m} min",
 } as const;

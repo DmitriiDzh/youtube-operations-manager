@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PlanCheck, PlanMarker, PlanReference, PlanReviewEntry } from "@/lib/generation-plans/contracts";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
@@ -212,7 +213,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
           const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; message?: string } & Partial<PeerQueueResponse>;
-          if (!res.ok) throw new Error(data.message ?? t("review.loadFailedStatus", { status: String(res.status) }));
+          if (!res.ok) throw new Error(errorText(t, data, t("review.loadFailedStatus", { status: String(res.status) }), { showErrorField: false }));
           setReferences(peerDevice ? (data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId)?.references ?? []) : (data.references ?? []));
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ProgressBar } from "./progress-bar";
 import { QuotaHistoryDialog } from "./quota-history-dialog";
 import { QuotaResetTime } from "./quota-reset-time";
-import { translateWithSlots } from "./quota-block-dialog";
+import { translateWithSlots } from "./ui-text-provider";
 import { useT } from "./ui-text-provider";
 
 export type ServiceQuotaStatusView = {

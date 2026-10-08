@@ -6,7 +6,7 @@ import { LoadingIndicator } from "./operation-progress";
 import { estimateCollectionUnits } from "@/lib/market-intelligence/collection-depth";
 import { describeCompleteReason, parseDateDraft, parseDepthDraft } from "./market-collection-depth-fields";
 import { useT } from "./ui-text-provider";
-import { uiMessageText } from "@/lib/ui-text";
+import { uiMessageText, errorText } from "@/lib/ui-text";
 
 type Progress = {
   maxVideosPerChannel: number;
@@ -87,7 +87,7 @@ export function MarketChannelCollectionDepth({ channelId }: { channelId: string 
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("depth.saveFailed"));
+        setError(errorText(t, data, t("depth.saveFailed"), { showErrorField: false }));
         return;
       }
       if (requestedChannelRef.current === channelId) apply(data as Progress);

@@ -10,6 +10,7 @@
 //   RunPod, Syncthing, Factory Operator, Operations Manager.
 import type { UiTextKey } from "./en";
 import { analytics } from "./ru/analytics";
+import { analyticsLabels } from "./ru/analyticsLabels";
 import { batches } from "./ru/batches";
 import { common } from "./ru/common";
 import { content } from "./ru/content";
@@ -25,6 +26,6 @@ import { settings } from "./ru/settings";
 import { settingsCards } from "./ru/settingsCards";
 import { shell } from "./ru/shell";
 
-export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors } as const;
+export const ruAreas = { common, shell, settings, production, media, languages, batches, decisions, research, researchData, analytics, content, merge, settingsCards, errors, analyticsLabels } as const;
 
-export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors };
+export const ru: Record<UiTextKey, string> = { ...common, ...shell, ...settings, ...production, ...media, ...languages, ...batches, ...decisions, ...research, ...researchData, ...analytics, ...content, ...merge, ...settingsCards, ...errors, ...analyticsLabels };

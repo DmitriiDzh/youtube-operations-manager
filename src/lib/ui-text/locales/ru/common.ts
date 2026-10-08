@@ -41,4 +41,9 @@ export const common: Record<keyof typeof en, string> = {
 
   "errorBoundary.title": "Сбой в разделе «{label}».",
   "errorBoundary.body": "Остальное приложение работает. Попробуйте ещё раз или перейдите на другую вкладку.",
+
+  "timeUntil.now": "сейчас",
+  "timeUntil.lessThanMinute": "меньше минуты",
+  "timeUntil.hoursMinutes": "{h} ч {m} мин",
+  "timeUntil.minutes": "{m} мин",
 };

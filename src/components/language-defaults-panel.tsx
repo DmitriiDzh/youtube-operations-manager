@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation, type AttachedOperationResult } from "./operation-progress";
@@ -65,7 +66,7 @@ export function LanguageDefaultsPanel({
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/language-defaults`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message ?? data.error ?? t("languageDefaults.loadFailed"));
+      if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.loadFailed")));
       setReport(data);
       setLanguage(data.defaults.defaultLanguage ?? "");
       setAudio(data.defaults.defaultAudioLanguage ?? "");
@@ -89,7 +90,7 @@ export function LanguageDefaultsPanel({
         body: JSON.stringify({ defaultLanguage: language || null, defaultAudioLanguage: audio || null }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message ?? data.error ?? t("languageDefaults.saveFailed"));
+      if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.saveFailed")));
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("languageDefaults.saveFailed"));
@@ -157,7 +158,7 @@ export function LanguageDefaultsPanel({
           body: JSON.stringify({ patch: patchFor(row) }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.message ?? data.error ?? t("languageDefaults.previewFailed"));
+        if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.previewFailed")));
         next[row.videoId] = { status: "ready", etag: data.before?.etag ?? null, before: data.before?.defaultLanguage ?? null };
         op.setItem(row.videoId, "done");
       } catch (e) {
@@ -278,7 +279,7 @@ export function LanguageDefaultsPanel({
           setQuotaBlock(quota);
           return;
         }
-        throw new Error(data.message ?? data.error ?? t("languageDefaults.startFailed"));
+        throw new Error(errorText(t, data, t("languageDefaults.startFailed")));
       }
       op.attach(data.operationId, { title: t("languageDefaults.writingTitle"), quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
     } catch (e) {

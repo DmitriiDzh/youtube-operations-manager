@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
@@ -105,7 +106,7 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.message ?? data.error ?? t("common.errorStatus", { status: res.status }));
+        setError(errorText(t, data, t("common.errorStatus", { status: res.status })));
         return;
       }
       await refresh();

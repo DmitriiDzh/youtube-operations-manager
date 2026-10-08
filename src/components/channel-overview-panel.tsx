@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatChartDate, formatWatchTimeHours } from "@/lib/analytics/period";
 import { formatDisplayDateUtc } from "@/lib/shared-formatting";
@@ -95,7 +96,7 @@ const PERIOD_OPTIONS = [
 ] as const;
 
 export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: string }) {
-  const { t, formatNumber } = useUiText();
+  const { t, formatNumber, language } = useUiText();
   const op = useOperation();
   const { runBlocking } = op;
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
@@ -180,7 +181,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       const data = await res.json();
       if (!isLatest()) return;
       if (!res.ok) {
-        setOverviewError(data.message ?? t("overview.loadFailed"));
+        setOverviewError(errorText(t, data, t("overview.loadFailed"), { showErrorField: false }));
         if (!refresh) setOverview(null);
         return;
       }
@@ -270,15 +271,15 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           return { res, data: await res.json() };
         },
         failureOf: ({ res, data }) =>
-          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) })),
+          res.ok || data.error === "analytics_data_current" ? null : (errorText(t, data, t("common.errorStatus", { status: String(res.status) }))),
         summarize: ({ data }) =>
           typeof data.videoCount === "number" ? t("analytics.videosQueried", { count: data.videoCount }) : null,
       });
       if (!res.ok) {
         if (data.error === "analytics_data_current") {
-          setCollectMessage({ kind: "info", text: data.message ?? t("overview.alreadyCurrent") });
+          setCollectMessage({ kind: "info", text: errorText(t, data, t("overview.alreadyCurrent"), { showErrorField: false }) });
         } else {
-          setCollectMessage({ kind: "error", text: data.message ?? data.error ?? t("common.errorStatus", { status: String(res.status) }) });
+          setCollectMessage({ kind: "error", text: errorText(t, data, t("common.errorStatus", { status: String(res.status) })) });
         }
         return;
       }
@@ -449,7 +450,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
             >
               <div className="text-xs text-zinc-500">{t("overview.metric.watchTimeHours")}</div>
               <div className="text-2xl font-semibold text-zinc-100">
-                {formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}
+                {formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched, language)}
               </div>
               <MetricDelta
                 percent={computePercentChange(
@@ -498,7 +499,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 {reachReady && reach ? (
                   <>
                     <div className="text-2xl font-semibold text-zinc-100">
-                      {key === "impressions" ? formatImpressions(reach.totals.impressions) : formatCtr(reach.totals.ctr)}
+                      {key === "impressions" ? formatImpressions(reach.totals.impressions, language) : formatCtr(reach.totals.ctr, language)}
                     </div>
                     <span className="text-xs text-zinc-500">
                       {reach.coverage.firstDate
@@ -558,7 +559,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 </div>
               </div>
             )}
-            <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} formatDate={formatChartDate} />
+            <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} formatDate={(d) => formatChartDate(d, language)} />
             {granularity !== "day" && selectedMetric !== "impressions" && selectedMetric !== "ctr" && (
               <p className="mt-1 text-xs text-zinc-500">
                 {t(granularity === "week" ? "overview.granularityNote.week" : "overview.granularityNote.month")}

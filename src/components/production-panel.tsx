@@ -1,5 +1,7 @@
 "use client";
 
+import { formatDisplayDateUtc } from "@/lib/shared-formatting";
+import { errorText } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 import type { Translate } from "@/lib/ui-text";
 import type { PeerReviewSource } from "./plan-review-screen";
@@ -46,7 +48,7 @@ export function describeBalance(t: Translate, balance: RunpodAccountBalance): { 
     headline: t("production.balance.unavailable"),
     detail:
       balance.from && balance.to
-        ? t("production.balance.billingWindow", { ...amounts, from: balance.from.slice(0, 10), to: balance.to.slice(0, 10) })
+        ? t("production.balance.billingWindow", { ...amounts, from: formatDisplayDateUtc(balance.from), to: formatDisplayDateUtc(balance.to) })
         : t("production.balance.billing", amounts),
   };
 }
@@ -62,7 +64,7 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
     return fetch("/api/media-generation/balance")
       .then(async (res) => {
         const data = (await res.json().catch(() => ({}))) as { balance?: RunpodAccountBalance; message?: string };
-        if (!res.ok || !data.balance) throw new Error(data.message ?? t("production.balance.requestFailedStatus", { status: String(res.status) }));
+        if (!res.ok || !data.balance) throw new Error(errorText(t, data, t("production.balance.requestFailedStatus", { status: String(res.status) }), { showErrorField: false }));
         setBalance(data.balance);
         setError(null);
       })

@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OperationLockControl } from "@/components/operation-lock-control";
@@ -108,7 +109,7 @@ async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Prom
   const res = await fetch(url, init);
   const data = await res.json();
   if (!res.ok && res.status !== 207) {
-    throw new Error(data?.message ?? t("handoff.requestFailed", { url, status: String(res.status) }));
+    throw new Error(errorText(t, data, t("handoff.requestFailed", { url, status: String(res.status) }), { showErrorField: false }));
   }
   return data as T;
 }

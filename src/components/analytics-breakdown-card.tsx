@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText, type Translate } from "@/lib/ui-text";
 import { useEffect, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { LoadingIndicator } from "./operation-progress";
@@ -36,7 +37,8 @@ export function AnalyticsBreakdownCard({
   breakdown: string;
   title: string;
   metricName: string;
-  labelFor: (dimensionValues: string[]) => string;
+  /** BL-152: gets the interface-language translator, so dimension values are labelled in that language. */
+  labelFor: (dimensionValues: string[], t: Translate) => string;
   formatValue?: (value: number) => string;
   emptyMessage?: string;
 }) {
@@ -60,7 +62,7 @@ export function AnalyticsBreakdownCard({
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) {
-          setError(data.message ?? t("analytics.breakdown.loadFailed"));
+          setError(errorText(t, data, t("analytics.breakdown.loadFailed"), { showErrorField: false }));
           return;
         }
         setRows(data.rows as BreakdownRow[]);
@@ -74,7 +76,7 @@ export function AnalyticsBreakdownCard({
   }, [channelId, periodDays, breakdown, t]);
 
   const ranked = (rows ?? [])
-    .map((row) => ({ label: labelFor(row.dimensionValues), value: row.metrics[metricName] ?? 0 }))
+    .map((row) => ({ label: labelFor(row.dimensionValues, t), value: row.metrics[metricName] ?? 0 }))
     .sort((a, b) => b.value - a.value);
   const total = ranked.reduce((sum, row) => sum + row.value, 0);
 

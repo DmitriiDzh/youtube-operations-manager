@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import type { UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
@@ -93,7 +94,7 @@ export function AiConnectionsManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("settingsCards.ai.createFailed"));
+        setError(errorText(t, data, t("settingsCards.ai.createFailed"), { showErrorField: false }));
         return;
       }
       setDraft(EMPTY_DRAFT);

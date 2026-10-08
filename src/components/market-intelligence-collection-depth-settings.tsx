@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
 import { useT } from "./ui-text-provider";
-import { uiMessageText } from "@/lib/ui-text";
+import { uiMessageText, errorText } from "@/lib/ui-text";
 import { estimateCollectionUnits } from "@/lib/market-intelligence/collection-depth";
 import { parseDateDraft, parseDepthDraft } from "./market-collection-depth-fields";
 
@@ -77,7 +77,7 @@ export function MarketIntelligenceCollectionDepthSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? t("settings.saveFailed"));
+        setError(errorText(t, data, t("settings.saveFailed"), { showErrorField: false }));
         return;
       }
       apply(data as Defaults);

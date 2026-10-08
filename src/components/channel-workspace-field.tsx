@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { useT } from "./ui-text-provider";
@@ -74,7 +75,7 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
         message?: string;
       };
       if (!res.ok || !data.workspace) {
-        setError(data.message ?? t("settings.saveFailed"));
+        setError(errorText(t, data, t("settings.saveFailed"), { showErrorField: false }));
         return;
       }
       const stored = data.workspace.configured ? (data.workspace.path ?? null) : null;

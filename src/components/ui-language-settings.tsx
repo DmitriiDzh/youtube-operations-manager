@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { UI_LANGUAGES, type UiLanguage } from "@/lib/ui-text";
+import { UI_LANGUAGES, type UiLanguage, errorText } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 
 // BL-152 (docs/roadmap/plans/UI_LANGUAGE_PLAN.md): Settings → General → Interface language. "System" follows the browser's
@@ -30,7 +30,7 @@ export function UiLanguageSettings() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.message ?? data.error ?? t("settings.saveFailed"));
+        setError(errorText(t, data, t("settings.saveFailed")));
         return;
       }
       // The root layout reads the new cookie and re-renders the whole interface in the new language.

@@ -23,7 +23,7 @@ export function VideoPerformanceTable({
   loading: boolean;
   onSelectVideo?: (videoId: string) => void;
 }) {
-  const { t, formatNumber } = useUiText();
+  const { t, formatNumber, language } = useUiText();
   const reachByVideo = new Map((reach?.videos ?? []).map((video) => [video.videoId, video]));
   const reachReady = reach?.state === "ready";
 
@@ -69,9 +69,9 @@ export function VideoPerformanceTable({
                       </div>
                     </td>
                     <td className="py-1.5 text-right">{formatNumber(row.views)}</td>
-                    <td className="py-1.5 text-right">{formatWatchTimeHours(row.watchMinutes)}</td>
-                    <td className="py-1.5 text-right">{reachReady && r ? formatImpressions(r.impressions) : "—"}</td>
-                    <td className="py-1.5 text-right">{reachReady && r ? formatCtr(r.ctr) : "—"}</td>
+                    <td className="py-1.5 text-right">{formatWatchTimeHours(row.watchMinutes, language)}</td>
+                    <td className="py-1.5 text-right">{reachReady && r ? formatImpressions(r.impressions, language) : "—"}</td>
+                    <td className="py-1.5 text-right">{reachReady && r ? formatCtr(r.ctr, language) : "—"}</td>
                   </tr>
                 );
               })}

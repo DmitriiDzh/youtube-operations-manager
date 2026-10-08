@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment, useMarketAssignments, VisibleToPill } from "./market-channel-assignment";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -181,7 +182,7 @@ export function MarketDiscoveryPanel({
       const res = await fetch(`/api/market-intelligence/discovery-candidates?${params.toString()}`);
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLoadError(body.message ?? t("discover.loadFailed"));
+        setLoadError(errorText(t, body, t("discover.loadFailed"), { showErrorField: false }));
         return;
       }
       setLoadError(null);
@@ -243,11 +244,11 @@ export function MarketDiscoveryPanel({
           });
           return { res, data: await res.json() };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? t("discover.searchFailed"))),
+        failureOf: ({ res, data }) => (res.ok ? null : (errorText(t, data, t("discover.searchFailed"), { showErrorField: false }))),
         summarize: () => t("discover.op.finished"),
       });
       if (!res.ok) {
-        setSearchError(data.message ?? t("discover.searchFailed"));
+        setSearchError(errorText(t, data, t("discover.searchFailed"), { showErrorField: false }));
         return;
       }
       setLastResult(data);
@@ -272,7 +273,7 @@ export function MarketDiscoveryPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setActionError(data.message ?? t("discover.statusFailed"));
+        setActionError(errorText(t, data, t("discover.statusFailed"), { showErrorField: false }));
         return;
       }
       await fetchCandidates();
@@ -293,7 +294,7 @@ export function MarketDiscoveryPanel({
       });
       const data = await res.json();
       if (!res.ok) {
-        setActionError(data.message ?? t("discover.promoteFailed"));
+        setActionError(errorText(t, data, t("discover.promoteFailed"), { showErrorField: false }));
         return;
       }
       setPromotingChannelId(null);

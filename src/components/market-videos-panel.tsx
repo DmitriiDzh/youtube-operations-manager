@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime, parseDisplayDate } from "@/lib/shared-formatting";
@@ -122,7 +123,7 @@ export function MarketVideosPanel({
           setData(body as VideosPage);
           setError(null);
         } else {
-          setError(body?.message ?? t("marketVideos.loadFailed"));
+          setError(errorText(t, body, t("marketVideos.loadFailed"), { showErrorField: false }));
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : t("marketVideos.loadFailed"));

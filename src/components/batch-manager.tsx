@@ -1,11 +1,13 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { runBatchWithProgress } from "./batch-run";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation } from "./operation-progress";
-import { QuotaBlockDialog, translateWithSlots, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { translateWithSlots } from "./ui-text-provider";
 import { useT } from "./ui-text-provider";
 
 type ChangeSetSummary = {
@@ -191,7 +193,7 @@ export function BatchManager({
       const data = await res.json();
       if (!res.ok) {
         const err = data as ApiError;
-        throw new Error(err.message ?? t("batches.error.create"));
+        throw new Error(errorText(t, err, t("batches.error.create"), { showErrorField: false }));
       }
       setSelectedChangeIds(new Set());
       setCreateAsLive(false);
