@@ -162,6 +162,8 @@ export type DomainErrorCode =
   | "plan_closed"
   | "plan_mismatch"
   | "plan_invalid"
+  // BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-04): the attempt already has a verdict and the request did not say `replace`.
+  | "plan_verdict_exists"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

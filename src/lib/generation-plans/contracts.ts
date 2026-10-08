@@ -170,6 +170,13 @@ export type PlanReviewEntry = {
    * in-app) or "rejected"; null when it said nothing (an attempt that only has an owner verdict).
    */
   validator: PlanValidatorVerdict | null;
+  /** BL-157 (AC-TC-05): the attempt's owner verdicts, oldest first (the last 10); absent when there are none. */
+  history?: PlanVerdictHistoryEntry[];
+  /**
+   * BL-157 (AC-TC-03): on the device that owns the plan, a verdict another device sent and this one has not applied yet --
+   * shown as "rated on <device>, being applied" and already counted as given (`verdict` carries it).
+   */
+  pendingFrom?: string;
 };
 
 export type PlanValidatorVerdict = "passed" | "rejected";
@@ -231,6 +238,18 @@ export type PlanReviewBatch = {
   /** At the stage right before the owner's review: attempts it passed (accepted / done) and rejected. */
   validator: { passed: number; rejected: number };
 };
+
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-05): one owner verdict of an attempt, as its history shows it (oldest first). */
+export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string };
+
+/** The full stored row (the history of a plan, every attempt). */
+export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & { itemKey: string; attemptRef: string; reasons: string[]; markers: PlanMarker[] };
+
+/** BL-157 (AC-TC-04): what is already there when a verdict would replace it -- for "Already rated on … Replace?". */
+export type PlanExistingVerdict = { result: string; rating: number | null; device: string | null; at: string };
+
+/** BL-157 (AC-TC-01/02, AC-WV-06): "being reviewed on <device> since <time>" -- another device's claim on a track or a wave. */
+export type PlanReviewClaim = { scope: "attempt" | "group"; itemKey: string | null; attemptRef: string | null; groupId: string | null; device: string; since: string; until: string };
 
 /** BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01): another device's plan, named for "open the place" (null = this device's). */
 export type PlanDeviceRef = { deviceId: string; hostname: string | null } | null;
@@ -294,6 +313,10 @@ export function planClosed(planId: string, status: PlanStatus): DomainError {
 }
 export function planMismatch(message: string, details: Record<string, unknown>): DomainError {
   return new DomainError({ code: "plan_mismatch", message, details });
+}
+/** BL-157 (AC-TC-04): a verdict on an attempt that already has one, without `replace`. */
+export function planVerdictExists(message: string, existing: PlanExistingVerdict): DomainError {
+  return new DomainError({ code: "plan_verdict_exists", message, details: { existing } });
 }
 export function planInvalid(message: string, details: Record<string, unknown> = {}): DomainError {
   return new DomainError({ code: "plan_invalid", message, details });

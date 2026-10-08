@@ -195,3 +195,29 @@ test("AC-WV-02: the walk is the validator filter, then the chosen wave", async (
   assert.deepEqual(visibleEntries(entries, "rejected", "C14").map((x) => x.id), ["b"]);
   assert.deepEqual(visibleEntries(entries, "rejected", null).map((x) => x.id), ["b", "c"]);
 });
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-02, AC-WV-06): a track another computer is reviewing is marked and passed over.
+test("AC-TC-02: claimOf -- a live claim on the track or its wave; expired or other tracks' claims do not count", async () => {
+  const { claimOf } = await import("./plan-review-screen");
+  const now = Date.parse("2026-10-08T16:35:00Z");
+  const claim = (over: Record<string, unknown>) => ({ scope: "attempt" as const, itemKey: "C14/F1", attemptRef: "job:j1", groupId: null, device: "DESKTOP-B0UCB4I", since: "2026-10-08T16:31:00Z", until: "2026-10-08T16:41:00Z", ...over });
+  const entry = { itemKey: "C14/F1", attemptRef: "job:j1", groupId: "C14" };
+  assert.equal(claimOf(entry, [claim({})], now)?.device, "DESKTOP-B0UCB4I");
+  assert.equal(claimOf(entry, [claim({ until: "2026-10-08T16:34:59Z" })], now), null, "expired");
+  assert.equal(claimOf(entry, [claim({ attemptRef: "job:j2" })], now), null, "another track");
+  assert.equal(claimOf(entry, [claim({ scope: "group", itemKey: null, attemptRef: null, groupId: "C14" })], now)?.groupId, "C14", "its wave");
+  assert.equal(claimOf(entry, [claim({ scope: "group", itemKey: null, attemptRef: null, groupId: "C13" })], now), null, "another wave");
+  assert.equal(claimOf({ ...entry, groupId: null }, [claim({ scope: "group", itemKey: null, attemptRef: null, groupId: null })], now), null, "no wave is no wave claim");
+});
+
+test("AC-TC-02: the arrows and 'next waiting' pass over skipped tracks, wrapping; with everything skipped they stay put", async () => {
+  const { nextWaitingIndex, stepIndex } = await import("./plan-review-screen");
+  const entries = [{ id: "a", verdict: null }, { id: "b", verdict: null }, { id: "c", verdict: {} }, { id: "d", verdict: null }];
+  const skipB = (e: { id: string }) => e.id === "b";
+  assert.equal(stepIndex(entries, 0, 1, skipB), 2);
+  assert.equal(stepIndex(entries, 2, -1, skipB), 0);
+  assert.equal(stepIndex(entries, 0, -1, skipB), 3, "wraps");
+  assert.equal(stepIndex(entries, 1, 1, () => true), 1, "all skipped: stays");
+  assert.equal(nextWaitingIndex(entries, 0, skipB), 3, "b is claimed, c is reviewed");
+  assert.equal(nextWaitingIndex(entries, 0), 1, "without skipping, as before");
+});

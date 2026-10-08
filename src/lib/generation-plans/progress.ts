@@ -12,6 +12,7 @@ import type {
   PlanStageCounts,
   PlanTodo,
   PlanValidatorVerdict,
+  PlanVerdictHistoryRow,
 } from "./contracts";
 
 // ---------------------------------------------------------------------------
@@ -365,7 +366,11 @@ export function secondFloor(at: Date): Date {
  * event returned when more remain (so none is skipped -- events of that second may repeat), else null (the caller uses
  * the current second). Stored times have one-second resolution, hence the inclusive bound.
  */
-export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 500): { events: PlanEvent[]; more: boolean; cursor: string | null } {
+/**
+ * `history` (BL-157, AC-TC-05): the owner verdicts' history -- an attempt that has history rows gets one `owner_verdict` per
+ * verdict (with the device it was given on); one without (a verdict from before the history existed) gets one from its row.
+ */
+export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], results: PlanResultRow[], recorded: PlanEvent[], since: Date | null, limit = 500, history: PlanVerdictHistoryRow[] = []): { events: PlanEvent[]; more: boolean; cursor: string | null } {
   const events: PlanEvent[] = [];
   for (const j of jobs) {
     const base = { jobId: j.id, sessionId: j.sessionId, itemKey: j.itemKey, seed: j.seed };
@@ -383,8 +388,32 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
   const rejectedEarlier = new Set(results.filter((r) => r.result === "rejected").map((r) => `${r.stageId}\u0000${r.itemKey}\u0000${r.attemptRef}`));
   // BL-153 AC-RR-04: the owner accepted an attempt an earlier stage (the validator) rejected -- a calibration case for the factory.
   const overrides = (r: PlanResultRow) => r.reportedBy === "owner" && r.result === "accepted" && results.some((x) => x.stageId !== r.stageId && x.itemKey === r.itemKey && x.attemptRef === r.attemptRef && rejectedEarlier.has(`${x.stageId}\u0000${x.itemKey}\u0000${x.attemptRef}`));
+  const historyKeys = new Set(history.map((h) => `${h.itemKey}\u0000${h.attemptRef}`));
   for (const r of results) {
     if (r.reportedBy === "import") continue;
+    if (r.reportedBy === "owner" && historyKeys.has(`${r.itemKey}\u0000${r.attemptRef}`)) {
+      for (const h of history.filter((x) => x.itemKey === r.itemKey && x.attemptRef === r.attemptRef)) {
+        const asRow = { ...r, result: h.result };
+        events.push({
+          at: h.at,
+          kind: "owner_verdict",
+          actor: "owner",
+          details: {
+            stageId: r.stageId,
+            itemKey: h.itemKey,
+            attemptRef: h.attemptRef,
+            result: h.result,
+            device: h.device,
+            ...(h.rating !== null ? { rating: h.rating } : {}),
+            ...(h.reasons.length > 0 ? { reasons: h.reasons } : {}),
+            ...(h.markers.length > 0 ? { markers: h.markers } : {}),
+            ...(h.note ? { note: h.note } : {}),
+            ...(overrides(asRow) ? { overridesValidator: true } : {}),
+          },
+        });
+      }
+      continue;
+    }
     events.push({
       at: r.at,
       kind: r.reportedBy === "owner" ? "owner_verdict" : "result_reported",

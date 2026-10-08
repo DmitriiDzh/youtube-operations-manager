@@ -1020,6 +1020,52 @@ export const generationPlanPeerVerdicts = sqliteTable(
   (table) => [index("generation_plan_peer_verdicts_at_idx").on(table.at)]
 );
 
+/**
+ * Schema v69 (BL-157, SERVERS_MEDIA_PLAN.md AC-TC-05): every owner verdict on THIS device's plans, given here or applied from
+ * another device -- the result row keeps only the newest, this keeps them all, with the device each was given on. Device-local.
+ */
+export const generationPlanVerdictHistory = sqliteTable(
+  "generation_plan_verdict_history",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    planId: text("plan_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    attemptRef: text("attempt_ref").notNull(),
+    result: text("result").notNull(),
+    rating: integer("rating"),
+    reasonsJson: text("reasons_json"),
+    markersJson: text("markers_json"),
+    note: text("note"),
+    /** The computer it was given on (its host name, else its device id). */
+    device: text("device").notNull(),
+    /** When the owner gave it (that device's clock), ISO. */
+    at: text("at").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("generation_plan_verdict_history_plan_idx").on(table.planId, table.itemKey, table.attemptRef)]
+);
+
+/**
+ * Schema v70 (BL-157, AC-TC-01/AC-WV-06): this device's "being reviewed here" claims -- a track (`attempt`) or a wave
+ * (`group`) of a plan owned by `owner_device_id` (this device's own id for its own plans). Published in this device's plans
+ * report; advisory, not a lock. Times in ms. Device-local.
+ */
+export const generationPlanReviewClaims = sqliteTable(
+  "generation_plan_review_claims",
+  {
+    claimId: text("claim_id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    ownerDeviceId: text("owner_device_id").notNull(),
+    scope: text("scope", { enum: ["attempt", "group"] }).notNull(),
+    itemKey: text("item_key"),
+    attemptRef: text("attempt_ref"),
+    groupId: text("group_id"),
+    since: integer("since", { mode: "timestamp_ms" }).notNull(),
+    until: integer("until", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("generation_plan_review_claims_plan_idx").on(table.ownerDeviceId, table.planId)]
+);
+
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -3638,6 +3684,47 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 69,
+    description:
+      "generation_plan_verdict_history -- BL-157 (FO-REQ-0009 §6.4): every owner verdict on this device's plans with the device it was given on (the result row keeps only the newest). Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_verdict_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        attempt_ref TEXT NOT NULL,
+        result TEXT NOT NULL,
+        rating INTEGER,
+        reasons_json TEXT,
+        markers_json TEXT,
+        note TEXT,
+        device TEXT NOT NULL,
+        at TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_verdict_history_plan_idx ON generation_plan_verdict_history (plan_id, item_key, attempt_ref)");
+    },
+  },
+  {
+    version: 70,
+    description:
+      "generation_plan_review_claims -- BL-157 (FO-REQ-0009 §6.1/§7.3): this device's 'being reviewed here' claims on a track or a wave, published in its plans report (advisory). Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_review_claims (
+        claim_id TEXT PRIMARY KEY NOT NULL,
+        plan_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        item_key TEXT,
+        attempt_ref TEXT,
+        group_id TEXT,
+        since INTEGER NOT NULL,
+        until INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_review_claims_plan_idx ON generation_plan_review_claims (owner_device_id, plan_id)");
     },
   },
 ];
@@ -8478,6 +8565,38 @@ export async function listGenerationPlanPeerVerdicts(sinceIso: string, database:
   await database.delete(generationPlanPeerVerdicts).where(lt(generationPlanPeerVerdicts.at, sinceIso));
   const rows = await database.select().from(generationPlanPeerVerdicts).orderBy(desc(generationPlanPeerVerdicts.at)).limit(1000);
   return rows.reverse();
+}
+
+export type StoredGenerationPlanVerdictHistory = typeof generationPlanVerdictHistory.$inferSelect;
+
+/** BL-157 (AC-TC-05): one owner verdict appended to the plan's verdict history. */
+export async function insertGenerationPlanVerdictHistory(row: typeof generationPlanVerdictHistory.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanVerdictHistory).values(row);
+}
+
+/** A plan's verdict history, oldest first (by the time given, then the order recorded). */
+export async function listGenerationPlanVerdictHistory(planId: string, database: AppDb = db): Promise<StoredGenerationPlanVerdictHistory[]> {
+  return database.select().from(generationPlanVerdictHistory).where(eq(generationPlanVerdictHistory.planId, planId)).orderBy(asc(generationPlanVerdictHistory.at), asc(generationPlanVerdictHistory.id)).limit(20_000);
+}
+
+export type StoredGenerationPlanReviewClaim = typeof generationPlanReviewClaims.$inferSelect;
+
+/** BL-157 (AC-TC-01): sets this device's claim (one per id; the caller decides the id, so a track claim moves in place). */
+export async function upsertGenerationPlanReviewClaim(row: typeof generationPlanReviewClaims.$inferInsert, database: AppDb = db): Promise<void> {
+  await database
+    .insert(generationPlanReviewClaims)
+    .values(row)
+    .onConflictDoUpdate({ target: generationPlanReviewClaims.claimId, set: { planId: row.planId, ownerDeviceId: row.ownerDeviceId, scope: row.scope, itemKey: row.itemKey ?? null, attemptRef: row.attemptRef ?? null, groupId: row.groupId ?? null, since: row.since, until: row.until } });
+}
+
+export async function deleteGenerationPlanReviewClaim(claimId: string, database: AppDb = db): Promise<void> {
+  await database.delete(generationPlanReviewClaims).where(eq(generationPlanReviewClaims.claimId, claimId));
+}
+
+/** This device's live claims (expired ones are deleted first). */
+export async function listGenerationPlanReviewClaims(now: Date, database: AppDb = db): Promise<StoredGenerationPlanReviewClaim[]> {
+  await database.delete(generationPlanReviewClaims).where(lte(generationPlanReviewClaims.until, now));
+  return database.select().from(generationPlanReviewClaims).orderBy(asc(generationPlanReviewClaims.since)).limit(200);
 }
 
 /** Every job of a plan (no limit beyond a safety cap: a plan has at most a few thousand attempts). */

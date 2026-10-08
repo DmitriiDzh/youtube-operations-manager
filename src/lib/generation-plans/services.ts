@@ -3,6 +3,7 @@ import {
   planInvalid,
   planMismatch,
   planNotFound,
+  planVerdictExists,
   PLAN_MOVE_MISSING_LISTED,
   validatorOfEntry,
   type GenerationPlan,
@@ -18,13 +19,17 @@ import {
   type PlanReference,
   type PlanResultRow,
   type PlanReviewBatch,
+  type PlanReviewClaim,
+  type PlanVerdictHistoryEntry,
+  type PlanVerdictHistoryRow,
   type PlanStage,
   type PlanStatus,
   type PlanReviewEntry,
   type PlanTodo,
   type PlanView,
 } from "./contracts";
-import type { GenerationPlansReport, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
+import { createHash } from "node:crypto";
+import type { GenerationPlansReport, SharedClaim, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
 import { inAppAttempts, planEvents, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
@@ -44,6 +49,7 @@ import {
   PLAN_LIMITS,
   peerVerdictInputSchema,
   reportInputSchema,
+  reviewClaimInputSchema,
   rerunRequestInputSchema,
   updatePlanInputSchema,
   type ReportRowInput,
@@ -90,6 +96,15 @@ export type PlanStore = {
   insertPeerVerdict(verdict: SharedVerdict): Promise<void>;
   /** The outgoing verdicts given since `sinceIso` (older ones are dropped), oldest first. */
   listPeerVerdicts(sinceIso: string): Promise<SharedVerdict[]>;
+  /** BL-157 (AC-TC-05): every owner verdict on this device's plans, with the device it was given on. */
+  insertVerdictHistory(planId: string, row: PlanVerdictHistoryRow): Promise<void>;
+  /** A plan's verdict history, oldest first. */
+  listVerdictHistory(planId: string): Promise<PlanVerdictHistoryRow[]>;
+  /** BL-157 (AC-TC-01): this device's review claims (`claimId` decides which one a write replaces). */
+  upsertClaim(claim: SharedClaim): Promise<void>;
+  deleteClaim(claimId: string): Promise<void>;
+  /** This device's live claims (expired ones are dropped). */
+  listClaims(now: Date): Promise<SharedClaim[]>;
 };
 
 /** BL-143 slice 2: what running a stage needs of the media core (wired in `index.ts`; absent = runs are not available). */
@@ -122,6 +137,8 @@ export type PlanServiceDependencies = {
    * `sentFileExists` uses the player's own resolver, so "exists" means "plays" (inside Sent to YTM, no symlink, a file).
    */
   files?: { workspaceOf(channelId: string): Promise<string | null>; sentFileExists(workspace: string, relativePath: string): Promise<boolean> };
+  /** BL-157 (AC-TC-04/05): how this computer is named in a verdict's history (its host name, else its device id). */
+  deviceLabel?: () => Promise<string>;
   generateId?: () => string;
 };
 
@@ -143,6 +160,12 @@ export type PlanRunResult = {
 };
 
 const CAS_RETRIES = 5;
+/** BL-157 (AC-TC-01): a claim lasts this long after the screen last showed it (a heartbeat every minute extends it). */
+export const REVIEW_CLAIM_TTL_MS = 10 * 60_000;
+/** A peer's claim reaching further than this ahead is not believed (a clock far ahead, or a bad report). */
+const PEER_CLAIM_MAX_AHEAD_MS = 15 * 60_000;
+/** BL-157 (AC-TC-05): how many of an attempt's verdicts the history shows and the report carries. */
+const HISTORY_SHOWN = 10;
 /** BL-157 (AC-MV-02): a job in one of these may still write its output; a plan does not move while it has one. */
 const UNFINISHED_JOB_STATUSES: ReadonlySet<PlanJobRow["status"]> = new Set(["queued", "submitted", "generating", "transferring"]);
 /** BL-143 phase 2: what goes into this device's plans report for the other devices. */
@@ -460,6 +483,85 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     });
   }
 
+  const keyOf = (itemKey: string, attemptRef: string) => `${itemKey}\u0000${attemptRef}`;
+  async function ownDeviceId(): Promise<string> {
+    return deps.peers ? deps.peers.ownDeviceId() : "this-device";
+  }
+  async function ownLabel(): Promise<string> {
+    return deps.deviceLabel ? deps.deviceLabel() : ownDeviceId();
+  }
+  /** One track claim per (plan's device, plan) -- it moves with the track; one claim per wave. */
+  function claimIdOf(scope: "attempt" | "group", ownerDeviceId: string, planId: string, groupId?: string): string {
+    return createHash("sha256").update([scope, ownerDeviceId, planId, scope === "group" ? (groupId ?? "") : ""].join("\u0000")).digest("hex").slice(0, 32);
+  }
+  /** BL-157 (AC-TC-05): an attempt's verdicts for the screen, oldest first, the last few. */
+  function historyOf(history: PlanVerdictHistoryRow[], itemKey: string, attemptRef: string): PlanVerdictHistoryEntry[] {
+    return history
+      .filter((h) => h.itemKey === itemKey && h.attemptRef === attemptRef)
+      .slice(-HISTORY_SHOWN)
+      .map((h) => ({ result: h.result, rating: h.rating, note: h.note, device: h.device, at: h.at }));
+  }
+
+  /**
+   * BL-157 (AC-TC-03): verdicts the other devices sent for THIS device's plan that this device has not applied yet (it applies
+   * them on its tick), newest per attempt -- the same rules `applyPeerVerdicts` will use (not older than the stored verdict,
+   * not dated more than 5 minutes ahead), so what shows as "being applied" is what will be applied.
+   */
+  async function pendingPeerVerdicts(row: StoredPlan, events: PlanEvent[], results: PlanResultRow[]): Promise<Map<string, { verdict: SharedVerdict; from: string }>> {
+    const pending = new Map<string, { verdict: SharedVerdict; from: string }>();
+    const review = row.definition.stages.find((s) => s.kind === "owner_review");
+    if (!deps.peers || !review) return pending;
+    const own = await deps.peers.ownDeviceId();
+    const applied = new Set(events.filter((e) => e.kind === "peer_verdict" && typeof e.details.verdictId === "string").map((e) => e.details.verdictId as string));
+    const stored = new Map(results.filter((r) => r.stageId === review.stageId && r.reportedBy === "owner").map((r) => [keyOf(r.itemKey, r.attemptRef), r]));
+    const at = now().getTime();
+    for (const report of await deps.peers.listPeerReports()) {
+      for (const verdict of report.verdicts) {
+        if (verdict.ownerDeviceId !== own || verdict.planId !== row.id || applied.has(verdict.verdictId) || Date.parse(verdict.at) > at + 5 * 60_000) continue;
+        const key = keyOf(verdict.itemKey, verdict.attemptRef);
+        const current = stored.get(key);
+        if (current && Math.floor(Date.parse(verdict.at) / 1000) < Math.floor(Date.parse(current.at) / 1000)) continue;
+        const seen = pending.get(key);
+        if (!seen || Date.parse(verdict.at) > Date.parse(seen.verdict.at)) pending.set(key, { verdict, from: report.hostname ?? report.deviceId });
+      }
+    }
+    return pending;
+  }
+
+  /** The queue as the owner sees it on this device: a verdict on its way from another device already counts as given. */
+  function withPending(entries: PlanReviewEntry[], pending: Map<string, { verdict: SharedVerdict; from: string }>, reviewStageId: string): PlanReviewEntry[] {
+    if (pending.size === 0) return entries;
+    return entries.map((entry) => {
+      const p = pending.get(keyOf(entry.itemKey, entry.attemptRef));
+      if (!p) return entry;
+      const v = p.verdict;
+      return {
+        ...entry,
+        verdict: { stageId: reviewStageId, itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: v.result, reportedBy: "owner", note: v.note, rating: v.rating, reasons: v.reasons, markers: v.markers, auditionFile: null, checks: [], metrics: {}, at: v.at },
+        pendingFrom: p.from,
+      };
+    });
+  }
+
+  /** This device's queue of one of its own plans as the owner sees it here (history attached, pending verdicts counted). */
+  async function ownerQueue(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanReviewEntry[]> {
+    const review = row.definition.stages.find((s) => s.kind === "owner_review");
+    if (!review) return [];
+    const [events, history] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
+    const entries = reviewEntries(row, jobs, results).map((e) => {
+      const h = historyOf(history, e.itemKey, e.attemptRef);
+      return h.length > 0 ? { ...e, history: h } : e;
+    });
+    return withPending(entries, await pendingPeerVerdicts(row, events, results), review.stageId);
+  }
+
+  /** BL-157 (AC-TC-01): a verdict given here ends this device's claim on that track. */
+  async function endTrackClaim(ownerDeviceId: string, planId: string, itemKey: string, attemptRef: string): Promise<void> {
+    const id = claimIdOf("attempt", ownerDeviceId, planId);
+    const claim = (await deps.store.listClaims(now())).find((c) => c.claimId === id);
+    if (claim && claim.itemKey === itemKey && claim.attemptRef === attemptRef) await deps.store.deleteClaim(id);
+  }
+
   /**
    * BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-05): a wave whose waiting count an owner verdict took from above zero to zero records
    * `group_reviewed` once -- the owner's accepted and rejected verdicts in it, and how many of the accepted ones the validator
@@ -684,12 +786,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     async getPlan(input: unknown): Promise<PlanView & { events: PlanEvent[]; more: boolean; cursor: string }> {
       const parsed = parseWithSchema(getPlanInputSchema, input, "plan id");
       const row = await requirePlan(parsed.planId);
-      const [jobs, results, sessions, recorded] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id)]);
+      const [jobs, results, sessions, recorded, history] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
       const plan = toPublicPlan(row);
       const at = now();
       const page = parsed.latest
-        ? { events: planEvents(jobs, sessions, results, recorded, null, 1_000_000).events.slice(-500), more: false, cursor: null }
-        : planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null);
+        ? { events: planEvents(jobs, sessions, results, recorded, null, 1_000_000, history).events.slice(-500), more: false, cursor: null }
+        : planEvents(jobs, sessions, results, recorded, parsed.since ? new Date(parsed.since) : null, 500, history);
       return { plan, progress: planProgress(plan, jobs, results, sessions, at), events: page.events, more: page.more, cursor: page.cursor ?? new Date(secondFloor(at).getTime() - EVENT_CURSOR_LOOKBACK_MS).toISOString() };
     },
 
@@ -738,8 +840,34 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
       const known = inAppAttempts(row.definition, jobs, results).some((a) => a.itemKey === parsed.itemKey && a.attemptRef === parsed.attemptRef) || results.some((r) => r.itemKey === parsed.itemKey && r.attemptRef === parsed.attemptRef);
       if (!known) throw planMismatch(`Item ${parsed.itemKey} has no attempt ${parsed.attemptRef}`, { planId: row.id, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
+      // BL-157 (AC-TC-04): a verdict already there -- given here, relayed, or on its way from another device -- is replaced
+      // only when the owner confirmed it (`replace`); the screen asks first, this holds when the screen's data was stale.
+      if (!parsed.replace) {
+        const [events, history] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
+        const incoming = (await pendingPeerVerdicts(row, events, results)).get(keyOf(parsed.itemKey, parsed.attemptRef));
+        const current = results.find((r) => r.stageId === stage.stageId && r.itemKey === parsed.itemKey && r.attemptRef === parsed.attemptRef);
+        if (incoming) {
+          throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} was already rated on ${incoming.from}`, { result: incoming.verdict.result, rating: incoming.verdict.rating, device: incoming.from, at: incoming.verdict.at });
+        }
+        if (current) {
+          const device = historyOf(history, parsed.itemKey, parsed.attemptRef).at(-1)?.device ?? (current.reportedBy === "owner" ? null : current.reportedBy);
+          throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} already has a verdict`, { result: current.result, rating: current.rating, device, at: current.at });
+        }
+      }
       const result = resultRow({ ...parsed, stageId: stage.stageId }, "owner", now().toISOString());
       await deps.store.upsertResults(row.id, [result]);
+      await deps.store.insertVerdictHistory(row.id, {
+        itemKey: result.itemKey,
+        attemptRef: result.attemptRef,
+        result: parsed.result,
+        rating: result.rating,
+        reasons: result.reasons,
+        markers: result.markers,
+        note: result.note,
+        device: await ownLabel(),
+        at: result.at,
+      });
+      await endTrackClaim(await ownDeviceId(), row.id, result.itemKey, result.attemptRef);
       await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
       return result;
       });
@@ -863,7 +991,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       let rejected = 0;
       for (const row of await deps.store.listPlans({ status: "active" })) {
         const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-        const waiting = reviewEntries(row, jobs, results).filter((e) => e.verdict === null);
+        // BL-157 (AC-TC-03): a verdict on its way from another device no longer waits here.
+        const waiting = (await ownerQueue(row, jobs, results)).filter((e) => e.verdict === null);
         local += waiting.length;
         rejected += waiting.filter((e) => e.validator === "rejected").length;
       }
@@ -915,7 +1044,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         if (!target) continue;
         const [jobs, results, sessions] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id)]);
         const plan = toPublicPlan(row);
-        const waiting = reviewEntries(row, jobs, results).filter((e) => e.verdict === null);
+        const waiting = (await ownerQueue(row, jobs, results)).filter((e) => e.verdict === null);
         add(target, plan, null, waiting.map((e) => ({ groupId: e.groupId, rejected: e.validator === "rejected" })), planProgress(plan, jobs, results, sessions, now()).notices);
       }
       if (deps.peers) {
@@ -931,6 +1060,86 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       }
       const active = input.activeChannelId ? work.get(input.activeChannelId) : undefined;
       return { waitingReview: active?.waitingReview ?? 0, waitingPassed: active?.waitingPassed ?? 0, waitingRejected: active?.waitingRejected ?? 0, channels: [...work.values()] };
+    },
+
+    /**
+     * BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-01, AC-WV-06): this device claims a track or a wave for review -- or gives it up
+     * (`release`). A track claim moves with the track (one per plan) and lasts 10 minutes from the last call (the screen's
+     * heartbeat); a verdict given here ends it. Advisory only: it reaches the other devices with this device's report.
+     */
+    async claimReview(input: unknown): Promise<{ claimId: string; until: string | null }> {
+      const parsed = parseWithSchema(reviewClaimInputSchema, input, "review claim");
+      const own = await ownDeviceId();
+      const ownerDeviceId = parsed.deviceId ?? own;
+      // The plan must be one this device can review: its own active plan, or an active plan in that device's report.
+      let entries: Array<{ itemKey: string; attemptRef: string; groupId: string | null }>;
+      let groups: string[];
+      if (ownerDeviceId === own) {
+        const row = await requireActive(parsed.planId);
+        const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+        entries = reviewEntries(row, jobs, results);
+        groups = row.definition.groups.map((g) => g.groupId);
+      } else {
+        const report = deps.peers ? (await deps.peers.listPeerReports()).find((r) => r.deviceId === ownerDeviceId) : undefined;
+        const plan = report?.plans.find((p) => p.planId === parsed.planId);
+        if (!plan) throw planNotFound(parsed.planId);
+        if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
+        entries = plan.review;
+        groups = plan.groups.map((g) => g.groupId);
+      }
+      const claimId = claimIdOf(parsed.scope, ownerDeviceId, parsed.planId, parsed.groupId);
+      if (parsed.release) {
+        await deps.store.deleteClaim(claimId);
+        return { claimId, until: null };
+      }
+      if (parsed.scope === "attempt" && !entries.some((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef)) {
+        throw planMismatch(`Plan ${parsed.planId} has no attempt ${parsed.attemptRef} of ${parsed.itemKey} to review`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
+      }
+      if (parsed.scope === "group" && !groups.includes(parsed.groupId as string)) throw planMismatch(`Plan ${parsed.planId} has no group ${parsed.groupId}`, { planId: parsed.planId, groupId: parsed.groupId });
+      const at = now();
+      const existing = (await deps.store.listClaims(at)).find((c) => c.claimId === claimId);
+      const same = existing && existing.itemKey === (parsed.itemKey ?? null) && existing.attemptRef === (parsed.attemptRef ?? null);
+      const until = new Date(at.getTime() + REVIEW_CLAIM_TTL_MS).toISOString();
+      await deps.store.upsertClaim({
+        claimId,
+        planId: parsed.planId,
+        ownerDeviceId,
+        scope: parsed.scope,
+        itemKey: parsed.scope === "attempt" ? (parsed.itemKey ?? null) : null,
+        attemptRef: parsed.scope === "attempt" ? (parsed.attemptRef ?? null) : null,
+        groupId: parsed.scope === "group" ? (parsed.groupId ?? null) : null,
+        since: same && existing ? existing.since : at.toISOString(),
+        until,
+      });
+      return { claimId, until };
+    },
+
+    /** BL-157 (AC-TC-01): this device's live claims, for its report. */
+    async ownClaims(): Promise<SharedClaim[]> {
+      return deps.store.listClaims(now());
+    },
+
+    /**
+     * BL-157 (AC-TC-02): the OTHER devices' live claims on a plan owned by `ownerDeviceId` (this device for its own plans),
+     * each named by the device that made it. A claim reaching implausibly far ahead is not believed.
+     */
+    async claimsOn(ownerDeviceId: string, planId: string): Promise<PlanReviewClaim[]> {
+      return (await more.peerClaims()).filter((c) => c.ownerDeviceId === ownerDeviceId && c.planId === planId).map(({ ownerDeviceId: _o, planId: _p, ...claim }) => (void _o, void _p, claim));
+    },
+
+    /** Every live claim in the other devices' reports, with the plan it is on (the peer plans view filters them itself). */
+    async peerClaims(): Promise<Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }>> {
+      if (!deps.peers) return [];
+      const at = now().getTime();
+      const out: Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }> = [];
+      for (const report of await deps.peers.listPeerReports()) {
+        for (const c of report.claims ?? []) {
+          const until = Date.parse(c.until);
+          if (!(until > at) || until > at + PEER_CLAIM_MAX_AHEAD_MS) continue;
+          out.push({ ownerDeviceId: c.ownerDeviceId, planId: c.planId, scope: c.scope, itemKey: c.itemKey, attemptRef: c.attemptRef, groupId: c.groupId, device: report.hostname ?? report.deviceId, since: c.since, until: c.until });
+        }
+      }
+      return out;
     },
 
     /** BL-143 phase 2: the other devices' plans (read-only), each report with its age and whether it is stale. */
@@ -951,8 +1160,22 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const plan = report?.plans.find((p) => p.planId === parsed.planId);
       if (!plan) throw planNotFound(parsed.planId);
       if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
-      if (!plan.review.some((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef)) {
+      const entry = plan.review.find((e) => e.itemKey === parsed.itemKey && e.attemptRef === parsed.attemptRef);
+      if (!entry) {
         throw planMismatch(`Plan ${parsed.planId} on that device has no attempt ${parsed.attemptRef} of ${parsed.itemKey} to review`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef });
+      }
+      // BL-157 (AC-TC-04): a verdict already there -- that device's, or one sent from here and not applied yet -- is replaced
+      // only when the owner confirmed it.
+      if (!parsed.replace) {
+        const sent = (await more.outgoingVerdicts()).filter((v) => v.ownerDeviceId === parsed.deviceId && v.planId === parsed.planId && v.itemKey === parsed.itemKey && v.attemptRef === parsed.attemptRef).at(-1);
+        const theirs = entry.verdict;
+        if (sent && (!theirs || Math.floor(Date.parse(sent.at) / 1000) > Math.floor(Date.parse(theirs.at) / 1000))) {
+          throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} was already rated here`, { result: sent.result, rating: sent.rating, device: await ownLabel(), at: sent.at });
+        }
+        if (theirs) {
+          const device = entry.history?.at(-1)?.device ?? (theirs.reportedBy === "owner" ? (report?.hostname ?? parsed.deviceId) : theirs.reportedBy);
+          throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} already has a verdict`, { result: theirs.result, rating: theirs.rating, device, at: theirs.at });
+        }
       }
       const verdict: SharedVerdict = {
         verdictId: deps.generateId(),
@@ -968,6 +1191,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         at: now().toISOString(),
       };
       await deps.store.insertPeerVerdict(verdict);
+      await endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef);
       return verdict;
     },
 
@@ -1067,6 +1291,18 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               at: verdict.at,
             };
             await deps.store.upsertResults(row.id, [row2]);
+            // BL-157 (AC-TC-05): the history keeps the verdict as given there, with the device it came from.
+            await deps.store.insertVerdictHistory(row.id, {
+              itemKey: verdict.itemKey,
+              attemptRef: verdict.attemptRef,
+              result: verdict.result,
+              rating: verdict.rating,
+              reasons: verdict.reasons,
+              markers: verdict.markers,
+              note: verdict.note,
+              device: from,
+              at: verdict.at,
+            });
             current.set(key, row2);
             await record(row.id, "peer_verdict", "owner", { verdictId: verdict.verdictId, fromDevice: from, itemKey: verdict.itemKey, result: verdict.result });
             a++;
@@ -1095,10 +1331,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const out: SharedPlanView[] = [];
       for (const row of rows) {
         const plan = toPublicPlan(row);
-        const [jobs, results, sessions, recorded] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id)]);
+        const [jobs, results, sessions, recorded, history] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id), deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
         const progress = planProgress(plan, jobs, results, sessions, now());
         // A job's error text can name local paths: other devices get the event without it (independent review, AC-GP2-01).
-        const events = planEvents(jobs, sessions, results, recorded, null, 100_000)
+        const events = planEvents(jobs, sessions, results, recorded, null, 100_000, history)
           .events.slice(-SHARE_MAX_EVENTS)
           .map((e) => (e.kind.startsWith("job_") && "error" in e.details ? { ...e, details: Object.fromEntries(Object.entries(e.details).filter(([k]) => k !== "error")) } : e));
         const queue = (await more.reviewQueueOf(row, jobs, results)).slice(0, SHARE_MAX_REVIEW);
@@ -1116,7 +1352,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           void _validator;
           // BL-157 (AC-RP-03): the job's output is in the workspace of the channel the job ran on, not the plan's (a moved plan).
           const jobChannelId = entry.jobId ? (jobs.find((j) => j.id === entry.jobId)?.channelId ?? null) : null;
-          review.push({ ...shared, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput, jobChannelId });
+          // BL-157 (report v2, AC-TC-05): the attempt's verdict history travels with it.
+          const entryHistory = historyOf(history, entry.itemKey, entry.attemptRef);
+          review.push({ ...shared, stages: entry.stages.map(shareRow), verdict: entry.verdict ? shareRow(entry.verdict) : null, params: {}, jobOutput, jobChannelId, ...(entryHistory.length > 0 ? { history: entryHistory } : {}) });
         }
         // A null-prototype map: an item key like "constructor" must be an ordinary key here.
         const itemParams: Record<string, PlanItem["params"]> = Object.create(null) as Record<string, PlanItem["params"]>;
@@ -1200,12 +1438,19 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * BL-143 slice 4: the attempts the owner reviews -- every attempt that passed the stage before the owner review --
      * waiting ones first, each with what the earlier stages reported and the owner's verdict if given.
      */
-    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[]; references: PlanReference[]; batches: PlanReviewBatch[] }> {
+    async reviewQueue(input: unknown): Promise<{ planId: string; entries: PlanReviewEntry[]; references: PlanReference[]; batches: PlanReviewBatch[]; claims: PlanReviewClaim[] }> {
       const { planId } = parseWithSchema(getPlanInputSchema.pick({ planId: true }), input, "plan id");
       const row = await requirePlan(planId);
       const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-      // BL-157 (AC-WV-03): each wave's context for the review screen.
-      return { planId, entries: reviewEntries(row, jobs, results), references: row.definition.references ?? [], batches: reviewBatches(toPublicPlan(row), jobs, results) };
+      // BL-157 (AC-WV-03, AC-TC-02/03/05): each wave's context, the verdicts' history, verdicts on their way from another
+      // device counted as given, and the other devices' claims on this plan.
+      return {
+        planId,
+        entries: await ownerQueue(row, jobs, results),
+        references: row.definition.references ?? [],
+        batches: reviewBatches(toPublicPlan(row), jobs, results),
+        claims: await more.claimsOn(await ownDeviceId(), row.id),
+      };
     },
 
     /**

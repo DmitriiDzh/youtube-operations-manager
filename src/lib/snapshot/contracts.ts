@@ -203,6 +203,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   generation_plan_results: "results of this device's generation plans (BL-143); they belong to the owning device's plan",
   generation_plan_events: "events of this device's generation plans (BL-143)",
   generation_plan_peer_verdicts: "verdicts given on this device for another device's plans (BL-143 phase 2); they travel in this device's sync report, not in a snapshot",
+  generation_plan_verdict_history: "the verdict history of this device's generation plans (BL-157); it belongs to the owning device's plan",
+  generation_plan_review_claims: "this device's short-lived 'being reviewed here' claims (BL-157); they travel in this device's sync report, not in a snapshot",
 });
 
 /**

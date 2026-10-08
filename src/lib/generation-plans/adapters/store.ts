@@ -1,5 +1,10 @@
 import {
+  deleteGenerationPlanReviewClaim,
   getGenerationPlan,
+  insertGenerationPlanVerdictHistory,
+  listGenerationPlanReviewClaims,
+  listGenerationPlanVerdictHistory,
+  upsertGenerationPlanReviewClaim,
   insertGenerationPlanPeerVerdict,
   listGenerationPlanPeerVerdicts,
   insertGenerationPlan,
@@ -162,6 +167,59 @@ export function createPlanStore(): PlanStore {
         markers: parseJson(r.markersJson, []),
         note: r.note ?? null,
         at: r.at,
+      })),
+    // BL-157 (AC-TC-05): the owner verdicts' history.
+    insertVerdictHistory: (planId, h) =>
+      insertGenerationPlanVerdictHistory({
+        planId,
+        itemKey: h.itemKey,
+        attemptRef: h.attemptRef,
+        result: h.result,
+        rating: h.rating,
+        reasonsJson: h.reasons.length > 0 ? JSON.stringify(h.reasons) : null,
+        markersJson: h.markers.length > 0 ? JSON.stringify(h.markers) : null,
+        note: h.note,
+        device: h.device,
+        at: h.at,
+        recordedAt: new Date(),
+      }),
+    listVerdictHistory: async (planId) =>
+      (await listGenerationPlanVerdictHistory(planId)).map((h) => ({
+        itemKey: h.itemKey,
+        attemptRef: h.attemptRef,
+        result: h.result === "accepted" ? ("accepted" as const) : ("rejected" as const),
+        rating: h.rating ?? null,
+        reasons: parseJson(h.reasonsJson, []),
+        markers: parseJson(h.markersJson, []),
+        note: h.note ?? null,
+        device: h.device,
+        at: h.at,
+      })),
+    // BL-157 (AC-TC-01): this device's review claims (times in ms in the table, ISO here).
+    upsertClaim: (c) =>
+      upsertGenerationPlanReviewClaim({
+        claimId: c.claimId,
+        planId: c.planId,
+        ownerDeviceId: c.ownerDeviceId,
+        scope: c.scope,
+        itemKey: c.itemKey,
+        attemptRef: c.attemptRef,
+        groupId: c.groupId,
+        since: new Date(c.since),
+        until: new Date(c.until),
+      }),
+    deleteClaim: (claimId) => deleteGenerationPlanReviewClaim(claimId),
+    listClaims: async (at) =>
+      (await listGenerationPlanReviewClaims(at)).map((c) => ({
+        claimId: c.claimId,
+        planId: c.planId,
+        ownerDeviceId: c.ownerDeviceId,
+        scope: c.scope,
+        itemKey: c.itemKey ?? null,
+        attemptRef: c.attemptRef ?? null,
+        groupId: c.groupId ?? null,
+        since: c.since.toISOString(),
+        until: c.until.toISOString(),
       })),
     listSessions: async (planId) =>
       (await listMediaSessionsByPlan(planId)).map((s) => ({

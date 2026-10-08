@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDomainError, type PlanEvent, type PlanResultRow } from "./contracts";
+import { isDomainError, type PlanEvent, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
-import type { GenerationPlansReport, SharedVerdict } from "@/lib/sync-gateway";
+import type { GenerationPlansReport, SharedClaim, SharedVerdict } from "@/lib/sync-gateway";
 import { createGenerationPlanServices, sharedNotices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 
 // BL-143 acceptance criteria AC-GP-01..07 (docs/roadmap/plans/GENERATION_PLANS_PLAN.md §4), written before the services.
@@ -22,6 +22,8 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
   const jobs = seed.jobs ?? [];
   const sessions = seed.sessions ?? [];
   const peerVerdicts: SharedVerdict[] = [];
+  const history: Array<PlanVerdictHistoryRow & { planId: string }> = [];
+  const claims = new Map<string, SharedClaim>();
   const store: PlanStore = {
     async insertPlan(row) {
       if (plans.has(row.id)) return null;
@@ -57,8 +59,20 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
       peerVerdicts.push(structuredClone(v));
     },
     listPeerVerdicts: async (sinceIso) => peerVerdicts.filter((v) => v.at >= sinceIso).map((v) => structuredClone(v)),
+    async insertVerdictHistory(planId, row) {
+      history.push({ ...structuredClone(row), planId });
+    },
+    // Oldest first by the time given (the store's order), then the order recorded.
+    listVerdictHistory: async (planId) => history.filter((h) => h.planId === planId).map((h, i) => ({ h, i })).sort((a, b) => a.h.at.localeCompare(b.h.at) || a.i - b.i).map(({ h }) => without(h, "planId")),
+    async upsertClaim(claim) {
+      claims.set(claim.claimId, structuredClone(claim));
+    },
+    async deleteClaim(claimId) {
+      claims.delete(claimId);
+    },
+    listClaims: async (at) => [...claims.values()].filter((c) => Date.parse(c.until) > at.getTime()).map((c) => structuredClone(c)),
   };
-  return { store, plans, results, events, jobs, peerVerdicts };
+  return { store, plans, results, events, jobs, peerVerdicts, history, claims };
 }
 
 const CHANNEL = "UC_plan_channel";
@@ -671,6 +685,7 @@ function twoDevices() {
       channels: { isConnected: async (id) => id === CHANNEL },
       clock: { now: () => new Date((clockMs += 1000)) },
       generateId: () => `verdict-${++ids}`,
+      deviceLabel: async () => (deviceId === "mac" ? "Mac" : "Windows PC"),
       peers: { ownDeviceId: async () => deviceId, listPeerReports: async () => Object.values(reports).filter((r) => r.deviceId !== deviceId) },
       media: { getSession: async () => null, linkSession: async () => true, validateJobParams: async () => ({ parameterNames: [] }), getJobOutputs: async () => [], createJob: async () => ({ jobId: "x" }) },
     });
@@ -679,7 +694,7 @@ function twoDevices() {
   const mac = device("mac", macBase);
   const win = device("win", winBase);
   const publish = async (deviceId: string, services: typeof mac) => {
-    reports[deviceId] = { format: "ytm-generation-plans", version: 2, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts() };
+    reports[deviceId] = { format: "ytm-generation-plans", version: 2, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts(), claims: await services.ownClaims() };
   };
   return { mac, win, macBase, winBase, publish, reports };
 }
@@ -711,7 +726,9 @@ test("AC-GP2-04: the Mac skips a peer verdict older than its own stored verdict,
   await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" });
   await d.publish("win", d.win);
   // The owner, on the Mac itself, decides later: that newer verdict stands.
-  await d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 8 });
+  // Changed requirement (BL-157, SERVERS_MEDIA_PLAN.md AC-TC-04): a verdict on its way from Windows already counts, so the Mac
+  // replaces it only when the owner confirmed (`replace`); the rule this test checks -- newest wins -- is unchanged.
+  await d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 8, replace: true });
   assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 0, skipped: 1 });
   assert.equal([...d.macBase.results.values()].find((r) => r.stageId === "owner_review")?.result, "accepted");
   // A verdict for an attempt the Mac does not have, and one for a closed plan, are skipped.
@@ -1284,8 +1301,8 @@ test("AC-WV-05: the verdict that takes a wave's waiting count to zero records gr
   assert.equal(reviewed().length, 0, "C1 still has one waiting");
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "rejected", rating: 3 });
   assert.deepEqual(reviewed().map((e) => [e.actor, e.details]), [["owner", { groupId: "C1", accepted: 2, rejected: 1, overridesValidator: 1 }]]);
-  // Changing a verdict in a finished wave does not finish it again.
-  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "accepted", rating: 6 });
+  // Changing a verdict in a finished wave (confirmed by the owner, AC-TC-04) does not finish it again.
+  await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "accepted", rating: 6, replace: true });
   assert.equal(reviewed().length, 1);
   // A new waiting attempt reopens the wave; finishing it again records it again.
   await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:e", result: "accepted", auditionFile: "R-0001/C1/e.mp3" }] });
@@ -1311,4 +1328,133 @@ test("AC-WV-03: the review queue carries each wave's context", async () => {
   await s.services.createPlan(basePlan());
   const queue = await s.services.reviewQueue({ planId: "R-0001-S1-music" });
   assert.deepEqual(queue.batches.map((b) => [b.groupId, b.title]), [["C1", "Wave 1"], ["C2", "Wave 2"]]);
+});
+
+// -- BL-157 (SERVERS_MEDIA_PLAN.md §F, FO-REQ-0009 §6): reviewing from two computers -------------------------------------
+// Expected values are stated from AC-TC-01..06, not from running the code.
+
+async function twoDevicesWithTrack() {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  return d;
+}
+const existingOf = (e: unknown) => (isDomainError(e) ? ((e.details as { existing?: Record<string, unknown> } | undefined)?.existing ?? null) : null);
+
+test("AC-TC-04: a second verdict on the owning device is refused without replace (plan_verdict_exists, with what is there); with replace it stands", async () => {
+  const d = await twoDevicesWithTrack();
+  await d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 8 });
+  let refusedWith: unknown = null;
+  await assert.rejects(d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", rating: 3 }), (e: unknown) => ((refusedWith = e), refused("plan_verdict_exists")(e)));
+  assert.deepEqual({ ...existingOf(refusedWith), at: undefined }, { result: "accepted", rating: 8, device: "Mac", at: undefined });
+  await d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", rating: 3, replace: true });
+  assert.equal([...d.macBase.results.values()].find((r) => r.stageId === "owner_review")?.result, "rejected");
+});
+
+test("AC-TC-04: on the other computer, a verdict the owning device shows -- or one already sent from here -- is replaced only with replace", async () => {
+  const d = await twoDevicesWithTrack();
+  // Sent from Windows, not applied yet: a second one from Windows asks first.
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", rating: 4 });
+  let refusedWith: unknown = null;
+  await assert.rejects(d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }), (e: unknown) => ((refusedWith = e), refused("plan_verdict_exists")(e)));
+  assert.deepEqual([existingOf(refusedWith)?.result, existingOf(refusedWith)?.device], ["rejected", "Windows PC"]);
+  // Rated on the Mac (its report shows it): Windows asks first too, naming the Mac.
+  const e = await twoDevicesWithTrack();
+  await e.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 8 });
+  await e.publish("mac", e.mac);
+  await assert.rejects(e.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" }), (x: unknown) => ((refusedWith = x), refused("plan_verdict_exists")(x)));
+  assert.deepEqual([existingOf(refusedWith)?.result, existingOf(refusedWith)?.rating, existingOf(refusedWith)?.device], ["accepted", 8, "Mac"]);
+  const verdict = await e.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", replace: true });
+  assert.equal(verdict.result, "rejected");
+});
+
+test("AC-TC-03: on the owning device a verdict sent from the other computer counts as given at once ('being applied'), before its tick applies it", async () => {
+  const d = await twoDevicesWithTrack();
+  const waitingOnMac = async () => (await d.mac.reviewQueue({ planId: "R-0001-S1-music" })).entries.filter((x) => x.verdict === null).length;
+  assert.equal(await waitingOnMac(), 1);
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 9, note: "lovely" });
+  await d.publish("win", d.win);
+  const [entry] = (await d.mac.reviewQueue({ planId: "R-0001-S1-music" })).entries;
+  assert.deepEqual([entry.verdict?.result, entry.verdict?.rating, entry.pendingFrom], ["accepted", 9, "Windows PC"]);
+  assert.equal((await d.mac.summary()).waitingReview, 0);
+  assert.equal((await d.mac.channelSummary({ activeChannelId: CHANNEL, connectedChannelIds: [CHANNEL] })).waitingReview, 0);
+  // Rating it on the Mac now asks first (it is already rated on Windows).
+  await assert.rejects(d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected" }), (e: unknown) => refused("plan_verdict_exists")(e) && existingOf(e)?.device === "Windows PC");
+  // Once applied, it is the stored verdict (no longer "being applied").
+  assert.deepEqual(await d.mac.applyPeerVerdicts(), { applied: 1, skipped: 0 });
+  const [after] = (await d.mac.reviewQueue({ planId: "R-0001-S1-music" })).entries;
+  assert.deepEqual([after.verdict?.result, after.pendingFrom], ["accepted", undefined]);
+});
+
+test("AC-TC-05: every verdict is kept with its device and time; the queue, the report and owner_verdict events show all of them", async () => {
+  const d = await twoDevicesWithTrack();
+  await d.mac.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 8, note: "nice" });
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "rejected", rating: 4, note: "thin", replace: true });
+  await d.publish("win", d.win);
+  await d.mac.applyPeerVerdicts();
+  const [entry] = (await d.mac.reviewQueue({ planId: "R-0001-S1-music" })).entries;
+  assert.equal(entry.verdict?.result, "rejected", "the newest is current");
+  assert.deepEqual(entry.history?.map((h) => [h.device, h.result, h.rating, h.note]), [["Mac", "accepted", 8, "nice"], ["Windows PC", "rejected", 4, "thin"]], "the note as given (no 'from' suffix)");
+  const events = (await d.mac.getPlan({ planId: "R-0001-S1-music" })).events.filter((e) => e.kind === "owner_verdict");
+  assert.deepEqual(events.map((e) => [e.details.device, e.details.result, e.details.rating]), [["Mac", "accepted", 8], ["Windows PC", "rejected", 4]]);
+  await d.publish("mac", d.mac);
+  assert.deepEqual(d.reports.mac.plans[0].review[0].history?.map((h) => [h.device, h.result]), [["Mac", "accepted"], ["Windows PC", "rejected"]]);
+});
+
+test("AC-TC-05: a verdict from before the history existed still gives one owner_verdict event from its row", async () => {
+  const s = setup();
+  await s.services.createPlan(basePlan());
+  await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", auditionFile: "a.mp3" }] });
+  // An owner row with no history row (stored by an older version).
+  await s.store.upsertResults("R-0001-S1-music", [{ stageId: "owner_review", itemKey: "C1/F1", attemptRef: "ext:a", result: "accepted", reportedBy: "owner", note: null, rating: 7, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: "2026-10-07T09:00:00.000Z" }]);
+  const events = (await s.services.getPlan({ planId: "R-0001-S1-music" })).events.filter((e) => e.kind === "owner_verdict");
+  assert.deepEqual(events.map((e) => [e.details.result, e.details.rating, e.details.device]), [["accepted", 7, undefined]]);
+});
+
+test("AC-TC-01/02: a track claim reaches the owning device with the computer's name; it moves with the track, a heartbeat keeps its start, release or a verdict ends it", async () => {
+  const d = await twoDevicesWithTrack();
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:b", result: "accepted", auditionFile: "b.mp3" }] });
+  await d.publish("mac", d.mac);
+  const claimsOnMac = async () => (await d.mac.reviewQueue({ planId: "R-0001-S1-music" })).claims;
+  const first = await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  await d.publish("win", d.win);
+  const [seen] = await claimsOnMac();
+  assert.deepEqual([seen.scope, seen.itemKey, seen.attemptRef, seen.device], ["attempt", "C1/F1", "job:j1", "Windows PC"]);
+  assert.equal(Date.parse(seen.until) - Date.parse(seen.since) <= 10 * 60_000 + 1000, true, "about 10 minutes");
+  // Heartbeat on the same track: the start stays; moving to another track: one claim, a new start.
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  assert.equal((await d.win.ownClaims())[0].since, seen.since);
+  const moved = await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "ext:b" });
+  assert.equal(moved.claimId, first.claimId);
+  assert.deepEqual((await d.win.ownClaims()).map((c) => c.attemptRef), ["ext:b"]);
+  // A verdict on that track ends the claim; a release ends a claim too.
+  await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:b", result: "accepted" });
+  assert.deepEqual(await d.win.ownClaims(), []);
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1", release: true });
+  assert.deepEqual(await d.win.ownClaims(), []);
+  await d.publish("win", d.win);
+  assert.deepEqual(await claimsOnMac(), [], "gone on the owning device with the next report");
+});
+
+test("AC-TC-02 / AC-WV-06: the owning device's own claims reach the other computer; a wave claim; expired, far-ahead or unknown claims are not shown", async () => {
+  const d = await twoDevicesWithTrack();
+  await d.mac.claimReview({ planId: "R-0001-S1-music", scope: "group", groupId: "C1" });
+  await d.mac.claimReview({ planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  await d.publish("mac", d.mac);
+  const onWin = (await d.win.claimsOn("mac", "R-0001-S1-music")).map((c) => [c.scope, c.groupId, c.attemptRef, c.device]);
+  assert.deepEqual(onWin.sort(), [["attempt", null, "job:j1", "Mac"], ["group", "C1", null, "Mac"]].sort());
+  // Expired (the report kept it, the clock moved on) and implausibly far ahead: not shown.
+  const report = d.reports.mac;
+  report.claims = [
+    { ...report.claims![0], until: new Date(clockMs - 1000).toISOString() },
+    { ...report.claims![1], until: new Date(clockMs + 60 * 60_000).toISOString() },
+  ];
+  assert.deepEqual(await d.win.claimsOn("mac", "R-0001-S1-music"), []);
+  // Claims on what the plan does not have are refused.
+  await assert.rejects(d.mac.claimReview({ planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:nope" }), refused("plan_mismatch"));
+  await assert.rejects(d.mac.claimReview({ planId: "R-0001-S1-music", scope: "group", groupId: "C9" }), refused("plan_mismatch"));
+  await assert.rejects(d.win.claimReview({ deviceId: "mac", planId: "nope-plan", scope: "group", groupId: "C1" }), refused("plan_not_found"));
+  await assert.rejects(d.mac.claimReview({ planId: "R-0001-S1-music", scope: "group" }), refused("validation_failed"));
 });

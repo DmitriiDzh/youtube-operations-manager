@@ -25,6 +25,8 @@ export function createGenerationPlansCore() {
     channels: { isConnected: async (channelId) => (await channels.listConnectedChannels()).some((c) => c.channelId === channelId) },
     clock: { now: () => new Date() },
     generateId: () => randomUUID(),
+    // BL-157 (AC-TC-04/05): this computer as a verdict's history names it.
+    deviceLabel: async () => hostLabel() ?? (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
     peers: {
       ownDeviceId: async () => (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
       listPeerReports: () => createGenerationPlansShareCoreForProduction().listPeerReports(),
@@ -63,14 +65,18 @@ export function createGenerationPlansCore() {
  * BL-143 phase 2: this device's generation plans report for the other devices (sync-gateway `generation-plans`), built on the
  * media watcher tick. Verdicts given here on other devices' plans travel in the same report.
  */
+/** This computer's host name, or null when it cannot be read. */
+function hostLabel(): string | null {
+  try {
+    return hostname() || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function publishGenerationPlansShare(): Promise<void> {
   const config = await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists();
-  let host: string | null = null;
-  try {
-    host = hostname() || null;
-  } catch {
-    host = null;
-  }
+  const host = hostLabel();
   const core = createGenerationPlansCore();
   // First take in the verdicts other devices gave on this device's plans, so this report already shows them applied.
   // Its own failure never stops this device's report from going out (independent review).
@@ -83,5 +89,7 @@ export async function publishGenerationPlansShare(): Promise<void> {
     updatedAt: new Date().toISOString(),
     plans: await core.buildSharedPlans(),
     verdicts: await core.outgoingVerdicts(),
+    // BL-157 (AC-TC-01): this device's "being reviewed here" claims.
+    claims: await core.ownClaims(),
   });
 }
