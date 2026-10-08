@@ -191,4 +191,5 @@ export const shell = {
   "page.analytics.intro": "Overview numbers come from the data this app collects and stores (daily automatic collection or “Collect now”); “Refresh live” reads them from YouTube directly. Percentages are computed facts (period-over-period deltas from real numbers, same as Studio's own cards) — AI-generated recommendations remain Phase 10's own, separate scope.",
   "page.planReview": "Plan review",
   "operation.gone": "The operation is no longer available (the server may have restarted).",
+  "conflicts.requestFailed": "Request to {url} failed ({status})",
 } as const;

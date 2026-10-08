@@ -42,7 +42,7 @@ const FIELD_LABELS: Record<string, UiTextKey> = {
 async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const data = (await res.json().catch(() => ({}))) as T & { message?: string };
-  if (!res.ok && res.status !== 207) throw new Error(errorText(t, data, `${url}: HTTP ${res.status}`, { showErrorField: false }));
+  if (!res.ok && res.status !== 207) throw new Error(errorText(t, data, t("conflicts.requestFailed", { url, status: String(res.status) }), { showErrorField: false }));
   return data;
 }
 

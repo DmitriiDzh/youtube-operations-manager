@@ -81,4 +81,8 @@ test("slice 4: a failed API answer -- English unchanged; another language names 
   // Unknown code or plain text: the server's text as it is; nothing at all: the (translated) fallback.
   assert.equal(apiErrorText("ru", { error: "SOMETHING_NEW", message: "m" }, "x"), "m");
   assert.equal(apiErrorText("ru", "garbage", "Не удалось"), "Не удалось");
+  // An informational answer (not a failure) without the repeated English detail; English unchanged.
+  const current = { error: "analytics_data_current", message: "Analytics data is already up to date for today." };
+  assert.equal(apiErrorText("ru", current, "x", { withDetail: false }), "Данные аналитики на сегодня уже актуальны.");
+  assert.equal(apiErrorText("en", current, "x", { withDetail: false }), "Analytics data is already up to date for today.");
 });

@@ -58,6 +58,19 @@ test("proxy never gates the device-handoff routes themselves (they manage the lo
   }
 });
 
+// BL-152: the interface-language route only sets a cookie on this browser; it must work whatever state the device is in.
+test("proxy never gates the interface-language route, even while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const response = await proxy(putRequest("/api/ui-language"));
+    assert.notEqual(response.status, 409);
+    assert.notEqual(response.status, 423);
+    assert.notEqual(response.status, 503);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
 test("proxy allows a mutating request through when the device is available", async () => {
   const response = await proxy(mutatingRequest("/api/channels/sync"));
   assert.notEqual(response.status, 409);

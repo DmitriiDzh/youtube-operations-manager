@@ -230,7 +230,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
             .map((m, i) => (
               <div key={i} className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-red-400/80" style={{ top: `${(1 - m.hz / SPECTROGRAM_MAX_HZ) * 100}%` }}>
                 <span className="absolute right-1 -top-4 rounded bg-zinc-950/80 px-1 text-[10px] text-red-300">
-                  {t("review.player.frequency", { label: m.label, hz: Math.round(m.hz) })}
+                  {t("review.player.frequency", { label: m.label, hz: String(Math.round(m.hz)) })}
                 </span>
               </div>
             ))}

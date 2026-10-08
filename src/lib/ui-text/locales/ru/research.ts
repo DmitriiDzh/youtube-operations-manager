@@ -84,7 +84,7 @@ export const research: Record<keyof typeof en, string> = {
   "watchlist.drawer.confidenceOptional": "Уверенность (необязательно)",
   "watchlist.drawer.recordEvidence": "Записать факт",
   "watchlist.drawer.recording": "Запись…",
-  "watchlist.drawer.remove": "Удаление",
+  "watchlist.drawer.remove": "Убрать из списка",
   "watchlist.drawer.removeFromWatchlist": "Убрать из списка",
   "watchlist.add.title": "Добавить канал в список наблюдения",
   "watchlist.add.channelId": "ID канала YouTube (например, UC...)",
@@ -182,7 +182,7 @@ export const research: Record<keyof typeof en, string> = {
     "Расходует 1 из 100 поисков YouTube в день (отдельная квота, сбрасывается в полночь по тихоокеанскому времени) на запрос «{query}» и 1 единицу из дневных 10 000 на показатели каналов.",
 
   "assignment.drawerTitle": "Видно агентам каналов",
-  "assignment.boundary": "Видимость для каналов",
+  "assignment.boundary": "Привязка к каналам",
   "assignment.loadFailed": "Не удалось загрузить видимость для каналов.",
   "assignment.saveFailed": "Не удалось сохранить",
   "assignment.visibleToLabel": "Видно агентам каналов:",

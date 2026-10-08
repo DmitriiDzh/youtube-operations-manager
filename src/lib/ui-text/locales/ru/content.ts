@@ -66,7 +66,7 @@ export const content: Record<keyof typeof en, string> = {
   "video.diff.before": "было: {value}",
   "video.diff.proposed": "станет: {value}",
   "video.preview": "Просмотреть изменения",
-  "video.previewing": "Проверка…",
+  "video.previewing": "Подготовка предпросмотра…",
   "video.saveToYoutube": "Сохранить в YouTube",
   "video.previewAgainTitle": "Перед сохранением просмотрите изменения ещё раз",
   "video.previewAgain": "Перед сохранением просмотрите изменения ещё раз — они поменялись.",

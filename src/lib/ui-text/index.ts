@@ -188,7 +188,12 @@ export function uiMessageText(t: Translate, message: UiMessage): string {
  * server's message kept as the detail; an unknown code falls back to the server's text. MCP and API bodies stay English
  * for agents and scripts (AGENTS.md §B) -- only the UI translates.
  */
-export function apiErrorText(language: UiLanguage, body: unknown, fallback: string, options: { showErrorField?: boolean } = {}): string {
+export function apiErrorText(
+  language: UiLanguage,
+  body: unknown,
+  fallback: string,
+  options: { showErrorField?: boolean; withDetail?: boolean } = {}
+): string {
   const b = typeof body === "object" && body !== null ? (body as { error?: unknown; message?: unknown }) : {};
   const code = typeof b.error === "string" ? b.error : undefined;
   const message = typeof b.message === "string" && b.message.trim() ? b.message : undefined;
@@ -198,13 +203,14 @@ export function apiErrorText(language: UiLanguage, body: unknown, fallback: stri
   const key = `errors.${code}`;
   if (!isUiTextKey(key)) return serverText;
   const text = translate(language, key);
-  return message ? translate(language, "common.errorDetail", { text, detail: message }) : text;
+  // `withDetail: false` for an answer that is information, not a failure: its English message only repeats the words.
+  return message && options.withDetail !== false ? translate(language, "common.errorDetail", { text, detail: message }) : text;
 }
 
 /**
  * `errorText(t, body, t("…failed"))` -- `apiErrorText` in `t`'s language: what a component shows for a failed API answer.
  * Pass `{ showErrorField: false }` where the screen showed only `message ?? fallback` before.
  */
-export function errorText(t: Translate, body: unknown, fallback: string, options?: { showErrorField?: boolean }): string {
+export function errorText(t: Translate, body: unknown, fallback: string, options?: { showErrorField?: boolean; withDetail?: boolean }): string {
   return apiErrorText(t.language, body, fallback, options);
 }

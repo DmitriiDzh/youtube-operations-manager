@@ -159,7 +159,11 @@ test("AC-R3-2: the drawer holds every action, and Fetch public snapshot asks bef
     assert.match(drawer, new RegExp(`<DrawerSection title=\\{?[\`"]${title}`), title);
   }
   // "Recent videos" picks between two keys (with and without its count), so its title is a choice, not one string.
-  assert.match(drawer, /<DrawerSection\s+title=\{[\s\S]*?t\("watchlist\.drawer\.recentVideos"\)/);
+  // Both keys must sit inside ONE DrawerSection's title expression (review: a looser match accepted the key anywhere).
+  const recentTitle = drawer.match(/<DrawerSection\s+title=\{((?:(?!<DrawerSection)[\s\S])*?)\}\s*>/g)?.find((m) => m.includes("watchlist.drawer.recentVideos"));
+  assert.ok(recentTitle, "a DrawerSection title holds the Recent videos keys");
+  assert.match(recentTitle, /t\("watchlist\.drawer\.recentVideosOf"/);
+  assert.match(recentTitle, /t\("watchlist\.drawer\.recentVideos"\)/);
   assert.equal(en("watchlist.drawer.recentVideos"), "Recent videos");
   // The button only opens the confirm, for the channel it was clicked on; the POST happens in the confirm's handler.
   assert.match(drawer, /onClick=\{\(\) => setConfirmSnapshotChannelId\(selected\.channelId\)\}/);

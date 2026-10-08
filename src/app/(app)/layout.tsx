@@ -133,12 +133,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         void refetchConnectionHealth({ force: true });
         return;
       }
-      const data = await res.json();
+      const data = (await res.json()) as { channel: (ChannelInfo & { title?: string | null }) | null };
       setChannelUnavailable(false);
       setChannel(data.channel);
       // Review M6: no channel at all (none connected yet) -- the collections waiting for one will not run this load.
       setStartup((prev) =>
-        prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ?? null } } : startupWithoutChannel(prev, { key: "startup.detail.noChannelYet" }, "skipped")
+        prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ? { text: data.channel.title } : null } } : startupWithoutChannel(prev, { key: "startup.detail.noChannelYet" }, "skipped")
       );
     } catch {
       // The loading window must not wait for it (review M6); the effect below still retries on the next session change.

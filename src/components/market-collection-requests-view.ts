@@ -42,8 +42,8 @@ export function budgetSentence(
   t: Translate,
   estimate: { dailyBudgetUnits: number; unitsSpentToday: number; remainingTodayUnits: number; fitsToday: boolean },
 ): string {
-  // Plain digits, as before (no grouping) -- the same figures the limits line above shows.
-  const params = { budget: String(estimate.dailyBudgetUnits), spent: String(estimate.unitsSpentToday), left: String(estimate.remainingTodayUnits) };
+  // Grouped in the interface language, like every other quota figure in Research (BL-152 review).
+  const params = { budget: estimate.dailyBudgetUnits, spent: estimate.unitsSpentToday, left: estimate.remainingTodayUnits };
   return t(estimate.fitsToday ? "requests.collection.budgetFits" : "requests.collection.budgetMayNotFit", params);
 }
 

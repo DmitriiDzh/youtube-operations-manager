@@ -21,7 +21,9 @@ test("estimateSentence states both numbers as upper bounds in YouTube quota unit
 
 test("budgetSentence: fits vs does not fit", () => {
   const base = { dailyBudgetUnits: 1000, unitsSpentToday: 120, remainingTodayUnits: 880 };
-  assert.equal(budgetSentence(t, { ...base, fitsToday: true }), "Daily budget 1000, spent today 120, left 880. The worst case fits today.");
+  // BL-152 review: quota figures are grouped in the interface language everywhere in Research (the budget line was the one
+  // place still showing bare digits next to grouped ones); the wording is unchanged.
+  assert.equal(budgetSentence(t, { ...base, fitsToday: true }), "Daily budget 1,000, spent today 120, left 880. The worst case fits today.");
   assert.match(budgetSentence(t, { ...base, fitsToday: false }), /may not fit today: collection stops at the budget and continues/);
 });
 

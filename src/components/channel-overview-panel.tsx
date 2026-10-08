@@ -277,7 +277,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       });
       if (!res.ok) {
         if (data.error === "analytics_data_current") {
-          setCollectMessage({ kind: "info", text: errorText(t, data, t("overview.alreadyCurrent"), { showErrorField: false }) });
+          setCollectMessage({ kind: "info", text: errorText(t, data, t("overview.alreadyCurrent"), { showErrorField: false, withDetail: false }) });
         } else {
           setCollectMessage({ kind: "error", text: errorText(t, data, t("common.errorStatus", { status: String(res.status) })) });
         }

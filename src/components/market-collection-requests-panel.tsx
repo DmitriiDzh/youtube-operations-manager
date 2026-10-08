@@ -162,9 +162,9 @@ export function MarketCollectionRequestsPanel({ onChanged }: { onChanged?: () =>
             {limits.dailyBudgetUnits === null
               ? t("requests.collection.noBudget")
               : t("requests.collection.limits", {
-                  budget: String(limits.dailyBudgetUnits),
-                  spent: String(limits.unitsSpentToday),
-                  left: String(limits.remainingTodayUnits ?? 0),
+                  budget: limits.dailyBudgetUnits,
+                  spent: limits.unitsSpentToday,
+                  left: limits.remainingTodayUnits ?? 0,
                   date: formatDisplayDateTime(limits.quotaDayResetsAt),
                 })}
           </p>
