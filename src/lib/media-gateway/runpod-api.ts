@@ -77,6 +77,11 @@ export type RunpodPod = {
    * `{ uptime, ports, ... }`) says the container started. Seconds since the container started, or `null` when it has not.
    */
   containerUptimeSec: number | null;
+  /**
+   * BL-155: the CUDA version the host's driver supports, as `POST`/`GET /pods` report it (`cudaVersion`, seen live
+   * 2026-10-08: "13.0"); null when the answer does not say. Absent on pods built by hand in tests.
+   */
+  cudaVersion?: string | null;
   env: Record<string, string>;
   createdAt: string | null;
   startedAt: string | null;
@@ -192,6 +197,7 @@ export function toPod(raw: unknown): RunpodPod {
     gpuCount: asNumber(gpu.count),
     networkVolumeIds: extractList(mounts.network, []).map((m) => asString(asRecord(m).volumeId) ?? "").filter(Boolean),
     containerUptimeSec: r.runtime && typeof r.runtime === "object" ? (asNumber(runtime.uptime) ?? 0) : null,
+    cudaVersion: asString(r.cudaVersion) ?? (asNumber(r.cudaVersion) !== null ? String(asNumber(r.cudaVersion)) : null),
     ports: Array.isArray(runtime.ports)
       ? runtime.ports.map((p) => {
           const port = asRecord(p);

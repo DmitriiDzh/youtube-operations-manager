@@ -1008,7 +1008,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             // download is waited for, so a too-old driver costs seconds, not minutes. A failed or empty read is asked again on
             // the next poll; only once the container is up is the version taken as unknown (review round 4).
             if (current.status === "RUNNING" && !hostChecked && settings.minCudaVersion !== null) {
-              const host = await readHostCuda();
+              // The pod answer itself names the host's CUDA (owner, msg 2093); the GraphQL read is the fallback.
+              const host = current.cudaVersion ?? (await readHostCuda());
               if (host !== null || current.containerUptimeSec !== null) hostChecked = true;
               if (hostCudaTooOld(host, settings.minCudaVersion)) {
                 mismatch = `CUDA driver too old: host ${host} < ${settings.minCudaVersion}`;
