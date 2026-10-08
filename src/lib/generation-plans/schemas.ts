@@ -249,6 +249,21 @@ export const importFileSchema = z
     stages: z.array(stageSchema).min(1).max(PLAN_LIMITS.stages),
     references: z.array(referenceSchema).max(PLAN_LIMITS.references).optional(),
     reviewRejected: z.boolean().optional(),
+    /** FO-MSG-0010: the file's waves with their titles; `groupId` or `id`. Groups only named by items keep their id as title. */
+    groups: z
+      .array(
+        z
+          .object({
+            groupId: groupIdSchema.optional(),
+            id: groupIdSchema.optional(),
+            title: titleSchema.optional(),
+            dependsOn: groupIdSchema.nullable().optional(),
+            note: noteSchema.nullable().optional(),
+          })
+          .passthrough()
+      )
+      .max(PLAN_LIMITS.groups)
+      .optional(),
     items: z
       .array(
         z

@@ -474,7 +474,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const groupIds = [...new Set(file.items.map((i) => i.group).filter((g): g is string => typeof g === "string"))];
       const definition: PlanDefinition = {
         stages: file.stages as PlanStage[],
-        groups: groupIds.map((groupId) => normalizeGroup({ groupId })),
+        groups: groupIds.map((groupId) => {
+          const given = (file.groups ?? []).find((g) => (g.groupId ?? g.id) === groupId);
+          return normalizeGroup({ groupId, title: given?.title, dependsOn: given?.dependsOn, note: given?.note });
+        }),
         references: (file.references ?? []).map(normalizeReference),
         ...(typeof file.reviewRejected === "boolean" ? { reviewRejected: file.reviewRejected } : {}),
         items: file.items.map((i) =>

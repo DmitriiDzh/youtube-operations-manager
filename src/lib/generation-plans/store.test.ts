@@ -12,6 +12,8 @@ import {
   linkMediaJobToPlan,
   listGenerationPlanResults,
   listMediaJobsByPlan,
+  listMediaSessionsByPlan,
+  mediaSessions,
   mediaJobs,
   updateGenerationPlan,
   upsertGenerationPlanResults,
@@ -76,4 +78,23 @@ test("linking a job: only a job of the plan's channel that is in no plan yet", (
     assert.equal(await linkMediaJobToPlan("j1", { ...link, planId: "other" }, db), false, "already in a plan");
     const linked = await listMediaJobsByPlan(plan.id, db);
     assert.deepEqual(linked.map((j) => [j.id, j.planStageId, j.planItemKey]), [["j1", "generate", "C1/F1"]]);
+  }));
+
+// FO-MSG-0010 note 2 (BL-154): an imported plan's jobs ran in sessions that were never linked to the plan, so its spend read 0.
+test("a plan's sessions are the ones linked to it plus the unlinked sessions its jobs ran in -- never another plan's", () =>
+  withDb(async (db) => {
+    const session = { channelId: "UC1", requestedBy: "factory" as const, maxMinutes: 60, estimateUsd: 1, fitsToday: true };
+    await db.insert(mediaSessions).values([
+      { ...session, id: "linked", planId: plan.id },
+      { ...session, id: "imported" },
+      { ...session, id: "other-plan", planId: "other" },
+      { ...session, id: "unrelated" },
+    ]);
+    const job = { templateId: "t", templateVersion: 1, paramsJson: "{}", status: "done" as const, createdBy: "factory" as const, channelId: "UC1" };
+    await db.insert(mediaJobs).values([
+      { ...job, id: "j1", sessionId: "imported", planId: plan.id },
+      { ...job, id: "j2", sessionId: "other-plan", planId: plan.id },
+      { ...job, id: "j3", sessionId: "unrelated" },
+    ]);
+    assert.deepEqual((await listMediaSessionsByPlan(plan.id, db)).map((s) => s.id).sort(), ["imported", "linked"]);
   }));

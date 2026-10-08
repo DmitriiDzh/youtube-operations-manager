@@ -8510,8 +8510,18 @@ export async function linkMediaSessionToPlan(sessionId: string, planId: string, 
   return rows.length > 0;
 }
 
+/**
+ * The sessions a plan's spend counts: those linked to it, plus sessions in no plan that ran one of its jobs (FO-MSG-0010: an
+ * imported plan's jobs came from sessions started before the plan existed). A session of another plan is never counted here.
+ */
 export async function listMediaSessionsByPlan(planId: string, database: AppDb = db): Promise<Array<typeof mediaSessions.$inferSelect>> {
-  return database.select().from(mediaSessions).where(eq(mediaSessions.planId, planId)).orderBy(asc(mediaSessions.createdAt)).limit(1000);
+  const ranJobs = database.select({ sessionId: mediaJobs.sessionId }).from(mediaJobs).where(eq(mediaJobs.planId, planId));
+  return database
+    .select()
+    .from(mediaSessions)
+    .where(or(eq(mediaSessions.planId, planId), and(isNull(mediaSessions.planId), inArray(mediaSessions.id, ranJobs))))
+    .orderBy(asc(mediaSessions.createdAt))
+    .limit(1000);
 }
 
 export async function upsertMediaExchangeFile(
