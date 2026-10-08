@@ -45,7 +45,10 @@ export const mediaSettingsSchema = z
     maxConcurrentSessions: z.number().int().min(MAX_CONCURRENT_SESSIONS_RANGE.min).max(MAX_CONCURRENT_SESSIONS_RANGE.max),
     gpuOnDemandPricePerHr: z.number().min(0).max(1000).nullable(),
     // BL-133 (FACTORY_GPU_SESSIONS_PLAN.md §2.1/§2.3/§2.4).
-    gpuFallbackIds: z.array(z.string().trim().min(1).max(128)).max(10),
+    // A numbered list typed into the Setup box ("1. NVIDIA RTX A5000") keeps the GPU id only (owner, Telegram 2026-10-08,
+    // msg 2091): a leading "1." / "2)" never belongs to a RunPod GPU id, and with it the id matches no catalog entry, so every
+    // fallback was skipped. Applied on save and on read, so a list stored that way works without being saved again.
+    gpuFallbackIds: z.array(z.string().trim().transform((v) => v.replace(/^\d{1,2}\s*[.)]\s*/, "").trim()).pipe(z.string().min(1).max(128))).max(10),
     gpuMinVramGb: z.number().int().min(1).max(1024).nullable(),
     gpuMaxPricePerHr: z.number().gt(0).max(1000).nullable(),
     capacityRetrySeconds: z.number().int().min(15).max(3600),
