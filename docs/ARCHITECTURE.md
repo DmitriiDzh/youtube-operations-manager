@@ -2852,6 +2852,24 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   approve and `factoryStartSession`, which first checks the factory limits (`factorySpendUsd`: spend plus the remaining caps of active factory
   sessions, per local day and month); `stopInner` is shared by the owner's Stop and `factoryStopSession`; `getFactorySession` hides every
   non-factory session from the factory route.
+- **CUDA host check and re-placement (BL-155, `docs/roadmap/plans/CUDA_HOSTS_PLAN.md`, FO-REQ-0007, no schema change).** Setting
+  `minCudaVersion` (12.8 default, null = no create-pod filter and no host-version check) → every createPod sends
+  `gpu.allowedCudaVersions` = the known versions ≥ it (`cuda-host.ts`, pure); no matching host is RunPod's "no capacity". Before
+  `running` the start reads the host's CUDA (gateway `getPodHostCudaVersion`, GraphQL `pod.machine.machineSystem.cudaVersion`) on
+  each RUNNING poll until it gets a value or the container is up (then unknown = not blocking), and always requires a `cuda` device
+  with VRAM in `/system_stats`. A mismatch terminates the pod (confirmed, else the usual `stopping` path, no second pod), logs a
+  capacity attempt `error` and places again from the candidate list -- at most `MAX_EXTRA_PLACEMENTS` = 2 more, each with its own
+  start budget -- then fails `media_gpu_host_incompatible` (503); a re-placement that cannot create a pod fails too (never waits).
+  Between placements the row goes back to `approved` with `podId` null (the name search covers a crash), `approvedAt` = now, and
+  each placement's `starting` write sets `approvedAt` to its pod's placement time (`startAttemptSince` = the later of `startedAt`
+  and `approvedAt` drives the abandoned-start clock). One billing window spans all placements: `startedAt` stays the first pod's,
+  `costPerHr` is the dearest pod's, and a failure after a re-placement is billed to the last confirmed terminate. The replaced
+  pod's `terminateSentAt` is kept on the `approved` row (a crash with no pod found closes the window there, else at the last
+  sighting) and cleared by the next `starting` write; wherever a new pod's facts are written outside it (orphan adoption in
+  `reconcileAbandoned`, `abortStart`, the swept-meanwhile path) they carry that pod's own DELETE time (or null) and a
+  `lastSeenAliveAt` no earlier than its placement/sighting. The watcher stops a `starting` session (every session, not only
+  re-placements) at `maxMinutes` counted from `startedAt` -- "max minutes reached (N) while starting". Factory jobs carry an
+  `errorCode` derived from their error text (Factory API 1.7.0); release-when-done with every job failed says "all jobs failed".
 - **Concurrent sessions, Production section, balance (slice 6, ADR 0023 amendment 1, schema v58).** Requests are
   never refused for another open session; `approveSession` runs the preconditions, clears a crash-stale exclusive
   volume lock (`volumeLock.activeHolder`), then `pending → approved` as ONE `UPDATE` guarded by "active sessions <

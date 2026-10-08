@@ -105,9 +105,12 @@ function fakeRunpod(
     hostCuda?: (podId: string) => string | null | Error;
     /** BL-155 review: the pod's $/h by GPU type (default 0.69). */
     podPrice?: (gpuId: string) => number;
+    /** BL-155 review 4: a RUNNING pod reports no runtime (image still downloading) for its first N RUNNING polls. */
+    uptimeAfterRunningPolls?: number;
   } = {}
 ) {
   const createInputs: Array<{ gpu?: { id: string; allowedCudaVersions?: string[] } }> = [];
+  const runningPolls = new Map<string, number>();
   const names = new Map<string, { name: string; gpu: string }>();
   let listCalls = 0;
   const pods = new Map<string, PodState>();
@@ -125,7 +128,7 @@ function fakeRunpod(
     networkVolumeIds: ["vol-eu"],
     ports: null,
     // Like the live API: `RUNNING` + a runtime once the container is up; `containerNeverStarts` = RUNNING with no runtime.
-    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts ? 5 : null,
+    containerUptimeSec: pods.get(id)?.status === "RUNNING" && !opts.containerNeverStarts && (runningPolls.get(id) ?? 0) > (opts.uptimeAfterRunningPolls ?? 0) ? 5 : null,
     env: {},
     createdAt: null,
     startedAt: null,
@@ -162,6 +165,7 @@ function fakeRunpod(
         polls++;
         if (polls >= (opts.runningAfterPolls ?? 1)) state.status = "RUNNING";
       }
+      if (state.status === "RUNNING") runningPolls.set(id, (runningPolls.get(id) ?? 0) + 1);
       return pod(id);
     },
     async terminatePod(id: string) {
@@ -2335,4 +2339,77 @@ test("BL-155 review 3: a re-placement pod aborted before its `starting` write, t
   row = f.mem.rows.get(requested.sessionId)!;
   assert.equal(row.status, "failed");
   assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:01:10.000Z");
+});
+
+// -- BL-155 independent review round 4 -------------------------------------------------------------------------------------
+// Expected (AC-CU-02): an unknown host version does not block -- but "unknown" is decided only once the container is up; until
+// then a failed or empty read is asked again on the next poll. A re-placement that cannot create a new pod ends the session
+// (never a wait), billed from the first pod's creation to the confirmed terminate of the last one.
+
+test("BL-155 review 4: a host CUDA read that fails while the image downloads is asked again; a later 12.4 still terminates and re-places", async () => {
+  let pod1Reads = 0;
+  const runpod = fakeRunpod({
+    uptimeAfterRunningPolls: 2,
+    hostCuda: (podId) => {
+      if (podId !== "pod1") return "12.8";
+      pod1Reads++;
+      return pod1Reads === 1 ? new Error("RunPod GraphQL request failed: timeout") : pod1Reads === 2 ? null : "12.4";
+    },
+  });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod2");
+  assert.equal(pod1Reads, 3);
+  assert.deepEqual(f.capacityLog.map((a) => [a.result, a.detail]), [["placed", null], ["error", "CUDA driver too old: host 12.4 < 12.8"], ["placed", null]]);
+});
+
+test("BL-155 review 4: a host version still unknown once the container is up is unknown -- the start continues and stops asking", async () => {
+  const runpod = fakeRunpod({ uptimeAfterRunningPolls: 2, hostCuda: () => null });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR } });
+  const running = await startRunning(f);
+  assert.equal(running.status, "running");
+  assert.equal(running.podId, "pod1");
+  // RUNNING without runtime twice, then with runtime: three reads, the last one at the poll the container came up.
+  assert.equal(runpod.calls.filter((c) => c === "hostCuda:pod1").length, 3);
+});
+
+async function replacementThatCannotCreate(second: "no_capacity" | "fatal") {
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", runningAfterPolls: 3 });
+  const f = fixture({ runpod, settings: { gpuTypeId: FOUR, gpuFallbackIds: [FIVE] } });
+  const create = runpod.client.createPod.bind(runpod.client);
+  let creates = 0;
+  (runpod.client as { createPod: (input: unknown) => Promise<unknown> }).createPod = async (input: unknown) => {
+    if (++creates === 1) return create(input as never);
+    f.advance(60_000); // each refused create takes a minute: "now" moves past the confirmed terminate
+    throw second === "no_capacity"
+      ? new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 400: There are no longer any instances available with the requested specifications. Please refresh and try again.", details: { status: 400 } })
+      : new DomainError({ code: "runpod_api_unavailable", message: "RunPod API returned HTTP 402: insufficient balance", details: { status: 402 } });
+  };
+  const requested = await f.services.requestSession(operatorRequest);
+  return { f, runpod, requested };
+}
+
+test("BL-155 review 4: after an incompatible host, no capacity for every candidate ends the session failed (media_gpu_host_incompatible), never waiting; billed to the confirmed terminate", async () => {
+  const { f, runpod, requested } = await replacementThatCannotCreate("no_capacity");
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_gpu_host_incompatible");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^media_gpu_host_incompatible: CUDA driver too old: host 12\.4 < 12\.8; no other host could be placed/);
+  // pod1 created 10:00:00, RUNNING after two 5 s polls, terminate confirmed 10:00:10; the two refused creates took 2 min.
+  assert.equal(row.startedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:10.000Z");
+  assert.equal(row.secondsUsed, 10);
+  assert.equal(runpod.pods.size, 0);
+  assert.deepEqual(f.capacityLog.map((a) => [a.gpuTypeId, a.result]), [[FOUR, "placed"], [FOUR, "error"], [FOUR, "no_capacity"], [FIVE, "no_capacity"]]);
+});
+
+test("BL-155 review 4: after an incompatible host, a fatal createPod answer ends the session failed (media_session_start_failed), billed to the confirmed terminate", async () => {
+  const { f, requested } = await replacementThatCannotCreate("fatal");
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  const row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /^pod creation failed: .*402/);
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:10.000Z");
+  assert.equal(row.secondsUsed, 10);
 });

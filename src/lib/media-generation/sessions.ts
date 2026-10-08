@@ -1004,11 +1004,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
               break;
             }
             await seenAlive(); // billed at least until here (AC-P14-17)
-            // BL-155 (AC-CU-02): RunPod has put the pod on a machine once it is RUNNING -- read that host's CUDA once, before
-            // the image download is waited for, so a too-old driver costs seconds, not minutes.
+            // BL-155 (AC-CU-02): RunPod has put the pod on a machine once it is RUNNING -- read that host's CUDA before the image
+            // download is waited for, so a too-old driver costs seconds, not minutes. A failed or empty read is asked again on
+            // the next poll; only once the container is up is the version taken as unknown (review round 4).
             if (current.status === "RUNNING" && !hostChecked && settings.minCudaVersion !== null) {
-              hostChecked = true;
               const host = await readHostCuda();
+              if (host !== null || current.containerUptimeSec !== null) hostChecked = true;
               if (hostCudaTooOld(host, settings.minCudaVersion)) {
                 mismatch = `CUDA driver too old: host ${host} < ${settings.minCudaVersion}`;
                 break;
