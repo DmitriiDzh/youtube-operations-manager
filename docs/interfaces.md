@@ -931,7 +931,7 @@ A second agent role, separate from the channel agents. Technical contract only (
 
       Sync-gateway family `generation-plans` (Merge tab "Generation plans"): report `ytm-generation-plans` v1.
     - Phase 3:
-      - `GET /api/generation-plans/summary` → `{ waitingReview, waitingPassed, waitingRejected, local, otherDevices }`;
+      - `GET /api/generation-plans/summary` → `{ waitingReview, waitingPassed, waitingRejected, local, otherDevices }` -- replaced by BL-157 (below): the answer is now per channel, `{ activeChannelId, waitingReview, waitingPassed, waitingRejected, channels }`, and `local` / `otherDevices` are gone;
       - `POST /api/generation-plans/[planId]/review-rejected` `{ reviewRejected: boolean }` -- the owner's switch (BL-153), a `plan_updated` event by the owner;
       - `GET .../reference?id=` (and `.../peers/[deviceId]/[planId]/reference?id=`): a plan reference's file, under the same rules as the audition below;
       - `GET .../review` also returns `references`.
