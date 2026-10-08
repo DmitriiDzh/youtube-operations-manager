@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   MAX_CONCURRENT_SESSIONS_RANGE,
@@ -2793,9 +2794,9 @@ export function NowRunningLine({ activeChannelId, sessionsHref }: { activeChanne
       {mine.map((s) => (
         <p key={s.sessionId} className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
           <span>{t("media.nowRunning.line", { gpu: s.gpuTypeId ?? t("media.nowRunning.noGpuYet"), status: mediaStatusLabel(t, s.status) })}</span>
-          <a href={sessionsHref} className="text-emerald-300 underline hover:text-white">
+          <Link href={sessionsHref} className="text-emerald-300 underline hover:text-white">
             {t("media.nowRunning.open")}
-          </a>
+          </Link>
         </p>
       ))}
     </div>
