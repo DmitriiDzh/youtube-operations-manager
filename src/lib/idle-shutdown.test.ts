@@ -304,6 +304,19 @@ test("createIdleHandler exit: a failed reset does not hold up the exit (the leas
   assert.deepEqual(calls, ["resetLiveWrites", "stopPods", "flush", "exit"]);
 });
 
+test("service mode: a session-end handler that reports nothing (a wrapper that dropped the result) counts as not done", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let calls = 0;
+  // Gets past the type on purpose: a JS caller or a cast must not turn the Live-writes retry off.
+  const dropsTheResult = (async () => { calls += 1; }) as unknown as () => Promise<boolean>;
+  const stop = startIdleShutdownWatcher({ action: "end-session", timeoutMs: 20, checkIntervalMs: 10, onIdle: dropsTheResult });
+  try {
+    assert.ok(await waitFor(() => calls >= 3), "only true counts as ended, so the idle period keeps being retried");
+  } finally {
+    stop();
+  }
+});
+
 test("service mode: a session-end handler that throws counts as not done and is tried again", async () => {
   recordActivity(new Date(Date.now() - 500));
   let attempts = 0;
