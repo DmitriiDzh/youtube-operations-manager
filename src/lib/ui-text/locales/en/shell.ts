@@ -193,4 +193,17 @@ export const shell = {
   "page.planReview": "Plan review",
   "operation.gone": "The operation is no longer available (the server may have restarted).",
   "conflicts.requestFailed": "Request to {url} failed ({status})",
+  // BL-157 (SERVERS_MEDIA_PLAN.md §D): the other channels' open Media work in the channel switcher and the bell.
+  "channelWork.title": "Other channels",
+  "channelWork.open": "Open",
+  "channelWork.waiting": "{count} waiting",
+  "channelWork.waitingSplit": "{count} waiting ({passed} passed, {rejected} rejected)",
+  "channelWork.review": "Media: {count, plural, one {# track} other {# tracks}} waiting for review",
+  "channelWork.reviewSplit": "Media: {count, plural, one {# track} other {# tracks}} waiting for review ({passed} passed, {rejected} rejected)",
+  "channelWork.wave": "{wave} {count}",
+  "channelWork.stageComplete": "Media: plan {plan}, stage “{stage}” complete",
+  "channelWork.planComplete": "Media: plan {plan} complete",
+  "channelWork.attemptsExhausted": "Media: plan {plan}, attempts used up for {count, plural, one {# item} other {# items}}",
+  "channelWork.budget80": "Media: plan {plan} has used 80% of its budget",
+  "channelWork.budget100": "Media: plan {plan} has reached its budget",
 } as const;

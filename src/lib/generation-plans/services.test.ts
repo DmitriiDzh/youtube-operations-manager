@@ -3,7 +3,7 @@ import test from "node:test";
 import { isDomainError, type PlanEvent, type PlanResultRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
 import type { GenerationPlansReport, SharedVerdict } from "@/lib/sync-gateway";
-import { createGenerationPlanServices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
+import { createGenerationPlanServices, sharedNotices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 
 // BL-143 acceptance criteria AC-GP-01..07 (docs/roadmap/plans/GENERATION_PLANS_PLAN.md §4), written before the services.
 // Expected values are stated from the plan's rules, not from running the code.
@@ -1179,4 +1179,73 @@ test("AC-SM-03: another device's plan is visible only to the channel its report 
   await assert.rejects(d.win.assertPeerPlanOfChannel("mac", "R-0001-S1-music", "UC_other"), refused("plan_not_found"));
   await assert.rejects(d.win.assertPeerPlanOfChannel("mac", "R-0001-S1-music", null), refused("plan_not_found"));
   await assert.rejects(d.win.assertPeerPlanOfChannel("linux", "R-0001-S1-music", CHANNEL), refused("plan_not_found"));
+});
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01): the open Media work per connected channel -- the active channel's counts for its
+// badge, every connected channel's counts, waves and notices for the switcher and the bell.
+test("AC-BL-01: per-channel work -- the active channel's counts on top, every connected channel's rows, other devices' plans, unconnected channels left out", async () => {
+  const d = twoDevices();
+  // The Mac: R-0001 on CHANNEL with two tracks waiting in wave C1 (one passed, one rejected; the plan reviews rejects).
+  await d.mac.createPlan({ ...basePlan(), reviewRejected: true });
+  await d.mac.report({
+    planId: "R-0001-S1-music",
+    rows: [
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" },
+      { stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:r1", result: "rejected", auditionFile: "R-0001/C1/r1.mp3" },
+    ],
+  });
+  // Windows owns a plan of another connected channel with one track waiting in no wave, and a plan of an unconnected one.
+  await d.win.createPlan({ ...basePlan(), planId: "T-0001-jazz", title: "Tropico jazz", channelId: CHANNEL, groups: [], items: [{ itemKey: "J/1", targetCount: 1 }] });
+  await d.win.report({ planId: "T-0001-jazz", rows: [{ stageId: "validate", itemKey: "J/1", attemptRef: "ext:t1", result: "accepted" }] });
+  await d.publish("win", d.win);
+  d.reports.win.plans[0].channelId = "UC_tropico";
+  d.reports.win.plans.push({ ...structuredClone(d.reports.win.plans[0]), planId: "X-elsewhere", channelId: "UC_not_connected" });
+
+  const summary = await d.mac.channelSummary({ activeChannelId: CHANNEL, connectedChannelIds: [CHANNEL, "UC_tropico"] });
+  assert.deepEqual([summary.waitingReview, summary.waitingPassed, summary.waitingRejected], [2, 1, 1], "the active channel's counts");
+  assert.deepEqual(summary.channels.map((c) => [c.channelId, c.waitingReview, c.waitingPassed, c.waitingRejected]), [
+    [CHANNEL, 2, 1, 1],
+    ["UC_tropico", 1, 1, 0],
+  ]);
+  const japan = summary.channels[0];
+  assert.deepEqual(japan.plans, [{ planId: "R-0001-S1-music", title: "Stage 1 music", device: null, waiting: 2 }]);
+  assert.deepEqual(japan.batches, [{ planId: "R-0001-S1-music", groupId: "C1", title: "Wave 1", waiting: 2 }]);
+  const tropico = summary.channels[1];
+  assert.deepEqual(tropico.plans, [{ planId: "T-0001-jazz", title: "Tropico jazz", device: { deviceId: "win", hostname: "Windows PC" }, waiting: 1 }]);
+  assert.deepEqual(tropico.batches, [{ planId: "T-0001-jazz", groupId: null, title: "", waiting: 1 }], "a track in no wave");
+
+  // A verdict sent from the Mac on the Windows plan no longer waits here.
+  await d.mac.recordPeerVerdict({ deviceId: "win", planId: "T-0001-jazz", itemKey: "J/1", attemptRef: "ext:t1", result: "accepted" });
+  const after = await d.mac.channelSummary({ activeChannelId: CHANNEL, connectedChannelIds: [CHANNEL, "UC_tropico"] });
+  assert.deepEqual(after.channels[1].plans, []);
+  assert.equal(after.channels[1].waitingReview, 0);
+
+  // No active channel: zero on top, the rows are still there (fail-closed badge, the bell still sees the others).
+  const none = await d.mac.channelSummary({ activeChannelId: null, connectedChannelIds: [CHANNEL] });
+  assert.deepEqual([none.waitingReview, none.channels[0].waitingReview], [0, 2]);
+});
+
+test("AC-BL-01: notices other than review_waiting are listed per plan; another device's are taken from its report, well-formed known kinds only", async () => {
+  const m = withMedia([running()]);
+  await m.services.createPlan(basePlan());
+  await m.services.runStage({ planId: "R-0001-S1-music", sessionId: "s1" });
+  for (const j of m.jobs) j.status = "done";
+  const summary = await m.services.channelSummary({ activeChannelId: null, connectedChannelIds: [CHANNEL] });
+  // All four generate jobs done: the in-app stage reached its planned count.
+  assert.deepEqual(summary.channels[0].notices, [{ planId: "R-0001-S1-music", planTitle: "Stage 1 music", device: null, notice: { kind: "stage_complete", stageId: "generate", title: "Generate" } }]);
+  assert.deepEqual(
+    sharedNotices({
+      notices: [
+        { kind: "stage_complete", stageId: "validate", title: "Validator" },
+        { kind: "budget_80" },
+        { kind: "attempts_exhausted", count: 3 },
+        { kind: "review_waiting", count: 4, passed: 4, rejected: 0 },
+        { kind: "stage_complete" },
+        { kind: "made_up" },
+        "text",
+      ],
+    }),
+    [{ kind: "stage_complete", stageId: "validate", title: "Validator" }, { kind: "budget_80" }, { kind: "attempts_exhausted", count: 3 }]
+  );
+  assert.deepEqual(sharedNotices({}), []);
 });

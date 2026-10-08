@@ -207,6 +207,35 @@ export type PlanNotice =
 
 export type PlanView = { plan: GenerationPlan; progress: PlanProgress };
 
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01): another device's plan, named for "open the place" (null = this device's). */
+export type PlanDeviceRef = { deviceId: string; hostname: string | null } | null;
+
+/**
+ * BL-157 (AC-BL-01/04): one connected channel's open Media work -- what its menu badge, the channel switcher and (for a
+ * channel that is not active) the bell show. Counts include other devices' plans of the channel, minus verdicts sent from here.
+ */
+export type PlanChannelWork = {
+  channelId: string;
+  waitingReview: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** The active plans with tracks waiting, in plan order (the bell opens the review when there is one). */
+  plans: Array<{ planId: string; title: string; device: PlanDeviceRef; waiting: number }>;
+  /** One row per wave with tracks waiting (groupId null = tracks in no wave). */
+  batches: Array<{ planId: string; groupId: string | null; title: string; waiting: number }>;
+  /** The active plans' notices other than `review_waiting` (that one is the counts above). */
+  notices: Array<{ planId: string; planTitle: string; device: PlanDeviceRef; notice: Exclude<PlanNotice, { kind: "review_waiting" }> }>;
+};
+
+export type PlanChannelSummary = {
+  /** The ACTIVE channel's waiting tracks (the Media menu badge); zero while no channel is active. */
+  waitingReview: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** Every channel connected on this device, in the order given. */
+  channels: PlanChannelWork[];
+};
+
 /**
  * BL-157 (AC-MV-03): a plan move's file check. `checked` = the distinct files checked (every reported `auditionFile` and
  * every reference file); `missing` lists up to `PLAN_MOVE_MISSING_LISTED` of the `missingCount` not found in the target

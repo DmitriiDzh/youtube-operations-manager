@@ -27,7 +27,8 @@ import {
   type StartupStepKey,
   type StepStatus,
 } from "@/components/startup-progress";
-import { CHANNEL_SWITCH_EVENT, type ChannelSwitchEventDetail } from "@/components/use-connected-channels";
+import { activateStoredChannel, CHANNEL_SWITCH_EVENT, type ChannelSwitchEventDetail } from "@/components/use-connected-channels";
+import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -122,6 +123,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [plansWaiting, setPlansWaiting] = useState(0);
   // BL-153: how many of the waiting tracks the validator rejected (shown when hovering the Production badge).
   const [plansWaitingRejected, setPlansWaitingRejected] = useState(0);
+  const [channelWork, setChannelWork] = useState<PlanChannelWork[]>([]);
   // Owner, msg 2004: a blurred loading window while the app loads its data on open and while the channel switches.
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDismissed, setStartupDismissed] = useState(false);
@@ -215,6 +217,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // and recreate both intervals (firing an immediate extra sync cycle) every time the operator
   // merely switches back to this browser tab, silently defeating the 60s pacing chosen below.
   const userId = session?.user?.id;
+  const activeChannelId = channel?.id ?? null;
 
   // BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md) -- the Reporting API's Reach report
   // (impressions/CTR). Its own independent fire-and-forget call, deliberately NOT chained to the Analytics
@@ -238,6 +241,26 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       () => setStep("reach", reachOutcome(false))
     );
   }, [channel, setStep]);
+
+  // BL-157 (AC-BL-05): a bell entry switches to its channel, waits until the switch has landed, then opens its place.
+  const [openAfterSwitch, setOpenAfterSwitch] = useState<{ channelId: string; href: string } | null>(null);
+  const openChannelWork = useCallback(async (channelId: string, href: string) => {
+    if (channelId === channel?.id) {
+      router.push(href);
+      return;
+    }
+    setOpenAfterSwitch({ channelId, href });
+    const { ok } = await activateStoredChannel(channelId);
+    if (!ok) setOpenAfterSwitch(null);
+  }, [channel?.id, router]);
+  useEffect(() => {
+    if (!openAfterSwitch || channel?.id !== openAfterSwitch.channelId) return;
+    const { href } = openAfterSwitch;
+    queueMicrotask(() => {
+      setOpenAfterSwitch(null);
+      router.push(href);
+    });
+  }, [channel?.id, openAfterSwitch, router]);
 
   // A channel switch (topbar or Settings → Channels): the loading window until the new channel has been read.
   useEffect(() => {
@@ -328,9 +351,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       try {
         const res = await fetch("/api/generation-plans/summary");
         if (!res.ok) return;
-        const data = (await res.json()) as { waitingReview?: number; waitingRejected?: number };
+        // BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01/02): the counts are the active channel's (the Media badge); `channels`
+        // is every connected channel's open work, for the channel switcher and the bell.
+        const data = (await res.json()) as { waitingReview?: number; waitingRejected?: number; channels?: PlanChannelWork[] };
         setPlansWaiting(data.waitingReview ?? 0);
         setPlansWaitingRejected(data.waitingRejected ?? 0);
+        setChannelWork(data.channels ?? []);
       } catch {
         // Non-fatal -- the next poll tries again.
       }
@@ -338,7 +364,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     void refreshPlansWaiting();
     const id = setInterval(() => void refreshPlansWaiting(), PLANS_REVIEW_POLL_MS);
     return () => clearInterval(id);
-  }, [userId]);
+    // BL-157: read again when the active channel changes -- the badge is that channel's.
+  }, [userId, activeChannelId]);
 
   // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
   // as every visit did before BL-149 (re-review).
@@ -364,6 +391,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       activeTab={tab}
       onReviewDeviceSyncDivergence={() => router.push("/merge")}
       channel={channel}
+      activeChannelId={channel?.id ?? null}
+      channelWork={channelWork}
+      onOpenChannelWork={(channelId, href) => void openChannelWork(channelId, href)}
       channelUnavailable={channelUnavailable}
       onSignOut={() => signOut()}
     >

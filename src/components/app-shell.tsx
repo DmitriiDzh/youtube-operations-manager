@@ -7,6 +7,7 @@
 import Link from "next/link";
 import type { ComponentType, ReactNode, SVGProps } from "react";
 import type { ChannelInfo } from "@/components/app-channel";
+import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
 import { ChannelSwitcher } from "./channel-switcher";
 import { DeviceSyncBell } from "./device-sync-bell";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
@@ -34,6 +35,11 @@ export function AppShell<T extends string>(props: {
   onSignOut: () => void;
   /** Where the bell's "see what differs" leads (the Merge tab). */
   onReviewDeviceSyncDivergence?: () => void;
+  /** BL-157 (SERVERS_MEDIA_PLAN.md §D): every connected channel's open Media work -- the switcher's counts, the bell's entries. */
+  activeChannelId?: string | null;
+  channelWork?: readonly PlanChannelWork[];
+  /** A bell entry's button: switch to that channel, then open `href`. */
+  onOpenChannelWork?: (channelId: string, href: string) => void;
   children: ReactNode;
 }) {
   const t = useT();
@@ -95,11 +101,16 @@ export function AppShell<T extends string>(props: {
                 )}
               </p>
             </div>
-            <ChannelSwitcher />
+            <ChannelSwitcher channelWork={props.channelWork} />
           </div>
           <div className="flex items-center gap-3">
             <FeatureErrorBoundary label={t("shell.deviceSync")}>
-              <DeviceSyncBell onReviewDivergence={props.onReviewDeviceSyncDivergence} />
+              <DeviceSyncBell
+                onReviewDivergence={props.onReviewDeviceSyncDivergence}
+                activeChannelId={props.activeChannelId ?? null}
+                channelWork={props.channelWork}
+                onOpenChannelWork={props.onOpenChannelWork}
+              />
             </FeatureErrorBoundary>
             <button
               onClick={props.onSignOut}

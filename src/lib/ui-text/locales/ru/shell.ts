@@ -193,4 +193,17 @@ export const shell: Record<keyof typeof en, string> = {
   "page.planReview": "Проверка плана",
   "operation.gone": "Операция больше недоступна (возможно, сервер перезапускался).",
   "conflicts.requestFailed": "Запрос к {url} не удался ({status})",
+  // BL-157 (SERVERS_MEDIA_PLAN.md §D): the other channels' open Media work in the channel switcher and the bell.
+  "channelWork.title": "Другие каналы",
+  "channelWork.open": "Открыть",
+  "channelWork.waiting": "ждут: {count}",
+  "channelWork.waitingSplit": "ждут: {count} (прошли: {passed}, отбракованы: {rejected})",
+  "channelWork.review": "Медиа: {count, plural, one {# трек ждёт} few {# трека ждут} many {# треков ждут} other {# трека ждут}} прослушивания",
+  "channelWork.reviewSplit": "Медиа: {count, plural, one {# трек ждёт} few {# трека ждут} many {# треков ждут} other {# трека ждут}} прослушивания (прошли: {passed}, отбракованы: {rejected})",
+  "channelWork.wave": "{wave} {count}",
+  "channelWork.stageComplete": "Медиа: план {plan}, стадия «{stage}» завершена",
+  "channelWork.planComplete": "Медиа: план {plan} выполнен",
+  "channelWork.attemptsExhausted": "Медиа: план {plan}, попытки исчерпаны у {count, plural, one {# позиции} few {# позиций} many {# позиций} other {# позиции}}",
+  "channelWork.budget80": "Медиа: план {plan} израсходовал 80% бюджета",
+  "channelWork.budget100": "Медиа: план {plan} исчерпал бюджет",
 };

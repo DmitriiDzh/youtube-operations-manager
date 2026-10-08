@@ -7,11 +7,14 @@ import {
   validatorOfEntry,
   type GenerationPlan,
   type PlanActor,
+  type PlanChannelSummary,
+  type PlanChannelWork,
   type PlanDefinition,
   type PlanEvent,
   type PlanGroup,
   type PlanItem,
   type PlanMoveResult,
+  type PlanNotice,
   type PlanReference,
   type PlanResultRow,
   type PlanStage,
@@ -262,6 +265,23 @@ export function validateDefinition(definition: PlanDefinition): void {
     if (Object.keys(item.params).length > 60) problems.push(`item ${item.itemKey} has more than 60 params`);
   }
   if (problems.length > 0) throw planInvalid(`The plan is not valid: ${problems.slice(0, 10).join("; ")}`, { problems });
+}
+
+/**
+ * BL-157 (AC-BL-01): the notices in another device's report (`progress` is that device's derived progress, a loose record):
+ * only well-formed ones of the known kinds are taken, anything else is left out.
+ */
+export function sharedNotices(progress: Record<string, unknown>): PlanNotice[] {
+  const raw = Array.isArray(progress.notices) ? (progress.notices as unknown[]) : [];
+  const out: PlanNotice[] = [];
+  for (const n of raw) {
+    if (!n || typeof n !== "object") continue;
+    const x = n as Record<string, unknown>;
+    if (x.kind === "stage_complete" && typeof x.stageId === "string" && typeof x.title === "string") out.push({ kind: "stage_complete", stageId: x.stageId.slice(0, 40), title: x.title.slice(0, 200) });
+    else if (x.kind === "budget_80" || x.kind === "budget_100" || x.kind === "plan_complete") out.push({ kind: x.kind });
+    else if (x.kind === "attempts_exhausted" && typeof x.count === "number" && Number.isFinite(x.count)) out.push({ kind: "attempts_exhausted", count: x.count });
+  }
+  return out;
 }
 
 export function createGenerationPlanServices(deps: PlanServiceDependencies) {
@@ -832,6 +852,57 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       }
       const total = local + otherDevices;
       return { waitingReview: total, waitingPassed: total - rejected, waitingRejected: rejected, local, otherDevices };
+    },
+
+    /**
+     * BL-157 (SERVERS_MEDIA_PLAN.md AC-BL-01): the open Media work of each channel connected here -- this device's active
+     * plans and the other devices' (minus the verdicts sent from here) -- and the active channel's counts for its badge.
+     * A plan of a channel that is not connected here is not counted anywhere.
+     */
+    async channelSummary(input: { activeChannelId: string | null; connectedChannelIds: readonly string[] }): Promise<PlanChannelSummary> {
+      const work = new Map<string, PlanChannelWork>(input.connectedChannelIds.map((channelId) => [channelId, { channelId, waitingReview: 0, waitingPassed: 0, waitingRejected: 0, plans: [], batches: [], notices: [] }]));
+      const add = (
+        row: PlanChannelWork,
+        plan: { planId: string; title: string; groups: Array<{ groupId: string; title: string }> },
+        device: PlanChannelWork["plans"][number]["device"],
+        waiting: Array<{ groupId: string | null; rejected: boolean }>,
+        notices: PlanNotice[]
+      ) => {
+        const rejected = waiting.filter((w) => w.rejected).length;
+        row.waitingReview += waiting.length;
+        row.waitingRejected += rejected;
+        row.waitingPassed += waiting.length - rejected;
+        if (waiting.length > 0) row.plans.push({ planId: plan.planId, title: plan.title, device, waiting: waiting.length });
+        const titles = new Map(plan.groups.map((g) => [g.groupId, g.title]));
+        const perGroup = new Map<string | null, number>();
+        for (const w of waiting) perGroup.set(w.groupId, (perGroup.get(w.groupId) ?? 0) + 1);
+        const order = [...plan.groups.map((g) => g.groupId), null];
+        for (const groupId of [...perGroup.keys()].sort((a, b) => order.indexOf(a) - order.indexOf(b))) {
+          row.batches.push({ planId: plan.planId, groupId, title: groupId === null ? "" : (titles.get(groupId) ?? groupId), waiting: perGroup.get(groupId) ?? 0 });
+        }
+        for (const notice of notices) if (notice.kind !== "review_waiting") row.notices.push({ planId: plan.planId, planTitle: plan.title, device, notice });
+      };
+      for (const row of await deps.store.listPlans({ status: "active" })) {
+        const target = work.get(row.channelId);
+        if (!target) continue;
+        const [jobs, results, sessions] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id)]);
+        const plan = toPublicPlan(row);
+        const waiting = reviewEntries(row, jobs, results).filter((e) => e.verdict === null);
+        add(target, plan, null, waiting.map((e) => ({ groupId: e.groupId, rejected: e.validator === "rejected" })), planProgress(plan, jobs, results, sessions, now()).notices);
+      }
+      if (deps.peers) {
+        const sent = new Set((await more.outgoingVerdicts()).map((v) => `${v.ownerDeviceId}\u0000${v.planId}\u0000${v.itemKey}\u0000${v.attemptRef}`));
+        for (const report of await deps.peers.listPeerReports()) {
+          for (const plan of report.plans.filter((p) => p.status === "active")) {
+            const target = work.get(plan.channelId);
+            if (!target) continue;
+            const waiting = plan.review.filter((e) => e.verdict === null && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
+            add(target, plan, { deviceId: report.deviceId, hostname: report.hostname }, waiting.map((e) => ({ groupId: e.groupId, rejected: validatorOfEntry(e) === "rejected" })), sharedNotices(plan.progress));
+          }
+        }
+      }
+      const active = input.activeChannelId ? work.get(input.activeChannelId) : undefined;
+      return { waitingReview: active?.waitingReview ?? 0, waitingPassed: active?.waitingPassed ?? 0, waitingRejected: active?.waitingRejected ?? 0, channels: [...work.values()] };
     },
 
     /** BL-143 phase 2: the other devices' plans (read-only), each report with its age and whether it is stale. */
