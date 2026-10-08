@@ -47,7 +47,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   acquireVideoExecutionLock,
   beginAttemptIntent,
@@ -75,7 +76,7 @@ before(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), "batches-concurrency-"));
   const dbFilePath = path.join(tempDir, "test.db");
 
-  clientA = createClient({ url: `file:${dbFilePath}` });
+  clientA = createLibsqlClient({ url: `file:${dbFilePath}` });
   await initializeDatabaseSchema(clientA);
   dbA = createIsolatedDb(clientA);
 
@@ -89,7 +90,7 @@ before(async () => {
     connectedUserId: null,
   });
 
-  clientB = createClient({ url: `file:${dbFilePath}` });
+  clientB = createLibsqlClient({ url: `file:${dbFilePath}` });
   // See the comment in initializeDatabaseSchema (src/lib/db.ts) -- clientA gets this
   // pragma from that call, but clientB never calls initializeDatabaseSchema itself.
   await clientB.execute("PRAGMA busy_timeout = 5000");

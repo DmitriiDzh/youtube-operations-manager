@@ -709,6 +709,8 @@ type ServiceDependencies = {
     discoveryQuery: string;
     reasonDiscovered?: string | null;
     createdVia: string;
+    /** The search's own clock time -- every candidate one search inserts or touches shares it (BL-156). */
+    seenAt: Date;
   }): Promise<void>;
   touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null): Promise<void>;
   /** BL-145: records what the latest genre search found of a candidate. */
@@ -2799,6 +2801,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             discoveryQuery: parsedInput.query,
             reasonDiscovered: result.description,
             createdVia: callOrigin.createdVia,
+            seenAt: now,
           });
           candidatesNewCount += 1;
           candidateIds.push(result.channelId);
@@ -2907,6 +2910,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
               discoveryQuery: parsedInput.query,
               reasonDiscovered: reason,
               createdVia: callOrigin.createdVia,
+              seenAt: now,
             });
             candidatesNew += 1;
           }

@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema } from "../db";
 import { exportHandoff, importHandoff } from "./services";
 import {
@@ -19,7 +20,7 @@ import { withTempDir } from "@/test-support/temp-dir";
 // Acceptance criteria: docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §5 (written before this code).
 
 async function makeClient(dir: string, name: string): Promise<Client> {
-  const client = createClient({ url: `file:${path.join(dir, name)}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, name)}` });
   await initializeDatabaseSchema(client);
   return client;
 }
@@ -270,7 +271,7 @@ test("R2-2: assertStillSafe runs while the merge holds the write lock (another c
     const b = await makeClient(dir, "b.db");
     await addResearchChannel(b, "UC-b");
     const sb = await exportFrom(b, dir, "device-b");
-    const other = createClient({ url: `file:${path.join(dir, "a.db")}` });
+    const other = createLibsqlClient({ url: `file:${path.join(dir, "a.db")}` });
     await other.execute("PRAGMA busy_timeout = 0");
     let otherWrite: "ok" | "busy" | null = null;
     await importInto(a, dir, sb.snapshotId, {

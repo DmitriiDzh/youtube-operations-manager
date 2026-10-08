@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { withTempDir } from "@/test-support/temp-dir";
@@ -20,7 +20,7 @@ import { missingTableOf, skippingAbsentDeviceLocalTables } from "@/lib/snapshot/
 const stamps = Array.from({ length: SCHEMA_CURRENT_VERSION - 50 }, (_, i) => 50 + i);
 for (const stamp of stamps) test(`a scrubbed snapshot stamped schema ${stamp} (no device-local tables) migrates to the current schema`, () =>
   withTempDir("staged-migration-", async (root) => {
-    const live = createClient({ url: `file:${path.join(root, "live.db")}` });
+    const live = createLibsqlClient({ url: `file:${path.join(root, "live.db")}` });
     await initializeDatabaseSchema(live);
     await live.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UC1', 'r', 'web_ui')");
     const staged = path.join(root, "staged.db");
@@ -28,7 +28,7 @@ for (const stamp of stamps) test(`a scrubbed snapshot stamped schema ${stamp} (n
     await scrubDatabaseCopy(live, staged);
     live.close();
 
-    const copy = createClient({ url: `file:${staged}` });
+    const copy = createLibsqlClient({ url: `file:${staged}` });
     const tables = (await copy.execute("SELECT name FROM sqlite_master WHERE type = 'table'")).rows.map((r) => String(r.name));
     assert.ok(!tables.includes("creative_assets") && !tables.includes("media_credentials"), "precondition: the copy is scrubbed like a published snapshot");
     await copy.execute({ sql: "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'", args: [String(stamp)] });
@@ -36,7 +36,7 @@ for (const stamp of stamps) test(`a scrubbed snapshot stamped schema ${stamp} (n
 
     await migrateStagedCopy(staged);
 
-    const after = createClient({ url: `file:${staged}` });
+    const after = createLibsqlClient({ url: `file:${staged}` });
     assert.deepEqual((await after.execute("SELECT id FROM research_channels")).rows.map((r) => String(r.id)), ["UC1"]);
     after.close();
   }));
@@ -44,7 +44,7 @@ for (const stamp of stamps) test(`a scrubbed snapshot stamped schema ${stamp} (n
 // The skip is narrow: only a DEVICE-LOCAL table that is absent. A missing transferred table, or any other error, still fails.
 test("on a staged copy only a statement on an absent device-local table is skipped; anything else still fails", () =>
   withTempDir("staged-migration-skip-", async (root) => {
-    const raw = createClient({ url: `file:${path.join(root, "empty.db")}` });
+    const raw = createLibsqlClient({ url: `file:${path.join(root, "empty.db")}` });
     const client = skippingAbsentDeviceLocalTables(raw);
     await client.execute("ALTER TABLE media_jobs ADD COLUMN plan_id TEXT");
     await client.execute("CREATE INDEX IF NOT EXISTS x ON creative_assets(channel_id)");

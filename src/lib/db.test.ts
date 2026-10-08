@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { eq } from "drizzle-orm";
 import {
   approveMarketCollectionRequestIfPending,
@@ -155,7 +156,7 @@ import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
 
 async function withTempClient(fn: (client: Client, dir: string) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-integration-test-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await fn(client, dir);
   } finally {
@@ -1811,6 +1812,21 @@ test("deleteResearchChannel cascade-deletes channel-type market_topic_assignment
     assert.ok(topicStillExists, "the topic itself must survive -- only the assignment is scoped to the deleted channel");
   }));
 
+// BL-156: a search hands its own clock time to every candidate it inserts, so one search's candidates share one
+// lastSeenAt (the list orders them by match count within it) whatever second each insert actually ran in.
+test("insertMarketDiscoveryCandidate stamps first/last seen with the given seenAt, not the insert's wall clock", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const seenAt = new Date("2026-10-07T12:00:00.000Z");
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_SEEN_AT_000000000000", title: "T", discoverySource: "search", discoveryQuery: "q", createdVia: "web_ui", seenAt },
+      isolatedDb
+    );
+    const row = await getMarketDiscoveryCandidateById("UC_SEEN_AT_000000000000", isolatedDb);
+    assert.deepEqual([row?.firstSeenAt.toISOString(), row?.lastSeenAt.toISOString()], ["2026-10-07T12:00:00.000Z", "2026-10-07T12:00:00.000Z"]);
+  }));
+
 // Found by independent review (2026-09-29): a promoted discovery candidate's row was never
 // cascade-deleted when its channel left the watchlist, leaving it permanently stuck at
 // status:"promoted" with no path back (promoteDiscoveryCandidate refuses re-promotion,
@@ -2259,7 +2275,7 @@ test("initializeDatabaseSchema: is idempotent -- re-running against an already-c
 test("copyLegacyDatabaseInto: copies every table's schema and rows from the legacy file into an already-open destination connection", () =>
   withTempClient(async (destClient, dir) => {
     const legacyDbPath = path.join(dir, "legacy.db");
-    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    const legacyClient = createLibsqlClient({ url: `file:${legacyDbPath}` });
     try {
       await legacyClient.execute(
         "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)"
@@ -2290,7 +2306,7 @@ test("copyLegacyDatabaseInto: copies every table's schema and rows from the lega
     assert.deepEqual(channels.rows, [{ id: "chan-1", title: "Legacy Channel" }]);
 
     // The legacy file itself must be untouched -- copyLegacyDatabaseInto never writes to it.
-    const legacyRecheck = createClient({ url: `file:${legacyDbPath}` });
+    const legacyRecheck = createLibsqlClient({ url: `file:${legacyDbPath}` });
     const legacyUsersAfter = await legacyRecheck.execute("SELECT id, email FROM users");
     assert.deepEqual(legacyUsersAfter.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
     legacyRecheck.close();
@@ -2302,7 +2318,7 @@ test("copyLegacyDatabaseInto: copies every table's schema and rows from the lega
 test("copyLegacyDatabaseInto: is idempotent -- calling it twice against the same destination never duplicates rows or fails", () =>
   withTempClient(async (destClient, dir) => {
     const legacyDbPath = path.join(dir, "legacy.db");
-    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    const legacyClient = createLibsqlClient({ url: `file:${legacyDbPath}` });
     try {
       await legacyClient.execute("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)");
       await legacyClient.execute({
@@ -2327,7 +2343,7 @@ test("copyLegacyDatabaseInto: is idempotent -- calling it twice against the same
 test("copyLegacyDatabaseInto: a failure partway through rolls back every table, not just the one that failed", () =>
   withTempClient(async (destClient, dir) => {
     const legacyDbPath = path.join(dir, "legacy.db");
-    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    const legacyClient = createLibsqlClient({ url: `file:${legacyDbPath}` });
     try {
       await legacyClient.execute("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)");
       await legacyClient.execute({

@@ -3,12 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { createIsolatedDb, getRefreshTokenIssuedAt, initializeDatabaseSchema, refreshTokenIssuedAtPatch, users } from "@/lib/db";
 
-async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: ReturnType<typeof createClient>) => Promise<void>) {
+async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: ReturnType<typeof createLibsqlClient>) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "conn-health-store-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await initializeDatabaseSchema(client);
     await fn(createIsolatedDb(client), client);

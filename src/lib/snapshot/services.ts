@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { initializeDatabaseSchema } from "@/lib/db";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   SNAPSHOT_REPLACE_ON_IMPORT_TABLES,
   SNAPSHOT_DEVICE_LOCAL_TABLES,
@@ -394,7 +395,7 @@ export function skippingAbsentDeviceLocalTables(client: Client): Client {
  * than this build supports, this throws the same `SchemaVersionError` a live boot would.
  */
 export async function migrateStagedCopy(stagedDbPath: string): Promise<void> {
-  const client = createClient({ url: `file:${stagedDbPath}` });
+  const client = createLibsqlClient({ url: `file:${stagedDbPath}` });
   try {
     await initializeDatabaseSchema(skippingAbsentDeviceLocalTables(client));
     // initializeDatabaseSchema leaves the connection in WAL mode (its own PRAGMA). A later
@@ -414,7 +415,7 @@ export async function migrateStagedCopy(stagedDbPath: string): Promise<void> {
 export async function scanFileForUnresolvedExecutionState(
   dbPath: string
 ): Promise<UnresolvedExecutionRow[]> {
-  const client = createClient({ url: `file:${dbPath}` });
+  const client = createLibsqlClient({ url: `file:${dbPath}` });
   try {
     return await scanForUnresolvedExecutionState(client);
   } finally {

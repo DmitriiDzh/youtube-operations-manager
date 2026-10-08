@@ -1,4 +1,4 @@
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
 import { API_DATA_RETENTION_DAYS, nonAuthorizedTables } from "./contracts";
 
@@ -115,7 +115,7 @@ export async function purgeExpiredApiDataWithinTransaction(client: SqlExecutor, 
  * the same commit; VACUUM then compacts the file (best effort). A file that predates some tables is handled (missing tables are skipped).
  */
 export async function scrubBackupFile(dbPath: string, now: Date = new Date()): Promise<{ changed: boolean }> {
-  const client = createClient({ url: `file:${dbPath}` });
+  const client = createLibsqlClient({ url: `file:${dbPath}` });
   try {
     await client.execute("PRAGMA busy_timeout = 5000");
     // Review round 6: deleted content is zeroed as part of the same commit, so an interrupted or

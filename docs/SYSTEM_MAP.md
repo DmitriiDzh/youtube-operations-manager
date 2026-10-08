@@ -80,6 +80,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 - **Ответственность:** локальное хранилище на SQLite (libSQL), файл `data/playlist-manager.db`.
 - **Файлы:** `src/lib/db.ts` — вся схема (`users`, `rules`, `channels`, `videos`) и CRUD-функции.
+- **Открытие и закрытие соединений (BL-156):** только через `createLibsqlClient` из `src/lib/libsql-client/` (не `createClient` из `@libsql/client` — проверяет `libsql-client-inventory.test.ts`). Нативный драйвер дважды закрывает соединение, если в момент закрытия у него не осталось живых statement-объектов или если соединение не закрыли вовсе (SIGSEGV); модуль закрывает соединения безопасным путём, ведёт транзакции на собственном, всегда закрываемом соединении и закрывает оставшиеся при выходе процесса (`docs/TECHNICAL_DEBT.md` RISK-113).
 - **Точки входа:** прямой импорт функций из `db.ts` внутри адаптеров каждого модуля (`channel-sync/adapters/store.ts`, `write-context`'s `channelSelectionStore` и т.д.).
 - **Зависимости:** нет (нижний уровень).
 - **Read/Write:** и то, и другое (это и есть хранилище).

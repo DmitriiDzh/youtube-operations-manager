@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import {
   createIsolatedDb,
   getGenerationPlan,
@@ -21,9 +21,9 @@ import {
 
 // BL-143 schema v66 (ADR 0029): the plan tables and the media_jobs/media_sessions columns, against a real migrated database.
 
-async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: ReturnType<typeof createClient>) => Promise<void>) {
+async function withDb(fn: (db: ReturnType<typeof createIsolatedDb>, client: ReturnType<typeof createLibsqlClient>) => Promise<void>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "generation-plans-store-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await initializeDatabaseSchema(client);
     await fn(createIsolatedDb(client), client);

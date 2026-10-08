@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 
 // Phase 14 ⟷ Factory Operator merge (2026-10-05): both branches had numbered migrations 50/51. Phase 14 kept 50–58 (a real
@@ -31,7 +32,7 @@ async function stamp(client: Client): Promise<number> {
 
 async function withDb(run: (client: Client) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "db-merge-numbering-"));
-  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
   try {
     await run(client);
   } finally {

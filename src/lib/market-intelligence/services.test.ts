@@ -566,11 +566,13 @@ function createFakeStore() {
       discoveryQuery: string;
       reasonDiscovered?: string | null;
       createdVia: string;
+      seenAt: Date;
     }) {
       if (failInsertMarketDiscoveryCandidateFor === input.id) {
         throw new Error("simulated insertMarketDiscoveryCandidate failure");
       }
-      const now = new Date();
+      // Mirrors db.ts: the search's own clock time, not this call's wall clock (BL-156).
+      const now = input.seenAt;
       discoveryCandidates.set(input.id, {
         id: input.id,
         title: input.title,
@@ -5452,4 +5454,34 @@ test("BL-145 review: channels found in the same search are listed with the most 
   const { services } = createFixture({ musicVideos: videos });
   await services.discoverChannelsByGenre({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
   assert.deepEqual((await services.listDiscoveryCandidates()).candidates.map((c) => c.channelId), ["UC_A00000000000000000000", "UC_B00000000000000000000"]);
+});
+
+// BL-156: the ordering above needs one search to stamp one lastSeenAt -- the search's own clock time, for new and
+// re-found candidates alike (the comparator's "same search = same lastSeenAt" premise), never each insert's wall clock.
+test("BL-156: every candidate one search inserts or re-finds is last seen at that search's clock time", async () => {
+  const now = new Date("2026-10-07T00:00:00.000Z");
+  const { services, store } = createFixture({
+    now,
+    musicVideos: [
+      { videoId: "b1", channelId: "UC_B00000000000000000000", channelTitle: "B", title: "x", publishedAt: null },
+      { videoId: "a1", channelId: "UC_A00000000000000000000", channelTitle: "A", title: "x", publishedAt: null },
+    ],
+  });
+  store.discoveryCandidates.set("UC_A00000000000000000000", {
+    id: "UC_A00000000000000000000",
+    title: "A (old)",
+    status: "new",
+    discoverySource: "youtube.search.list:music_videos",
+    discoveryQuery: "old",
+    reasonDiscovered: null,
+    firstSeenAt: new Date("2026-09-01T00:00:00.000Z"),
+    lastSeenAt: new Date("2026-09-20T00:00:00.000Z"),
+    createdVia: "web_ui",
+  } as never);
+  await services.discoverChannelsByGenre({ query: "q", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  const b = store.discoveryCandidates.get("UC_B00000000000000000000");
+  assert.deepEqual(
+    [b?.firstSeenAt.toISOString(), b?.lastSeenAt.toISOString(), store.discoveryCandidates.get("UC_A00000000000000000000")?.lastSeenAt.toISOString()],
+    ["2026-10-07T00:00:00.000Z", "2026-10-07T00:00:00.000Z", "2026-10-07T00:00:00.000Z"]
+  );
 });

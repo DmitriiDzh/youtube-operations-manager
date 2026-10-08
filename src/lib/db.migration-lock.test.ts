@@ -20,7 +20,7 @@ test("boot-time migration does not leave the operation lock held once initializa
 // to start -- an MCP/CLI process starting during an export must not lose its DB; (2) a due
 // migration waits for a busy lock instead of failing; (3) a lock left by a dead EXPORT process is
 // cleared; (4) a dead IMPORT/MIGRATION holder keeps the never-auto-release policy (decision 2b).
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import path from "node:path";
 import { acquireMigrationLockIfDue, initializeDatabaseSchema, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -29,12 +29,12 @@ import { withTempDir } from "@/test-support/temp-dir";
 const DEAD_PID = 2_147_483_000; // far above any real PID
 
 async function freshClient(dir: string) {
-  const client = createClient({ url: `file:${path.join(dir, "boot.db")}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "boot.db")}` });
   await initializeDatabaseSchema(client);
   return client;
 }
 
-async function holdLock(client: ReturnType<typeof createClient>, type: string, pid: number) {
+async function holdLock(client: ReturnType<typeof createLibsqlClient>, type: string, pid: number) {
   await client.execute({
     sql: "INSERT INTO app_operation_locks (id, operation_type, holder_pid, acquired_at) VALUES ('singleton', ?, ?, '2026-10-01T00:00:00Z')",
     args: [type, pid],

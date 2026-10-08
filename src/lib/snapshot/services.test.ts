@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema } from "../db";
 import {
   applySnapshotToDatabase,
@@ -18,7 +19,7 @@ import { SnapshotError, SNAPSHOT_DEVICE_LOCAL_TABLES, SNAPSHOT_TRANSFERRED_TABLE
 import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
-  const client = createClient({ url: `file:${path.join(dir, name)}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, name)}` });
   await initializeDatabaseSchema(client);
   return client;
 }
@@ -82,7 +83,7 @@ test("exportSnapshot: the published data.db contains zero users rows and zero to
     const buffer = await readFile(dbPath);
     assert.ok(!buffer.toString("latin1").includes("super-secret-access-token-xyz"));
 
-    const scrubbedClient = createClient({ url: `file:${dbPath}` });
+    const scrubbedClient = createLibsqlClient({ url: `file:${dbPath}` });
     const users = await scrubbedClient.execute(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'"
     );
@@ -116,7 +117,7 @@ test("exportSnapshot: the published data.db contains neither ai_connections nor 
     });
 
     const dbPath = path.join(dir, "snapshots", manifest.snapshotId, "data.db");
-    const scrubbedClient = createClient({ url: `file:${dbPath}` });
+    const scrubbedClient = createLibsqlClient({ url: `file:${dbPath}` });
     for (const table of ["ai_connection_credentials", "ai_connections"]) {
       const result = await scrubbedClient.execute({
         sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -344,7 +345,7 @@ test("applySnapshotToDatabase: replaces application-state tables while never tou
     // Step 1: verify (already covered above) -- proceed directly to migrate + merge.
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -409,7 +410,7 @@ test("applySnapshotToDatabase: Phase 9 market-intelligence tables (research_chan
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -502,7 +503,7 @@ test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> ex
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -582,7 +583,7 @@ test("applySnapshotToDatabase: succeeds when the receiving device already has lo
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -653,7 +654,7 @@ test("applySnapshotToDatabase: merges by column name, not physical position (RIS
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -757,7 +758,7 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
     const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
 
     // The published copy itself must not contain the table (not merely "apply ignores it").
-    const published = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+    const published = createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
     const tableRows = await published.execute(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'channel_workspaces'"
     );
@@ -772,7 +773,7 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -810,7 +811,7 @@ test("applySnapshotToDatabase: logical_paths and logical_path_values are device-
     });
     const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
 
-    const published = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+    const published = createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
     const tableRows = await published.execute(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('logical_paths', 'logical_path_values')"
     );
@@ -829,7 +830,7 @@ test("applySnapshotToDatabase: logical_paths and logical_path_values are device-
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
@@ -872,12 +873,12 @@ test("applySnapshotToDatabase: a transferred table missing from an older snapsho
     const manifest = await exportSnapshot({ client: source, snapshotsDir: path.join(dir, "snapshots"), deviceId: "device-a", schemaVersion: 3 });
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(dir, "snapshots", manifest.snapshotId, "data.db")}` }),
+      createLibsqlClient({ url: `file:${path.join(dir, "snapshots", manifest.snapshotId, "data.db")}` }),
       workingCopyPath
     );
     await migrateStagedCopy(workingCopyPath);
     // Simulate the older build's scrub, which did not keep this table.
-    const staged = createClient({ url: `file:${workingCopyPath}` });
+    const staged = createLibsqlClient({ url: `file:${workingCopyPath}` });
     await staged.execute("DROP TABLE video_edit_audit_events");
     staged.close();
 

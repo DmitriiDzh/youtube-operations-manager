@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { withTempDir } from "@/test-support/temp-dir";
 import { runOperationLockCli } from "@/cli/operation-lock";
 import { createRecoverableInitializer } from "@/lib/recoverable-initializer";
@@ -27,7 +28,7 @@ async function withLockedDb(
   fn: (client: Client) => Promise<void>
 ) {
   await withTempDir("op-lock-recovery-", async (dir) => {
-    const client = createClient({ url: `file:${path.join(dir, "t.db")}` });
+    const client = createLibsqlClient({ url: `file:${path.join(dir, "t.db")}` });
     await client.execute(CREATE_TABLE_SQL);
     if (row) {
       await client.execute({

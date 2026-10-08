@@ -1,5 +1,6 @@
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient, SQLITE_BUSY_TIMEOUT_MS } from "@/lib/libsql-client";
 import {
   appDataPaths,
   getDeviceAutoSyncEnabled,
@@ -29,8 +30,8 @@ type GlobalWithRunner = typeof globalThis & { [RUNNER_KEY]?: DeviceSyncRunner };
  * On its own connection, such a write simply waits for the busy timeout like any other writer.
  */
 function createDedicatedClient(): Client {
-  const client = createClient({ url: `file:${appDataPaths.dbPath}` });
-  void client.execute("PRAGMA busy_timeout = 5000").catch(() => undefined);
+  const client = createLibsqlClient({ url: `file:${appDataPaths.dbPath}` });
+  void client.execute(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`).catch(() => undefined);
   return client;
 }
 

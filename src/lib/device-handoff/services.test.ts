@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
+import { type Client } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { initializeDatabaseSchema } from "../db";
 import {
   acknowledgeRecoveryDiagnostics,
@@ -17,7 +18,7 @@ import { OperationLockError } from "@/lib/operation-lock";
 import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
-  const client = createClient({ url: `file:${path.join(dir, name)}` });
+  const client = createLibsqlClient({ url: `file:${path.join(dir, name)}` });
   await initializeDatabaseSchema(client);
   return client;
 }

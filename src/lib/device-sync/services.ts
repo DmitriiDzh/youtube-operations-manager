@@ -2,7 +2,7 @@ import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
-import { createClient } from "@libsql/client";
+import { createLibsqlClient } from "@/lib/libsql-client";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
 import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
@@ -457,7 +457,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         localLineage: await readLineageState(deps.client),
         acceptDivergentLineage: true,
       });
-      const snapshotDbClient = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+      const snapshotDbClient = createLibsqlClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
       try {
         await copyDatabaseConsistently(snapshotDbClient, workingCopyPath);
       } finally {
