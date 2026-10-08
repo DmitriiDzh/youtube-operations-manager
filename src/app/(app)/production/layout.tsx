@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useAppChannel } from "@/components/app-channel";
 import { PRODUCTION_TABS, ProductionPanel } from "@/components/production-panel";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
+import { useT } from "@/components/ui-text-provider";
 
 // BL-149 (docs/roadmap/plans/APP_ROUTES_PLAN.md): Production at `/production/<sub-tab>`. The panel lives in this layout, which
 // persists while only the sub-tab changes, so its sub-tabs stay mounted and are only hidden, as before.
@@ -20,6 +21,7 @@ function planReviewHref(planId: string, source?: { deviceId: string; hostname: s
 export default function ProductionLayout({ children }: { children: ReactNode }) {
   const { channel } = useAppChannel();
   const router = useRouter();
+  const t = useT();
   const segments = useSelectedLayoutSegments();
   const segment = segments[0] ?? null;
   const tab = PRODUCTION_TABS.find((t) => t.value === segment)?.value;
@@ -30,7 +32,7 @@ export default function ProductionLayout({ children }: { children: ReactNode }) 
   return (
     <>
       {tab && (
-        <FeatureErrorBoundary label="Production">
+        <FeatureErrorBoundary label={t("nav.production")}>
           <div key={channel?.id ?? "no-channel"} className={reviewing ? "hidden" : undefined}>
             <ProductionPanel
               activeChannelId={channel?.id ?? null}

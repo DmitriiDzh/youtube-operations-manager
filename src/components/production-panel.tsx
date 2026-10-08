@@ -1,5 +1,9 @@
 "use client";
 
+import { formatDisplayDateUtc } from "@/lib/shared-formatting";
+import { errorText } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
+import type { Translate } from "@/lib/ui-text";
 import type { PeerReviewSource } from "./plan-review-screen";
 import { SettingsSyncNotice } from "./settings-sync-notice";
 import { useCallback, useEffect, useState } from "react";
@@ -34,19 +38,23 @@ export { PRODUCTION_TABS };
 const BALANCE_POLL_MS = 60_000;
 
 /** The header line for the balance, in words (exported for its unit test). */
-export function describeBalance(balance: RunpodAccountBalance): { headline: string; detail: string | null } {
+export function describeBalance(t: Translate, balance: RunpodAccountBalance): { headline: string; detail: string | null } {
   if (balance.source === "graphql") {
-    const parts = [balance.spendPerHrUsd !== null ? `spending $${balance.spendPerHrUsd.toFixed(3)}/h now` : null, balance.spendLimitUsd !== null ? `account spend limit $${balance.spendLimitUsd.toFixed(2)}/h` : null].filter(Boolean);
-    return { headline: `$${balance.balanceUsd.toFixed(2)}`, detail: parts.length > 0 ? parts.join(" · ") : null };
+    const parts = [balance.spendPerHrUsd !== null ? t("production.balance.spendingNow", { rate: balance.spendPerHrUsd.toFixed(3) }) : null, balance.spendLimitUsd !== null ? t("production.balance.spendLimit", { limit: balance.spendLimitUsd.toFixed(2) }) : null].filter(Boolean);
+    return { headline: t("unit.usd", { value: balance.balanceUsd.toFixed(2) }), detail: parts.length > 0 ? parts.join(" · ") : null };
   }
-  const window = balance.from && balance.to ? ` (${balance.from.slice(0, 10)} – ${balance.to.slice(0, 10)})` : "";
+  const amounts = { spent: balance.spentUsd.toFixed(2), pods: balance.podsUsd.toFixed(2), volumes: balance.networkVolumesUsd.toFixed(2), error: balance.balanceError };
   return {
-    headline: "balance unavailable",
-    detail: `RunPod spend${window}: $${balance.spentUsd.toFixed(2)} (pods $${balance.podsUsd.toFixed(2)}, network volumes $${balance.networkVolumesUsd.toFixed(2)}). The balance read failed: ${balance.balanceError}`,
+    headline: t("production.balance.unavailable"),
+    detail:
+      balance.from && balance.to
+        ? t("production.balance.billingWindow", { ...amounts, from: formatDisplayDateUtc(balance.from), to: formatDisplayDateUtc(balance.to) })
+        : t("production.balance.billing", amounts),
   };
 }
 
 function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured: boolean; limits: MediaSessionLimits | null; activeElsewhere?: number }) {
+  const t = useT();
   const [balance, setBalance] = useState<RunpodAccountBalance | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -56,13 +64,13 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
     return fetch("/api/media-generation/balance")
       .then(async (res) => {
         const data = (await res.json().catch(() => ({}))) as { balance?: RunpodAccountBalance; message?: string };
-        if (!res.ok || !data.balance) throw new Error(data.message ?? `Balance request failed (${res.status})`);
+        if (!res.ok || !data.balance) throw new Error(errorText(t, data, t("production.balance.requestFailedStatus", { status: String(res.status) }), { showErrorField: false }));
         setBalance(data.balance);
         setError(null);
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Balance request failed"))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : t("production.balance.requestFailed")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!configured) return;
@@ -71,32 +79,34 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
     return () => clearInterval(timer);
   }, [configured, fetchBalance]);
 
-  const described = balance ? describeBalance(balance) : null;
+  const described = balance ? describeBalance(t, balance) : null;
   return (
     <div className="flex flex-wrap items-start gap-x-8 gap-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
-        <p className="text-xs text-zinc-500">RunPod balance{balance?.source === "graphql" ? " (legacy API)" : ""}</p>
+        <p className="text-xs text-zinc-500">{balance?.source === "graphql" ? t("production.balance.titleLegacy") : t("production.balance.title")}</p>
         {!configured ? (
-          <p className="text-sm text-zinc-400">Connect RunPod in Settings → RunPod.</p>
+          <p className="text-sm text-zinc-400">{t("production.balance.connect")}</p>
         ) : described ? (
           <>
             <p className="text-2xl font-semibold text-zinc-100">{described.headline}</p>
             {described.detail && <p className="max-w-xl text-xs text-zinc-500">{described.detail}</p>}
           </>
         ) : (
-          <p className="text-sm text-zinc-500">{error ?? "Loading…"}</p>
+          <p className="text-sm text-zinc-500">{error ?? t("common.loading")}</p>
         )}
-        {described && error && <p className="text-xs text-amber-400">Last refresh failed: {error}</p>}
+        {described && error && <p className="text-xs text-amber-400">{t("production.balance.lastRefreshFailed", { error })}</p>}
       </div>
       {limits && (
         <div>
-          <p className="text-xs text-zinc-500">Today</p>
+          <p className="text-xs text-zinc-500">{t("production.today")}</p>
           <p className="text-2xl font-semibold text-zinc-100">
-            ${limits.spentTodayUsd.toFixed(2)} <span className="text-sm font-normal text-zinc-500">of ${limits.maxUsdPerDay.toFixed(2)}</span>
+            {t("unit.usd", { value: limits.spentTodayUsd.toFixed(2) })} <span className="text-sm font-normal text-zinc-500">{t("production.todayOf", { max: limits.maxUsdPerDay.toFixed(2) })}</span>
           </p>
           <p className="text-xs text-zinc-500">
-            {limits.activeSessionCount} of {limits.maxConcurrentSessions} sessions active
-            {activeElsewhere > 0 ? ` (+${activeElsewhere} on other devices)` : ""} · {limits.openSessions.filter((s) => s.status === "pending").length} waiting for approval
+            {activeElsewhere > 0
+              ? t("production.sessionsActiveElsewhere", { active: limits.activeSessionCount, max: limits.maxConcurrentSessions, elsewhere: activeElsewhere })
+              : t("production.sessionsActive", { active: limits.activeSessionCount, max: limits.maxConcurrentSessions })}{" "}
+            · {t("production.waitingApproval", { count: limits.openSessions.filter((s) => s.status === "pending").length })}
           </p>
         </div>
       )}
@@ -106,7 +116,7 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
             void fetchBalance();
           }}
           disabled={loading} className="ml-auto rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50">
-          {loading ? "Refreshing…" : "Refresh balance"}
+          {loading ? t("production.balance.refreshing") : t("production.balance.refresh")}
         </button>
       )}
     </div>
@@ -129,6 +139,7 @@ export function ProductionPanel({
   /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
   onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
 }) {
+  const t = useT();
   const [ownTab, setOwnTab] = useState<ProductionTab>("sessions");
   const tab = routeTab ?? ownTab;
   const setTab = onTabChange ?? setOwnTab;
@@ -137,16 +148,16 @@ export function ProductionPanel({
   const { overview, loadError, gatewayTraffic, refresh } = useMediaOverview();
 
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
-  if (!overview) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!overview) return <p className="text-sm text-zinc-500">{t("common.loading")}</p>;
 
-  const tabButton = (t: (typeof PRODUCTION_TABS)[number]) => (
+  const tabButton = (item: (typeof PRODUCTION_TABS)[number]) => (
     <button
-      key={t.value}
+      key={item.value}
       type="button"
-      onClick={() => setTab(t.value)}
-      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+      onClick={() => setTab(item.value)}
+      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
     >
-      {t.label}
+      {t(item.labelKey)}
     </button>
   );
 
@@ -156,8 +167,8 @@ export function ProductionPanel({
     <div className="max-w-5xl space-y-6">
       <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} />
       <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "work").map(tabButton)}</div>
-        <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((t) => t.side === "setup").map(tabButton)}</div>
+        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((item) => item.side === "work").map(tabButton)}</div>
+        <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((item) => item.side === "setup").map(tabButton)}</div>
       </div>
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
         <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />

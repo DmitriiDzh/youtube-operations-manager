@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BlockingDialog } from "./blocking-dialog";
+import { useT } from "./ui-text-provider";
 import {
   INITIAL_PRESENCE_STATE,
   nextPresenceState,
@@ -17,6 +18,7 @@ import {
  * leaving a page that silently fails.
  */
 export function ServerPresence() {
+  const t = useT();
   const [state, setState] = useState<PresenceState>(INITIAL_PRESENCE_STATE);
 
   useEffect(() => {
@@ -52,19 +54,15 @@ export function ServerPresence() {
   if (!state.serverStopped) return null;
 
   return (
-    <BlockingDialog label="The server has stopped" maxWidthClass="max-w-md">
-      <p className="text-sm font-medium text-zinc-100">The server has stopped</p>
-      <p className="text-xs text-zinc-400">
-        The application server is no longer running. It shuts itself down after 10 minutes without an open window, or
-        when the computer sleeps or the launcher is closed. Open the application shortcut again to start it, then press
-        Retry.
-      </p>
+    <BlockingDialog label={t("serverStopped.title")} maxWidthClass="max-w-md">
+      <p className="text-sm font-medium text-zinc-100">{t("serverStopped.title")}</p>
+      <p className="text-xs text-zinc-400">{t("serverStopped.body")}</p>
       <div className="flex justify-end">
         <button
           onClick={() => window.location.reload()}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
         >
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     </BlockingDialog>

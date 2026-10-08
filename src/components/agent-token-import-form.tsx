@@ -1,7 +1,9 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useRef, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
+import { useT } from "./ui-text-provider";
 
 /**
  * BL-130 (`docs/roadmap/plans/AGENT_TOKEN_IMPORT_PLAN.md` §2.4) -- "Use an existing token": registers on
@@ -24,6 +26,7 @@ export function AgentTokenImportForm<TSummary>({
   replacesActive: boolean;
   onImported: (summary: TSummary) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -62,13 +65,13 @@ export function AgentTokenImportForm<TSummary>({
       });
       const data = (await res.json()) as { token?: TSummary; message?: string };
       if (!res.ok || !data.token) {
-        setError(data.message ?? "Failed to import the token");
+        setError(errorText(t, data, t("settingsCards.tokenImport.failed"), { showErrorField: false }));
         return;
       }
       onImported(data.token);
       close();
     } catch {
-      setError("Failed to import the token");
+      setError(t("settingsCards.tokenImport.failed"));
     } finally {
       inflight.current = false;
       setBusy(false);
@@ -78,7 +81,7 @@ export function AgentTokenImportForm<TSummary>({
   if (!open) {
     return (
       <button onClick={() => setOpen(true)} className="text-xs text-zinc-400 underline hover:text-zinc-200">
-        Use an existing token
+        {t("settingsCards.tokenImport.open")}
       </button>
     );
   }
@@ -89,8 +92,7 @@ export function AgentTokenImportForm<TSummary>({
     <>
       <form onSubmit={submit} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950/40 p-2">
         <p className="text-xs text-zinc-400">
-          Paste a token issued on another device. The same token then works on both devices.
-          {replacesActive && " It replaces this device's current token."} Revoking a token applies only to the device where you revoke it.
+          {replacesActive ? t("settingsCards.tokenImport.helpReplaces") : t("settingsCards.tokenImport.help")}
         </p>
         <div className="flex items-center gap-2">
           <input
@@ -100,7 +102,7 @@ export function AgentTokenImportForm<TSummary>({
             placeholder={placeholder}
             autoComplete="off"
             spellCheck={false}
-            aria-label="Existing token"
+            aria-label={t("settingsCards.tokenImport.aria")}
             className="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 font-mono text-xs text-zinc-100"
           />
           <button
@@ -108,10 +110,10 @@ export function AgentTokenImportForm<TSummary>({
             disabled={busy || value.trim() === ""}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            {busy ? "Importing..." : "Import"}
+            {busy ? t("settingsCards.tokenImport.importing") : t("settingsCards.tokenImport.import")}
           </button>
           <button type="button" onClick={close} className="rounded-md px-2 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
         {error && (
@@ -122,9 +124,9 @@ export function AgentTokenImportForm<TSummary>({
       </form>
       {confirming && (
         <ConfirmDialog
-          title="Replace this device's current token?"
-          description="The token currently active on this device stops working here immediately. Agents configured with it on this device lose access until they use the imported token."
-          confirmLabel="Replace"
+          title={t("settingsCards.tokenImport.confirmTitle")}
+          description={t("settingsCards.tokenImport.confirmBody")}
+          confirmLabel={t("settingsCards.tokenImport.confirmReplace")}
           confirmVariant="danger"
           onCancel={() => setConfirming(false)}
           onConfirm={importToken}

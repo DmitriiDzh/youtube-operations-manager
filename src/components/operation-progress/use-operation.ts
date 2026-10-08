@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useT } from "../ui-text-provider";
 import {
   IDLE_OPERATION,
   isOperationActive,
@@ -47,6 +48,7 @@ export type AttachedOperationResult = ServerOperationSnapshot & { id: string };
  * and aborting the fetch would only lose its result).
  */
 export function useOperation() {
+  const t = useT();
   const [state, dispatch] = useReducer(operationReducer, IDLE_OPERATION);
   const cancelRef = useRef(false);
   const active = isOperationActive(state);
@@ -94,7 +96,7 @@ export function useOperation() {
         const res = await fetch(`/api/operations/${encodeURIComponent(attached.id)}`);
         if (stopped) return;
         if (res.status === 404) {
-          dispatch({ type: "finish", error: true, message: "The operation is no longer available (the server may have restarted).", now: Date.now() });
+          dispatch({ type: "finish", error: true, message: t("operation.gone"), now: Date.now() });
           setAttached(null);
           return;
         }
@@ -117,7 +119,7 @@ export function useOperation() {
       stopped = true;
       clearInterval(id);
     };
-  }, [attached, pollQuota]);
+  }, [attached, pollQuota, t]);
 
   // A browser-driven loop dies with the page: warn before a reload/close mid-run. A server-run
   // operation keeps going without the page, so it needs no warning.

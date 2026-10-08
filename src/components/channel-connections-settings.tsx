@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -10,6 +11,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { activateStoredChannel, useConnectedChannels, type ConnectedChannel } from "./use-connected-channels";
 import { LoadingIndicator } from "./operation-progress";
 import { useConnectionHealth } from "./use-connection-health";
+import { useT } from "./ui-text-provider";
 
 /**
  * Settings-tab card for persistent channel connections (`docs/decisions/0010-persistent-channel-connections.md`,
@@ -21,6 +23,7 @@ import { useConnectionHealth } from "./use-connection-health";
  * owns Disconnect, which the topbar dropdown deliberately doesn't expose.
  */
 export function ChannelConnectionsSettings() {
+  const t = useT();
   const { channels, refetch } = useConnectedChannels();
   const { health } = useConnectionHealth();
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +39,7 @@ export function ChannelConnectionsSettings() {
       if (ok) {
         await refetch();
       } else {
-        setError("Could not activate this channel. It may need to be reconnected.");
+        setError(t("settingsCards.channels.activateFailed"));
       }
     } finally {
       setActivatingChannelId(null);
@@ -55,7 +58,7 @@ export function ChannelConnectionsSettings() {
       });
       const data = (await res.json()) as { forceSignOut?: boolean; message?: string };
       if (!res.ok) {
-        setError(data.message ?? "Disconnect failed");
+        setError(errorText(t, data, t("settingsCards.disconnectFailed"), { showErrorField: false }));
         return;
       }
       setPendingDisconnect(null);
@@ -65,7 +68,7 @@ export function ChannelConnectionsSettings() {
       }
       await refetch();
     } catch {
-      setError("Disconnect failed");
+      setError(t("settingsCards.disconnectFailed"));
     } finally {
       setDisconnecting(false);
     }
@@ -74,19 +77,14 @@ export function ChannelConnectionsSettings() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-        Channels
-        <InfoTooltip>
-          Every channel you connect here stays connected until you explicitly disconnect it --
-          switching between them (here, or from the topbar&rsquo;s &ldquo;Switch channel&rdquo;
-          dropdown) never requires signing in to Google again. Connecting a new channel still goes
-          through Google&rsquo;s own consent screen once.
-        </InfoTooltip>
+        {t("settingsCard.channels")}
+        <InfoTooltip>{t("settingsCards.channels.info")}</InfoTooltip>
       </h3>
 
       {channels === null ? (
         <LoadingIndicator className="text-xs text-zinc-500" />
       ) : channels.length === 0 ? (
-        <p className="text-xs text-zinc-500">No channels connected yet.</p>
+        <p className="text-xs text-zinc-500">{t("settingsCards.channels.none")}</p>
       ) : (
         <ul className="space-y-2">
           {channels.map((c) => {
@@ -116,20 +114,20 @@ export function ChannelConnectionsSettings() {
                           <span
                             className={`rounded-full px-2.5 py-1 text-xs font-medium ${dead ? "bg-red-950/60 text-red-400" : "bg-amber-950/60 text-amber-400"}`}
                           >
-                            {dead ? "Reconnect needed" : `Expires in ${h.daysLeft ?? "?"} d`}
+                            {dead ? t("shell.reconnectNeeded") : t("settingsCards.channels.expiresIn", { days: h.daysLeft ?? "?" })}
                           </span>
                           <button
                             onClick={() => void signIn("google", undefined, { login_hint: c.connectedEmail })}
                             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
                           >
-                            Reconnect
+                            {t("settingsCards.reconnect")}
                           </button>
                         </>
                       );
                     })()}
                     {isActive ? (
                       <span className="rounded-full bg-emerald-950/60 px-2.5 py-1 text-xs font-medium text-emerald-400">
-                        Active now
+                        {t("settingsCards.channels.activeNow")}
                       </span>
                     ) : (
                       <button
@@ -137,21 +135,21 @@ export function ChannelConnectionsSettings() {
                         disabled={activatingChannelId === c.channelId}
                         className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
                       >
-                        {activatingChannelId === c.channelId ? "Activating..." : "Activate"}
+                        {activatingChannelId === c.channelId ? t("settingsCards.channels.activating") : t("settingsCards.channels.activate")}
                       </button>
                     )}
                     <button
                       onClick={() => setPendingDisconnect(c)}
                       className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950"
                     >
-                      Disconnect
+                      {t("settingsCards.disconnect")}
                     </button>
                   </div>
                 </div>
-                <FeatureErrorBoundary label="Channel workspace path">
+                <FeatureErrorBoundary label={t("settingsCards.channels.workspaceBoundary")}>
                   <ChannelWorkspaceField channelId={c.channelId} />
                 </FeatureErrorBoundary>
-                <FeatureErrorBoundary label="Channel agent token">
+                <FeatureErrorBoundary label={t("settingsCards.channels.tokenBoundary")}>
                   <ChannelAgentTokenField channelId={c.channelId} />
                 </FeatureErrorBoundary>
               </li>
@@ -164,16 +162,16 @@ export function ChannelConnectionsSettings() {
         onClick={() => signIn("google")}
         className="rounded-md border border-zinc-700 px-4 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
       >
-        Connect a new channel
+        {t("settingsCards.channels.connectNew")}
       </button>
 
       {error && <p className="text-xs text-red-400">{error}</p>}
 
       {pendingDisconnect && (
         <ConfirmDialog
-          title={`Disconnect "${pendingDisconnect.title}"?`}
-          description="This revokes its stored Google access. You'll need to sign in again with Google to reconnect it."
-          confirmLabel={disconnecting ? "Disconnecting..." : "Disconnect"}
+          title={t("settingsCards.channels.disconnectTitle", { channel: pendingDisconnect.title })}
+          description={t("settingsCards.channels.disconnectBody")}
+          confirmLabel={disconnecting ? t("settingsCards.disconnecting") : t("settingsCards.disconnect")}
           confirmVariant="danger"
           onCancel={() => setPendingDisconnect(null)}
           onConfirm={handleConfirmDisconnect}

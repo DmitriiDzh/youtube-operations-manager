@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DeviceSyncDivergenceCard } from "./device-sync-divergence-card";
 import { SETTING_LABELS, formatValue, listDiff, settingLabel, wordDiff, type DiffToken } from "./conflict-values";
+import { useT } from "./ui-text-provider";
+import type { Translate, UiMessage, UiTextKey } from "@/lib/ui-text";
+import { errorText, uiMessageText } from "@/lib/ui-text";
 
 // Owner, Telegram 2026-10-07 (msgs 2011/2013): every difference between the two computers on one screen, decided in one go --
 // shown blocking on the startup window and, without blocking, in Merge. Each conflict is a card with the two versions side by
@@ -13,8 +16,8 @@ type SettingConflict = { field: string; values: unknown[]; thisComputer: unknown
 type ActorConflict = {
   family: "change_drafts" | "editorial_profile" | "ai_connections";
   key: string;
-  group: string;
-  subject: string;
+  group: UiMessage;
+  subject: UiMessage;
   field: string;
   channelId?: string;
   changeId?: string;
@@ -24,22 +27,22 @@ type ActorConflict = {
 };
 
 const RESOLVABLE_CHANGE_DRAFT_FIELDS = new Set(["proposedValue", "approvalStatus", "approvedValue", "conflictStatus"]);
-const FIELD_LABELS: Record<string, string> = {
-  proposedValue: "Proposed text",
-  approvedValue: "Approved text",
-  approvalStatus: "Approval",
-  conflictStatus: "Conflict state",
-  targetAudience: "Target audience",
-  toneNotes: "Tone",
-  terminologyNotes: "Terminology",
-  titleConstraints: "Title rules",
-  descriptionConstraints: "Description rules",
+const FIELD_LABELS: Record<string, UiTextKey> = {
+  proposedValue: "conflicts.field.proposedValue",
+  approvedValue: "conflicts.field.approvedValue",
+  approvalStatus: "conflicts.field.approvalStatus",
+  conflictStatus: "conflicts.field.conflictStatus",
+  targetAudience: "conflicts.field.targetAudience",
+  toneNotes: "conflicts.field.toneNotes",
+  terminologyNotes: "conflicts.field.terminologyNotes",
+  titleConstraints: "conflicts.field.titleConstraints",
+  descriptionConstraints: "conflicts.field.descriptionConstraints",
 };
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(t: Translate, url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const data = (await res.json().catch(() => ({}))) as T & { message?: string };
-  if (!res.ok && res.status !== 207) throw new Error(data?.message ?? `Request to ${url} failed (${res.status})`);
+  if (!res.ok && res.status !== 207) throw new Error(errorText(t, data, t("conflicts.requestFailed", { url, status: String(res.status) }), { showErrorField: false }));
   return data;
 }
 
@@ -60,56 +63,57 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
   const [divergence, setDivergence] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const t = useT();
 
   const refresh = useCallback(async () => {
     const errors: string[] = [];
     const settled = await Promise.allSettled([
-      fetchJson<{ conflicts?: SettingConflict[] }>("/api/media-generation/settings-sync"),
-      fetchJson<{ notices?: Array<{ kind: string; snapshotId?: string | null }> }>("/api/device-sync/status"),
-      fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>("/api/ai-connections/conflicts"),
-      fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>("/api/channel-connections"),
+      fetchJson<{ conflicts?: SettingConflict[] }>(t, "/api/media-generation/settings-sync"),
+      fetchJson<{ notices?: Array<{ kind: string; snapshotId?: string | null }> }>(t, "/api/device-sync/status"),
+      fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, "/api/ai-connections/conflicts"),
+      fetchJson<{ channels: Array<{ channelId: string; title: string; isActive: boolean }> }>(t, "/api/channel-connections"),
     ]);
     const [settingsRes, statusRes, aiRes, channelsRes] = settled;
     if (settingsRes.status === "fulfilled") setSettings(settingsRes.value.conflicts ?? []);
     // RunPod not set up on this device: Production has no settings to compare -- not an error worth showing.
     if (statusRes.status === "fulfilled") setDivergence((statusRes.value.notices ?? []).some((n) => n.kind === "divergence" && n.snapshotId));
-    else errors.push(statusRes.reason instanceof Error ? statusRes.reason.message : "device sync status unavailable");
+    else errors.push(statusRes.reason instanceof Error ? statusRes.reason.message : t("conflicts.unavailable.deviceSync"));
     const next: ActorConflict[] = [];
     if (aiRes.status === "fulfilled") {
       for (const c of aiRes.value.conflicts) {
-        next.push({ family: "ai_connections", key: `ai.${c.connectionId}.${c.field}`, group: "AI connections", subject: `Connection ${c.connectionId.slice(0, 8)}`, field: c.field, connectionId: c.connectionId, valuesByActor: c.valuesByActor, resolvable: true });
+        next.push({ family: "ai_connections", key: `ai.${c.connectionId}.${c.field}`, group: { key: "conflicts.group.aiConnections" }, subject: { key: "conflicts.subject.connection", params: { id: c.connectionId.slice(0, 8) } }, field: c.field, connectionId: c.connectionId, valuesByActor: c.valuesByActor, resolvable: true });
       }
-    } else errors.push(aiRes.reason instanceof Error ? aiRes.reason.message : "AI-connection conflicts unavailable");
+    } else errors.push(aiRes.reason instanceof Error ? aiRes.reason.message : t("conflicts.unavailable.aiConnections"));
     if (channelsRes.status === "fulfilled") {
       // The active channel's drafts and profile only: the server answers these for the session's active channel and refuses any
       // other (ADR 0004); another channel's conflicts appear here once it is the active one (independent review).
       const perChannel = await Promise.allSettled(
         channelsRes.value.channels.filter((ch) => ch.isActive).map(async (ch) => {
           const [drafts, profile] = await Promise.all([
-            fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(`/api/channels/${ch.channelId}/change-drafts/conflicts`),
-            fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(`/api/channels/${ch.channelId}/editorial-profile/conflicts`),
+            fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/change-drafts/conflicts`),
+            fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(t, `/api/channels/${ch.channelId}/editorial-profile/conflicts`),
           ]);
           return { ch, drafts: drafts.conflicts, profile: profile.conflicts };
         })
       );
       for (const r of perChannel) {
         if (r.status === "rejected") {
-          errors.push(r.reason instanceof Error ? r.reason.message : "channel conflicts unavailable");
+          errors.push(r.reason instanceof Error ? r.reason.message : t("conflicts.unavailable.channel"));
           continue;
         }
         const { ch, drafts, profile } = r.value;
         for (const c of drafts) {
-          next.push({ family: "change_drafts", key: `drafts.${ch.channelId}.${c.changeId}.${c.field}`, group: `Change drafts — ${ch.title}`, subject: `Change ${c.changeId.slice(0, 8)}`, field: c.field, channelId: ch.channelId, changeId: c.changeId, valuesByActor: c.valuesByActor, resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field) });
+          next.push({ family: "change_drafts", key: `drafts.${ch.channelId}.${c.changeId}.${c.field}`, group: { key: "conflicts.group.changeDrafts", params: { channel: ch.title } }, subject: { key: "conflicts.subject.change", params: { id: c.changeId.slice(0, 8) } }, field: c.field, channelId: ch.channelId, changeId: c.changeId, valuesByActor: c.valuesByActor, resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field) });
         }
         for (const c of profile) {
-          next.push({ family: "editorial_profile", key: `profile.${ch.channelId}.${c.field}`, group: `Channel profile — ${ch.title}`, subject: "Editorial profile", field: c.field, channelId: ch.channelId, valuesByActor: c.valuesByActor, resolvable: true });
+          next.push({ family: "editorial_profile", key: `profile.${ch.channelId}.${c.field}`, group: { key: "conflicts.group.channelProfile", params: { channel: ch.title } }, subject: { key: "conflicts.subject.editorialProfile" }, field: c.field, channelId: ch.channelId, valuesByActor: c.valuesByActor, resolvable: true });
         }
       }
-    } else errors.push(channelsRes.reason instanceof Error ? channelsRes.reason.message : "channel list unavailable");
+    } else errors.push(channelsRes.reason instanceof Error ? channelsRes.reason.message : t("conflicts.unavailable.channels"));
     setOthers(next);
     setError(errors.length > 0 ? errors.join(" ") : null);
     setLoaded(true);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -121,13 +125,14 @@ export function useConflictCenter(enabled: boolean): ConflictCenterState {
 }
 
 function Tokens({ tokens, list }: { tokens: DiffToken[]; list?: boolean }) {
+  const t = useT();
   if (list) {
-    if (tokens.length === 0) return <p className="text-zinc-400">none</p>;
+    if (tokens.length === 0) return <p className="text-zinc-400">{t("value.none")}</p>;
     return (
       <ol className="list-decimal space-y-0.5 pl-5">
-        {tokens.map((t, i) => (
-          <li key={i} className={t.changed ? "rounded bg-amber-500/20 px-1 text-amber-100" : "text-zinc-200"}>
-            {t.text}
+        {tokens.map((token, i) => (
+          <li key={i} className={token.changed ? "rounded bg-amber-500/20 px-1 text-amber-100" : "text-zinc-200"}>
+            {token.text}
           </li>
         ))}
       </ol>
@@ -135,9 +140,9 @@ function Tokens({ tokens, list }: { tokens: DiffToken[]; list?: boolean }) {
   }
   return (
     <p className="whitespace-pre-wrap text-zinc-200">
-      {tokens.map((t, i) => (
-        <span key={i} className={t.changed ? "rounded bg-amber-500/20 text-amber-100" : undefined}>
-          {t.text}
+      {tokens.map((token, i) => (
+        <span key={i} className={token.changed ? "rounded bg-amber-500/20 text-amber-100" : undefined}>
+          {token.text}
         </span>
       ))}
     </p>
@@ -164,16 +169,17 @@ function VersionPair({
   busy: boolean;
   resolvable?: boolean;
 }) {
+  const t = useT();
   const bothLists = Array.isArray(left) && Array.isArray(right);
   const bothTexts = typeof left === "string" && typeof right === "string" && (left.length > 24 || right.length > 24);
   const diff = bothLists ? listDiff((left as unknown[]).map(String), (right as unknown[]).map(String)) : bothTexts ? wordDiff(left as string, right as string) : null;
   const column = (title: string, value: unknown, tokens: DiffToken[] | undefined, side: "left" | "right") => (
     <div className="flex flex-col rounded-lg border border-zinc-700 bg-zinc-950/60 p-3">
       <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">{title}</p>
-      <div className="flex-1 text-sm">{tokens ? <Tokens tokens={tokens} list={bothLists} /> : <p className="text-base font-semibold text-zinc-100">{formatValue(value, unit)}</p>}</div>
+      <div className="flex-1 text-sm">{tokens ? <Tokens tokens={tokens} list={bothLists} /> : <p className="text-base font-semibold text-zinc-100">{formatValue(t, value, unit)}</p>}</div>
       {resolvable && (
         <button type="button" disabled={busy} onClick={() => onKeep(side)} className="mt-3 self-start rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
-          Keep this
+          {t("conflicts.keepThis")}
         </button>
       )}
     </div>
@@ -199,6 +205,7 @@ export function ConflictCenter({
    * failing) -- the window must never trap the owner (independent review). */
   onDecideLater?: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -212,14 +219,14 @@ export function ConflictCenter({
       await run();
       await state.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not keep that version");
+      setError(err instanceof Error ? err.message : t("conflicts.keepFailed"));
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
   }
 
-  const post = (url: string, body: unknown) => fetchJson(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const post = (url: string, body: unknown) => fetchJson(t, url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
   const keepSetting = (c: SettingConflict, value: unknown) => act(() => post("/api/media-generation/settings-sync/resolve", { field: c.field, value }));
   const keepActor = (c: ActorConflict, actor: string) =>
@@ -232,37 +239,40 @@ export function ConflictCenter({
     );
 
   const groups = new Map<string, ActorConflict[]>();
-  for (const c of state.others) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
+  for (const c of state.others) {
+    const group = uiMessageText(t, c.group);
+    groups.set(group, [...(groups.get(group) ?? []), c]);
+  }
 
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-base font-semibold text-zinc-100">Your two computers differ — choose what to keep</h2>
+        <h2 className="text-base font-semibold text-zinc-100">{t("conflicts.title")}</h2>
         <p className="mt-1 text-sm text-zinc-400">
-          {state.total === 0 ? "Nothing left to decide." : `Left to decide: ${state.total}.`} Each choice goes to both computers at once.
-          {blocking && " The app opens once everything is decided; the server, syncing and the operator keep working meanwhile."}
+          {state.total === 0 ? t("conflicts.nothingLeft") : t("conflicts.leftToDecide", { count: state.total })} {t("conflicts.bothComputers")}
+          {blocking && ` ${t("conflicts.blockingNote")}`}
         </p>
       </div>
       {(error || state.error) && <p className="text-sm text-red-400">{error ?? state.error}</p>}
       {blocking && onDecideLater && error && (
         <button type="button" onClick={onDecideLater} className="text-xs text-zinc-400 underline hover:text-zinc-200">
-          Decide later — the differences stay listed in Merge
+          {t("conflicts.decideLater")}
         </button>
       )}
 
       {state.settings.length > 0 && (
         <section className="space-y-3">
-          <h3 className="text-sm font-semibold text-zinc-200">Production settings</h3>
+          <h3 className="text-sm font-semibold text-zinc-200">{t("conflicts.productionSettings")}</h3>
           {state.settings.map((c) => {
             // Normally one of the two values is this computer's own (it keeps it until the choice); if not, both are shown as versions.
             const mine = c.values.find((v) => JSON.stringify(v) === JSON.stringify(c.thisComputer));
             const [left, right] = mine !== undefined ? [mine, c.values.find((v) => v !== mine) ?? c.values[1]] : [c.values[0], c.values[1]];
             return (
               <div key={c.field} className="space-y-2 rounded-xl border border-amber-800/60 bg-amber-950/10 p-3">
-                <p className="text-sm font-medium text-zinc-100">{settingLabel(c.field)}</p>
+                <p className="text-sm font-medium text-zinc-100">{settingLabel(t, c.field)}</p>
                 <VersionPair
-                  leftTitle={mine !== undefined ? "This computer" : "Version 1"}
-                  rightTitle={mine !== undefined ? "The other computer" : "Version 2"}
+                  leftTitle={mine !== undefined ? t("conflicts.thisComputer") : t("conflicts.version", { n: 1 })}
+                  rightTitle={mine !== undefined ? t("conflicts.otherComputer") : t("conflicts.version", { n: 2 })}
                   left={left}
                   right={right}
                   unit={SETTING_LABELS[c.field]?.unit}
@@ -277,7 +287,7 @@ export function ConflictCenter({
 
       {state.divergence && !hideDivergence && (
         <section className="space-y-2">
-          <h3 className="text-sm font-semibold text-zinc-200">Batches, audit, Research and Decisions</h3>
+          <h3 className="text-sm font-semibold text-zinc-200">{t("conflicts.snapshotGroup")}</h3>
           <DeviceSyncDivergenceCard />
         </section>
       )}
@@ -291,26 +301,26 @@ export function ConflictCenter({
             return (
               <div key={c.key} className="space-y-2 rounded-xl border border-amber-800/60 bg-amber-950/10 p-3">
                 <p className="text-sm font-medium text-zinc-100">
-                  {c.subject} · {FIELD_LABELS[c.field] ?? c.field}
+                  {uiMessageText(t, c.subject)} · {FIELD_LABELS[c.field] ? t(FIELD_LABELS[c.field]) : c.field}
                 </p>
                 {a && b && versions.length === 2 ? (
-                  <VersionPair leftTitle="Version 1" rightTitle="Version 2" left={a[1]} right={b[1]} busy={busy} resolvable={c.resolvable} onKeep={(side) => void keepActor(c, side === "left" ? a[0] : b[0])} />
+                  <VersionPair leftTitle={t("conflicts.version", { n: 1 })} rightTitle={t("conflicts.version", { n: 2 })} left={a[1]} right={b[1]} busy={busy} resolvable={c.resolvable} onKeep={(side) => void keepActor(c, side === "left" ? a[0] : b[0])} />
                 ) : (
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {versions.map(([actor, value], i) => (
                       <div key={actor} className="rounded-lg border border-zinc-700 bg-zinc-950/60 p-3 text-sm">
-                        <p className="mb-1 text-[11px] uppercase text-zinc-500">Version {i + 1}</p>
-                        <p className="whitespace-pre-wrap text-zinc-200">{formatValue(value)}</p>
+                        <p className="mb-1 text-[11px] uppercase text-zinc-500">{t("conflicts.version", { n: i + 1 })}</p>
+                        <p className="whitespace-pre-wrap text-zinc-200">{formatValue(t, value)}</p>
                         {c.resolvable && (
                           <button type="button" disabled={busy} onClick={() => void keepActor(c, actor)} className="mt-3 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
-                            Keep this
+                            {t("conflicts.keepThis")}
                           </button>
                         )}
                       </div>
                     ))}
                   </div>
                 )}
-                {!c.resolvable && <p className="text-xs text-zinc-500">This field cannot be decided here; it settles with the next edit of the change.</p>}
+                {!c.resolvable && <p className="text-xs text-zinc-500">{t("conflicts.notResolvable")}</p>}
               </div>
             );
           })}

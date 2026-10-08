@@ -1,4 +1,8 @@
+import type { Translate } from "@/lib/ui-text";
 import type { OperationItem } from "./operation-progress";
+
+// BL-152: display texts are interface-text keys (`batches.progress.*`); `t` is passed in so this module stays pure.
+// A ledger status (`CONFLICT`...) and a server error text are shown as they are.
 
 /** The slice of a ledger row the progress view needs (same JSON the batch GET route returns). */
 export type ProgressLedgerRow = { id: string; videoId: string; status: string; error: string | null };
@@ -14,7 +18,7 @@ export type ProgressLedgerRow = { id: string; videoId: string; status: string; e
  *  - UNKNOWN                       -> outcome of a sent write could not be confirmed: shown as failed
  *    (needs reconciliation) so it is never presented as written.
  */
-export function ledgerRowToItem(row: ProgressLedgerRow): OperationItem {
+export function ledgerRowToItem(row: ProgressLedgerRow, t: Translate): OperationItem {
   const base = { id: row.id, label: row.videoId };
   switch (row.status) {
     case "APPLYING":
@@ -27,29 +31,30 @@ export function ledgerRowToItem(row: ProgressLedgerRow): OperationItem {
     case "ABORTED_SYSTEMIC":
       return { ...base, status: "failed", detail: row.error ?? row.status };
     case "CANCELLED":
-      return { ...base, status: "skipped", detail: "Cancelled" };
+      return { ...base, status: "skipped", detail: t("batches.progress.cancelled") };
     case "UNKNOWN":
-      return { ...base, status: "failed", detail: row.error ?? "UNKNOWN — outcome not confirmed" };
+      return { ...base, status: "failed", detail: row.error ?? t("batches.progress.unknownOutcome") };
     default:
       return { ...base, status: "pending" };
   }
 }
 
-export function deriveBatchStage(rows: ProgressLedgerRow[], dryRun: boolean): string {
-  if (dryRun) return "Dry run: checking identity, backup and conflicts — nothing is written";
-  if (rows.some((row) => row.status === "APPLYING")) return "Writing to YouTube — each video is backed up and verified";
-  if (rows.some((row) => row.status === "PENDING")) return "Preparing: identity, backup and conflict checks";
-  return "Writing to YouTube — each video is backed up and verified";
+export function deriveBatchStage(rows: ProgressLedgerRow[], dryRun: boolean, t: Translate): string {
+  if (dryRun) return t("batches.progress.stageDryRun");
+  if (rows.some((row) => row.status === "APPLYING")) return t("batches.progress.stageWriting");
+  if (rows.some((row) => row.status === "PENDING")) return t("batches.progress.stagePreparing");
+  return t("batches.progress.stageWriting");
 }
 
-export function summarizeBatchRows(rows: ProgressLedgerRow[], dryRun: boolean): string {
+export function summarizeBatchRows(rows: ProgressLedgerRow[], dryRun: boolean, t: Translate): string {
   const ok = rows.filter((row) => row.status === "SUCCESS" || row.status === "DRY_RUN_COMPLETE").length;
   const notOk = rows.filter((row) => ["FAILED", "CONFLICT", "ABORTED_SYSTEMIC", "UNKNOWN"].includes(row.status)).length;
   const cancelledCount = rows.filter((row) => row.status === "CANCELLED").length;
   const waiting = rows.length - ok - notOk - cancelledCount;
-  const parts = [`${ok} ${dryRun ? "checked" : "written"}`];
-  if (notOk) parts.push(`${notOk} not written (see the batch table)`);
-  if (cancelledCount) parts.push(`${cancelledCount} cancelled`);
-  if (waiting) parts.push(`${waiting} still waiting`);
-  return `${parts.join(", ")}.`;
+  // Each part is a whole clause; the list of clauses is joined by the list separator key.
+  const parts = [t(dryRun ? "batches.progress.summaryChecked" : "batches.progress.summaryWritten", { count: ok })];
+  if (notOk) parts.push(t("batches.progress.summaryNotWritten", { count: notOk }));
+  if (cancelledCount) parts.push(t("batches.progress.summaryCancelled", { count: cancelledCount }));
+  if (waiting) parts.push(t("batches.progress.summaryWaiting", { count: waiting }));
+  return t("batches.progress.summary", { parts: parts.join(t("batches.progress.listSeparator")) });
 }

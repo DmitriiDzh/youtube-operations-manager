@@ -1,7 +1,10 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatDisplayDate, resolvePublishDate } from "@/lib/shared-formatting";
+import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
+import type { UiTextKey } from "@/lib/ui-text";
+import { useUiText } from "./ui-text-provider";
 import { postChannelSync } from "./channel-sync-client";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
@@ -56,9 +59,15 @@ export function formatPublishColumn(video: SyncedVideo): string {
 const AUTO_RESYNC_STALENESS_MS = 20 * 60 * 1000;
 const PAGE_SIZE = 30;
 
-function formatCount(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString();
+function formatCount(value: number | null, formatNumber: (n: number) => string): string {
+  return value === null ? "—" : formatNumber(value);
 }
+
+const PRIVACY_LABELS: Record<string, UiTextKey> = {
+  public: "content.privacy.public",
+  unlisted: "content.privacy.unlisted",
+  private: "content.privacy.private",
+};
 
 function SortableHeader({
   label,
@@ -101,6 +110,7 @@ function SortableHeader({
  * same thing Studio's own Content > Videos table shows, not a second, separate concept.
  */
 export function ContentManager() {
+  const { t, formatNumber } = useUiText();
   const op = useOperation();
   const { runBlocking, attach } = op;
   const [channels, setChannels] = useState<SyncedChannel[]>([]);
@@ -130,7 +140,7 @@ export function ContentManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setVideos(data.videos);
@@ -139,7 +149,7 @@ export function ContentManager() {
     } finally {
       setLoadingVideos(false);
     }
-  }, []);
+  }, [t]);
 
   /**
    * `background: true` is the automatic resync when the tab opens with stale data: it must NOT dim the
@@ -154,18 +164,19 @@ export function ContentManager() {
     try {
       const onConflict = options.background ? "skip" : "retry";
       const { res, data, waitedForOther } = options.background
-        ? await postChannelSync(channelId, { onConflict })
+        ? await postChannelSync(channelId, { onConflict, t })
         : await runBlocking({
-            title: "Syncing the channel from YouTube",
+            title: t("content.sync.overlayTitle"),
             track: { channelId: channelId ?? null, kind: "channel-sync" },
             quotaServices: ["dataApi"],
-            request: () => postChannelSync(channelId, { onConflict }),
-            failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? `Error ${res.status}`)),
+            request: () => postChannelSync(channelId, { onConflict, t }),
+            failureOf: ({ res, data }) =>
+              res.ok ? null : String(errorText(t, data, t("common.errorStatus", { status: String(res.status) }))),
             summarize: ({ data }) =>
-              typeof data?.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null,
+              typeof data?.videoCount === "number" ? t("content.sync.videosSynced", { count: data.videoCount }) : null,
           });
       if (!res.ok) {
-        setError(String(data?.message ?? data?.error ?? `Error ${res.status}`));
+        setError(String(errorText(t, data, t("common.errorStatus", { status: String(res.status) }))));
         return;
       }
       if (!data) {
@@ -175,9 +186,7 @@ export function ContentManager() {
       }
       void waitedForOther;
       const channel = data.channel as SyncedChannel;
-      setLastSyncSummary(
-        `Synced "${channel.title}" — ${data.videoCount} video${data.videoCount === 1 ? "" : "s"}`
-      );
+      setLastSyncSummary(t("content.sync.summary", { channel: channel.title, count: Number(data.videoCount) }));
       setChannels([channel]);
       setSelectedChannelId(channel.channelId);
       await fetchVideos(channel.channelId);
@@ -186,7 +195,7 @@ export function ContentManager() {
     } finally {
       setSyncing(false);
     }
-  }, [fetchVideos, runBlocking]);
+  }, [fetchVideos, runBlocking, t]);
 
   // After a reload, follow a sync the server is still running for this channel (ADR 0015). Only syncs:
   // their result is the saved data, which a refresh picks up. (An AI generation's proposals exist only in
@@ -202,7 +211,7 @@ export function ContentManager() {
         if (!running || cancelled) return;
         setSyncing(true);
         attach(running.id, {
-          title: "Syncing the channel from YouTube",
+          title: t("content.sync.overlayTitle"),
           quotaServices: ["dataApi"],
           onFinished: () => {
             setSyncing(false);
@@ -216,7 +225,7 @@ export function ContentManager() {
     return () => {
       cancelled = true;
     };
-  }, [selectedChannelId, attach, fetchVideos]);
+  }, [selectedChannelId, attach, fetchVideos, t]);
 
   // Only one channel is ever active (docs/decisions/0004-active-channel-read-scoping.md), so
   // there is nothing for the operator to pick -- resolve it implicitly and, per the staleness
@@ -286,10 +295,7 @@ export function ContentManager() {
           {loadingChannels ? (
             <LoadingIndicator className="text-sm text-zinc-400" />
           ) : !selectedChannelId ? (
-            <p className="text-sm text-zinc-400">
-              No channel synchronized yet — sign in and this app will pick up your active channel
-              automatically.
-            </p>
+            <p className="text-sm text-zinc-400">{t("content.noChannel")}</p>
           ) : null}
 
           {selectedChannelId && (
@@ -298,19 +304,18 @@ export function ContentManager() {
               disabled={syncing}
               className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
             >
-              {syncing ? "Syncing..." : "Sync now"}
+              {syncing ? t("common.syncing") : t("common.syncNow")}
             </button>
           )}
         </div>
 
         {selectedChannelId && (
           <p className="text-xs text-zinc-500">
-            Last synced:{" "}
-            {channels.find((c) => c.channelId === selectedChannelId)?.lastSyncedAt
-              ? new Date(
-                  channels.find((c) => c.channelId === selectedChannelId)!.lastSyncedAt!
-                ).toLocaleString()
-              : "never"}
+            {t("content.lastSynced", {
+              time: channels.find((c) => c.channelId === selectedChannelId)?.lastSyncedAt
+                ? formatDisplayDateTime(channels.find((c) => c.channelId === selectedChannelId)!.lastSyncedAt!)
+                : t("common.never"),
+            })}
           </p>
         )}
 
@@ -335,7 +340,7 @@ export function ContentManager() {
                 setSearch(e.target.value);
                 setPage(1);
               }}
-              placeholder="Search by title..."
+              placeholder={t("content.searchPlaceholder")}
               className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm"
             />
             <select
@@ -346,15 +351,15 @@ export function ContentManager() {
               }}
               className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm"
             >
-              <option value="all">All</option>
-              <option value="public">Public</option>
-              <option value="unlisted">Unlisted</option>
-              <option value="private">Private</option>
+              <option value="all">{t("content.privacy.all")}</option>
+              <option value="public">{t("content.privacy.public")}</option>
+              <option value="unlisted">{t("content.privacy.unlisted")}</option>
+              <option value="private">{t("content.privacy.private")}</option>
             </select>
             <span className="text-sm text-zinc-400">
               {loadingVideos
-                ? "Loading..."
-                : `${filteredVideos.length} of ${videos.length} video${videos.length === 1 ? "" : "s"}`}
+                ? t("common.loading")
+                : t("content.shownOfTotal", { shown: filteredVideos.length, count: videos.length })}
             </span>
           </div>
 
@@ -369,11 +374,11 @@ export function ContentManager() {
             </colgroup>
             <thead>
               <tr className="border-b border-zinc-800 text-left text-xs uppercase text-zinc-500">
-                <SortableHeader label="Video" sortKey="title" sort={sort} onSort={handleSort} />
-                <SortableHeader label="Access" sortKey="privacy" sort={sort} onSort={handleSort} />
-                <SortableHeader label="Publish" sortKey="publish" sort={sort} onSort={handleSort} />
-                <SortableHeader label="Views" sortKey="views" sort={sort} onSort={handleSort} align="right" />
-                <SortableHeader label="Comments" sortKey="comments" sort={sort} onSort={handleSort} align="right" />
+                <SortableHeader label={t("content.column.video")} sortKey="title" sort={sort} onSort={handleSort} />
+                <SortableHeader label={t("content.column.access")} sortKey="privacy" sort={sort} onSort={handleSort} />
+                <SortableHeader label={t("content.column.publish")} sortKey="publish" sort={sort} onSort={handleSort} />
+                <SortableHeader label={t("content.column.views")} sortKey="views" sort={sort} onSort={handleSort} align="right" />
+                <SortableHeader label={t("content.column.comments")} sortKey="comments" sort={sort} onSort={handleSort} align="right" />
               </tr>
             </thead>
             <tbody>
@@ -402,7 +407,7 @@ export function ContentManager() {
                           <div className="mt-1 flex flex-wrap gap-1">
                             {video.existingLocalizationLanguages.length === 0 ? (
                               <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">
-                                No localizations
+                                {t("content.noLocalizations")}
                               </span>
                             ) : (
                               video.existingLocalizationLanguages.map((lang) => (
@@ -418,13 +423,15 @@ export function ContentManager() {
                         </div>
                       </div>
                     </td>
-                    <td className="truncate px-4 py-3 text-zinc-400">{video.privacyStatus}</td>
+                    <td className="truncate px-4 py-3 text-zinc-400">
+                      {PRIVACY_LABELS[video.privacyStatus] ? t(PRIVACY_LABELS[video.privacyStatus]) : video.privacyStatus}
+                    </td>
                     <td className="truncate px-4 py-3 text-zinc-400">{formatPublishColumn(video)}</td>
                     <td className="truncate px-4 py-3 text-right text-zinc-400">
-                      {formatCount(video.viewCount)}
+                      {formatCount(video.viewCount, formatNumber)}
                     </td>
                     <td className="truncate px-4 py-3 text-right text-zinc-400">
-                      {formatCount(video.commentCount)}
+                      {formatCount(video.commentCount, formatNumber)}
                     </td>
                   </tr>
               ))}
@@ -434,17 +441,18 @@ export function ContentManager() {
 
           {!loadingVideos && filteredVideos.length === 0 && (
             <p className="px-4 py-6 text-center text-sm text-zinc-500">
-              {videos.length === 0
-                ? 'No videos synchronized yet. Click "Sync now" above.'
-                : "No videos match the current filters."}
+              {videos.length === 0 ? t("content.empty.noVideos") : t("content.empty.noMatches")}
             </p>
           )}
 
           {filteredVideos.length > PAGE_SIZE && (
             <div className="flex items-center justify-between border-t border-zinc-800 px-4 py-3 text-sm text-zinc-400">
               <span>
-                {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, filteredVideos.length)} of{" "}
-                {filteredVideos.length}
+                {t("content.pageRange", {
+                  from: pageStart + 1,
+                  to: Math.min(pageStart + PAGE_SIZE, filteredVideos.length),
+                  total: filteredVideos.length,
+                })}
               </span>
               <div className="flex gap-2">
                 <button
@@ -452,14 +460,14 @@ export function ContentManager() {
                   disabled={clampedPage <= 1}
                   className="rounded-lg border border-zinc-700 px-3 py-1 disabled:opacity-40"
                 >
-                  Prev
+                  {t("content.page.prev")}
                 </button>
                 <button
                   onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
                   disabled={clampedPage >= pageCount}
                   className="rounded-lg border border-zinc-700 px-3 py-1 disabled:opacity-40"
                 >
-                  Next
+                  {t("content.page.next")}
                 </button>
               </div>
             </div>

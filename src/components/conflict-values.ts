@@ -2,56 +2,59 @@
 // two versions are easy to compare -- human field names, values in words and units, and what differs highlighted. Pure helpers
 // for that screen (conflict-center.tsx); nothing here fetches.
 
+import type { Translate, UiTextKey } from "@/lib/ui-text";
+
 /** Production → Setup fields (BL-150), in the words the Setup page uses. */
-export const SETTING_LABELS: Record<string, { label: string; unit?: "usd" | "usd_per_hr" | "minutes" | "seconds" | "gb" }> = {
-  datacenterId: { label: "Datacenter" },
-  gpuTypeId: { label: "GPU type" },
-  cloudType: { label: "Cloud type" },
-  networkVolumeId: { label: "Network volume" },
-  templateId: { label: "Pod template" },
-  maxUsdPerDay: { label: "Daily spend cap", unit: "usd" },
-  defaultMaxMinutes: { label: "Default session length", unit: "minutes" },
-  idleMinutes: { label: "Stop an idle session after", unit: "minutes" },
-  watchIntervalSeconds: { label: "Check running sessions every", unit: "seconds" },
-  maxConcurrentSessions: { label: "Sessions at once" },
-  gpuFallbackIds: { label: "Fallback GPU types (in order)" },
-  gpuMinVramGb: { label: "Minimum GPU memory", unit: "gb" },
-  gpuMaxPricePerHr: { label: "Maximum GPU price", unit: "usd_per_hr" },
-  capacityRetrySeconds: { label: "Retry a start without capacity every", unit: "seconds" },
-  capacityWaitMinutes: { label: "Give up waiting for capacity after", unit: "minutes" },
-  factorySessionsEnabled: { label: "Factory Operator may start sessions" },
-  factoryMaxUsdPerSession: { label: "Factory: max per session", unit: "usd" },
-  factoryMaxMinutesPerSession: { label: "Factory: max session length", unit: "minutes" },
-  factoryMaxUsdPerDay: { label: "Factory: max per day", unit: "usd" },
-  factoryMaxUsdPerMonth: { label: "Factory: max per month", unit: "usd" },
-  ownerReleaseWhenDone: { label: "Release a session after its last job" },
+export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" | "usd_per_hr" | "minutes" | "seconds" | "gb" }> = {
+  datacenterId: { labelKey: "setupField.datacenterId" },
+  gpuTypeId: { labelKey: "setupField.gpuTypeId" },
+  cloudType: { labelKey: "setupField.cloudType" },
+  networkVolumeId: { labelKey: "setupField.networkVolumeId" },
+  templateId: { labelKey: "setupField.templateId" },
+  maxUsdPerDay: { labelKey: "setupField.maxUsdPerDay", unit: "usd" },
+  defaultMaxMinutes: { labelKey: "setupField.defaultMaxMinutes", unit: "minutes" },
+  idleMinutes: { labelKey: "setupField.idleMinutes", unit: "minutes" },
+  watchIntervalSeconds: { labelKey: "setupField.watchIntervalSeconds", unit: "seconds" },
+  maxConcurrentSessions: { labelKey: "setupField.maxConcurrentSessions" },
+  gpuFallbackIds: { labelKey: "setupField.gpuFallbackIds" },
+  gpuMinVramGb: { labelKey: "setupField.gpuMinVramGb", unit: "gb" },
+  gpuMaxPricePerHr: { labelKey: "setupField.gpuMaxPricePerHr", unit: "usd_per_hr" },
+  capacityRetrySeconds: { labelKey: "setupField.capacityRetrySeconds", unit: "seconds" },
+  capacityWaitMinutes: { labelKey: "setupField.capacityWaitMinutes", unit: "minutes" },
+  factorySessionsEnabled: { labelKey: "setupField.factorySessionsEnabled" },
+  factoryMaxUsdPerSession: { labelKey: "setupField.factoryMaxUsdPerSession", unit: "usd" },
+  factoryMaxMinutesPerSession: { labelKey: "setupField.factoryMaxMinutesPerSession", unit: "minutes" },
+  factoryMaxUsdPerDay: { labelKey: "setupField.factoryMaxUsdPerDay", unit: "usd" },
+  factoryMaxUsdPerMonth: { labelKey: "setupField.factoryMaxUsdPerMonth", unit: "usd" },
+  ownerReleaseWhenDone: { labelKey: "setupField.ownerReleaseWhenDone" },
 };
 
-export function settingLabel(field: string): string {
-  return SETTING_LABELS[field]?.label ?? field;
+export function settingLabel(t: Translate, field: string): string {
+  const entry = SETTING_LABELS[field];
+  return entry ? t(entry.labelKey) : field;
 }
 
 /** One value in words: units, On/Off, "not set". Lists are shown by `listDiff`. */
-export function formatValue(value: unknown, unit?: (typeof SETTING_LABELS)[string]["unit"]): string {
-  if (value === null || value === undefined || value === "") return "not set";
-  if (typeof value === "boolean") return value ? "On" : "Off";
+export function formatValue(t: Translate, value: unknown, unit?: (typeof SETTING_LABELS)[string]["unit"]): string {
+  if (value === null || value === undefined || value === "") return t("value.notSet");
+  if (typeof value === "boolean") return value ? t("value.on") : t("value.off");
   if (typeof value === "number") {
     switch (unit) {
       case "usd":
-        return `$${value}`;
+        return t("unit.usd", { value: String(value) });
       case "usd_per_hr":
-        return `$${value}/h`;
+        return t("unit.usdPerHour", { value: String(value) });
       case "minutes":
-        return `${value} min`;
+        return t("unit.minutes", { value: String(value) });
       case "seconds":
-        return `${value} s`;
+        return t("unit.seconds", { value: String(value) });
       case "gb":
-        return `${value} GB`;
+        return t("unit.gb", { value: String(value) });
       default:
         return String(value);
     }
   }
-  if (Array.isArray(value)) return value.length === 0 ? "none" : value.map((v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v))).join(", ");
+  if (Array.isArray(value)) return value.length === 0 ? t("value.none") : value.map((v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v))).join(", ");
   // An object (e.g. an AI connection's field) reads as its JSON, never as "[object Object]".
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);

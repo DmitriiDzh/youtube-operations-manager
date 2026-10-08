@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ServerPresence } from "@/components/server-presence";
 import { SessionProvider } from "@/components/session-provider";
+import { UiTextProvider } from "@/components/ui-text-provider";
+import { translate } from "@/lib/ui-text";
+import { requestUiLanguage } from "@/lib/ui-text/server";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,24 +17,28 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "YouTube Operations Manager",
-  description: "Automate your YouTube playlists with rules",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { language } = await requestUiLanguage();
+  return { title: "YouTube Operations Manager", description: translate(language, "app.description") };
+}
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // BL-152: the interface language (a chosen one, else the browser's, else English) -- known before the first paint.
+  const { language, source, systemLanguage } = await requestUiLanguage();
   return (
     <html
-      lang="en"
+      lang={language}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
     >
       <body className="min-h-full bg-zinc-950 text-zinc-100">
-        <SessionProvider>{children}</SessionProvider>
-        <ServerPresence />
+        <UiTextProvider language={language} source={source} systemLanguage={systemLanguage}>
+          <SessionProvider>{children}</SessionProvider>
+          <ServerPresence />
+        </UiTextProvider>
       </body>
     </html>
   );

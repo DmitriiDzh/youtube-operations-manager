@@ -1,9 +1,11 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { LoadingIndicator } from "./operation-progress";
+import { useT } from "./ui-text-provider";
 
 type Settings = {
   marketIntelligenceDailyQuotaBudgetUnits: number | null;
@@ -25,6 +27,7 @@ const SLIDER_MAX_UNITS = 500;
  * background collection feature).
  */
 export function MarketIntelligenceCollectionSettings() {
+  const t = useT();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draftUnits, setDraftUnits] = useState<number>(0);
   const [saving, setSaving] = useState(false);
@@ -39,21 +42,21 @@ export function MarketIntelligenceCollectionSettings() {
     try {
       const res = await fetch("/api/settings");
       if (!res.ok) {
-        setLoadError("Failed to load settings.");
+        setLoadError(t("settings.loadFailed"));
         return;
       }
       const data = (await res.json()) as Settings;
       if (ownSettingsUnavailable(data, ["marketIntelligenceDailyQuotaBudgetUnits"])) {
-        setLoadError("Failed to load settings.");
+        setLoadError(t("settings.loadFailed"));
         return;
       }
       setLoadError(null);
       setSettings(data);
       setDraftUnits(data.marketIntelligenceDailyQuotaBudgetUnits ?? 0);
     } catch {
-      setLoadError("Failed to load settings.");
+      setLoadError(t("settings.loadFailed"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchSettings();
@@ -71,14 +74,14 @@ export function MarketIntelligenceCollectionSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to save");
+        setError(errorText(t, data, t("settings.saveFailed"), { showErrorField: false }));
         return;
       }
       setSettings(data);
       setDraftUnits(data.marketIntelligenceDailyQuotaBudgetUnits ?? 0);
-      setSavedNotice("Saved.");
+      setSavedNotice(t("common.saved"));
     } catch {
-      setError("Failed to save");
+      setError(t("settings.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -94,7 +97,7 @@ export function MarketIntelligenceCollectionSettings() {
               onClick={() => void fetchSettings()}
               className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
             >
-              Retry
+              {t("common.retry")}
             </button>
           </div>
         ) : (
@@ -111,16 +114,8 @@ export function MarketIntelligenceCollectionSettings() {
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
-          Market intelligence daily quota
-          <InfoTooltip>
-            One shared daily YouTube API unit budget for both features on the Research tab: (1)
-            automatic competitor auto-refresh &mdash; once per running dashboard session, this app
-            checks every watchlisted competitor channel that hasn&rsquo;t been refreshed in the last
-            24h and refreshes as many as the budget allows (up to 3 units per channel, only ever
-            spent in full, never partially); and (2) it enables channel discovery &mdash; searches no
-            longer spend this budget: YouTube gives searches their own limit of 100 per day. Set to 0
-            to turn both off. Both reset at midnight Pacific time, like YouTube&rsquo;s own quota.
-          </InfoTooltip>
+          {t("settingsCards.marketQuota.title")}
+          <InfoTooltip>{t("settingsCards.marketQuota.info")}</InfoTooltip>
         </h3>
       </div>
 
@@ -151,17 +146,17 @@ export function MarketIntelligenceCollectionSettings() {
           disabled={saving}
           className="w-24 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 disabled:opacity-50"
         />
-        <span className="text-xs text-zinc-400">units/day</span>
+        <span className="text-xs text-zinc-400">{t("settingsCards.marketQuota.unitsPerDay")}</span>
         <button
           onClick={handleSave}
           disabled={saving || !dirty}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? t("common.saving") : t("common.save")}
         </button>
       </div>
 
-      {isOff && <p className="text-xs text-zinc-500">Auto-refresh and discovery are both off.</p>}
+      {isOff && <p className="text-xs text-zinc-500">{t("settingsCards.marketQuota.off")}</p>}
       {savedNotice && <p className="text-sm font-medium text-green-500">{savedNotice}</p>}
       {error && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">

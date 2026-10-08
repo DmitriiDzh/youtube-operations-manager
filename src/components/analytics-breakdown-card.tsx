@@ -1,8 +1,10 @@
 "use client";
 
+import { errorText, type Translate } from "@/lib/ui-text";
 import { useEffect, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { LoadingIndicator } from "./operation-progress";
+import { useUiText } from "./ui-text-provider";
 
 type BreakdownRow = { dimensionValues: string[]; metrics: Record<string, number> };
 
@@ -21,32 +23,37 @@ export function AnalyticsBreakdownCard({
   title,
   metricName,
   labelFor,
-  formatValue = (v) => v.toLocaleString(),
+  formatValue: formatValueProp,
   // Independent review round 6 (2026-09-26): the plan's own §1 cross-cutting note requires an
   // empty state matching Studio's own wording/tone per card, not one generic message for every
   // breakdown kind -- Studio's real, live-observed message for age/gender specifically
   // ("Not enough demographic data to show this report") is genuinely different in tone from a
   // plain "no data yet." Callers with a known Studio wording pass it here; others keep the
   // generic default rather than a guessed-at Studio phrase this session never actually observed.
-  emptyMessage = "No data for this period yet.",
+  emptyMessage: emptyMessageProp,
 }: {
   channelId: string;
   periodDays: number;
   breakdown: string;
   title: string;
   metricName: string;
-  labelFor: (dimensionValues: string[]) => string;
+  /** BL-152: gets the interface-language translator, so dimension values are labelled in that language. */
+  labelFor: (dimensionValues: string[], t: Translate) => string;
   formatValue?: (value: number) => string;
   emptyMessage?: string;
 }) {
+  const { t, formatNumber } = useUiText();
+  const formatValue = formatValueProp ?? ((v: number) => formatNumber(v));
+  const emptyMessage = emptyMessageProp ?? t("chart.noData");
   const [rows, setRows] = useState<BreakdownRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setRows(null);
-    setError(null);
     (async () => {
+      // Runs synchronously up to the first await, exactly like a reset before the call (react-hooks/set-state-in-effect).
+      setRows(null);
+      setError(null);
       try {
         const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
         const res = await fetch(
@@ -55,21 +62,21 @@ export function AnalyticsBreakdownCard({
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) {
-          setError(data.message ?? "Failed to load");
+          setError(errorText(t, data, t("analytics.breakdown.loadFailed"), { showErrorField: false }));
           return;
         }
         setRows(data.rows as BreakdownRow[]);
       } catch {
-        if (!cancelled) setError("Failed to load");
+        if (!cancelled) setError(t("analytics.breakdown.loadFailed"));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [channelId, periodDays, breakdown]);
+  }, [channelId, periodDays, breakdown, t]);
 
   const ranked = (rows ?? [])
-    .map((row) => ({ label: labelFor(row.dimensionValues), value: row.metrics[metricName] ?? 0 }))
+    .map((row) => ({ label: labelFor(row.dimensionValues, t), value: row.metrics[metricName] ?? 0 }))
     .sort((a, b) => b.value - a.value);
   const total = ranked.reduce((sum, row) => sum + row.value, 0);
 

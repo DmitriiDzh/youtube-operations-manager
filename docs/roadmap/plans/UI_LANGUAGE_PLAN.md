@@ -29,8 +29,8 @@ Out of scope, stays English:
 
 ### Module `src/lib/ui-text/` (shared, per AGENTS.md §M)
 
-- `locales/en.ts` — the source dictionary: a flat object `{ "settings.general.title": "General", ... }`. Keys are grouped by screen: `nav.*`, `settings.*`, `content.*`, `common.*` (Save, Cancel, Loading…).
-- `locales/ru.ts` — typed as `Record<keyof typeof en, string>`. A missing or extra key fails `tsc` → `npm run build` fails. A new language = one new file + one line in the language list.
+- `locales/en.ts` — the source dictionary, assembled from one file per area (`locales/en/<area>.ts`, so separate work on separate areas never edits the same file): a flat object `{ "settings.general.title": "General", ... }`. Keys are grouped by screen: `nav.*`, `settings.*`, `content.*`, `common.*` (Save, Cancel, Loading…).
+- `locales/ru.ts` (+ `locales/ru/<area>.ts`) — each area typed as `Record<keyof typeof <en area>, string>`. A missing or extra key fails `tsc` → `npm run build` fails. A new language = one new locale folder (+ its `<lang>.ts`) and one entry in `UI_LANGUAGES`.
 - `translate(locale, key, params)` — `{name}` substitution; plurals through `Intl.PluralRules` (Russian has 3 forms: 1 видео / 2 видео / 5 видео; `{count, plural}` syntax kept tiny, no ICU library).
 - `formatNumber(locale, n)` — added to `shared-formatting`; all `toLocaleString()` calls move to it. Dates keep `DD.MM.YYYY` in every language.
 - React: `UiTextProvider` (client context) + `useT()` hook. The provider gets the locale from the root layout, so the first render is already in the right language (no flash of English).
@@ -39,11 +39,10 @@ Out of scope, stays English:
 
 ### The setting
 
-- `app_settings` key `ui_language`, values `en` | `ru`. **Per device**, not synced (Q1): each computer shows its own language, and a language change never creates a sync conflict on the blocking startup screen.
+- The choice is a cookie `ui_language` (`en` | `ru`), set by `PUT /api/ui-language` (`{ language: null }` = back to the system language). **Per device** (Q1) -- strictly per browser profile on that computer -- and not synced, so a language change never creates a sync conflict on the blocking startup screen. *Changed during slice 1 from the `app_settings` key first planned:* the root layout renders every page, including the startup recovery page, which must work while the database cannot open; every database read waits for its initialization (and possibly the migration lock), a cookie does not.
 - No saved choice → the system language (Q4): the browser's `Accept-Language` header, read in the root layout (the browser runs on the same computer and follows the OS language; Node's own locale is unreliable when the server is started without `LANG`). The first supported language wins; none supported → `en`. Nothing is saved until the person picks a language, so a later OS language change still applies. The selector shows a «System (Русский)»-style first option for this.
-- `GET/PUT /api/settings` gains `uiLanguage` (validated against the language list).
 - Settings → General: a "Interface language" select. Each language is shown in its own name (English, Русский). After saving, `router.refresh()` re-renders in the new language.
-- `src/app/layout.tsx` reads the setting: `<html lang>`, page title, and the provider's locale.
+- `src/app/layout.tsx` reads the cookie and `Accept-Language` (`requestUiLanguage`, `src/lib/ui-text/server.ts`): `<html lang>`, the page description, and the provider's language.
 
 ### Server errors
 

@@ -1,10 +1,12 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { AgentTokenImportForm } from "./agent-token-import-form";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import { useT } from "./ui-text-provider";
 
 type TokenSummary = { tokenId: string; channelId: string; label: string | null; createdAt: string };
 
@@ -32,6 +34,7 @@ function fetchTokenList(): Promise<TokenSummary[]> {
  * channel row (`AGENTS.md` §M). No native dialogs -- ConfirmDialog only.
  */
 export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
+  const t = useT();
   const [active, setActive] = useState<TokenSummary | null | undefined>(undefined);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,9 +51,9 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
       setActive(tokens.find((token) => token.channelId === channelId) ?? null);
     } catch {
       setLoadFailed(true);
-      setError("Could not load the agent token status.");
+      setError(t("settingsCards.channelToken.loadFailed"));
     }
-  }, [channelId]);
+  }, [channelId, t]);
 
   useEffect(() => {
     load();
@@ -68,14 +71,14 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
       });
       const data = (await res.json()) as { token?: TokenSummary & { token: string }; message?: string };
       if (!res.ok || !data.token) {
-        setError(data.message ?? "Failed to issue a token");
+        setError(errorText(t, data, t("settingsCards.token.issueFailed"), { showErrorField: false }));
         return;
       }
       const { token, ...summary } = data.token;
       setActive(summary);
       setRevealed(token);
     } catch {
-      setError("Failed to issue a token");
+      setError(t("settingsCards.token.issueFailed"));
     } finally {
       setBusy(false);
       setPending(null);
@@ -93,13 +96,13 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
       });
       if (!res.ok) {
         const data = (await res.json()) as { message?: string };
-        setError(data.message ?? "Failed to revoke the token");
+        setError(errorText(t, data, t("settingsCards.token.revokeFailed"), { showErrorField: false }));
         return;
       }
       setActive(null);
       setRevealed(null);
     } catch {
-      setError("Failed to revoke the token");
+      setError(t("settingsCards.token.revokeFailed"));
     } finally {
       setBusy(false);
       setPending(null);
@@ -112,7 +115,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
       await navigator.clipboard.writeText(revealed);
       setCopied(true);
     } catch {
-      setError("Copy failed -- select the token and copy it manually.");
+      setError(t("settingsCards.token.copyFailed"));
     }
   }
 
@@ -120,22 +123,15 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
     <div className="space-y-2 border-t border-zinc-800 pt-2">
       <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
         <span className="flex items-center gap-1.5">
-          Agent token
-          <InfoTooltip>
-            The one token that binds an AI agent to this channel. An agent that presents this token to the
-            app&apos;s MCP endpoint (as a Bearer credential) can only read and change this channel&apos;s data. It
-            cannot see or switch to any other channel. Issuing a new token revokes the old one. The token is
-            shown only once, right after issuing. It is stored only as a hash on this device. To use the same
-            agent on another device, paste this token there with &quot;Use an existing token&quot;. Revoking a
-            token applies only to the device where you revoke it.
-          </InfoTooltip>
+          {t("settingsCards.channelToken.title")}
+          <InfoTooltip>{t("settingsCards.channelToken.info")}</InfoTooltip>
         </span>
         <span className="text-zinc-500">
           {active === undefined
-            ? "Loading..."
+            ? t("common.loading")
             : active
-              ? `active since ${formatDisplayDateTime(active.createdAt)}`
-              : "none issued"}
+              ? t("settingsCards.token.activeSince", { date: formatDisplayDateTime(active.createdAt) })
+              : t("settingsCards.token.noneIssued")}
         </span>
         <span className="flex-1" />
         {active === null && (
@@ -144,7 +140,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
             disabled={busy}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            {busy ? "Issuing..." : "Issue token"}
+            {busy ? t("settingsCards.token.issuing") : t("settingsCards.token.issue")}
           </button>
         )}
         {active && (
@@ -154,14 +150,14 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
               disabled={busy}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-50"
             >
-              Rotate
+              {t("settingsCards.token.rotate")}
             </button>
             <button
               onClick={() => setPending("revoke")}
               disabled={busy}
               className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950 disabled:opacity-50"
             >
-              Revoke
+              {t("settingsCards.token.revoke")}
             </button>
           </>
         )}
@@ -182,9 +178,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
 
       {revealed && (
         <div className="space-y-1 rounded-lg border border-amber-900 bg-amber-950/30 p-2">
-          <p className="text-xs text-amber-300">
-            Copy this token now -- it will not be shown again.
-          </p>
+          <p className="text-xs text-amber-300">{t("settingsCards.token.copyNow")}</p>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -194,10 +188,10 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
               className="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 font-mono text-xs text-zinc-100"
             />
             <button onClick={copy} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:border-zinc-500">
-              {copied ? "Copied" : "Copy"}
+              {copied ? t("settingsCards.copied") : t("settingsCards.copy")}
             </button>
             <button onClick={() => setRevealed(null)} className="rounded-md px-2 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">
-              Hide
+              {t("settingsCards.token.hide")}
             </button>
           </div>
         </div>
@@ -208,7 +202,7 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
           {error}
           {loadFailed && (
             <button onClick={() => load()} className="underline hover:text-red-300">
-              Retry
+              {t("common.retry")}
             </button>
           )}
         </p>
@@ -216,13 +210,13 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
 
       {pending && (
         <ConfirmDialog
-          title={pending === "rotate" ? "Rotate this channel's agent token?" : "Revoke this channel's agent token?"}
+          title={pending === "rotate" ? t("settingsCards.channelToken.rotateTitle") : t("settingsCards.channelToken.revokeTitle")}
           description={
             pending === "rotate"
-              ? "The current token stops working immediately. The agent needs the new token in its configuration."
-              : "The agent using this token loses access to this channel on this device immediately. If the token was also entered on other devices, revoke it there too."
+              ? t("settingsCards.channelToken.rotateBody")
+              : t("settingsCards.channelToken.revokeBody")
           }
-          confirmLabel={pending === "rotate" ? "Rotate" : "Revoke"}
+          confirmLabel={pending === "rotate" ? t("settingsCards.token.rotate") : t("settingsCards.token.revoke")}
           confirmVariant="danger"
           onCancel={() => setPending(null)}
           onConfirm={pending === "rotate" ? issue : revoke}

@@ -4,6 +4,7 @@ import { useSession, signOut } from "next-auth/react";
 import { redirect, usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useCallback, useRef } from "react";
 import type { ComponentType, ReactNode, SVGProps } from "react";
+import type { UiTextKey } from "@/lib/ui-text";
 import { ConnectionHealthDialog } from "@/components/connection-health-dialog";
 import { useConnectionHealth } from "@/components/use-connection-health";
 import { AppShell } from "@/components/app-shell";
@@ -11,6 +12,7 @@ import { OperationLockControl } from "@/components/operation-lock-control";
 import { AppChannelProvider, type ChannelInfo } from "@/components/app-channel";
 import { rememberablePath, sectionHref } from "@/components/section-tabs";
 import { LoadingOverlay } from "@/components/loading-overlay";
+import { useT } from "@/components/ui-text-provider";
 import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 import { ConflictCenter, useConflictCenter } from "@/components/conflict-center";
 import {
@@ -46,30 +48,30 @@ import {
 // Tab is derived from NAV_ITEMS (not declared independently) so the two can never drift apart --
 // adding a nav entry adds the tab, and vice versa, with no separate list for the compiler to miss.
 const NAV_ITEMS = [
-  { value: "home", href: "/home", label: "Home", icon: HomeIcon },
-  { value: "content", href: "/content", label: "Content", icon: ContentIcon },
+  { value: "home", href: "/home", labelKey: "nav.home", icon: HomeIcon },
+  { value: "content", href: "/content", labelKey: "nav.content", icon: ContentIcon },
   // Phase 14 slice 6 (owner, Telegram 2026-10-05, msg 1549): remote media generation -- sessions, jobs, models,
   // workflow templates and their setup -- right after Content. The RunPod keys stay in Settings → RunPod.
-  { value: "production", href: "/production", label: "Production", icon: ProductionIcon },
-  { value: "analytics", href: "/analytics", label: "Analytics", icon: AnalyticsIcon },
-  { value: "languages", href: "/languages", label: "Languages", icon: LocalizationsIcon },
-  { value: "batches", href: "/batches", label: "Batches", icon: BatchesIcon },
+  { value: "production", href: "/production", labelKey: "nav.production", icon: ProductionIcon },
+  { value: "analytics", href: "/analytics", labelKey: "nav.analytics", icon: AnalyticsIcon },
+  { value: "languages", href: "/languages", labelKey: "nav.languages", icon: LocalizationsIcon },
+  { value: "batches", href: "/batches", labelKey: "nav.batches", icon: BatchesIcon },
   // Phase 9 slice 2 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global, not channel-scoped (see
   // MarketResearchPanel's own doc comment), so it doesn't need `channel` the way Content/
   // Analytics/Languages/Batches do.
-  { value: "research", href: "/research", label: "Research", icon: ResearchIcon },
+  { value: "research", href: "/research", labelKey: "nav.research", icon: ResearchIcon },
   // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- global, not channel-scoped
   // as a tab, though an individual hypothesis may itself be channel-scoped (see DecisionsManager).
-  { value: "decisions", href: "/decisions", label: "Decisions", icon: DecisionsIcon },
-  { value: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
+  { value: "decisions", href: "/decisions", labelKey: "nav.decisions", icon: DecisionsIcon },
+  { value: "settings", href: "/settings", labelKey: "nav.settings", icon: SettingsIcon },
   // Renamed from "Device" (2026-09-21, AUTOMERGE_MIGRATION_PLAN.md §6 CD6, owner instruction):
   // this tab is now also where every detected draft-sync conflict is tracked and presented for a
   // human decision, not only device handoff export/import.
-  { value: "merge", href: "/merge", label: "Merge", icon: DeviceIcon },
+  { value: "merge", href: "/merge", labelKey: "nav.merge", icon: DeviceIcon },
 ] as const satisfies {
   value: string;
   href: string;
-  label: string;
+  labelKey: UiTextKey;
   icon: ComponentType<SVGProps<SVGSVGElement>>;
 }[];
 
@@ -94,6 +96,7 @@ type Tab = (typeof NAV_ITEMS)[number]["value"];
 export default function AppLayout({ children }: { children: ReactNode }) {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const t = useT();
   // The section is the first path segment (`/production/plans` → production).
   const pathname = usePathname();
   const tab: Tab | null = NAV_ITEMS.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))?.value ?? null;
@@ -130,16 +133,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         void refetchConnectionHealth({ force: true });
         return;
       }
-      const data = await res.json();
+      const data = (await res.json()) as { channel: (ChannelInfo & { title?: string | null }) | null };
       setChannelUnavailable(false);
       setChannel(data.channel);
       // Review M6: no channel at all (none connected yet) -- the collections waiting for one will not run this load.
       setStartup((prev) =>
-        prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ?? null } } : startupWithoutChannel(prev, "no channel connected yet", "skipped")
+        prev.channel.state !== "running" ? prev : data.channel ? { ...prev, channel: { state: "done", detail: data.channel.title ? { text: data.channel.title } : null } } : startupWithoutChannel(prev, { key: "startup.detail.noChannelYet" }, "skipped")
       );
     } catch {
       // The loading window must not wait for it (review M6); the effect below still retries on the next session change.
-      setStartup((prev) => (prev.channel.state === "running" ? startupWithoutChannel(prev, "could not be read") : prev));
+      setStartup((prev) => (prev.channel.state === "running" ? startupWithoutChannel(prev, { key: "startup.detail.channelUnreadable" }) : prev));
       // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
       // right after activating a different stored channel connection, docs/decisions/0010), since
       // that no longer reloads the page the way the old signIn("google")-only flow always did.
@@ -333,14 +336,14 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   // With agent requests waiting, Research leads to plain `/research`, where its first-open rule opens Inbox (AC-R1-2),
   // as every visit did before BL-149 (re-review).
-  const navItemsWithBadges = NAV_ITEMS.map((item) => ({ ...item, href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
+  const navItemsWithBadges = NAV_ITEMS.map(({ labelKey, ...item }) => ({ ...item, label: t(labelKey), href: item.value === "research" && researchPending > 0 ? item.href : sectionHref(item.href, lastPathBySection) })).map((item) =>
     item.value === "merge" ? { ...item, badge: conflictCount } : item.value === "research" ? { ...item, badge: researchPending } : item.value === "production" ? { ...item, badge: plansWaiting } : item
   );
 
   if (status === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <p className="text-zinc-500">Loading...</p>
+        <p className="text-zinc-500">{t("common.loading")}</p>
       </div>
     );
   }
@@ -361,13 +364,13 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <ConnectionHealthDialog health={connectionHealth.health} />
       {startupInProgress(startup) && !startupDismissed && !reloginBlocking && (
         <LoadingOverlay
-          title="Loading your data…"
-          steps={STARTUP_STEPS.map((step) => ({ ...step, status: startup[step.key] }))}
+          title={t("startup.title")}
+          steps={STARTUP_STEPS.map((step) => ({ key: step.key, label: t(step.labelKey), status: startup[step.key] }))}
           onDismiss={() => setStartupDismissed(true)}
         />
       )}
       {conflictsBlocking && !reloginBlocking && (
-        <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-zinc-950/40 py-10 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Choose what to keep">
+        <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-zinc-950/40 py-10 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={t("shell.conflicts.ariaLabel")}>
           <div className="w-[56rem] max-w-[94vw] rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
             <ConflictCenter state={conflicts} blocking onDecideLater={() => setConflictsDeferred(true)} />
           </div>
@@ -375,8 +378,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       )}
       {switching && !conflictsBlocking && !reloginBlocking && (!startupInProgress(startup) || startupDismissed) && (
         <LoadingOverlay
-          title="Switching channel…"
-          steps={[{ key: "switch", label: "Loading the channel's data", status: { state: "running", detail: null } }]}
+          title={t("shell.switching.title")}
+          steps={[{ key: "switch", label: t("shell.switching.step"), status: { state: "running", detail: null } }]}
           onDismiss={() => setSwitchingTo(null)}
         />
       )}

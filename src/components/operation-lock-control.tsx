@@ -3,24 +3,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OperationLockStatus } from "@/lib/operation-lock/contracts";
 import { OPERATION_LOCK_FORCE_CONFIRMATION } from "@/lib/operation-lock/contracts";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
+import { useT } from "./ui-text-provider";
 
 type DatabaseState = "ready" | "failed" | "starting";
 type LockResponse = { status: OperationLockStatus | null; database: DatabaseState };
 
 const POLL_MS = 3_000;
 
-const OPERATION_LABELS: Record<string, string> = {
-  migration: "Database schema migration",
-  import: "Handoff import",
-  export: "Handoff export",
+const OPERATION_LABELS: Record<string, UiTextKey> = {
+  migration: "operationLock.op.migration",
+  import: "operationLock.op.import",
+  export: "operationLock.op.export",
 };
 
-function formatElapsed(ms: number): string {
+function formatElapsed(t: Translate, ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return t("duration.seconds", { s: totalSeconds });
   const minutes = Math.floor(totalSeconds / 60);
-  if (minutes < 60) return `${minutes} min ${totalSeconds % 60}s`;
-  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+  if (minutes < 60) return t("duration.minutesSeconds", { m: minutes, s: totalSeconds % 60 });
+  return t("duration.hoursMinutes", { h: Math.floor(minutes / 60), m: minutes % 60 });
 }
 
 /**
@@ -41,8 +44,11 @@ export function OperationLockControl({
    * a second and runs about once a minute under automatic sync) stays invisible. */
   quiet?: boolean;
 }) {
+  const t = useT();
   const [data, setData] = useState<LockResponse | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // `detail` is the HTTP status when the server answered with an error; null for any other failure (shown as the plain
+  // translated "could not read" text instead of a browser's own English error message).
+  const [loadError, setLoadError] = useState<{ detail: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [forceOpen, setForceOpen] = useState(false);
@@ -53,12 +59,16 @@ export function OperationLockControl({
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/operation-lock", { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        // ui-text-ignore: an HTTP status code, shown as the detail of the translated sentence
+        setLoadError({ detail: `HTTP ${response.status}` });
+        return;
+      }
       setData((await response.json()) as LockResponse);
       setFetchedAt(Date.now());
       setLoadError(null);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Could not read the lock state.");
+    } catch {
+      setLoadError({ detail: null });
     }
   }, []);
 
@@ -102,40 +112,40 @@ export function OperationLockControl({
         }),
       });
       const result = (await response.json()) as { outcome?: string; error?: string };
-      if (result.outcome === "cleared") setMessage("Lock cleared.");
-      else if (result.outcome === "not_held") setMessage("The lock was already released.");
-      else if (result.outcome === "changed") setMessage("The lock changed while you were looking at it -- review the new state.");
-      else if (result.outcome === "holder_alive") setMessage("The holder process is still running -- use the force option only if you are sure it is stuck.");
-      else setMessage(result.error ?? "Could not clear the lock.");
+      if (result.outcome === "cleared") setMessage(t("operationLock.result.cleared"));
+      else if (result.outcome === "not_held") setMessage(t("operationLock.result.notHeld"));
+      else if (result.outcome === "changed") setMessage(t("operationLock.result.changed"));
+      else if (result.outcome === "holder_alive") setMessage(t("operationLock.result.holderAlive"));
+      else setMessage(result.error ?? t("operationLock.result.failed"));
       setForceOpen(false);
       setConfirmation("");
       await refresh();
       onChanged?.();
     } catch {
-      setMessage("Could not clear the lock.");
+      setMessage(t("operationLock.result.failed"));
     } finally {
       setBusy(false);
     }
   }
 
   if (loadError && !data) {
-    return <p className="text-sm text-red-300">Could not read the operation lock state ({loadError}).</p>;
+    return <p className="text-sm text-red-300">{loadError.detail ? t("operationLock.loadError", { error: loadError.detail }) : t("operationLock.loadFailed")}</p>;
   }
-  if (!data) return <p className="text-sm text-zinc-500">Checking operation lock...</p>;
+  if (!data) return <p className="text-sm text-zinc-500">{t("operationLock.checking")}</p>;
 
   const databaseNote =
     data.database === "ready"
-      ? "Database: ready."
+      ? t("operationLock.db.ready")
       : data.database === "starting"
-        ? "Database: still starting up..."
-        : "Database: not initialized yet (it retries automatically once the lock is gone).";
+        ? t("operationLock.db.starting")
+        : t("operationLock.db.failed");
 
   if (quiet && (!status || (status.lock.operationType === "export" && !status.stale))) return null;
 
   if (!status) {
     return (
       <div className="space-y-1 text-sm">
-        <p className="text-green-300">No operation is holding the device lock.</p>
+        <p className="text-green-300">{t("operationLock.none")}</p>
         <p className="text-zinc-400">{databaseNote}</p>
         {message && <p className="text-zinc-300">{message}</p>}
       </div>
@@ -143,7 +153,8 @@ export function OperationLockControl({
   }
 
   const elapsed = status.elapsedMs + Math.max(0, now - fetchedAt);
-  const label = OPERATION_LABELS[status.lock.operationType] ?? status.lock.operationType;
+  const labelKey = OPERATION_LABELS[status.lock.operationType];
+  const label = labelKey ? t(labelKey) : status.lock.operationType;
 
   return (
     <div
@@ -153,19 +164,22 @@ export function OperationLockControl({
     >
       <div>
         <p className="font-medium">
-          {label} {status.stale ? "was interrupted" : "is in progress"}
+          {t(status.stale ? "operationLock.interrupted" : "operationLock.inProgress", { operation: label })}
         </p>
         <p className="mt-1 text-xs opacity-80">
-          Started {status.lock.acquiredAt} ({formatElapsed(elapsed)} ago) &middot; process {status.lock.holderPid}{" "}
-          {status.holderAlive ? "is running" : "is no longer running"}
+          {t(status.holderAlive ? "operationLock.startedRunning" : "operationLock.startedStopped", {
+            time: formatDisplayDateTime(status.lock.acquiredAt),
+            elapsed: formatElapsed(t, elapsed),
+            pid: String(status.lock.holderPid),
+          })}
         </p>
       </div>
       <p>
         {status.stale
-          ? "The process that held this lock has stopped (closed window, restart or crash) and will never release it. Nothing is running now. Your data is intact (a pre-migration backup is kept); the interrupted operation is simply re-run on the next start."
+          ? t("operationLock.staleBody")
           : status.lock.operationType === "migration"
-            ? "A schema migration normally takes a few seconds. This page refreshes on its own and the app continues when it finishes."
-            : "This usually finishes within seconds. This page refreshes on its own."}
+            ? t("operationLock.migrationBody")
+            : t("operationLock.otherBody")}
       </p>
       <p className="text-xs opacity-80">{databaseNote}</p>
 
@@ -176,38 +190,34 @@ export function OperationLockControl({
             disabled={busy}
             className="rounded-md border border-amber-500 px-3 py-1.5 text-xs font-medium hover:bg-amber-900/40 disabled:opacity-50"
           >
-            {busy ? "Clearing..." : "Clear interrupted lock"}
+            {busy ? t("operationLock.clearing") : t("operationLock.clear")}
           </button>
         ) : (
           <button
             onClick={() => setForceOpen((open) => !open)}
             className="rounded-md border border-zinc-600 px-3 py-1.5 text-xs font-medium hover:bg-zinc-800"
           >
-            Looks stuck? Force clear...
+            {t("operationLock.looksStuck")}
           </button>
         )}
       </div>
 
       {forceOpen && !status.stale && (
         <div className="space-y-2 rounded-md border border-red-800 bg-red-950/40 p-3 text-xs text-red-200">
-          <p>
-            The holder process still appears to be running. Clearing the lock under a live operation can corrupt
-            it. Do this only if you are sure nothing is running (for example the process id was reused by an
-            unrelated program). Type {OPERATION_LOCK_FORCE_CONFIRMATION} to confirm.
-          </p>
+          <p>{t("operationLock.forceWarning", { word: OPERATION_LOCK_FORCE_CONFIRMATION })}</p>
           <div className="flex items-center gap-2">
             <input
               value={confirmation}
               onChange={(event) => setConfirmation(event.target.value)}
               className="w-28 rounded border border-red-700 bg-zinc-950 px-2 py-1 text-zinc-100"
-              aria-label={`Type ${OPERATION_LOCK_FORCE_CONFIRMATION} to confirm`}
+              aria-label={t("operationLock.typeToConfirm", { word: OPERATION_LOCK_FORCE_CONFIRMATION })}
             />
             <button
               onClick={() => void clearLock(true)}
               disabled={busy || confirmation !== OPERATION_LOCK_FORCE_CONFIRMATION}
               className="rounded-md border border-red-600 px-3 py-1 font-medium hover:bg-red-900/40 disabled:opacity-50"
             >
-              Force clear
+              {t("operationLock.forceClear")}
             </button>
           </div>
         </div>

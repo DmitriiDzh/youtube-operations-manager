@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { MediaVolumeUsage } from "@/lib/media-generation/contracts";
+import type { Translate } from "@/lib/ui-text";
+import { useUiText } from "./ui-text-provider";
 
 // BL-136 (owner, Telegram 2026-10-06, msg 1709): a space bar at the top of Production → Models -- how much is rented, how much
 // is used, and how much each model takes. One horizontal stacked bar (part-to-whole) against the rented size: the largest
@@ -49,7 +51,10 @@ export function volumeUsageBreakdown(input: {
     .sort((a, b) => a.key.localeCompare(b.key))
     .map((m, i) => ({ id: m.key, label: m.name, bytes: m.bytes, color: SERIES[i], kind: "model" as const }));
   const otherModels = modelsBytes - shownBytes;
+  // BL-152: the folded segments' labels are shown through `segmentLabel` (translated by kind); these stay as their English names.
+  // ui-text-ignore: shown via segmentLabel, by kind
   if (otherModels > 0) segments.push({ id: "other-models", label: "Other models", bytes: otherModels, color: OTHER_MODELS, kind: "other-models" });
+  // ui-text-ignore: shown via segmentLabel, by kind
   if (otherFilesBytes > 0) segments.push({ id: "other-files", label: "Exchange and service files", bytes: otherFilesBytes, color: OTHER_FILES, kind: "other-files" });
   const usedBytes = modelsBytes + otherFilesBytes;
   return {
@@ -62,13 +67,25 @@ export function volumeUsageBreakdown(input: {
   };
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes >= GIB) return `${(bytes / GIB).toFixed(bytes >= 100 * GIB ? 0 : 1)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
-  return `${bytes} B`;
+type NumberFormat = (value: number, options?: Intl.NumberFormatOptions) => string;
+
+export function formatBytes(t: Translate, formatNumber: NumberFormat, bytes: number): string {
+  const fixed = (value: number, digits: number) => formatNumber(value, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  if (bytes >= GIB) return t("unit.gb", { value: fixed(bytes / GIB, bytes >= 100 * GIB ? 0 : 1) });
+  if (bytes >= 1024 ** 2) return t("volume.mb", { value: fixed(bytes / 1024 ** 2, 0) });
+  return t("volume.bytes", { value: fixed(bytes, 0) });
+}
+
+/** A segment's name: a model's own file name, or the folded segments' names in the interface language. */
+function segmentLabel(t: Translate, segment: UsageSegment): string {
+  if (segment.kind === "other-models") return t("volume.otherModels");
+  if (segment.kind === "other-files") return t("volume.otherFiles");
+  return segment.label;
 }
 
 export function VolumeUsageBar({ breakdown }: { breakdown: UsageBreakdown }) {
+  const { t, formatNumber } = useUiText();
+  const size = (bytes: number) => formatBytes(t, formatNumber, bytes);
   const [hovered, setHovered] = useState<string | null>(null);
   const scale = Math.max(breakdown.rentedBytes, breakdown.usedBytes) || 1;
   const pct = (bytes: number) => (bytes / scale) * 100;
@@ -76,16 +93,23 @@ export function VolumeUsageBar({ breakdown }: { breakdown: UsageBreakdown }) {
   const focus = breakdown.segments.find((s) => s.id === hovered) ?? null;
 
   return (
-    <div className="space-y-2" aria-label="Network volume space">
+    <div className="space-y-2" aria-label={t("volume.label")}>
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
         <span className="text-zinc-200">
-          <span className="text-base font-semibold text-white">{formatBytes(breakdown.usedBytes)}</span> used of {formatBytes(breakdown.rentedBytes)} rented
-          {usedPct !== null ? ` (${usedPct}%)` : ""}
+          {/* The used size is emphasized wherever the sentence puts it: the text is split at its {used} placeholder. */}
+          {(usedPct !== null ? t("volume.usedOfRentedPercent", { rented: size(breakdown.rentedBytes), percent: usedPct }) : t("volume.usedOfRented", { rented: size(breakdown.rentedBytes) }))
+            .split("{used}")
+            .map((part, i) => (
+              <span key={i}>
+                {i > 0 && <span className="text-base font-semibold text-white">{size(breakdown.usedBytes)}</span>}
+                {part}
+              </span>
+            ))}
         </span>
-        <span className="text-zinc-400">{breakdown.overBytes > 0 ? `${formatBytes(breakdown.overBytes)} over the rented size` : `${formatBytes(breakdown.freeBytes)} free`}</span>
+        <span className="text-zinc-400">{breakdown.overBytes > 0 ? t("volume.over", { size: size(breakdown.overBytes) }) : t("volume.free", { size: size(breakdown.freeBytes) })}</span>
       </div>
       {/* The track is the rented size; segments are separated by a 2px gap in the surface color. */}
-      <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded bg-zinc-800" role="img" aria-label={`${formatBytes(breakdown.usedBytes)} used of ${formatBytes(breakdown.rentedBytes)}`}>
+      <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded bg-zinc-800" role="img" aria-label={t("volume.barLabel", { used: size(breakdown.usedBytes), rented: size(breakdown.rentedBytes) })}>
         {breakdown.segments.map((s) => (
           <div
             key={s.id}
@@ -96,24 +120,24 @@ export function VolumeUsageBar({ breakdown }: { breakdown: UsageBreakdown }) {
           />
         ))}
       </div>
-      <p className="h-4 text-xs text-zinc-300">{focus ? `${focus.label}: ${formatBytes(focus.bytes)} (${Math.round(pct(focus.bytes))}% of the volume)` : ""}</p>
+      <p className="h-4 text-xs text-zinc-300">{focus ? t("volume.focus", { label: segmentLabel(t, focus), size: size(focus.bytes), percent: Math.round(pct(focus.bytes)) }) : ""}</p>
       <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-400">
         {breakdown.segments.map((s) => (
           <li key={s.id} className="flex items-center gap-1.5" onMouseEnter={() => setHovered(s.id)} onMouseLeave={() => setHovered(null)}>
             <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: s.color }} />
-            <span className="max-w-[16rem] truncate text-zinc-300" title={s.label}>
-              {s.label}
+            <span className="max-w-[16rem] truncate text-zinc-300" title={segmentLabel(t, s)}>
+              {segmentLabel(t, s)}
             </span>
-            <span>{formatBytes(s.bytes)}</span>
+            <span>{size(s.bytes)}</span>
           </li>
         ))}
         <li className="flex items-center gap-1.5">
           <span className="inline-block h-2.5 w-2.5 rounded-sm border border-zinc-600 bg-zinc-800" />
-          <span className="text-zinc-300">Free</span>
-          <span>{formatBytes(breakdown.freeBytes)}</span>
+          <span className="text-zinc-300">{t("volume.freeLegend")}</span>
+          <span>{size(breakdown.freeBytes)}</span>
         </li>
       </ul>
-      {!breakdown.complete && <p className="text-xs text-amber-400">Only model files are counted: the full volume listing failed.</p>}
+      {!breakdown.complete && <p className="text-xs text-amber-400">{t("volume.incomplete")}</p>}
     </div>
   );
 }

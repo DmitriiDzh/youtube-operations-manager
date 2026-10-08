@@ -1,10 +1,12 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { AgentTokenImportForm } from "./agent-token-import-form";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import { useT } from "./ui-text-provider";
 import { LoadingIndicator } from "./operation-progress";
 
 type TokenSummary = { tokenId: string; label: string | null; createdAt: string };
@@ -17,6 +19,7 @@ type TokenSummary = { tokenId: string; label: string | null; createdAt: string }
  * native dialogs -- ConfirmDialog only.
  */
 export function FactoryAgentTokenSettings() {
+  const t = useT();
   const [active, setActive] = useState<TokenSummary | null | undefined>(undefined);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -36,9 +39,9 @@ export function FactoryAgentTokenSettings() {
       setActive(((await res.json()) as { token: TokenSummary | null }).token);
     } catch {
       setLoadFailed(true);
-      setError("Could not load the Factory Operator token status.");
+      setError(t("settingsCards.factoryToken.loadFailed"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     load();
@@ -58,14 +61,14 @@ export function FactoryAgentTokenSettings() {
       });
       const data = (await res.json()) as { token?: TokenSummary & { token: string }; message?: string };
       if (!res.ok || !data.token) {
-        setError(data.message ?? "Failed to issue a token");
+        setError(errorText(t, data, t("settingsCards.token.issueFailed"), { showErrorField: false }));
         return;
       }
       const { token, ...summary } = data.token;
       setActive(summary);
       setRevealed(token);
     } catch {
-      setError("Failed to issue a token");
+      setError(t("settingsCards.token.issueFailed"));
     } finally {
       inflight.current = false;
       setBusy(false);
@@ -82,13 +85,13 @@ export function FactoryAgentTokenSettings() {
       const res = await fetch("/api/factory-agent-token", { method: "DELETE" });
       if (!res.ok) {
         const data = (await res.json()) as { message?: string };
-        setError(data.message ?? "Failed to revoke the token");
+        setError(errorText(t, data, t("settingsCards.token.revokeFailed"), { showErrorField: false }));
         return;
       }
       setActive(null);
       setRevealed(null);
     } catch {
-      setError("Failed to revoke the token");
+      setError(t("settingsCards.token.revokeFailed"));
     } finally {
       inflight.current = false;
       setBusy(false);
@@ -102,7 +105,7 @@ export function FactoryAgentTokenSettings() {
       await navigator.clipboard.writeText(revealed);
       setCopied(true);
     } catch {
-      setError("Copy failed -- select the token and copy it manually.");
+      setError(t("settingsCards.token.copyFailed"));
     }
   }
 
@@ -117,21 +120,13 @@ export function FactoryAgentTokenSettings() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
-        Factory Operator token
-        <InfoTooltip>
-          The token for the Factory Operator role, a read-only agent that is not tied to any channel. It
-          works only on its own endpoint (/api/mcp/factory) and cannot use a channel agent&apos;s
-          tools or data; a channel agent&apos;s token does not work there either. Issuing a new token
-          revokes the old one. The token is shown only once, right after issuing, and is stored only as a
-          hash on this device. It follows the same MCP connection on/off switch as channel agents. To use
-          the same token on another device, paste it there with &quot;Use an existing token&quot;. Revoking a
-          token applies only to the device where you revoke it.
-        </InfoTooltip>
+        {t("settingsCard.factoryToken")}
+        <InfoTooltip>{t("settingsCards.factoryToken.info")}</InfoTooltip>
       </h3>
 
       <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
         <span className="text-zinc-500">
-          {loadFailed ? "status unknown" : active ? `active since ${formatDisplayDateTime(active.createdAt)}` : "none issued"}
+          {loadFailed ? t("settingsCards.factoryToken.statusUnknown") : active ? t("settingsCards.token.activeSince", { date: formatDisplayDateTime(active.createdAt) }) : t("settingsCards.token.noneIssued")}
         </span>
         <span className="flex-1" />
         {!active && !loadFailed && (
@@ -140,7 +135,7 @@ export function FactoryAgentTokenSettings() {
             disabled={busy}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            {busy ? "Issuing..." : "Issue token"}
+            {busy ? t("settingsCards.token.issuing") : t("settingsCards.token.issue")}
           </button>
         )}
         {active && (
@@ -150,14 +145,14 @@ export function FactoryAgentTokenSettings() {
               disabled={busy}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-50"
             >
-              Rotate
+              {t("settingsCards.token.rotate")}
             </button>
             <button
               onClick={() => setPending("revoke")}
               disabled={busy}
               className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950 disabled:opacity-50"
             >
-              Revoke
+              {t("settingsCards.token.revoke")}
             </button>
           </>
         )}
@@ -177,7 +172,7 @@ export function FactoryAgentTokenSettings() {
 
       {revealed && (
         <div className="space-y-1 rounded-lg border border-amber-900 bg-amber-950/30 p-2">
-          <p className="text-xs text-amber-300">Copy this token now -- it will not be shown again.</p>
+          <p className="text-xs text-amber-300">{t("settingsCards.token.copyNow")}</p>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -187,10 +182,10 @@ export function FactoryAgentTokenSettings() {
               className="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 font-mono text-xs text-zinc-100"
             />
             <button onClick={copy} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:border-zinc-500">
-              {copied ? "Copied" : "Copy"}
+              {copied ? t("settingsCards.copied") : t("settingsCards.copy")}
             </button>
             <button onClick={() => setRevealed(null)} className="rounded-md px-2 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">
-              Hide
+              {t("settingsCards.token.hide")}
             </button>
           </div>
         </div>
@@ -201,7 +196,7 @@ export function FactoryAgentTokenSettings() {
           {error}
           {loadFailed && (
             <button onClick={() => load()} className="underline hover:text-red-300">
-              Retry
+              {t("common.retry")}
             </button>
           )}
         </p>
@@ -209,13 +204,13 @@ export function FactoryAgentTokenSettings() {
 
       {pending && (
         <ConfirmDialog
-          title={pending === "rotate" ? "Rotate the Factory Operator token?" : "Revoke the Factory Operator token?"}
+          title={pending === "rotate" ? t("settingsCards.factoryToken.rotateTitle") : t("settingsCards.factoryToken.revokeTitle")}
           description={
             pending === "rotate"
-              ? "The current token stops working immediately. The Factory Operator needs the new token in its configuration."
-              : "The Factory Operator loses access on this device immediately. Channel agents are not affected. If the token was also entered on other devices, revoke it there too."
+              ? t("settingsCards.factoryToken.rotateBody")
+              : t("settingsCards.factoryToken.revokeBody")
           }
-          confirmLabel={pending === "rotate" ? "Rotate" : "Revoke"}
+          confirmLabel={pending === "rotate" ? t("settingsCards.token.rotate") : t("settingsCards.token.revoke")}
           confirmVariant="danger"
           onCancel={() => setPending(null)}
           onConfirm={pending === "rotate" ? issue : revoke}

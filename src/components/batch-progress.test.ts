@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveBatchStage, ledgerRowToItem, summarizeBatchRows, type ProgressLedgerRow } from "./batch-progress";
+import { createTranslator } from "@/lib/ui-text";
+import { deriveBatchStage as deriveBatchStageT, ledgerRowToItem as ledgerRowToItemT, summarizeBatchRows as summarizeBatchRowsT, type ProgressLedgerRow } from "./batch-progress";
+
+// BL-152: the texts are interface-text keys translated by `t`; the requirement checked here is the English wording.
+const en = createTranslator("en");
+const ledgerRowToItem = (r: ProgressLedgerRow) => ledgerRowToItemT(r, en);
+const deriveBatchStage = (rows: ProgressLedgerRow[], dryRun: boolean) => deriveBatchStageT(rows, dryRun, en);
+const summarizeBatchRows = (rows: ProgressLedgerRow[], dryRun: boolean) => summarizeBatchRowsT(rows, dryRun, en);
 
 const row = (status: string, error: string | null = null): ProgressLedgerRow => ({ id: `r-${status}`, videoId: `v-${status}`, status, error });
 

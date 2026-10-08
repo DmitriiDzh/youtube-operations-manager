@@ -28,7 +28,10 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // would block an agent's reads during recovery mode / an operation lock. The old stdio MCP server never
 // went through this proxy either; locally-mutating and remote-mutating tools keep their own gate
 // (`wrapMcpHandlersWithMutationGate` in src/mcp/server.ts), exactly as before.
-const EXEMPT_PATH_PREFIXES = ["/api/device-handoff", "/api/auth", "/api/operation-lock"];
+// `/api/ui-language` (BL-152) only sets this browser's interface-language cookie -- no database, no device state, nothing
+// that travels in a snapshot -- so changing the language must keep working in recovery mode, under an operation lock and
+// while the database cannot open (the reason the choice is a cookie at all).
+const EXEMPT_PATH_PREFIXES = ["/api/device-handoff", "/api/auth", "/api/operation-lock", "/api/ui-language"];
 
 // These POST routes are read-only/preview with respect to both local persistence and YouTube --
 // per their own doc comments, none of them create a Change/ChangeSet, write a batch ledger row,

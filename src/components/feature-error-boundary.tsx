@@ -1,6 +1,7 @@
 "use client";
 
 import { Component, type ReactNode } from "react";
+import { useT } from "./ui-text-provider";
 
 /**
  * A render-time exception in one feature (a dashboard tab, or a Settings sub-tab -- several of
@@ -39,26 +40,25 @@ export class FeatureErrorBoundary extends Component<Props, State> {
   };
 
   render() {
-    if (this.state.error) {
-      return (
-        <div className="rounded-xl border border-red-900/50 bg-red-950/20 p-4">
-          <p className="text-sm font-medium text-red-200">
-            Something went wrong in {this.props.label}.
-          </p>
-          <p className="mt-1 text-sm text-zinc-400">
-            The rest of the app is unaffected. You can try again, or switch to another tab.
-          </p>
-          <button
-            type="button"
-            onClick={this.handleRetry}
-            className="mt-3 rounded-md bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
-          >
-            Try again
-          </button>
-        </div>
-      );
-    }
-
+    if (this.state.error) return <FeatureErrorFallback label={this.props.label} onRetry={this.handleRetry} />;
     return this.props.children;
   }
+}
+
+// A function component, so the fallback can use the interface language (a class component cannot call hooks).
+function FeatureErrorFallback({ label, onRetry }: { label: string; onRetry: () => void }) {
+  const t = useT();
+  return (
+    <div className="rounded-xl border border-red-900/50 bg-red-950/20 p-4">
+      <p className="text-sm font-medium text-red-200">{t("errorBoundary.title", { label })}</p>
+      <p className="mt-1 text-sm text-zinc-400">{t("errorBoundary.body")}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-3 rounded-md bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
+      >
+        {t("common.tryAgain")}
+      </button>
+    </div>
+  );
 }

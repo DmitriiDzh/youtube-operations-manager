@@ -1,9 +1,11 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useRef, useState } from "react";
 import { runBatchWithProgress } from "./batch-run";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { useT } from "./ui-text-provider";
 
 type ApiError = { error?: string; message?: string; details?: { batchId?: string } };
 
@@ -29,6 +31,7 @@ export function SendApprovedButton({
   /** Called after a run ended, so the parent can refresh its view. */
   onFinished?: () => void;
 }) {
+  const t = useT();
   const op = useOperation();
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -46,10 +49,11 @@ export function SendApprovedButton({
         batchId,
         kind: "execute",
         op,
-        title: "Sending approved changes to YouTube",
-        failureMessage: "Failed to send the approved changes",
+        title: t("sendApproved.title"),
+        failureMessage: t("sendApproved.failure"),
         acknowledgeUnknownQuota,
         failOnUnwrittenRows: true,
+        t,
       });
       if (result.kind === "quota_block") {
         setSplitOutcome(null);
@@ -67,8 +71,8 @@ export function SendApprovedButton({
     busyRef.current = true;
     setBusy(true);
     try {
-      op.start({ title: "Sending approved changes to YouTube", cancellable: false });
-      op.setStage("Selecting the approved changes");
+      op.start({ title: t("sendApproved.title"), cancellable: false });
+      op.setStage(t("sendApproved.selecting"));
       let batchId: string | null = null;
       try {
         const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/${encodeURIComponent(changeSetId)}/send`, {
@@ -78,21 +82,21 @@ export function SendApprovedButton({
         if (res.ok) {
           batchId = data.batchId ?? null;
           if (!batchId) {
-            op.finish({ error: true, message: "The server did not return a batch — nothing was sent." });
+            op.finish({ error: true, message: t("sendApproved.noBatch") });
             return;
           }
         } else if (data.error === "send_already_in_progress" && data.details?.batchId) {
           // An earlier click created the batch but it never finished: continue that one, never create another.
           batchId = data.details.batchId;
         } else if (data.error === "live_writes_disabled") {
-          op.finish({ error: true, message: "Live writes is off — nothing was sent. Turn on “Live writes” in Settings, then send again." });
+          op.finish({ error: true, message: t("sendApproved.liveWritesOff") });
           return;
         } else {
-          op.finish({ error: true, message: data.message ?? "Could not prepare the batch — nothing was sent." });
+          op.finish({ error: true, message: errorText(t, data, t("sendApproved.prepareFailed"), { showErrorField: false }) });
           return;
         }
       } catch (e) {
-        op.finish({ error: true, message: e instanceof Error ? e.message : "Could not prepare the batch — nothing was sent." });
+        op.finish({ error: true, message: e instanceof Error ? e.message : t("sendApproved.prepareFailed") });
         return;
       }
       if (batchId) await execute(batchId);
@@ -112,7 +116,7 @@ export function SendApprovedButton({
   async function split(batchId: string): Promise<SplitOutcome> {
     const res = await fetch(`${batchBase}/${encodeURIComponent(batchId)}/split-for-quota`, { method: "POST" });
     const data = await res.json();
-    if (!res.ok) throw new Error((data as ApiError).message ?? "Could not split the batch");
+    if (!res.ok) throw new Error((data as ApiError).message ?? t("sendApproved.splitFailed"));
     const outcome = data as SplitOutcome;
     setSplitOutcome(outcome);
     return outcome;
@@ -123,10 +127,10 @@ export function SendApprovedButton({
       <button
         onClick={() => void send()}
         disabled={busy || approvedCount === 0}
-        title={approvedCount === 0 ? "Approve at least one change first" : "Writes the approved changes to YouTube (same safety checks as a batch)"}
+        title={approvedCount === 0 ? t("sendApproved.approveFirst") : t("sendApproved.hint")}
         className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
       >
-        Send approved to YouTube ({approvedCount})
+        {t("sendApproved.button", { count: approvedCount })}
       </button>
       <OperationOverlay state={op.state} onCancel={cancel} onClose={op.reset} />
       {quotaBlock && (

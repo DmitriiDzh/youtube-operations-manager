@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { BlockingDialog } from "./blocking-dialog";
 import { QuotaResetTime } from "./quota-reset-time";
+import { translateWithSlots, useUiText } from "./ui-text-provider";
 
 /**
  * What the server said when it refused to START a write run because of quota (BL-117 slice 2, owner decisions 2026-10-03):
@@ -53,7 +54,7 @@ export function parseQuotaBlock(body: unknown): QuotaBlock | null {
  */
 export function QuotaBlockDialog({
   block,
-  noun = "batch",
+  noun = "batch", // ui-text-ignore: variant discriminator, not shown
   onClose,
   onSplit,
   onRunAnyway,
@@ -61,7 +62,7 @@ export function QuotaBlockDialog({
   onOpenBatch,
 }: {
   block: QuotaBlock;
-  /** "batch" or "Fix all": wording only. */
+  /** "batch" or "Fix all": picks the wording variant (BL-152: each variant has its own whole-sentence keys). */
   noun?: string;
   onClose: () => void;
   /** Only passed when the run can be split (a fresh batch). Resolves with the outcome, or throws with a message. */
@@ -71,6 +72,8 @@ export function QuotaBlockDialog({
   splitOutcome?: SplitOutcome | null;
   onOpenBatch?: (batchId: string) => void;
 }) {
+  const { t, formatNumber } = useUiText();
+  const isBatch = noun === "batch"; // ui-text-ignore: variant discriminator, not shown
   const [splitting, setSplitting] = useState(false);
   const [splitError, setSplitError] = useState<string | null>(null);
 
@@ -81,7 +84,7 @@ export function QuotaBlockDialog({
     try {
       await onSplit();
     } catch (error) {
-      setSplitError(error instanceof Error ? error.message : "Could not split the batch");
+      setSplitError(error instanceof Error ? error.message : t("quota.block.splitFailed"));
     } finally {
       setSplitting(false);
     }
@@ -89,12 +92,12 @@ export function QuotaBlockDialog({
 
   if (splitOutcome) {
     return (
-      <BlockingDialog label="Batches prepared" maxWidthClass="max-w-md">
-        <p className="text-sm font-medium text-zinc-100">Smaller batches are ready</p>
+      <BlockingDialog label={t("quota.split.label")} maxWidthClass="max-w-md">
+        <p className="text-sm font-medium text-zinc-100">{t("quota.split.title")}</p>
         <ul className="space-y-1 text-xs text-zinc-300">
-          {splitOutcome.fitsBatchId && <li>{splitOutcome.fitRows} video(s) fit the quota available now: a new batch is ready to run.</li>}
-          {splitOutcome.restBatchId && <li>{splitOutcome.restRows} video(s) are saved in another new batch to run after the quota is back.</li>}
-          <li className="text-zinc-500">The original batch was closed so no video can be written twice. Nothing was sent to YouTube.</li>
+          {splitOutcome.fitsBatchId && <li>{t("quota.split.fits", { count: splitOutcome.fitRows })}</li>}
+          {splitOutcome.restBatchId && <li>{t("quota.split.rest", { count: splitOutcome.restRows })}</li>}
+          <li className="text-zinc-500">{t("quota.split.originalClosed")}</li>
         </ul>
         <div className="flex justify-end gap-2">
           {splitOutcome.fitsBatchId && onOpenBatch && (
@@ -102,11 +105,11 @@ export function QuotaBlockDialog({
               onClick={() => onOpenBatch(splitOutcome.fitsBatchId as string)}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
             >
-              Open the batch that fits
+              {t("quota.split.openFitting")}
             </button>
           )}
           <button onClick={onClose} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
-            Close
+            {t("common.close")}
           </button>
         </div>
       </BlockingDialog>
@@ -115,14 +118,11 @@ export function QuotaBlockDialog({
 
   if (block.code === "quota_unknown") {
     return (
-      <BlockingDialog label="Quota cannot be checked" maxWidthClass="max-w-md">
-        <p className="text-sm font-medium text-zinc-100">YouTube quota cannot be checked</p>
+      <BlockingDialog label={t("quota.unknown.label")} maxWidthClass="max-w-md">
+        <p className="text-sm font-medium text-zinc-100">{t("quota.unknown.title")}</p>
         <p className="text-xs text-zinc-400">
-          {block.cloudConnected
-            ? "Google Cloud did not return the remaining quota just now."
-            : "Google Cloud is not connected, so the remaining quota is unknown."}{" "}
-          This {noun} needs about {block.estimatedUnits.toLocaleString()} units ({block.rowsToWrite} video(s)). Without the check it could be
-          cut off half way if the quota runs out.
+          {block.cloudConnected ? t("quota.unknown.cloudNoAnswer") : t("quota.unknown.cloudNotConnected")}{" "}
+          {t(isBatch ? "quota.unknown.needsBatch" : "quota.unknown.needsFixAll", { units: block.estimatedUnits, count: block.rowsToWrite })}
         </p>
         <div className="flex flex-wrap justify-end gap-2">
           {!block.cloudConnected && (
@@ -130,16 +130,16 @@ export function QuotaBlockDialog({
               href="/api/cloud-connection/start"
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
             >
-              Connect Google Cloud
+              {t("quota.connectCloud")}
             </a>
           )}
           {onRunAnyway && (
             <button onClick={onRunAnyway} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
-              Run anyway
+              {t("quota.unknown.runAnyway")}
             </button>
           )}
           <button onClick={onClose} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
       </BlockingDialog>
@@ -147,23 +147,22 @@ export function QuotaBlockDialog({
   }
 
   return (
-    <BlockingDialog label="Not enough quota" maxWidthClass="max-w-md">
-      <p className="text-sm font-medium text-zinc-100">Not enough YouTube quota for this {noun}</p>
+    <BlockingDialog label={t("quota.insufficient.label")} maxWidthClass="max-w-md">
+      <p className="text-sm font-medium text-zinc-100">{t(isBatch ? "quota.insufficient.titleBatch" : "quota.insufficient.titleFixAll")}</p>
       <p className="text-xs text-zinc-400">
-        It needs about <span className="text-zinc-200">{block.estimatedUnits.toLocaleString()}</span> units ({block.rowsToWrite} video(s)), but only{" "}
-        <span className="text-zinc-200">{block.remainingUnits.toLocaleString()}</span> are available
-        {block.resetsAt ? <> (the quota resets <QuotaResetTime iso={block.resetsAt} />)</> : null}. It was not started, so nothing was written and
-        nothing can be cut off half way.
+        {translateWithSlots(t, block.resetsAt ? "quota.insufficient.needsWithReset" : "quota.insufficient.needs", { count: block.rowsToWrite }, {
+          units: <span className="text-zinc-200">{formatNumber(block.estimatedUnits)}</span>,
+          remaining: <span className="text-zinc-200">{formatNumber(block.remainingUnits)}</span>,
+          ...(block.resetsAt ? { time: <QuotaResetTime iso={block.resetsAt} /> } : {}),
+        })}
       </p>
       {block.canSplit && onSplit ? (
-        <p className="text-xs text-zinc-400">
-          {block.fitVideos} video(s) fit right now. You can prepare a smaller batch of those, plus a new batch of the remaining{" "}
-          {block.rowsToWrite - block.fitVideos} to run later.
-        </p>
+        <p className="text-xs text-zinc-400">{t("quota.insufficient.canSplit", { count: block.fitVideos, rest: block.rowsToWrite - block.fitVideos })}</p>
       ) : (
         <p className="text-xs text-zinc-500">
-          {block.fitVideos > 0 ? `${block.fitVideos} video(s) would fit; ` : "Nothing fits right now; "}
-          {noun === "batch" ? "a batch that already started cannot be split." : "select fewer videos or try again after the reset."}
+          {block.fitVideos > 0
+            ? t(isBatch ? "quota.insufficient.wouldFitBatch" : "quota.insufficient.wouldFitFixAll", { count: block.fitVideos })
+            : t(isBatch ? "quota.insufficient.nothingFitsBatch" : "quota.insufficient.nothingFitsFixAll")}
         </p>
       )}
       {splitError && <p className="text-xs text-red-400">{splitError}</p>}
@@ -174,11 +173,11 @@ export function QuotaBlockDialog({
             disabled={splitting}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
-            {splitting ? "Preparing..." : `Prepare a batch of ${block.fitVideos} + a batch of the rest`}
+            {splitting ? t("quota.insufficient.preparing") : t("quota.insufficient.prepareSplit", { count: block.fitVideos })}
           </button>
         )}
         <button onClick={onClose} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
-          Close
+          {t("common.close")}
         </button>
       </div>
     </BlockingDialog>

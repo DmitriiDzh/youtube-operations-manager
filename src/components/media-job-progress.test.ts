@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { JobLiveProgress } from "@/lib/media-generation/job-progress";
 import type { MediaJob } from "@/lib/media-generation/contracts";
-import { describeJobProgress, describeSessionJobCounts, fromSharedProgress } from "./media-job-progress";
+import { createTranslator } from "@/lib/ui-text";
+import { describeJobProgress as describeJobProgressIn, describeSessionJobCounts as describeSessionJobCountsIn, fromSharedProgress } from "./media-job-progress";
 import { nowRunningOn } from "./media-generation-settings";
 
 // BL-144 (owner, Telegram 2026-10-06, msg 1887): what the owner reads about a running job, only ComfyUI's own facts.
+
+// BL-152: the words are translated; the requirement checked here is the English wording.
+const t = createTranslator("en");
+const describeJobProgress = (progress: JobLiveProgress) => describeJobProgressIn(t, progress);
+const describeSessionJobCounts = (jobs: Parameters<typeof describeSessionJobCountsIn>[1]) => describeSessionJobCountsIn(t, jobs);
 const base: JobLiveProgress = {
   state: "running",
   nodesTotal: 9,

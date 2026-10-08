@@ -1,7 +1,9 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
+import { useUiText } from "./ui-text-provider";
 
 type SyncedChannel = {
   channelId: string;
@@ -46,8 +48,8 @@ function defaultDateRange(): { startDate: string; endDate: string } {
   return { startDate: formatLocalDate(start), endDate: formatLocalDate(end) };
 }
 
-function formatMetricValue(value: number): string {
-  return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
+function formatMetricValue(value: number, formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string): string {
+  return Number.isInteger(value) ? formatNumber(value) : formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // Owner instruction, 2026-09-22 (Telegram msg 417): a ticking countdown reads better than a fixed
@@ -71,6 +73,7 @@ function formatCountdown(msRemaining: number): string {
  * `docs/roadmap/FUTURE_PHASES.md` §4's "facts only" constraint).
  */
 export function AnalyticsManager() {
+  const { t, formatNumber } = useUiText();
   const op = useOperation();
   const { runBlocking } = op;
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
@@ -103,16 +106,16 @@ export function AnalyticsManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to load collected metrics");
+        setError(errorText(t, data, t("analytics.raw.loadFailed"), { showErrorField: false }));
         return;
       }
       setRows(data.rows as MetricRow[]);
     } catch {
-      setError("Failed to load collected metrics");
+      setError(t("analytics.raw.loadFailed"));
     } finally {
       setLoadingRows(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,7 +150,7 @@ export function AnalyticsManager() {
       // Shown in the progress overlay with the Analytics quota (ADR 0015); the request is unchanged.
       // "Already collected today" is an expected answer, not a failure.
       const { res, data } = await runBlocking({
-        title: "Collecting YouTube Analytics",
+        title: t("analytics.collectingTitle"),
         track: { channelId: channel.channelId, kind: "analytics-collect" },
         quotaServices: ["analytics"],
         request: async () => {
@@ -159,15 +162,15 @@ export function AnalyticsManager() {
           return { res, data: await res.json() };
         },
         failureOf: ({ res, data }) =>
-          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? "Collection failed"),
+          res.ok || data.error === "analytics_data_current" ? null : (errorText(t, data, t("analytics.collectionFailed"), { showErrorField: false })),
         summarize: ({ data }) =>
-          typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} queried.` : null,
+          typeof data.videoCount === "number" ? t("analytics.videosQueried", { count: data.videoCount }) : null,
       });
       if (!res.ok) {
         if (data.error === "analytics_data_current" && data.details?.nextRefreshAt) {
           setNextRefreshAt(new Date(data.details.nextRefreshAt));
         } else {
-          setError(data.message ?? "Collection failed");
+          setError(errorText(t, data, t("analytics.collectionFailed"), { showErrorField: false }));
         }
         return;
       }
@@ -179,11 +182,11 @@ export function AnalyticsManager() {
       await fetchRows(channel.channelId);
       setPage(1);
     } catch {
-      setError("Collection failed");
+      setError(t("analytics.collectionFailed"));
     } finally {
       setCollecting(false);
     }
-  }, [channel, startDate, endDate, fetchRows, runBlocking]);
+  }, [channel, startDate, endDate, fetchRows, runBlocking, t]);
 
   const sortedRows = useMemo(
     () =>
@@ -207,14 +210,12 @@ export function AnalyticsManager() {
         {loadingChannel ? (
           <LoadingIndicator className="text-sm text-zinc-400" />
         ) : !channel ? (
-          <p className="text-sm text-zinc-400">
-            No channel synchronized yet — sign in and sync a channel in the Content tab first.
-          </p>
+          <p className="text-sm text-zinc-400">{t("analytics.noChannel")}</p>
         ) : (
           <>
             <div className="flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-xs text-zinc-400">
-                Start date
+                {t("analytics.raw.startDate")}
                 <input
                   type="date"
                   value={startDate}
@@ -224,7 +225,7 @@ export function AnalyticsManager() {
                 />
               </label>
               <label className="flex flex-col gap-1 text-xs text-zinc-400">
-                End date
+                {t("analytics.raw.endDate")}
                 <input
                   type="date"
                   value={endDate}
@@ -238,36 +239,38 @@ export function AnalyticsManager() {
                 disabled={collecting}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
               >
-                {collecting ? "Collecting..." : "Collect now"}
+                {collecting ? t("analytics.collecting") : t("analytics.collectNow")}
               </button>
             </div>
-            <p className="text-xs text-zinc-500">
-              Pulls every metric available under the read-only YouTube Analytics scope for each
-              synced video, one video at a time. Views/likes/comments and similar counts are
-              exact; percentage/rate metrics are shown to two decimal places.
-            </p>
+            <p className="text-xs text-zinc-500">{t("analytics.raw.description")}</p>
           </>
         )}
 
         {collectResult && (
           <p className="text-sm font-medium text-green-500">
-            Collected for {collectResult.videoCount} video{collectResult.videoCount === 1 ? "" : "s"}
-            {" — "}
-            {collectResult.upsertsIssued} value{collectResult.upsertsIssued === 1 ? "" : "s"} written
-            {collectResult.skippedVideoIds.length > 0 &&
-              ` (${collectResult.skippedVideoIds.length} video${collectResult.skippedVideoIds.length === 1 ? "" : "s"} skipped due to an error)`}
-            .
+            {t(collectResult.skippedVideoIds.length > 0 ? "analytics.raw.collectedWithSkips" : "analytics.raw.collected", {
+              videoCount: collectResult.videoCount,
+              valueCount: collectResult.upsertsIssued,
+              skippedCount: collectResult.skippedVideoIds.length,
+            })}
           </p>
         )}
 
         {nextRefreshAt && (
           <div className="rounded-lg border border-zinc-700 bg-zinc-800/60 p-3 text-sm text-zinc-300">
-            Analytics data is already up to date for today -- YouTube itself only refreshes it
-            about once a day. Next refresh available in{" "}
-            <span className="font-mono tabular-nums text-zinc-100">
-              {formatCountdown(nextRefreshAt.getTime() - nowTick)}
-            </span>
-            .
+            {(() => {
+              // The countdown is styled on its own, so the sentence is split around its placeholder (left unfilled).
+              const [before, after = ""] = t("analytics.raw.upToDate").split("{countdown}");
+              return (
+                <>
+                  {before}
+                  <span className="font-mono tabular-nums text-zinc-100">
+                    {formatCountdown(nextRefreshAt.getTime() - nowTick)}
+                  </span>
+                  {after}
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -282,15 +285,12 @@ export function AnalyticsManager() {
         <div className="rounded-xl border border-zinc-800 bg-zinc-900">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
             <span className="text-sm text-zinc-400">
-              {loadingRows ? "Loading..." : `${sortedRows.length} collected value${sortedRows.length === 1 ? "" : "s"}`}
+              {loadingRows ? t("common.loading") : t("analytics.raw.valueCount", { count: sortedRows.length })}
             </span>
           </div>
 
           {sortedRows.length === 0 && !loadingRows ? (
-            <p className="px-4 py-6 text-sm text-zinc-500">
-              Nothing collected yet for this channel — pick a date range above and click
-              &ldquo;Collect now&rdquo;.
-            </p>
+            <p className="px-4 py-6 text-sm text-zinc-500">{t("analytics.raw.empty")}</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[480px] table-fixed text-sm">
@@ -302,10 +302,10 @@ export function AnalyticsManager() {
                 </colgroup>
                 <thead>
                   <tr className="border-b border-zinc-800 text-left text-xs uppercase text-zinc-500">
-                    <th className="px-4 py-2 font-medium">Video</th>
-                    <th className="px-4 py-2 font-medium">Date</th>
-                    <th className="px-4 py-2 font-medium">Metric</th>
-                    <th className="px-4 py-2 text-right font-medium">Value</th>
+                    <th className="px-4 py-2 font-medium">{t("analytics.raw.column.video")}</th>
+                    <th className="px-4 py-2 font-medium">{t("analytics.raw.column.date")}</th>
+                    <th className="px-4 py-2 font-medium">{t("analytics.raw.column.metric")}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t("analytics.raw.column.value")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -317,7 +317,7 @@ export function AnalyticsManager() {
                       <td className="truncate px-4 py-2 text-zinc-300">{row.videoId}</td>
                       <td className="px-4 py-2 text-zinc-400">{row.metricDate}</td>
                       <td className="px-4 py-2 text-zinc-400">{row.metricName}</td>
-                      <td className="px-4 py-2 text-right text-zinc-100">{formatMetricValue(row.metricValue)}</td>
+                      <td className="px-4 py-2 text-right text-zinc-100">{formatMetricValue(row.metricValue, formatNumber)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -332,17 +332,17 @@ export function AnalyticsManager() {
                 disabled={clampedPage <= 1}
                 className="rounded-lg border border-zinc-700 px-3 py-1 disabled:opacity-40"
               >
-                Previous
+                {t("analytics.raw.previous")}
               </button>
               <span className="text-zinc-400">
-                Page {clampedPage} of {pageCount}
+                {t("analytics.raw.page", { page: clampedPage, pageCount })}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
                 disabled={clampedPage >= pageCount}
                 className="rounded-lg border border-zinc-700 px-3 py-1 disabled:opacity-40"
               >
-                Next
+                {t("analytics.raw.next")}
               </button>
             </div>
           )}

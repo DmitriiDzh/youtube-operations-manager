@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "./ui-text-provider";
 import { useEffect, useRef, type ReactNode } from "react";
 
 /**
@@ -19,6 +20,7 @@ export function SideDrawer({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const t = useT();
   const panelRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -50,7 +52,7 @@ export function SideDrawer({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t("common.close")}
             className="shrink-0 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
           >
             ✕

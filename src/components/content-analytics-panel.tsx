@@ -1,5 +1,6 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useEffect, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { AnalyticsBreakdownCard } from "./analytics-breakdown-card";
@@ -8,15 +9,16 @@ import { labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { useTopVideos } from "./use-top-videos";
 import { ReachPanel } from "./reach-panel";
 import { LoadingIndicator } from "./operation-progress";
+import { useUiText } from "./ui-text-provider";
 
 type SyncedChannel = { channelId: string; title: string };
 type RetentionPoint = { elapsedVideoTimeRatio: number; audienceWatchRatio: number; relativeRetentionPerformance: number };
 
 const PERIOD_OPTIONS = [
-  { days: 7, label: "Last 7 days" },
-  { days: 28, label: "Last 28 days" },
-  { days: 90, label: "Last 90 days" },
-  { days: 365, label: "Last 365 days" },
+  { days: 7, labelKey: "analytics.period.last7" },
+  { days: 28, labelKey: "analytics.period.last28" },
+  { days: 90, labelKey: "analytics.period.last90" },
+  { days: 365, labelKey: "analytics.period.last365" },
 ] as const;
 
 /**
@@ -25,6 +27,7 @@ const PERIOD_OPTIONS = [
  * C5 (top videos) are follow-up additions to this same panel, not a redesign of it.
  */
 export function ContentAnalyticsPanel() {
+  const { t, formatNumber } = useUiText();
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loadingChannel, setLoadingChannel] = useState(true);
   const [periodDays, setPeriodDays] = useState<number>(28);
@@ -51,18 +54,18 @@ export function ContentAnalyticsPanel() {
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) {
-          setRetentionError(data.message ?? "Failed to load retention data");
+          setRetentionError(errorText(t, data, t("contentAnalytics.retentionLoadFailed"), { showErrorField: false }));
           return;
         }
         setRetentionPoints(data.points as RetentionPoint[]);
       } catch {
-        if (!cancelled) setRetentionError("Failed to load retention data");
+        if (!cancelled) setRetentionError(t("contentAnalytics.retentionLoadFailed"));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [channel, selectedVideoId, periodDays]);
+  }, [channel, selectedVideoId, periodDays, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,16 +92,14 @@ export function ContentAnalyticsPanel() {
 
   if (!channel) {
     return (
-      <p className="text-sm text-zinc-400">
-        No channel synchronized yet — sign in and sync a channel in the Content tab first.
-      </p>
+      <p className="text-sm text-zinc-400">{t("analytics.noChannel")}</p>
     );
   }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-medium text-zinc-300">Content</h3>
+        <h3 className="text-sm font-medium text-zinc-300">{t("tabs.analytics.content")}</h3>
         <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
           {PERIOD_OPTIONS.map((option) => (
             <button
@@ -108,7 +109,7 @@ export function ContentAnalyticsPanel() {
                 periodDays === option.days ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              {option.label}
+              {t(option.labelKey)}
             </button>
           ))}
         </div>
@@ -120,20 +121,18 @@ export function ContentAnalyticsPanel() {
         channelId={channel.channelId}
         periodDays={periodDays}
         breakdown="trafficSources"
-        title="How viewers find your videos"
+        title={t("contentAnalytics.trafficSources")}
         metricName="views"
         labelFor={labelTrafficSource}
-        formatValue={(v) => `${v.toLocaleString()} views`}
+        formatValue={(v) => t("chart.value.views", { count: v })}
       />
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <h4 className="mb-3 text-sm font-medium text-zinc-300">Top videos</h4>
+        <h4 className="mb-3 text-sm font-medium text-zinc-300">{t("contentAnalytics.topVideos")}</h4>
         {loadingTopVideos && topVideos.length === 0 ? (
           <LoadingIndicator className="text-sm text-zinc-500" />
         ) : topVideos.length === 0 ? (
-          <p className="text-sm text-zinc-500">
-            No collected data for this period yet — use &ldquo;Collect now&rdquo; in the Overview tab to fetch it.
-          </p>
+          <p className="text-sm text-zinc-500">{t("contentAnalytics.noTopVideos")}</p>
         ) : (
           <ul className="space-y-2">
             {topVideos.map((item) => (
@@ -152,7 +151,7 @@ export function ContentAnalyticsPanel() {
                     <div className="h-9 w-16 rounded bg-zinc-800" />
                   )}
                   <span className="flex-1 truncate text-zinc-300">{item.title}</span>
-                  <span className="text-zinc-400">{item.views.toLocaleString()} views</span>
+                  <span className="text-zinc-400">{t("chart.value.views", { count: item.views })}</span>
                 </button>
               </li>
             ))}
@@ -162,7 +161,7 @@ export function ContentAnalyticsPanel() {
 
       {selectedVideoId && (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-          <h4 className="mb-1 text-sm font-medium text-zinc-300">Audience retention</h4>
+          <h4 className="mb-1 text-sm font-medium text-zinc-300">{t("contentAnalytics.retention")}</h4>
           <p className="mb-3 text-xs text-zinc-500">
             {topVideos.find((v) => v.videoId === selectedVideoId)?.title ?? selectedVideoId}
           </p>
@@ -171,14 +170,14 @@ export function ContentAnalyticsPanel() {
           ) : retentionPoints === null ? (
             <LoadingIndicator className="text-sm text-zinc-500" />
           ) : retentionPoints.length === 0 ? (
-            <p className="text-sm text-zinc-500">No retention data for this video/period yet.</p>
+            <p className="text-sm text-zinc-500">{t("contentAnalytics.noRetention")}</p>
           ) : (
             <AnalyticsLineChart
               data={retentionPoints.map((p) => ({
-                date: `${Math.round(p.elapsedVideoTimeRatio * 100)}%`,
+                date: t("analytics.percent", { value: Math.round(p.elapsedVideoTimeRatio * 100) }),
                 value: Math.round(p.audienceWatchRatio * 100),
               }))}
-              formatValue={(v) => `${v}% watching`}
+              formatValue={(v) => t("chart.value.watching", { value: formatNumber(v) })}
             />
           )}
         </div>

@@ -2996,3 +2996,15 @@ Plan: `docs/roadmap/plans/ANALYTICS_DATA_SHARING_PLAN.md`; owner msgs 2004/2008.
 - **Measured on a copy of the Mac's database (2026-10-07).**
   - Everything: 45,780 metric rows and 1,880 reach rows, 4.3 MB as JSON. One day: about 11,000 rows.
   - Export of a day: 35 ms. A full re-import into the same data: 1.1 s, and nothing changed.
+
+## 32. Interface language (BL-152, `docs/roadmap/plans/UI_LANGUAGE_PLAN.md`)
+
+The Web UI shows every text in the person's interface language: English or Russian today, any language later. MCP tool texts, API response bodies and CLI output stay English -- agents and scripts read them (AGENTS.md §B).
+
+- **Module `src/lib/ui-text/`** (flat and pure, like `shared-formatting`; not the §6.2 five-piece layering). Not related to `localization`/`ai-localization`, which translate *video* metadata.
+  - `locales/en/<area>.ts` -- the English source, one file per area of the app; `locales/en.ts` merges them into one flat map, and `UiTextKey` is its key type. `locales/ru/<area>.ts` -- each typed `Record<keyof typeof <en area>, string>`, so a missing or extra key fails `tsc` and the build. A new language = a new locale folder + `<lang>.ts` + one entry in `UI_LANGUAGES`.
+  - `formatMessage`: `{param}` substitution and `{n, plural, one {…} few {…} many {…} other {…}}` via `Intl.PluralRules` (no ICU library). Number params and `formatNumber` use the language's own marks (`en-US`, `ru-RU`), never the browser's locale. Dates keep `DD.MM.YYYY` in every language (`shared-formatting`).
+  - `UiMessage` (`{ key, params }` or `{ text }`) lets pure `.ts` helpers return display text without holding English.
+  - `apiErrorText`: a failed API answer `{ error: <DomainErrorCode>, message }`. English shows the server's message exactly as before; another language shows `errors.<code>` in words with the server's message as the detail; an unknown code shows the server's text.
+- **Choosing the language.** `requestUiLanguage()` (`ui-text/server.ts`) in the root layout: the `ui_language` cookie (set by `PUT /api/ui-language`, `{ language: null }` = system) wins; else the first supported language of `Accept-Language` (the browser on the same computer follows the system language); else English. A cookie and not `app_settings`: the root layout renders every page, the recovery page included, which must work while the database cannot open. The choice is per browser profile on a computer and never syncs between devices. The layout sets `<html lang>` and passes `language`, `source` and `systemLanguage` to `UiTextProvider`; components call `useT()` / `useUiText()`. A change calls `router.refresh()`, so the whole interface re-renders without a reload.
+- **Keeping it complete.** `locales.test.ts` (every language has every key, same placeholders, unique keys across areas, well-formed plurals) and `literal-text.inventory.test.ts` (the scan in `src/test-support/ui-text-literals.ts` fails on English JSX text, text attributes and sentence-like strings in `src/components` / `src/app`; a non-interface string is marked `ui-text-ignore` with a reason).

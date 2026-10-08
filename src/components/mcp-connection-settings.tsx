@@ -1,11 +1,13 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
 import { ToggleSwitch } from "./toggle-switch";
+import { useT } from "./ui-text-provider";
 
 type Settings = {
   mcpConnectionEnabled: boolean;
@@ -26,6 +28,7 @@ type Settings = {
  * sessions once turned on (a one-time setup step, not reset every boot).
  */
 export function McpConnectionSettings() {
+  const t = useT();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -58,12 +61,12 @@ export function McpConnectionSettings() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setSettings(data);
       setDraft(data);
-      setSavedNotice("Saved.");
+      setSavedNotice(t("common.saved"));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -79,19 +82,12 @@ export function McpConnectionSettings() {
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-          MCP connection
-          <InfoTooltip>
-            Off by default. While off, the app&apos;s MCP endpoint refuses every agent request with a clear
-            error. Turning this on is the master switch only: an agent also needs its channel&apos;s agent token
-            (Settings &rarr; Channels), sent as a Bearer token. With a valid token it sees only that
-            channel&apos;s tools and data. The separate Live writes toggle, under API, still gates any real
-            YouTube write. Unlike Live writes, this persists across restarts. Changes apply to the very next
-            request, with no client restart.
-          </InfoTooltip>
+          {t("settingsCard.mcp")}
+          <InfoTooltip>{t("settingsCards.mcp.info")}</InfoTooltip>
         </h3>
         <div className="mt-2 flex items-center gap-2">
           <ToggleSwitch
-            label="Enable MCP / agent connection"
+            label={t("settingsCards.mcp.toggle")}
             checked={draft.mcpConnectionEnabled}
             onChange={(checked) => {
               if (checked) {
@@ -101,7 +97,7 @@ export function McpConnectionSettings() {
               }
             }}
           />
-          <span className="text-sm text-zinc-300">Enable MCP / agent connection</span>
+          <span className="text-sm text-zinc-300">{t("settingsCards.mcp.toggle")}</span>
         </div>
       </div>
 
@@ -118,20 +114,20 @@ export function McpConnectionSettings() {
           disabled={saving || !dirty}
           className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {saving ? "Saving..." : "Save / Apply"}
+          {saving ? t("common.saving") : t("settingsCards.saveApply")}
         </button>
         {dirty && (
           <button onClick={() => setDraft(settings)} className="text-xs text-zinc-500 hover:text-zinc-300">
-            Discard changes
+            {t("settingsCards.discardChanges")}
           </button>
         )}
       </div>
 
       {confirming && (
         <ConfirmDialog
-          title="Allow an MCP client / agent to connect?"
-          description="Any MCP client (Codex, Claude, etc.) that presents a valid channel agent token will see that channel's full tool set -- including apply and playlist_* write-capable tools, not just read/propose/create ones. This applies immediately. It does not by itself send anything to YouTube -- the separate Live writes toggle (under API) still gates any real write. Turn it back off any time; unlike Live writes, this stays on across restarts until you turn it off yourself."
-          confirmLabel="Enable"
+          title={t("settingsCards.mcp.confirmTitle")}
+          description={t("settingsCards.mcp.confirmBody")}
+          confirmLabel={t("settingsCards.enable")}
           confirmVariant="danger"
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
@@ -150,6 +146,7 @@ export function McpConnectionSettings() {
  * (AGENTS.md section B). The host is always the loopback address the server binds to.
  */
 function AgentConnectionGuide() {
+  const t = useT();
   // The port the operator actually opened this page on (server render falls back to the launchers' 3000).
   const url = useSyncExternalStore(
     () => () => {},
@@ -161,13 +158,15 @@ function AgentConnectionGuide() {
   const snippets = [
     {
       id: "codex",
-      title: "Codex",
+      title: "Codex", // ui-text-ignore: product name.
+      // ui-text-ignore: a shell command the operator copies, not interface text.
       text: `codex mcp add ytom-<channel> --url ${url} --bearer-token-env-var YTOM_TOKEN_<CHANNEL>`,
-      note: "One entry and one environment variable per channel (a single shared variable would hand every Codex the same channel). Prefer a project-level .codex/config.toml inside the channel's own folder, with the variable set only for that agent's launch.",
+      note: t("settingsCards.mcp.codexNote"),
     },
     {
       id: "claude",
-      title: "Claude Code",
+      title: "Claude Code", // ui-text-ignore: product name.
+      // ui-text-ignore: a shell command the operator copies, not interface text.
       text: `claude mcp add --transport http ytom ${url} --header "Authorization: Bearer <this channel's agent token>"`,
       note: null,
     },
@@ -185,10 +184,9 @@ function AgentConnectionGuide() {
   return (
     <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
       <div>
-        <h4 className="text-sm font-medium text-zinc-200">Connect an agent</h4>
+        <h4 className="text-sm font-medium text-zinc-200">{t("settingsCards.mcp.guideTitle")}</h4>
         <p className="mt-1 text-xs text-zinc-500">
-          The app serves MCP itself while it is running, on this computer only. An agent needs just this URL and
-          its channel&apos;s agent token (Settings &rarr; Channels) &mdash; no path to the project.
+          {t("settingsCards.mcp.guideBody")}
         </p>
         <code className="mt-2 block break-all rounded bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-200">{url}</code>
       </div>
@@ -197,7 +195,7 @@ function AgentConnectionGuide() {
           <div className="flex items-center justify-between text-xs text-zinc-400">
             <span>{snippet.title}</span>
             <button onClick={() => copy(snippet.id, snippet.text)} className="text-zinc-400 hover:text-zinc-200">
-              {copied === snippet.id ? "Copied" : "Copy"}
+              {copied === snippet.id ? t("settingsCards.copied") : t("settingsCards.copy")}
             </button>
           </div>
           <code className="block break-all rounded bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-300">{snippet.text}</code>

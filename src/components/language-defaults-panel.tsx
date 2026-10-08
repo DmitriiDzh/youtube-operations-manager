@@ -1,9 +1,11 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation, type AttachedOperationResult } from "./operation-progress";
 import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock } from "./quota-block-dialog";
+import { useT } from "./ui-text-provider";
 
 type LanguageOption = { code: string; name: string };
 
@@ -44,6 +46,7 @@ export function LanguageDefaultsPanel({
   channelId: string;
   supportedLanguages: LanguageOption[];
 }) {
+  const t = useT();
   const [report, setReport] = useState<Report | null>(null);
   // BL-117: the server refused to START Fix all because of quota (insufficient / cannot be checked).
   const [quotaBlock, setQuotaBlock] = useState<QuotaBlock | null>(null);
@@ -63,15 +66,15 @@ export function LanguageDefaultsPanel({
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/language-defaults`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message ?? data.error ?? "Failed to load language defaults");
+      if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.loadFailed")));
       setReport(data);
       setLanguage(data.defaults.defaultLanguage ?? "");
       setAudio(data.defaults.defaultAudioLanguage ?? "");
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load language defaults");
+      setError(e instanceof Error ? e.message : t("languageDefaults.loadFailed"));
     }
-  }, [channelId]);
+  }, [channelId, t]);
 
   useEffect(() => {
     void load();
@@ -87,10 +90,10 @@ export function LanguageDefaultsPanel({
         body: JSON.stringify({ defaultLanguage: language || null, defaultAudioLanguage: audio || null }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message ?? data.error ?? "Failed to save");
+      if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.saveFailed")));
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
+      setError(e instanceof Error ? e.message : t("languageDefaults.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -134,12 +137,12 @@ export function LanguageDefaultsPanel({
     if (!target && !targetAudio) return { next, cancelled: false };
     setAligning("preview");
     op.start({
-      title: "Checking videos",
+      title: t("languageDefaults.checkingTitle"),
       cancellable: true,
       quotaServices: ["dataApi"],
       items: rows.map((row) => ({ id: row.videoId, label: row.title, status: "pending" })),
     });
-    op.setStage("Reading current values from YouTube — nothing is changed");
+    op.setStage(t("languageDefaults.checkingStage"));
     let cancelled = false;
     for (const row of rows) {
       if (op.isCancelRequested()) {
@@ -155,11 +158,11 @@ export function LanguageDefaultsPanel({
           body: JSON.stringify({ patch: patchFor(row) }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.message ?? data.error ?? "Preview failed");
+        if (!res.ok) throw new Error(errorText(t, data, t("languageDefaults.previewFailed")));
         next[row.videoId] = { status: "ready", etag: data.before?.etag ?? null, before: data.before?.defaultLanguage ?? null };
         op.setItem(row.videoId, "done");
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Preview failed";
+        const message = e instanceof Error ? e.message : t("languageDefaults.previewFailed");
         next[row.videoId] = { status: "failed", message };
         op.setItem(row.videoId, "failed", message);
       }
@@ -174,7 +177,14 @@ export function LanguageDefaultsPanel({
     const { next, cancelled } = await previewAlignment();
     const ready = Object.values(next).filter((state) => state.status === "ready").length;
     const failed = Object.values(next).length - ready;
-    op.finish({ message: `${ready} ready${failed ? `, ${failed} failed the check` : ""}${cancelled ? " — stopped before the rest" : ""}.` });
+    const key = failed
+      ? cancelled
+        ? "languageDefaults.previewResultFailedStopped"
+        : "languageDefaults.previewResultFailed"
+      : cancelled
+        ? "languageDefaults.previewResultStopped"
+        : "languageDefaults.previewResult";
+    op.finish({ message: t(key, { ready, failed }) });
   }
 
   /** One-button flow: preview EVERY video that deviates (read-only), then ask once before writing. */
@@ -185,7 +195,7 @@ export function LanguageDefaultsPanel({
     const { next, cancelled } = await previewAlignment(fixable);
     const ready = Object.values(next).filter((state) => state.status === "ready").length;
     if (cancelled || ready === 0) {
-      op.finish({ message: cancelled ? "Nothing was written." : "No video passed the check — nothing to write." });
+      op.finish({ message: cancelled ? t("languageDefaults.nothingWritten") : t("languageDefaults.nonePassed") });
       return;
     }
     op.reset();
@@ -199,14 +209,14 @@ export function LanguageDefaultsPanel({
         const next = { ...prev };
         for (const item of result.items) {
           if (item.status === "done") next[item.id] = { status: "applied" };
-          else if (item.status === "failed") next[item.id] = { status: "failed", message: item.detail ?? "Apply failed" };
+          else if (item.status === "failed") next[item.id] = { status: "failed", message: item.detail ?? t("languageDefaults.applyFailed") };
         }
         return next;
       });
       setAligning(null);
       void load();
     },
-    [load]
+    [load, t]
   );
 
   // After a reload, follow a Fix all the server is still running for this channel.
@@ -219,7 +229,7 @@ export function LanguageDefaultsPanel({
         const running = ((await res.json()).operations ?? [])[0] as { id: string } | undefined;
         if (!running || cancelled) return;
         setAligning("apply");
-        attach(running.id, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
+        attach(running.id, { title: t("languageDefaults.writingTitle"), quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
       } catch {
         // Nothing to re-attach to.
       }
@@ -227,7 +237,7 @@ export function LanguageDefaultsPanel({
     return () => {
       cancelled = true;
     };
-  }, [channelId, attach, handleFixAllFinished]);
+  }, [channelId, attach, handleFixAllFinished, t]);
 
   /**
    * Starts the write on the SERVER and follows it (ADR 0015): the run continues if this page is
@@ -239,7 +249,7 @@ export function LanguageDefaultsPanel({
   async function applyAlignment(options: { acknowledgeUnknownQuota?: boolean } = {}) {
     if (!target && !targetAudio) return;
     setAligning("apply");
-    op.start({ title: "Starting…", cancellable: false });
+    op.start({ title: t("languageDefaults.starting"), cancellable: false });
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/language-defaults/fix-all`, {
         method: "POST",
@@ -257,7 +267,7 @@ export function LanguageDefaultsPanel({
       const data = await res.json();
       if (res.status === 409 && data.details?.operationId) {
         // Already running (e.g. started from another tab): just follow that run.
-        op.attach(data.details.operationId, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
+        op.attach(data.details.operationId, { title: t("languageDefaults.writingTitle"), quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
         return;
       }
       if (!res.ok) {
@@ -269,12 +279,12 @@ export function LanguageDefaultsPanel({
           setQuotaBlock(quota);
           return;
         }
-        throw new Error(data.message ?? data.error ?? "Could not start the write");
+        throw new Error(errorText(t, data, t("languageDefaults.startFailed")));
       }
-      op.attach(data.operationId, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
+      op.attach(data.operationId, { title: t("languageDefaults.writingTitle"), quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
     } catch (e) {
       setAligning(null);
-      op.finish({ error: true, message: e instanceof Error ? e.message : "Could not start the write" });
+      op.finish({ error: true, message: e instanceof Error ? e.message : t("languageDefaults.startFailed") });
     }
   }
 
@@ -288,9 +298,9 @@ export function LanguageDefaultsPanel({
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
       <div className="flex flex-wrap items-end gap-4">
         <label className="space-y-1">
-          <span className="block text-xs text-zinc-400">Title and description language</span>
+          <span className="block text-xs text-zinc-400">{t("languageDefaults.titleLanguage")}</span>
           <select value={language} onChange={(e) => setLanguage(e.target.value)} className={selectClass}>
-            <option value="">Not set</option>
+            <option value="">{t("languageDefaults.notSet")}</option>
             {supportedLanguages.map((l) => (
               <option key={l.code} value={l.code}>
                 {l.name} ({l.code})
@@ -299,10 +309,10 @@ export function LanguageDefaultsPanel({
           </select>
         </label>
         <label className="space-y-1">
-          <span className="block text-xs text-zinc-400">Video language</span>
+          <span className="block text-xs text-zinc-400">{t("languageDefaults.videoLanguage")}</span>
           <select value={audio} onChange={(e) => setAudio(e.target.value)} className={selectClass}>
-            <option value="">Not set</option>
-            <option value={NOT_APPLICABLE}>Not applicable ({NOT_APPLICABLE})</option>
+            <option value="">{t("languageDefaults.notSet")}</option>
+            <option value={NOT_APPLICABLE}>{t("languageDefaults.notApplicable", { code: NOT_APPLICABLE })}</option>
             {supportedLanguages.map((l) => (
               <option key={l.code} value={l.code}>
                 {l.name} ({l.code})
@@ -315,16 +325,16 @@ export function LanguageDefaultsPanel({
           disabled={busy || !dirty}
           className="rounded-lg bg-zinc-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
         >
-          {busy ? "Saving..." : "Save channel defaults"}
+          {busy ? t("common.saving") : t("languageDefaults.saveDefaults")}
         </button>
         {(target || targetAudio) && fixable.length > 0 && (
           <button
             onClick={fixAll}
             disabled={aligning !== null || dirty}
-            title={dirty ? "Save channel defaults first" : undefined}
+            title={dirty ? t("languageDefaults.saveFirst") : undefined}
             className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
           >
-            {`Fix all ${fixable.length} videos`}
+            {t("languageDefaults.fixAll", { count: fixable.length })}
           </button>
         )}
         {report && (
@@ -334,8 +344,8 @@ export function LanguageDefaultsPanel({
             className="text-xs text-zinc-400 underline disabled:no-underline disabled:opacity-60"
           >
             {deviations.length === 0
-              ? "All videos match the defaults"
-              : `${deviations.length} of ${report.totalVideos} videos differ from the defaults`}
+              ? t("languageDefaults.allMatch")
+              : t("languageDefaults.differ", { count: deviations.length, total: report.totalVideos })}
           </button>
         )}
       </div>
@@ -344,6 +354,7 @@ export function LanguageDefaultsPanel({
       {quotaBlock && (
         <QuotaBlockDialog
           block={quotaBlock}
+          // ui-text-ignore: a wording selector the dialog compares against ("batch" | "Fix all"), not display text here
           noun="Fix all"
           onClose={() => setQuotaBlock(null)}
           onRunAnyway={
@@ -358,11 +369,20 @@ export function LanguageDefaultsPanel({
       )}
       {confirmAll && (
         <ConfirmDialog
-          title={`Set ${[target && `Title/description language "${target}"`, targetAudio && `Video language "${targetAudio}"`].filter(Boolean).join(" and ")} on ${readyIds.length} videos?`}
-          description={`Writes only the language labels to YouTube (title and description text stay unchanged); only fields that differ are sent. Each video is backed up and verified; the run stops at the first error and continues on the server if you close this page.${
-            fixable.length > readyIds.length ? ` ${fixable.length - readyIds.length} video(s) failed the check and will be skipped (see the list).` : ""
-          }`}
-          confirmLabel={`Write ${readyIds.length} videos to YouTube`}
+          title={t(
+            target && targetAudio
+              ? "languageDefaults.confirmTitleBoth"
+              : target
+                ? "languageDefaults.confirmTitleLanguage"
+                : "languageDefaults.confirmTitleAudio",
+            { language: target ?? "", audio: targetAudio ?? "", count: readyIds.length },
+          )}
+          description={
+            fixable.length > readyIds.length
+              ? t("languageDefaults.confirmDescriptionSkipped", { skipped: fixable.length - readyIds.length })
+              : t("languageDefaults.confirmDescription")
+          }
+          confirmLabel={t("languageDefaults.confirmButton", { count: readyIds.length })}
           confirmVariant="danger"
           onCancel={() => setConfirmAll(false)}
           onConfirm={() => {
@@ -373,23 +393,20 @@ export function LanguageDefaultsPanel({
       )}
       {open && deviations.length > 0 && (target || targetAudio) && fixable.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-          <span>
-            Align language labels to the defaults (title and description text are not changed). Video language is written
-            experimentally -- a failure means YouTube refused it.
-          </span>
+          <span>{t("languageDefaults.alignIntro")}</span>
           <button
             onClick={() => void previewChosen()}
             disabled={aligning !== null || chosen.length === 0}
             className="rounded-lg bg-zinc-700 px-3 py-1 text-white hover:bg-zinc-600 disabled:opacity-50"
           >
-            {aligning === "preview" ? "Checking..." : `Preview (${chosen.length})`}
+            {aligning === "preview" ? t("languageDefaults.checking") : t("languageDefaults.preview", { count: chosen.length })}
           </button>
           <button
             onClick={() => void applyAlignment()}
             disabled={aligning !== null || readyIds.length === 0}
             className="rounded-lg bg-red-600 px-3 py-1 text-white hover:bg-red-700 disabled:opacity-50"
           >
-            {aligning === "apply" ? "Writing..." : `Confirm and write to YouTube (${readyIds.length})`}
+            {aligning === "apply" ? t("languageDefaults.writing") : t("languageDefaults.confirmAndWrite", { count: readyIds.length })}
           </button>
         </div>
       )}
@@ -399,9 +416,9 @@ export function LanguageDefaultsPanel({
             <thead className="text-left text-zinc-500">
               <tr>
                 <th className="px-3 py-1.5" />
-                <th className="px-3 py-1.5">Video</th>
-                <th className="px-3 py-1.5">Title/description language</th>
-                <th className="px-3 py-1.5">Video language</th>
+                <th className="px-3 py-1.5">{t("languageDefaults.colVideo")}</th>
+                <th className="px-3 py-1.5">{t("languageDefaults.colTitleLanguage")}</th>
+                <th className="px-3 py-1.5">{t("languageDefaults.colVideoLanguage")}</th>
               </tr>
             </thead>
             <tbody>
@@ -414,17 +431,17 @@ export function LanguageDefaultsPanel({
                   </td>
                   <td className="px-3 py-1.5">
                     {row.title}
-                    {align[row.videoId]?.status === "ready" && <span className="ml-2 text-emerald-400">ready</span>}
-                    {align[row.videoId]?.status === "applied" && <span className="ml-2 text-emerald-400">written</span>}
+                    {align[row.videoId]?.status === "ready" && <span className="ml-2 text-emerald-400">{t("languageDefaults.ready")}</span>}
+                    {align[row.videoId]?.status === "applied" && <span className="ml-2 text-emerald-400">{t("languageDefaults.written")}</span>}
                     {align[row.videoId]?.status === "failed" && (
                       <span className="ml-2 text-red-400">{(align[row.videoId] as { message: string }).message}</span>
                     )}
                   </td>
                   <td className={`px-3 py-1.5 ${row.defaultLanguageDeviates ? "text-amber-400" : "text-zinc-400"}`}>
-                    {row.defaultLanguage ?? "not set"}
+                    {row.defaultLanguage ?? t("value.notSet")}
                   </td>
                   <td className={`px-3 py-1.5 ${row.defaultAudioLanguageDeviates ? "text-amber-400" : "text-zinc-400"}`}>
-                    {row.defaultAudioLanguage ?? "not set"}
+                    {row.defaultAudioLanguage ?? t("value.notSet")}
                   </td>
                 </tr>
               ))}

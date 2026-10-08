@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { formatValue, settingLabel, SETTING_LABELS } from "./conflict-values";
+import { useT } from "./ui-text-provider";
 
 // BL-150 (docs/roadmap/plans/PRODUCTION_SETTINGS_SYNC_PLAN.md): Setup says that its settings are shared with the other
 // computers, what came from them, and what is waiting here and why (volume in use, invalid here, another account, a choice).
@@ -15,6 +17,7 @@ type Status = {
 };
 
 export function SettingsSyncNotice({ onApplied }: { onApplied?: () => void }) {
+  const t = useT();
   const [status, setStatus] = useState<Status | null>(null);
   // BL-150 review: when a value from the other computer has been applied, the cards re-read the settings at once, so no form
   // keeps showing (and later re-sending) the old value.
@@ -43,19 +46,19 @@ export function SettingsSyncNotice({ onApplied }: { onApplied?: () => void }) {
   const held = status?.pending.filter((p) => !p.reason.startsWith("set differently")) ?? [];
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
-      <p className="text-zinc-300">These settings are the same on all your computers: a change here reaches the others within about a minute (RunPod keys stay on each computer).</p>
+      <p className="text-zinc-300">{t("settingsSync.intro")}</p>
       {status?.lastApplied && (
         <p className="mt-1 text-zinc-500">
-          From the other computer: {status.lastApplied.fields.map(settingLabel).join(", ")} ({new Date(status.lastApplied.at).toLocaleString()}).
+          {t("settingsSync.fromOther", { fields: status.lastApplied.fields.map((f) => settingLabel(t, f)).join(", "), time: formatDisplayDateTime(status.lastApplied.at) })}
         </p>
       )}
-      {status && status.conflicts.length > 0 && <p className="mt-1 text-amber-300">Set differently on the two computers: {status.conflicts.map((c) => settingLabel(c.field)).join(", ")} — choose in Merge.</p>}
+      {status && status.conflicts.length > 0 && <p className="mt-1 text-amber-300">{t("settingsSync.conflicts", { fields: status.conflicts.map((c) => settingLabel(t, c.field)).join(", ") })}</p>}
       {held.map((p) => (
         <p key={p.field} className="mt-1 text-amber-300">
-          {settingLabel(p.field)} = {formatValue(p.value, SETTING_LABELS[p.field]?.unit)}: {p.reason}
+          {settingLabel(t, p.field)} = {formatValue(t, p.value, SETTING_LABELS[p.field]?.unit)}: {p.reason}
         </p>
       ))}
-      {status?.error && <p className="mt-1 text-red-400">Could not check the shared settings: {status.error}</p>}
+      {status?.error && <p className="mt-1 text-red-400">{t("settingsSync.error", { error: status.error })}</p>}
     </div>
   );
 }

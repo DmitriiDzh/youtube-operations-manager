@@ -6,13 +6,15 @@ import { ProgressBar } from "../progress-bar";
 import { blocksKey, isOperationActive, type OperationItemStatus, type OperationState } from "./operation-state";
 import { Spinner } from "./spinner";
 import { SuccessMark } from "./success-mark";
+import { useUiText } from "../ui-text-provider";
+import type { UiTextKey } from "@/lib/ui-text";
 
 function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-const QUOTA_LABEL = { dataApi: "YouTube Data API quota (24h)", analytics: "YouTube Analytics API quota (24h)" } as const;
+const QUOTA_LABEL: Record<"dataApi" | "analytics", UiTextKey> = { dataApi: "operation.quota.dataApi", analytics: "operation.quota.analytics" };
 
 const ITEM_MARK: Record<OperationItemStatus, { mark: string; className: string }> = {
   pending: { mark: "·", className: "text-zinc-600" },
@@ -22,10 +24,10 @@ const ITEM_MARK: Record<OperationItemStatus, { mark: string; className: string }
   skipped: { mark: "–", className: "text-zinc-500" },
 };
 
-const FINISHED_TITLE: Record<"success" | "failed" | "cancelled", string> = {
-  success: "Done",
-  failed: "Stopped with an error",
-  cancelled: "Cancelled",
+const FINISHED_TITLE: Record<"success" | "failed" | "cancelled", UiTextKey> = {
+  success: "operation.finished.success",
+  failed: "operation.finished.failed",
+  cancelled: "operation.finished.cancelled",
 };
 
 /**
@@ -43,6 +45,7 @@ export function OperationOverlay({
   onCancel?: () => void;
   onClose: () => void;
 }) {
+  const { t, formatNumber } = useUiText();
   const active = isOperationActive(state);
   const [now, setNow] = useState(() => Date.now());
 
@@ -78,19 +81,19 @@ export function OperationOverlay({
       <div className="flex items-center gap-2">
         {active && <Spinner />}
         {state.status === "success" && <SuccessMark />}
-        <p className={`text-sm font-medium ${state.status === "success" ? "text-emerald-300" : "text-zinc-100"}`}>{finishedStatus ? `${state.title} — ${FINISHED_TITLE[finishedStatus]}` : state.title}</p>
+        <p className={`text-sm font-medium ${state.status === "success" ? "text-emerald-300" : "text-zinc-100"}`}>{finishedStatus ? `${state.title} — ${t(FINISHED_TITLE[finishedStatus])}` : state.title}</p>
         <span className="ml-auto text-xs tabular-nums text-zinc-500">{formatElapsed(elapsed)}</span>
       </div>
 
       {active && (
         <p className="text-xs text-zinc-400">
           {state.status === "cancelling"
-            ? "Stopping after the current item — a write already sent to YouTube cannot be recalled."
-            : state.stage ?? "Working…"}
+            ? t("operation.stoppingNote")
+            : state.stage ?? t("operation.working")}
         </p>
       )}
       {state.total > 0 && (
-        <ProgressBar value={state.done} max={state.total} label={`${state.done} / ${state.total}${failedItems ? ` · ${failedItems} failed` : ""}`} />
+        <ProgressBar value={state.done} max={state.total} label={`${state.done} / ${state.total}${failedItems ? ` · ${t("operation.failedCount", { count: failedItems })}` : ""}`} />
       )}
       {state.quotas.map((q) => (
         <ProgressBar
@@ -98,13 +101,13 @@ export function OperationOverlay({
           value={q.used}
           max={q.limit}
           color="indigo"
-          label={`${QUOTA_LABEL[q.service]}: ${q.used.toLocaleString()} / ${q.limit.toLocaleString()} · this operation +${Math.max(0, q.used - q.baseline).toLocaleString()} units`}
+          label={t("operation.quotaLine", { quota: t(QUOTA_LABEL[q.service]), used: formatNumber(q.used), limit: formatNumber(q.limit), delta: formatNumber(Math.max(0, q.used - q.baseline)) })}
         />
       ))}
       {state.quotas.length > 0 && (
-        <p className="text-[11px] text-zinc-600">Google reports usage with a delay of about a minute, so the figure may lag.</p>
+        <p className="text-[11px] text-zinc-600">{t("operation.quotaDelay")}</p>
       )}
-      {active && <p className="text-xs text-zinc-500">Keep this window open until it finishes.</p>}
+      {active && <p className="text-xs text-zinc-500">{t("operation.keepOpen")}</p>}
       {state.message && (
         <p className={`text-xs ${state.status === "failed" ? "text-red-400" : "text-zinc-300"}`}>{state.message}</p>
       )}
@@ -130,12 +133,12 @@ export function OperationOverlay({
             disabled={state.status === "cancelling"}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
           >
-            {state.status === "cancelling" ? "Stopping…" : "Cancel"}
+            {state.status === "cancelling" ? t("common.stopping") : t("common.cancel")}
           </button>
         )}
         {!active && (
           <button onClick={onClose} className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">
-            Close
+            {t("common.close")}
           </button>
         )}
       </div>

@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { uiMessageText } from "@/lib/ui-text";
 import type { StepStatus } from "./startup-progress";
+import { useT } from "./ui-text-provider";
 
 // BL-149 follow-up (owner, Telegram 2026-10-07, msg 2004): a blurred screen with a loading window while the app loads its data
 // on open and while the active channel switches -- so it is clear that work is in progress and nothing should be clicked
@@ -19,6 +21,7 @@ const TONE: Record<StepStatus["state"], string> = {
 };
 
 export function LoadingOverlay({ title, steps, onDismiss }: { title: string; steps: ReadonlyArray<{ key: string; label: string; status: StepStatus }>; onDismiss: () => void }) {
+  const t = useT();
   const [canDismiss, setCanDismiss] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setCanDismiss(true), DISMISS_AFTER_MS);
@@ -39,14 +42,14 @@ export function LoadingOverlay({ title, steps, onDismiss }: { title: string; ste
               </span>
               <span>
                 {s.label}
-                {s.status.detail && <span className="text-zinc-500"> · {s.status.detail}</span>}
+                {s.status.detail && <span className="text-zinc-500"> · {uiMessageText(t, s.status.detail)}</span>}
               </span>
             </li>
           ))}
         </ul>
         {canDismiss && (
           <button type="button" onClick={onDismiss} className="mt-4 text-xs text-zinc-400 underline hover:text-zinc-200">
-            Continue in the background
+            {t("startup.continueInBackground")}
           </button>
         )}
       </div>

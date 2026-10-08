@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "./ui-text-provider";
 import { AnalyticsManager } from "./analytics-manager";
 import { ChannelOverviewPanel } from "./channel-overview-panel";
 import { ContentAnalyticsPanel } from "./content-analytics-panel";
@@ -30,6 +31,7 @@ export function AnalyticsTab({
   tab?: SubTabKey;
   onTabChange?: (tab: SubTabKey) => void;
 }) {
+  const t = useT();
   const [ownSubTab, setOwnSubTab] = useState<SubTabKey>("overview");
   const activeSubTab = tab ?? ownSubTab;
   const setActiveSubTab = onTabChange ?? setOwnSubTab;
@@ -48,7 +50,7 @@ export function AnalyticsTab({
                 : "text-zinc-500 hover:text-zinc-300"
             }`}
           >
-            {tab.label}
+            {t(tab.labelKey)}
           </button>
         ))}
       </div>
@@ -62,7 +64,7 @@ export function AnalyticsTab({
               onClick={() => setShowRaw((v) => !v)}
               className="text-sm font-medium text-zinc-400 hover:text-zinc-200"
             >
-              {showRaw ? "Hide" : "Show"} raw collected data
+              {t(showRaw ? "analytics.raw.hide" : "analytics.raw.show")}
             </button>
             {showRaw && (
               <div className="mt-4">

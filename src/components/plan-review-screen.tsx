@@ -1,17 +1,24 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PlanCheck, PlanMarker, PlanReference, PlanReviewEntry } from "@/lib/generation-plans/contracts";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
+import { useUiText } from "./ui-text-provider";
 
 // BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A + the owner's additions, msg 1939): the owner's listening review of a plan --
 // a queue of attempts waiting for a verdict, the player with the waveform and the validator's time findings, keyboard
 // shortcuts, Accept / Reject with reasons, a rating out of 10, time marks and a comment; blind mode hides the validator until
 // the verdict. "Ask for a re-run" only records the request for the Factory Operator -- nothing is started here.
 
-/** The reasons from R-0001 (FO-MSG-0008 §6), the owner's starting list (msg 1933). */
+/**
+ * The reasons from R-0001 (FO-MSG-0008 §6), the owner's starting list (msg 1933). These exact English values are what a
+ * verdict records (the Factory Operator reads them); the buttons show them in the interface language (REVIEW_REASON_KEYS).
+ */
+// ui-text-ignore: verdict values sent to the API; shown through REVIEW_REASON_KEYS
 export const REVIEW_REASONS = [
   "thin / sparse",
   "dropout / pause",
@@ -24,6 +31,32 @@ export const REVIEW_REASONS = [
   "not melodic / boring",
   "unwanted beat / drums",
 ] as const;
+
+const REVIEW_REASON_KEYS: Record<(typeof REVIEW_REASONS)[number], UiTextKey> = {
+  "thin / sparse": "review.reason.thin",
+  "dropout / pause": "review.reason.dropout",
+  "abrupt start": "review.reason.abruptStart",
+  "dead tail / abrupt end": "review.reason.deadTail",
+  "ringing / whine": "review.reason.ringing",
+  "wrong instrument": "review.reason.wrongInstrument",
+  "stuck loop": "review.reason.stuckLoop",
+  "sounds like the others": "review.reason.soundsLikeOthers",
+  "not melodic / boring": "review.reason.notMelodic",
+  "unwanted beat / drums": "review.reason.unwantedBeat",
+};
+
+/** A verdict / result in words (accepted, rejected); any other value shows as it is. */
+export function resultLabel(t: Translate, result: unknown): string {
+  if (result === "accepted") return t("plans.result.accepted");
+  if (result === "rejected") return t("plans.result.rejected");
+  if (result === "done") return t("plans.result.done");
+  if (result === "failed") return t("plans.result.failed");
+  return String(result);
+}
+
+/** What `peerQueue` writes as the note of a verdict sent from here and not yet applied there; shown translated. */
+// ui-text-ignore: a marker in the verdict data, shown through review.sentWaitingFor
+const SENT_NOTE_PREFIX = "sent, waiting for ";
 
 export type ReviewKeyAction = "play" | "back" | "forward" | "accept" | "reject" | "next" | "previous" | "mark" | "ab" | { rating: number };
 
@@ -82,7 +115,7 @@ export function reportedLufs(entry: Pick<PlanReviewEntry, "stages">): number | n
  * FO-MSG-0009 §4: the frequencies the validator flagged -- steady artefact tones (a ringing check's `detail`, e.g.
  * "tones 2751, 8500 Hz") and a held note (`metrics.held_hz`) -- for the spectrogram. Exported for its test.
  */
-export function frequencyMarksOf(entry: Pick<PlanReviewEntry, "stages">): FrequencyMark[] {
+export function frequencyMarksOf(t: Translate, entry: Pick<PlanReviewEntry, "stages">): FrequencyMark[] {
   const marks: FrequencyMark[] = [];
   for (const stage of entry.stages) {
     for (const check of stage.checks) {
@@ -92,12 +125,12 @@ export function frequencyMarksOf(entry: Pick<PlanReviewEntry, "stages">): Freque
         const factor = list[2].toLowerCase() === "khz" ? 1000 : 1;
         for (const n of list[1].split(",")) {
           const hz = Number(n.trim()) * factor;
-          if (hz >= 20 && hz <= 24_000) marks.push({ hz, label: "ringing" });
+          if (hz >= 20 && hz <= 24_000) marks.push({ hz, label: t("review.freq.ringing") });
         }
       }
     }
     const held = stage.metrics.held_hz;
-    if (typeof held === "number" && held >= 20 && held <= 24_000) marks.push({ hz: held, label: "held note" });
+    if (typeof held === "number" && held >= 20 && held <= 24_000) marks.push({ hz: held, label: t("review.freq.heldNote") });
   }
   return marks.filter((m, i) => marks.findIndex((x) => x.hz === m.hz && x.label === m.label) === i);
 }
@@ -116,10 +149,10 @@ export function findingMarkers(entry: Pick<PlanReviewEntry, "stages">): ReviewMa
   );
 }
 
-async function postJson(url: string, body: unknown): Promise<unknown> {
+async function postJson(t: Translate, url: string, body: unknown): Promise<unknown> {
   const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { message?: string }).message ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new Error((data as { message?: string }).message ?? t("review.requestFailed", { status: String(res.status) }));
   return data;
 }
 
@@ -150,11 +183,12 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
     // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
     // Whole seconds: the owning device stores times to the second, so the applied copy of a verdict sent at …:12.345 reads …:12.000.
     if (!sent || (entry.verdict && Math.floor(Date.parse(entry.verdict.at) / 1000) >= Math.floor(Date.parse(sent.at) / 1000))) return entry;
-    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `sent, waiting for ${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
+    return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
   });
 }
 
 export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
+  const { t, formatNumber, language } = useUiText();
   const [entries, setEntries] = useState<PlanReviewEntry[] | null>(null);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
@@ -181,17 +215,17 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
           const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; message?: string } & Partial<PeerQueueResponse>;
-          if (!res.ok) throw new Error(data.message ?? `Failed to load the review queue (${res.status})`);
+          if (!res.ok) throw new Error(errorText(t, data, t("review.loadFailedStatus", { status: String(res.status) }), { showErrorField: false }));
           setReferences(peerDevice ? (data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId)?.references ?? []) : (data.references ?? []));
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
           return list;
         })
         .catch((error: unknown) => {
-          setMessage({ tone: "error", text: error instanceof Error ? error.message : "Failed to load the review queue" });
+          setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.loadFailed") });
           return [];
         }),
-    [base, peerDevice, peerName, planId]
+    [base, peerDevice, peerName, planId, t]
   );
 
   useEffect(() => {
@@ -224,8 +258,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       setBusy(true);
       try {
         const marks = draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks;
-        await postJson(`${base}/verdict`, { itemKey: entry.itemKey, attemptRef: entry.attemptRef, result, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks, ...(draft.note.trim() ? { note: draft.note.trim() } : {}) });
-        setMessage({ tone: "ok", text: `${entry.itemKey}: ${result}` });
+        await postJson(t, `${base}/verdict`, { itemKey: entry.itemKey, attemptRef: entry.attemptRef, result, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks, ...(draft.note.trim() ? { note: draft.note.trim() } : {}) });
+        setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
         const list = await load();
@@ -235,27 +269,27 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
         stopB();
         setIndex(next >= 0 ? next : Math.max(0, here));
       } catch (error) {
-        setMessage({ tone: "error", text: error instanceof Error ? error.message : "The verdict could not be saved" });
+        setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
       } finally {
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, index, load, onChanged, stopB]
+    [base, busy, draft, entry, index, load, onChanged, stopB, t]
   );
 
   const mark = useCallback(() => {
-    const t = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
-    setDraft((d) => (d.openMark === null ? { ...d, openMark: t } : { ...d, openMark: null, marks: [...d.marks, { start: Math.min(d.openMark, t), end: Math.max(d.openMark, t), note: null }] }));
+    const at = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
+    setDraft((d) => (d.openMark === null ? { ...d, openMark: at } : { ...d, openMark: null, marks: [...d.marks, { start: Math.min(d.openMark, at), end: Math.max(d.openMark, at), note: null }] }));
   }, []);
 
   const askRerun = async () => {
     if (!entry) return;
     try {
-      await postJson(`${base}/rerun-request`, { itemKey: entry.itemKey, attemptRef: entry.attemptRef, ...(draft.note.trim() ? { note: draft.note.trim() } : {}) });
-      setMessage({ tone: "ok", text: `Re-run of ${entry.itemKey} asked; the Factory Operator sees it in the plan's events` });
+      await postJson(t, `${base}/rerun-request`, { itemKey: entry.itemKey, attemptRef: entry.attemptRef, ...(draft.note.trim() ? { note: draft.note.trim() } : {}) });
+      setMessage({ tone: "ok", text: t("review.rerunAsked", { item: entry.itemKey }) });
       onChanged?.();
     } catch (error) {
-      setMessage({ tone: "error", text: error instanceof Error ? error.message : "The request could not be saved" });
+      setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.rerunFailed") });
     }
   };
 
@@ -270,24 +304,24 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     const audio = referenceAudio.current;
     if (!audio || !chosen) return;
     if (!onB) {
-      const t = player.current?.currentTime() ?? 0;
+      const at = player.current?.currentTime() ?? 0;
       player.current?.pause();
-      audio.currentTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(t, audio.duration) : t;
+      audio.currentTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(at, audio.duration) : at;
       audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
       setOnB(true);
       audio.play().catch((error: unknown) => {
         // A quick B-then-A pauses before play() settled (AbortError): not a failure.
         if (error instanceof DOMException && error.name === "AbortError") return;
         setOnB(false);
-        setMessage({ tone: "error", text: "The reference could not be played on this device" });
+        setMessage({ tone: "error", text: t("review.referenceFailed") });
       });
     } else {
-      const t = audio.currentTime;
+      const at = audio.currentTime;
       audio.pause();
-      player.current?.playFrom(t);
+      player.current?.playFrom(at);
       setOnB(false);
     }
-  }, [chosen, matchLoudness, onB]);
+  }, [chosen, matchLoudness, onB, t]);
 
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
@@ -334,12 +368,18 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     if (audio && chosen) audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
   }, [matchLoudness, chosen, onB]);
 
-  const markers = useMemo<ReviewMarker[]>(() => {
+  const savedMarkers = useMemo<ReviewMarker[]>(() => {
     if (!entry) return [];
     const findings = blind && entry.verdict === null ? [] : findingMarkers(entry);
     const own = [...(entry.verdict?.markers ?? []), ...draft.marks].map((m) => ({ start: m.start, end: m.end, label: m.note, tone: "mark" as const }));
-    return [...findings, ...own, ...(draft.openMark !== null ? [{ start: draft.openMark, end: null, label: "mark…", tone: "mark" as const }] : [])];
-  }, [blind, draft.marks, draft.openMark, entry]);
+    return [...findings, ...own];
+  }, [blind, draft.marks, entry]);
+  // The open mark's label is rebuilt on a language switch (`t` itself keeps one identity, so `language` is in the deps).
+  const markers = useMemo<ReviewMarker[]>(
+    () => (entry && draft.openMark !== null ? [...savedMarkers, { start: draft.openMark, end: null, label: t("review.openMark"), tone: "mark" as const }] : savedMarkers),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `language` re-builds the label after a language switch
+    [savedMarkers, draft.openMark, entry, t, language],
+  );
 
   const lufsOf = entry ? (reportedLufs(entry) ?? (measured && entry && measured.src === `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` ? measured.lufs : null)) : null;
   const src = entry ? `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` : null;
@@ -349,38 +389,39 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-base font-semibold text-zinc-100">
-          Review · {planId}
-          {source ? <span className="ml-2 text-xs font-normal text-zinc-400">on {source.hostname ?? source.deviceId} · your verdicts are sent there</span> : null}
+          {t("review.title", { plan: planId })}
+          {source ? <span className="ml-2 text-xs font-normal text-zinc-400">{t("review.onDevice", { device: source.hostname ?? source.deviceId })}</span> : null}
         </h3>
-        <span className="text-xs text-zinc-400">{entries ? `${waiting} waiting · ${entries.length} in the queue` : "Loading…"}</span>
+        <span className="text-xs text-zinc-400">{entries ? t("review.queueCounts", { waiting, total: entries.length }) : t("common.loading")}</span>
         <div className="ml-auto flex items-center gap-3">
-          <ToggleSwitch label="Match loudness" checked={matchLoudness} onChange={setMatchLoudness} />
-          <ToggleSwitch label="Spectrogram" checked={showSpectrogram} onChange={setShowSpectrogram} />
-          <ToggleSwitch label="Blind (hide the validator until my verdict)" checked={blind} onChange={setBlind} />
+          <ToggleSwitch label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
+          <ToggleSwitch label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
+          <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
           <button type="button" onClick={onClose} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
-            Back to the plan
+            {t("review.backToPlan")}
           </button>
         </div>
       </div>
-      {entries && entries.length === 0 && <p className="text-sm text-zinc-500">Nothing to review yet: no attempt has passed the stage before your review.</p>}
+      {entries && entries.length === 0 && <p className="text-sm text-zinc-500">{t("review.empty")}</p>}
       {entry && (
         <>
           <div className="flex flex-wrap items-baseline gap-2 text-sm">
-            <button type="button" onClick={() => go(index - 1)} className="text-zinc-400 hover:text-zinc-100" aria-label="Previous (P)">
+            <button type="button" onClick={() => go(index - 1)} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.previous")}>
               ←
             </button>
             <span className="font-mono text-zinc-100">{entry.itemKey}</span>
             <span className="text-xs text-zinc-500">
-              {entry.attemptRef}
-              {entry.seed !== null ? ` · seed ${entry.seed}` : ""} · {index + 1} of {entries?.length}
+              {entry.seed !== null
+                ? t("review.attemptMetaSeed", { attempt: entry.attemptRef, seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 })
+                : t("review.attemptMeta", { attempt: entry.attemptRef, index: index + 1, total: entries?.length ?? 0 })}
             </span>
-            <button type="button" onClick={() => go(index + 1)} className="text-zinc-400 hover:text-zinc-100" aria-label="Next (N)">
+            <button type="button" onClick={() => go(index + 1)} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.next")}>
               →
             </button>
             {entry.verdict && (
               <span className={`ml-auto text-xs ${entry.verdict.result === "accepted" ? "text-emerald-400" : "text-red-400"}`}>
-                {entry.verdict.reportedBy === "owner" ? "your" : "relayed"} verdict: {entry.verdict.result}
-                {entry.verdict.note?.startsWith("sent, waiting for") ? ` · ${entry.verdict.note}` : ""}
+                {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
+                {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
                 {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
               </span>
             )}
@@ -398,7 +439,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                   if (referenceAudio.current && !referenceAudio.current.paused) referenceAudio.current.pause();
                   setOnB(false);
                 }}
-                frequencyMarks={hideFindings ? [] : frequencyMarksOf(entry)}
+                frequencyMarks={hideFindings ? [] : frequencyMarksOf(t, entry)}
                 volume={matchLoudness ? matchedVolume(lufsOf) : 1}
                 onDecoded={(audio) => {
                   // Measured only when the validator gave no LUFS (AC-GP3-04).
@@ -406,12 +447,14 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 }}
               />
               <p className="text-xs text-zinc-500">
-                {lufsOf === null ? "Loudness unknown yet" : `Loudness ${lufsOf.toFixed(1)} LUFS (${reportedLufs(entry) !== null ? "validator" : "measured here"})`}
-                {matchLoudness && lufsOf !== null ? ` · played at ${Math.round(matchedVolume(lufsOf) * 100)} % to match ${LOUDNESS_TARGET_LUFS} LUFS` : ""}
+                {lufsOf === null
+                  ? t("review.loudnessUnknown")
+                  : t(reportedLufs(entry) !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                {matchLoudness && lufsOf !== null ? ` · ${t("review.playedAt", { percent: Math.round(matchedVolume(lufsOf) * 100), target: LOUDNESS_TARGET_LUFS })}` : ""}
               </p>
               {chosen && (
                 <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                  <span>Compare with</span>
+                  <span>{t("review.compareWith")}</span>
                   <select
                     value={chosen.id}
                     onChange={(e) => {
@@ -428,19 +471,19 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                     ))}
                   </select>
                   <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
-                    {onB ? `B: ${chosen.label} -- back to A (B)` : "A/B (B)"}
+                    {onB ? t("review.abOnB", { label: chosen.label }) : t("review.ab")}
                   </button>
-                  {offered.some((r) => r.nearest) && <span className="text-zinc-500">★ = nearest library track by the validator</span>}
-                  {matchLoudness && chosen.lufs === null && <span className="text-amber-300">this reference has no LUFS: it plays unmatched</span>}
+                  {offered.some((r) => r.nearest) && <span className="text-zinc-500">{t("review.nearestHint")}</span>}
+                  {matchLoudness && chosen.lufs === null && <span className="text-amber-300">{t("review.referenceNoLufs")}</span>}
                   <audio
                     ref={referenceAudio}
                     src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
                     preload="metadata"
                     onEnded={() => {
                       // The reference ran out: back to A where it would be.
-                      const t = referenceAudio.current?.currentTime ?? 0;
+                      const at = referenceAudio.current?.currentTime ?? 0;
                       setOnB(false);
-                      player.current?.playFrom(t);
+                      player.current?.playFrom(at);
                     }}
                     className="hidden"
                   />
@@ -448,7 +491,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
               )}
             </>
           ) : (
-            <p className="text-sm text-zinc-500">Nothing to play for this attempt on this device.</p>
+            <p className="text-sm text-zinc-500">{t("review.nothingToPlay")}</p>
           )}
 
           <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
@@ -458,13 +501,13 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                   const on = draft.reasons.includes(reason);
                   return (
                     <button key={reason} type="button" onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))} className={`rounded-full border px-2.5 py-0.5 text-xs ${on ? "border-red-400 bg-red-500/20 text-red-200" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
-                      {reason}
+                      {t(REVIEW_REASON_KEYS[reason])}
                     </button>
                   );
                 })}
               </div>
               <div className="flex flex-wrap items-center gap-1 text-xs text-zinc-400">
-                Rating
+                {t("review.rating")}
                 {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
                   <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-6 w-6 rounded ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
                     {n}
@@ -472,16 +515,16 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 ))}
                 <span className="ml-1 text-zinc-500">/ 10</span>
               </div>
-              <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={2} maxLength={2000} placeholder="Comment for the Factory Operator (optional)" className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100" />
+              <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={2} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100" />
               <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
                 <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
-                  {draft.openMark === null ? "Mark at playhead (M)" : `End mark started at ${formatPlayerTime(draft.openMark)} (M)`}
+                  {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
                 </button>
                 {draft.marks.map((m, i) => (
                   <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
                     {formatPlayerTime(m.start)}
                     {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
-                    <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label="Remove mark">
+                    <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
                       ×
                     </button>
                   </span>
@@ -489,36 +532,36 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
               </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50">
-                  Accept (A)
+                  {t("review.accept")}
                 </button>
                 <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-md bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50">
-                  Reject (R)
+                  {t("review.reject")}
                 </button>
                 {!source && (
                   <button type="button" onClick={() => void askRerun()} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
-                    Ask for a re-run
+                    {t("review.askRerun")}
                   </button>
                 )}
               </div>
-              <p className="text-xs text-zinc-500">Space play/pause · ←/→ 5 s · A accept · R reject · N/P next/previous · M mark · B A/B · 1–9, 0 = 10 rating</p>
+              <p className="text-xs text-zinc-500">{t("review.shortcuts")}</p>
               {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}
             </div>
             <div className="space-y-3 text-xs">
               {hideFindings ? (
-                <p className="text-zinc-500">Blind mode: the validator&rsquo;s findings show after your verdict.</p>
+                <p className="text-zinc-500">{t("review.blindNote")}</p>
               ) : (
                 entry.stages.map((stage) => (
                   <div key={stage.stageId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-zinc-200">{stage.stageId}</span>
-                      <span className={stage.result === "accepted" || stage.result === "done" ? "text-emerald-400" : "text-red-400"}>{stage.result}</span>
+                      <span className={stage.result === "accepted" || stage.result === "done" ? "text-emerald-400" : "text-red-400"}>{resultLabel(t, stage.result)}</span>
                     </div>
                     {stage.checks.map((c) => (
                       <div key={c.id} className={c.pass ? "text-zinc-400" : "text-red-300"}>
                         {c.pass ? "✓" : "✗"} {c.label ?? c.id}: {c.value === null ? "—" : String(c.value)}
                         {c.unit ? ` ${c.unit}` : ""}
-                        {c.threshold !== null ? ` (limit ${String(c.threshold)})` : ""}
-                        {c.atSeconds ? ` at ${formatPlayerTime(c.atSeconds[0])}` : ""}
+                        {c.threshold !== null ? ` ${t("review.limit", { value: String(c.threshold) })}` : ""}
+                        {c.atSeconds ? ` ${t("review.atTime", { time: formatPlayerTime(c.atSeconds[0]) })}` : ""}
                         {c.detail ? ` · ${c.detail}` : ""}
                       </div>
                     ))}
@@ -534,8 +577,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                 ))
               )}
               <div className="space-y-0.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-zinc-400">
-                <div className="font-medium text-zinc-200">Generation</div>
-                {Object.entries(entry.params).length === 0 ? <div className="text-zinc-500">No params recorded in the plan.</div> : Object.entries(entry.params).map(([k, v]) => <div key={k}>{k}: {String(v)}</div>)}
+                <div className="font-medium text-zinc-200">{t("review.generation")}</div>
+                {Object.entries(entry.params).length === 0 ? <div className="text-zinc-500">{t("review.noParams")}</div> : Object.entries(entry.params).map(([k, v]) => <div key={k}>{k}: {String(v)}</div>)}
               </div>
             </div>
           </div>

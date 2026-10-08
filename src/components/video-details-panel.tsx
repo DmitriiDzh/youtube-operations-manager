@@ -1,8 +1,10 @@
 "use client";
 
+import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { OperationOverlay, useOperation } from "./operation-progress";
 import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
+import { useT } from "./ui-text-provider";
 
 // Exported so `video-details-panel.test.ts` can exercise the date-conversion wiring directly --
 // plain function calls, no React rendering involved (this repo has no component-rendering test
@@ -78,7 +80,7 @@ export function toFormValues(s: VideoDetailsSnapshot): FormValues {
 function parseTags(text: string): string[] {
   return text
     .split(",")
-    .map((t) => t.trim())
+    .map((tag) => tag.trim())
     .filter(Boolean);
 }
 
@@ -152,6 +154,7 @@ export function VideoDetailsPanel({
    * edits, without this panel needing to know anything about where/how it's displayed. */
   onDirtyChange?: (dirty: boolean) => void;
 }) {
+  const t = useT();
   const op = useOperation();
   const { runBlocking } = op;
   const [snapshot, setSnapshot] = useState<VideoDetailsSnapshot | null>(null);
@@ -176,7 +179,7 @@ export function VideoDetailsPanel({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setSnapshot(data);
@@ -189,7 +192,7 @@ export function VideoDetailsPanel({
     } finally {
       setLoading(false);
     }
-  }, [channelId, videoId]);
+  }, [channelId, videoId, t]);
 
   useEffect(() => {
     void load();
@@ -226,7 +229,7 @@ export function VideoDetailsPanel({
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setDiff(data.diff);
@@ -246,8 +249,8 @@ export function VideoDetailsPanel({
       // A real write to YouTube: backup, write, then a read-back that may wait a few seconds for YouTube
       // to show the change. Shown in the progress overlay (ADR 0015); the request is unchanged.
       const { res, data } = await runBlocking({
-        title: "Saving to YouTube",
-        stage: "Backing up, writing and verifying — YouTube can take a few seconds to show the change",
+        title: t("video.saving.title"),
+        stage: t("video.saving.stage"),
         quotaServices: ["dataApi"],
         request: async () => {
           const res = await fetch(
@@ -260,11 +263,11 @@ export function VideoDetailsPanel({
           );
           return { res, data: await res.json() };
         },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
-        summarize: () => "Saved and verified.",
+        failureOf: ({ res, data }) => (res.ok ? null : (errorText(t, data, t("common.errorStatus", { status: String(res.status) })))),
+        summarize: () => t("video.saving.done"),
       });
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(errorText(t, data, t("common.errorStatus", { status: String(res.status) })));
         return;
       }
       setSnapshot(data.after);
@@ -279,8 +282,8 @@ export function VideoDetailsPanel({
     }
   }
 
-  if (loading) return <p className="text-sm text-zinc-500">Loading details...</p>;
-  if (!form || !snapshot) return <p className="text-sm text-red-400">Failed to load video details.</p>;
+  if (loading) return <p className="text-sm text-zinc-500">{t("video.loading")}</p>;
+  if (!form || !snapshot) return <p className="text-sm text-red-400">{t("video.loadFailed")}</p>;
 
   const canSetPublishAt = snapshot.privacyStatus === "private" && !snapshot.publishAt;
   const recordingDateValid = form.recordingDate === "" || parseDisplayDate(form.recordingDate) !== null;
@@ -294,13 +297,13 @@ export function VideoDetailsPanel({
       )}
       {applySuccess && (
         <div className="shrink-0 rounded-lg border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300">
-          Saved to YouTube.
+          {t("video.savedToYoutube")}
         </div>
       )}
 
       <div className="grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="block sm:col-span-2">
-          <span className="text-xs text-zinc-400">Title</span>
+          <span className="text-xs text-zinc-400">{t("video.field.title")}</span>
           <input
             value={form.title}
             onChange={(e) => updateForm({ title: e.target.value })}
@@ -309,23 +312,23 @@ export function VideoDetailsPanel({
           />
         </label>
         <label className="block">
-          <span className="text-xs text-zinc-400">Privacy</span>
+          <span className="text-xs text-zinc-400">{t("video.field.privacy")}</span>
           <select
             value={form.privacyStatus}
             onChange={(e) => updateForm({ privacyStatus: e.target.value })}
             className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
           >
-            <option value="private">Private</option>
-            <option value="public">Public</option>
-            <option value="unlisted">Unlisted</option>
+            <option value="private">{t("content.privacy.private")}</option>
+            <option value="public">{t("content.privacy.public")}</option>
+            <option value="unlisted">{t("content.privacy.unlisted")}</option>
           </select>
         </label>
         <label className="block">
-          <span className="text-xs text-zinc-400">Category ID</span>
+          <span className="text-xs text-zinc-400">{t("video.field.categoryId")}</span>
           <input
             value={form.categoryId}
             onChange={(e) => updateForm({ categoryId: e.target.value })}
-            placeholder="e.g. 10 (Music)"
+            placeholder={t("video.field.categoryIdPlaceholder")}
             className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
           />
         </label>
@@ -337,7 +340,7 @@ export function VideoDetailsPanel({
        * a flex child to be allowed to shrink below its content's natural height at all, which is
        * what lets the textarea's own `overflow-y-auto` take over instead of growing the panel. */}
       <label className="flex min-h-[140px] flex-1 flex-col">
-        <span className="shrink-0 text-xs text-zinc-400">Description</span>
+        <span className="shrink-0 text-xs text-zinc-400">{t("video.field.description")}</span>
         <textarea
           value={form.description}
           onChange={(e) => updateForm({ description: e.target.value })}
@@ -346,7 +349,7 @@ export function VideoDetailsPanel({
       </label>
 
       <label className="block shrink-0">
-        <span className="text-xs text-zinc-400">Tags (comma-separated)</span>
+        <span className="text-xs text-zinc-400">{t("video.field.tags")}</span>
         <textarea
           value={form.tagsText}
           onChange={(e) => updateForm({ tagsText: e.target.value })}
@@ -359,26 +362,26 @@ export function VideoDetailsPanel({
         onClick={() => setShowMore((v) => !v)}
         className="shrink-0 text-xs font-medium text-zinc-400 hover:text-zinc-200"
       >
-        {showMore ? "Hide advanced fields" : "Show more"}
+        {showMore ? t("video.hideAdvanced") : t("video.showMore")}
       </button>
 
       {showMore && (
         <div className="grid shrink-0 grid-cols-1 gap-3 rounded-lg border border-zinc-800 p-3 sm:grid-cols-2">
           <label className="block">
-            <span className="text-xs text-zinc-400">Default language (BCP-47)</span>
+            <span className="text-xs text-zinc-400">{t("video.field.defaultLanguage")}</span>
             <input
               value={form.defaultLanguage}
               onChange={(e) => updateForm({ defaultLanguage: e.target.value })}
-              placeholder="e.g. en"
+              placeholder={t("video.field.defaultLanguagePlaceholder")}
               className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
             />
           </label>
           <label className="block">
-            <span className="text-xs text-zinc-400">Recording date</span>
+            <span className="text-xs text-zinc-400">{t("video.field.recordingDate")}</span>
             <input
               type="text"
               inputMode="numeric"
-              placeholder="DD.MM.YYYY"
+              placeholder={t("video.format.date")}
               value={form.recordingDate}
               onChange={(e) => updateForm({ recordingDate: e.target.value })}
               // A plain text input, not `type="date"` -- the native picker renders its value using
@@ -393,11 +396,11 @@ export function VideoDetailsPanel({
           </label>
           {canSetPublishAt && (
             <label className="block">
-              <span className="text-xs text-zinc-400">Scheduled publish time (private only, one-time)</span>
+              <span className="text-xs text-zinc-400">{t("video.field.publishAt")}</span>
               <input
                 type="text"
                 inputMode="numeric"
-                placeholder="DD.MM.YYYY HH:MM"
+                placeholder={t("video.format.dateTime")}
                 value={form.publishAt}
                 onChange={(e) => updateForm({ publishAt: e.target.value })}
                 // Same reasoning as Recording date above -- a plain text input showing/accepting
@@ -412,19 +415,19 @@ export function VideoDetailsPanel({
           )}
           {(!recordingDateValid || !publishAtValid) && (
             <p className="text-xs text-red-400 sm:col-span-2">
-              {!recordingDateValid && "Recording date must be DD.MM.YYYY. "}
-              {!publishAtValid && "Scheduled publish time must be DD.MM.YYYY HH:MM (24h)."}
+              {!recordingDateValid && `${t("video.invalid.recordingDate")} `}
+              {!publishAtValid && t("video.invalid.publishAt")}
             </p>
           )}
           <label className="block">
-            <span className="text-xs text-zinc-400">License</span>
+            <span className="text-xs text-zinc-400">{t("video.field.license")}</span>
             <select
               value={form.license}
               onChange={(e) => updateForm({ license: e.target.value })}
               className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
             >
-              <option value="youtube">Standard YouTube License</option>
-              <option value="creativeCommon">Creative Commons</option>
+              <option value="youtube">{t("video.license.youtube")}</option>
+              <option value="creativeCommon">{t("video.license.creativeCommon")}</option>
             </select>
           </label>
           <label className="flex items-center gap-2 text-xs text-zinc-300">
@@ -433,7 +436,7 @@ export function VideoDetailsPanel({
               checked={form.embeddable}
               onChange={(e) => updateForm({ embeddable: e.target.checked })}
             />
-            Allow embedding
+            {t("video.field.embeddable")}
           </label>
           <label className="flex items-center gap-2 text-xs text-zinc-300">
             <input
@@ -441,7 +444,7 @@ export function VideoDetailsPanel({
               checked={form.publicStatsViewable}
               onChange={(e) => updateForm({ publicStatsViewable: e.target.checked })}
             />
-            Public stats viewable
+            {t("video.field.publicStats")}
           </label>
           <label className="flex items-center gap-2 text-xs text-zinc-300">
             <input
@@ -449,7 +452,7 @@ export function VideoDetailsPanel({
               checked={form.selfDeclaredMadeForKids}
               onChange={(e) => updateForm({ selfDeclaredMadeForKids: e.target.checked })}
             />
-            Made for kids
+            {t("video.field.madeForKids")}
           </label>
           <label className="flex items-center gap-2 text-xs text-zinc-300">
             <input
@@ -457,20 +460,20 @@ export function VideoDetailsPanel({
               checked={form.containsSyntheticMedia}
               onChange={(e) => updateForm({ containsSyntheticMedia: e.target.checked })}
             />
-            Contains altered or synthetic (AI) content
+            {t("video.field.syntheticMedia")}
           </label>
         </div>
       )}
 
       {diff && diff.length > 0 && (
         <div className="shrink-0 space-y-2 overflow-y-auto rounded-lg border border-indigo-900/60 bg-indigo-950/20 p-3">
-          <p className="text-xs font-semibold text-indigo-300">Preview diff</p>
+          <p className="text-xs font-semibold text-indigo-300">{t("video.diff.title")}</p>
           {diff.map((d) => (
             <div key={d.field} className="text-xs">
               <span className="font-mono text-zinc-400">{d.field}</span>
               <div className="mt-0.5 grid grid-cols-2 gap-2">
-                <p className="truncate text-zinc-500">before: {JSON.stringify(d.before)}</p>
-                <p className="truncate text-zinc-200">proposed: {JSON.stringify(d.proposed)}</p>
+                <p className="truncate text-zinc-500">{t("video.diff.before", { value: JSON.stringify(d.before) })}</p>
+                <p className="truncate text-zinc-200">{t("video.diff.proposed", { value: JSON.stringify(d.proposed) })}</p>
               </div>
             </div>
           ))}
@@ -483,18 +486,18 @@ export function VideoDetailsPanel({
           disabled={!hasChanges || previewing || !recordingDateValid || !publishAtValid}
           className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
         >
-          {previewing ? "Previewing..." : "Preview changes"}
+          {previewing ? t("video.previewing") : t("video.preview")}
         </button>
         <button
           onClick={handleApply}
           disabled={!canSave || !recordingDateValid || !publishAtValid}
-          title={hasChanges && !patchesEqual(previewedPatch, currentPatch) ? "Preview again before saving" : undefined}
+          title={hasChanges && !patchesEqual(previewedPatch, currentPatch) ? t("video.previewAgainTitle") : undefined}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
         >
-          {applying ? "Saving..." : "Save to YouTube"}
+          {applying ? t("common.saving") : t("video.saveToYoutube")}
         </button>
         {hasChanges && !patchesEqual(previewedPatch, currentPatch) && (
-          <span className="text-xs text-amber-400">Preview again before saving -- the patch changed.</span>
+          <span className="text-xs text-amber-400">{t("video.previewAgain")}</span>
         )}
       </div>
     </div>
