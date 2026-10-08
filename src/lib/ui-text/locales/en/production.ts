@@ -276,4 +276,5 @@ export const production = {
   "review.failedCheck.fail": "{label} {value} vs {threshold}",
   "review.failedCheck.warn": "{label} {value} vs {threshold} (warning)",
   "review.failedCheck.off": "({percent}% off)",
+  "review.atRange": "at {start}–{end}",
 } as const;

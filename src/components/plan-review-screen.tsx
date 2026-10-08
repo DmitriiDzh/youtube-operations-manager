@@ -503,7 +503,7 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
                   [
                     t(c.severity === "fail" ? "review.failedCheck.fail" : "review.failedCheck.warn", { label: c.label, value: String(c.value ?? "—"), threshold: String(c.threshold ?? "—") }),
                     c.offPercent !== null ? t("review.failedCheck.off", { percent: String(c.offPercent) }) : null,
-                    c.atSeconds ? t("review.atTime", { time: formatPlayerTime(c.atSeconds[0]) }) : null,
+                    c.atSeconds ? t("review.atRange", { start: formatPlayerTime(c.atSeconds[0]), end: formatPlayerTime(c.atSeconds[1]) }) : null,
                   ]
                     .filter(Boolean)
                     .join(" ")

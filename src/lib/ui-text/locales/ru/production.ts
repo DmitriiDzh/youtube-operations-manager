@@ -277,4 +277,5 @@ export const production: Record<keyof typeof en, string> = {
   "review.failedCheck.fail": "{label} {value} при пороге {threshold}",
   "review.failedCheck.warn": "{label} {value} при пороге {threshold} (предупреждение)",
   "review.failedCheck.off": "(промах {percent}%)",
+  "review.atRange": "на {start}–{end}",
 };
