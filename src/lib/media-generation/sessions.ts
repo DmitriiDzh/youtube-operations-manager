@@ -434,7 +434,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       return stopped.status === "stopping" ? "retrying" : "reconciled";
     }
     let podId = open.podId;
-    let orphanFacts: { podId: string; startedAt: Date; costPerHr: number | null } | null = null;
+    let orphanFacts: { podId: string; startedAt: Date; costPerHr: number | null; terminateSentAt: null; lastSeenAliveAt: Date } | null = null;
     if (!podId && open.status === "approved") {
       // The process died between createPod and the `starting` write: the pod carries the session's deterministic name.
       try {
@@ -450,13 +450,17 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           const orphanPrice = orphan.costPerHr ?? open.costPerHr;
           // BL-155 review: a row left `approved` by a re-placement already has an open window (the first pod's start, the
           // dearest price so far): the orphan widens it, never narrows it.
+          // BL-155 review 3: a NEW pod goes on the row -- a replaced pod's DELETE time (kept for the crash case) does not
+          // describe it, and it was seen alive just now in RunPod's listing, so a later "already gone" closes no earlier.
+          const fresh = { terminateSentAt: null, lastSeenAliveAt: deps.clock.now() };
           orphanFacts = open.startedAt
             ? {
                 podId: orphan.id,
                 startedAt: orphanStart < open.startedAt ? orphanStart : open.startedAt,
                 costPerHr: orphanPrice !== null && open.costPerHr !== null ? Math.max(orphanPrice, open.costPerHr) : (orphanPrice ?? open.costPerHr),
+                ...fresh,
               }
-            : { podId: orphan.id, startedAt: orphanStart, costPerHr: orphanPrice };
+            : { podId: orphan.id, startedAt: orphanStart, costPerHr: orphanPrice, ...fresh };
         }
       } catch (cause) {
         await deps.store.transition(open.id, ["approved"], {
@@ -818,9 +822,23 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // (`row.costPerHr`), since one window spans them all (BL-155).
       const podPrice = pod.costPerHr ?? used.pricePerHr ?? row.costPerHr;
       const windowPrice = placement > 0 && podPrice !== null && row.costPerHr !== null ? Math.max(podPrice, row.costPerHr) : podPrice;
+      /** This pod's own DELETE time, once sent (never a replaced pod's, BL-155 review 3). */
+      let podDeleteSentAt: Date | null = null;
+      /**
+       * Facts of THIS pod for a row write outside the `starting` write: no inherited DELETE time, and seen alive at least when
+       * it was placed -- so an "already gone" later never closes its window at a replaced pod's DELETE (BL-155 review 3).
+       */
+      const thisPodFacts = (latest: StoredSessionRow) => ({
+        podId: pod.id,
+        startedAt,
+        costPerHr: windowPrice ?? latest.costPerHr,
+        terminateSentAt: podDeleteSentAt,
+        lastSeenAliveAt: latest.lastSeenAliveAt && latest.lastSeenAliveAt > placedAt ? latest.lastSeenAliveAt : placedAt,
+      });
       const terminateStartPod = async (): Promise<TerminateOutcome> => {
         try {
           return await terminateAndConfirm(client, pod.id, async (at, alreadyGone) => {
+            if (!alreadyGone) podDeleteSentAt = at;
             if (!alreadyGone) await deps.store.transition(sessionId, ["approved", "starting"], { status: (await requireRow(sessionId)).status as "approved" | "starting", podId: pod.id, startedAt, terminateSentAt: at });
           });
         } catch (error) {
@@ -835,7 +853,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         const latest = await requireRow(sessionId);
         if (latest.status === "approved" || latest.status === "starting") {
           // The pod existed and billed from `startedAt`: record it even when the `starting` write never happened.
-          const podFacts = { podId: pod.id, startedAt, costPerHr: windowPrice ?? latest.costPerHr };
+          const podFacts = thisPodFacts(latest);
           if (terminated.confirmed) {
             await finish(latest, ["approved", "starting"], "failed", { error: `${prefix}: ${lastDetail}` }, podFacts);
           } else {
@@ -907,7 +925,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           failure = cause instanceof Error ? cause.message : String(cause);
         }
         const latest = await requireRow(sessionId);
-        const facts = { podId: pod.id, startedAt, costPerHr: windowPrice ?? latest.costPerHr };
+        const facts = thisPodFacts(latest);
         if (!outcome?.confirmed) {
           const detail = failure ?? `pod still ${outcome?.lastStatus} after terminate`;
           log(`[media] pod ${pod.id} created after session ${sessionId} was ${latest.status}; terminate not confirmed (${detail})`);

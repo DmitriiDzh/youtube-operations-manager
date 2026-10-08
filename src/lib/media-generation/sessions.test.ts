@@ -219,6 +219,8 @@ function fixture(opts: {
   now?: Date;
   jobSummary?: (sessionId: string) => Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
   accountWide?: (now: Date, localPodIds: string[], options?: { fresh?: boolean }) => Promise<{ otherActiveSessions: number; otherSpentTodayUsd: number }>;
+  /** BL-155 review 3: the proxy URL builder (default: a fixed test host). */
+  proxyUrl?: (podId: string, port: number) => string;
 } = {}) {
   const capacityLog: Array<{ gpuTypeId: string; result: string; detail: string | null }> = [];
   const events: Array<{ actor: string; action: string; subject: string; details?: Record<string, unknown> }> = [];
@@ -243,7 +245,7 @@ function fixture(opts: {
       openSecret: async (payload) => decryptSecret(payload, KEY),
     },
     createComfyClient: comfy.factory,
-    comfyUiProxyBaseUrl: (podId, port) => `https://${podId}-${port}.example.test`,
+    comfyUiProxyBaseUrl: opts.proxyUrl ?? ((podId, port) => `https://${podId}-${port}.example.test`),
     generateId: () => `session-${++idCounter}`,
     generateToken: () => "tok-abc",
     clock: { now: () => now },
@@ -2230,4 +2232,107 @@ test("BL-155 review 2: the re-placement's next pod starts with no stale terminat
   const running = await startRunning(f);
   assert.equal(running.podId, "pod2");
   assert.equal(f.mem.rows.get(running.sessionId)?.terminateSentAt, null);
+});
+
+// -- BL-155 independent review round 3 -------------------------------------------------------------------------------------
+// Expected: a row that carries the REPLACED pod's DELETE time (kept through a re-placement for the crash case) must never bill a
+// NEW pod's window to that old time. Wherever a new pod's facts are put on the row, the old DELETE time goes with them, and the
+// new pod counts as seen alive when it was found / created -- so a later "already gone" closes the window no earlier than that.
+
+async function replacementRowWithOrphan(terminateFirst: "throws" | "gone") {
+  const f = fixture();
+  const requested = await f.services.requestSession(operatorRequest);
+  const name = `ytm-media-${requested.sessionId.slice(0, 8)}`;
+  const pod = await f.runpod.client.createPod({ name, env: {} } as never);
+  // Left by a re-placement + crash: window open since 09:00, pod1 DELETEd at 09:10:30 (T1); P2 created at 09:20, found at boot (10:00).
+  f.mem.rows.set(requested.sessionId, {
+    ...f.mem.rows.get(requested.sessionId)!,
+    status: "approved",
+    approvedAt: new Date("2026-10-05T09:10:30Z"),
+    startedAt: new Date("2026-10-05T09:00:00Z"),
+    lastSeenAliveAt: new Date("2026-10-05T09:10:00Z"),
+    terminateSentAt: new Date("2026-10-05T09:10:30Z"),
+    costPerHr: 0.69,
+    podId: null,
+  });
+  (f.runpod.client as { listPods: () => Promise<unknown[]> }).listPods = async () => [{ ...pod, name, status: "RUNNING", createdAt: "2026-10-05T09:20:00Z" }];
+  const terminate = f.runpod.client.terminatePod.bind(f.runpod.client);
+  let calls = 0;
+  (f.runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => {
+    calls++;
+    if (calls === 1 && terminateFirst === "throws") throw new Error("RunPod API request failed: timeout");
+    if (terminateFirst === "gone") {
+      f.runpod.pods.delete(id); // RunPod already lost it: a 404
+      return { terminated: true, alreadyGone: true };
+    }
+    return terminate(id);
+  };
+  return { f, sessionId: requested.sessionId, podId: pod.id };
+}
+
+test("BL-155 review 3: an orphan of a re-placement row whose first terminate fails, then is found gone, is billed past its creation -- never to the replaced pod's DELETE", async () => {
+  const { f, sessionId, podId } = await replacementRowWithOrphan("throws");
+  await f.services.bootSweep();
+  let row = f.mem.rows.get(sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, podId);
+  assert.equal(row.terminateSentAt, null, "the replaced pod's DELETE time does not describe this pod");
+  // Later the pod is gone on its own (404): the window closes at its last sighting -- the boot listing at 10:00.
+  f.runpod.pods.delete(podId);
+  f.advance(30 * 60_000);
+  await tick1(f.services);
+  row = f.mem.rows.get(sessionId)!;
+  assert.equal(row.status, "interrupted");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.ok(row.stoppedAt! >= new Date("2026-10-05T09:20:00Z"));
+});
+
+test("BL-155 review 3: the same orphan found already gone in a single pass (404) is billed to its sighting at boot, not to the old DELETE", async () => {
+  const { f, sessionId } = await replacementRowWithOrphan("gone");
+  await f.services.bootSweep();
+  const row = f.mem.rows.get(sessionId)!;
+  assert.equal(row.status, "interrupted");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:00:00.000Z");
+  assert.equal(row.secondsUsed, 3600);
+});
+
+test("BL-155 review 3: a re-placement pod aborted before its `starting` write, terminate unconfirmed, is never billed to the replaced pod's DELETE", async () => {
+  // pod1 (old host) is DELETEd at 10:00:10 (T1); its gone-confirmation takes a minute, so pod2 is placed at 10:01:10.
+  const runpod = fakeRunpod({ hostCuda: () => "12.4", runningAfterPolls: 3 });
+  const f = fixture({
+    runpod,
+    settings: { gpuTypeId: FOUR },
+    proxyUrl: (podId, port) => {
+      if (podId === "pod2") throw new Error("database is locked");
+      return `https://${podId}-${port}.example.test`;
+    },
+  });
+  const getPod = runpod.client.getPod.bind(runpod.client);
+  let slowConfirm = true;
+  (runpod.client as { getPod: (id: string) => Promise<unknown> }).getPod = async (id: string) => {
+    if (id === "pod1" && !runpod.pods.has("pod1") && slowConfirm) {
+      slowConfirm = false;
+      f.advance(60_000);
+    }
+    return getPod(id);
+  };
+  const terminate = runpod.client.terminatePod.bind(runpod.client);
+  (runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = async (id: string) => {
+    if (id === "pod2") throw new Error("RunPod API request failed: timeout");
+    return terminate(id);
+  };
+  const requested = await f.services.requestSession(operatorRequest);
+  await assert.rejects(f.services.approveAndStartSession({ sessionId: requested.sessionId }), (e: unknown) => isDomainError(e) && e.code === "media_session_start_failed");
+  let row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "stopping");
+  assert.equal(row.podId, "pod2");
+  assert.equal(row.terminateSentAt, null);
+  // The retry finds pod2 already gone: closed at its creation (its only sighting), not at pod1's DELETE (10:00:10).
+  runpod.pods.delete("pod2");
+  (runpod.client as { terminatePod: (id: string) => Promise<unknown> }).terminatePod = terminate;
+  f.advance(10 * 60_000);
+  await tick1(f.services);
+  row = f.mem.rows.get(requested.sessionId)!;
+  assert.equal(row.status, "failed");
+  assert.equal(row.stoppedAt?.toISOString(), "2026-10-05T10:01:10.000Z");
 });
