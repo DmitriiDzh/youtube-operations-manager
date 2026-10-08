@@ -102,4 +102,3 @@ Plan: `docs/roadmap/plans/GENERATION_PLANS_PHASE_3_PLAN.md`.
   - A replacement needs the owner's confirmation (`plan_verdict_exists`).
   - A verdict sent from another device counts as given on the owning device before its tick applies it.
 - **Media scoping.** The owner's Web routes are scoped to the active channel (Media).
-
