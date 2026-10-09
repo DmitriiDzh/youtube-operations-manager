@@ -3265,5 +3265,28 @@ Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
   list, 200 newest decided for the owner).
 - Late refusals that keep the proposal pending: an add whose channel is no longer connected (checked before the claim) and a
   hypothesis whose channel stopped being the active one between the check and the creation (the claim is reopened).
-- Two entry points: `createAgentProposalSubmitCore` (wired into `ProducerSession.proposals` by the Producer route) and
+- Two entry points: `createAgentProposalSubmitCore` (wired into `ProducerSession.proposals` by the Producer session deps,
+  `src/lib/producer-mcp-endpoint/session-deps.ts` since BL-166) and
   `createAgentProposalReviewCore` (the Web routes and the summary count). The approval inventory test pins that split.
+
+## 36. Video milestones: day-7 and day-28 retention and totals (BL-166, FO-REQ-0015 items 1 and 8)
+
+Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75.
+
+- **Windows.** `milestoneWindow(publishedAt, M)` = the Pacific publish date .. +M-1 (inclusive); `isMilestoneDue` once today (Pacific) is at
+  least `MILESTONE_LAG_DAYS` (reporting lag + 1 = 3) after the window end.
+- **Collection** (`createVideoMilestoneServices.collectDueMilestones`, analytics core). `planDueMilestones` takes never-attempted milestones by
+  window end, then retries whose `next_attempt_at` has passed, at most 25 per channel per run. Each costs two `queryChannelBreakdownReport`
+  calls (gateway, `dimensions` optional): `elapsedVideoTimeRatio` with the five retention metrics, and the four totals with no dimension, both
+  `video==<id>` over the window. A per-video error records an attempt (`recordVideoMilestoneFailure`: retry after 24 h, `failed` at 3); reads
+  off, quota, sign-in or channel errors stop the run with nothing counted. The core wraps it in the analytics quota context and
+  `isBackgroundReadAllowed("analytics")`. `/api/analytics/auto-collect-all` runs it after the daily rows for each channel whose collection
+  did not fail, each in its own try/catch.
+- **Storage.** `video_milestones` (primary key `video_id, milestone_days`): status, attempts, last error, next attempt, collected time, the
+  four totals and `retention_json` (as returned, `[]` when none). Classified `authorized`; device-local (not in the snapshot, not synced).
+- **Reads.** `listVideoMilestones` (channel scope, joins each row with the video's stored `durationSeconds`, drops rows whose video the
+  channel does not have) backs `agent_get_video_milestones`. `producer_upload_milestones` is built by `createUploadMilestonesServices`
+  (`src/lib/portfolio-overview/upload-milestones.ts`): uploads by UTC date in the range, windows from the analytics helpers (passed in, so
+  the module does not import analytics), stored rows, and `getVideoWindowsReach` (`reach-reports`: one `listDaily` over the span of all
+  windows, per-window `daysWithData`, summed impressions, `weightedCtr`), read in each channel's agent scope. A Reach figure is null unless
+  Reach is `ready` and the window has a stored day.

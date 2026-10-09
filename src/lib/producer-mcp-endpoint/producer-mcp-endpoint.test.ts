@@ -3,7 +3,7 @@ import test from "node:test";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { createProducerTokenServices } from "@/lib/producer-agent-tokens/services";
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
-import { addChannelRecordAssignment, insertResearchChannel, upsertChannel, upsertVideos } from "@/lib/db";
+import { addChannelRecordAssignment, insertResearchChannel, saveCollectedVideoMilestone, upsertChannel, upsertVideos } from "@/lib/db";
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
@@ -92,6 +92,7 @@ function setup(initial: { enabled?: boolean } = {}) {
           { channelId: "UC_PR_Y", title: "Channel UC_PR_Y", workspace: null },
         ],
         portfolioOverview: async (input) => ({ ...input, source: "local", channels: [] }),
+        uploadMilestones: async (input) => ({ ...input, source: "local", channels: [] }),
         proposals: {
           submit: async (input) => {
             proposalCalls.push(["submit", input]);
@@ -223,6 +224,76 @@ test("AC-PR-05 / AC-PR-06 / AC-PR-09: each call reads only its own channel's row
   );
 });
 
+// BL-166 AC-VM-06 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): agent_get_video_milestones returns only the named channel's videos and
+// only stored data; another channel's video behaves like an unknown one. Real handlers on the real (isolated) database.
+test("BL-166 AC-VM-06: agent_get_video_milestones reads only the named channel's stored milestones", async () => {
+  await seedTwoChannels();
+  const point = { elapsedVideoTimeRatio: 0.01, audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.5, startedWatching: 0.1, stoppedWatching: 0.02, totalSegmentImpressions: 40 };
+  const saved = (videoId: string, channelId: string, views: number) => ({
+    videoId,
+    milestoneDays: 7,
+    channelId,
+    windowStart: "2026-10-01",
+    windowEnd: "2026-10-07",
+    views,
+    estimatedMinutesWatched: 30,
+    averageViewDuration: 95,
+    averageViewPercentage: 1.3,
+    retentionJson: JSON.stringify([point]),
+    at: new Date("2026-10-11T06:00:00Z"),
+  });
+  await saveCollectedVideoMilestone(saved("vid-x-1", "UC_PR_X", 12));
+  await saveCollectedVideoMilestone(saved("vid-y-1", "UC_PR_Y", 99));
+  const { endpoint, tokens, calls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const read = async (args: Record<string, unknown>) => {
+    const result = await toolResult(await endpoint.handle(rpc(call("agent_get_video_milestones", args), bearer(token))));
+    assert.equal(result.isError, false, result.text);
+    return payloadOf(result.text) as { channelId: string; forChannelId: string; milestones: Array<Record<string, unknown>> };
+  };
+  const viaX = await read({ channelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-y-1"] });
+  assert.equal(viaX.forChannelId, "UC_PR_X");
+  assert.deepEqual(viaX.milestones, [
+    {
+      videoId: "vid-x-1",
+      milestoneDays: 7,
+      windowStart: "2026-10-01",
+      windowEnd: "2026-10-07",
+      status: "collected",
+      attempts: 1,
+      lastError: null,
+      collectedAt: "2026-10-11T06:00:00.000Z",
+      // seedTwoChannels stores no length.
+      durationSeconds: null,
+      totals: { views: 12, estimatedMinutesWatched: 30, averageViewDuration: 95, averageViewPercentage: 1.3 },
+      retention: [point],
+    },
+  ]);
+  const viaY = await read({ channelId: "UC_PR_Y", milestone: 7 });
+  assert.deepEqual(viaY.milestones.map((row) => [row.videoId, (row.totals as { views: number }).views]), [["vid-y-1", 99]]);
+  assert.deepEqual((await read({ channelId: "UC_PR_X", milestone: 28 })).milestones, []);
+  // The plan's bounds: 1-50 videoIds, milestone 7 or 28.
+  for (const bad of [{ channelId: "UC_PR_X", videoIds: [] }, { channelId: "UC_PR_X", milestone: 14 }]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("agent_get_video_milestones", bad), bearer(token))))).isError, true);
+  }
+  assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId, entry.outcome]).slice(0, 3), [
+    ["agent_get_video_milestones", "UC_PR_X", "ok"],
+    ["agent_get_video_milestones", "UC_PR_Y", "ok"],
+    ["agent_get_video_milestones", "UC_PR_X", "ok"],
+  ]);
+});
+
+test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const ask = (startDate: string, endDate: string) => endpoint.handle(rpc(call("producer_upload_milestones", { startDate, endDate }), bearer(token))).then(toolResult);
+  assert.equal((await ask("2026-02-01", "2026-02-30")).isError, true);
+  assert.equal((await ask("2026-10-07", "2026-10-01")).isError, true);
+  // 07-01 .. 09-30 is 92 days inclusive; one more day is refused.
+  assert.equal((await ask("2026-07-01", "2026-09-30")).isError, false);
+  assert.equal((await ask("2026-07-01", "2026-10-01")).isError, true);
+});
+
 test("query_market_intelligence: `channelId` is the Producer's channel, the watchlist channel travels as watchlistChannelId", async () => {
   const { endpoint, tokens } = setup();
   const token = (await tokens.issueToken({})).token;
@@ -251,7 +322,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   assert.equal(capabilities.producerApiVersion, PRODUCER_API_VERSION);
   // BL-163 (FO-REQ-0014 §C6, ADR 0034 Amendment 1) changed the requirement: Producer API 1.1.0 adds its proposal tools, the only
   // DRAFT ones -- the previous "every permission is READ" (1.0.0) no longer holds, and exactly these two tools are DRAFT.
-  assert.equal(PRODUCER_API_VERSION, "1.1.0");
+  // BL-166 (VIDEO_MILESTONES_PLAN.md §2 "Versions"): 1.2.0 adds two READ tools, agent_get_video_milestones and
+  // producer_upload_milestones; the DRAFT list is unchanged.
+  assert.equal(PRODUCER_API_VERSION, "1.2.0");
   assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
   assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done"]);
   assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done"]);
@@ -285,6 +358,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       },
       listChannels: async () => [],
       portfolioOverview: async () => ({}),
+      uploadMilestones: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
     },
   });
@@ -468,6 +542,7 @@ test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint",
       recordCall: async () => {},
       listChannels: async () => [],
       portfolioOverview: async () => ({}),
+      uploadMilestones: async () => ({}),
       proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
     },
   });

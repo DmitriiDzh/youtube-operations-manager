@@ -51,3 +51,30 @@ export const getChannelReachInputSchema = getChannelReachInputObjectSchema.super
   });
 
 export const getReachStatusInputSchema = z.object({ credentialRef: credentialRefSchema, channelId: z.string().min(1) }).strict();
+
+/** At most this many windows per read (BL-166: the Producer's upload milestones, two windows per upload). */
+export const MAX_REACH_WINDOWS = 2000;
+
+/** BL-166: Reach totals of several videos, each over its own window; one stored read for the span of all windows. */
+export const getVideoWindowsReachInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    windows: z
+      .array(z.object({ videoId: z.string().min(1).max(64), startDate: isoDateSchema, endDate: isoDateSchema }).strict())
+      .max(MAX_REACH_WINDOWS),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const dates = value.windows.flatMap((window) => [window.startDate, window.endDate]);
+    const times = dates.map((date) => Date.parse(`${date}T00:00:00Z`));
+    // A real calendar day only: Date.parse rolls 2026-02-30 over into March instead of refusing it.
+    if (times.some((time, index) => Number.isNaN(time) || new Date(time).toISOString().slice(0, 10) !== dates[index])) {
+      ctx.addIssue({ code: "custom", message: "startDate/endDate must be real calendar dates" });
+      return;
+    }
+    if (value.windows.some((window) => window.startDate > window.endDate)) ctx.addIssue({ code: "custom", message: "a window's startDate must not be after its endDate" });
+    if (times.length > 0 && (Math.max(...times) - Math.min(...times)) / 86_400_000 > MAX_REACH_RANGE_DAYS) {
+      ctx.addIssue({ code: "custom", message: `the windows must not span more than ${MAX_REACH_RANGE_DAYS} days` });
+    }
+  });

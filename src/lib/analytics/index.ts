@@ -104,6 +104,8 @@ export { beginAllChannelsRun, endAllChannelsRun } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";
 export { buildChannelOverviewView } from "./overview-view";
+export { MILESTONE_DAYS, isMilestoneDue, listVideoMilestonesInputSchema, milestoneWindow } from "./milestones";
+export type { VideoMilestone } from "./milestones";
 export type { ChannelOverviewView } from "./overview-view";
 export type { Granularity } from "./granularity";
 export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";

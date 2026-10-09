@@ -1,6 +1,6 @@
 # Video milestones: day-7 and day-28 retention and totals (BL-166, FO-REQ-0015 items 1 and 8)
 
-**Status: APPROVED in outline, being built.** Owner, Telegram 2026-10-09 (msgs 2380–2381): FO-REQ-0015 in the order of DEV-RESP-0018, step 2
+**Status: BUILT on `feature/fo-req-0015-milestones`, waiting for the owner's merge decision.** Owner, Telegram 2026-10-09 (msgs 2380–2381): FO-REQ-0015 in the order of DEV-RESP-0018, step 2
 after the quick fixes. Branch `feature/fo-req-0015-milestones`.
 
 ## 1. Facts (checked 2026-10-09)
@@ -39,8 +39,8 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
     - `durationSeconds` is the video's stored length, so a reader can locate a time on the curve.
     - READ, channel-scoped, local only.
     - The Producer gets it too: closed list, READ.
-  - Producer tool `producer_upload_milestones` `{ startDate, endDate }` → for each connected channel, its uploads published in that
-    range, each with:
+  - Producer tool `producer_upload_milestones` `{ startDate, endDate }` (at most 92 days, uploads by UTC date like the portfolio overview)
+    → for each connected channel, its uploads published in that range, each with:
     - its day-7 and day-28 totals;
     - Reach impressions and CTR over the same window, from stored `channel_reach_daily` rows (impressions summed; CTR = Σ(impressions ×
       ctr) / Σ impressions, simple math on own data; null when no Reach day is stored in the window);

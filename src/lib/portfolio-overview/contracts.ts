@@ -45,3 +45,77 @@ export type PortfolioChannelRow = {
 };
 
 export type PortfolioOverview = PortfolioRange & { source: "local"; channels: PortfolioChannelRow[] };
+
+/**
+ * BL-166 (FO-REQ-0015 item 8, `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` §2): for each connected channel, its uploads in a range,
+ * each with its day-7 and day-28 milestones -- the stored window totals (as YouTube returned them) and the Reach of the same window.
+ * Stored data only, never a live call; no retention curves (`agent_get_video_milestones` has them).
+ */
+export type UploadMilestoneStatus = "collected" | "retry" | "failed" | "due" | "not_due";
+
+/** A stored milestone as the analytics collection left it. */
+export type StoredUploadMilestone = {
+  videoId: string;
+  milestoneDays: number;
+  status: "collected" | "retry" | "failed";
+  collectedAt: Date | null;
+  views: number | null;
+  estimatedMinutesWatched: number | null;
+  averageViewDuration: number | null;
+  averageViewPercentage: number | null;
+};
+
+export type UploadMilestonesDeps = {
+  /** The milestones, e.g. [7, 28]. */
+  milestoneDays: readonly number[];
+  /** A milestone's window for a publish time (YouTube Analytics' Pacific dates, inclusive). */
+  windowOf(publishedAt: string, days: number): { windowStart: string; windowEnd: string };
+  /** Whether the collection may query that window yet (its reporting lag has passed). */
+  isDue(windowEnd: string): boolean;
+  listChannels(): Promise<Array<{ channelId: string; title: string }>>;
+  /** The channel's synced videos; null when they were never synced on this device. */
+  listVideos(channelId: string): Promise<Array<{ videoId: string; title: string; publishedAt: string | null; durationSeconds: number | null }> | null>;
+  listStoredMilestones(channelId: string): Promise<StoredUploadMilestone[]>;
+  /** Reach of each video over its own window, or null when it could not be read. */
+  readReach(
+    channelId: string,
+    windows: Array<{ videoId: string; startDate: string; endDate: string }>
+  ): Promise<{
+    state: "no_job" | "waiting_for_first_report" | "ready";
+    windows: Array<{ videoId: string; startDate: string; endDate: string; daysWithData: number; impressions: number; ctr: number | null }>;
+  } | null>;
+};
+
+export type UploadMilestoneView = {
+  milestoneDays: number;
+  windowStart: string;
+  windowEnd: string;
+  /**
+   * `collected`; `retry` (a query failed, tried again on a later run); `failed` (given up after its attempts); `due` (waiting for its
+   * collection run); `not_due` (the window or its reporting lag is not over yet).
+   */
+  status: UploadMilestoneStatus;
+  collectedAt: string | null;
+  /** As YouTube returned them for the window; null unless `collected`. */
+  totals: { views: number | null; estimatedMinutesWatched: number | null; averageViewDuration: number | null; averageViewPercentage: number | null } | null;
+  /** Imported Reach over the window: impressions summed, CTR impressions-weighted; both null when no Reach day is stored in it. */
+  reach: { daysWithData: number; impressions: number | null; ctr: number | null };
+};
+
+export type UploadMilestonesUpload = {
+  videoId: string;
+  title: string;
+  publishedAt: string;
+  durationSeconds: number | null;
+  milestones: UploadMilestoneView[];
+};
+
+export type UploadMilestonesChannel = {
+  channelId: string;
+  title: string;
+  reachState: "no_job" | "waiting_for_first_report" | "ready" | "unavailable";
+  /** Uploads published in the range (UTC dates, like the portfolio overview), oldest first; null when never synced here. */
+  uploads: UploadMilestonesUpload[] | null;
+};
+
+export type UploadMilestones = PortfolioRange & { source: "local"; channels: UploadMilestonesChannel[] };

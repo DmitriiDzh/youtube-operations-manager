@@ -7,6 +7,7 @@ import {
   REACH_BASIC_REPORT_TYPE_ID,
   REACH_JOB_NAME,
   type GetChannelReachResult,
+  type GetVideoWindowsReachResult,
   type ReachRow,
   type ReachState,
   type ReachVideoDayPoint,
@@ -20,9 +21,9 @@ import {
   STATUS_FILES_LIMIT,
   type GetReachStatusResult,
 } from "./contracts";
-import { aggregateReach } from "./reach-aggregate";
+import { aggregateReach, weightedCtr } from "./reach-aggregate";
 import { mapReachBasicRows } from "./reach-csv";
-import { getChannelReachInputSchema, getReachStatusInputSchema, parseWithSchema, syncReachReportsInputSchema } from "./schemas";
+import { getChannelReachInputSchema, getReachStatusInputSchema, getVideoWindowsReachInputSchema, parseWithSchema, syncReachReportsInputSchema } from "./schemas";
 
 function toVideoDayPoints(rows: readonly ReachRow[]): { points: ReachVideoDayPoint[]; truncated: boolean } {
   const sorted = rows
@@ -291,6 +292,37 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         ...aggregateReach(scoped),
         ...(parsed.videoId ? { videoId: parsed.videoId } : {}),
         ...(videoDaily ? { videoDaily: videoDaily.points, videoDailyTruncated: videoDaily.truncated } : {}),
+      };
+    },
+
+    /**
+     * BL-166: each video's Reach over its own window (the Producer's upload milestones) -- a local read, no Google call. One stored
+     * read covers the span of every window; each window's totals use the same rule as `getChannelReach` (impressions summed, CTR
+     * impressions-weighted). Same active-channel check as `getChannelReach`.
+     */
+    async getVideoWindowsReach(input: unknown): Promise<GetVideoWindowsReachResult> {
+      const parsed = parseWithSchema(getVideoWindowsReachInputSchema, input, "get video windows reach input");
+      await assertChannel(parsed.credentialRef, parsed.channelId);
+      const [job, coverage] = await Promise.all([deps.store.getJob(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID), deps.store.getCoverage(parsed.channelId)]);
+      const state: ReachState = !job ? "no_job" : coverage.importedFiles === 0 ? "waiting_for_first_report" : "ready";
+      if (parsed.windows.length === 0) return { channelId: parsed.channelId, state, windows: [] };
+      const startDate = parsed.windows.reduce((min, window) => (window.startDate < min ? window.startDate : min), parsed.windows[0].startDate);
+      const endDate = parsed.windows.reduce((max, window) => (window.endDate > max ? window.endDate : max), parsed.windows[0].endDate);
+      const rows = await deps.store.listDaily(parsed.channelId, { startDate, endDate });
+      const byVideo = new Map<string, ReachRow[]>();
+      for (const row of rows) byVideo.set(row.videoId, [...(byVideo.get(row.videoId) ?? []), row]);
+      return {
+        channelId: parsed.channelId,
+        state,
+        windows: parsed.windows.map((window) => {
+          const inWindow = (byVideo.get(window.videoId) ?? []).filter((row) => row.date >= window.startDate && row.date <= window.endDate);
+          return {
+            ...window,
+            daysWithData: new Set(inWindow.map((row) => row.date)).size,
+            impressions: inWindow.reduce((total, row) => total + row.impressions, 0),
+            ctr: weightedCtr(inWindow),
+          };
+        }),
       };
     },
 

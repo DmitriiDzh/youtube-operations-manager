@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = path.resolve(THIS_DIR, "../..");
 
-const AGENT_REACHABLE_ROOTS = ["mcp", "cli", path.join("lib", "agent-operations"), path.join("app", "api", "mcp")].map((dir) => path.join(SRC_ROOT, dir));
+// BL-166 moved the Producer route's session deps (its proposal-store side included) to `lib/producer-mcp-endpoint`; the scan follows
+// them there, so the same code stays fenced -- the requirement is unchanged.
+const AGENT_REACHABLE_ROOTS = ["mcp", "cli", path.join("lib", "agent-operations"), path.join("lib", "producer-mcp-endpoint"), path.join("app", "api", "mcp")].map((dir) =>
+  path.join(SRC_ROOT, dir)
+);
 
 const OWNER_SIDE = ["approve", "reject", "apply", "decide", "fail"].map((verb) => `${verb}AgentProposal`);
 const REVIEW_CORE = ["createAgentProposal", "ReviewCore"].join("");

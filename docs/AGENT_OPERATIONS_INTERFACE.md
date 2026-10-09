@@ -1128,3 +1128,9 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   - for one plan, its events. These include the owner's listening verdicts (rating out of 10, reasons, time markers, note);
     job error texts are left out.
 - An agent cannot create, change, run or close a plan. Contract: `docs/interfaces.md`.
+
+**Video milestones (BL-166, Agent API 3.9.0, `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md`):**
+- `agent_get_video_milestones` (capability `analytics.query_video_milestones`, READ) returns the stored day-7 and day-28 milestones of the
+  channel's own videos: the window totals and the 100-point retention curve as YouTube returned them, with the video's stored length.
+- Collected in the background with the Analytics collection (2 Analytics API queries per milestone, at most 25 per channel per run); a local
+  read, never a live call. Each computer collects the milestones of the channels connected on it. Contract: `docs/interfaces.md`.

@@ -1,91 +1,17 @@
-import { runInAgentSession } from "@/lib/agent-session";
-import { createAgentProposalSubmitCore } from "@/lib/agent-proposals";
-import { createChannelConnectionsCore } from "@/lib/channel-connections";
-import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import {
-  getLatestChannelMetricCollectedAt,
-  getMcpConnectionEnabled,
-  getStoredChannel,
-  insertProducerCallLogEntry,
-  listChannelMetricsInRange,
-  listStoredVideosByChannel,
-  recordGatewayCallOutcome,
-} from "@/lib/db";
-import { createPortfolioOverviewServices } from "@/lib/portfolio-overview";
+import { getMcpConnectionEnabled, insertProducerCallLogEntry, recordGatewayCallOutcome } from "@/lib/db";
 import { createProducerTokenCore } from "@/lib/producer-agent-tokens";
 import { createProducerMcpEndpoint } from "@/lib/producer-mcp-endpoint";
-import { createReachReportsCore } from "@/lib/reach-reports";
-import { PRODUCER_API_VERSION, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
-import { createMcpServer, type ProducerSession } from "@/mcp/server";
+import { createProducerSessionDeps } from "@/lib/producer-mcp-endpoint/session-deps";
+import { PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
+import { createMcpServer } from "@/mcp/server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Producer session.
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 // BL-161 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3). Wiring only: which tools the Producer gets is the closed list in
-// `src/mcp/producer-tools.ts`; each channel tool runs in the named channel's agent scope (`createMcpServer`'s producer mode).
-
-/** Every channel in Settings → Channels on this device, with this device's workspace folder (or null). */
-async function listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>> {
-  const [connected, workspaces] = await Promise.all([createChannelConnectionsCore().listConnectedChannels(), createChannelWorkspacesCore().listWorkspaces()]);
-  const pathByChannel = new Map(workspaces.map((entry) => [entry.channelId, entry.path]));
-  return connected.map((channel) => ({ channelId: channel.channelId, title: channel.title, workspace: pathByChannel.get(channel.channelId) ?? null }));
-}
-
-/** The Google account a channel is connected under here -- only for a channel Settings → Channels lists as connected. */
-async function resolveChannelUser(channelId: string): Promise<string | null> {
-  const connected = (await createChannelConnectionsCore().listConnectedChannels()).some((channel) => channel.channelId === channelId);
-  return connected ? ((await getStoredChannel(channelId))?.connectedUserId ?? null) : null;
-}
-
-function createProducerSessionDeps(session: { tokenId: string; reverify(): Promise<void>; noteRecorded(tool: string, channelId: string | null): void }): ProducerSession {
-  const portfolio = createPortfolioOverviewServices({
-    listChannels,
-    async loadChannel(channel, range) {
-      const userId = await resolveChannelUser(channel.channelId);
-      const reach = userId
-        ? await runInAgentSession({ tokenId: session.tokenId, channelId: channel.channelId, userId }, () =>
-            createReachReportsCore().getChannelReach({ credentialRef: { userId }, channelId: channel.channelId, startDate: range.startDate, endDate: range.endDate })
-          ).catch(() => null)
-        : null;
-      const [metrics, videos, stored, lastAnalyticsCollectedAt] = await Promise.all([
-        listChannelMetricsInRange(channel.channelId, range),
-        listStoredVideosByChannel(channel.channelId),
-        getStoredChannel(channel.channelId),
-        getLatestChannelMetricCollectedAt(channel.channelId),
-      ]);
-      return {
-        channelId: channel.channelId,
-        title: channel.title,
-        metrics,
-        reach: reach
-          ? { state: reach.state, impressions: reach.totals.impressions, ctr: reach.totals.ctr, coveredThrough: reach.coverage.lastDate, daysWithData: reach.daily.length }
-          : null,
-        videoPublishedAt: videos.map((video) => video.publishedAt),
-        lastVideoSyncAt: stored?.lastSyncedAt ?? null,
-        lastAnalyticsCollectedAt,
-      };
-    },
-  });
-  // BL-163: the Producer's side of the proposal store only; approving and applying are Web-UI routes.
-  const proposals = createAgentProposalSubmitCore();
-  return {
-    tokenId: session.tokenId,
-    reverify: () => session.reverify(),
-    resolveChannelUser,
-    async recordCall(entry) {
-      session.noteRecorded(entry.tool, entry.channelId);
-      await insertProducerCallLogEntry({ at: new Date(), ...entry });
-    },
-    listChannels,
-    portfolioOverview: async (input) => ({ ...(await portfolio.getOverview(input)) }),
-    proposals: {
-      submit: async (input) => ({ ...(await proposals.submitProducerProposal(input, { agentApiVersion: PRODUCER_API_VERSION })) }),
-      list: async (input) => ({ ...(await proposals.listProducerProposals(input)) }),
-      markDone: async (input) => ({ ...(await proposals.markProducerProposalsDone(input)) }),
-    },
-  };
-}
+// `src/mcp/producer-tools.ts`; each channel tool runs in the named channel's agent scope (`createMcpServer`'s producer mode). The
+// session's deps are built in `src/lib/producer-mcp-endpoint/session-deps.ts`.
 
 const endpoint = createProducerMcpEndpoint({
   isConnectionEnabled: getMcpConnectionEnabled,
