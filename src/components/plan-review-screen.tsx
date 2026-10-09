@@ -212,6 +212,8 @@ async function postJson(t: Translate, url: string, body: unknown, init: { keepal
  */
 const CLAIM_HEARTBEAT_MS = 30_000;
 const CLAIMS_REFRESH_MS = 3_000;
+/** BL-162 (§5.4): how long after opening a track the "the other computer opened it first" move may still happen. */
+const AUTO_MOVE_WINDOW_MS = 20_000;
 
 type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
@@ -579,7 +581,9 @@ export function PlanReviewScreen({
     if (!entry || entry.verdict !== null || !entries || !claimKey) return;
     const claim = claimOf(entry, claims, nowMs);
     const opened = openedAt.current;
-    if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || pickedByHand.current === claimKey || !(Date.parse(claim.since) < opened.at)) return;
+    // Only in the first seconds after opening (review): a claim that arrives later (an older build's report) never pulls a track
+    // away from the owner mid-listen -- the "being reviewed on" line says it instead.
+    if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || pickedByHand.current === claimKey || nowMs - opened.at > AUTO_MOVE_WINDOW_MS || !(Date.parse(claim.since) < opened.at)) return;
     const untouched = draft.reasons.length === 0 && draft.rating === null && !draft.note.trim() && draft.marks.length === 0 && draft.openMark === null;
     if (!untouched) return;
     const next = nextWaitingIndex(entries, index, skipClaimed);
@@ -834,7 +838,7 @@ export function PlanReviewScreen({
           {device && <span className="rounded-full border border-sky-900 px-2 py-0.5 text-xs text-sky-200">{t("review.onDevice", { device })}</span>}
           {/* AC-UX-03: the wave's details on request. */}
           {chosenWave && (
-            <Popover trigger={<>ⓘ {t("review.wave.about")}</>} triggerClassName={toolButton} align="right" panelClassName="w-[32rem] max-w-[80vw] space-y-2 p-3 text-xs text-zinc-300">
+            <Popover trigger={<>ⓘ {t("review.wave.about")}</>} triggerClassName={toolButton} align="right" panelClassName="max-h-[70vh] w-[32rem] max-w-[80vw] space-y-2 overflow-y-auto p-3 text-xs text-zinc-300">
               <p className="text-sm font-medium text-zinc-100">{chosenWave.title}</p>
               {chosenBatch?.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: chosenBatch.ownerNote })}</p>}
               {chosenBatch?.note && <p className="whitespace-pre-wrap">{chosenBatch.note}</p>}
@@ -885,7 +889,10 @@ export function PlanReviewScreen({
         </div>
       </div>
 
-      {entries && entries.length === 0 ? (
+      {/* Review: the first load still running, or failed -- said, not three empty columns. */}
+      {entries === null ? (
+        <p className={`p-6 text-sm ${message?.tone === "error" ? "text-red-400" : "text-zinc-500"}`}>{message?.tone === "error" ? message.text : t("common.loading")}</p>
+      ) : entries.length === 0 ? (
         <p className="p-6 text-sm text-zinc-500">{t("review.empty")}</p>
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_19rem_16rem] divide-x divide-zinc-800">
@@ -1209,6 +1216,8 @@ export function PlanReviewScreen({
                         type="button"
                         ref={current ? currentRow : undefined}
                         onClick={() => {
+                          // The open track again: nothing to do (review: `go` would clear the verdict being written).
+                          if (i === index) return;
                           pickedByHand.current = `${e.itemKey}\u0000${e.attemptRef}`;
                           go(i);
                         }}

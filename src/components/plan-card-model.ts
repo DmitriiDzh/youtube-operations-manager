@@ -142,7 +142,13 @@ export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevi
   const open = plan.review.filter((e) => e.verdict === null && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
   const waiting = open.length;
   const rejected = open.filter((e) => validatorOfEntry(e) === "rejected").length;
-  const progress = sharedProgress(plan.progress);
+  const reported = sharedProgress(plan.progress);
+  // The waves' and items' waiting counts follow the same rule as the header (review): a track rated from here is not waiting.
+  const progress: PlanProgress = {
+    ...reported,
+    groups: reported.groups.map((g) => ({ ...g, counts: { ...g.counts, waitingReview: open.filter((e) => e.groupId === g.groupId).length } })),
+    items: reported.items.map((i) => ({ ...i, waitingReview: open.filter((e) => e.itemKey === i.itemKey).length })),
+  };
   // `review_waiting` is not taken from the report (`sharedNotices`): this computer counts it itself, with its sent verdicts.
   const notices: PlanNotice[] = waiting > 0 ? [...progress.notices, { kind: "review_waiting", count: waiting, passed: waiting - rejected, rejected }] : progress.notices;
   return {
@@ -152,7 +158,8 @@ export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevi
     status: plan.status,
     createdAt: plan.createdAt,
     note: plan.note,
-    reviewRejected: null,
+    // Not in the report; validator-rejected tracks in its queue mean the option is on there (BL-153: they wait only then).
+    reviewRejected: plan.review.some((e) => e.verdict === null && validatorOfEntry(e) === "rejected") ? true : null,
     groups: plan.groups.map((g) => ({ groupId: g.groupId, title: g.title, dependsOn: g.dependsOn, note: g.note, ownerNote: g.ownerNote ?? null, ownerNoteAt: g.ownerNoteAt ?? null })),
     progress: { ...progress, notices },
     events: plan.events.map((e) => ({ at: e.at, kind: e.kind, actor: e.actor, details: e.details })),

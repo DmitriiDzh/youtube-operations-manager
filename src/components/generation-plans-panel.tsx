@@ -339,7 +339,8 @@ export function PlansPanel({
         </ul>
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
-      {selectedModel && <PlanDetailCard model={selectedModel} onChanged={load} onReview={(wave) => review(selectedModel.planId, selectedModel.device, wave)} />}
+      {/* Keyed by the plan (review): another plan never inherits an open note editor or folded waves. */}
+      {selectedModel && <PlanDetailCard key={selected ?? undefined} model={selectedModel} onChanged={load} onReview={(wave) => review(selectedModel.planId, selectedModel.device, wave)} />}
       {selected && !selectedModel && <p className="text-xs text-zinc-500">{t("plans.loadingPlan")}</p>}
     </div>
   );
@@ -474,7 +475,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
           )}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {model.waiting > 0 && (
+          {model.waiting > 0 && model.status === "active" && (
             <button type="button" onClick={() => onReview()} className={primaryButton}>
               {t("plans.reviewWaiting", { count: model.waiting })}
             </button>
@@ -498,7 +499,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
           value={String(model.waiting)}
           tone={model.waiting > 0 ? "text-amber-300" : "text-zinc-100"}
           sub={waitingNotice && waitingNotice.rejected > 0 ? t("plans.kpi.waitingSplit", { passed: waitingNotice.passed, rejected: waitingNotice.rejected }) : null}
-          onClick={model.waiting > 0 ? () => onReview() : undefined}
+          onClick={model.waiting > 0 && model.status === "active" ? () => onReview() : undefined}
         />
         <Kpi label={t("plans.kpi.accepted")} value={String(ownerStage ? ownerStage.counts.accepted + ownerStage.counts.done : 0)} tone="text-emerald-300" sub={ownerStage && ownerStage.counts.rejected > 0 ? t("plans.kpi.rejected", { count: ownerStage.counts.rejected }) : null} />
         {generate && <Kpi label={t("plans.kpi.generated")} value={`${generate.counts.done} / ${generate.counts.planned}`} bar={{ percent: describeStage(t, generate.kind, generate.counts).percent, tone: "bg-violet-500" }} sub={generate.counts.failed > 0 ? t("plans.stage.failed", { count: generate.counts.failed }) : null} />}
@@ -539,7 +540,11 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
           {model.status === "active" && (
             <span className="ml-auto">
               {elsewhere ? (
-                <span className="text-xs text-zinc-500">{t("plans.reviewRejectedOn", { device: elsewhere })}</span>
+                // AC-UX-13: shown, disabled, with where it is set (its state as that computer's queue shows it).
+                <span className="flex items-center gap-2 text-xs text-zinc-500">
+                  <ToggleSwitch tone="violet" label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled onChange={() => undefined} />
+                  <span>{t("plans.reviewRejectedOn", { device: elsewhere })}</span>
+                </span>
               ) : (
                 <span className="flex items-center gap-1.5 text-xs text-zinc-300">
                   <label className="flex cursor-pointer items-center gap-2">

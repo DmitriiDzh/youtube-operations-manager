@@ -129,3 +129,24 @@ test("BL-162 §5.2: another device's plan takes wave notes from here only from v
   assert.equal(m.notes, "relay");
   assert.deepEqual(Object.keys(m.pendingNotes), ["C1"]);
 });
+
+test("BL-162 review: on another device's plan the waves' and items' waiting counts leave out what was rated from here, like the header", () => {
+  const plan = v1Plan({
+    progress: {
+      ...v1Plan().progress,
+      groups: [{ groupId: "C2", title: "C2 recipe", counts: { items: 2, generated: 3, accepted: 0, rejected: 0, waitingReview: 3, missing: 0 } }],
+      items: [
+        { itemKey: "C2/V1", targetCount: 1, attempts: 2, generated: 2, waitingReview: 2 },
+        { itemKey: "C2/V2", targetCount: 1, attempts: 1, generated: 1, waitingReview: 1 },
+      ],
+    },
+  });
+  // Two of the three were rated here: job:a (C2/V1) and job:c (C2/V2).
+  const m = peerPlanModel(plan, device, [
+    { ownerDeviceId: "win-1", planId: "R-0001", itemKey: "C2/V1", attemptRef: "job:a" },
+    { ownerDeviceId: "win-1", planId: "R-0001", itemKey: "C2/V2", attemptRef: "job:c" },
+  ]);
+  assert.equal(m.waiting, 1);
+  assert.equal(m.progress.groups[0].counts.waitingReview, 1);
+  assert.deepEqual(m.progress.items.map((i) => [i.itemKey, i.waitingReview]), [["C2/V1", 1], ["C2/V2", 0]]);
+});

@@ -64,4 +64,3 @@ test("BL-162 review: a configured sync folder that is missing is never created b
   await assert.rejects(presence.publish({ hostname: "PC", claims: [] }), /not available/);
   await assert.rejects(readFile(path.join(missingRoot, "generation-plans", "global", "win-1.presence.json")), { code: "ENOENT" });
 });
-

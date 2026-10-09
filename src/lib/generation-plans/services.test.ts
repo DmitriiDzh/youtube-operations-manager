@@ -1885,4 +1885,3 @@ test("BL-162 review: the owner's own note saved while another computer's older n
   await d.mac.applyPeerGroupNotes();
   assert.equal((await macPlan()).groups[0].ownerNote, "Mac (newer)");
 });
-
