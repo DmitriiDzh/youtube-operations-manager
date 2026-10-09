@@ -1901,3 +1901,14 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **What to do:** update both computers together (stated in the release note); set Syncthing's watch delay for the shared folder to 1 s so claims arrive in seconds; keep the computers' clocks synced (macOS/Windows network time is on by default).
 - **Re-evaluate:** if a third computer joins (presence and notes are per device, nothing assumes two, but the tie-break is pairwise), or if clocks drift (then use the order the owning device received them).
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner, msgs 2244/2263).
+
+## RISK-120 — An approved agent proposal reads "applied" if the app stops between the claim and the change — OPEN, 2026-10-09
+
+- **What:** BL-163 (`docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md` §2.C). Approving claims the proposal first (`pending -> applied`,
+  atomic), then makes the change; a failure stores `failed` with the error. If the process stops between the two (crash, power loss), the
+  proposal reads `applied` though the change was not made. Claiming first is deliberate: it makes a double approve apply once, and lets a
+  deletion drop the entry's other pending proposals without dropping the one being applied.
+- **Bounded by:** each change is one local write through an existing service (milliseconds), nothing touches YouTube, and the watchlist or the
+  hypotheses list shows the real state; the owner can make the change by hand.
+- **Re-evaluate:** if a proposal kind gets a long or external apply step (then add an `approved` state with a resume on start).
+- **Gate(s):** none. **Status:** open, accepted tradeoff.

@@ -3212,10 +3212,47 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
 - `createMcpServer` producer mode: `registerTool` routes every tool through `producerRegistration`. A `bound` tool in the closed list
   (`src/mcp/producer-tools.ts`, each entry naming its READ capability) gets `.extend({ channelId })` (required; `query_market_intelligence`'s
   own `channelId` moves to `watchlistChannelId`); its wrapper re-verifies, resolves the channel's account (none: `CHANNEL_NOT_ACTIVE`), runs the
-  unchanged handler inside `runInAgentSession({tokenId, channelId, userId})` for that one call, logs it, and adds `forChannelId`. The three
-  `producer-only` tools (classification class) run without a scope. A channel session never registers a producer tool; the SDK registration
+  unchanged handler inside `runInAgentSession({tokenId, channelId, userId})` for that one call, logs it, and adds `forChannelId`. The
+  `producer-only` tools (classification class) run without a scope; one that names a `channelId` (the proposal tools, BL-163) is logged under
+  it and answers with `forChannelId`, so the endpoint matches the call to the server's own log entry. A channel session never registers a producer tool; the SDK registration
   is still one call.
 - `src/lib/portfolio-overview` adds up stored data per channel (`channel_metrics_daily`, Reach totals read in the channel's scope, synced
   videos' `publishedAt`, freshness); a source with nothing stored is `null`, not zero.
 - `producer_call_log` (v72) records every call with tool, channel, outcome and error code; pruned to 90 days on insert; shown on the Producer
   card (`GET /api/producer-agent-token/calls`).
+
+## 35. Watchlist hygiene and agent proposals (BL-163, FO-REQ-0014, ADR 0034 Amendment 1)
+
+Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
+
+**Activity and pause (market-intelligence).**
+- Read model: `listLatestUploadDates` = `MAX(published_at)` of each entry's retained video snapshots (the 30-day window applies to API rows,
+  so a paused entry's date fades). `watchlistActivityOf` derives `inactive` = known and older than `monthsBefore(now, N)`; N is the
+  `market_intelligence_inactive_after_months` setting (default 6, 1-60). Every watchlist read carries the raw date, `inactive`, `pausedAt`
+  and `pausedReason`; nothing is computed from another channel's statistics (III.E.4.h).
+- Pause is stored state (`research_channels.paused_at`, `paused_reason` `inactive` | `owner`, `resumed_at`); inactivity only sets it.
+  `claimStaleResearchChannelsForCollection` skips paused rows, so neither auto-collection nor an approved collection request collects them.
+- Detector: `evaluateInactivity` runs before and after `collectStaleChannels` in `runCollectionIfStale` (and on demand). It skips paused
+  entries, unknown dates, active ones and entries resumed after their newest upload, and for the rest calls `pauseInactiveResearchChannel`:
+  one transaction that pauses only a still-unpaused row and inserts the system proposal `watchlist.delete` with `onConflictDoNothing` on the
+  pending dedupe key (`watchlist.delete|<id>`), so two connections or two passes add one.
+- `setResearchChannelPause` writes only a state change (a paused entry keeps its first reason; resuming stamps `resumed_at`).
+  `deleteResearchChannel` also deletes the entry's `channel_record_assignments` rows and its pending proposals.
+
+**Agent proposals (`src/lib/agent-proposals/`).**
+- Store: `agent_proposals` (source `producer` | `system`, kind, `channel_id`, `target_id`, `payload_json`, `text`, status
+  `pending | applied | rejected | failed`, `dedupe_key` with a unique index -- cleared when decided, so it binds only pending rows --,
+  decision fields, `done_at`). In the device snapshot; `notApiData`.
+- Services: `submitProducerProposal` checks the channel is connected, the payload per kind (strict zod), and the current state through
+  the watchlist port (the entry exists and this channel follows it; pause needs an active entry, resume a paused one; add refuses an entry the
+  channel already follows), then inserts; a pending duplicate is `AGENT_PROPOSAL_DUPLICATE`. `approveAgentProposal` checks (for a
+  hypothesis) that the proposal's channel is the session's active channel -- `createHypothesis` requires it -- then claims (`decide` to
+  `applied`, atomic on `status = pending`) and only then applies; a throw is stored as `failed` with its message (RISK-120 for a stop in
+  between). Claim-first is what makes a double approve apply once, and keeps a deletion (which drops the entry's pending proposals) from
+  dropping the proposal being applied. `rejectAgentProposal` requires a trimmed comment.
+- Apply goes through public cores only: `market-intelligence` (`addToWatchlist` with `createdVia: "mcp"`, `setWatchlistPause`,
+  `removeFromWatchlist`, `getWatchlistEntry`, `listWatchlist` for labels), `market-assignments` (`listAssignments` / `setAssignment` for
+  follow and unfollow) and `decision-engine` (`createHypothesis`, `createdBy: "producer"`). None of them depends on this module (§M).
+- Cleanup is lazy: every list and every mark-done purges decided rows that are done or decided more than 90 days ago.
+- Two entry points: `createAgentProposalSubmitCore` (wired into `ProducerSession.proposals` by the Producer route) and
+  `createAgentProposalReviewCore` (the Web routes and the summary count). The approval inventory test pins that split.

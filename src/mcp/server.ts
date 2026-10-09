@@ -76,7 +76,8 @@ import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
+import { AGENT_PROPOSAL_KINDS } from "@/lib/agent-proposals/contracts";
 import {
   createChannelWorkspacesCore,
   getChannelWorkspaceInputSchema,
@@ -461,6 +462,12 @@ export type ProducerSession = {
   recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
   listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+  /** BL-163: the Producer's side of the proposal store -- submit, list its own, mark read. Approving is not here (Web UI only). */
+  proposals: {
+    submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    markDone(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). */
@@ -471,6 +478,26 @@ const ISO_DATE = z
     const time = Date.parse(`${value}T00:00:00Z`);
     return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
   }, "not a calendar date");
+
+// BL-163 (FO-REQ-0014 §C): the proposal tools' inputs. `payload` is checked per kind by the proposal service.
+export const producerProposeInputSchema = z
+  .object({
+    channelId: z.string().min(1).max(64).describe("The channel of ours the proposal is for (one of producer_list_channels)."),
+    kind: z.enum(AGENT_PROPOSAL_KINDS),
+    text: z.string().min(1).max(4000).describe("Your explanation for the owner: what, why, and the evidence. Shown on the proposal card."),
+    payload: z.record(z.string(), z.unknown()).describe("The kind's own fields -- see the tool description."),
+  })
+  .strict();
+
+export const producerListProposalsInputSchema = z
+  .object({
+    channelId: z.string().min(1).max(64).optional(),
+    status: z.enum(["pending", "applied", "rejected", "failed"]).optional(),
+    includeDone: z.boolean().optional(),
+  })
+  .strict();
+
+export const producerMarkProposalsDoneInputSchema = z.object({ proposalIds: z.array(z.string().min(1).max(100)).min(1).max(100) }).strict();
 
 export const producerPortfolioOverviewInputSchema = z
   .object({ startDate: ISO_DATE, endDate: ISO_DATE })
@@ -2590,14 +2617,19 @@ export function createMcpServer(
     };
     if (toolClass === "producer-only") {
       const wrapped = async (args: never) => {
+        // A producer tool that names one of our channels (BL-163's proposal tools) is logged under it, by the endpoint's own rule
+        // (a string of at most 64 characters), so the endpoint matches the call to this entry; the answer names it too.
+        const named = (args as { channelId?: unknown } | undefined)?.channelId;
+        const channelId = typeof named === "string" && named.length <= 64 ? named : null;
+        const finish = (result: ToolResponse) => (channelId ? withForChannel(result, channelId) : result);
         let result: ToolResponse;
         try {
           await session.reverify();
         } catch (error) {
           await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
           result = toolErrorResult(error);
-          await record({ channelId: null, result });
-          return result;
+          await record({ channelId, result });
+          return finish(result);
         }
         await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
         try {
@@ -2605,8 +2637,8 @@ export function createMcpServer(
         } catch (error) {
           result = toolErrorResult(error);
         }
-        await record({ channelId: null, result });
-        return result;
+        await record({ channelId, result });
+        return finish(result);
       };
       return { config, handler: wrapped };
     }
@@ -2683,16 +2715,17 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, that every permission is READ, and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here drafts, writes, spends, or starts anything.",
+        "The Producer role's own report: its API version, its permissions (READ, plus DRAFT for its proposals only) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes, spends, or starts anything: the only DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ"],
+        permissions: ["READ", "DRAFT"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
+        draftTools: [...PRODUCER_DRAFT_TOOLS],
       })
   );
 
@@ -2714,6 +2747,44 @@ export function createMcpServer(
       inputSchema: producerPortfolioOverviewInputSchema,
     },
     async (args: z.infer<typeof producerPortfolioOverviewInputSchema>) => toolSuccessResult(await producerSession!.portfolioOverview(args))
+  );
+
+  // BL-163 (FO-REQ-0014 §C, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): the Producer proposes, the owner decides in
+  // the Web UI, the system applies. These tools reach only the proposal store's Producer side (`ProducerSession.proposals`).
+  registerTool(
+    "producer_propose",
+    {
+      description:
+        "Propose ONE change to the research watchlist or the hypotheses of one of our channels. It changes nothing: the owner sees it in YT Manager (Research → Inbox, \"Agent proposals\") with your `text`, approves it in one click, or rejects it with a required comment. Read the outcome with producer_list_proposals. `channelId` = the channel of ours it is for (one of producer_list_channels); `text` = what, why and the evidence (e.g. \"no upload since 2023-11-29\"). `kind` and its `payload`: " +
+        "watchlist.add {competitorChannelId: the competitor's UC... channel id (a handle or URL is not accepted -- no YouTube call is made), reason: why it is watched (stored on the entry), handleOrUrl?: shown in the list} -- adds it to the watchlist if needed and makes this channel follow it; " +
+        "watchlist.unfollow {researchChannelId} -- this channel stops following it, the entry stays for the others; " +
+        "watchlist.pause / watchlist.resume {researchChannelId} -- stops / restarts its collection, for every channel; " +
+        "watchlist.delete {researchChannelId} -- deletes it from the watchlist completely, with its stored history, for every channel; " +
+        "hypothesis.add {statement, evidenceNotes} -- a new hypothesis of this channel, created as yours (createdVia mcp) when approved. " +
+        "Every watchlist kind except add must name an entry this channel follows (query_competitors with this channelId). Refused at once: an entry the channel does not follow (RESEARCH_CHANNEL_NOT_AVAILABLE), a channel not connected here (CHANNEL_NOT_ACTIVE), a change that does not fit the current state, e.g. pausing a paused entry (AGENT_PROPOSAL_NOT_APPLICABLE), and the same proposal already waiting (AGENT_PROPOSAL_DUPLICATE -- pause, resume and delete: one per entry, whoever proposed it, the system's own deletion proposals for inactive entries included). Returns the stored proposal (status pending).",
+      inputSchema: producerProposeInputSchema,
+    },
+    async (args: z.infer<typeof producerProposeInputSchema>) => toolSuccessResult({ proposal: await producerSession!.proposals.submit(args) })
+  );
+
+  registerTool(
+    "producer_list_proposals",
+    {
+      description:
+        "Your proposals, newest first, with their status: pending (waiting for the owner), applied (approved and made), rejected (with the owner's `rejectComment` -- the reason, for you), failed (approved, but the change could not be made: `applyError`; never retried by itself). Optional filters: channelId, status; includeDone (default false) also lists the ones you marked read before they leave the store. Mark decided ones read with producer_mark_proposals_done. A decided proposal leaves the store when you mark it, or 90 days after the decision; a pending one never expires. A local read.",
+      inputSchema: producerListProposalsInputSchema,
+    },
+    async (args: z.infer<typeof producerListProposalsInputSchema>) => toolSuccessResult(await producerSession!.proposals.list(args))
+  );
+
+  registerTool(
+    "producer_mark_proposals_done",
+    {
+      description:
+        "Mark decided proposals (applied, rejected or failed) as read: they leave the proposal store. A pending one is never marked (it stays for the owner). Returns `marked` and `notMarked` (pending, unknown, already gone, or not yours). Up to 100 ids per call.",
+      inputSchema: producerMarkProposalsDoneInputSchema,
+    },
+    async (args: z.infer<typeof producerMarkProposalsDoneInputSchema>) => toolSuccessResult(await producerSession!.proposals.markDone(args))
   );
 
   registerTool(

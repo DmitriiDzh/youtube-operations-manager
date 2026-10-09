@@ -740,7 +740,7 @@ Key MCP tools:
     `createExperiment`/`insertExperiment` never actually persist `createdBy` anywhere -- the
     `Experiment` type has no such field, only `responsible` (a caller-supplied input value, not an
     identity stamp).
-  - `agent_export_research_data` (BL-119, ADR 0019) — `{ channelId, researchChannelIds?, includeOwnChannel?=true, formats?=["csv"] }` (`.strict()`; no path or file name) → `{ generatedAt, exportsDir, files: [{ dataset, format, path, rows, bytes, expiresAt }], watchlistChannels: { exported, withoutSnapshots }, retentionNote }`. `DRAFT`, channel-scoped, passes the mutation gate; writes into the fixed folder `<channel workspace>/99 Data Exchange/From YTM/` (created on the first export; owner-approved exception, ADR 0019 amendment). Errors `RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED` / `RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE` / `RESEARCH_EXPORT_WRITE_FAILED`. `query_market_overview` — `{ channelIds?, limit?=50 (max 200), offset?=0 }` → `{ total, offset, limit, channels: [{ channelId, handleOrUrl, latestChannelSnapshot, channelSnapshotCount, videoSnapshotCount, evidenceCount, dataQualityFlags }], nextOffset }`; `READ`, local. `agent_query_channel_reach` also takes `videoId` and `groupBy: "video_day"` (adds `videoDaily`, capped at 5000 rows); `agent_query_video_analytics` takes `format: "wide"` (`wideRows`, `rows` empty); `channel_video_list` takes `fields`, `limit` (max 500), `offset` (→ `{ channelId, videos, total, offset, nextOffset }`). Agent API 3.1.0.
+  - `agent_export_research_data` (BL-119, ADR 0019) — `{ channelId, researchChannelIds?, includeOwnChannel?=true, formats?=["csv"] }` (`.strict()`; no path or file name) → `{ generatedAt, exportsDir, files: [{ dataset, format, path, rows, bytes, expiresAt }], watchlistChannels: { exported, withoutSnapshots }, retentionNote }`. `DRAFT`, channel-scoped, passes the mutation gate; writes into the fixed folder `<channel workspace>/99 Data Exchange/From YTM/` (created on the first export; owner-approved exception, ADR 0019 amendment). Errors `RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED` / `RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE` / `RESEARCH_EXPORT_WRITE_FAILED`. `query_market_overview` — `{ channelIds?, limit?=50 (max 200), offset?=0 }` → `{ total, offset, limit, channels: [{ channelId, handleOrUrl, latestChannelSnapshot, channelSnapshotCount, videoSnapshotCount, evidenceCount, dataQualityFlags, latestUploadPublishedAt, inactive, pausedAt, pausedReason }], nextOffset }` (the last four BL-163, also on `query_competitors`; no version bump: an additive output field); `READ`, local. `agent_query_channel_reach` also takes `videoId` and `groupBy: "video_day"` (adds `videoDaily`, capped at 5000 rows); `agent_query_video_analytics` takes `format: "wide"` (`wideRows`, `rows` empty); `channel_video_list` takes `fields`, `limit` (max 500), `offset` (→ `{ channelId, videos, total, offset, nextOffset }`). Agent API 3.1.0.
   - `agent_create_collection_request` (ADR 0021) — `{ researchChannelIds?: string[], reason?: string (<= 500) }` (`.strict()`; no force) → `{ created, request, notNeeded: [{ channelId, reason: "collected_recently"|"recent_failure", hoursSince }], alreadyRequested: [{ channelId, requestId }] }`. `DRAFT`, channel-bound, passes the mutation gate; zero YouTube calls. `request` = `{ requestId, channelIds, reason, status, estimate: { channels: [{ channelId, mode, expectedUnits, worstCaseUnits }], totalExpectedUnits, totalWorstCaseUnits, dailyBudgetUnits, unitsSpentToday, remainingTodayUnits, fitsToday }, result, unitsSpentTotal, error, ... }`; units are YouTube quota units, estimates are upper bounds (incremental: about 2, at most 5); `alreadyRequested[].requestId` only for requests assigned to the caller; a `done` request can have every channel skipped_*, read `result`. Errors `MARKET_INTELLIGENCE_QUOTA_DISABLED` (no daily budget), `RESEARCH_CHANNEL_NOT_AVAILABLE`. `agent_get_collection_request` — `{ requestId? }` → `{ request }` or `{ requests }` (latest 20 assigned to the caller); per-channel `result` entries `{ channelId, outcome: completed|partial_budget|failed|skipped_not_stale|skipped_recent_failure|skipped_quota_limited, videosStored, newSnapshotsObservedAt, unitsSpent }`; `COLLECTION_REQUEST_NOT_FOUND` for an unknown or unassigned id. `agent_get_collection_limits` — `{}` → `{ dailyBudgetUnits|null, unitsSpentToday, remainingTodayUnits|null, quotaDayResetsAt, defaultMaxVideosPerChannel, defaultPublishedAfter, staleWindowHours, perChannelOverrides }`; both `READ`, local. CLI: `agent create-collection-request [--researchChannelIds a,b] [--reason ...]`, `agent collection-limits`. Approve/run/reject are Web-only (`POST /api/market-intelligence/collection-requests/[requestId]/approve|reject`, session required; approve blocks until the run finishes). Agent API 3.2.0.
   - Remote media generation, BL-135 additions (Agent API 3.6.0, ADR 0023 amendment 2, additive): `agent_request_media_session` takes `releaseWhenDone?: boolean` (sessions report `releaseWhenDone`; the watcher stops such a running session one minute after its last job finished and its last activity, once it has had a job and none is open). `agent_release_media_session` `{ channelId, sessionId }` → `{ session }` (`DRAFT`, gated): ends this channel's own session -- `pending` withdrawn (`rejected`), `starting`/`running` stopped like the owner's Stop, `stopping` returned as is; `approved` or terminal → `media_session_invalid_state`; another channel's → `media_session_not_found`. Approve/start/reject stay Web-only. Web `POST /api/media-generation/sessions` takes `releaseWhenDone` too.
   - Default `releaseWhenDone` (Agent API 3.7.0, Factory API 1.4.0; DEV-MSG-0001 / FO-MSG-0007, owner 2026-10-07): a session request that omits `releaseWhenDone` -- the owner's, `agent_request_media_session` or `factory_media_start_session` -- takes the owner's Servers → Setup setting (on by default); before, agent and factory requests defaulted to `false`. An explicit `true`/`false` always wins. A session stopped this way has `stopReason` starting with `released after last job`.
@@ -964,11 +964,12 @@ A second agent role, separate from the channel agents. Technical contract only (
 
 ## Producer MCP endpoint (`POST /api/mcp/producer`, BL-161, ADR 0034)
 
-A read-only agent role that reads every channel connected on the device, one channel per call (FO-REQ-0012). Technical contract only.
+An agent role that reads every channel connected on the device, one channel per call (FO-REQ-0012), and proposes watchlist and hypothesis
+changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical contract only.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.0.0`, independent of `AGENT_API_VERSION` and the Factory API.
+- **Producer API version:** `1.1.0` (1.0.0 plus the three proposal tools, BL-163), independent of `AGENT_API_VERSION` and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
@@ -979,7 +980,7 @@ A read-only agent role that reads every channel connected on the device, one cha
   `agent_list_content_proposals`, `agent_list_hypotheses`, `agent_get_hypothesis_trail`, `agent_list_generation_plans`, `agent_get_generation_plan`,
   `agent_get_channel_workspace`. A call runs in that channel's agent scope: it sees exactly what the channel's own agent sees (market records assigned
   to that channel, its hypotheses, ...). A channel not connected on this device: `CHANNEL_NOT_ACTIVE`, nothing read.
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ"], channelRequired: true, tools }`;
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done"] }`;
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
@@ -991,7 +992,22 @@ A read-only agent role that reads every channel connected on the device, one cha
   refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`
   header) as `REQUEST_REJECTED`. The channel tools take no `credentialRef` here (the channel's own connected
   account is used); passing one is refused at input.
-- No DRAFT, WRITE, research or collection request, media session or job.
+- **Proposal tools (BL-163, FO-REQ-0014 §C, ADR 0034 Amendment 1).** The only DRAFT tools; a proposal changes nothing until the owner
+  approves it in the Web UI (Research → Inbox); no tool here can approve, reject or apply (inventory test).
+  - `producer_propose` `{ channelId, kind, text (1-4000), payload }` → `{ proposal, forChannelId }`. `kind` / `payload` (strict):
+    `watchlist.add` `{ competitorChannelId: "UC...", reason, handleOrUrl? }` (no handle resolution, no YouTube call),
+    `watchlist.unfollow` / `watchlist.pause` / `watchlist.resume` / `watchlist.delete` `{ researchChannelId }`, `hypothesis.add`
+    `{ statement, evidenceNotes }`. Refused at submit: `CHANNEL_NOT_ACTIVE` (channel not connected here), `RESEARCH_CHANNEL_NOT_AVAILABLE`
+    (an entry this channel does not follow, or none), `AGENT_PROPOSAL_NOT_APPLICABLE` (e.g. pausing a paused entry, adding one the channel
+    already follows), `AGENT_PROPOSAL_DUPLICATE` (`details.proposalId`; one pending pause / resume / delete per entry whoever proposed it,
+    the system's own deletion proposal included; add / unfollow per entry and channel), `validation_failed`.
+  - `producer_list_proposals` `{ channelId?, status?, includeDone? = false }` → `{ proposals }` -- the Producer's own, newest first:
+    `{ proposalId, source: "producer", kind, channelId, targetId, payload, text, status: pending | applied | rejected | failed, createdAt,
+    decidedAt, rejectComment, applyError, doneAt }`.
+  - `producer_mark_proposals_done` `{ proposalIds (1-100) }` → `{ marked, notMarked }`: a decided proposal leaves the store; a pending one is
+    never marked. Decided proposals also leave 90 days after the decision; pending ones never expire.
+  - These calls are logged under the `channelId` they name (null when none), and `producer_propose`'s answer carries `forChannelId`.
+- No WRITE, research or collection request, media session or job.
 
 ## API Route Handlers (selected)
 
@@ -1068,6 +1084,20 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
 - Both require a NextAuth session. They are not active-channel-scoped: the Settings → Channels
   card manages every connected channel.
 
+### Agent proposals API (BL-163, FO-REQ-0014 §C, `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`)
+
+Web UI only: no MCP tool, CLI command or agent-operations code reaches these (`src/lib/agent-proposals/agent-proposal-approval-inventory.test.ts`).
+
+- `GET /api/agent-proposals?view=pending|decided` → `{ proposals, pendingCount }` -- every source (Producer and system); each proposal as on the
+  Producer side plus `channelTitle`, `targetLabel` (the entry's handle while it is on the watchlist) and `decidedBy` (the approving session user).
+- `POST /api/agent-proposals/[proposalId]/approve` (no body) → `{ proposal }`: claims it atomically (`pending -> applied`), then makes the change
+  through the same services the UI uses (watchlist add, our-channel links, pause/resume, delete; `createHypothesis` with `createdVia: "mcp"`,
+  `createdBy: "producer"`). A change that cannot be made leaves it `failed` with `applyError` (HTTP 200), never retried. `AGENT_PROPOSAL_NOT_PENDING`
+  (409) once decided, `AGENT_PROPOSAL_NOT_FOUND` (404), `AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE` (409, the proposal stays pending) for a hypothesis
+  whose channel is not the session's active channel.
+- `POST /api/agent-proposals/[proposalId]/reject` `{ comment }` (required, 1-2000 after trimming) → `{ proposal }`; nothing else changes.
+- `GET /api/market-intelligence/summary` `pending.agentProposals` counts the pending ones into `pending.total` (the Research inbox badge).
+
 ### Market Intelligence API (Phase 9 slices 1-4/9A-9E/9G — previously undocumented here, per `AGENTS.md` §H)
 
 All routes are global (not scoped to one owned channel) -- the research watchlist tracks channels
@@ -1078,6 +1108,8 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `GET /api/market-intelligence/channels/[channelId]/evidence` — the recorded observations for the channel (Phase 13: API-sourced rows only within the last 30 days, operator-entered rows at any age); `POST` — record one manually (`{ observation, source, confidence? }`; `source` is free text but must not be one of the strings the API collection stamps itself, `youtube.channels.list` / `youtube.videos.list` / `youtube.videos.batchGetStats` — `validation_failed`)
 - `POST /api/market-intelligence/channels/[channelId]/fetch-public-snapshot` — the one slice-3 action making a real `channels.list` call; records a free-text evidence row
 - `POST /api/market-intelligence/collect-if-stale` (Phase 9 slice 9B) — repeatable, budget-aware auto-refresh: every watchlisted channel stale by >24h gets a channel snapshot + up to 50 newest video snapshots, gated by the operator-set daily unit budget (`marketIntelligenceDailyQuotaBudgetUnits`, Settings tab); triggered once per dashboard mount (chained after the two Phase 8 analytics calls), real mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; no request body
+- `POST /api/market-intelligence/channels/[channelId]/pause` `{ paused: boolean }` → `{ channel }` (BL-163, FO-REQ-0014 §A): the owner pauses (reason `owner`) or resumes a watchlist entry; a paused entry is never collected. Only a state change is written (a paused entry keeps its first reason; resuming stamps `resumedAt`, after which the detector does not pause it again for the same silence). `RESEARCH_CHANNEL_NOT_AVAILABLE` (404) for an entry not on the watchlist.
+- `GET/POST /api/market-intelligence/inactivity` `{ inactiveAfterMonths: 1..60 }` (BL-163): "inactive after N months without uploads", default 6. An entry whose newest stored upload (`MAX(published_at)` of its retained video snapshots) is older is paused (reason `inactive`) with one pending system proposal `watchlist.delete`, evaluated at the start and end of every collection pass. Every watchlist read (these routes, `watchlist-table`, `query_competitors`, `query_market_overview`) carries `latestUploadPublishedAt` (raw, null when unknown), `inactive`, `pausedAt`, `pausedReason`.
 - `GET/POST /api/market-intelligence/collection-depth` and `GET/POST /api/market-intelligence/channels/[channelId]/collection-depth` (operator request 2026-10-04) — the global default and a watchlist entry's override of the competitor collection depth (`maxVideosPerChannel` integer 1..2000 or null, `publishedAfter` `YYYY-MM-DD` or null; null = default / unset = 50 videos, no date), plus (per channel) `collectionProgress` (videos stored, complete, estimated first-collection units). Session only, like the other watchlist routes; Web UI only, no MCP/CLI write contract. MCP read side: `query_market_overview` per-channel `collection`, `query_market_intelligence` `collectionProgress`, data-quality flag `feed_fallback_used`.
 - `GET /api/market-intelligence/discover` (Phase 13 slice 13.4) — today's `search.list` usage against its own bucket (`{ searchesUsedToday, dailyLimit: 100, quotaDayStartedAt }`, the quota day starting at midnight Pacific)
 - `POST /api/market-intelligence/discover` (Phase 9 slice 9C; quota revised in Phase 13 slice 13.4) — `{ query }`; one `search.list` call (1 unit from its own bucket of 100 calls a day, refused when that bucket is used up; it does not draw on the collection budget), only ever called from an explicit Research-tab UI click, never automatic; upserts discovery candidates (dedup against the watchlist and existing candidates)

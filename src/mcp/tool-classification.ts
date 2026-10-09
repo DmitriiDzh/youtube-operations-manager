@@ -98,4 +98,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   producer_get_capabilities: "producer-only",
   producer_list_channels: "producer-only",
   producer_portfolio_overview: "producer-only",
+  producer_propose: "producer-only",
+  producer_list_proposals: "producer-only",
+  producer_mark_proposals_done: "producer-only",
 });

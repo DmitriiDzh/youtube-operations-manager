@@ -1,6 +1,6 @@
 # Watchlist hygiene and agent proposals (BL-163, FO-REQ-0014)
 
-**Status: APPROVED, in progress.** Owner, Telegram 2026-10-09 (msg 2311): full pause plus a deletion proposal; no
+**Status: IMPLEMENTED on the branch, awaiting the owner's merge approval.** Owner, Telegram 2026-10-09 (msg 2311): full pause plus a deletion proposal; no
 revival check, since inactive channels get deleted; hypotheses in this round if possible; history goes with a full
 deletion. Branch: `feature/watchlist-hygiene-proposals`, one merge approval at the end. Reply to the Factory Operator:
 DEV-RESP-0016.
@@ -96,7 +96,13 @@ before the code.
   `createHypothesis`). It is guarded by an atomic `pending → approved` update. A failure is stored as `failed` with the
   error. Nothing changes before approval.
 - **Cleanup.** A decided proposal is deleted when the Producer marks it done, or 90 days after the decision. Pending ones
-  never expire.
+  never expire. (Implemented lazily: every list and every mark-done purges.)
+- **As built (2026-10-09):**
+  - `watchlist.add` takes the competitor's `UC...` id only: resolving a handle would need a YouTube call.
+  - A hypothesis is approved only while the proposal's channel is the owner's active channel (`createHypothesis` requires it).
+    Otherwise approval is refused with `AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE` and the proposal stays pending.
+  - Approve claims the proposal (`pending → applied`) before applying, and a throw sets `failed`. There is no separate
+    `approved` state (RISK-120).
 - **Integrity tests.** An inventory test fails if `src/mcp`, `src/cli` or `src/lib/agent-operations` can reach approve,
   reject or apply. The Producer READ test changes from "only READ" to "READ, plus exactly these two DRAFT tools".
 

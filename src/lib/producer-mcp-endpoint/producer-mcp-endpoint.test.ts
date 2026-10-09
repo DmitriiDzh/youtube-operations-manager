@@ -7,7 +7,7 @@ import { addChannelRecordAssignment, insertResearchChannel, upsertChannel, upser
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { createProducerMcpEndpoint, type ProducerRefusedCall } from "./index";
 
@@ -69,6 +69,7 @@ function setup(initial: { enabled?: boolean } = {}) {
   const state = { enabled: initial.enabled ?? true, createdServers: 0 };
   const calls: Array<{ tool: string; channelId: string | null; outcome: string; errorCode: string | null }> = [];
   const refused: ProducerRefusedCall[] = [];
+  const proposalCalls: Array<[string, Record<string, unknown>]> = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
     verifyToken: (token) => tokens.verifyToken(token),
@@ -91,11 +92,26 @@ function setup(initial: { enabled?: boolean } = {}) {
           { channelId: "UC_PR_Y", title: "Channel UC_PR_Y", workspace: null },
         ],
         portfolioOverview: async (input) => ({ ...input, source: "local", channels: [] }),
+        proposals: {
+          submit: async (input) => {
+            proposalCalls.push(["submit", input]);
+            if (input.kind === "watchlist.delete") throw new DomainError({ code: "AGENT_PROPOSAL_DUPLICATE", message: "already waiting" });
+            return { proposalId: "p1", status: "pending" };
+          },
+          list: async (input) => {
+            proposalCalls.push(["list", input]);
+            return { proposals: [] };
+          },
+          markDone: async (input) => {
+            proposalCalls.push(["markDone", input]);
+            return { marked: [], notMarked: input.proposalIds };
+          },
+        },
       };
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls, refused };
+  return { endpoint, tokens, state, calls, refused, proposalCalls };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -233,8 +249,12 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   const capabilities = payloadOf((await toolResult(await endpoint.handle(rpc(call("producer_get_capabilities"), bearer(token))))).text);
   assert.equal(capabilities.role, "producer");
   assert.equal(capabilities.producerApiVersion, PRODUCER_API_VERSION);
-  assert.equal(PRODUCER_API_VERSION, "1.0.0");
-  assert.deepEqual(capabilities.permissions, ["READ"]);
+  // BL-163 (FO-REQ-0014 §C6, ADR 0034 Amendment 1) changed the requirement: Producer API 1.1.0 adds its proposal tools, the only
+  // DRAFT ones -- the previous "every permission is READ" (1.0.0) no longer holds, and exactly these two tools are DRAFT.
+  assert.equal(PRODUCER_API_VERSION, "1.1.0");
+  assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
+  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done"]);
+  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done"]);
   assert.deepEqual([...(capabilities.tools as string[])].sort(), [...PRODUCER_TOOL_NAMES].sort());
   assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId]), [
     ["producer_list_channels", null],
@@ -265,6 +285,7 @@ test("a token revoked mid-session is refused on its next call, before any channe
       },
       listChannels: async () => [],
       portfolioOverview: async () => ({}),
+      proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
     },
   });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })._registeredTools;
@@ -404,4 +425,56 @@ test("review round 5: a batch that cancels a request is refused whole instead of
   assert.equal(calls.length, 0);
   assert.equal(state.createdServers, 0);
   assert.deepEqual(refused, [{ tool: "channel_video_list", channelId: "UC_PR_X", errorCode: "REQUEST_REJECTED" }]);
+});
+
+test("BL-163 AC-PR-01/03: the proposal tools reach only the session's proposal store; each call is logged under the channel it names", async () => {
+  const { endpoint, tokens, calls, refused, proposalCalls } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const args = { channelId: "UC_PR_X", kind: "watchlist.pause", text: "No upload since 2023-11-29", payload: { researchChannelId: "UCaaaaaaaaaaaaaaaaaaaaaa" } };
+  const proposed = await toolResult(await endpoint.handle(rpc(call("producer_propose", args), bearer(token))));
+  assert.equal(proposed.isError, false, proposed.text);
+  assert.deepEqual(payloadOf(proposed.text), { proposal: { proposalId: "p1", status: "pending" }, forChannelId: "UC_PR_X" });
+  const duplicate = await toolResult(await endpoint.handle(rpc(call("producer_propose", { ...args, kind: "watchlist.delete" }), bearer(token))));
+  assert.equal(duplicate.isError, true);
+  assert.equal((payloadOf(duplicate.text).error as { code: string }).code, "AGENT_PROPOSAL_DUPLICATE");
+  // An unknown kind never reaches the store.
+  const unknownKind = await toolResult(await endpoint.handle(rpc(call("producer_propose", { ...args, kind: "watchlist.approve" }), bearer(token))));
+  assert.equal(unknownKind.isError, true);
+  await endpoint.handle(rpc(call("producer_list_proposals", { status: "rejected" }), bearer(token)));
+  await endpoint.handle(rpc(call("producer_mark_proposals_done", { proposalIds: ["p1"] }), bearer(token)));
+  assert.deepEqual(proposalCalls, [
+    ["submit", args],
+    ["submit", { ...args, kind: "watchlist.delete" }],
+    ["list", { status: "rejected" }],
+    ["markDone", { proposalIds: ["p1"] }],
+  ]);
+  assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId, entry.outcome, entry.errorCode]), [
+    ["producer_propose", "UC_PR_X", "ok", null],
+    ["producer_propose", "UC_PR_X", "error", "AGENT_PROPOSAL_DUPLICATE"],
+    ["producer_list_proposals", null, "ok", null],
+    ["producer_mark_proposals_done", null, "ok", null],
+  ]);
+  assert.deepEqual(refused, [{ tool: "producer_propose", channelId: "UC_PR_X", errorCode: "INVALID_PARAMS" }], "only the refused input is logged as refused");
+});
+
+test("BL-163 AC-PR-05: no approve, reject or apply tool exists on any endpoint", () => {
+  const producer = createMcpServer(undefined, {
+    connectionEnabled: true,
+    producerSession: {
+      tokenId: "p",
+      reverify: async () => {},
+      resolveChannelUser: async () => null,
+      recordCall: async () => {},
+      listChannels: async () => [],
+      portfolioOverview: async () => ({}),
+      proposals: { submit: async () => ({}), list: async () => ({}), markDone: async () => ({}) },
+    },
+  });
+  const agent = createMcpServer(undefined, { connectionEnabled: true, agentSession: { tokenId: "t", channelId: "UC_PR_X", async reverify() {} } });
+  for (const server of [producer, agent]) {
+    const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+    assert.deepEqual(names.filter((name) => /proposal/.test(name) && /approve|reject|apply|decide/.test(name)), []);
+  }
+  const agentNames = Object.keys((agent as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+  assert.equal(agentNames.includes("producer_propose"), false, "a channel agent does not get the Producer's proposal tools");
 });

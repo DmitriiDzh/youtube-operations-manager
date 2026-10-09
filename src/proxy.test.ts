@@ -460,6 +460,23 @@ test("proxy gates the market-assignments PUT route like any other real mutation"
   }
 });
 
+// BL-163: the owner's proposal decisions and the watchlist pause / inactivity settings are real mutations, gated like the rest.
+test("proxy gates the agent-proposal approve/reject and the watchlist pause/inactivity routes like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    for (const path of [
+      "/api/agent-proposals/p-1/approve",
+      "/api/agent-proposals/p-1/reject",
+      "/api/market-intelligence/channels/UCaaaaaaaaaaaaaaaaaaaaaa/pause",
+      "/api/market-intelligence/inactivity",
+    ]) {
+      assert.equal((await proxy(mutatingRequest(path))).status, 409, path);
+    }
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
 // docs/roadmap/plans/HTTP_MCP_SERVER_PLAN.md AC-HM-11: every MCP call is a POST (reads included), so the
 // in-app agent endpoint must not be blocked by the device gate; other mutating routes still are.
 test("AC-HM-11: only /api/mcp itself is exempt -- a sibling like /api/mcp-x or /api/mcpx stays gated", async () => {

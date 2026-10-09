@@ -10,6 +10,7 @@ import { MarketDiscoveryPanel } from "./market-discovery-panel";
 import { MarketTopicsPanel } from "./market-topics-panel";
 import { MarketTrendsPanel } from "./market-trends-panel";
 import { MusicChartPanel } from "./music-chart-panel";
+import { AgentProposalsPanel } from "./agent-proposals-panel";
 import { MarketResearchRequestsPanel } from "./market-research-requests-panel";
 import { MarketCollectionRequestsPanel } from "./market-collection-requests-panel";
 
@@ -26,7 +27,7 @@ export type ResearchSummary = {
   newDiscoveryCount: number | null;
   searches: { usedToday: number; dailyLimit: number } | null;
   collectionBudget: { dailyBudgetUnits: number | null; unitsSpentToday: number; remainingTodayUnits: number | null } | null;
-  pending: { researchRequests: number | null; collectionRequests: number | null; total: number };
+  pending: { researchRequests: number | null; collectionRequests: number | null; agentProposals?: number | null; total: number };
 };
 
 const SUMMARY_POLL_MS = 30_000;
@@ -190,6 +191,9 @@ export function ResearchTab({
 
       <div className={tab === "inbox" ? "space-y-6" : "hidden"}>
         <p className="text-sm text-zinc-400">{t("research.inbox.intro")}</p>
+        <FeatureErrorBoundary label={t("research.boundary.agentProposals")}>
+          <AgentProposalsPanel onChanged={onChanged} />
+        </FeatureErrorBoundary>
         <FeatureErrorBoundary label={t("research.boundary.requests")}>
           <MarketResearchRequestsPanel onChanged={onChanged} />
         </FeatureErrorBoundary>

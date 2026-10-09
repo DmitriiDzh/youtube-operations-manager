@@ -1,4 +1,5 @@
 import { runInAgentSession } from "@/lib/agent-session";
+import { createAgentProposalSubmitCore } from "@/lib/agent-proposals";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import {
@@ -14,7 +15,7 @@ import { createPortfolioOverviewServices } from "@/lib/portfolio-overview";
 import { createProducerTokenCore } from "@/lib/producer-agent-tokens";
 import { createProducerMcpEndpoint } from "@/lib/producer-mcp-endpoint";
 import { createReachReportsCore } from "@/lib/reach-reports";
-import { PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Producer session.
@@ -66,6 +67,8 @@ function createProducerSessionDeps(session: { tokenId: string; reverify(): Promi
       };
     },
   });
+  // BL-163: the Producer's side of the proposal store only; approving and applying are Web-UI routes.
+  const proposals = createAgentProposalSubmitCore();
   return {
     tokenId: session.tokenId,
     reverify: () => session.reverify(),
@@ -76,6 +79,11 @@ function createProducerSessionDeps(session: { tokenId: string; reverify(): Promi
     },
     listChannels,
     portfolioOverview: async (input) => ({ ...(await portfolio.getOverview(input)) }),
+    proposals: {
+      submit: async (input) => ({ ...(await proposals.submitProducerProposal(input, { agentApiVersion: PRODUCER_API_VERSION })) }),
+      list: async (input) => ({ ...(await proposals.listProducerProposals(input)) }),
+      markDone: async (input) => ({ ...(await proposals.markProducerProposalsDone(input)) }),
+    },
   };
 }
 

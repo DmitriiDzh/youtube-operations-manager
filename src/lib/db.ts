@@ -9358,7 +9358,10 @@ export async function decideAgentProposal(
 
 /** An approved proposal whose change could not be made: `failed` with the error (never retried silently). */
 export async function failAgentProposal(id: string, error: string, database: AppDb = db): Promise<void> {
-  await database.update(agentProposals).set({ status: "failed", applyError: error.slice(0, 2000) }).where(eq(agentProposals.id, id));
+  await database
+    .update(agentProposals)
+    .set({ status: "failed", applyError: error.slice(0, 2000) })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "applied")));
 }
 
 /** The proposer read these decided proposals: marked done (a pending one is never touched). Returns the ids marked. */
