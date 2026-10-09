@@ -35,6 +35,20 @@ if errorlevel 1 (
   goto :finish
 )
 
+REM FO-MSG-0013: stopping terminates this computer's running pods and fails their queued jobs, so a running media session
+REM blocks stopping unless the script is called with --force.
+if /I not "%~1"=="--force" (
+  echo Checking that no media session is running on this computer...
+  call npm run --silent operation-lock -- media-idle
+  if errorlevel 1 (
+    echo [ERROR] The application was NOT stopped: a media session is running here ^(or this could not be checked^).
+    echo         Stopping now would terminate its pod and fail its queued jobs. Wait until it finishes, stop it in
+    echo         Production, or run stop.bat --force.
+    set RC=1
+    goto :finish
+  )
+)
+
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /C:":3000 " ^| findstr LISTENING') do (
   echo Stopping process id %%p ...
   taskkill /PID %%p /F >nul 2>nul

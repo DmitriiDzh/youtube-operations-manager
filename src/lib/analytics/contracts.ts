@@ -230,6 +230,8 @@ export type DataQualityVideoSkip = {
   videoId: string;
   skipCount: number;
   lastSkippedAt: string;
+  /** FO-MSG-0013 §4: the window of the latest run that skipped it (inclusive, YYYY-MM-DD). */
+  lastSkippedRange: { startDate: string; endDate: string };
 };
 
 export type DataQualityReportResult = {

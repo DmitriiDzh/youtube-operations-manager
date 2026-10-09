@@ -2378,7 +2378,7 @@ re-attempts (at most every 3 s), so clearing the lock needs no restart; (4) `/re
 and `/api/operation-lock` (exempt in `src/proxy.ts`) use `ungatedRecoveryClient`, independent of
 initialization and session; (5) the same `OperationLockControl` is shown in the Merge tab and as a
 dashboard banner for non-export locks; (6) `npm run operation-lock -- status|clear` works with the
-app stopped; `wait-idle` is what `stop.bat`/`stop.sh` run before killing the server (and `start` runs `stop` when port 3000 is busy), so a server is never killed mid-operation. Clearing is always an explicit operator action, a compare-and-delete on the exact lock
+app stopped; `wait-idle` is what `stop.bat`/`stop.sh` run before killing the server (and `start` runs `stop` when port 3000 is busy), so a server is never killed mid-operation. FO-MSG-0013: they then run `media-idle`, which refuses (unless the script gets `--force`) while a media session on this computer is `approved`/`starting`/`running`/`stopping` -- stopping the app terminates its pod (AC-P14-09) and fails its queued jobs. Clearing is always an explicit operator action, a compare-and-delete on the exact lock
 shown; a holder that looks alive needs `force` plus the typed word CLEAR. See RISK-91.
 
 **Not done, by design.**

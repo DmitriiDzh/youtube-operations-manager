@@ -2202,7 +2202,7 @@ function makeAnalyticsCoreStub(): Pick<
       coveredDates: ["2026-09-01", "2026-09-02"],
       uncoveredDates: ["2026-09-03", "2026-09-04", "2026-09-05"],
       tooRecentDates: [],
-      videosWithSkips: [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z" }],
+      videosWithSkips: [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z", lastSkippedRange: { startDate: "2026-09-01", endDate: "2026-09-04" } }],
     }),
     getComparableAgeComparison: async () => ({
       channelId: "UC_1",
@@ -2448,7 +2448,7 @@ test("MCP analytics_data_quality returns coverage/skip diagnostics for a date ra
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.deepEqual(payload.coveredDates, ["2026-09-01", "2026-09-02"]);
-  assert.deepEqual(payload.videosWithSkips, [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z" }]);
+  assert.deepEqual(payload.videosWithSkips, [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z", lastSkippedRange: { startDate: "2026-09-01", endDate: "2026-09-04" } }]);
 });
 
 test("MCP analytics_data_quality forwards the resolved credentialRef when omitted", async () => {

@@ -16,15 +16,17 @@ import {
 //   npm run operation-lock -- clear                      (holder process is gone)
 //   npm run operation-lock -- clear --force --confirm CLEAR   (holder looks alive; operator override)
 //   npm run operation-lock -- wait-idle [--timeout <seconds>]  (used by the start/stop launchers)
+//   npm run operation-lock -- media-idle                        (used by the stop launchers: no media session running here)
 //
 // Opens the database file directly -- it never imports src/lib/db.ts, whose initialization is
 // exactly what fails while the lock is stuck. Only ever reads/deletes the one operation-lock row.
 
 const HELP = [
-  "Usage: npm run operation-lock -- <status | clear | wait-idle> [--force --confirm " + OPERATION_LOCK_FORCE_CONFIRMATION + "]",
+  "Usage: npm run operation-lock -- <status | clear | wait-idle | media-idle> [--force --confirm " + OPERATION_LOCK_FORCE_CONFIRMATION + "]",
   "  status   show the device operation lock, how long it has been held, and whether its process still runs",
   "  clear    remove the lock when its holder process is no longer running",
   "  wait-idle [--timeout <seconds>]   wait (default 120s) until no running operation holds the lock; exit 1 on timeout",
+  "  media-idle   exit 1 (and list them) while a media session is being created or running on this computer",
   "  clear --force --confirm " + OPERATION_LOCK_FORCE_CONFIRMATION + "   remove it even though the holder looks alive",
 ].join("\n");
 
@@ -80,6 +82,33 @@ async function waitIdle(
   }
 }
 
+/** The statuses in which this computer owns, or is creating, a pod: stopping the app terminates it (AC-P14-09). */
+const ACTIVE_MEDIA_SESSION_STATUSES = ["approved", "starting", "running", "stopping"] as const;
+
+/**
+ * FO-MSG-0013 §2: the stop launchers' second check. Stopping the app terminates every pod this computer runs and fails the jobs
+ * queued on it (twice on 2026-10-06, both by a restart to load a new build), so stopping is refused while a media session is being
+ * created or running here. `media_sessions` is device-local, so only this computer's sessions count. Exit 0 = none (also on a
+ * database from before media sessions existed), 1 = some are active (listed).
+ */
+async function mediaIdle(client: SqlExecutor, log: (line: string) => void): Promise<number> {
+  let rows: Array<Record<string, unknown>>;
+  try {
+    const result = (await client.execute({
+      sql: `SELECT id, status, channel_id FROM media_sessions WHERE status IN (${ACTIVE_MEDIA_SESSION_STATUSES.map(() => "?").join(", ")}) ORDER BY created_at`,
+      args: [...ACTIVE_MEDIA_SESSION_STATUSES],
+    })) as { rows: Array<Record<string, unknown>> };
+    rows = result.rows;
+  } catch (error) {
+    if (/no such table/i.test(error instanceof Error ? error.message : String(error))) return 0;
+    throw error;
+  }
+  if (rows.length === 0) return 0;
+  log(`${rows.length} media session(s) are active on this computer: ${rows.map((row) => `${String(row.id)} (${String(row.status)}, channel ${String(row.channel_id)})`).join("; ")}.`);
+  log("Stopping the app now would terminate their pods and fail their queued jobs. Wait until they finish, stop them in Production, or stop with --force.");
+  return 1;
+}
+
 /** Returns the process exit code; prints through `log` so tests can capture it. */
 export async function runOperationLockCli(
   args: string[],
@@ -93,6 +122,7 @@ export async function runOperationLockCli(
 ): Promise<number> {
   const [command, ...rest] = args;
   if (command === "wait-idle") return waitIdle(rest, client, log, probe, timing);
+  if (command === "media-idle") return mediaIdle(client, log);
   if (command !== "status" && command !== "clear") {
     log(HELP);
     return command === undefined || command === "help" || command === "--help" ? 0 : 2;
