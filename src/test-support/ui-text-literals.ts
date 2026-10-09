@@ -15,7 +15,7 @@ const TECHNICAL_ATTRIBUTES = new Set([
   "autoComplete", "target", "rel", "method", "action", "viewBox", "fill", "stroke", "d", "strokeLinecap", "strokeLinejoin",
   "xmlns", "accept", "pattern", "lang", "dir", "spellCheck", "wrap", "aria-hidden", "aria-live", "aria-controls",
   "aria-describedby", "aria-labelledby", "aria-current", "aria-haspopup", "aria-expanded", "aria-selected", "data-testid",
-  "maxWidthClass", "loading", "decoding", "crossOrigin", "preload", "encType", "tabIndex", "variant", "confirmVariant",
+  "maxWidthClass", "panelClassName", "triggerClassName", "loading", "decoding", "crossOrigin", "preload", "encType", "tabIndex", "variant", "confirmVariant",
   "color", "size", "side", "kind", "mode", "tone", "status", "align", "sizes", "download",
 ]);
 

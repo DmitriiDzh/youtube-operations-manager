@@ -73,9 +73,11 @@ export type MediaReviewPlayerProps = {
   onPlayStart?: () => void;
   /** BL-162 (AC-UX-02): controls shown at the end of the transport row (the review screen's A/B), so they sit with Play. */
   toolbar?: ReactNode;
+  /** The waveform's height in px (default 128). */
+  height?: number;
 };
 
-export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart, toolbar }, ref) {
+export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart, toolbar, height = 128 }, ref) {
   const t = useT();
   const container = useRef<HTMLDivElement | null>(null);
   const spectrogramContainer = useRef<HTMLDivElement | null>(null);
@@ -128,7 +130,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
         container: container.current,
         url: src,
         // BL-162 (AC-UX-02): the waveform is the screen's main element.
-        height: 128,
+        height,
         waveColor: "#52525b",
         progressColor: "#818cf8",
         cursorColor: "#e4e4e7",
@@ -185,7 +187,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       wave.current = null;
       regions.current = null;
     };
-  }, [src]);
+  }, [src, height]);
 
   // AC-GP3-05: the spectrogram is a plugin registered on the SAME player while shown (toggling never rebuilds the player, so
   // volume, markers and the selection stay). Linear scale, so the frequency marks below line up.
@@ -224,7 +226,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
 
   return (
     <div className="space-y-2">
-      <div ref={container} className="min-h-32 w-full rounded-md bg-zinc-950" />
+      <div ref={container} className="w-full rounded-md bg-zinc-950" style={{ minHeight: height }} />
       <div className={spectrogram ? "relative w-full" : "hidden"} style={{ height: SPECTROGRAM_HEIGHT }}>
         <div ref={spectrogramContainer} className="absolute inset-0" />
         {spectrogram &&

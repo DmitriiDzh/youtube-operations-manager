@@ -11,6 +11,7 @@ import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
 import { ToggleSwitch } from "./toggle-switch";
+import { Popover } from "./popover";
 import { useT } from "./ui-text-provider";
 
 // BL-143 (ADR 0029, GENERATION_PLANS_PLAN.md §3): Media → Plans. Every number comes from the plans core, which derives
@@ -344,48 +345,50 @@ export function PlansPanel({
 
 /** A small "⋯" menu for the actions that are not the card's main one (BL-162 AC-UX-08). */
 function ActionsMenu({ label, items }: { label: string; items: Array<{ key: string; text: string; onSelect: () => void; danger?: boolean; disabled?: boolean }> }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
   return (
-    <div ref={ref} className="relative">
-      <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label} onClick={() => setOpen((v) => !v)} className={secondaryButton}>
-        ⋯
-      </button>
-      {open && (
-        <div role="menu" className="absolute right-0 z-20 mt-1 min-w-60 rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
-          {items.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="menuitem"
-              disabled={item.disabled}
-              onClick={() => {
-                setOpen(false);
-                item.onSelect();
-              }}
-              className={`block w-full rounded px-3 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${item.danger ? "text-red-300 hover:bg-red-500/10" : "text-zinc-200 hover:bg-zinc-800"}`}
-            >
-              {item.text}
-            </button>
-          ))}
-        </div>
+    <Popover trigger="⋯" triggerClassName={secondaryButton} label={label} align="right" panelClassName="min-w-60 p-1">
+      {(close) =>
+        items.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            role="menuitem"
+            disabled={item.disabled}
+            onClick={() => {
+              close();
+              item.onSelect();
+            }}
+            className={`block w-full rounded px-3 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${item.danger ? "text-red-300 hover:bg-red-500/10" : "text-zinc-200 hover:bg-zinc-800"}`}
+          >
+            {item.text}
+          </button>
+        ))
+      }
+    </Popover>
+  );
+}
+
+/** One number of the plan card's KPI strip (BL-162: numbers, not sentences -- owner, msg 2263). */
+function Kpi({ label, value, sub, tone = "text-zinc-100", bar, onClick }: { label: string; value: string; sub?: string | null; tone?: string; bar?: { percent: number; tone: string } | null; onClick?: () => void }) {
+  const body = (
+    <>
+      <span className="text-xs text-zinc-400">{label}</span>
+      <span className={`text-2xl font-semibold leading-tight ${tone}`}>{value}</span>
+      {bar && (
+        <span className="block h-1.5 w-full overflow-hidden rounded bg-zinc-800">
+          <span className={`block h-full ${bar.tone}`} style={{ width: `${bar.percent}%` }} />
+        </span>
       )}
-    </div>
+      {sub ? <span className="text-xs text-zinc-500">{sub}</span> : null}
+    </>
+  );
+  const box = "flex min-w-0 flex-col gap-1 rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-left";
+  return onClick ? (
+    <button type="button" onClick={onClick} className={`${box} hover:border-amber-500/60`}>
+      {body}
+    </button>
+  ) : (
+    <div className={box}>{body}</div>
   );
 }
 
@@ -398,6 +401,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
   const [error, setError] = useState<string | null>(null);
   const [showItems, setShowItems] = useState(false);
   const [showAllWaves, setShowAllWaves] = useState(false);
+  const [showNote, setShowNote] = useState(false);
   const [savingReviewRejected, setSavingReviewRejected] = useState(false);
   const base = `/api/generation-plans/${encodeURIComponent(model.planId)}`;
   const openSession = progress.spend.sessions.find((s) => !s.final);
@@ -405,6 +409,11 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
   // AC-UX-13: another device's plan is changed only there -- its actions are shown, disabled, with that device's name.
   const elsewhere = model.device ? (model.device.hostname ?? model.device.deviceId) : null;
   const waves = waveRows(model, showAllWaves);
+  const generate = progress.stages.find((s) => s.kind === "in_app");
+  const ownerStage = progress.stages.find((s) => s.kind === "owner_review");
+  const waitingNotice = progress.notices.find((n): n is Extract<PlanNotice, { kind: "review_waiting" }> => n.kind === "review_waiting");
+  // The budget and the waiting tracks are the tiles' own; the other notices stay as small badges.
+  const otherNotices = progress.notices.filter((n) => n.kind !== "review_waiting" && n.kind !== "budget_80" && n.kind !== "budget_100");
 
   const close = async (status: "completed" | "cancelled") => {
     try {
@@ -432,18 +441,26 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      {/* Header: the title, one line of facts, the description folded to one line; the actions on the right (AC-UX-08). */}
       <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold text-zinc-100">{model.title}</h3>
+        <div className="min-w-0 flex-1 space-y-1">
+          <h3 className="text-lg font-semibold text-zinc-100">{model.title}</h3>
           <p className="text-xs text-zinc-500">
             {/* ui-text-ignore: "Factory Operator" is a product name */}
             <span className="font-mono">{model.planId}</span> · {model.owner === "factory" ? "Factory Operator" : t("plans.ownerYou")} · {t("plans.created", { date: formatDisplayDateTime(model.createdAt) })} · {planStatusLabel(t, model.status)}
             {elsewhere ? ` · ${t("plans.peers.reported", { device: elsewhere, age: describeAge(t, model.device?.updatedAt ?? model.createdAt, Date.now()) })}` : ""}
           </p>
-          {model.note && <p className="mt-1 text-xs text-zinc-400">{model.note}</p>}
-          {progress.notices.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {progress.notices.map((n, i) => {
+          {model.note && (
+            <p className={`text-xs text-zinc-400 ${showNote ? "whitespace-pre-wrap" : "truncate"}`}>
+              <button type="button" onClick={() => setShowNote((v) => !v)} className="mr-1.5 text-indigo-300 hover:underline">
+                {showNote ? t("plans.note.less") : t("plans.note.more")}
+              </button>
+              {model.note}
+            </p>
+          )}
+          {otherNotices.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {otherNotices.map((n, i) => {
                 const d = describeNotice(t, n);
                 return (
                   <span key={i} className={`rounded-full border px-2 py-0.5 text-xs ${NOTICE_TONES[d.tone]}`}>
@@ -454,18 +471,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
             </div>
           )}
         </div>
-        {/* AC-UX-08: one primary action; the switch with its caption; the rest in the menu. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-3">
-          {model.status === "active" &&
-            (elsewhere ? (
-              <span className="text-xs text-zinc-500">{t("plans.reviewRejectedOn", { device: elsewhere })}</span>
-            ) : (
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300">
-                <ToggleSwitch label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
-                <span>{t("plans.reviewRejected")}</span>
-                <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
-              </label>
-            ))}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {model.waiting > 0 && (
             <button type="button" onClick={() => onReview()} className={primaryButton}>
               {t("plans.reviewWaiting", { count: model.waiting })}
@@ -483,103 +489,135 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
         </div>
       </div>
 
-      <div className="grid gap-3 text-xs text-zinc-400 sm:grid-cols-3">
-        <div className="space-y-1">
-          <div>
-            {progress.budget.usd !== null
-              ? t("plans.spendBudget", { spent: progress.spend.usd.toFixed(2), budget: progress.budget.usd.toFixed(2) })
-              : t("plans.spendNoBudget", { spent: progress.spend.usd.toFixed(2) })}
-            {progress.budget.warnings.includes("100") ? <span className="ml-1 text-red-400">{t("plans.overBudget")}</span> : progress.budget.warnings.includes("80") ? <span className="ml-1 text-amber-300">{t("plans.used80")}</span> : null}
-          </div>
-          {progress.budget.usedShare !== null && <Bar percent={Math.min(100, Math.round(progress.budget.usedShare * 100))} tone={budgetTone} />}
-          <div className="text-zinc-500">{t("plans.gpuMinutes", { minutes: progress.spend.gpuMinutes })}</div>
-        </div>
-        <div>
-          {t("plans.timeLeft", { eta: formatEta(t, progress.eta.seconds) })}
-          <div className="text-zinc-500">{progress.eta.gpuTypeId ? t("plans.etaFrom", { count: progress.eta.samples, gpu: progress.eta.gpuTypeId }) : t("plans.noGpuYet")}</div>
-        </div>
-        <div>
-          {openSession ? (
-            <>{t("plans.nowSession", { session: openSession.sessionId.slice(0, 8), gpu: openSession.gpuTypeId ?? t("plans.gpuPending"), usd: openSession.usd.toFixed(2) })}</>
-          ) : (
-            <span className="text-zinc-500">{t("plans.noSession")}</span>
+      {/* The KPI strip: what waits for the owner, what was accepted, generated, spent, and how long is left. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        <Kpi
+          label={t("plans.kpi.waiting")}
+          value={String(model.waiting)}
+          tone={model.waiting > 0 ? "text-amber-300" : "text-zinc-100"}
+          sub={waitingNotice && waitingNotice.rejected > 0 ? t("plans.kpi.waitingSplit", { passed: waitingNotice.passed, rejected: waitingNotice.rejected }) : null}
+          onClick={model.waiting > 0 ? () => onReview() : undefined}
+        />
+        <Kpi label={t("plans.kpi.accepted")} value={String(ownerStage ? ownerStage.counts.accepted + ownerStage.counts.done : 0)} tone="text-emerald-300" sub={ownerStage && ownerStage.counts.rejected > 0 ? t("plans.kpi.rejected", { count: ownerStage.counts.rejected }) : null} />
+        {generate && <Kpi label={t("plans.kpi.generated")} value={`${generate.counts.done} / ${generate.counts.planned}`} bar={{ percent: describeStage(t, generate.kind, generate.counts).percent, tone: "bg-indigo-500" }} sub={generate.counts.failed > 0 ? t("plans.stage.failed", { count: generate.counts.failed }) : null} />}
+        <Kpi
+          label={t("plans.kpi.budget")}
+          value={progress.budget.usd !== null ? t("plans.spendOf", { spent: progress.spend.usd.toFixed(2), budget: progress.budget.usd.toFixed(2) }) : t("unit.usd", { value: progress.spend.usd.toFixed(2) })}
+          tone={progress.budget.warnings.includes("100") ? "text-red-300" : progress.budget.warnings.includes("80") ? "text-amber-300" : "text-zinc-100"}
+          bar={progress.budget.usedShare !== null ? { percent: Math.min(100, Math.round(progress.budget.usedShare * 100)), tone: budgetTone } : null}
+          sub={t("plans.gpuMinutes", { minutes: progress.spend.gpuMinutes })}
+        />
+        <Kpi
+          label={t("plans.kpi.left")}
+          value={formatEta(t, progress.eta.seconds)}
+          sub={openSession ? t("plans.nowSession", { session: openSession.sessionId.slice(0, 8), gpu: openSession.gpuTypeId ?? t("plans.gpuPending"), usd: openSession.usd.toFixed(2) }) : t("plans.noSession")}
+        />
+      </div>
+
+      {/* The stages as one funnel line: how many passed each step. */}
+      {progress.stages.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {progress.stages.map((stage, i) => (
+            <span key={stage.stageId} className="flex items-center gap-2">
+              {i > 0 && <span className="text-zinc-600">→</span>}
+              <span className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5">
+                <span className="mr-2 text-xs text-zinc-500">{stage.title}</span>
+                {stage.kind === "in_app" ? (
+                  <span className="font-medium text-zinc-100">{stage.counts.done}</span>
+                ) : (
+                  <>
+                    <span className="font-medium text-emerald-300">✓ {stage.counts.accepted + stage.counts.done}</span>
+                    <span className="ml-2 font-medium text-red-300">✗ {stage.counts.rejected}</span>
+                    {stage.kind === "owner_review" && model.waiting > 0 ? <span className="ml-2 text-amber-300">· {t("plans.waitingForYou", { count: model.waiting })}</span> : null}
+                  </>
+                )}
+              </span>
+            </span>
+          ))}
+          {model.status === "active" && (
+            <span className="ml-auto">
+              {elsewhere ? (
+                <span className="text-xs text-zinc-500">{t("plans.reviewRejectedOn", { device: elsewhere })}</span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-xs text-zinc-300">
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <ToggleSwitch label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
+                    <span>{t("plans.reviewRejected")}</span>
+                  </label>
+                  <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
+                </span>
+              )}
+            </span>
           )}
         </div>
-      </div>
+      )}
 
-      <div className="space-y-2">
-        {progress.stages.map((stage) => {
-          const d = describeStage(t, stage.kind, stage.counts);
-          return (
-            <div key={stage.stageId} className="grid grid-cols-[8rem_1fr] items-center gap-3 text-xs sm:grid-cols-[10rem_12rem_1fr]">
-              <span className="text-zinc-200">{stage.title}</span>
-              <div className="flex items-center gap-2">
-                <Bar percent={d.percent} tone={stage.kind === "owner_review" ? "bg-amber-500" : "bg-indigo-500"} />
-                <span className="w-16 shrink-0 text-zinc-400">
-                  {d.value} / {d.total}
-                </span>
-              </div>
-              <span className="col-span-2 text-zinc-500 sm:col-span-1">
-                {d.words}
-                {/* Finding 13: the review's remainder is said where its bar is. */}
-                {stage.kind === "owner_review" && model.waiting > 0 ? <span className="text-amber-300"> · {t("plans.waitingForYou", { count: model.waiting })}</span> : null}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
+      {/* The waves as a table (AC-UX-10): newest first, counts as numbers, the long texts behind a click. */}
       {model.groups.length > 0 && (
-        <div className="space-y-2">
-          <h4 className="text-sm font-medium text-zinc-200">{t("plans.waves")}</h4>
-          {waves.shown.map((row) => (
-            <GroupRow key={row.groupId} planId={model.planId} row={row} editable={model.status === "active" && elsewhere === null} onSaved={onChanged} onReview={model.status === "active" ? () => onReview(row.groupId) : undefined} />
-          ))}
+        <div className="overflow-hidden rounded-lg border border-zinc-800">
+          <table className="w-full table-fixed text-sm">
+            <thead className="bg-zinc-950 text-xs text-zinc-500">
+              <tr>
+                <th className="w-20 px-3 py-2 text-left font-normal">{t("plans.waves.colWave")}</th>
+                <th className="px-3 py-2 text-left font-normal">{t("plans.waves.colAbout")}</th>
+                <th className="w-24 px-2 py-2 text-right font-normal">{t("plans.waves.colGenerated")}</th>
+                <th className="w-14 px-2 py-2 text-right font-normal">✓</th>
+                <th className="w-14 px-2 py-2 text-right font-normal">✗</th>
+                <th className="w-16 px-2 py-2 text-right font-normal">{t("plans.waves.colWaiting")}</th>
+                <th className="w-36 px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {waves.shown.map((row) => (
+                <WaveTableRow key={row.groupId} planId={model.planId} row={row} editable={model.status === "active" && elsewhere === null} onSaved={onChanged} onReview={model.status === "active" ? () => onReview(row.groupId) : undefined} />
+              ))}
+            </tbody>
+          </table>
           {(waves.folded > 0 || showAllWaves) && (
-            <button type="button" onClick={() => setShowAllWaves((v) => !v)} className="text-xs text-indigo-300 hover:underline">
+            <button type="button" onClick={() => setShowAllWaves((v) => !v)} className="w-full border-t border-zinc-800 px-3 py-2 text-left text-xs text-indigo-300 hover:bg-zinc-950">
               {showAllWaves ? t("plans.waves.fewer") : t("plans.waves.more", { count: waves.folded })}
             </button>
           )}
         </div>
       )}
 
-      <div>
-        <button type="button" onClick={() => setShowItems((v) => !v)} className="text-xs text-indigo-300 hover:underline">
+      <div className="flex flex-wrap items-center gap-4 text-xs">
+        <button type="button" onClick={() => setShowItems((v) => !v)} className="text-indigo-300 hover:underline">
           {showItems ? t("plans.hideItems") : t("plans.showItems", { count: progress.items.length })}
         </button>
-        {showItems && (
-          <div className="mt-2 overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-xs text-zinc-400">
-              <thead>
-                <tr className="text-zinc-500">
-                  <th className="py-1 pr-3">{t("plans.col.item")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.target")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.attempts")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.generated")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.accepted")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.rejected")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.waiting")}</th>
-                  <th className="py-1 pr-3">{t("plans.col.stillNeeded")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {progress.items.map((i) => (
-                  <tr key={i.itemKey} className="border-t border-zinc-800">
-                    <td className="py-1 pr-3 font-mono text-zinc-300">{i.itemKey}</td>
-                    <td className="py-1 pr-3">{i.mode === "until_accepted" ? t("plans.targetAccepted", { count: i.targetCount }) : i.targetCount}</td>
-                    <td className="py-1 pr-3">{i.attempts}</td>
-                    <td className="py-1 pr-3">{i.generated}</td>
-                    <td className="py-1 pr-3 text-emerald-400">{i.accepted}</td>
-                    <td className="py-1 pr-3 text-red-400">{i.rejected}</td>
-                    <td className="py-1 pr-3 text-amber-300">{i.waitingReview}</td>
-                    <td className="py-1 pr-3">{i.missing}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
+      {showItems && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-xs text-zinc-400">
+            <thead>
+              <tr className="text-zinc-500">
+                <th className="py-1 pr-3">{t("plans.col.item")}</th>
+                <th className="py-1 pr-3">{t("plans.col.target")}</th>
+                <th className="py-1 pr-3">{t("plans.col.attempts")}</th>
+                <th className="py-1 pr-3">{t("plans.col.generated")}</th>
+                <th className="py-1 pr-3">{t("plans.col.accepted")}</th>
+                <th className="py-1 pr-3">{t("plans.col.rejected")}</th>
+                <th className="py-1 pr-3">{t("plans.col.waiting")}</th>
+                <th className="py-1 pr-3">{t("plans.col.stillNeeded")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {progress.items.map((i) => (
+                <tr key={i.itemKey} className="border-t border-zinc-800">
+                  <td className="py-1 pr-3 font-mono text-zinc-300">{i.itemKey}</td>
+                  <td className="py-1 pr-3">{i.mode === "until_accepted" ? t("plans.targetAccepted", { count: i.targetCount }) : i.targetCount}</td>
+                  <td className="py-1 pr-3">{i.attempts}</td>
+                  <td className="py-1 pr-3">{i.generated}</td>
+                  <td className="py-1 pr-3 text-emerald-400">{i.accepted}</td>
+                  <td className="py-1 pr-3 text-red-400">{i.rejected}</td>
+                  <td className="py-1 pr-3 text-amber-300">{i.waitingReview}</td>
+                  <td className="py-1 pr-3">{i.missing}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {events.length > 0 && (
         <details className="text-xs text-zinc-400">
@@ -611,13 +649,16 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
   );
 }
 
-function GroupRow({ planId, row, editable, onSaved, onReview }: { planId: string; row: WaveRow; editable: boolean; onSaved: () => void; onReview?: () => void }) {
+/** One wave in the card's table; a click on its description opens the factory's note and the owner's own note. */
+function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: string; row: WaveRow; editable: boolean; onSaved: () => void; onReview?: () => void }) {
   const t = useT();
+  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   // BL-157 (AC-WV-04): the owner edits their own note; the factory's context (`note`) is shown apart, read-only.
   const [note, setNote] = useState(row.ownerNote ?? "");
   const [error, setError] = useState<string | null>(null);
   const counts = row.counts;
+  const cell = (n: number | undefined, tone: string) => (n && n > 0 ? <span className={tone}>{n}</span> : <span className="text-zinc-600">—</span>);
   const save = async () => {
     try {
       await postJson(t, `/api/generation-plans/${encodeURIComponent(planId)}/group-note`, { groupId: row.groupId, note: note.trim() ? note : null });
@@ -629,71 +670,79 @@ function GroupRow({ planId, row, editable, onSaved, onReview }: { planId: string
     }
   };
   return (
-    <div className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm text-zinc-100">{row.groupId}</span>
-        {row.title !== row.groupId && (
-          <span className="min-w-0 flex-1 truncate text-zinc-300" title={row.title}>
-            {row.title}
-          </span>
-        )}
-        {row.dependsOn && <span className="text-zinc-500">{t("plans.after", { group: row.dependsOn })}</span>}
-        {/* AC-UX-10: neutral counts; colour only for a count above zero. */}
-        {counts && (
-          <span className="ml-auto text-zinc-500">
-            {t("plans.group.items", { count: counts.items })} · {t("plans.group.generated", { count: counts.generated })}
-            {counts.accepted > 0 ? <span className="text-emerald-400"> · {t("plans.group.accepted", { count: counts.accepted })}</span> : null}
-            {counts.rejected > 0 ? <span className="text-red-400"> · {t("plans.group.rejected", { count: counts.rejected })}</span> : null}
-          </span>
-        )}
-        {editable && !editing && (
-          <button
-            type="button"
-            onClick={() => {
-              setNote(row.ownerNote ?? "");
-              setEditing(true);
-            }}
-            aria-label={row.ownerNote ? t("plans.editNote") : t("plans.addNote")}
-            title={row.ownerNote ? t("plans.editNote") : t("plans.addNote")}
-            className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-          >
-            ✎
+    <>
+      <tr className="border-t border-zinc-800 hover:bg-zinc-950/60">
+        <td className="px-3 py-2 font-mono text-zinc-100">{row.groupId}</td>
+        <td className="px-3 py-2">
+          <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-1.5 text-left text-zinc-300 hover:text-white">
+            <span className="text-zinc-500">{open ? "▾" : "▸"}</span>
+            <span className="truncate" title={row.title}>
+              {row.title !== row.groupId ? row.title : ""}
+            </span>
+            {row.ownerNote ? (
+              <span className="shrink-0 text-amber-300" title={t("plans.ownerNote", { note: row.ownerNote })}>
+                ✎
+              </span>
+            ) : null}
           </button>
-        )}
-        {/* AC-UX-09: this wave's own review. */}
-        {counts && counts.waitingReview > 0 && onReview && (
-          <button type="button" onClick={onReview} className="rounded-md bg-indigo-600 px-2.5 py-0.5 text-xs font-medium text-white hover:bg-indigo-500">
-            {t("plans.reviewWaiting", { count: counts.waitingReview })}
-          </button>
-        )}
-      </div>
-      {row.note && (
-        <p className="line-clamp-2 whitespace-pre-wrap text-zinc-400" title={row.note}>
-          {row.note}
-        </p>
-      )}
-      {!editing && row.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: row.ownerNote })}</p>}
-      {editing && (
-        <div className="space-y-1">
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100" placeholder={t("plans.notePlaceholder")} />
-          <div className="flex gap-2">
-            <button type="button" onClick={() => void save()} className={primaryButton}>
-              {t("plans.saveNote")}
+        </td>
+        <td className="px-2 py-2 text-right text-zinc-300">{counts ? counts.generated : "—"}</td>
+        <td className="px-2 py-2 text-right">{cell(counts?.accepted, "text-emerald-300")}</td>
+        <td className="px-2 py-2 text-right">{cell(counts?.rejected, "text-red-300")}</td>
+        <td className="px-2 py-2 text-right">{cell(counts?.waitingReview, "font-medium text-amber-300")}</td>
+        <td className="px-3 py-2 text-right">
+          {/* AC-UX-09: this wave's own review. */}
+          {counts && counts.waitingReview > 0 && onReview ? (
+            <button type="button" onClick={onReview} className="rounded-md border border-indigo-500/60 px-2.5 py-1 text-xs font-medium text-indigo-200 hover:bg-indigo-500/15">
+              {t("plans.reviewWaiting", { count: counts.waitingReview })}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(false);
-                setNote(row.ownerNote ?? "");
-              }}
-              className={secondaryButton}
-            >
-              {t("common.cancel")}
-            </button>
-          </div>
-        </div>
+          ) : null}
+        </td>
+      </tr>
+      {open && (
+        <tr className="bg-zinc-950/60">
+          <td />
+          <td colSpan={6} className="space-y-2 px-3 pb-3 text-xs">
+            {row.dependsOn && <p className="text-zinc-500">{t("plans.after", { group: row.dependsOn })}</p>}
+            {row.note && <p className="whitespace-pre-wrap text-zinc-400">{row.note}</p>}
+            {!editing && row.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: row.ownerNote })}</p>}
+            {editing ? (
+              <div className="space-y-1">
+                <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} maxLength={2000} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100" placeholder={t("plans.notePlaceholder")} />
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => void save()} className={primaryButton}>
+                    {t("plans.saveNote")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditing(false);
+                      setNote(row.ownerNote ?? "");
+                    }}
+                    className={secondaryButton}
+                  >
+                    {t("common.cancel")}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              editable && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNote(row.ownerNote ?? "");
+                    setEditing(true);
+                  }}
+                  className="text-indigo-300 hover:underline"
+                >
+                  ✎ {row.ownerNote ? t("plans.editNote") : t("plans.addNote")}
+                </button>
+              )
+            )}
+            {error && <p className="text-red-400">{error}</p>}
+          </td>
+        </tr>
       )}
-      {error && <p className="text-red-400">{error}</p>}
-    </div>
+    </>
   );
 }

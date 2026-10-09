@@ -9,6 +9,7 @@ import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMar
 import { ToggleSwitch } from "./toggle-switch";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
+import { Popover } from "./popover";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
@@ -370,11 +371,10 @@ export function PlanReviewScreen({
   // BL-157 (AC-WV-01/02): the chosen wave (null = all waves) and each wave's context.
   const [wave, setWave] = useState<string | null>(null);
   const [batches, setBatches] = useState<PlanReviewBatch[]>([]);
-  // BL-157 (AC-TC-01..04): the other computers' claims, whether claimed tracks are walked too, the wave this computer took,
-  // and a verdict waiting for "Replace?".
+  // BL-157 (AC-TC-01..04): the other computers' claims and a verdict waiting for "Replace?". BL-162 (owner, msg 2254 p.5 / 2263):
+  // what is "in work" follows what is open -- no "take this wave" and no "show claimed ones too"; a claimed track is still
+  // opened by a click in the queue.
   const [claims, setClaims] = useState<PlanReviewClaim[]>([]);
-  const [showClaimed, setShowClaimed] = useState(false);
-  const [waveTaken, setWaveTaken] = useState<string | null>(null);
   // The attempt the question is about travels with it: "Replace" confirms exactly that track (review round 3).
   const [confirmReplace, setConfirmReplace] = useState<{ result: "accepted" | "rejected"; existing: PlanExistingVerdict; itemKey: string; attemptRef: string } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -395,11 +395,11 @@ export function PlanReviewScreen({
   const referenceAudio = useRef<HTMLAudioElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
-  // BL-162: the picker's reviewed waves, the wave's details and "copied".
-  const [showReviewedWaves, setShowReviewedWaves] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
+  // BL-162: "copied" after the attempt's id went to the clipboard.
   const [copied, setCopied] = useState(false);
   const player = useRef<ReviewPlayerHandle | null>(null);
+  // BL-162 (AC-UX-15): the queue keeps the open track in view.
+  const currentRow = useRef<HTMLButtonElement | null>(null);
   const peerDevice = source?.deviceId;
   const peerName = source?.hostname ?? null;
   const base = peerDevice ? `/api/generation-plans/peers/${encodeURIComponent(peerDevice)}/${encodeURIComponent(planId)}` : `/api/generation-plans/${encodeURIComponent(planId)}`;
@@ -438,10 +438,10 @@ export function PlanReviewScreen({
     [base, claimsFrom, peerDevice, peerName, planId, t]
   );
 
-  // A claimed track is passed over unless the owner asked to see claimed ones too (AC-TC-02).
-  const skipClaimed = useCallback((e: PlanReviewEntry) => !showClaimed && e.verdict === null && claimOf(e, claims, nowMs) !== null, [claims, nowMs, showClaimed]);
+  // A track another computer is on is passed over by the arrows and auto-advance (AC-TC-02); the queue still opens it on a click.
+  const skipClaimed = useCallback((e: PlanReviewEntry) => e.verdict === null && claimOf(e, claims, nowMs) !== null, [claims, nowMs]);
   /** The same rule against the claims `load` just read -- the state above only catches up on the next render (review round 1). */
-  const skipFresh = useCallback((e: PlanReviewEntry) => !showClaimed && e.verdict === null && claimOf(e, freshClaims.current, Date.now()) !== null, [showClaimed]);
+  const skipFresh = useCallback((e: PlanReviewEntry) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) !== null, []);
 
   useEffect(() => {
     // First open: the first waiting track no other computer is on (its claims arrive with the same answer). BL-162 (AC-UX-09):
@@ -471,6 +471,9 @@ export function PlanReviewScreen({
 
   const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
   const waiting = entries?.filter((e) => e.verdict === null).length ?? 0;
+  useEffect(() => {
+    currentRow.current?.scrollIntoView({ block: "nearest" });
+  }, [index, entries]);
 
   /** Back to A whenever the attempt changes (the reference never keeps playing under another track). */
   const stopB = useCallback(() => {
@@ -560,30 +563,6 @@ export function PlanReviewScreen({
       void postJson(t, `${base}/claim`, { scope: "attempt", itemKey, attemptRef, release: true }, { keepalive: true }).catch(() => undefined);
     };
   }, [base, claimKey, t]);
-  useEffect(() => {
-    if (!waveTaken) return;
-    const send = () => void postJson(t, `${base}/claim`, { scope: "group", groupId: waveTaken }).catch(() => undefined);
-    const timer = setInterval(send, CLAIM_HEARTBEAT_MS);
-    return () => {
-      clearInterval(timer);
-      void postJson(t, `${base}/claim`, { scope: "group", groupId: waveTaken, release: true }, { keepalive: true }).catch(() => undefined);
-    };
-  }, [base, t, waveTaken]);
-  /** AC-WV-06: take the chosen wave on this computer (the other one skips it), or give it back. */
-  const toggleWaveTaken = useCallback(async () => {
-    if (!wave) return;
-    if (waveTaken === wave) {
-      setWaveTaken(null);
-      return;
-    }
-    try {
-      await postJson(t, `${base}/claim`, { scope: "group", groupId: wave });
-      setWaveTaken(wave);
-    } catch (error) {
-      setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
-    }
-  }, [base, t, wave, waveTaken]);
-
   /** A filter shows its own first waiting attempt. */
   const chooseFilter = useCallback(
     (next: ReviewFilter) => {
@@ -611,7 +590,6 @@ export function PlanReviewScreen({
   const chosenBatch = wave === null ? null : (batches.find((b) => b.groupId === wave) ?? null);
   // AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has something.
   const nextWave = useMemo(() => nextOpenWave(waves, chosenWave, allEntries ?? [], skipClaimed), [allEntries, chosenWave, skipClaimed, waves]);
-  const entryWaveTitle = (groupId: string | null) => (groupId === null ? null : (batches.find((b) => b.groupId === groupId)?.title ?? groupId));
   const filterCounts = useMemo(() => {
     const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);
     const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter((e) => e.verdict === null).length;
@@ -728,12 +706,15 @@ export function PlanReviewScreen({
   const src = entry ? `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` : null;
   const hideFindings = blind && entry?.verdict === null;
 
-  const tabButton = (selected: boolean) => `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${selected ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`;
-  const picker = pickerWaves(waves, wave, showReviewedWaves);
+  const segment = (selected: boolean) => `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${selected ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`;
+  const toolButton = "flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700";
+  const picker = pickerWaves(waves, wave, true);
   const allWaiting = (allEntries ?? []).filter((e) => e.verdict === null).length;
-  const claimedHere = (entries ?? []).filter((e) => e.verdict === null && claimOf(e, claims, nowMs) !== null).length;
+  const reviewedHere = (entries ?? []).filter((e) => e.verdict !== null).length;
   const takenElsewhere = (groupId: string) => claims.find((c) => c.scope === "group" && c.groupId === groupId && Date.parse(c.until) > nowMs) ?? null;
   const device = source ? (source.hostname ?? source.deviceId) : null;
+  /** The item key without the chosen wave's prefix ("C14/V04" → "V04" inside C14). */
+  const shortKey = (itemKey: string) => (wave !== null && itemKey.startsWith(`${wave}/`) ? itemKey.slice(wave.length + 1) : itemKey);
   const copyAttempt = (attemptRef: string) => {
     void navigator.clipboard?.writeText(attemptRef).then(
       () => {
@@ -743,85 +724,94 @@ export function PlanReviewScreen({
       () => undefined
     );
   };
+  const allChecks = entry ? entry.stages.flatMap((st) => st.checks) : [];
 
-  // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §2.1): three zones -- a one-line context bar, the player as the main element, and the
-  // verdict bar pinned to the bottom of the screen; the validator and the generation details sit in a side panel.
+  // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §2.1, owner msgs 2254/2263): a review workstation -- one toolbar, then three columns that
+  // fill the screen and scroll on their own: the wave's queue, the player with the verdict under it, and the auto-check.
   return (
-    <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      {/* Zone 1: the context bar (AC-UX-04) -- whose track (BL-157 AC-SM-07: the channel), the plan, the wave, what waits. */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <button type="button" onClick={onClose} className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700">
+    <div className="flex h-[calc(100vh-6.25rem)] min-h-[34rem] flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+      {/* The toolbar (AC-UX-04): back, whose plan, the wave picker, progress, the validator filter, the wave's details, View. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
+        <button type="button" onClick={onClose} className={toolButton}>
           ← {t("review.backToPlan")}
         </button>
-        <h3 className="min-w-0 truncate text-sm font-semibold text-zinc-100">
-          {channel?.title ? <span className="font-normal text-zinc-400">{t("review.titleChannel", { channel: channel.title })}</span> : null}
-          {t("review.title", { plan: planId })}
-          {entry?.groupId ? (
-            <span className="text-zinc-300" title={entryWaveTitle(entry.groupId) ?? undefined}>
-              {t("review.titleWave", { wave: entry.groupId })}
-            </span>
-          ) : null}
-        </h3>
-        <span className="text-xs text-zinc-400">{entries ? t("review.header.waiting", { waiting, total: entries.length }) : t("common.loading")}</span>
-        {device && <span className="rounded-full border border-sky-900 px-2 py-0.5 text-xs text-sky-200">{t("review.onDevice", { device })}</span>}
-      </div>
-
-      {/* AC-UX-07: the waves with something waiting (plan order), the reviewed ones on request. */}
-      {waves.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label={t("review.wave.label")}>
-          <button type="button" role="tab" aria-selected={wave === null} onClick={() => chooseWave(null)} className={tabButton(wave === null)}>
-            {t("review.wave.all")}
-            <span className="ml-1.5 text-zinc-500">{allWaiting}</span>
-          </button>
-          {picker.shown.map((w) => {
-            const left = w.waitingPassed + w.waitingRejected;
-            return (
-              <button
-                key={w.groupId}
-                type="button"
-                role="tab"
-                aria-selected={wave === w.groupId}
-                onClick={() => chooseWave(w.groupId)}
-                title={`${w.title} — ${left > 0 ? t("review.wave.waiting", { waiting: left, passed: w.waitingPassed, rejected: w.waitingRejected, reviewed: w.reviewed, total: w.total }) : t("review.wave.progress", { reviewed: w.reviewed, total: w.total })}`}
-                className={tabButton(wave === w.groupId)}
-              >
-                {w.groupId}
-                {left > 0 ? <span className="ml-1.5 rounded bg-amber-500/15 px-1 text-amber-300">{left}</span> : <span className="ml-1.5 text-emerald-400">✓</span>}
-                {takenElsewhere(w.groupId) ? <span className="ml-1 text-sky-300">{t("review.wave.takenMark")}</span> : null}
-              </button>
-            );
-          })}
-          {picker.reviewed > 0 && (
-            <button type="button" onClick={() => setShowReviewedWaves((v) => !v)} className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-200">
-              {showReviewedWaves ? t("review.wave.hideReviewed") : t("review.wave.showReviewed", { count: picker.reviewed })}
-            </button>
-          )}
+        <div className="flex min-w-0 items-center gap-1.5 text-sm">
+          {channel?.title ? <span className="max-w-40 truncate text-zinc-500">{channel.title}</span> : null}
+          <span className="font-mono text-zinc-300">{planId}</span>
+          <span className="text-zinc-600">›</span>
+          {/* AC-UX-07: the waves as a list -- those with tracks waiting first, the reviewed ones under them. */}
+          <Popover
+            trigger={
+              <>
+                <span className="font-medium text-white">{wave ?? t("review.wave.all")}</span>
+                <span className="text-zinc-400">{wave === null ? allWaiting : (chosenWave ? chosenWave.waitingPassed + chosenWave.waitingRejected : 0)}</span>
+                <span className="text-zinc-500">▾</span>
+              </>
+            }
+            triggerClassName={toolButton}
+            label={t("review.wave.label")}
+            panelClassName="max-h-[60vh] w-80 overflow-y-auto p-1"
+          >
+            {(close) => {
+              const option = (w: WaveSummary | null) => {
+                const id = w?.groupId ?? null;
+                const left = w ? w.waitingPassed + w.waitingRejected : allWaiting;
+                return (
+                  <button
+                    key={id ?? "all"}
+                    type="button"
+                    onClick={() => {
+                      chooseWave(id);
+                      close();
+                    }}
+                    title={w?.title}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${wave === id ? "bg-indigo-500/20 text-white" : "text-zinc-200 hover:bg-zinc-800"}`}
+                  >
+                    <span className="w-14 shrink-0 font-mono">{id ?? t("review.wave.all")}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-zinc-500">{w && w.title !== w.groupId ? w.title : ""}</span>
+                    {w && takenElsewhere(w.groupId) ? <span className="text-xs text-sky-300">{t("review.wave.takenMark")}</span> : null}
+                    {left > 0 ? <span className="rounded bg-amber-500/15 px-1.5 text-xs text-amber-300">{left}</span> : <span className="text-xs text-emerald-400">✓</span>}
+                  </button>
+                );
+              };
+              const open = picker.shown.filter((w) => w.waitingPassed + w.waitingRejected > 0);
+              const done = picker.shown.filter((w) => w.waitingPassed + w.waitingRejected === 0);
+              return (
+                <>
+                  {option(null)}
+                  {open.map(option)}
+                  {done.length > 0 && <p className="px-2 pb-1 pt-2 text-[11px] uppercase tracking-wide text-zinc-500">{t("review.wave.reviewedGroup")}</p>}
+                  {done.map(option)}
+                </>
+              );
+            }}
+          </Popover>
         </div>
-      )}
-
-      {/* AC-WV-03 / AC-UX-03: the chosen wave in one line; its details (notes, params, prompt, lyrics) on request. */}
-      {chosenWave && (
-        <div className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-300">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="min-w-0 flex-1 truncate text-sm text-zinc-100" title={chosenWave.title}>
-              {chosenWave.title}
-            </p>
-            {/* AC-WV-06: a wave another computer took; or take this one here. */}
-            {(() => {
-              const other = takenElsewhere(chosenWave.groupId);
-              return other ? <span className="text-sky-200">{t("review.wave.takenBy", { device: other.device, time: formatDisplayDateTime(other.since) })}</span> : null;
-            })()}
-            <button type="button" aria-expanded={aboutOpen} onClick={() => setAboutOpen((v) => !v)} className="rounded-md border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-200 hover:border-zinc-500">
-              {aboutOpen ? t("review.wave.aboutHide") : t("review.wave.about")}
-            </button>
-            <button type="button" onClick={() => void toggleWaveTaken()} className="rounded-md border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-200 hover:border-zinc-500">
-              {waveTaken === chosenWave.groupId ? t("review.wave.release") : t("review.wave.take")}
-            </button>
+        {entries && entries.length > 0 && (
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <div className="h-1.5 w-24 overflow-hidden rounded bg-zinc-800">
+              <div className="h-full bg-emerald-500" style={{ width: `${Math.round((reviewedHere / entries.length) * 100)}%` }} />
+            </div>
+            {t("review.progress", { reviewed: reviewedHere, total: entries.length })}
           </div>
-          {chosenBatch?.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: chosenBatch.ownerNote })}</p>}
-          {aboutOpen && (
-            <div className="space-y-1 border-t border-zinc-800 pt-1.5">
-              {chosenBatch?.note && <p className="whitespace-pre-wrap text-zinc-300">{chosenBatch.note}</p>}
+        )}
+        {(filterCounts.anyRejected || filter !== "all") && (
+          <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
+            {(["all", "passed", "rejected"] as const).map((f) => (
+              <button key={f} type="button" role="tab" aria-selected={filter === f} onClick={() => chooseFilter(f)} className={segment(filter === f)}>
+                {t(f === "all" ? "review.filter.all" : f === "passed" ? "review.filter.passed" : "review.filter.rejected", { count: filterCounts[f] })}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          {device && <span className="rounded-full border border-sky-900 px-2 py-0.5 text-xs text-sky-200">{t("review.onDevice", { device })}</span>}
+          {/* AC-UX-03: the wave's details on request. */}
+          {chosenWave && (
+            <Popover trigger={<>ⓘ {t("review.wave.about")}</>} triggerClassName={toolButton} align="right" panelClassName="w-[32rem] max-w-[80vw] space-y-2 p-3 text-xs text-zinc-300">
+              <p className="text-sm font-medium text-zinc-100">{chosenWave.title}</p>
+              {chosenBatch?.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: chosenBatch.ownerNote })}</p>}
+              {chosenBatch?.note && <p className="whitespace-pre-wrap">{chosenBatch.note}</p>}
               <p className="text-zinc-400">
                 {[
                   chosenBatch?.firstAt ? t("review.wave.date", { date: formatDisplayDate(chosenBatch.firstAt) }) : null,
@@ -838,7 +828,7 @@ export function PlanReviewScreen({
                   .join(" · ")}
               </p>
               {chosenBatch && chosenBatch.differingParams.length > 0 && (
-                <ul className="max-h-64 space-y-0.5 overflow-y-auto text-zinc-400">
+                <ul className="max-h-64 space-y-1 overflow-y-auto text-zinc-400">
                   {chosenBatch.differingParams.map((p) => (
                     <li key={p.name}>
                       <span className="font-mono text-zinc-300">{p.name}</span>: {p.values.map((v) => String(v)).join(" | ")}
@@ -846,236 +836,316 @@ export function PlanReviewScreen({
                   ))}
                 </ul>
               )}
-            </div>
+            </Popover>
           )}
-          {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
-          {chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
-            <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-2 py-1.5 text-emerald-200">
-              <span>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</span>
-              {nextWave && (
-                <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-indigo-600 px-2.5 py-0.5 text-xs font-medium text-white hover:bg-indigo-500">
-                  {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* The validator filter (kept while a filter other than All is chosen, so its way back never hides) and BL-157
-          (AC-TC-02): tracks another computer is on are passed over -- unless the owner wants them too. */}
-      {((filterCounts.anyRejected || filter !== "all") || claimedHere > 0 || showClaimed) && (
-        <div className="flex flex-wrap items-center gap-3">
-          {(filterCounts.anyRejected || filter !== "all") && (
-            <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
-              {(["all", "passed", "rejected"] as const).map((f) => (
-                <button key={f} type="button" role="tab" aria-selected={filter === f} onClick={() => chooseFilter(f)} className={tabButton(filter === f)}>
-                  {t(f === "all" ? "review.filter.all" : f === "passed" ? "review.filter.passed" : "review.filter.rejected", { count: filterCounts[f] })}
-                </button>
-              ))}
-            </div>
-          )}
-          {(claimedHere > 0 || showClaimed) && (
-            <div className="flex flex-wrap items-center gap-2 text-xs text-sky-200">
-              <span>{t("review.claimedCount", { count: claimedHere })}</span>
-              <label className="flex cursor-pointer items-center gap-2">
-                <ToggleSwitch label={t("review.showClaimed")} checked={showClaimed} onChange={setShowClaimed} />
-                <span>{t("review.showClaimed")}</span>
+          {/* AC-UX-01: the view switches, each with its caption, in one place. */}
+          <Popover trigger={<>{t("review.view.label")} ▾</>} triggerClassName={toolButton} align="right" panelClassName="w-80 space-y-3 p-3 text-sm text-zinc-200">
+            <label className="flex cursor-pointer items-center gap-3">
+              <ToggleSwitch label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
+              <span>{t("review.matchLoudness")}</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-3">
+              <ToggleSwitch label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
+              <span>{t("review.spectrogram")}</span>
+            </label>
+            <div className="space-y-1">
+              <label className="flex cursor-pointer items-center gap-3">
+                <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
+                <span>{t("review.blindShort")}</span>
               </label>
+              <p className="pl-14 text-xs text-zinc-500">{t("review.blindInfo")}</p>
             </div>
-          )}
+          </Popover>
         </div>
-      )}
+      </div>
 
-      {entries && entries.length === 0 && <p className="text-sm text-zinc-500">{t("review.empty")}</p>}
-
-      {entry && (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          {/* Zone 2: the track and the player. */}
-          <div className="min-w-0 space-y-3">
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <button type="button" onClick={() => go(stepIndex(entries ?? [], index, -1, skipClaimed))} className="rounded px-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.previous")} title={t("review.previous")}>
-                ←
-              </button>
-              <span className="font-mono text-base text-zinc-100">{entry.itemKey}</span>
-              <span className="text-xs text-zinc-500">
-                {entry.seed !== null ? t("review.trackMeta", { seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 }) : t("review.trackMetaNoSeed", { index: index + 1, total: entries?.length ?? 0 })}
-              </span>
-              <button type="button" onClick={() => go(stepIndex(entries ?? [], index, 1, skipClaimed))} className="rounded px-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.next")} title={t("review.next")}>
-                →
-              </button>
-              {/* AC-UX-05: the attempt's id is copied, not shown. */}
-              <button type="button" onClick={() => copyAttempt(entry.attemptRef)} title={`${t("review.copyId")}: ${entry.attemptRef}`} className="rounded border border-zinc-800 px-1.5 text-[11px] text-zinc-500 hover:border-zinc-600 hover:text-zinc-200">
-                {copied ? t("review.copied") : t("review.copyIdShort")}
-              </button>
-              {entry.verdict && (
-                <span className={`ml-auto rounded-full px-2 py-0.5 text-xs ${entry.verdict.result === "accepted" ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"}`}>
-                  {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
-                  {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
-                  {entry.pendingFrom ? ` · ${t("review.beingApplied", { device: entry.pendingFrom })}` : ""}
-                  {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
-                </span>
-              )}
-            </div>
-            {/* BL-157 (AC-TC-02): another computer is on this track (or its wave) right now. */}
-            {(() => {
-              const claim = claimOf(entry, claims, nowMs);
-              return claim && entry.verdict === null ? (
-                <p className="rounded-md border border-sky-900/60 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-200">{t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) })}</p>
-              ) : null;
-            })()}
-            {!hideFindings && validatorOfEntry(entry) === "rejected" && failedChecksOf(entry).length > 0 && (
-              <p className="rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-200">
-                <span className="font-medium">{t("review.failedChecks")}</span>{" "}
-                {failedChecksOf(entry)
-                  .map((c) =>
-                    [
-                      t(c.severity === "fail" ? "review.failedCheck.fail" : "review.failedCheck.warn", { label: c.label, value: String(c.value ?? "—"), threshold: String(c.threshold ?? "—") }),
-                      c.offPercent !== null ? t("review.failedCheck.off", { percent: String(c.offPercent) }) : null,
-                      c.atSeconds ? t("review.atRange", { start: formatPlayerTime(c.atSeconds[0]), end: formatPlayerTime(c.atSeconds[1]) }) : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" ")
-                  )
-                  .join(" · ")}
-              </p>
+      {entries && entries.length === 0 ? (
+        <p className="p-6 text-sm text-zinc-500">{t("review.empty")}</p>
+      ) : (
+        <div className="grid min-h-0 flex-1 grid-cols-[14rem_minmax(0,1fr)_19rem] divide-x divide-zinc-800">
+          {/* Column 1: the queue (AC-UX-15) -- every track of the walk with its state; a click opens it. */}
+          <div className="flex min-h-0 flex-col">
+            <div className="border-b border-zinc-800 px-3 py-2 text-xs text-zinc-400">{t("review.queue.counts", { waiting, reviewed: reviewedHere })}</div>
+            {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
+            {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
+              <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+                <p>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</p>
+                {nextWave && (
+                  <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-indigo-600 px-2.5 py-1 font-medium text-white hover:bg-indigo-500">
+                    {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
+                  </button>
+                )}
+              </div>
             )}
-            {entry.playable && src ? (
-              <>
-                <MediaReviewPlayer
-                  key={src}
-                  ref={player}
-                  src={src}
-                  markers={markers}
-                  spectrogram={showSpectrogram}
-                  onPlayStart={() => {
-                    // Starting A (its own Play button) stops B.
-                    if (referenceAudio.current && !referenceAudio.current.paused) referenceAudio.current.pause();
-                    setOnB(false);
-                  }}
-                  frequencyMarks={hideFindings ? [] : frequencyMarksOf(t, entry)}
-                  volume={matchLoudness ? matchedVolume(lufsOf) : 1}
-                  onDecoded={(audio) => {
-                    // Measured only when the validator gave no LUFS (AC-GP3-04).
-                    if (reportedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
-                  }}
-                  toolbar={
-                    chosen ? (
-                      <>
-                        <span>{t("review.compareWith")}</span>
-                        <select
-                          value={chosen.id}
-                          onChange={(e) => {
-                            stopB();
-                            setReferenceId(e.target.value);
-                          }}
-                          className="max-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
-                        >
-                          {offered.map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.nearest ? "★ " : ""}
-                              {r.label}
-                            </option>
-                          ))}
-                        </select>
-                        <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
-                          {onB ? t("review.abOnB", { label: chosen.label }) : t("review.ab")}
-                        </button>
-                        <audio
-                          ref={referenceAudio}
-                          src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
-                          preload="metadata"
-                          onEnded={() => {
-                            // The reference ran out: back to A where it would be.
-                            const at = referenceAudio.current?.currentTime ?? 0;
-                            setOnB(false);
-                            player.current?.playFrom(at);
-                          }}
-                          className="hidden"
-                        />
-                      </>
-                    ) : undefined
-                  }
-                />
-                {/* AC-UX-01: the view switches, each with its caption. */}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-zinc-400">
-                  <span className="text-zinc-500">{t("review.view.label")}</span>
-                  <label className="flex cursor-pointer items-center gap-2">
-                    <ToggleSwitch label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
-                    <span>{t("review.matchLoudness")}</span>
-                  </label>
-                  <label className="flex cursor-pointer items-center gap-2">
-                    <ToggleSwitch label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
-                    <span>{t("review.spectrogram")}</span>
-                  </label>
+            <ul className="min-h-0 flex-1 overflow-y-auto py-1 [scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin]">
+              {(entries ?? []).map((e, i) => {
+                const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
+                const current = i === index;
+                return (
+                  <li key={`${e.itemKey}\u0000${e.attemptRef}`}>
+                    <button
+                      type="button"
+                      ref={current ? currentRow : undefined}
+                      onClick={() => go(i)}
+                      title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${current ? "bg-indigo-500/20 text-white" : "text-zinc-300 hover:bg-zinc-800/70"}`}
+                    >
+                      <span className={`w-4 shrink-0 text-center ${e.verdict?.result === "accepted" ? "text-emerald-400" : e.verdict ? "text-red-400" : claim ? "text-sky-300" : "text-amber-300"}`}>
+                        {e.verdict?.result === "accepted" ? "✓" : e.verdict ? "✗" : claim ? "●" : "○"}
+                      </span>
+                      <span className="min-w-0 truncate font-mono">{shortKey(e.itemKey)}</span>
+                      <span className="text-xs text-zinc-500">{e.seed ?? ""}</span>
+                      <span className="ml-auto flex items-center gap-1 text-xs">
+                        {claim ? <span className="text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span> : null}
+                        {!hideFindings && validatorOfEntry(e) === "rejected" ? (
+                          <span className="text-amber-400" title={t("review.queue.validatorRejected")}>
+                            ⚠
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {/* Column 2: the track, the player and the verdict right under it. */}
+          <div className="min-h-0 overflow-y-auto p-4 [scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin]">
+            {entry && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <h2 className="font-mono text-xl font-semibold text-white">{entry.itemKey}</h2>
+                  <span className="text-sm text-zinc-500">
+                    {entry.seed !== null ? t("review.trackMeta", { seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 }) : t("review.trackMetaNoSeed", { index: index + 1, total: entries?.length ?? 0 })}
+                  </span>
                   <span className="flex items-center gap-1">
-                    <label className="flex cursor-pointer items-center gap-2">
-                      <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
-                      <span>{t("review.blindShort")}</span>
-                    </label>
-                    <InfoTooltip>{t("review.blindInfo")}</InfoTooltip>
+                    <button type="button" onClick={() => go(stepIndex(entries ?? [], index, -1, skipClaimed))} className="rounded px-2 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.previous")} title={t("review.previous")}>
+                      ←
+                    </button>
+                    <button type="button" onClick={() => go(stepIndex(entries ?? [], index, 1, skipClaimed))} className="rounded px-2 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.next")} title={t("review.next")}>
+                      →
+                    </button>
                   </span>
-                  <span className="text-zinc-500">
-                    {lufsOf === null
-                      ? t("review.loudnessUnknown")
-                      : t(reportedLufs(entry) !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
-                    {matchLoudness && lufsOf !== null ? ` · ${t("review.playedAt", { percent: Math.round(matchedVolume(lufsOf) * 100), target: LOUDNESS_TARGET_LUFS })}` : ""}
-                  </span>
+                  {/* AC-UX-05: the attempt's id is copied, not shown. */}
+                  <button type="button" onClick={() => copyAttempt(entry.attemptRef)} title={`${t("review.copyId")}: ${entry.attemptRef}`} className="rounded border border-zinc-800 px-1.5 text-[11px] text-zinc-500 hover:border-zinc-600 hover:text-zinc-200">
+                    {copied ? t("review.copied") : t("review.copyIdShort")}
+                  </button>
+                  {entry.verdict && (
+                    <span className={`ml-auto rounded-full px-2.5 py-0.5 text-xs ${entry.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
+                      {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
+                      {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
+                      {entry.pendingFrom ? ` · ${t("review.beingApplied", { device: entry.pendingFrom })}` : ""}
+                      {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
+                    </span>
+                  )}
                 </div>
-                {chosen && (offered.some((r) => r.nearest) || (matchLoudness && chosen.lufs === null)) && (
-                  <p className="text-xs">
-                    {offered.some((r) => r.nearest) && <span className="text-zinc-500">{t("review.nearestHint")}</span>}
-                    {matchLoudness && chosen.lufs === null && <span className="ml-2 text-amber-300">{t("review.referenceNoLufs")}</span>}
+                {/* BL-157 (AC-TC-02): another computer is on this track (or its wave) right now. */}
+                {(() => {
+                  const claim = claimOf(entry, claims, nowMs);
+                  return claim && entry.verdict === null ? (
+                    <p className="rounded-md border border-sky-900/60 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-200">{t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) })}</p>
+                  ) : null;
+                })()}
+                {/* BL-153 AC-RR-07: a rejected attempt's failed checks in one line by the player -- fail before warn, with the miss. */}
+                {!hideFindings && validatorOfEntry(entry) === "rejected" && failedChecksOf(entry).length > 0 && (
+                  <p className="rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-200">
+                    <span className="font-medium">{t("review.failedChecks")}</span>{" "}
+                    {failedChecksOf(entry)
+                      .map((c) =>
+                        [
+                          t(c.severity === "fail" ? "review.failedCheck.fail" : "review.failedCheck.warn", { label: c.label, value: String(c.value ?? "—"), threshold: String(c.threshold ?? "—") }),
+                          c.offPercent !== null ? t("review.failedCheck.off", { percent: String(c.offPercent) }) : null,
+                          c.atSeconds ? t("review.atRange", { start: formatPlayerTime(c.atSeconds[0]), end: formatPlayerTime(c.atSeconds[1]) }) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")
+                      )
+                      .join(" · ")}
                   </p>
                 )}
-              </>
-            ) : (
-              <p className="text-sm text-zinc-500">{t("review.nothingToPlay")}</p>
-            )}
-            {/* BL-157 (AC-TC-05): every verdict of this track, with the computer and the time. */}
-            {entry.history && entry.history.length > 0 && (
-              <details className="text-[11px] text-zinc-500">
-                <summary className="cursor-pointer">{t("review.history.title", { count: entry.history.length })}</summary>
-                <ul className="mt-1 space-y-0.5">
-                  {entry.history.map((h, i) => (
-                    <li key={`${h.at}-${i}`}>
-                      {t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" })}
-                    </li>
-                  ))}
-                </ul>
-              </details>
+                {entry.playable && src ? (
+                  <div className="space-y-1.5">
+                    <MediaReviewPlayer
+                      key={src}
+                      ref={player}
+                      src={src}
+                      height={160}
+                      markers={markers}
+                      spectrogram={showSpectrogram}
+                      onPlayStart={() => {
+                        // Starting A (its own Play button) stops B.
+                        if (referenceAudio.current && !referenceAudio.current.paused) referenceAudio.current.pause();
+                        setOnB(false);
+                      }}
+                      frequencyMarks={hideFindings ? [] : frequencyMarksOf(t, entry)}
+                      volume={matchLoudness ? matchedVolume(lufsOf) : 1}
+                      onDecoded={(audio) => {
+                        // Measured only when the validator gave no LUFS (AC-GP3-04).
+                        if (reportedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
+                      }}
+                      toolbar={
+                        chosen ? (
+                          <>
+                            <span>{t("review.compareWith")}</span>
+                            <select
+                              value={chosen.id}
+                              onChange={(e) => {
+                                stopB();
+                                setReferenceId(e.target.value);
+                              }}
+                              title={offered.some((r) => r.nearest) ? t("review.nearestHint") : undefined}
+                              className="max-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
+                            >
+                              {offered.map((r) => (
+                                <option key={r.id} value={r.id}>
+                                  {r.nearest ? "★ " : ""}
+                                  {r.label}
+                                </option>
+                              ))}
+                            </select>
+                            <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
+                              {onB ? t("review.abOnB", { label: chosen.label }) : t("review.ab")}
+                            </button>
+                            <audio
+                              ref={referenceAudio}
+                              src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
+                              preload="metadata"
+                              onEnded={() => {
+                                // The reference ran out: back to A where it would be.
+                                const at = referenceAudio.current?.currentTime ?? 0;
+                                setOnB(false);
+                                player.current?.playFrom(at);
+                              }}
+                              className="hidden"
+                            />
+                          </>
+                        ) : undefined
+                      }
+                    />
+                    <p className="text-[11px] text-zinc-500">
+                      {lufsOf === null
+                        ? t("review.loudnessUnknown")
+                        : t(reportedLufs(entry) !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                      {matchLoudness && lufsOf !== null ? ` · ${t("review.playedAt", { percent: Math.round(matchedVolume(lufsOf) * 100), target: LOUDNESS_TARGET_LUFS })}` : ""}
+                      {matchLoudness && chosen && chosen.lufs === null ? <span className="ml-2 text-amber-300">{t("review.referenceNoLufs")}</span> : null}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-zinc-500">{t("review.nothingToPlay")}</p>
+                )}
+
+                {/* The verdict, right under the player (AC-UX-02): the two decisions first, then rating, reasons, comment. */}
+                <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-lg bg-emerald-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">
+                      {t("review.accept")}
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-lg bg-red-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-red-500 disabled:opacity-50">
+                      {t("review.reject")}
+                    </button>
+                    <div className="ml-auto flex flex-wrap items-center gap-1 text-xs text-zinc-400">
+                      <span className="mr-1">{t("review.rating")}</span>
+                      {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                        <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-8 w-8 rounded-md text-sm ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <p className="text-xs text-zinc-400">
+                      {t("review.reasons.label")} <span className="text-zinc-600">· {t("review.reasons.hint")}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {REVIEW_REASONS.map((reason) => {
+                        const on = draft.reasons.includes(reason);
+                        return (
+                          <button
+                            key={reason}
+                            type="button"
+                            aria-pressed={on}
+                            onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
+                            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}
+                          >
+                            <span aria-hidden="true">{REVIEW_REASON_ICONS[reason]}</span>
+                            {t(REVIEW_REASON_KEYS[reason])}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+                    <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
+                      {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
+                    </button>
+                    {draft.marks.map((m, i) => (
+                      <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                        {formatPlayerTime(m.start)}
+                        {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
+                        <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does. */}
+                    <span className="flex items-center gap-1">
+                      <button type="button" disabled={device !== null} onClick={() => void askRerun()} className="text-zinc-300 underline-offset-2 hover:text-white hover:underline disabled:cursor-not-allowed disabled:text-zinc-600 disabled:no-underline">
+                        {device !== null ? t("review.rerunOnDevice", { device }) : t("review.askRerun")}
+                      </button>
+                      <InfoTooltip>{t("review.askRerunInfo")}</InfoTooltip>
+                    </span>
+                    <span className="ml-auto flex items-center gap-1 text-zinc-500">
+                      {t("review.shortcutsTitle")}
+                      <InfoTooltip>{t("review.shortcuts")}</InfoTooltip>
+                    </span>
+                  </div>
+                  {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}
+                </section>
+
+                {/* BL-157 (AC-TC-05): every verdict of this track, with the computer and the time. */}
+                {entry.history && entry.history.length > 0 && (
+                  <details className="text-xs text-zinc-500">
+                    <summary className="cursor-pointer">{t("review.history.title", { count: entry.history.length })}</summary>
+                    <ul className="mt-1 space-y-0.5">
+                      {entry.history.map((h, i) => (
+                        <li key={`${h.at}-${i}`}>
+                          {t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" })}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
             )}
           </div>
 
-          {/* The auto-check, always in view (owner, msg 2254 p.2): every check with its mark, value and threshold -- the failed
-              ones first (AC-UX-06); the generation parameters below. */}
-          <aside className="space-y-2">
+          {/* Column 3: the auto-check, always in view (owner, msg 2254 p.2) -- the failed checks first (AC-UX-06). */}
+          <aside className="min-h-0 space-y-3 overflow-y-auto p-3 [scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin]">
             <h4 className="flex items-baseline justify-between gap-2 text-sm font-medium text-zinc-200">
               {t("review.why.validator")}
-              {!hideFindings && (() => {
-                const all = entry.stages.flatMap((st) => st.checks);
-                return all.length > 0 ? <span className="text-xs font-normal text-zinc-500">{t("review.checks.passed", { passed: all.filter((c) => c.pass).length, total: all.length })}</span> : null;
-              })()}
+              {!hideFindings && allChecks.length > 0 && <span className="text-xs font-normal text-zinc-500">{t("review.checks.passed", { passed: allChecks.filter((c) => c.pass).length, total: allChecks.length })}</span>}
             </h4>
-            {hideFindings ? (
-              <p className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">{t("review.blindNote")}</p>
+            {!entry ? null : hideFindings ? (
+              <p className="text-xs text-zinc-500">{t("review.blindNote")}</p>
             ) : (
               entry.stages.map((stage) => {
                 const { failed, passed } = splitChecks(stage.checks);
                 const ok = stage.result === "accepted" || stage.result === "done";
                 return (
-                  <div key={stage.stageId} className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
+                  <div key={stage.stageId} className="space-y-1">
                     <div className="flex items-center gap-2 text-xs">
-                      <span className="font-medium text-zinc-200">{stage.stageId}</span>
+                      <span className="text-zinc-400">{stage.stageId}</span>
                       <span className={`rounded-full px-2 py-0.5 ${ok ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>{resultLabel(t, stage.result)}</span>
                     </div>
                     {[...failed, ...passed].map((c) => (
-                      <div key={c.id} className={`flex items-start gap-2 rounded-md px-2 py-1 ${c.pass ? "bg-emerald-500/5" : "bg-red-500/10 ring-1 ring-red-500/40"}`}>
+                      <div key={c.id} className={`flex items-start gap-2 rounded-md px-2 py-1 ${c.pass ? "" : "bg-red-500/10 ring-1 ring-red-500/40"}`}>
                         <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${c.pass ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500 text-white"}`}>{c.pass ? "✓" : "✗"}</span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2 text-sm">
                             <span className={c.pass ? "text-zinc-300" : "font-medium text-red-200"}>{c.label ?? c.id}</span>
-                            <span className={`shrink-0 font-mono text-xs ${c.pass ? "text-zinc-300" : "text-red-200"}`}>
+                            <span className={`shrink-0 font-mono text-xs ${c.pass ? "text-zinc-400" : "text-red-200"}`}>
                               {c.value === null ? "—" : String(c.value)}
                               {c.unit ? ` ${c.unit}` : ""}
                             </span>
@@ -1098,111 +1168,35 @@ export function PlanReviewScreen({
                       </div>
                     ))}
                     {Object.keys(stage.metrics).length > 0 && (
-                      <div className="text-[11px] text-zinc-500">
+                      <p className="px-2 text-[11px] text-zinc-500">
                         <span className="text-zinc-400">{t("review.checks.metrics")}: </span>
                         {Object.entries(stage.metrics)
                           .map(([k, v]) => `${k} ${String(v)}`)
                           .join(" · ")}
-                      </div>
+                      </p>
                     )}
-                    {stage.note && <div className="text-xs text-zinc-400">{stage.note}</div>}
+                    {stage.note && <p className="px-2 text-xs text-zinc-400">{stage.note}</p>}
                   </div>
                 );
               })
             )}
-            <details className="rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-xs text-zinc-400">
-              <summary className="cursor-pointer text-zinc-300">{t("review.generationDetails")}</summary>
-              <div className="mt-1 space-y-0.5">
-                {Object.entries(entry.params).length === 0 ? (
-                  <div className="text-zinc-500">{t("review.noParams")}</div>
-                ) : (
-                  Object.entries(entry.params).map(([k, v]) => (
-                    <div key={k} className="break-words">
-                      <span className="font-mono text-zinc-300">{k}</span>: {String(v)}
-                    </div>
-                  ))
-                )}
-              </div>
-            </details>
+            {entry && (
+              <details className="border-t border-zinc-800 pt-2 text-xs text-zinc-400">
+                <summary className="cursor-pointer text-zinc-300">{t("review.generationDetails")}</summary>
+                <div className="mt-1 space-y-0.5">
+                  {Object.entries(entry.params).length === 0 ? (
+                    <div className="text-zinc-500">{t("review.noParams")}</div>
+                  ) : (
+                    Object.entries(entry.params).map(([k, v]) => (
+                      <div key={k} className="break-words">
+                        <span className="font-mono text-zinc-300">{k}</span>: {String(v)}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </details>
+            )}
           </aside>
-        </div>
-      )}
-
-      {/* Zone 3: the verdict bar, pinned to the bottom of the screen (AC-UX-02); reasons with icons and a roomy comment
-          (owner, msg 2254 p.3/p.4). */}
-      {entry && (
-        <div className="sticky bottom-0 z-10 -mx-4 -mb-4 space-y-3 rounded-b-xl border-t border-zinc-800 bg-zinc-900/95 px-4 py-3 backdrop-blur">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="mr-1 text-xs text-zinc-400">
-              {t("review.reasons.label")} <span className="text-zinc-600">· {t("review.reasons.hint")}</span>
-            </span>
-            {REVIEW_REASONS.map((reason) => {
-              const on = draft.reasons.includes(reason);
-              return (
-                <button
-                  key={reason}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
-                  className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-950 text-zinc-200 hover:border-zinc-500"}`}
-                >
-                  <span aria-hidden="true">{REVIEW_REASON_ICONS[reason]}</span>
-                  {t(REVIEW_REASON_KEYS[reason])}
-                </button>
-              );
-            })}
-          </div>
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-1 text-xs text-zinc-400">
-                <span className="mr-1">{t("review.rating")}</span>
-                {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-                  <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-7 w-7 rounded text-sm ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
-                    {n}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
-                  {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
-                </button>
-                {draft.marks.map((m, i) => (
-                  <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
-                    {formatPlayerTime(m.start)}
-                    {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
-                    <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">
-                  {t("review.accept")}
-                </button>
-                <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-md bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50">
-                  {t("review.reject")}
-                </button>
-                {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does. */}
-                <span className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    disabled={device !== null}
-                    onClick={() => void askRerun()}
-                    className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {device !== null ? t("review.rerunOnDevice", { device }) : t("review.askRerun")}
-                  </button>
-                  <InfoTooltip>{t("review.askRerunInfo")}</InfoTooltip>
-                </span>
-              </div>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 text-[11px]">
-            {message && <span className={message.tone === "ok" ? "text-emerald-400" : "text-red-400"}>{message.text}</span>}
-            <span className="ml-auto text-zinc-500">{t("review.shortcuts")}</span>
-          </div>
         </div>
       )}
       {confirmReplace && (
