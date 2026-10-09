@@ -1,6 +1,6 @@
 # Watchlist hygiene and agent proposals (BL-163, FO-REQ-0014)
 
-**Status: IMPLEMENTED on the branch, awaiting the owner's merge approval.** Owner, Telegram 2026-10-09 (msg 2311): full pause plus a deletion proposal; no
+**Status: DONE, merged into `dev` in 0cbe1a4 (owner msg 2360).** Owner, Telegram 2026-10-09 (msg 2311): full pause plus a deletion proposal; no
 revival check, since inactive channels get deleted; hypotheses in this round if possible; history goes with a full
 deletion. Branch: `feature/watchlist-hygiene-proposals`, one merge approval at the end. Reply to the Factory Operator:
 DEV-RESP-0016.
