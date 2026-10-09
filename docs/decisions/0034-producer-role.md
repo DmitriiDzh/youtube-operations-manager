@@ -68,3 +68,12 @@ every channel's reads without a worker per channel, and nothing else.
   tools of the closed list are still READ only; an inventory test fails if `src/mcp`, `src/cli`, `src/lib/agent-operations` or
   `src/app/api/mcp` names the owner's approve / reject / apply side, and only the Web routes build the review core.
 - **Not changed:** no WRITE tool, no YouTube call, no quota spent by a proposal; channel agents do not get these tools.
+
+## Amendment 2 — upload milestones (BL-166, FO-REQ-0015 items 1 and 8, owner 2026-10-09, Telegram msgs 2381, 2414)
+
+- Producer API 1.2.0 adds two READ tools: the channel tool `agent_get_video_milestones` (closed list, capability
+  `analytics.query_video_milestones`) and its own `producer_upload_milestones` (every connected channel's uploads in a range of at most 92
+  days, each with its stored day-7 / day-28 totals and the Reach of the same window). Both read stored data only.
+- The Producer session's real deps moved from the route file to `src/lib/producer-mcp-endpoint/session-deps.ts` (a route may export only
+  its handlers), so they are tested on a real database; the approval inventory scan covers that directory too.
+- **Not changed:** the DRAFT tools, the permissions, the per-call channel scope.

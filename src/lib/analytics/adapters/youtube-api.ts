@@ -58,7 +58,7 @@ export function createAnalyticsYoutubeApiAdapter() {
       channelId: string;
       startDate: string;
       endDate: string;
-      dimensions: string;
+      dimensions?: string;
       metricNames: readonly string[];
       filters?: string;
     }) {

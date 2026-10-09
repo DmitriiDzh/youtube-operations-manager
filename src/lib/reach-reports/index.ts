@@ -23,6 +23,8 @@ export type ReachReportsCore = ReturnType<typeof createReachReportsCore>;
 export { REACH_BASIC_REPORT_TYPE_ID } from "./contracts";
 export type {
   GetChannelReachResult,
+  GetVideoWindowsReachResult,
+  VideoWindowReach,
   GetReachStatusResult,
   ReachFileView,
   ReachSyncAttemptView,

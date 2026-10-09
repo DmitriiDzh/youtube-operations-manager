@@ -179,7 +179,8 @@ export async function queryChannelBreakdownReport(
     channelId: string;
     startDate: string;
     endDate: string;
-    dimensions: string;
+    /** Omitted: one row of totals for the whole range (the "basic stats" report; BL-166 milestone totals). */
+    dimensions?: string;
     metricNames: readonly string[];
     filters?: string;
   }
@@ -189,7 +190,7 @@ export async function queryChannelBreakdownReport(
     startDate: args.startDate,
     endDate: args.endDate,
     metrics: args.metricNames.join(","),
-    dimensions: args.dimensions,
+    ...(args.dimensions ? { dimensions: args.dimensions } : {}),
     ...(args.filters ? { filters: args.filters } : {}),
   });
 

@@ -10,7 +10,7 @@ import { getAnalyticsDataSync, importPeersFirst } from "@/lib/analytics-data-syn
 
 export type AutoCollectAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp">;
+  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones">;
   getActiveChannelId: (userId: string) => Promise<string | null>;
   /** Runs work after the response is sent (Next's `after`); injectable for tests. */
   runAfter: (work: () => Promise<void>) => void;
@@ -78,6 +78,14 @@ export function createAutoCollectAllHandler(
               });
             } catch {
               // Already running, reads switched off, quota reserve: planned again on the next dashboard open.
+            }
+          }
+          // BL-166: each collected channel's due day-7 / day-28 milestones, after the history (both are background reads).
+          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+            try {
+              await deps.core.collectDueMilestones({ credentialRef, channelId });
+            } catch {
+              // Reads off, quota, sign-in: nothing was counted against the milestones; the next dashboard open tries again.
             }
           }
         } catch {

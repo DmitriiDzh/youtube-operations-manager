@@ -463,6 +463,15 @@ Key MCP tools:
     `period`, `freshness`, and, additively from Phase 13, `viewCountingChangeInComparison: boolean` -- true when the two periods straddle YouTube's 2026-08-27 view-counting change, so the totals are not like-for-like). Wraps `analytics_overview` unchanged — a **live** Analytics API read
     that counts against that API's quota. Requires `channelId` to be the caller's active channel
     (checked internally by the wrapped `analyticsCore` call, not a second check in this module).
+  - `agent_get_video_milestones` (BL-166, Agent API 3.9.0, `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md`) — `{ channelId, videoIds? (1-50),
+    milestone? (7 | 28), credentialRef? }` → `{ channelId, milestones: [{ videoId, milestoneDays, windowStart, windowEnd, status
+    (collected | retry | failed), attempts, lastError, collectedAt, durationSeconds, totals: { views, estimatedMinutesWatched,
+    averageViewDuration, averageViewPercentage }, retention: [{ elapsedVideoTimeRatio, audienceWatchRatio, relativeRetentionPerformance,
+    startedWatching, stoppedWatching, totalSegmentImpressions }] }] }`. The stored day-7 / day-28 milestones of the channel's own videos: window
+    = Pacific publish date .. +6 / +27; collected with the Analytics collection once 3 days have passed after the window, at most 25 per channel
+    per run, failed after 3 attempts. Values as YouTube returned them (null / `[]` when it returned none); nothing is computed from the curve.
+    Only public videos have milestones (a private or scheduled video's `publishedAt` is its upload time). Milestones not yet due or not yet
+    attempted, or collected for a window the video no longer has, are not listed; a video of another channel is not listed. Local read only.
   - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
     `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`
     (BL-114, ADR 0014). Thumbnail impressions and click-through rate from the YouTube Reporting API
@@ -965,15 +974,17 @@ A second agent role, separate from the channel agents. Technical contract only (
 ## Producer MCP endpoint (`POST /api/mcp/producer`, BL-161, ADR 0034)
 
 An agent role that reads every channel connected on the device, one channel per call (FO-REQ-0012), and proposes watchlist and hypothesis
-changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical contract only.
+changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical contract only. Producer API 1.2.0 (BL-166) adds the upload
+milestones.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.1.0` (1.0.0 plus the three proposal tools, BL-163), independent of `AGENT_API_VERSION` and the Factory API.
+- **Producer API version:** `1.2.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+  `producer_upload_milestones` in 1.2.0 (BL-166)), independent of `AGENT_API_VERSION` and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
-  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_query_video_analytics`, `analytics_data_quality`,
+  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_get_video_milestones`, `agent_query_video_analytics`, `analytics_data_quality`,
   `analytics_comparable_age`, `analytics_weekly_reports_list`, `analytics_weekly_report_get`, `agent_list_asset_performance`,
   `agent_find_comparable_videos`, `query_competitors`, `query_market_intelligence` (its watchlist channel is `watchlistChannelId` here),
   `query_market_overview`, `agent_list_market_records`, `agent_get_collection_request`, `agent_get_collection_limits`, `agent_get_content_proposal`,
@@ -987,6 +998,12 @@ changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical co
   ctr, daysWithData }, uploads, freshness: { lastVideoSyncAt, lastAnalyticsCollectedAt, reachCoveredThrough } }] }` -- stored data only, `null`
   where nothing is stored (never zero): analytics with no stored day, Reach with no imported day in the range, `uploads` of a channel whose videos
   were never synced here. Analytics days are YouTube's reporting days; uploads count by UTC date. Dates must be real calendar dates.
+  `producer_upload_milestones` `{ startDate, endDate }` (YYYY-MM-DD, at most 92 days; BL-166) → `{ startDate, endDate, source: "local", channels:
+  [{ channelId, title, reachState (no_job | waiting_for_first_report | ready | unavailable), reachError (why unavailable, else null), uploads: [{ videoId, title, publishedAt,
+  durationSeconds, milestones: [{ milestoneDays, windowStart, windowEnd, status (collected | retry | failed | due | not_due), collectedAt, totals:
+  { views, estimatedMinutesWatched, averageViewDuration, averageViewPercentage } | null, reach: { daysWithData, impressions, ctr } }] }] | null }] }`
+  -- public uploads published in the range by UTC date, oldest first (private, scheduled and upcoming videos are left out); `totals` only when collected; Reach over the same window (impressions summed,
+  CTR impressions-weighted), `null` figures when no Reach day is stored in it; `uploads` null for a channel never synced here. No curves.
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
   refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`

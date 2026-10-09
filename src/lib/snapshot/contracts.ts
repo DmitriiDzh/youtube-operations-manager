@@ -168,6 +168,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   video_metrics_daily: "accepted limitation (RISK-52, ARCHITECTURE §14.7): collected metrics stay local",
   analytics_collection_runs: "collection bookkeeping for the local metrics above",
   analytics_weekly_reports: "rebuilt from the device's own local metrics",
+  video_milestones: "accepted limitation (RISK-52, same as video_metrics_daily): each computer collects its own channels' milestones (BL-166)",
   creative_assets: "accepted limitation (RISK-52)",
   content_proposals: "accepted limitation (RISK-52)",
   content_proposal_artifacts: "accepted limitation (RISK-52), child of content_proposals",

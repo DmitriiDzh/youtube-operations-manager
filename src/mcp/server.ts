@@ -30,7 +30,7 @@ import {
   listSyncedVideosInputSchema,
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
-import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
+import { createAnalyticsCore, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import {
   createChangeSetFromGenerationInputSchema,
@@ -154,6 +154,7 @@ type AnalyticsCoreSubset = Pick<
   | "getComparableAgeComparison"
   | "listWeeklyReports"
   | "getWeeklyReport"
+  | "listVideoMilestones"
 >;
 
 // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): registered directly here, not
@@ -344,6 +345,7 @@ type McpToolHandlers = {
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
+  agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
@@ -462,6 +464,8 @@ export type ProducerSession = {
   recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
   listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+  /** BL-166: every connected channel's uploads in the range with their day-7 / day-28 milestones and Reach (stored data only). */
+  uploadMilestones(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
   /** BL-163: the Producer's side of the proposal store -- submit, list its own, mark read. Approving is not here (Web UI only). */
   proposals: {
     submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -484,6 +488,15 @@ const ISO_DATE = z
 export const producerProposeInputSchema = submitProducerProposalInputSchema;
 export const producerListProposalsInputSchema = listProducerProposalsInputSchema;
 export const producerMarkProposalsDoneInputSchema = markProposalsDoneInputSchema;
+
+/** BL-166: the Producer's upload milestones -- the same date rules as the portfolio overview, at most 92 days (one answer lists every upload). */
+export const producerUploadMilestonesInputSchema = z
+  .object({ startDate: ISO_DATE, endDate: ISO_DATE })
+  .strict()
+  .refine((input) => input.startDate <= input.endDate, { message: "startDate must not be after endDate" })
+  .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 91 * 24 * 60 * 60_000, {
+    message: "at most 92 days",
+  });
 
 export const producerPortfolioOverviewInputSchema = z
   .object({ startDate: ISO_DATE, endDate: ISO_DATE })
@@ -1692,6 +1705,25 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md) -- the stored day-7 / day-28 milestones of the channel's videos. A LOCAL read,
+     * no Google call; `listVideoMilestones` checks the active channel itself, and a video of another channel is simply not listed.
+     */
+    async agentGetVideoMilestones(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listVideoMilestonesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listVideoMilestones({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-118 -- traffic sources / devices / audience / geography / subscribed status / content format for a date range: the same
      * `getChannelBreakdown` the Content tab uses (a LIVE YouTube Analytics API read, 1 quota unit), with each raw API value also given a
      * readable label. Same forwarding pattern as `agentQueryChannelAnalytics`; the service checks the active channel itself.
@@ -2402,6 +2434,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
     // BL-114 -- a pure local read, ungated.
     agentQueryChannelReach: handlers.agentQueryChannelReach,
+    // BL-166 -- a pure local read, ungated.
+    agentGetVideoMilestones: handlers.agentGetVideoMilestones,
     // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
     agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
@@ -2733,6 +2767,16 @@ export function createMcpServer(
       inputSchema: producerPortfolioOverviewInputSchema,
     },
     async (args: z.infer<typeof producerPortfolioOverviewInputSchema>) => toolSuccessResult(await producerSession!.portfolioOverview(args))
+  );
+
+  registerTool(
+    "producer_upload_milestones",
+    {
+      description:
+        "For each connected channel, its public uploads published in the range (synced videos, by UTC date like producer_portfolio_overview; a private, scheduled or upcoming video is not listed), oldest first, each with its day-7 and day-28 milestones (BL-166): `windowStart`/`windowEnd` (YouTube Analytics' Pacific dates: publish date .. +6 / +27), `status` (collected | retry -- a query failed, tried again later | failed -- given up after 3 attempts | due -- waiting for its collection run | not_due -- the window or the 3-day reporting lag after it is not over), `collectedAt`, `totals` (views, estimatedMinutesWatched, averageViewDuration in seconds, averageViewPercentage, as YouTube returned them for the window; null unless collected) and `reach` over the same window from the imported Reach reports (`daysWithData`; `impressions` summed and `ctr` impressions-weighted, both null when no Reach day is stored in the window -- a window still open has only its days so far). `reachState` is the channel's Reach state (no_job, waiting_for_first_report, ready, or unavailable when it could not be read -- `reachError` then names why, e.g. CHANNEL_NOT_ACTIVE). `uploads` is null for a channel whose videos were never synced on this computer. No retention curves: agent_get_video_milestones with the channelId returns them. Local data only, never a live YouTube call; milestones are collected by the computer the channel is connected on. Dates are YYYY-MM-DD, inclusive, at most 92 days.",
+      inputSchema: producerUploadMilestonesInputSchema,
+    },
+    async (args: z.infer<typeof producerUploadMilestonesInputSchema>) => toolSuccessResult(await producerSession!.uploadMilestones(args))
   );
 
   // BL-163 (FO-REQ-0014 §C, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): the Producer proposes, the owner decides in
@@ -3153,6 +3197,16 @@ export function createMcpServer(
       inputSchema: getChannelReachInputObjectSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelReach(args)
+  );
+
+  registerTool(
+    "agent_get_video_milestones",
+    {
+      description:
+        "The stored day-7 and day-28 milestones of the channel's own videos (BL-166). A milestone's window runs from the video's publish date (YouTube Analytics' Pacific date) to publish date + 6 (day 7) or + 27 (day 28), inclusive. YT Manager queries a window once it and YouTube's reporting lag are over (3 days after its last day), during the dashboard's Analytics collection, at most 25 per channel per run, oldest first: a longer backlog fills over several runs. Each milestone: `status` (collected | retry -- a query failed, it is tried again on a later run | failed -- given up after 3 attempts), `attempts`, `lastError`, `collectedAt`, `durationSeconds` (the video's stored length, null when unknown, so a point of the curve can be placed in time), `totals` (views, estimatedMinutesWatched, averageViewDuration in seconds, averageViewPercentage -- each as YouTube returned it for the window, null when it returned none) and `retention`: up to 100 points of the audience-retention curve (elapsedVideoTimeRatio 0.01 .. 1.00, with audienceWatchRatio, relativeRetentionPerformance, startedWatching, stoppedWatching, totalSegmentImpressions), as returned -- [] when YouTube returned none (e.g. too few views) or the milestone is not collected. Only public videos have milestones (while a video is private or scheduled, its publishedAt is its upload time); a milestone not due yet, or due but not attempted yet, is not listed, nor one collected for a window the video no longer has (its publish date moved) until it is collected again. Optional `videoIds` (1-50) and `milestone` (7 or 28) narrow the answer; a videoId of another channel is simply not listed. A LOCAL read, never a live YouTube call; each computer collects the milestones of the channels connected on it. Nothing is computed from the curve (e.g. no 'retention at 30 s'). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listVideoMilestonesInputSchema,
+    },
+    (args) => handlers.agentGetVideoMilestones(args)
   );
 
   registerTool(

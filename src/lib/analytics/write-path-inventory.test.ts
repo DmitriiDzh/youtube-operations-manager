@@ -90,6 +90,9 @@ const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "markAnalyticsAutoCollected", // this module's own single channels column (BL-059)
   "recordAnalyticsCollectionRun", // this module's own append-only collection-run history (data-quality diagnostics)
   "upsertWeeklyReport", // this module's own weekly report snapshots (Phase 8 follow-up, slice 4)
+  "saveCollectedVideoMilestone", // BL-166: this module's own day-7/day-28 milestone rows (video_milestones), never a video/channel row
+  "recordVideoMilestoneFailure", // BL-166: the same table's attempt bookkeeping
+  "deferVideoMilestone", // BL-166: the same table -- puts a milestone back without counting an attempt
   "saveChannelDailyMetric", // this module's own channel-level daily totals table (BL-118)
   "advanceVideoHistory", // this module's own per-video history-coverage bookkeeping (BL-118)
 ]);

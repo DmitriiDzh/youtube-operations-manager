@@ -168,6 +168,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "Thumbnail impressions and click-through rate (CTR) per video per day for a date range, from YouTube's Reporting API Reach report that this app downloads and stores locally -- a LOCAL read, no live YouTube call. Neither metric is available from the Analytics API. Returns `state` (`no_job` / `waiting_for_first_report` / `ready`) so an empty result is never mistaken for zero, plus daily points, per-video totals and impressions-weighted totals; the first report file arrives up to 48 hours after the subscription is created, and data only exists from the day Google started producing files.",
   },
   {
+    id: "analytics.query_video_milestones",
+    mcpTools: ["agent_get_video_milestones"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "The stored day-7 and day-28 milestones of the channel's own videos (BL-166): per milestone its window (publish date .. +6 / +27, Pacific), status (collected / retry / failed), the window totals (views, watch minutes, average view duration and percentage) and the audience-retention curve (up to 100 points) as YouTube returned them, plus the video's stored length. Collected in the background with the Analytics collection, at most 25 per channel per run -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
     id: "analytics.query_video_analytics",
     mcpTools: ["agent_query_video_analytics", "analytics_list"],
     domain: "analytics",

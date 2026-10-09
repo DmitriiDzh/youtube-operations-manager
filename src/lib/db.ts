@@ -1320,6 +1320,35 @@ export const channelMetricsDaily = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 75 (BL-166, FO-REQ-0015 items 1/8, docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): a video's day-7 and day-28
+ * milestone -- the audience-retention curve and the window totals YouTube Analytics returns for publish date .. +6 / +27 (Pacific). One
+ * row per attempted milestone: `collected` (the answer, as returned), `retry` (a failed attempt, retried from `next_attempt_at`) or
+ * `failed` (gave up after the maximum attempts; never queried again). Own-channel Analytics data (Authorized, III.E.4.b), device-local.
+ */
+export const videoMilestones = sqliteTable(
+  "video_milestones",
+  {
+    videoId: text("video_id").notNull(),
+    milestoneDays: integer("milestone_days").notNull(),
+    channelId: text("channel_id").notNull(),
+    windowStart: text("window_start").notNull(),
+    windowEnd: text("window_end").notNull(),
+    status: text("status", { enum: ["collected", "retry", "failed"] }).notNull(),
+    attempts: integer("attempts").notNull(),
+    lastError: text("last_error"),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp" }),
+    collectedAt: integer("collected_at", { mode: "timestamp" }),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+    averageViewDuration: real("average_view_duration"),
+    averageViewPercentage: real("average_view_percentage"),
+    retentionJson: text("retention_json"),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.videoId, table.milestoneDays] }), index("video_milestones_channel_idx").on(table.channelId)]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- per-VIDEO history coverage: this video's daily metrics are collected contiguously from its
  * publish date through `history_through` (a date). Run windows alone cannot say this: a video first synced long after it was published
  * is covered by every channel-level run window yet has no early days. Maintained by collection; drives the automatic history catch-up.
@@ -3925,6 +3954,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS agent_proposals_status_idx ON agent_proposals (status)");
       // NULL keys never collide in SQLite, so only pending rows (which carry the key) are unique.
       await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS agent_proposals_pending_dedupe_idx ON agent_proposals (dedupe_key)");
+    },
+  },
+  {
+    version: 75,
+    description:
+      "video_milestones -- BL-166 (FO-REQ-0015 items 1/8, docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): each video's day-7 and day-28 retention curve and window totals from YouTube Analytics, with per-milestone attempts. Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_milestones (
+        video_id TEXT NOT NULL,
+        milestone_days INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        window_start TEXT NOT NULL,
+        window_end TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_error TEXT,
+        next_attempt_at INTEGER,
+        collected_at INTEGER,
+        views REAL,
+        estimated_minutes_watched REAL,
+        average_view_duration REAL,
+        average_view_percentage REAL,
+        retention_json TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (video_id, milestone_days)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_milestones_channel_idx ON video_milestones (channel_id)");
     },
   },
 ];
@@ -9428,6 +9484,186 @@ export async function getMarketIntelligenceInactiveAfterMonths(database: AppDb =
 
 export async function setMarketIntelligenceInactiveAfterMonths(months: number, database: AppDb = db): Promise<void> {
   await setAppSetting(MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY, String(months), database);
+}
+
+export type StoredVideoMilestone = typeof videoMilestones.$inferSelect;
+
+/** BL-166: every attempted milestone of one channel (any status). */
+export async function listVideoMilestones(
+  channelId: string,
+  filter: { videoIds?: string[]; milestoneDays?: number } = {},
+  database: AppDb = db
+): Promise<StoredVideoMilestone[]> {
+  const conditions = [eq(videoMilestones.channelId, channelId)];
+  if (filter.videoIds) conditions.push(inArray(videoMilestones.videoId, filter.videoIds.length > 0 ? filter.videoIds : [""]));
+  if (filter.milestoneDays !== undefined) conditions.push(eq(videoMilestones.milestoneDays, filter.milestoneDays));
+  return database.select().from(videoMilestones).where(and(...conditions)).orderBy(asc(videoMilestones.videoId), asc(videoMilestones.milestoneDays));
+}
+
+/** BL-166 (review): what the collection plans from -- key, window, status and retry time, without the stored curve. */
+export async function listVideoMilestoneStates(
+  channelId: string,
+  database: AppDb = db
+): Promise<Array<{ videoId: string; milestoneDays: number; windowStart: string; windowEnd: string; status: StoredVideoMilestone["status"]; nextAttemptAt: Date | null }>> {
+  return database
+    .select({
+      videoId: videoMilestones.videoId,
+      milestoneDays: videoMilestones.milestoneDays,
+      windowStart: videoMilestones.windowStart,
+      windowEnd: videoMilestones.windowEnd,
+      status: videoMilestones.status,
+      nextAttemptAt: videoMilestones.nextAttemptAt,
+    })
+    .from(videoMilestones)
+    .where(eq(videoMilestones.channelId, channelId));
+}
+
+/** BL-166 (review): the Producer's upload milestones -- the stored totals of these videos, without the stored curve. */
+export async function listVideoMilestoneTotals(
+  channelId: string,
+  videoIds: string[],
+  database: AppDb = db
+): Promise<
+  Array<{
+    videoId: string;
+    milestoneDays: number;
+    windowStart: string;
+    windowEnd: string;
+    status: StoredVideoMilestone["status"];
+    collectedAt: Date | null;
+    views: number | null;
+    estimatedMinutesWatched: number | null;
+    averageViewDuration: number | null;
+    averageViewPercentage: number | null;
+  }>
+> {
+  if (videoIds.length === 0) return [];
+  return database
+    .select({
+      videoId: videoMilestones.videoId,
+      milestoneDays: videoMilestones.milestoneDays,
+      windowStart: videoMilestones.windowStart,
+      windowEnd: videoMilestones.windowEnd,
+      status: videoMilestones.status,
+      collectedAt: videoMilestones.collectedAt,
+      views: videoMilestones.views,
+      estimatedMinutesWatched: videoMilestones.estimatedMinutesWatched,
+      averageViewDuration: videoMilestones.averageViewDuration,
+      averageViewPercentage: videoMilestones.averageViewPercentage,
+    })
+    .from(videoMilestones)
+    .where(and(eq(videoMilestones.channelId, channelId), inArray(videoMilestones.videoId, videoIds)));
+}
+
+/** BL-166: a milestone's answer, as returned -- `collected`, never queried again. */
+export async function saveCollectedVideoMilestone(
+  row: {
+    videoId: string;
+    milestoneDays: number;
+    channelId: string;
+    windowStart: string;
+    windowEnd: string;
+    views: number | null;
+    estimatedMinutesWatched: number | null;
+    averageViewDuration: number | null;
+    averageViewPercentage: number | null;
+    retentionJson: string;
+    at: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status: "collected" as const,
+    lastError: null,
+    nextAttemptAt: null,
+    collectedAt: row.at,
+    views: row.views,
+    estimatedMinutesWatched: row.estimatedMinutesWatched,
+    averageViewDuration: row.averageViewDuration,
+    averageViewPercentage: row.averageViewPercentage,
+    retentionJson: row.retentionJson,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, attempts: 1, ...values })
+    .onConflictDoUpdate({
+      target: [videoMilestones.videoId, videoMilestones.milestoneDays],
+      // Attempts count per window: a video whose publish date moved (a scheduled video going public) starts again at 1.
+      set: {
+        ...values,
+        attempts: sql`CASE WHEN ${videoMilestones.windowStart} = ${row.windowStart} AND ${videoMilestones.windowEnd} = ${row.windowEnd} THEN ${videoMilestones.attempts} + 1 ELSE 1 END`,
+      },
+    });
+}
+
+/**
+ * BL-166 (second review): a milestone whose query got no usable answer (no HTTP answer, 429, 5xx) is put back until `retryAt` without
+ * counting an attempt, so the run can stop without the same milestone heading the queue again on the next run.
+ */
+export async function deferVideoMilestone(
+  row: { videoId: string; milestoneDays: number; channelId: string; windowStart: string; windowEnd: string; error: string; at: Date; retryAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status: "retry" as const,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: row.retryAt,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, attempts: 0, ...values })
+    .onConflictDoUpdate({
+      target: [videoMilestones.videoId, videoMilestones.milestoneDays],
+      // Attempts are kept for the same window and start from 0 for a new one (the same rule as the other two writes).
+      set: {
+        ...values,
+        attempts: sql`CASE WHEN ${videoMilestones.windowStart} = ${row.windowStart} AND ${videoMilestones.windowEnd} = ${row.windowEnd} THEN ${videoMilestones.attempts} ELSE 0 END`,
+      },
+    });
+}
+
+/**
+ * BL-166: a failed attempt. Below `maxAttempts` the milestone is retried from `retryAt`; at it, the milestone is `failed` and never
+ * queried again (a video YouTube keeps refusing must not hold the queue).
+ */
+export async function recordVideoMilestoneFailure(
+  row: { videoId: string; milestoneDays: number; channelId: string; windowStart: string; windowEnd: string; error: string; at: Date; retryAt: Date; maxAttempts: number },
+  database: AppDb = db
+): Promise<"retry" | "failed"> {
+  const previous = (
+    await database
+      .select({ attempts: videoMilestones.attempts, windowStart: videoMilestones.windowStart, windowEnd: videoMilestones.windowEnd })
+      .from(videoMilestones)
+      .where(and(eq(videoMilestones.videoId, row.videoId), eq(videoMilestones.milestoneDays, row.milestoneDays)))
+      .limit(1)
+  )[0];
+  // Attempts count per window (a moved publish date starts again at 1).
+  const sameWindow = previous !== undefined && previous.windowStart === row.windowStart && previous.windowEnd === row.windowEnd;
+  const attempts = (sameWindow ? previous.attempts : 0) + 1;
+  const status = attempts >= row.maxAttempts ? ("failed" as const) : ("retry" as const);
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status,
+    attempts,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: status === "retry" ? row.retryAt : null,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, ...values })
+    .onConflictDoUpdate({ target: [videoMilestones.videoId, videoMilestones.milestoneDays], set: values });
+  return status;
 }
 
 // ---------------------------------------------------------------------------
