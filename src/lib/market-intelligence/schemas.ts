@@ -914,6 +914,7 @@ export const getWatchlistTableOutputSchema = z
           handleOrUrl: z.string().nullable(),
           reason: z.string(),
           addedAt: z.string(),
+          ...watchlistActivityFields,
           latestObservation: z
             .object({
               observedAt: z.string(),

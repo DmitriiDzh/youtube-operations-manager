@@ -133,9 +133,29 @@ test("AC-WH-04/07: a pause stays until the owner resumes; a resumed entry is not
   assert.deepEqual(await svc.evaluateWatchlistInactivity(), { paused: [] });
   // A newer upload after the resume that goes quiet again does count: newest 2026-04-01 (after the resume is not possible
   // before NOW in this fixture), so simulate the order with a resume stamped before that upload.
+  // (A resume writes only when the entry is paused, so pause it first and resume it with the earlier stamp.)
+  await setResearchChannelPause(A, { at: NOW, reason: "owner" }, NOW, db);
   await setResearchChannelPause(A, null, new Date("2026-03-20T00:00:00.000Z"), db);
   await insertMarketVideoSnapshot({ id: "snap-late", researchChannelId: A, videoId: "late", publishedAt: new Date("2026-04-01T00:00:00.000Z"), source: "youtube.videos.list", createdVia: "web_ui" }, db);
   assert.deepEqual(await svc.evaluateWatchlistInactivity(), { paused: [A] });
+});
+
+test("AC-WH-04: pause and resume write only a state change -- a paused entry keeps its first reason, an active one gets no resume stamp", async () => {
+  const { db } = await freshDb();
+  await seed(db);
+  const svc = detector(db, { next: 0 });
+  await svc.evaluateWatchlistInactivity();
+  // The owner pauses an entry the detector already paused: still "inactive", from the same moment.
+  const later = new Date("2026-10-10T12:00:00.000Z");
+  assert.equal(await setResearchChannelPause(A, { at: later, reason: "owner" }, later, db), true);
+  const a = await getResearchChannelById(A, db);
+  assert.deepEqual([a?.pausedAt?.toISOString(), a?.pausedReason], [NOW.toISOString(), "inactive"]);
+  // Resuming an entry that is not paused stamps nothing, so its silence is not shielded from the detector.
+  assert.equal(await setResearchChannelPause(B, null, later, db), true);
+  assert.equal((await getResearchChannelById(B, db))?.resumedAt ?? null, null);
+  // An unknown entry is reported as missing either way.
+  assert.equal(await setResearchChannelPause("UCzzzzzzzzzzzzzzzzzzzzzz", null, later, db), false);
+  assert.equal(await setResearchChannelPause("UCzzzzzzzzzzzzzzzzzzzzzz", { at: later, reason: "owner" }, later, db), false);
 });
 
 test("AC-WH-05: delete completely also drops the entry's links to our channels and its pending proposals; decided ones stay", async () => {

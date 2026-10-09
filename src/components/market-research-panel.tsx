@@ -9,7 +9,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { BlockingDialog } from "./blocking-dialog";
 import { DrawerSection, SideDrawer } from "./side-drawer";
-import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import { LoadingIndicator } from "./operation-progress";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
@@ -41,6 +41,11 @@ type WatchlistRow = {
   latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
   dataQualityFlags: string[];
   status: ChannelStatus;
+  // BL-163 (FO-REQ-0014 §A): the newest known upload, whether that makes it inactive, and its pause.
+  latestUploadPublishedAt: string | null;
+  inactive: boolean;
+  pausedAt: string | null;
+  pausedReason: "inactive" | "owner" | null;
 };
 
 type RecentVideo = { videoId: string; title: string | null; publishedAt: string | null; viewCount: number | null; observedAt: string };
@@ -171,6 +176,8 @@ export function MarketResearchPanel({
   const [removeTarget, setRemoveTarget] = useState<WatchlistRow | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
 
   const fetchRows = useCallback(async () => {
     try {
@@ -192,6 +199,25 @@ export function MarketResearchPanel({
   useEffect(() => {
     void fetchRows();
   }, [fetchRows]);
+
+  // BL-163: the owner pauses or resumes one entry, then the table reloads.
+  const togglePause = useCallback(
+    async (channelId: string, paused: boolean) => {
+      setPausing(true);
+      setPauseError(null);
+      try {
+        const res = await fetch(`/api/market-intelligence/channels/${encodeURIComponent(channelId)}/pause`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paused }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(errorText(t, data, t("watchlist.drawer.pauseFailed"), { showErrorField: false }));
+        await fetchRows();
+      } catch (error) {
+        setPauseError(error instanceof Error ? error.message : t("watchlist.drawer.pauseFailed"));
+      } finally {
+        setPausing(false);
+      }
+    },
+    [fetchRows, t]
+  );
 
   // Every sub-tab stays mounted (BL-140 R1), so a change made in another sub-tab (a promoted candidate, an approved
   // collection) is picked up when this one is shown again (BL-140 review).
@@ -493,6 +519,7 @@ export function MarketResearchPanel({
                 <th className="pb-1 pr-3 font-medium">{t("watchlist.col.reason")}</th>
                 <th className="pb-1 pr-3 font-medium">{t("watchlist.col.subscribers")}</th>
                 <th className="pb-1 pr-3 font-medium">{t("watchlist.col.videosObserved")}</th>
+                <th className="pb-1 pr-3 font-medium">{t("watchlist.col.latestUpload")}</th>
                 <th className="pb-1 pr-3 font-medium">{t("watchlist.col.lastCollected")}</th>
                 <th className="pb-1 pr-3 font-medium">{t("watchlist.col.status")}</th>
                 <th className="pb-1 font-medium">{t("watchlist.col.visibleTo")}</th>
@@ -523,9 +550,20 @@ export function MarketResearchPanel({
                     )}
                   </td>
                   <td className="py-1.5 pr-3 text-zinc-400">{formatNumber(row.videosObserved)}</td>
+                  {/* BL-163: the newest known upload; "inactive" past the owner's months. */}
+                  <td className="whitespace-nowrap py-1.5 pr-3 text-zinc-400">
+                    {row.latestUploadPublishedAt ? formatDisplayDate(row.latestUploadPublishedAt) : "—"}
+                    {row.inactive && <span className="ml-1.5 rounded-full border border-amber-800 bg-amber-950/40 px-1.5 py-0.5 text-[11px] text-amber-300">{t("watchlist.inactive")}</span>}
+                  </td>
                   <td className="whitespace-nowrap py-1.5 pr-3 text-zinc-400">{row.latestRun?.ranAt ? formatDisplayDateTime(row.latestRun.ranAt) : "—"}</td>
                   <td className="py-1.5 pr-3">
-                    <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 ${STATUS_PILL[row.status]}`}>{t(CHANNEL_STATUS_LABELS[row.status])}</span>
+                    {row.pausedAt ? (
+                      <span className="whitespace-nowrap rounded-full border border-zinc-600 bg-zinc-800 px-2 py-0.5 text-zinc-300" title={t("watchlist.pausedInfo")}>
+                        {t(row.pausedReason === "inactive" ? "watchlist.pausedInactive" : "watchlist.paused")}
+                      </span>
+                    ) : (
+                      <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 ${STATUS_PILL[row.status]}`}>{t(CHANNEL_STATUS_LABELS[row.status])}</span>
+                    )}
                   </td>
                   <td className="py-1.5">
                     <VisibleToPill channelIds={assignments.get(row.channelId) ?? []} connectedChannels={connectedChannels} />
@@ -691,6 +729,24 @@ export function MarketResearchPanel({
                 onChange={(channelIds) => setAssignment(selected.channelId, channelIds)}
               />
             </FeatureErrorBoundary>
+          </DrawerSection>
+
+          {/* BL-163 (FO-REQ-0014 §A): a paused entry is not collected; resuming is the owner's own call. */}
+          <DrawerSection title={t("watchlist.drawer.collection")}>
+            <p className="text-xs text-zinc-400">
+              {selected.pausedAt
+                ? t(selected.pausedReason === "inactive" ? "watchlist.drawer.pausedInactiveSince" : "watchlist.drawer.pausedSince", { date: formatDisplayDateTime(selected.pausedAt) })
+                : t("watchlist.drawer.collecting")}
+            </p>
+            <button
+              type="button"
+              disabled={pausing}
+              onClick={() => void togglePause(selected.channelId, !selected.pausedAt)}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {selected.pausedAt ? t("watchlist.drawer.resume") : t("watchlist.drawer.pause")}
+            </button>
+            {pauseError && <p className="text-xs text-red-400">{pauseError}</p>}
           </DrawerSection>
 
           <DrawerSection title={t("watchlist.drawer.remove")}>

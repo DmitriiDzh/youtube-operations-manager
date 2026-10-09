@@ -9274,12 +9274,15 @@ export async function listLatestUploadDates(database: AppDb = db): Promise<Map<s
 
 /** The owner's pause, or resume (`pause: null`, stamped `resumedAt = at`). A resume clears any reason. */
 export async function setResearchChannelPause(id: string, pause: { at: Date; reason: "inactive" | "owner" } | null, at: Date = new Date(), database: AppDb = db): Promise<boolean> {
+  // Only a state change is written: pausing a paused entry keeps its original date and reason, and resuming an active entry
+  // stamps no `resumedAt` (which would otherwise shield its current silence from the detector, AC-WH-04).
   const rows = await database
     .update(researchChannels)
     .set(pause ? { pausedAt: pause.at, pausedReason: pause.reason } : { pausedAt: null, pausedReason: null, resumedAt: at })
-    .where(eq(researchChannels.id, id))
+    .where(and(eq(researchChannels.id, id), pause ? isNull(researchChannels.pausedAt) : isNotNull(researchChannels.pausedAt)))
     .returning({ id: researchChannels.id });
-  return rows.length > 0;
+  if (rows.length > 0) return true;
+  return (await database.select({ id: researchChannels.id }).from(researchChannels).where(eq(researchChannels.id, id)).limit(1)).length > 0;
 }
 
 export type NewAgentProposal = Omit<typeof agentProposals.$inferInsert, "status" | "decidedAt" | "decidedBy" | "rejectComment" | "applyError" | "doneAt">;

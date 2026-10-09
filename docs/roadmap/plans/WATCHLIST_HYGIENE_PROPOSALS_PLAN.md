@@ -36,7 +36,8 @@ before the code.
   - `inactive`: the date is known and older than N months;
   - `pausedAt`, `pausedReason` (`inactive` | `owner`).
 - These fields appear in Research → Channels, in `query_market_overview` / `query_competitors` for channel agents and the
-  Producer (`AGENT_API_VERSION` minor bump), and in the Producer's own reads.
+  Producer, and in the Producer's own reads. No `AGENT_API_VERSION` bump for them: new optional output fields on existing
+  tools are a widening, which the version rule (`agent-operations/contracts.ts`) leaves unbumped.
 - **Auto-pause.** It is evaluated after each collection run, and over all entries at the start of a run. An entry that is
   inactive and not yet paused gets two things in one transaction:
   - `pausedAt`, with reason `inactive`;

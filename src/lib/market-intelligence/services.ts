@@ -2196,17 +2196,19 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * quality flags getMarketOverview's collection warnings use. A local read, no YouTube call.
      */
     async getWatchlistTable(): Promise<{
-      channels: {
-        channelId: string;
-        handleOrUrl: string | null;
-        reason: string;
-        addedAt: string;
-        latestObservation: { observedAt: string; subscriberCount: number | null; hiddenSubscriberCount: boolean; viewCount: number | null; videoCount: number | null } | null;
-        videosObserved: number;
-        latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
-        dataQualityFlags: DataQualityFlag[];
-        status: "current" | "attention" | "failed" | "never_collected";
-      }[];
+      channels: Array<
+        {
+          channelId: string;
+          handleOrUrl: string | null;
+          reason: string;
+          addedAt: string;
+          latestObservation: { observedAt: string; subscriberCount: number | null; hiddenSubscriberCount: boolean; viewCount: number | null; videoCount: number | null } | null;
+          videosObserved: number;
+          latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
+          dataQualityFlags: DataQualityFlag[];
+          status: "current" | "attention" | "failed" | "never_collected";
+        } & WatchlistActivity
+      >;
     }> {
       const { channels } = await services.listWatchlist();
       const rows = [];
@@ -2223,6 +2225,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           handleOrUrl: channel.handleOrUrl,
           reason: channel.reason,
           addedAt: channel.addedAt,
+          latestUploadPublishedAt: channel.latestUploadPublishedAt,
+          inactive: channel.inactive,
+          pausedAt: channel.pausedAt,
+          pausedReason: channel.pausedReason,
           latestObservation: latest
             ? {
                 observedAt: latest.observedAt,

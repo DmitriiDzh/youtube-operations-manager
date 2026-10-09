@@ -6,6 +6,7 @@ import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
 import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
 import { MarketIntelligenceCollectionDepthSettings } from "@/components/market-intelligence-collection-depth-settings";
+import { MarketIntelligenceInactivitySettings } from "@/components/market-intelligence-inactivity-settings";
 import { QuotaReserveSettings } from "@/components/quota-reserve-settings";
 import { RetentionSettings } from "@/components/retention-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
@@ -98,6 +99,9 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.competitorDepth")}>
           <MarketIntelligenceCollectionDepthSettings />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("settingsCard.competitorInactivity")}>
+          <MarketIntelligenceInactivitySettings />
         </FeatureErrorBoundary>
       </div>
 

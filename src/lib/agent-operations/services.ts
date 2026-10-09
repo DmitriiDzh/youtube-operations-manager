@@ -320,7 +320,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "market_intelligence",
     permission: "READ",
     description:
-      "Compact bulk read of the research watchlist: several channels in one paged call, each with its newest raw channel snapshot and snapshot/evidence counts (no evidence text, no snapshot lists). Other channels' API-sourced snapshots only for the last 30 days (YouTube API policy III.E.4.d); nothing computed from competitor statistics (III.E.4.h). Implemented as the `query_market_overview` MCP tool (`src/lib/research-export/`). Local read only, never a live YouTube call.",
+      "Compact bulk read of the research watchlist: several channels in one paged call, each with its newest raw channel snapshot, snapshot/evidence counts and its activity (the newest stored upload date, an inactive flag from the operator's months setting, and the pause) -- no evidence text, no snapshot lists. Other channels' API-sourced snapshots only for the last 30 days (YouTube API policy III.E.4.d); nothing computed from competitor statistics (III.E.4.h). Implemented as the `query_market_overview` MCP tool (`src/lib/research-export/`). Local read only, never a live YouTube call.",
   },
   // Research export (ADR 0019): the Manager writes flat CSV/JSON files of watchlist snapshots (and our own channel's videos) into the
   // channel's workspace `99 Data Exchange/From YTM/` folder so a script can read them. DRAFT, not READ: it creates local files and a ledger row (never

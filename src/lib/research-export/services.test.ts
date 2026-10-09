@@ -265,6 +265,11 @@ test("AC-RE-14 (bulk read): pages the visible watchlist, newest snapshot + count
     videoSnapshotCount: 50,
     uniqueVideoCount: 50,
     latestVideoSnapshotAt: "2026-10-02T10:00:00.000Z",
+    // BL-163: this fixture's context carries no activity -- not known, not inactive, not paused.
+    latestUploadPublishedAt: null,
+    inactive: false,
+    pausedAt: null,
+    pausedReason: null,
     evidenceCount: 2,
     dataQualityFlags: [],
     collection: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 50, complete: true, completeReason: "cap" },

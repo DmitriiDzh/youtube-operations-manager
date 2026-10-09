@@ -12,6 +12,7 @@ export const settings = {
   "settingsCard.quotaReserve": "Quota reserve",
   "settingsCard.marketCollection": "Market intelligence collection",
   "settingsCard.competitorDepth": "Competitor collection depth",
+  "settingsCard.competitorInactivity": "Inactive competitors",
   "settingsCard.channels": "Channels",
   "settingsCard.mcp": "MCP connection",
   "settingsCard.operatorCli": "Operator CLI",
