@@ -753,8 +753,6 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
   const [paramsText, setParamsText] = useState("{}");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [janitorReport, setJanitorReport] = useState<string | null>(null);
-  const [confirmJanitor, setConfirmJanitor] = useState(false);
 
   // Only the job list changes every few seconds while a job runs; the templates and the open session are fetched on
   // mount, after an action, and at a slow cadence (review round 11: three endpoints every 5 s for a 2 h job was ~1,400
@@ -837,28 +835,6 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
     }
   }
 
-  async function janitor(dryRun: boolean) {
-    setConfirmJanitor(false);
-    setBusy(true);
-    setError(null);
-    try {
-      const report = await requestJson<{ dryRun: boolean; scanned: number; deleted: string[]; wouldDelete: string[]; kept: Array<{ key: string; reason: string }> }>("/api/media-generation/exchange/janitor", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ dryRun }),
-      });
-      setJanitorReport(
-        dryRun
-          ? t("media.jobs.janitorDryRun", { count: report.wouldDelete.length, scanned: report.scanned, kept: report.kept.length })
-          : t("media.jobs.janitorDeleted", { count: report.deleted.length, scanned: report.scanned, kept: report.kept.length })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("media.jobs.janitorFailed"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   // A job is submitted for the active channel, to one of ITS running sessions (review round 16; slice 6: several may run).
   const runningHere = openSessions.filter((s) => s.status === "running" && s.channelId === activeChannelId);
   const targetSession = runningHere.find((s) => s.sessionId === chosenSessionId) ?? runningHere[0] ?? null;
@@ -926,6 +902,7 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
                 <th className="py-1 pr-3">{t("media.common.colWhen")}</th>
                 <th className="py-1 pr-3">{t("media.common.colStatus")}</th>
                 <th className="py-1 pr-3">{t("media.common.colBy")}</th>
+                <th className="py-1 pr-3">{t("media.jobs.colPlan")}</th>
                 <th className="py-1 pr-3">{t("media.jobs.colOutputs")}</th>
                 <th className="py-1 pr-3">{t("media.jobs.colNotes")}</th>
                 <th className="py-1"></th>
@@ -940,8 +917,20 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
                     {j.progress && <JobProgress progress={j.progress} />}
                   </td>
                   <td className="py-1 pr-3">{j.createdBy}</td>
-                  <td className="py-1 pr-3 font-mono">
-                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? o.localPath.split(/[\\/]/).slice(-2).join("/") : `${o.filename} (${o.note ?? t("media.jobs.outputPending")})`)).join(", ")}
+                  {/* BL-162 (AC-UX-11): which plan attempt the job is, instead of ids alone. */}
+                  <td className="py-1 pr-3">
+                    {j.plan ? (
+                      <>
+                        <span className="font-mono text-zinc-300">{j.plan.planId}</span>
+                        {j.plan.itemKey ? <span className="font-mono"> · {j.plan.itemKey}</span> : null}
+                        {j.plan.seed !== null ? <span className="text-zinc-500"> · {t("media.jobs.planSeed", { seed: String(j.plan.seed) })}</span> : null}
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="py-1 pr-3 font-mono" title={`${j.jobId}${j.outputs.length > 0 ? `\n${j.outputs.map((o) => o.localPath ?? o.filename).join("\n")}` : ""}`}>
+                    {j.outputs.length === 0 ? "—" : j.outputs.map((o) => (o.localPath ? (o.localPath.split(/[\\/]/).pop() ?? o.filename) : `${o.filename} (${o.note ?? t("media.jobs.outputPending")})`)).join(", ")}
                   </td>
                   <td className="py-1 pr-3">{j.error ?? ""}</td>
                   <td className="py-1">
@@ -958,7 +947,47 @@ export function JobsCard({ activeChannelId }: { activeChannelId: string | null }
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3">
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </Card>
+  );
+}
+
+/**
+ * The exchange janitor (Phase 14 slice 3), run by hand here (dry run first) and daily by the server. BL-162 (AC-UX-11): it is
+ * this computer's maintenance, not a channel's work -- moved from Media → Jobs to Servers → Setup.
+ */
+export function ExchangeCleanupCard() {
+  const { t } = useUiText();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [janitorReport, setJanitorReport] = useState<string | null>(null);
+  const [confirmJanitor, setConfirmJanitor] = useState(false);
+
+  async function janitor(dryRun: boolean) {
+    setConfirmJanitor(false);
+    setBusy(true);
+    setError(null);
+    try {
+      const report = await requestJson<{ dryRun: boolean; scanned: number; deleted: string[]; wouldDelete: string[]; kept: Array<{ key: string; reason: string }> }>("/api/media-generation/exchange/janitor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dryRun }),
+      });
+      setJanitorReport(
+        dryRun
+          ? t("media.jobs.janitorDryRun", { count: report.wouldDelete.length, scanned: report.scanned, kept: report.kept.length })
+          : t("media.jobs.janitorDeleted", { count: report.deleted.length, scanned: report.scanned, kept: report.kept.length })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("media.jobs.janitorFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title={t("media.cleanup.title")} help={t("media.cleanup.help")}>
+      <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={() => janitor(true)} disabled={busy} className={secondaryButton}>
           {t("media.jobs.janitorDryRunButton")}
         </button>

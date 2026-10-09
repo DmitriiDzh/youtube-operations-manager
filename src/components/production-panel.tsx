@@ -13,6 +13,7 @@ import {
   ComputeCard,
   JobsCard,
   CapacityLogCard,
+  ExchangeCleanupCard,
   NowRunningLine,
   FactoryLimitsCard,
   GpuFallbackCard,
@@ -196,6 +197,7 @@ export function ServersPanel({
         <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
         <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
         <CapacityLogCard />
+        <ExchangeCleanupCard />
       </div>
     </div>
   );
