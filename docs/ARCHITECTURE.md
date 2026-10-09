@@ -3105,6 +3105,16 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
   - On a plan: `batches` (`reviewBatches`).
   - On a group: `ownerNote`.
   - On the report: `claims` (≤ 200).
+- **Plans report version 3 (BL-162, FO-REQ-0013; the reader accepts 1–3).**
+  - On a group: `ownerNoteAt` -- when the current owner note was written (`ownerNoteTimes`: the newest not-superseded owner
+    `group_note` event, by `writtenAt` for one that came from another device).
+  - On the report: `groupNotes` (≤ 200) -- the newest wave note per device, plan and wave written here on another device's plan
+    (schema v73, `generation_plan_peer_group_notes`, kept 30 days).
+  - `applyPeerGroupNotes` runs with `applyPeerVerdicts` before each report: a note written after the wave's last owner-note
+    change is applied (`ownerNote` set, `group_note { noteId, fromDevice, writtenAt }`); an older one is recorded with
+    `superseded: true`. A note id already in an event is passed over; a note dated > 5 min ahead, for an unknown wave or a
+    closed plan is skipped.
+  - `recordPeerGroupNote` refuses a device whose report is below version 3 (`plan_invalid`, `peer_update_required`).
 - **Waves.**
   - `reviewBatches` (pure, in `progress.ts`) returns per group: title, `note`, `ownerNote`, earliest attempt, templates, the
     params that differ between the group's items, and passed / rejected at the stage before `owner_review`.
@@ -3131,16 +3141,24 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     - `claimReview` takes `{ deviceId?, planId, scope: attempt|group, itemKey/attemptRef | groupId, release? }`.
     - The claim id is a sha256 of (scope, owning device, plan[, group]). That gives one track claim per plan, which moves with
       the track, and one claim per wave.
-    - A claim lasts 10 minutes. `since` is kept while the same track is renewed. A verdict here ends this device's claim on
-      that track.
+    - A claim lasts 90 s (BL-162; was 10 minutes). `since` is kept while the same track is renewed. A verdict here ends this
+      device's claim on that track.
     - The claim routes (`[planId]/claim`, `peers/[deviceId]/[planId]/claim`) publish the report at once.
     - `claimReview` runs under the plan's lock, so a release and the next claim sent together keep the new claim. A release
       removes only this device's own claim (the same track) and needs no plan or channel, so it works after a channel switch.
     - `claimsOn` and `peerClaims` read the peers' live claims. A claim that reaches more than 15 minutes ahead is ignored.
-    - The screen:
-      - renews its claims every 60 s and releases them on leaving (`keepalive`);
-      - reads the others' claims every 30 s without reloading the queue;
-      - passes over claimed tracks (`claimOf`, `stepIndex`, `nextWaitingIndex(skip)`) unless "show them too" is on.
+    - The screen (BL-162):
+      - renews its claims every 30 s and releases them on leaving (`keepalive`);
+      - reads the others' claims every 3 s from `GET .../claim` (not the whole queue);
+      - passes over claimed tracks (`claimOf`, `stepIndex`, `nextWaitingIndex(skip)`); the queue column still opens one on a
+        click ("show them too" and "take this wave" were removed: what is in work follows what is open, owner msg 2263);
+      - when two computers opened the same track within the sync delay, the later opener moves on to the next free track,
+        but only while its verdict draft is untouched.
+  - **Presence files (BL-162, `sync-gateway/generation-plans/presence.ts`).** Each device writes its live claims into
+    `<sync folder>/generation-plans/global/<deviceId>.presence.json` (`ytm-review-presence` v1, strict, ≤ 256 KB read)
+    the moment a claim changes; `peerClaims` reads the others' files straight from disk and, for a device that has one,
+    ignores the claims in its (older) report. A file must name the device it is named after. The sync runner only reads
+    `*.automerge`, so it never sees these files.
   - **Pending verdicts.**
     - On the owning device, `pendingPeerVerdicts` uses the same rules as `applyPeerVerdicts`.
     - `withPending` overlays a not-yet-applied verdict from another device as given (`pendingFrom`), in the queue, `summary` and
@@ -3151,9 +3169,14 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
       here, or pending from a peer. The error is `plan_verdict_exists` (409, `planVerdictExists`) with
       `{ existing: { result, rating, device, at } }`.
     - The screen asks first (`ConfirmDialog`) and asks again on a 409.
-- **Limits** (RISK-114):
-  - claims are advisory and arrive within the sync delay;
-  - both computers must run version 2.
+- **Limits** (RISK-114, RISK-119):
+  - claims are advisory and arrive within the sync delay (seconds with the presence files and a 1 s Syncthing watch delay);
+  - both computers must run the same report version (3 since BL-162).
+- **Screens (BL-162, `docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md`).** The review screen is a window-high workstation:
+  a toolbar (back, plan, wave picker, progress, validator filter, "About the wave", "View") and three columns -- the player
+  with the verdict under it, the auto-check, the queue. The Plans list holds this device's and the other devices' plans of
+  the channel; one card (`plan-card-model.ts` adapts another device's report defensively) with KPI tiles, a stage funnel and
+  a waves table; actions that change the plan are shown disabled "on <computer>" for another device's plan.
 
 ## 34. Agent tokens shared between devices, and the Producer role (BL-160, BL-161, ADR 0033, ADR 0034)
 

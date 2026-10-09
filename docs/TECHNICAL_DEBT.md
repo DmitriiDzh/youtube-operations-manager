@@ -1892,3 +1892,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Bounded by:** a valid agent token and a loopback caller; it ties up only that request (the agent's own client waits); nothing is read or written by it.
 - **Possible fix:** a timeout around `handleRequest` in the three endpoints, or refusing `notifications/cancelled` in stateless mode. The Producer endpoint already refuses such a batch (and one that repeats a request id) before the transport sees it (BL-161 review round 5); `/api/mcp` and `/api/mcp/factory` still have the gap.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-119 — Plans report version 3 and presence files: both computers must update; device clocks decide ties — OPEN, 2026-10-09
+
+- **What:** BL-162 (`docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md` §5, FO-REQ-0013). The plans report is version 3. A computer on an older build refuses it ("version 3 is newer") and stops seeing the other computer's plans and verdicts until it updates, as with version 2 (RISK-114). A wave note to a computer still on version 2 is refused (`peer_update_required`). Wave notes ("written later wins") and the same-track tie-break of the review screen ("opened earlier keeps it") compare times from two computers' clocks.
+- **Bounded by:** nothing is lost: the verdict history keeps every rating; a superseded note is recorded as an event; a note or verdict dated more than 5 min ahead is not taken; claims stay advisory (a verdict still asks before replacing one). The presence file holds only claims (plan, track, times, host name).
+- **What to do:** update both computers together (stated in the release note); set Syncthing's watch delay for the shared folder to 1 s so claims arrive in seconds.
+- **Re-evaluate:** if a third computer joins (presence and notes are per device, nothing assumes two, but the tie-break is pairwise), or if clocks drift (then use the order the owning device received them).
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner, msgs 2244/2263).

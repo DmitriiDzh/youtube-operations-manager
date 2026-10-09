@@ -1,6 +1,6 @@
 # Media section UX redesign: Plans, Review, Jobs (plan)
 
-**Status: APPROVED, in progress (BL-162).** Owner, Telegram 2026-10-09 (msg 2244): concept accepted, FO-REQ-0013 in the same
+**Status: APPROVED, implemented on the branch, review pending (BL-162).** Owner, Telegram 2026-10-09 (msg 2244): concept accepted, FO-REQ-0013 in the same
 branch, built directly in the app (no prototype). Branch: `feature/media-ux-redesign`, one merge approval at the end.
 
 **Source.** Owner, Telegram 2026-10-09 (msg 2232): "Оцени как выглядит раздел media и экраны проверки треков. Действуй как
@@ -36,33 +36,39 @@ The user's job on the review screen is to **listen to a track and decide**. The 
 
 ## 2. Design
 
-### 2.1 Review screen: three zones
+### 2.1 Review screen (as built after the owner's rounds, msgs 2254, 2263, 2269, 2276)
 
-1. **Context bar** (one line): `‹ План R-0001 · C14 · ждут 37 из 40`, the previous and next arrows, and "Назад к плану". The full
-   wave context (factory note, owner note, templates, differing params, prompt and lyrics) opens with a "О волне" button and
-   is collapsed by default.
-2. **Player** (full width, dominant): the waveform, transport, time and A/B in one row. Under it sits a labelled "Вид" group
-   with visible captions: loudness match, spectrogram, blind. Loudness and claim lines become small captions.
-3. **Verdict bar** (sticky at the bottom of the viewport): Принять (A), Отклонить (R), Перезапуск, rating 1–10, mark,
-   comment. Reason chips are always reachable, and selecting Reject highlights them.
+The first build (three stacked zones and a pinned verdict bar) was judged "much empty space, untidy" (msg 2263), so the
+structure itself was changed:
 
-On the right is a collapsible **"Почему"** panel. Failed checks come first, with a jump to `atSeconds`. Passed checks are
-folded into "ещё N пройдено". Generation parameters are on a second tab.
+- **One toolbar.** Back, the channel and plan, the wave picker (a dropdown: waves with tracks waiting, then the reviewed
+  ones), "reviewed N of M", the validator filter, "About the wave" (a popover with the notes, params, prompt and lyrics) and
+  "View" (a popover with the three captioned switches; blind mode is called "Hide the auto-check until my verdict").
+- **Three columns, window-high, each scrolling on its own.** From left to right:
+  - the player (160 px waveform, a round play button, A/B in the transport row) with the verdict right under it;
+  - the auto-check;
+  - the queue (msg 2276: on the right).
+- **The verdict.** Calm tinted "✓ Accept [A]" / "✗ Reject [R]", the 1–10 rating, the reasons with icons, a three-line
+  comment, the mark, and "↻ Ask to generate again" with an explanation.
+- **The auto-check.** Every check is visible: a ✓/✗ mark, the value and the limit. The failed ones come first, highlighted,
+  with a jump to their time. There are no folded lists (msg 2254).
+- **The queue.** Groups "Waiting for your verdict · N" and "Reviewed · N". Each track shows its name, seed, "auto-check ✓/✗"
+  (hidden in blind mode), and the verdict with its rating or "on <computer>".
+- **Removed (owner, msg 2263):** "Take this wave" and "show claimed ones too". What is in work follows what is open (§5.4).
+  This supersedes BL-157 AC-WV-06 (manual wave claim) and the AC-TC-02 switch. A claimed track still opens from the queue.
 
-The **wave picker** is a compact list of rows: a short label (the group id, with the title truncated to one line) and the
-number waiting. Only waves with waiting tracks show by default, with "показать проверенные (N)". The plan order and
-`nextOpenWave` stay as they are.
+### 2.2 Plan card (as built, msgs 2263, 2271)
 
-### 2.2 Plan card
-
-- One primary action, "Проверить (N)", with a visible caption next to the review-rejected switch.
-- "Завершить" and "Отменить план" move into a "⋯" menu. The existing `ConfirmDialog` stays, with `danger` for cancel.
-- Waves are listed newest first (the reverse of plan order). Each wave row has:
-  - "Проверить (N)" when N > 0, which opens the review on that wave (`?wave=`);
-  - neutral counts, with colour only when the count is above zero;
-  - the owner note as an icon button with a tooltip.
-- Waves with nothing waiting and nothing generating are folded into "ещё N волн".
-- The owner-review stage line states the remainder explicitly ("ждут N").
+- **Header.** The title, one line of facts, and the description folded to one line with "more". Then the primary
+  "Review (N)" and a "⋯" menu (Complete, Cancel; confirmed as before).
+- **KPI tiles.** Waiting for you (clickable), Accepted, Generated, Spend, Time left. Budget and review notices colour the
+  tiles instead of being badges.
+- **The stages** form one funnel line.
+- **The "Listen to rejected tracks too" switch** has its caption.
+- **The waves** form a table: Wave | Recipe | Generated | ✓ | ✗ | Waiting | Review. Rows are newest first and the Review
+  buttons are equal width. The factory and owner notes open on the row's arrow. Waves with nothing waiting, except the
+  newest, are folded.
+- **Media's accent is violet:** `ToggleSwitch tone="violet"` and the buttons. Red stays the default switch for settings.
 
 ### 2.3 Jobs
 
@@ -77,8 +83,9 @@ number waiting. Only waves with waiting tracks show by default, with "показ
   - blind mode (off by default) and ask for a re-run;
   - `atSeconds` markers and the R-0001 reason list (`REVIEW_REASONS` values unchanged).
 - Phase 3: loudness match (on by default), spectrogram, A/B with the nearest references, frequency marks.
-- The keyboard map (`reviewKeyAction`), auto-advance, claims (track and wave), "Replace?" (`plan_verdict_exists`), the verdict
-  history and the peer-device paths.
+- The keyboard map (`reviewKeyAction`), auto-advance, track claims (wave claims from older builds are still honoured; taking a
+  wave by hand was removed by the owner, §2.1), "Replace?" (`plan_verdict_exists`), the verdict history and the peer-device
+  paths.
 - The routes `/media/plans`, `/media/jobs` and `/media/plans/<id>/review` (BL-149 AC-RT-07).
 - The conventions `ToggleSwitch`, `ConfirmDialog` and no native dialogs, and every label in `en` and `ru` (AGENTS.md §H).
 - The exported helpers the existing tests import keep their behaviour. A changed expectation needs a stated requirement
@@ -87,8 +94,8 @@ number waiting. Only waves with waiting tracks show by default, with "показ
 ## 4. Acceptance criteria (defined before implementation)
 
 - **AC-UX-01** Every switch in Media (plan card, review) has visible caption text next to it, with a key in `en` and `ru`.
-- **AC-UX-02** At a 1280×800 viewport, with a wave chosen and the wave context collapsed, Accept, Reject and Re-run are visible
-  without scrolling, and so are the waveform and the play control.
+- **AC-UX-02** At a 1280×800 viewport, Accept, Reject, the waveform and the play control are visible without scrolling. The
+  verdict sits right under the player, and the screen is exactly window-high.
 - **AC-UX-03** Wave context (prompt, lyrics, differing params) is collapsed by default, and one control expands it.
 - **AC-UX-04** The review heading is one line: plan, wave short label, waiting / total. The full wave title is reachable
   through the expanded context or a tooltip.
@@ -96,8 +103,7 @@ number waiting. Only waves with waiting tracks show by default, with "показ
   be copied.
 - **AC-UX-06** A validator-rejected track lists its failed checks before any passed check. Passed checks are collapsed with
   their count.
-- **AC-UX-07** The wave picker shows waves with waiting tracks by default. Fully reviewed waves stay reachable through one
-  control.
+- **AC-UX-07** The wave picker lists the waves with waiting tracks first. Fully reviewed waves follow under "Reviewed".
 - **AC-UX-08** The plan card has exactly one primary button. Complete and Cancel are reachable through a menu and still
   confirm through `ConfirmDialog`.
 - **AC-UX-09** A wave with N > 0 waiting has "Проверить (N)". It opens `/media/plans/<id>/review?wave=<groupId>` with that
@@ -106,8 +112,12 @@ number waiting. Only waves with waiting tracks show by default, with "показ
   coloured counts.
 - **AC-UX-11** Jobs: a job linked to a plan shows the plan id and the item key. The empty-session hint names Servers →
   Sessions. The janitor buttons are in Servers → Setup and no longer in Media → Jobs.
-- **AC-UX-12** The keyboard map, verdict payloads and API calls are unchanged. The existing
+- **AC-UX-12** The keyboard map and verdict payloads are unchanged. The existing
   `plan-review-screen.test.ts` / `generation-plans-panel.test.ts` pass unchanged.
+
+- **AC-UX-15** The queue lists the walk's tracks in two groups, waiting and reviewed. Each track has its state and a click
+  opens it. The open track stays in view.
+- **AC-UX-16** Scrollbars are dark and thin everywhere (`src/app/ui-kit.css`). The Media switches use `tone="violet"`.
 
 ## 5. FO-REQ-0013: the same plan on every computer (slice 4)
 
@@ -168,12 +178,28 @@ A/B, verdicts (applied on the owner's tick), track and wave claims, and the wave
 - **AC-UX-14** The Plans list shows this device's plans and the peers' plans of the active channel in one list, each with its
   device label, and each opens the same card.
 
+### 5.4 What is open, in seconds (owner msgs 2254 p.5, 2259, 2263)
+
+- **The presence file.** Each device writes its live claims to `<sync folder>/generation-plans/global/<deviceId>.presence.json`
+  (`ytm-review-presence` v1, strict) whenever a claim changes.
+- **Reading it.** The others read it straight from disk. For a device that has one, it replaces that device's report claims.
+- **Timing.** A claim lives 90 s, the screen renews it every 30 s, and `GET …/claim` is polled every 3 s.
+- **Same track opened twice.** When both computers opened one track within the delay, the earlier opener keeps it. The
+  later one moves on automatically, but only with an untouched draft.
+- **Syncthing.** Set the shared folder's watch delay to 1 s.
+- **AC-PR-01** A claim reaches the owning device without a report.
+- **AC-PR-02** A release is gone at once, even while the older report still names the claim.
+- **AC-PR-03** A device without a presence file is heard through its report.
+- **AC-PR-04** A malformed, oversized or impersonating file is ignored.
+- **AC-PR-05** The quick read answers only for the active channel's plan.
+
 ## 6. Slices (one branch, one merge approval)
 
 1. Review screen (AC-UX-01..07, 09 review side, 12).
 2. Plan card (AC-UX-01, 08..10).
 3. Jobs (AC-UX-11).
 4. FO-REQ-0013: one list and one card (AC-UX-13/14), then the wave note relay and report v3 (AC-NOTE-01..09).
+5. Owner review rounds (msgs 2254–2276): the three-column review, the KPI card, the UI kit, the presence files (§5.4).
 
 ## 7. Owner answers (msg 2244)
 
