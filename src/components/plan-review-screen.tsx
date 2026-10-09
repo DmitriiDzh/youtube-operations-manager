@@ -8,6 +8,7 @@ import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudn
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
 import { ConfirmDialog } from "./confirm-dialog";
+import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
@@ -46,6 +47,21 @@ const REVIEW_REASON_KEYS: Record<(typeof REVIEW_REASONS)[number], UiTextKey> = {
   "sounds like the others": "review.reason.soundsLikeOthers",
   "not melodic / boring": "review.reason.notMelodic",
   "unwanted beat / drums": "review.reason.unwantedBeat",
+};
+
+/** BL-162 (owner, Telegram 2026-10-09 msg 2254 p.3): an icon per reason, so the buttons read at a glance. */
+// ui-text-ignore: pictograms, not text
+const REVIEW_REASON_ICONS: Record<(typeof REVIEW_REASONS)[number], string> = {
+  "thin / sparse": "🕳️",
+  "dropout / pause": "⏸️",
+  "abrupt start": "⚡",
+  "dead tail / abrupt end": "✂️",
+  "ringing / whine": "🔔",
+  "wrong instrument": "🎻",
+  "stuck loop": "🔁",
+  "sounds like the others": "👥",
+  "not melodic / boring": "😴",
+  "unwanted beat / drums": "🥁",
 };
 
 /** A verdict / result in words (accepted, rejected); any other value shows as it is. */
@@ -379,10 +395,9 @@ export function PlanReviewScreen({
   const referenceAudio = useRef<HTMLAudioElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
-  // BL-162: the picker's reviewed waves, the wave's details, the side panel's tab and "copied".
+  // BL-162: the picker's reviewed waves, the wave's details and "copied".
   const [showReviewedWaves, setShowReviewedWaves] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [whyTab, setWhyTab] = useState<"validator" | "generation">("validator");
   const [copied, setCopied] = useState(false);
   const player = useRef<ReviewPlayerHandle | null>(null);
   const peerDevice = source?.deviceId;
@@ -728,22 +743,6 @@ export function PlanReviewScreen({
       () => undefined
     );
   };
-  const checkLine = (c: PlanCheck) => (
-    <div key={c.id} className={c.pass ? "text-zinc-400" : "text-red-300"}>
-      {c.pass ? "✓" : "✗"} {c.label ?? c.id}: {c.value === null ? "—" : String(c.value)}
-      {c.unit ? ` ${c.unit}` : ""}
-      {c.threshold !== null ? ` ${t("review.limit", { value: String(c.threshold) })}` : ""}
-      {c.atSeconds ? (
-        <>
-          {" "}
-          <button type="button" onClick={() => c.atSeconds && player.current?.playFrom(c.atSeconds[0])} className="underline decoration-dotted underline-offset-2 hover:text-white">
-            {t("review.atTime", { time: formatPlayerTime(c.atSeconds[0]) })}
-          </button>
-        </>
-      ) : null}
-      {c.detail ? ` · ${c.detail}` : ""}
-    </div>
-  );
 
   // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §2.1): three zones -- a one-line context bar, the player as the main element, and the
   // verdict bar pinned to the bottom of the screen; the validator and the generation details sit in a side panel.
@@ -1009,10 +1008,13 @@ export function PlanReviewScreen({
                     <ToggleSwitch label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
                     <span>{t("review.spectrogram")}</span>
                   </label>
-                  <label className="flex cursor-pointer items-center gap-2" title={t("review.blind")}>
-                    <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
-                    <span>{t("review.blindShort")}</span>
-                  </label>
+                  <span className="flex items-center gap-1">
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
+                      <span>{t("review.blindShort")}</span>
+                    </label>
+                    <InfoTooltip>{t("review.blindInfo")}</InfoTooltip>
+                  </span>
                   <span className="text-zinc-500">
                     {lufsOf === null
                       ? t("review.loudnessUnknown")
@@ -1045,52 +1047,72 @@ export function PlanReviewScreen({
             )}
           </div>
 
-          {/* "Why": the validator (AC-UX-06: failed checks first) and the generation details. */}
-          <aside className="space-y-2 text-xs">
-            <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist">
-              <button type="button" role="tab" aria-selected={whyTab === "validator"} onClick={() => setWhyTab("validator")} className={tabButton(whyTab === "validator")}>
-                {t("review.why.validator")}
-              </button>
-              <button type="button" role="tab" aria-selected={whyTab === "generation"} onClick={() => setWhyTab("generation")} className={tabButton(whyTab === "generation")}>
-                {t("review.generation")}
-              </button>
-            </div>
-            {whyTab === "validator" ? (
-              hideFindings ? (
-                <p className="text-zinc-500">{t("review.blindNote")}</p>
-              ) : (
-                entry.stages.map((stage) => {
-                  const { failed, passed } = splitChecks(stage.checks);
-                  return (
-                    <div key={stage.stageId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-zinc-200">{stage.stageId}</span>
-                        <span className={stage.result === "accepted" || stage.result === "done" ? "text-emerald-400" : "text-red-400"}>{resultLabel(t, stage.result)}</span>
-                      </div>
-                      {failed.map(checkLine)}
-                      {passed.length > 0 && (
-                        <details>
-                          <summary className="cursor-pointer text-zinc-500">{t("review.checks.passed", { count: passed.length })}</summary>
-                          <div className="mt-1 space-y-0.5">{passed.map(checkLine)}</div>
-                        </details>
-                      )}
-                      {Object.keys(stage.metrics).length > 0 && (
-                        <details>
-                          <summary className="cursor-pointer text-zinc-500">{t("review.checks.metrics")}</summary>
-                          <div className="mt-1 text-zinc-500">
-                            {Object.entries(stage.metrics)
-                              .map(([k, v]) => `${k} ${String(v)}`)
-                              .join(" · ")}
-                          </div>
-                        </details>
-                      )}
-                      {stage.note && <div className="text-zinc-400">{stage.note}</div>}
-                    </div>
-                  );
-                })
-              )
+          {/* The auto-check, always in view (owner, msg 2254 p.2): every check with its mark, value and threshold -- the failed
+              ones first (AC-UX-06); the generation parameters below. */}
+          <aside className="space-y-2">
+            <h4 className="flex items-baseline justify-between gap-2 text-sm font-medium text-zinc-200">
+              {t("review.why.validator")}
+              {!hideFindings && (() => {
+                const all = entry.stages.flatMap((st) => st.checks);
+                return all.length > 0 ? <span className="text-xs font-normal text-zinc-500">{t("review.checks.passed", { passed: all.filter((c) => c.pass).length, total: all.length })}</span> : null;
+              })()}
+            </h4>
+            {hideFindings ? (
+              <p className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">{t("review.blindNote")}</p>
             ) : (
-              <div className="space-y-0.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-zinc-400">
+              entry.stages.map((stage) => {
+                const { failed, passed } = splitChecks(stage.checks);
+                const ok = stage.result === "accepted" || stage.result === "done";
+                return (
+                  <div key={stage.stageId} className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="font-medium text-zinc-200">{stage.stageId}</span>
+                      <span className={`rounded-full px-2 py-0.5 ${ok ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>{resultLabel(t, stage.result)}</span>
+                    </div>
+                    {[...failed, ...passed].map((c) => (
+                      <div key={c.id} className={`flex items-start gap-2 rounded-md px-2 py-1 ${c.pass ? "bg-emerald-500/5" : "bg-red-500/10 ring-1 ring-red-500/40"}`}>
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${c.pass ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500 text-white"}`}>{c.pass ? "✓" : "✗"}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2 text-sm">
+                            <span className={c.pass ? "text-zinc-300" : "font-medium text-red-200"}>{c.label ?? c.id}</span>
+                            <span className={`shrink-0 font-mono text-xs ${c.pass ? "text-zinc-300" : "text-red-200"}`}>
+                              {c.value === null ? "—" : String(c.value)}
+                              {c.unit ? ` ${c.unit}` : ""}
+                            </span>
+                          </div>
+                          {(c.threshold !== null || c.atSeconds || c.detail) && (
+                            <div className="text-[11px] text-zinc-500">
+                              {c.threshold !== null ? t("review.limit", { value: String(c.threshold) }) : ""}
+                              {c.atSeconds ? (
+                                <>
+                                  {" "}
+                                  <button type="button" onClick={() => c.atSeconds && player.current?.playFrom(c.atSeconds[0])} className="underline decoration-dotted underline-offset-2 hover:text-white">
+                                    {t("review.atTime", { time: formatPlayerTime(c.atSeconds[0]) })}
+                                  </button>
+                                </>
+                              ) : null}
+                              {c.detail ? ` · ${c.detail}` : ""}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {Object.keys(stage.metrics).length > 0 && (
+                      <div className="text-[11px] text-zinc-500">
+                        <span className="text-zinc-400">{t("review.checks.metrics")}: </span>
+                        {Object.entries(stage.metrics)
+                          .map(([k, v]) => `${k} ${String(v)}`)
+                          .join(" · ")}
+                      </div>
+                    )}
+                    {stage.note && <div className="text-xs text-zinc-400">{stage.note}</div>}
+                  </div>
+                );
+              })
+            )}
+            <details className="rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-xs text-zinc-400">
+              <summary className="cursor-pointer text-zinc-300">{t("review.generationDetails")}</summary>
+              <div className="mt-1 space-y-0.5">
                 {Object.entries(entry.params).length === 0 ? (
                   <div className="text-zinc-500">{t("review.noParams")}</div>
                 ) : (
@@ -1101,67 +1123,80 @@ export function PlanReviewScreen({
                   ))
                 )}
               </div>
-            )}
+            </details>
           </aside>
         </div>
       )}
 
-      {/* Zone 3: the verdict bar, pinned to the bottom of the screen (AC-UX-02). */}
+      {/* Zone 3: the verdict bar, pinned to the bottom of the screen (AC-UX-02); reasons with icons and a roomy comment
+          (owner, msg 2254 p.3/p.4). */}
       {entry && (
-        <div className="sticky bottom-0 z-10 -mx-4 -mb-4 space-y-2 rounded-b-xl border-t border-zinc-800 bg-zinc-900/95 px-4 py-3 backdrop-blur">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="sticky bottom-0 z-10 -mx-4 -mb-4 space-y-3 rounded-b-xl border-t border-zinc-800 bg-zinc-900/95 px-4 py-3 backdrop-blur">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="mr-1 text-xs text-zinc-400">
               {t("review.reasons.label")} <span className="text-zinc-600">· {t("review.reasons.hint")}</span>
             </span>
             {REVIEW_REASONS.map((reason) => {
               const on = draft.reasons.includes(reason);
               return (
-                <button key={reason} type="button" onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))} className={`rounded-full border px-2.5 py-0.5 text-xs ${on ? "border-red-400 bg-red-500/20 text-red-200" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
+                <button
+                  key={reason}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
+                  className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-950 text-zinc-200 hover:border-zinc-500"}`}
+                >
+                  <span aria-hidden="true">{REVIEW_REASON_ICONS[reason]}</span>
                   {t(REVIEW_REASON_KEYS[reason])}
                 </button>
               );
             })}
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1 text-xs text-zinc-400">
-              {t("review.rating")}
-              {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-                <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-6 w-6 rounded ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
-                  {n}
-                </button>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-              <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
-                {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
-              </button>
-              {draft.marks.map((m, i) => (
-                <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
-                  {formatPlayerTime(m.start)}
-                  {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
-                  <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
-                    ×
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-1 text-xs text-zinc-400">
+                <span className="mr-1">{t("review.rating")}</span>
+                {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                  <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-7 w-7 rounded text-sm ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
+                    {n}
                   </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
+                  {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
+                </button>
+                {draft.marks.map((m, i) => (
+                  <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                    {formatPlayerTime(m.start)}
+                    {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
+                    <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">
+                  {t("review.accept")}
+                </button>
+                <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-md bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50">
+                  {t("review.reject")}
+                </button>
+                {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does. */}
+                <span className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={device !== null}
+                    onClick={() => void askRerun()}
+                    className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {device !== null ? t("review.rerunOnDevice", { device }) : t("review.askRerun")}
+                  </button>
+                  <InfoTooltip>{t("review.askRerunInfo")}</InfoTooltip>
                 </span>
-              ))}
-            </div>
-            <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={1} maxLength={2000} placeholder={t("review.notePlaceholder")} className="min-w-64 flex-1 resize-y rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100" />
-            <div className="flex flex-wrap gap-2">
-              <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50">
-                {t("review.accept")}
-              </button>
-              <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-md bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50">
-                {t("review.reject")}
-              </button>
-              {/* AC-UX-13: on another device's plan a re-run is asked for there -- shown, not hidden. */}
-              <button
-                type="button"
-                disabled={device !== null}
-                onClick={() => void askRerun()}
-                className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {device !== null ? t("review.rerunOnDevice", { device }) : t("review.askRerun")}
-              </button>
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[11px]">
