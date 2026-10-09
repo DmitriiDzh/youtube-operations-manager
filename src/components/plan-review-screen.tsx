@@ -726,7 +726,8 @@ export function PlanReviewScreen({
   const allChecks = entry ? entry.stages.flatMap((st) => st.checks) : [];
 
   // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §2.1, owner msgs 2254/2263): a review workstation -- one toolbar, then three columns that
-  // fill the screen and scroll on their own: the wave's queue, the player with the verdict under it, and the auto-check.
+  // fill the screen and scroll on their own: the player with the verdict under it, the auto-check, and the wave's queue (owner,
+  // msg 2276: the queue on the right).
   return (
     <div className="flex h-[calc(100vh-6.25rem)] min-h-[34rem] flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
       {/* The toolbar (AC-UX-04): back, whose plan, the wave picker, progress, the validator filter, the wave's details, View. */}
@@ -861,80 +862,8 @@ export function PlanReviewScreen({
       {entries && entries.length === 0 ? (
         <p className="p-6 text-sm text-zinc-500">{t("review.empty")}</p>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[16rem_minmax(0,1fr)_19rem] divide-x divide-zinc-800">
-          {/* Column 1: the queue (AC-UX-15) -- every track of the walk with its state; a click opens it. */}
-          <div className="flex min-h-0 flex-col">
-            {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
-            {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
-              <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
-                <p>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</p>
-                {nextWave && (
-                  <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
-                    {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
-                  </button>
-                )}
-              </div>
-            )}
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {(() => {
-                const row = (e: PlanReviewEntry, i: number) => {
-                  const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
-                  const current = i === index;
-                  const auto = validatorOfEntry(e);
-                  return (
-                    <li key={`${e.itemKey}\u0000${e.attemptRef}`}>
-                      <button
-                        type="button"
-                        ref={current ? currentRow : undefined}
-                        onClick={() => go(i)}
-                        title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
-                        className={`w-full border-l-2 px-3 py-2 text-left transition-colors ${current ? "border-violet-400 bg-zinc-800" : "border-transparent hover:bg-zinc-800/50"}`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <span className={`min-w-0 truncate text-sm font-medium ${current ? "text-white" : "text-zinc-200"}`}>{shortKey(e.itemKey)}</span>
-                          {e.verdict ? (
-                            <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] ${e.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"}`}>
-                              {e.verdict.result === "accepted" ? "✓" : "✗"}
-                              {e.verdict.rating !== null ? ` ${e.verdict.rating}/10` : ""}
-                            </span>
-                          ) : claim ? (
-                            <span className="ml-auto shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span>
-                          ) : null}
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-2 whitespace-nowrap text-xs text-zinc-500">
-                          {e.seed !== null ? <span>{t("review.queue.seed", { seed: String(e.seed) })}</span> : null}
-                          {/* Blind mode keeps the queue blind too. */}
-                          {!blind && auto !== null ? <span className={`ml-auto ${auto === "rejected" ? "text-amber-400" : "text-emerald-500/80"}`}>{auto === "rejected" ? t("review.queue.autoFailed") : t("review.queue.autoPassed")}</span> : null}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                };
-                const all = (entries ?? []).map((e, i) => ({ e, i }));
-                const open = all.filter(({ e }) => e.verdict === null);
-                const done = all.filter(({ e }) => e.verdict !== null);
-                const heading = (text: string) => <p className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">{text}</p>;
-                return (
-                  <>
-                    {open.length > 0 && (
-                      <section>
-                        {heading(t("review.queue.waitingGroup", { count: open.length }))}
-                        <ul>{open.map(({ e, i }) => row(e, i))}</ul>
-                      </section>
-                    )}
-                    {done.length > 0 && (
-                      <section>
-                        {heading(t("review.queue.reviewedGroup", { count: done.length }))}
-                        <ul>{done.map(({ e, i }) => row(e, i))}</ul>
-                      </section>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-
-          {/* Column 2: the track, the player and the verdict right under it. */}
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_19rem_16rem] divide-x divide-zinc-800">
+          {/* Left: the track, the player and the verdict right under it. */}
           <div className="min-h-0 overflow-y-auto p-4">
             {entry && (
               <div className="space-y-4">
@@ -1153,7 +1082,7 @@ export function PlanReviewScreen({
             )}
           </div>
 
-          {/* Column 3: the auto-check, always in view (owner, msg 2254 p.2) -- the failed checks first (AC-UX-06). */}
+          {/* Middle: the auto-check, always in view (owner, msg 2254 p.2) -- the failed checks first (AC-UX-06). */}
           <aside className="min-h-0 space-y-3 overflow-y-auto p-3">
             <h4 className="flex items-baseline justify-between gap-2 text-sm font-medium text-zinc-200">
               {t("review.why.validator")}
@@ -1229,6 +1158,78 @@ export function PlanReviewScreen({
               </details>
             )}
           </aside>
+          {/* The queue, rightmost (owner, msg 2276) (AC-UX-15) -- every track of the walk with its state; a click opens it. */}
+          <div className="flex min-h-0 flex-col">
+            {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
+            {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
+              <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+                <p>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</p>
+                {nextWave && (
+                  <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
+                    {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {(() => {
+                const row = (e: PlanReviewEntry, i: number) => {
+                  const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
+                  const current = i === index;
+                  const auto = validatorOfEntry(e);
+                  return (
+                    <li key={`${e.itemKey}\u0000${e.attemptRef}`}>
+                      <button
+                        type="button"
+                        ref={current ? currentRow : undefined}
+                        onClick={() => go(i)}
+                        title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
+                        className={`w-full border-l-2 px-3 py-2 text-left transition-colors ${current ? "border-violet-400 bg-zinc-800" : "border-transparent hover:bg-zinc-800/50"}`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className={`min-w-0 truncate text-sm font-medium ${current ? "text-white" : "text-zinc-200"}`}>{shortKey(e.itemKey)}</span>
+                          {e.verdict ? (
+                            <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] ${e.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"}`}>
+                              {e.verdict.result === "accepted" ? "✓" : "✗"}
+                              {e.verdict.rating !== null ? ` ${e.verdict.rating}/10` : ""}
+                            </span>
+                          ) : claim ? (
+                            <span className="ml-auto shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span>
+                          ) : null}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-2 whitespace-nowrap text-xs text-zinc-500">
+                          {e.seed !== null ? <span>{t("review.queue.seed", { seed: String(e.seed) })}</span> : null}
+                          {/* Blind mode keeps the queue blind too. */}
+                          {!blind && auto !== null ? <span className={`ml-auto ${auto === "rejected" ? "text-amber-400" : "text-emerald-500/80"}`}>{auto === "rejected" ? t("review.queue.autoFailed") : t("review.queue.autoPassed")}</span> : null}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                };
+                const all = (entries ?? []).map((e, i) => ({ e, i }));
+                const open = all.filter(({ e }) => e.verdict === null);
+                const done = all.filter(({ e }) => e.verdict !== null);
+                const heading = (text: string) => <p className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">{text}</p>;
+                return (
+                  <>
+                    {open.length > 0 && (
+                      <section>
+                        {heading(t("review.queue.waitingGroup", { count: open.length }))}
+                        <ul>{open.map(({ e, i }) => row(e, i))}</ul>
+                      </section>
+                    )}
+                    {done.length > 0 && (
+                      <section>
+                        {heading(t("review.queue.reviewedGroup", { count: done.length }))}
+                        <ul>{done.map(({ e, i }) => row(e, i))}</ul>
+                      </section>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+
         </div>
       )}
       {confirmReplace && (
