@@ -3192,4 +3192,3 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
   videos' `publishedAt`, freshness); a source with nothing stored is `null`, not zero.
 - `producer_call_log` (v72) records every call with tool, channel, outcome and error code; pruned to 90 days on insert; shown on the Producer
   card (`GET /api/producer-agent-token/calls`).
-
