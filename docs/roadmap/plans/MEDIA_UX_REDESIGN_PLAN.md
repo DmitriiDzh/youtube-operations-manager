@@ -1,14 +1,15 @@
 # Media section UX redesign: Plans, Review, Jobs (plan)
 
-**Status: DRAFT. Waiting for the owner's answer to the concept.** Branch: `feature/media-ux-redesign`.
+**Status: APPROVED, in progress (BL-162).** Owner, Telegram 2026-10-09 (msg 2244): concept accepted, FO-REQ-0013 in the same
+branch, built directly in the app (no prototype). Branch: `feature/media-ux-redesign`, one merge approval at the end.
 
 **Source.** Owner, Telegram 2026-10-09 (msg 2232): "Оцени как выглядит раздел media и экраны проверки треков. Действуй как
 профессиональный UI/UX дизайнер… переработать UI этого раздела, чтобы работа с ним была интуитивно понятной и удобной."
 The audit and the concept went to the owner on 2026-10-09 (msgs 2236–2242). Related: FO-REQ-0013 (see §5).
 
-**Scope.** This is a UI-only change to `plan-review-screen.tsx`, `generation-plans-panel.tsx` and the Media → Jobs card
-(`JobsCard` in `media-generation-settings.tsx`). It changes no API, schema, MCP contract or sync behaviour. The one exception
-is a new optional `?wave=` on the review route (AC-UX-09).
+**Scope.** Slices 1–3 are UI-only: `plan-review-screen.tsx`, `generation-plans-panel.tsx` and the Media → Jobs card
+(`JobsCard` in `media-generation-settings.tsx`), plus an optional `?wave=` on the review route (AC-UX-09). Slice 4
+(FO-REQ-0013) changes the generation-plans sync report to version 3, adds a peer route and a table (§5).
 
 ## 1. Audit (2026-10-09, live screens, plan R-0001-S1-music)
 
@@ -108,21 +109,75 @@ number waiting. Only waves with waiting tracks show by default, with "показ
 - **AC-UX-12** The keyboard map, verdict payloads and API calls are unchanged. The existing
   `plan-review-screen.test.ts` / `generation-plans-panel.test.ts` pass unchanged.
 
-## 5. FO-REQ-0013 (plans the same on every computer)
+## 5. FO-REQ-0013: the same plan on every computer (slice 4)
 
-The redesign gives the review screen a single mode, with no "read-only on this device" look. Making the wave note, "take
-this wave" and claims work from a device that does not own the plan is a sync change. It touches the ownership model of
-DEV-RESP-0008 §3. It needs its own design, the full AGENTS.md §A reading pass and a DEV-RESP to the Factory Operator. The
-owner chooses whether it rides on this branch or follows it (question 2 in msg 2242).
+Reply to the Factory Operator: DEV-RESP-0015. What already works for another computer's plan: playing tracks and references,
+A/B, verdicts (applied on the owner's tick), track and wave claims, and the wave list and context.
+
+### 5.1 One plan list and one card
+
+- Media → Plans lists this device's plans and the other devices' plans of the active channel in one list. The `/peers` route
+  already filters to the active channel. A small label names the device and the report's age, plus "stale" after 5 min.
+- A peer plan opens the same `PlanDetailCard`, built from the report by a defensive adapter (`peerPlanToDetail`). `progress` is
+  a loose record that is shown and never recomputed, and the adapter must tolerate a version 1 report.
+- Actions that change the plan stay on the owning device: Complete, Cancel, the review-rejected switch and "Ask for a re-run".
+  They are shown disabled with "на <computer>", never hidden.
+
+### 5.2 Wave note from another computer (report version 3)
+
+- **Sender.** `POST /api/generation-plans/peers/<deviceId>/<planId>/group-note` `{ groupId, note|null }` stores an outgoing
+  note `{ noteId, planId, ownerDeviceId, groupId, note, at }` in a new table. It is kept 30 days, like outgoing verdicts. The
+  call is refused when:
+  - the plan is not active or is not on the active channel;
+  - the group is unknown;
+  - the owner's report version is below 3 (`peer_update_required`).
+- **Report v3.** A new optional `groupNotes` field carries the newest outgoing note per (owner, plan, group), at most 200. Each
+  shared group gets an optional `ownerNoteAt`: the time of its current owner note, derived from the plan's `group_note`
+  events. The new build writes version 3 and reads 1–3. A version 2 build refuses it with "update the app", as v2 did to v1.
+- **Owner's tick** (next to `applyPeerVerdicts`). A note for this device's active plan and a known group is handled as
+  follows:
+  - Skip it when its `noteId` is already in a `group_note` event, or when it is dated more than 5 min in the future.
+  - Compare it with the group's last change, which is the newest `group_note` event's `details.writtenAt ?? at`:
+    - if it is newer, apply it: set `ownerNote` and record `group_note` `{ groupId, note, noteId, fromDevice, writtenAt }`;
+    - otherwise record `group_note` `{ …, superseded: true }` and leave `ownerNote` unchanged.
+- **Sender's view.** "sent, waiting for <computer>" while the owner's `ownerNoteAt` is older than the outgoing note's `at`.
+  - When it equals the note's `at`, the note was applied.
+  - When it is newer, the owner's note is shown and the outgoing one is no longer pending.
+
+### 5.3 Acceptance criteria (hand-computed, §L)
+
+- **AC-NOTE-01** Peer note written 10:05. The owner's last change was at 10:00 by the owner's own edit. Result: applied,
+  `ownerNote` = the peer text, and one `group_note` event with `fromDevice` and `writtenAt` 10:05.
+- **AC-NOTE-02** Peer note written 10:05. The owner edited at 10:10. Result: not applied, `ownerNote` keeps the 10:10 text, and
+  the event is recorded `superseded: true`.
+- **AC-NOTE-03** Two peers wrote A at 10:00 and B at 10:05:
+  - both arrive in one tick: B is the result;
+  - B is applied first and A arrives in a later tick: B stays, and A is superseded.
+- **AC-NOTE-04** Delayed delivery. A (10:00) is applied at 10:20, then B (written 10:05) arrives at 10:30. Result: B is applied,
+  because the comparison uses the time the note was written, not the time it was applied.
+- **AC-NOTE-05** The same `noteId` delivered twice changes nothing the second time and adds no second event.
+- **AC-NOTE-06** A note for a closed plan, an unknown plan, an unknown group or another device's plan is skipped, and nothing
+  is written.
+- **AC-NOTE-07** `note: null` clears the owner note under the same rules.
+- **AC-NOTE-08** The sender refuses with `peer_update_required` when the owner's report version is 1 or 2, and stores nothing.
+- **AC-NOTE-09** A version 3 report with `groupNotes` and `ownerNoteAt` parses on the new build. Versions 1 and 2 still parse.
+  A version 3 report is refused by a schema that knows only 1–2. That last point is checked against the old schema's
+  literal, not run.
+- **AC-UX-13** For a peer plan, Complete and Cancel (in the menu), the review-rejected switch and "Ask for a re-run" render
+  disabled with "на <computer>".
+- **AC-UX-14** The Plans list shows this device's plans and the peers' plans of the active channel in one list, each with its
+  device label, and each opens the same card.
 
 ## 6. Slices (one branch, one merge approval)
 
 1. Review screen (AC-UX-01..07, 09 review side, 12).
 2. Plan card (AC-UX-01, 08..10).
 3. Jobs (AC-UX-11).
+4. FO-REQ-0013: one list and one card (AC-UX-13/14), then the wave note relay and report v3 (AC-NOTE-01..09).
 
-## 7. Open questions to the owner (msg 2242)
+## 7. Owner answers (msg 2244)
 
-1. Is the concept accepted, or does it need changes?
-2. FO-REQ-0013: (a) UI first and sync next, or (b) both in one branch?
-3. Should an interactive prototype of the review screen come first?
+1. The concept is accepted. The waveform draws on the owner's machine, so the audit's "Загрузка волны…" was an automation
+   artefact.
+2. FO-REQ-0013 goes in the same branch.
+3. No prototype: build it directly in the app.
