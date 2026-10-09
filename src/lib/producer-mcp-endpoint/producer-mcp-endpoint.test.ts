@@ -3,7 +3,7 @@ import test from "node:test";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { createProducerTokenServices } from "@/lib/producer-agent-tokens/services";
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
-import { addChannelRecordAssignment, insertResearchChannel, saveCollectedVideoMilestone, upsertChannel, upsertVideos } from "@/lib/db";
+import { addChannelRecordAssignment, insertResearchChannel, saveCollectedAnalyticsBreakdown, saveCollectedVideoMilestone, upsertChannel, upsertVideos } from "@/lib/db";
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
@@ -283,6 +283,68 @@ test("BL-166 AC-VM-06: agent_get_video_milestones reads only the named channel's
   ]);
 });
 
+// BL-168 AC-VB-13/16 (docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md): the Producer reads a channel's stored breakdowns through the channel
+// tool, in that channel's scope only; another channel's video is not listed. Real handlers on the real (isolated) database.
+test("BL-168 AC-VB-13/16: agent_get_stored_breakdowns via the Producer reads only the named channel's stored rows", async () => {
+  await seedTwoChannels();
+  // seedTwoChannels publishes every video 2026-10-01T10:00:00Z (03:00 PDT): window 10-01 .. 12-29.
+  const save = (channelId: string, videoId: string, views: number) =>
+    saveCollectedAnalyticsBreakdown({
+      channelId,
+      subject: videoId,
+      videoId,
+      rangeStart: "2026-10-01",
+      from: "2026-10-01",
+      to: "2026-10-08",
+      fresh: true,
+      rows: {
+        traffic_source: [
+          { day: "2026-10-02", value: "RELATED_VIDEO", views, estimatedMinutesWatched: 40 },
+          { day: "2026-10-03", value: "RELATED_VIDEO", views: 1, estimatedMinutesWatched: 2 },
+        ],
+        device_type: [{ day: "2026-10-02", value: "TV", views: 2, estimatedMinutesWatched: 30 }],
+      },
+      collectedOn: "2026-10-09",
+      at: new Date("2026-10-09T17:00:00Z"),
+    });
+  await save("UC_PR_X", "vid-x-1", 7);
+  await save("UC_PR_Y", "vid-y-1", 70);
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const result = await toolResult(
+    await endpoint.handle(rpc(call("agent_get_stored_breakdowns", { channelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-y-1"], startDate: "2026-10-01", endDate: "2026-10-08" }), bearer(token)))
+  );
+  assert.equal(result.isError, false, result.text);
+  const payload = payloadOf(result.text) as { forChannelId: string; videos: Array<Record<string, unknown>> };
+  assert.equal(payload.forChannelId, "UC_PR_X");
+  assert.deepEqual(payload.videos, [
+    {
+      videoId: "vid-x-1",
+      publishedAt: "2026-10-01T10:00:00Z",
+      window: { start: "2026-10-01", end: "2026-12-29" },
+      coverage: { from: "2026-10-01", through: "2026-10-08", collectedAt: "2026-10-09T17:00:00.000Z" },
+      status: "collected",
+      lastError: null,
+      trafficSources: [{ value: "RELATED_VIDEO", label: "Suggested videos", views: 8, estimatedMinutesWatched: 42 }],
+      devices: [{ value: "TV", label: "TV", views: 2, estimatedMinutesWatched: 30 }],
+    },
+  ]);
+  // The plan's bounds hold on the Producer's path too (its schema is rebuilt from the tool's shape; the handler checks them again):
+  // at most 92 days, start not after end, 1-20 videoIds, real calendar dates.
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `v${i}`);
+  for (const bad of [
+    { channelId: "UC_PR_X", startDate: "2026-07-02", endDate: "2026-10-02" },
+    { channelId: "UC_PR_X", startDate: "2026-10-02", endDate: "2026-10-01" },
+    { channelId: "UC_PR_X", startDate: "2026-10-01", endDate: "2026-10-02", videoIds: ids(21) },
+    { channelId: "UC_PR_X", startDate: "2026-10-01", endDate: "2026-10-02", videoIds: [] },
+    { channelId: "UC_PR_X", startDate: "2026-02-30", endDate: "2026-03-02" },
+  ]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("agent_get_stored_breakdowns", bad), bearer(token))))).isError, true, JSON.stringify(bad));
+  }
+  const ok = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_breakdowns", { channelId: "UC_PR_X", startDate: "2026-07-03", endDate: "2026-10-02", videoIds: ids(20) }), bearer(token))));
+  assert.equal(ok.isError, false, ok.text);
+});
+
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
   const { endpoint, tokens } = setup();
   const token = (await tokens.issueToken({})).token;
@@ -324,7 +386,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // DRAFT ones -- the previous "every permission is READ" (1.0.0) no longer holds, and exactly these two tools are DRAFT.
   // BL-166 (VIDEO_MILESTONES_PLAN.md §2 "Versions"): 1.2.0 adds two READ tools, agent_get_video_milestones and
   // producer_upload_milestones; the DRAFT list is unchanged.
-  assert.equal(PRODUCER_API_VERSION, "1.2.0");
+  // BL-168 (VIDEO_BREAKDOWNS_PLAN.md §2 "Reads", AC-VB-16): 1.3.0 adds the READ channel tool agent_get_stored_breakdowns.
+  assert.equal(PRODUCER_API_VERSION, "1.3.0");
+  assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
   assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done"]);
   assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done"]);

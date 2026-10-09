@@ -20,6 +20,11 @@ import {
   deferVideoMilestone,
   recordVideoMilestoneFailure,
   saveCollectedVideoMilestone,
+  listAnalyticsBreakdownStates,
+  listAnalyticsBreakdownRows,
+  saveCollectedAnalyticsBreakdown,
+  deferAnalyticsBreakdown,
+  recordAnalyticsBreakdownFailure,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -50,6 +55,29 @@ export function createVideoMilestoneStoreAdapter() {
       saveCollected: (row: Parameters<typeof saveCollectedVideoMilestone>[0]) => saveCollectedVideoMilestone(row),
       recordFailure: (row: Parameters<typeof recordVideoMilestoneFailure>[0]) => recordVideoMilestoneFailure(row),
       defer: (row: Parameters<typeof deferVideoMilestone>[0]) => deferVideoMilestone(row),
+    },
+  };
+}
+
+/** BL-168: the stored breakdowns' store (`breakdowns.ts`): publish dates and visibility of the channel's videos, and the breakdown rows. */
+export function createBreakdownStoreAdapter() {
+  return {
+    videoStore: {
+      async listVideos(channelId: string) {
+        return (await listStoredVideosByChannel(channelId)).map((record) => ({
+          videoId: record.videoId,
+          publishedAt: record.publishedAt ?? null,
+          privacyStatus: record.privacyStatus ?? null,
+          liveBroadcastContent: record.liveBroadcastContent ?? null,
+        }));
+      },
+    },
+    store: {
+      listStates: (channelId: string) => listAnalyticsBreakdownStates(channelId),
+      saveCollected: (row: Parameters<typeof saveCollectedAnalyticsBreakdown>[0]) => saveCollectedAnalyticsBreakdown(row),
+      defer: (row: Parameters<typeof deferAnalyticsBreakdown>[0]) => deferAnalyticsBreakdown(row),
+      recordFailure: (row: Parameters<typeof recordAnalyticsBreakdownFailure>[0]) => recordAnalyticsBreakdownFailure(row),
+      listRows: (channelId: string, subjects: string[], startDate: string, endDate: string) => listAnalyticsBreakdownRows(channelId, subjects, startDate, endDate),
     },
   };
 }

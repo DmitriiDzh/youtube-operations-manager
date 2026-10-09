@@ -6,7 +6,7 @@
  * verbatim; `src/lib/video-metadata/contracts.ts` re-exports every name unchanged.
  */
 import { randomUUID } from "node:crypto";
-import type { ZodError, ZodType } from "zod";
+import { z, type ZodError, type ZodType } from "zod";
 
 export function createIdGenerator() {
   return () => randomUUID();
@@ -310,3 +310,15 @@ export type ResolvedCredentials = {
   tokenExpiry?: number;
   scopeSet: Set<string>;
 };
+
+/**
+ * A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). The one definition for tool inputs that
+ * take dates (the Producer's upload milestones and portfolio overview, BL-168's stored breakdowns).
+ */
+export const calendarDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD")
+  .refine((value) => {
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+  }, "not a calendar date");

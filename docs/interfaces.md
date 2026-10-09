@@ -472,6 +472,17 @@ Key MCP tools:
     per run, failed after 3 attempts. Values as YouTube returned them (null / `[]` when it returned none); nothing is computed from the curve.
     Only public videos have milestones (a private or scheduled video's `publishedAt` is its upload time). Milestones not yet due or not yet
     attempted, or collected for a window the video no longer has, are not listed; a video of another channel is not listed. Local read only.
+  - `agent_get_stored_breakdowns` (BL-168, Agent API 3.10.0, `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md`) — `{ channelId, videoIds?
+    (1-20), startDate, endDate (YYYY-MM-DD, at most 92 days), groupBy? ("total" default | "day"), credentialRef? }` → `{ channelId,
+    startDate, endDate, groupBy, channel? | videos? }`. Without `videoIds`: `channel: Subject`; with them: `videos: [{ videoId, publishedAt,
+    window: { start, end }, ...Subject }]`, where `Subject = { coverage: { from, through, collectedAt } | null, status (collected | retry |
+    failed | not_collected), lastError, trafficSources: Row[], devices: Row[] }` and `Row = { day? (groupBy day only), value (raw
+    insightTrafficSourceType / deviceType), label, views, estimatedMinutesWatched }`. Stored per day as YouTube returned them: each public
+    video's first 90 days (Pacific publish date .. +89) and the channel from 90 days before its first collection on; `total` sums each value
+    over the requested days within the coverage, most views first. Collected once a day with the Analytics collection (latest day =
+    yesterday; each read starts 6 days before its first new day; at most 100 subjects per channel per run, the channel first, then the
+    least recently read videos; a video is failed after 3 attempts, the channel is never given up). A video of another channel, or one
+    that is private, scheduled or never synced, is not listed. Local read only (the live read is `agent_query_channel_breakdown`).
   - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
     `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`
     (BL-114, ADR 0014). Thumbnail impressions and click-through rate from the YouTube Reporting API
@@ -975,16 +986,17 @@ A second agent role, separate from the channel agents. Technical contract only (
 
 An agent role that reads every channel connected on the device, one channel per call (FO-REQ-0012), and proposes watchlist and hypothesis
 changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical contract only. Producer API 1.2.0 (BL-166) adds the upload
-milestones.
+milestones, 1.3.0 (BL-168) the stored traffic sources and devices.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.2.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
-  `producer_upload_milestones` in 1.2.0 (BL-166)), independent of `AGENT_API_VERSION` and the Factory API.
+- **Producer API version:** `1.3.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+  `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168)), independent of `AGENT_API_VERSION`
+  and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
-  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_get_video_milestones`, `agent_query_video_analytics`, `analytics_data_quality`,
+  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_get_video_milestones`, `agent_get_stored_breakdowns`, `agent_query_video_analytics`, `analytics_data_quality`,
   `analytics_comparable_age`, `analytics_weekly_reports_list`, `analytics_weekly_report_get`, `agent_list_asset_performance`,
   `agent_find_comparable_videos`, `query_competitors`, `query_market_intelligence` (its watchlist channel is `watchlistChannelId` here),
   `query_market_overview`, `agent_list_market_records`, `agent_get_collection_request`, `agent_get_collection_limits`, `agent_get_content_proposal`,

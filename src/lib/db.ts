@@ -1349,6 +1349,66 @@ export const videoMilestones = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 77 (BL-168, FO-REQ-0015 item 2, docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md): views and watch minutes per
+ * day per traffic source (`traffic_source`) and per device type (`device_type`), as YouTube Analytics returned them -- for each own
+ * video's first 90 days (`video_breakdown_daily`) and for the channel as a whole (`channel_breakdown_daily`). A day with no row had no
+ * views from that value, or lies outside the stored range (`analytics_breakdown_state`). Own-channel Analytics data (Authorized,
+ * III.E.4.b), device-local.
+ */
+export const videoBreakdownDaily = sqliteTable(
+  "video_breakdown_daily",
+  {
+    videoId: text("video_id").notNull(),
+    breakdown: text("breakdown", { enum: ["traffic_source", "device_type"] }).notNull(),
+    day: text("day").notNull(),
+    value: text("value").notNull(),
+    channelId: text("channel_id").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.videoId, table.breakdown, table.day, table.value] }),
+    index("video_breakdown_daily_channel_idx").on(table.channelId, table.videoId),
+  ]
+);
+
+export const channelBreakdownDaily = sqliteTable(
+  "channel_breakdown_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    breakdown: text("breakdown", { enum: ["traffic_source", "device_type"] }).notNull(),
+    day: text("day").notNull(),
+    value: text("value").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.breakdown, table.day, table.value] })]
+);
+
+/**
+ * v77 (BL-168): what is stored for each subject -- the channel (`subject = 'channel'`) or one video (its id): the range start, the last
+ * collected day and the Pacific date of that collection, and the attempt bookkeeping of the milestones (`retry` from `next_attempt_at`,
+ * `failed` after the maximum attempts, never queried again).
+ */
+export const analyticsBreakdownState = sqliteTable(
+  "analytics_breakdown_state",
+  {
+    channelId: text("channel_id").notNull(),
+    subject: text("subject").notNull(),
+    rangeStart: text("range_start").notNull(),
+    collectedThrough: text("collected_through"),
+    collectedOn: text("collected_on"),
+    collectedAt: integer("collected_at", { mode: "timestamp" }),
+    status: text("status", { enum: ["collected", "retry", "failed"] }).notNull(),
+    attempts: integer("attempts").notNull(),
+    lastError: text("last_error"),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp" }),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.subject] })]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- per-VIDEO history coverage: this video's daily metrics are collected contiguously from its
  * publish date through `history_through` (a date). Run windows alone cannot say this: a video first synced long after it was published
  * is covered by every channel-level run window yet has no early days. Maintained by collection; drives the automatic history catch-up.
@@ -3989,6 +4049,47 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       "video_milestones -- BL-166 fix: milestones collected before the curve query was corrected got no curve (YouTube returns no rows for the five-metric query); collected rows without a curve are removed so they are collected again. Data only",
     apply: async (client) => {
       await client.execute("DELETE FROM video_milestones WHERE status = 'collected' AND (retention_json IS NULL OR retention_json = '[]')");
+    },
+  },
+  {
+    version: 77,
+    description:
+      "video_breakdown_daily, channel_breakdown_daily, analytics_breakdown_state -- BL-168 (FO-REQ-0015 item 2, docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md): traffic sources and devices per day for each own video's first 90 days and for the channel, with what is stored per subject. Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_breakdown_daily (
+        video_id TEXT NOT NULL,
+        breakdown TEXT NOT NULL,
+        day TEXT NOT NULL,
+        value TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (video_id, breakdown, day, value)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_breakdown_daily_channel_idx ON video_breakdown_daily (channel_id, video_id)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_breakdown_daily (
+        channel_id TEXT NOT NULL,
+        breakdown TEXT NOT NULL,
+        day TEXT NOT NULL,
+        value TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (channel_id, breakdown, day, value)
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS analytics_breakdown_state (
+        channel_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        range_start TEXT NOT NULL,
+        collected_through TEXT,
+        collected_on TEXT,
+        collected_at INTEGER,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_error TEXT,
+        next_attempt_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, subject)
+      )`);
     },
   },
 ];
@@ -9672,6 +9773,182 @@ export async function recordVideoMilestoneFailure(
     .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, ...values })
     .onConflictDoUpdate({ target: [videoMilestones.videoId, videoMilestones.milestoneDays], set: values });
   return status;
+}
+
+export type StoredAnalyticsBreakdownState = typeof analyticsBreakdownState.$inferSelect;
+
+/** BL-168: every subject's state of one channel (the channel itself and each video collected or attempted). */
+export async function listAnalyticsBreakdownStates(channelId: string, database: AppDb = db): Promise<StoredAnalyticsBreakdownState[]> {
+  return database.select().from(analyticsBreakdownState).where(eq(analyticsBreakdownState.channelId, channelId));
+}
+
+type BreakdownRowInput = { day: string; value: string; views: number | null; estimatedMinutesWatched: number | null };
+const BREAKDOWN_INSERT_CHUNK = 400;
+
+/**
+ * BL-168: one subject's answer, in one atomic batch -- the subject's stored rows in `from`..`to` (every row of the subject when `fresh`)
+ * are replaced by the answer, so a value YouTube no longer reports for a reread day is gone too, and the state records the range as
+ * collected (attempts back to 0). Days outside the range are not touched.
+ */
+export async function saveCollectedAnalyticsBreakdown(
+  row: {
+    channelId: string;
+    subject: string;
+    videoId: string | null;
+    rangeStart: string;
+    from: string;
+    to: string;
+    fresh: boolean;
+    rows: Record<"traffic_source" | "device_type", BreakdownRowInput[]>;
+    collectedOn: string;
+    at: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [];
+  const kinds = ["traffic_source", "device_type"] as const;
+  if (row.videoId !== null) {
+    const videoId = row.videoId;
+    const scope = row.fresh
+      ? eq(videoBreakdownDaily.videoId, videoId)
+      : and(eq(videoBreakdownDaily.videoId, videoId), gte(videoBreakdownDaily.day, row.from), lte(videoBreakdownDaily.day, row.to));
+    writes.push(database.delete(videoBreakdownDaily).where(scope));
+    const values = kinds.flatMap((breakdown) => row.rows[breakdown].map((r) => ({ videoId, breakdown, day: r.day, value: r.value, channelId: row.channelId, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched })));
+    for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+      writes.push(database.insert(videoBreakdownDaily).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+    }
+  } else {
+    const scope = row.fresh
+      ? eq(channelBreakdownDaily.channelId, row.channelId)
+      : and(eq(channelBreakdownDaily.channelId, row.channelId), gte(channelBreakdownDaily.day, row.from), lte(channelBreakdownDaily.day, row.to));
+    writes.push(database.delete(channelBreakdownDaily).where(scope));
+    const values = kinds.flatMap((breakdown) => row.rows[breakdown].map((r) => ({ channelId: row.channelId, breakdown, day: r.day, value: r.value, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched })));
+    for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+      writes.push(database.insert(channelBreakdownDaily).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+    }
+  }
+  const state = {
+    rangeStart: row.rangeStart,
+    collectedThrough: row.to,
+    collectedOn: row.collectedOn,
+    collectedAt: row.at,
+    status: "collected" as const,
+    attempts: 0,
+    lastError: null,
+    nextAttemptAt: null,
+    updatedAt: row.at,
+  };
+  writes.push(
+    database
+      .insert(analyticsBreakdownState)
+      .values({ channelId: row.channelId, subject: row.subject, ...state })
+      .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: state })
+  );
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+async function previousBreakdownState(channelId: string, subject: string, database: AppDb) {
+  return (
+    await database
+      .select()
+      .from(analyticsBreakdownState)
+      .where(and(eq(analyticsBreakdownState.channelId, channelId), eq(analyticsBreakdownState.subject, subject)))
+      .limit(1)
+  )[0];
+}
+
+/**
+ * BL-168: a subject whose query got no usable answer (no HTTP answer, 429, 5xx) is put back until `retryAt` without counting an attempt.
+ * What is stored for the same range is kept; a state of another range start (the publish date moved) starts over.
+ */
+export async function deferAnalyticsBreakdown(
+  row: { channelId: string; subject: string; rangeStart: string; error: string; at: Date; retryAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  const previous = await previousBreakdownState(row.channelId, row.subject, database);
+  const same = previous !== undefined && previous.rangeStart === row.rangeStart;
+  const values = {
+    rangeStart: row.rangeStart,
+    collectedThrough: same ? previous.collectedThrough : null,
+    collectedOn: same ? previous.collectedOn : null,
+    collectedAt: same ? previous.collectedAt : null,
+    status: "retry" as const,
+    attempts: same ? previous.attempts : 0,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: row.retryAt,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(analyticsBreakdownState)
+    .values({ channelId: row.channelId, subject: row.subject, ...values })
+    .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: values });
+}
+
+/**
+ * BL-168: a failed attempt (an error about the query itself). Consecutive failures count; below `maxAttempts` the subject is retried
+ * from `retryAt`, at it the subject is `failed` and never queried again. What is stored for the same range is kept.
+ */
+export async function recordAnalyticsBreakdownFailure(
+  row: { channelId: string; subject: string; rangeStart: string; error: string; at: Date; retryAt: Date; maxAttempts: number },
+  database: AppDb = db
+): Promise<"retry" | "failed"> {
+  const previous = await previousBreakdownState(row.channelId, row.subject, database);
+  const same = previous !== undefined && previous.rangeStart === row.rangeStart;
+  const attempts = (same ? previous.attempts : 0) + 1;
+  const status = attempts >= row.maxAttempts ? ("failed" as const) : ("retry" as const);
+  const values = {
+    rangeStart: row.rangeStart,
+    collectedThrough: same ? previous.collectedThrough : null,
+    collectedOn: same ? previous.collectedOn : null,
+    collectedAt: same ? previous.collectedAt : null,
+    status,
+    attempts,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: status === "retry" ? row.retryAt : null,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(analyticsBreakdownState)
+    .values({ channelId: row.channelId, subject: row.subject, ...values })
+    .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: values });
+  return status;
+}
+
+/**
+ * BL-168: stored rows of one channel in startDate..endDate -- the channel's own (subject `'channel'`) and/or those of the given videos,
+ * always within this channel.
+ */
+export async function listAnalyticsBreakdownRows(
+  channelId: string,
+  subjects: string[],
+  startDate: string,
+  endDate: string,
+  database: AppDb = db
+): Promise<Array<{ subject: string; breakdown: "traffic_source" | "device_type"; day: string; value: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  const videoIds = subjects.filter((subject) => subject !== "channel");
+  const out: Array<{ subject: string; breakdown: "traffic_source" | "device_type"; day: string; value: string; views: number | null; estimatedMinutesWatched: number | null }> = [];
+  if (subjects.includes("channel")) {
+    const rows = await database
+      .select()
+      .from(channelBreakdownDaily)
+      .where(and(eq(channelBreakdownDaily.channelId, channelId), gte(channelBreakdownDaily.day, startDate), lte(channelBreakdownDaily.day, endDate)));
+    for (const r of rows) out.push({ subject: "channel", breakdown: r.breakdown, day: r.day, value: r.value, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched });
+  }
+  if (videoIds.length > 0) {
+    const rows = await database
+      .select()
+      .from(videoBreakdownDaily)
+      .where(
+        and(
+          eq(videoBreakdownDaily.channelId, channelId),
+          inArray(videoBreakdownDaily.videoId, videoIds),
+          gte(videoBreakdownDaily.day, startDate),
+          lte(videoBreakdownDaily.day, endDate)
+        )
+      );
+    for (const r of rows) out.push({ subject: r.videoId, breakdown: r.breakdown, day: r.day, value: r.value, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

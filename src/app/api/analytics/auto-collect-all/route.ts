@@ -10,7 +10,7 @@ import { getAnalyticsDataSync, importPeersFirst } from "@/lib/analytics-data-syn
 
 export type AutoCollectAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones">;
+  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones" | "collectDueBreakdowns">;
   getActiveChannelId: (userId: string) => Promise<string | null>;
   /** Runs work after the response is sent (Next's `after`); injectable for tests. */
   runAfter: (work: () => Promise<void>) => void;
@@ -86,6 +86,15 @@ export function createAutoCollectAllHandler(
               await deps.core.collectDueMilestones({ credentialRef, channelId });
             } catch {
               // Reads off, quota, sign-in: nothing was counted against the milestones; the next dashboard open tries again.
+            }
+          }
+          // BL-168: then each such channel's stored traffic sources and devices (a background read too; one channel failing never
+          // stops the next one).
+          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+            try {
+              await deps.core.collectDueBreakdowns({ credentialRef, channelId });
+            } catch {
+              // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
             }
           }
         } catch {

@@ -5,7 +5,7 @@ import { loadEnvConfig } from "@next/env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
-import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { recordGatewayCallOutcome } from "@/lib/db";
@@ -30,7 +30,7 @@ import {
   listSyncedVideosInputSchema,
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
-import { createAnalyticsCore, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
+import { createAnalyticsCore, listStoredBreakdownsInputSchema, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import {
   createChangeSetFromGenerationInputSchema,
@@ -155,6 +155,7 @@ type AnalyticsCoreSubset = Pick<
   | "listWeeklyReports"
   | "getWeeklyReport"
   | "listVideoMilestones"
+  | "listStoredBreakdowns"
 >;
 
 // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): registered directly here, not
@@ -346,6 +347,7 @@ type McpToolHandlers = {
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
+  agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
@@ -474,14 +476,8 @@ export type ProducerSession = {
   };
 };
 
-/** A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). */
-const ISO_DATE = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD")
-  .refine((value) => {
-    const time = Date.parse(`${value}T00:00:00Z`);
-    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
-  }, "not a calendar date");
+/** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
+const ISO_DATE = calendarDateSchema;
 
 // BL-163 (FO-REQ-0014 §C): the proposal tools' inputs are the proposal service's own schemas (one definition, no drift); `payload`
 // is checked per kind by the service.
@@ -1724,6 +1720,25 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-168 (docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md) -- the stored traffic sources and devices per day of the channel or its videos.
+     * A LOCAL read, no Google call; `listStoredBreakdowns` checks the active channel itself, and a video of another channel is not listed.
+     */
+    async agentGetStoredBreakdowns(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listStoredBreakdownsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listStoredBreakdowns({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-118 -- traffic sources / devices / audience / geography / subscribed status / content format for a date range: the same
      * `getChannelBreakdown` the Content tab uses (a LIVE YouTube Analytics API read, 1 quota unit), with each raw API value also given a
      * readable label. Same forwarding pattern as `agentQueryChannelAnalytics`; the service checks the active channel itself.
@@ -2436,6 +2451,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentQueryChannelReach: handlers.agentQueryChannelReach,
     // BL-166 -- a pure local read, ungated.
     agentGetVideoMilestones: handlers.agentGetVideoMilestones,
+    // BL-168 -- a pure local read, ungated.
+    agentGetStoredBreakdowns: handlers.agentGetStoredBreakdowns,
     // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
     agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
@@ -3207,6 +3224,16 @@ export function createMcpServer(
       inputSchema: listVideoMilestonesInputSchema,
     },
     (args) => handlers.agentGetVideoMilestones(args)
+  );
+
+  registerTool(
+    "agent_get_stored_breakdowns",
+    {
+      description:
+        "Stored traffic sources and device types per day (BL-168): views and estimatedMinutesWatched per `insightTrafficSourceType` (e.g. SUBSCRIBER, RELATED_VIDEO, YT_SEARCH, YT_CHANNEL, YT_OTHER_PAGE, EXT_URL, PLAYLIST, NOTIFICATION, NO_LINK_OTHER) and per `deviceType` (e.g. DESKTOP, MOBILE, TV, TABLET), as YouTube Analytics returned them. Without `videoIds` the answer is the channel as a whole (`channel`); with `videoIds` (1-20) it is those videos (`videos`). YT Manager stores each public video's first 90 days (its Pacific publish date .. +89, see `window`) and the channel from 90 days before its first collection on, once a day during the dashboard's Analytics collection (yesterday is the latest day; each read starts 6 days before its first new day, since YouTube revises recent days; at most 100 subjects per channel per run, the channel first, then the least recently read videos, so a video left out is read on the next run). `coverage` (from, through, collectedAt) says which days are stored and when they were last read; null with `status: not_collected` when they never were. `status` is collected | retry (a query failed, tried again later; `lastError`) | failed (a video given up after 3 attempts; the channel is never given up). `groupBy: total` (default) sums each value over startDate..endDate within the coverage, most views first; `groupBy: day` lists the stored rows. A day with no row for a value had no views from it (or lies outside the coverage); a 0 can occur. The channel's sum across sources can differ slightly from its total views, as YouTube reports it. Each row has the raw API `value` and a readable `label`. A videoId of another channel, or of a private, scheduled or never-synced video, is not listed. A LOCAL read, never a live YouTube call (agent_query_channel_breakdown is the live one); each computer collects the channels connected on it. Dates are YYYY-MM-DD, inclusive, at most 92 days. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listStoredBreakdownsInputSchema,
+    },
+    (args) => handlers.agentGetStoredBreakdowns(args)
   );
 
   registerTool(
