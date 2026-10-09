@@ -1892,4 +1892,3 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Bounded by:** a valid agent token and a loopback caller; it ties up only that request (the agent's own client waits); nothing is read or written by it.
 - **Possible fix:** a timeout around `handleRequest` in the three endpoints, or refusing `notifications/cancelled` in stateless mode.
 - **Gate(s):** none. **Status:** open.
-
