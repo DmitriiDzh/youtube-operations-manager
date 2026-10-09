@@ -235,6 +235,40 @@ export function monthsBefore(now: Date, months: number): Date {
   return new Date(Date.UTC(year, month, Math.min(now.getUTCDate(), lastDay), now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds(), now.getUTCMilliseconds()));
 }
 
+/** FO-REQ-0015 item 4: the snapshot sources whose rows carry a video's duration and live status (`batchGetStats` returns neither). */
+const VIDEO_DETAILS_SOURCE = "youtube.videos.list";
+/** A video whose details were read longer ago than this gets them read again on its next collection (well inside the 30 days). */
+export const VIDEO_DETAILS_REFRESH_DAYS = 20;
+
+function hasVideoDetails(row: Pick<StoredMarketVideoSnapshotForService, "source" | "durationSeconds" | "liveBroadcastContent">): boolean {
+  return row.source === VIDEO_DETAILS_SOURCE && ((row.durationSeconds ?? null) !== null || (row.liveBroadcastContent ?? null) !== null);
+}
+
+/** Each row with its video's newest details row's values where it has none of its own. Exported for its test. */
+export function withKnownVideoDetails<T extends StoredMarketVideoSnapshotForService>(rows: T[]): T[] {
+  const latest = new Map<string, T>();
+  for (const row of rows) {
+    if (!hasVideoDetails(row)) continue;
+    const seen = latest.get(row.videoId);
+    if (!seen || row.observedAt.getTime() > seen.observedAt.getTime()) latest.set(row.videoId, row);
+  }
+  return rows.map((row) => {
+    const known = latest.get(row.videoId);
+    if (!known || hasVideoDetails(row)) return row;
+    return {
+      ...row,
+      durationSeconds: row.durationSeconds ?? known.durationSeconds ?? null,
+      liveBroadcastContent: row.liveBroadcastContent ?? known.liveBroadcastContent ?? null,
+    };
+  });
+}
+
+/** The videos of `rows` whose details were read within `days` of `now` (they need no new `videos.list`). */
+export function videosWithFreshDetails(rows: StoredMarketVideoSnapshotForService[], now: Date, days: number = VIDEO_DETAILS_REFRESH_DAYS): Set<string> {
+  const since = now.getTime() - days * 24 * 60 * 60 * 1000;
+  return new Set(rows.filter((row) => hasVideoDetails(row) && row.observedAt.getTime() >= since).map((row) => row.videoId));
+}
+
 /**
  * BL-163 (AC-WH-01): an entry's activity -- inactive only when its newest upload is KNOWN and older than `months`; an unknown date is
  * never inactive. Exported for its test.
@@ -366,8 +400,14 @@ function toMarketVideoSnapshot(row: StoredMarketVideoSnapshotForService): Market
     title: row.title,
     durationSeconds: row.durationSeconds ?? null,
     liveBroadcastContent: row.liveBroadcastContent ?? null,
+    thumbnailUrl: youtubeThumbnailUrl(row.videoId),
     source: row.source,
   };
+}
+
+/** FO-REQ-0015 item 6: YouTube's own thumbnail URL for a video id (what `snippet.thumbnails.high` returns); never a stored copy. */
+export function youtubeThumbnailUrl(videoId: string): string {
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
 }
 
 type StoredMarketDiscoveryCandidateForService = {
@@ -1078,6 +1118,13 @@ export function isCollectionWarning(status: CollectionStatus): boolean {
 }
 
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
+  // FO-REQ-0015 item 4: a channel's stored video snapshots, each row showing its video's newest known duration and live status. Only
+  // a `videos.list` read returns them (`batchGetStats` does not), and only some rows come from one, so a row without them shows its
+  // video's values from the newest details row still inside the 30-day window -- the value read then, never older than the window.
+  async function listVideoSnapshots(researchChannelId: string): Promise<StoredMarketVideoSnapshotForService[]> {
+    return withKnownVideoDetails(await deps.listMarketVideoSnapshotsByChannel(researchChannelId));
+  }
+
   // Per services instance (one per process in production); current-only, never persisted (13.9).
   const musicChartCache = new Map<string, { fetchedAt: Date; entries: MusicChartEntry[] }>();
 
@@ -1343,7 +1390,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         const afterMs = depth.publishedAfter === null ? null : Date.parse(`${depth.publishedAfter}T00:00:00Z`);
         // Backfill = walk deeper (first collection, unfinished, cap raised, date moved earlier); otherwise incremental = refresh
         // the newest page and read further only while pages still hold videos we have not stored.
-        const storedAtStart = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId)).size;
+        const storedAtStart = new Set((await listVideoSnapshots(researchChannelId)).map((row) => row.videoId)).size;
         const backfill = channelRow ? needsBackfill(channelRow, depth, storedAtStart) : true;
         let resumeToken = backfill && channelRow?.videosComplete === 0 ? (channelRow.videosNextPageToken ?? null) : null;
 
@@ -1400,7 +1447,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           }
         }
 
-        const knownIds = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId));
+        const storedRows = await listVideoSnapshots(researchChannelId);
+        const knownIds = new Set(storedRows.map((row) => row.videoId));
+        const freshDetails = videosWithFreshDetails(storedRows, deps.clock.now());
         const knownAtStart = knownIds.size;
         const maxPages = pagesForCap(cap) + pagesForCap(knownAtStart) + 2;
         // A cursor on a playlist that now ends at page 1 is moot.
@@ -1450,8 +1499,28 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           if (videoIds.length > 0) {
             let videoSnapshots: PublicVideoSnapshot[];
             let statsSource = "youtube.videos.batchGetStats";
+            const detailedIds = new Set<string>();
             try {
               videoSnapshots = await deps.youtubeApi.getPublicVideoStatsBatch({ credentials, videoIds });
+              // FO-REQ-0015 item 4: batchGetStats returns neither duration nor live status (none of 10,957 stored rows had them,
+              // 2026-10-09). The videos whose details are missing or older than VIDEO_DETAILS_REFRESH_DAYS get this page's one
+              // `videos.list` instead -- the unit every page already reserves for the fallback below, so the budget is unchanged.
+              // A failure keeps the batch rows; the details are read on a later run.
+              const needDetails = videoIds.filter((id) => !freshDetails.has(id));
+              if (needDetails.length > 0) {
+                unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
+                remaining -= VIDEOS_LIST_UNIT_COST;
+                try {
+                  const detailed = await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds: needDetails });
+                  for (const row of detailed) {
+                    detailedIds.add(row.videoId);
+                    freshDetails.add(row.videoId);
+                  }
+                  videoSnapshots = [...videoSnapshots.filter((row) => !detailedIds.has(row.videoId)), ...detailed];
+                } catch {
+                  // the unit is spent either way; nothing else changes
+                }
+              }
             } catch {
               statsSource = "youtube.videos.list";
               unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
@@ -1482,7 +1551,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                 // Operator request 2026-10-04: raw values only, null when the fetch did not return them (never 0).
                 durationSeconds: videoSnapshot.durationSeconds ?? null,
                 liveBroadcastContent: videoSnapshot.liveBroadcastContent ?? null,
-                source: statsSource,
+                source: detailedIds.has(videoSnapshot.videoId) ? VIDEO_DETAILS_SOURCE : statsSource,
                 createdVia: "web_ui",
               });
               knownIds.add(videoSnapshot.videoId);
@@ -2024,7 +2093,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       const evidenceRows = await deps.listResearchEvidenceByChannel(parsedInput.channelId);
-      const videoSnapshotRows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.channelId);
+      const videoSnapshotRows = await listVideoSnapshots(parsedInput.channelId);
       const topicAssignmentRows = await deps.listTopicsForSubject("channel", parsedInput.channelId);
       const { channelSnapshotRows, dataQualityFlags, neverObserved } = await readCollectionState(parsedInput.channelId);
 
@@ -2179,7 +2248,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
-      const rows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.channelId);
+      const rows = await listVideoSnapshots(parsedInput.channelId);
       const filtered = rows.filter((row) => row.videoId === parsedInput.videoId);
 
       return parseWithSchema(
@@ -2239,7 +2308,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         // video count. These reads never throw for a channel removed after listWatchlist(); its row shows until the
         // next refresh.
         const state = await readCollectionState(channel.channelId);
-        const videoSnapshotRows = await deps.listMarketVideoSnapshotsByChannel(channel.channelId);
+        const videoSnapshotRows = await listVideoSnapshots(channel.channelId);
         const latest = state.latestChannelSnapshot ? toMarketChannelSnapshot(state.latestChannelSnapshot) : null;
         const run = state.latestRun;
         rows.push({
@@ -2642,7 +2711,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         createdVia: callOrigin.createdVia,
       });
 
-      const rows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.researchChannelId);
+      const rows = await listVideoSnapshots(parsedInput.researchChannelId);
       // Guaranteed to exist -- this call itself just inserted it.
       const row = rows.find((candidate) => candidate.id === id)!;
 
@@ -2661,7 +2730,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
-      const rows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.researchChannelId);
+      const rows = await listVideoSnapshots(parsedInput.researchChannelId);
       const output = { snapshots: rows.map(toMarketVideoSnapshot) };
       return parseWithSchema(listVideoSnapshotsOutputSchema, output, "list video snapshots output");
     },
@@ -2786,7 +2855,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           details: { channelId: parsed.channelId },
         });
       }
-      const videos = await deps.listMarketVideoSnapshotsByChannel(parsed.channelId);
+      const videos = await listVideoSnapshots(parsed.channelId);
       return buildCollectionProgress(row, await deps.getMarketIntelligenceCollectionDepthDefaults(), videos.map((v) => v.videoId));
     },
 
@@ -3889,7 +3958,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       for (const id of needed) {
         const row = byId.get(id)!;
         const depth = resolveCollectionDepth(row, depthDefaults);
-        const stored = new Set((await deps.listMarketVideoSnapshotsByChannel(id)).map((snapshot) => snapshot.videoId)).size;
+        const stored = new Set((await listVideoSnapshots(id)).map((snapshot) => snapshot.videoId)).size;
         if (!needsBackfill(row, depth, stored)) {
           // Steady state: expected 1 channels.list + 1 playlist page = 2. Worst case: page 1 held new videos so page 2 is read too, and
           // each of the two pages falls back to one videos.list = 1 + 2 + 2 = 5 (STEADY_STATE_WORST_CASE_UNITS).

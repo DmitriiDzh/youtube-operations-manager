@@ -2983,6 +2983,8 @@ function makeAgentOperationsCoreStub(): Pick<
         defaultLanguage: "en",
         defaultAudioLanguage: "en",
         lastSyncedAt: "2026-09-20T00:00:00.000Z",
+        durationSeconds: 7200,
+        liveBroadcastContent: "none",
       },
       localizations: [],
     }),
@@ -3202,6 +3204,8 @@ test("MCP agent_get_video_context forwards input including optional `include`, c
         defaultLanguage: "en",
         defaultAudioLanguage: "en",
         lastSyncedAt: "2026-09-20T00:00:00.000Z",
+        durationSeconds: null,
+        liveBroadcastContent: null,
       },
     };
   };

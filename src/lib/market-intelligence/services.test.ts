@@ -1034,6 +1034,21 @@ function createFixture(overrides?: {
         if (overrides?.autoStats === "list") {
           return args.videoIds.map((videoId) => ({ videoId, title: "", publishedAt: null, viewCount: 1, likeCount: 1, commentCount: 1 }));
         }
+        // FO-REQ-0015 item 4: with batchGetStats answering, videos.list is the details read. Like the real videos.list
+        // (part snippet,contentDetails,statistics), it answers for every requested public video with its duration and live
+        // status -- what batchGetStats does not return.
+        if (overrides?.autoStats === "batch") {
+          return args.videoIds.map((videoId) => ({
+            videoId,
+            title: "",
+            publishedAt: null,
+            viewCount: 1,
+            likeCount: 1,
+            commentCount: 1,
+            durationSeconds: 600,
+            liveBroadcastContent: "none",
+          }));
+        }
         return overrides?.publicVideoSnapshots ?? [];
       },
       async getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }) {
@@ -3879,7 +3894,7 @@ test("13.3: the market overview lists no breakout videos and no emerging channel
 // videos.list only when batchGetStats fails. A channel normally costs 2 pool units, worst case 3.
 // ---------------------------------------------------------------------------
 
-test("13.6: playlist + batchGetStats: 2 pool units, no videos.list; title/publish time from the playlist and batchGetStats", async () => {
+test("13.6: playlist + batchGetStats + one videos.list for v1's details: 3 pool units; title/publish time from the playlist and batchGetStats", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services, videoSnapshotCalls, feedCalls, batchStatsCalls } = createFixture({
     now,
@@ -3892,9 +3907,11 @@ test("13.6: playlist + batchGetStats: 2 pool units, no videos.list; title/publis
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
 
   const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
-  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 2 });
+  // FO-REQ-0015 item 4: +1 videos.list for the page's video lacking details (v1): channels.list 1 + playlist 1 + details 1 = 3.
+  // This fixture's videos.list returns nothing for v1, so the batch row is kept as it was.
+  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 3 });
   assert.equal(batchStatsCalls.length, 1);
-  assert.equal(videoSnapshotCalls.length, 0);
+  assert.deepEqual(videoSnapshotCalls.map((c) => (c as { videoIds: string[] }).videoIds), [["v1"]]);
   assert.equal(feedCalls.length, 0, "RSS is only a fallback");
   const [snap] = store.videoSnapshots;
   assert.equal(snap.viewCount, 10);
@@ -3964,7 +3981,8 @@ test("13.5: if the uploads playlist call fails, the RSS feed (no quota) still su
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
   assert.equal(result.succeeded, 1);
-  assert.equal(result.unitsSpent, 2, "channels.list + the failed playlist call (charged); RSS and batchGetStats are free of the pool");
+  // FO-REQ-0015 item 4: +1 videos.list for v1's details (this fixture's videos.list returns nothing, so the feed title stays).
+  assert.equal(result.unitsSpent, 3, "channels.list + the failed playlist call (charged) + v1's details read; RSS and batchGetStats are free of the pool");
   assert.equal(feedCalls.length, 1);
   assert.equal(store.videoSnapshots[0].title, "From feed");
   assert.equal(store.videoSnapshots[0].publishedAt?.toISOString(), "2026-09-21T00:00:00.000Z");
@@ -4140,7 +4158,7 @@ function distinctStored(store: { videoSnapshots: { videoId: string }[] }): numbe
   return new Set(store.videoSnapshots.map((row) => row.videoId)).size;
 }
 
-test("depth: cap 120 over a 3-page playlist fetches 3 pages, stores exactly 120 distinct videos (50+50+20), costs 1+3 = 4 units, stats via batch (0 pool units)", async () => {
+test("depth: cap 120 over a 3-page playlist fetches 3 pages, stores exactly 120 distinct videos (50+50+20), costs 1 + 3 pages + 3 details reads = 7 units, stats via batch (0 pool units)", async () => {
   const { store, services, playlistCalls, batchStatsCalls, videoSnapshotCalls } = createFixture({
     now: T0,
     publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
@@ -4153,28 +4171,30 @@ test("depth: cap 120 over a 3-page playlist fetches 3 pages, stores exactly 120 
 
   const result = await services.runCollectionIfStale(RUN_INPUT);
 
-  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 4 });
+  // FO-REQ-0015 item 4: +1 videos.list per page with videos lacking details -- all 120 are new: 1 + 3 + 3 = 7.
+  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 7 });
   assert.equal(playlistCalls.length, 3);
   assert.equal(distinctStored(store), 120);
   assert.deepEqual(batchStatsCalls.map((c) => (c as { videoIds: string[] }).videoIds.length), [50, 50, 20]);
-  assert.equal(videoSnapshotCalls.length, 0, "no videos.list fallback");
+  assert.deepEqual(videoSnapshotCalls.map((c) => (c as { videoIds: string[] }).videoIds.length), [50, 50, 20], "one details read per page, for its new videos");
   const row = store.channels.get(VALID_CHANNEL_ID)!;
   assert.deepEqual(
     [row.videosComplete, row.videosCompleteReason, row.videosNextPageToken, row.videosCapAtRun, row.videosPublishedAfterAtRun],
     [1, "cap", null, 120, null]
   );
-  assert.equal(store.collectionRuns[0].unitsSpent, 4);
+  assert.equal(store.collectionRuns[0].unitsSpent, 7);
   assert.equal(store.collectionRuns[0].videosRequested, 120);
   assert.equal(store.collectionRuns[0].videosReturned, 120);
 });
 
-test("depth: the cap decides how many pages are read -- cap 100 over the same playlist stops after page 2 (1+2 = 3 units)", async () => {
+test("depth: the cap decides how many pages are read -- cap 100 over the same playlist stops after page 2 (1 + 2 pages + 2 details reads = 5 units)", async () => {
   const { store, services, playlistCalls } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
   store.setQuotaBudget(1000);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
   const result = await services.runCollectionIfStale(RUN_INPUT);
-  assert.equal(result.unitsSpent, 3);
+  // FO-REQ-0015 item 4: +1 videos.list per page with videos lacking details (both pages are new): 1 + 2 + 2 = 5.
+  assert.equal(result.unitsSpent, 5);
   assert.equal(playlistCalls.length, 2);
   assert.equal(distinctStored(store), 100);
 });
@@ -4196,8 +4216,8 @@ test("depth: steady state -- a second run when page 1 holds only stored videos r
   assert.equal(store.videoSnapshots.length, 170, "page 1's 50 videos were re-observed (append-only), as before this feature");
 });
 
-test("depth: steady state -- page 1 with 5 new videos reads page 2 too; page 2 holds only stored videos, so paging stops there (2 pages, 3 units)", async () => {
-  const { store, services, playlistCalls, batchStatsCalls, setNow, setPlaylistPages } = createFixture({
+test("depth: steady state -- page 1 with 5 new videos reads page 2 too; page 2 holds only stored videos, so paging stops there (2 pages + 1 details read for the 5 new videos = 4 units)", async () => {
+  const { store, services, playlistCalls, batchStatsCalls, videoSnapshotCalls, setNow, setPlaylistPages } = createFixture({
     now: T0,
     publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
     playlistPages: [PAGE_A, PAGE_B],
@@ -4207,24 +4227,28 @@ test("depth: steady state -- page 1 with 5 new videos reads page 2 too; page 2 h
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: null });
   const first = await services.runCollectionIfStale(RUN_INPUT);
-  assert.equal(first.unitsSpent, 3, "100 videos: 2 pages, the playlist ends -> exhausted");
+  // FO-REQ-0015 item 4: +1 videos.list per page with videos lacking details: 1 + 2 pages + 2 details reads = 5.
+  assert.equal(first.unitsSpent, 5, "100 videos: 2 pages, the playlist ends -> exhausted");
   assert.equal(store.channels.get(VALID_CHANNEL_ID)!.videosCompleteReason, "exhausted");
 
   // 5 uploads since: page 1 = 5 new + a1..a45; page 2 = a46..a50 + b1..b45; page 3 = b46..b50 (never needed).
   setPlaylistPages([[...ids("n", 1, 5), ...ids("a", 1, 45)], [...ids("a", 46, 50), ...ids("b", 1, 45)], ids("b", 46, 50)]);
   playlistCalls.length = 0;
   batchStatsCalls.length = 0;
+  videoSnapshotCalls.length = 0;
   setNow(new Date(T0.getTime() + DAY_MS));
   const second = await services.runCollectionIfStale(RUN_INPUT);
 
-  assert.equal(second.unitsSpent, 3);
+  // FO-REQ-0015 item 4: a1..a45 were detailed in the first run (fresh), so only n1..n5 get a details read: 1 + 2 pages + 1 = 4.
+  assert.equal(second.unitsSpent, 4);
+  assert.deepEqual(videoSnapshotCalls.map((c) => (c as { videoIds: string[] }).videoIds), [ids("n", 1, 5)]);
   assert.equal(playlistCalls.length, 2);
   assert.equal(distinctStored(store), 105);
   assert.equal(batchStatsCalls.length, 1, "the all-stored page that ends the walk gets no statistics call");
   assert.equal((batchStatsCalls[0] as { videoIds: string[] }).videoIds.length, 50);
 });
 
-test("depth: with the default depth (nothing set) one page is read as before, even when a new upload appears -- 2 units, state complete at the cap of 50", async () => {
+test("depth: with the default depth (nothing set) one page is read as before, even when a new upload appears -- 1 page + its details read = 3 units, state complete at the cap of 50", async () => {
   const { store, services, playlistCalls, setNow, setPlaylistPages } = createFixture({
     now: T0,
     publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
@@ -4234,7 +4258,8 @@ test("depth: with the default depth (nothing set) one page is read as before, ev
   store.setQuotaBudget(1000);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   const first = await services.runCollectionIfStale(RUN_INPUT);
-  assert.equal(first.unitsSpent, 2);
+  // FO-REQ-0015 item 4: +1 videos.list for page 1's 50 new videos: 1 + 1 + 1 = 3.
+  assert.equal(first.unitsSpent, 3);
   assert.equal(playlistCalls.length, 1);
   const row = store.channels.get(VALID_CHANNEL_ID)!;
   assert.deepEqual([row.videosComplete, row.videosCompleteReason, row.videosCapAtRun], [1, "cap", 50]);
@@ -4243,7 +4268,8 @@ test("depth: with the default depth (nothing set) one page is read as before, ev
   playlistCalls.length = 0;
   setNow(new Date(T0.getTime() + DAY_MS));
   const second = await services.runCollectionIfStale(RUN_INPUT);
-  assert.equal(second.unitsSpent, 2, "the stored count (50) already reaches the cap of 50, so page 2 is not read");
+  // FO-REQ-0015 item 4: +1 videos.list for new1's details (a1..a49 are fresh): 1 + 1 + 1 = 3.
+  assert.equal(second.unitsSpent, 3, "the stored count (50) already reaches the cap of 50, so page 2 is not read");
   assert.equal(playlistCalls.length, 1);
   assert.equal(distinctStored(store), 51, "the new upload itself is still captured");
 });
@@ -4255,26 +4281,30 @@ test("depth: a budget too small for the whole backfill stops early with a saved 
     playlistPages: [PAGE_A, PAGE_B, PAGE_C, PAGE_D],
     autoStats: "batch",
   });
-  store.setQuotaBudget(5);
+  // FO-REQ-0015 item 4: each page with new videos also spends its details read (the unit the budget reserves per page), so the
+  // budget is 6 (was 5) to keep "the next run finishes" true.
+  store.setQuotaBudget(6);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 200, publishedAfter: null });
 
-  // Budget 5: channels.list (4 left) + page 1 (3 left); page 2 needs 2 spare (3-2>=0) -> 2 left; page 3 (2-2>=0) -> 1 left; page 4 needs 2 > 1: stop.
+  // Budget 6: channels.list (5 left), page 1 (4), its details (3); page 2 needs 2 spare (3-2>=0) -> page 2 (2), details (1);
+  // page 3 needs 2 > 1: stop. 5 units, 100 stored, cursor page-3.
   const first = await services.runCollectionIfStale(RUN_INPUT);
-  assert.equal(first.unitsSpent, 4);
+  assert.equal(first.unitsSpent, 5);
   assert.equal(first.succeeded, 1);
-  assert.equal(playlistCalls.length, 3);
-  assert.equal(distinctStored(store), 150);
+  assert.equal(playlistCalls.length, 2);
+  assert.equal(distinctStored(store), 100);
   const afterFirst = store.channels.get(VALID_CHANNEL_ID)!;
-  assert.deepEqual([afterFirst.videosComplete, afterFirst.videosNextPageToken], [0, "page-4"]);
+  assert.deepEqual([afterFirst.videosComplete, afterFirst.videosNextPageToken], [0, "page-3"]);
   assert.notEqual(afterFirst.lastAutoCollectedAt, null, "a budget-limited backfill is a recorded success; the next stale run (24h) resumes it");
 
   playlistCalls.length = 0;
   setNow(new Date(T0.getTime() + DAY_MS));
   const second = await services.runCollectionIfStale(RUN_INPUT);
-  // channels.list + page 1 (refresh) + the cursor page 4 = 3 units; 150 + 50 = 200 = the cap.
-  assert.equal(second.unitsSpent, 3);
-  assert.deepEqual(playlistCalls.map((c) => (c as { pageToken?: string }).pageToken ?? null), [null, "page-4"]);
+  // A new day, 6 again: channels.list (5), page 1 refresh (4, its details are fresh: no read), the cursor page 3 (3) + details (2),
+  // page 4 (2-2>=0: 1) + details (0) = 6 units; 100 + 50 + 50 = 200 = the cap.
+  assert.equal(second.unitsSpent, 6);
+  assert.deepEqual(playlistCalls.map((c) => (c as { pageToken?: string }).pageToken ?? null), [null, "page-3", "page-4"]);
   assert.equal(distinctStored(store), 200);
   const done = store.channels.get(VALID_CHANNEL_ID)!;
   assert.deepEqual([done.videosComplete, done.videosCompleteReason, done.videosNextPageToken, done.videosCapAtRun], [1, "cap", null, 200]);
@@ -4290,17 +4320,20 @@ test("depth: a rejected cursor restarts from page 1's own next page -- stored pa
   store.setQuotaBudget(5);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 200, publishedAfter: null });
-  await services.runCollectionIfStale(RUN_INPUT); // 150 stored, cursor page-4 (see the previous test)
-  assert.equal(store.videoSnapshots.length, 150);
+  // FO-REQ-0015 item 4 (each new page also spends its details read): budget 5 = channels.list (4), page 1 (3) + details (2),
+  // page 2 (2-2>=0: 1) + details (0); page 3 is not affordable. 100 stored, cursor page-3.
+  await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(store.videoSnapshots.length, 100);
 
-  setRejectedPageTokens(["page-4"]);
+  setRejectedPageTokens(["page-3"]);
   setNow(new Date(T0.getTime() + DAY_MS));
-  // channels.list (4 left), page 1 (3), cursor page-4 rejected but charged (2), restart: page 2 (1) = all stored -> no snapshots; page 3 needs 2 > 1: stop.
+  // channels.list (4 left), page 1 (3; details fresh, no read), cursor page-3 rejected but charged (2), restart: page 2 (1) = all stored
+  // -> no snapshots, no details read; page 3 needs 2 > 1: stop.
   const second = await services.runCollectionIfStale(RUN_INPUT);
   assert.equal(second.unitsSpent, 4);
   assert.equal(second.failed, 0);
-  assert.equal(distinctStored(store), 150, "nothing new yet");
-  assert.equal(store.videoSnapshots.length, 200, "only page 1's 50 videos were re-observed; the stored videos of page 2 were not duplicated");
+  assert.equal(distinctStored(store), 100, "nothing new yet");
+  assert.equal(store.videoSnapshots.length, 150, "only page 1's 50 videos were re-observed; the stored videos of page 2 were not duplicated");
   assert.equal(store.videoSnapshots.filter((row) => row.videoId.startsWith("b")).length, 50, "each b-video has exactly one snapshot");
   const row = store.channels.get(VALID_CHANNEL_ID)!;
   assert.deepEqual([row.videosComplete, row.videosNextPageToken], [0, "page-3"]);
@@ -4325,7 +4358,8 @@ test("depth: publishedAfter stops paging at the first older item; videos from th
 
   const result = await services.runCollectionIfStale(RUN_INPUT);
 
-  assert.equal(result.unitsSpent, 3, "channels.list + pages 1 and 2; page 3 is never read");
+  // FO-REQ-0015 item 4: +1 videos.list per page with videos lacking details: 1 + 2 pages + 2 details reads = 5.
+  assert.equal(result.unitsSpent, 5, "channels.list + pages 1 and 2 + their details reads; page 3 is never read");
   assert.equal(playlistCalls.length, 2);
   assert.equal(distinctStored(store), 80, "50 from page 1 + b1..b30");
   assert.equal(store.videoSnapshots.some((row) => row.videoId === "b31"), false);
@@ -4355,8 +4389,9 @@ test("depth: raising the cap after a collection that stopped on the cap makes th
   setNow(new Date(T0.getTime() + DAY_MS));
   const result = await services.runCollectionIfStale(RUN_INPUT);
 
-  // channels.list + page 1 (refresh) + page 2 (stored, walked) + page 3 (50 new -> 150) = 4 units.
-  assert.equal(result.unitsSpent, 4);
+  // channels.list + page 1 (refresh; its details are fresh, no read) + page 2 (stored, walked) + page 3 (50 new -> 150) + page 3's
+  // details read (FO-REQ-0015 item 4) = 5 units.
+  assert.equal(result.unitsSpent, 5);
   assert.equal(playlistCalls.length, 3);
   assert.deepEqual(batchStatsCalls.map((c) => (c as { videoIds: string[] }).videoIds.length), [50, 50]);
   assert.equal(distinctStored(store), 150);
@@ -4399,10 +4434,11 @@ test("depth: a failure on a later page records the run as failed with its real s
 
   const result = await services.runCollectionIfStale(RUN_INPUT);
 
-  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 1, quotaLimited: 0, unitsSpent: 3 });
+  // FO-REQ-0015 item 4: page 1's 50 new videos get a details read: 1 + 1 + 1 + the failed page 2 call = 4.
+  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 1, quotaLimited: 0, unitsSpent: 4 });
   assert.equal(store.collectionRuns.length, 1);
   assert.equal(store.collectionRuns[0].status, "failed");
-  assert.equal(store.collectionRuns[0].unitsSpent, 3, "channels.list + page 1 + the failed page 2 call");
+  assert.equal(store.collectionRuns[0].unitsSpent, 4, "channels.list + page 1 + its details read + the failed page 2 call");
   assert.equal(store.collectionRuns[0].videosReturned, 50);
   const row = store.channels.get(VALID_CHANNEL_ID)!;
   assert.deepEqual([row.videosComplete, row.videosNextPageToken], [0, "page-2"]);
@@ -4424,13 +4460,15 @@ test("depth: a deep backfill does not starve the other watched channels -- the r
     await services.setChannelCollectionDepth({ channelId, maxVideosPerChannel: 200, publishedAfter: null });
   }
 
-  // Channel 1: channels.list (7 left), page 1 (6); page 2 needs 6-2 >= 3 (one channel waits) -> 5; page 3: 5-2 >= 3 -> 4; page 4: 4-2 = 2 < 3 -> stop. 4 units.
-  // Channel 2: starts with 4 (>= 3): channels.list (3), page 1 (2); page 2: 2-2 >= 0 -> 1; page 3: 1-2 < 0 -> stop. 3 units.
+  // FO-REQ-0015 item 4: each new page also spends the details read its reserved unit pays for.
+  // Channel 1: channels.list (7 left), page 1 (6) + details (5); page 2 needs 5-2 >= 3 (one channel waits) -> 4, details 3;
+  // page 3: 3-2 = 1 < 3 -> stop. 5 units, cursor page-3.
+  // Channel 2: starts with 3 (>= 3, its minimum is kept): channels.list (2), page 1 (1) + details (0); page 2: 0-2 < 0 -> stop. 3 units.
   const result = await services.runCollectionIfStale(RUN_INPUT);
 
-  assert.deepEqual(result, { attempted: 2, succeeded: 2, failed: 0, quotaLimited: 0, unitsSpent: 7 });
-  assert.equal(store.channels.get(VALID_CHANNEL_ID)!.videosNextPageToken, "page-4");
-  assert.equal(store.channels.get(OTHER_VALID_CHANNEL_ID)!.videosNextPageToken, "page-3");
+  assert.deepEqual(result, { attempted: 2, succeeded: 2, failed: 0, quotaLimited: 0, unitsSpent: 8 });
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)!.videosNextPageToken, "page-3");
+  assert.equal(store.channels.get(OTHER_VALID_CHANNEL_ID)!.videosNextPageToken, "page-2");
 });
 
 test("depth: the RSS fallback marks the run (feed_fallback_used), changes no deep-collection state, and a normal run carries no such flag", async () => {
@@ -4464,7 +4502,8 @@ test("depth: getWatchlistEntryContext reports the effective depth, stored count,
   store.setQuotaBudget(1000);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
 
-  // Nothing collected, nothing set: 50 / no date; first collection = 1 + 1 page = 2 units, worst case 1 + 2*1 = 3.
+  // Nothing collected, nothing set: 50 / no date; first collection = 1 + 1 page + its details read = 3 units (FO-REQ-0015 item 4),
+  // worst case 1 + 2*1 = 3.
   assert.deepEqual((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress, {
     maxVideosPerChannel: 50,
     maxVideosPerChannelOverride: null,
@@ -4473,13 +4512,13 @@ test("depth: getWatchlistEntryContext reports the effective depth, stored count,
     videosStored: 0,
     complete: false,
     completeReason: null,
-    estimatedFirstCollectionUnits: 2,
+    estimatedFirstCollectionUnits: 3,
     estimatedFirstCollectionWorstCaseUnits: 3,
   });
 
   await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: "2026-01-15" });
   await services.runCollectionIfStale(RUN_INPUT);
-  // 120 videos = 3 pages: 1 + 3 = 4 units, worst case 1 + 6 = 7.
+  // 120 videos = 3 pages: 1 + 3 + 3 details reads = 7 units (FO-REQ-0015 item 4), worst case 1 + 6 = 7.
   assert.deepEqual((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress, {
     maxVideosPerChannel: 120,
     maxVideosPerChannelOverride: 120,
@@ -4488,7 +4527,7 @@ test("depth: getWatchlistEntryContext reports the effective depth, stored count,
     videosStored: 120,
     complete: true,
     completeReason: "cap",
-    estimatedFirstCollectionUnits: 4,
+    estimatedFirstCollectionUnits: 7,
     estimatedFirstCollectionWorstCaseUnits: 7,
   });
 });
@@ -4502,7 +4541,8 @@ test("depth: the global default applies to a channel without an override; a chan
     maxVideosPerChannel: 100,
     publishedAfter: null,
     effectiveMaxVideosPerChannel: 100,
-    estimatedFirstCollectionUnits: 3,
+    // 100 videos = 2 pages: 1 + 2 + 2 details reads = 5 (FO-REQ-0015 item 4); worst case 1 + 2*2 = 5.
+    estimatedFirstCollectionUnits: 5,
     estimatedFirstCollectionWorstCaseUnits: 5,
   });
 
@@ -4587,20 +4627,22 @@ function runRequest(services: ReturnType<typeof createFixture>["services"], requ
   return services.runApprovedCollectionRequest({ requestId, credentialRef: { userId: "u1" } });
 }
 
-test("collection request: estimate arithmetic per mode -- cap 300 never collected: pages 7 -> 8/15; cursor resume with 100 stored: 5 pages -> 6/11; raised cap with 100 stored and no cursor: 6 pages -> 7/13; steady state 2/5; totals 23/44; remaining 40 so it does not fit today", async () => {
+test("collection request: estimate arithmetic per mode -- cap 300 never collected: pages 7 -> 15/15; cursor resume with 100 stored: 5 pages -> 11/11; raised cap with 100 stored and no cursor: 6 pages -> 13/13; steady state 2/5; totals 41/44; remaining 40 so it does not fit today", async () => {
   const { store, services } = createFixture({ now: CR_NOW });
   store.setQuotaBudget(40);
   await watchChannels(services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID, "UC0000000000000000000004");
   await services.setCollectionDepthDefaults({ maxVideosPerChannel: 300, publishedAfter: null });
-  // A: never collected, nothing stored. Backfill, no cursor: max(ceil(300/50)+1 = 7, ceil(300/50) = 6) = 7 pages -> 1+7 = 8 expected, 1+2*7 = 15 worst.
-  // B: 100 stored, unfinished backfill with a cursor: ceil((300-100)/50)+1 = 5 pages -> 6 / 11.
+  // FO-REQ-0015 item 4: a backfill page now reads its videos' details (videos.list) as well, so a backfill's expected units are
+  // 1 + 2 per page -- the old worst case.
+  // A: never collected, nothing stored. Backfill, no cursor: max(ceil(300/50)+1 = 7, ceil(300/50) = 6) = 7 pages -> 1+2*7 = 15 expected, 15 worst.
+  // B: 100 stored, unfinished backfill with a cursor: ceil((300-100)/50)+1 = 5 pages -> 11 / 11.
   seedStoredVideos(store, OTHER_VALID_CHANNEL_ID, 100);
   Object.assign(store.channels.get(OTHER_VALID_CHANNEL_ID)!, { videosComplete: 0, videosNextPageToken: "tok", videosCapAtRun: 300 });
-  // C: 100 stored, finished at cap 100, cap now 300, no cursor: max(ceil(200/50)+1 = 5, 6) = 6 pages -> 7 / 13.
+  // C: 100 stored, finished at cap 100, cap now 300, no cursor: max(ceil(200/50)+1 = 5, 6) = 6 pages -> 13 / 13.
   seedStoredVideos(store, THIRD_VALID_CHANNEL_ID, 100);
   Object.assign(store.channels.get(THIRD_VALID_CHANNEL_ID)!, { videosComplete: 1, videosCompleteReason: "cap", videosCapAtRun: 100 });
   // D: finished by reaching the end of the playlist -> incremental: expected 1+1 = 2; worst case 1 + 2 pages + 2 videos.list fallbacks = 5.
-  // Totals: expected 8+6+7+2 = 23; worst 15+11+13+5 = 44.
+  // Totals: expected 15+11+13+2 = 41; worst 15+11+13+5 = 44.
   Object.assign(store.channels.get("UC0000000000000000000004")!, { videosComplete: 1, videosCompleteReason: "exhausted", videosCapAtRun: 300 });
 
   const result = await services.createCollectionRequest({ reason: "weekly check" }, CR_AGENT);
@@ -4610,13 +4652,13 @@ test("collection request: estimate arithmetic per mode -- cap 300 never collecte
   assert.deepEqual(
     estimate.channels.map((c) => [c.channelId, c.mode, c.expectedUnits, c.worstCaseUnits]),
     [
-      [VALID_CHANNEL_ID, "backfill", 8, 15],
-      [OTHER_VALID_CHANNEL_ID, "backfill", 6, 11],
-      [THIRD_VALID_CHANNEL_ID, "backfill", 7, 13],
+      [VALID_CHANNEL_ID, "backfill", 15, 15],
+      [OTHER_VALID_CHANNEL_ID, "backfill", 11, 11],
+      [THIRD_VALID_CHANNEL_ID, "backfill", 13, 13],
       ["UC0000000000000000000004", "incremental", 2, 5],
     ]
   );
-  assert.equal(estimate.totalExpectedUnits, 23);
+  assert.equal(estimate.totalExpectedUnits, 41);
   assert.equal(estimate.totalWorstCaseUnits, 44);
   assert.equal(estimate.dailyBudgetUnits, 40);
   assert.equal(estimate.unitsSpentToday, 0);
@@ -4882,13 +4924,14 @@ test("collection run: a backfill the budget cannot finish is partial_budget (cur
   await f.services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: null });
   const created = await f.services.createCollectionRequest({}, CR_AGENT);
   const done = await runRequest(f.services, created.request!.requestId);
-  // Budget 3: channels.list 1 + page 1 (1) = 2 spent, 1 left; another page needs 2 -> stops with a saved cursor. 50 videos stored.
+  // Budget 3: channels.list 1 + page 1 (1) + page 1's details read (1, FO-REQ-0015 item 4) = 3 spent, 0 left; another page needs 2
+  // -> stops with a saved cursor. 50 videos stored.
   assert.deepEqual(
     done.result!.map((r) => [r.outcome, r.videosStored, r.unitsSpent]),
-    [["partial_budget", 50, 2]]
+    [["partial_budget", 50, 3]]
   );
   assert.equal(f.store.channels.get(VALID_CHANNEL_ID)!.videosNextPageToken, "page-2");
-  assert.equal(done.unitsSpentTotal, 2);
+  assert.equal(done.unitsSpentTotal, 3);
 });
 
 test("collection run: a channel YouTube reports no data for fails; when every attempted channel failed the request is failed with the error and the per-channel result", async () => {
