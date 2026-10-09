@@ -18,6 +18,7 @@ export const settings = {
   "settingsCard.operationsWorkspace": "Operations workspace",
   "settingsCard.logicalPaths": "Logical paths",
   "settingsCard.factoryToken": "Factory Operator token",
+  "settingsCard.producerToken": "Producer token",
   "settingsCard.aiProviders": "AI providers",
   "settingsCard.sync": "Sync",
   "settingsCard.autoDeviceSync": "Automatic device sync",
