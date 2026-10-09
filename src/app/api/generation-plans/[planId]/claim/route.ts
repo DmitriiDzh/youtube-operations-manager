@@ -29,7 +29,33 @@ export function createClaimPostHandler(deps: ClaimRouteDeps) {
   };
 }
 
+/**
+ * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.4): the other computers' live claims on this device's plan, for the review screen's quick
+ * poll (every few seconds, without reloading the queue). Only the active channel's plan (AC-SM-03).
+ */
+export function createClaimGetHandler(deps: Omit<PlanRouteDeps, "core"> & { core: Pick<GenerationPlanServices, "assertPlanOfChannel" | "liveClaims"> }) {
+  return async function GET(_request: Request, context: { params: Promise<{ planId: string }> }) {
+    const session = await deps.getSession();
+    const userId = session?.user?.id;
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    try {
+      const { planId } = await context.params;
+      await deps.core.assertPlanOfChannel(planId, await deps.activeChannelId(userId));
+      return NextResponse.json({ claims: await deps.core.liveClaims({ planId }) });
+    } catch (error) {
+      return planErrorResponse(error);
+    }
+  };
+}
+
 const defaults = defaultPlanRouteDeps();
+export const GET = createClaimGetHandler({
+  getSession: defaults.getSession,
+  get core() {
+    return defaults.core;
+  },
+  activeChannelId: defaults.activeChannelId,
+});
 export const POST = createClaimPostHandler({
   getSession: defaults.getSession,
   get core() {

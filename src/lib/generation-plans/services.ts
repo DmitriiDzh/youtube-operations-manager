@@ -144,6 +144,11 @@ export type PlanServiceDependencies = {
   /** BL-157 (AC-TC-04/05): how this computer is named in a verdict's history (its host name, else its device id). */
   deviceLabel?: () => Promise<string>;
   generateId?: () => string;
+  /**
+   * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.4): the small "what is open here" files -- this device's claims written the moment
+   * they change, the other devices' read straight from disk (absent = claims travel only in the plans report).
+   */
+  presence?: { publish(claims: SharedClaim[]): Promise<void>; readPeers(): Promise<Array<{ deviceId: string; hostname: string | null; claims: SharedClaim[] }>> };
 };
 
 /** BL-143 phase 2: a peer report older than this is shown as stale (the same 5 minutes as the sessions of other devices). */
@@ -164,8 +169,11 @@ export type PlanRunResult = {
 };
 
 const CAS_RETRIES = 5;
-/** BL-157 (AC-TC-01): a claim lasts this long after the screen last showed it (a heartbeat every minute extends it). */
-export const REVIEW_CLAIM_TTL_MS = 10 * 60_000;
+/**
+ * BL-157 (AC-TC-01): a claim lasts this long after the screen last showed it. BL-162 (owner, msg 2263): 90 s with a heartbeat
+ * every 30 s, so a closed screen frees its track within a minute and a half even when its release never arrived.
+ */
+export const REVIEW_CLAIM_TTL_MS = 90_000;
 /** A peer's claim reaching further than this ahead is not believed (a clock far ahead, or a bad report). */
 const PEER_CLAIM_MAX_AHEAD_MS = 15 * 60_000;
 /** BL-157 (AC-TC-05): how many of an attempt's verdicts the history shows and the report carries. */
@@ -1079,6 +1087,16 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   }
 
   // The rest of the public surface (added to the object returned above).
+  /** BL-162 (§5.4): this device's claims, written to its presence file at once; advisory, so a failure is ignored. */
+  async function publishPresence(): Promise<void> {
+    if (!deps.presence) return;
+    try {
+      await deps.presence.publish(await deps.store.listClaims(now()));
+    } catch {
+      // The plans report still carries the claims a minute later.
+    }
+  }
+
   const more = {
     /**
      * AC-GP3-02: how many attempts wait for the owner -- this device's active plans plus other devices' active plans, minus
@@ -1185,6 +1203,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           // closed or the active channel changed (review round 2).
           const stored = (await deps.store.listClaims(now())).find((c) => c.claimId === claimId);
           if (stored && (parsed.scope === "group" || (stored.itemKey === (parsed.itemKey ?? null) && stored.attemptRef === (parsed.attemptRef ?? null)))) await deps.store.deleteClaim(claimId);
+          await publishPresence();
           return { claimId, until: null };
         }
         // The plan must be one this device can review: its own active plan, or an active plan in that device's report.
@@ -1222,6 +1241,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           since: same && existing ? existing.since : at.toISOString(),
           until,
         });
+        await publishPresence();
         return { claimId, until };
       });
     },
@@ -1235,22 +1255,36 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * BL-157 (AC-TC-02): the OTHER devices' live claims on a plan owned by `ownerDeviceId` (this device for its own plans),
      * each named by the device that made it. A claim reaching implausibly far ahead is not believed.
      */
+    /** BL-162 (§5.4): the other computers' live claims on a plan -- this device's (no `ownerDeviceId`) or another's -- for the review screen's quick poll. */
+    async liveClaims(input: { planId: string; ownerDeviceId?: string }): Promise<PlanReviewClaim[]> {
+      return more.claimsOn(input.ownerDeviceId ?? (await ownDeviceId()), input.planId);
+    },
+
     async claimsOn(ownerDeviceId: string, planId: string): Promise<PlanReviewClaim[]> {
       return (await more.peerClaims()).filter((c) => c.ownerDeviceId === ownerDeviceId && c.planId === planId).map(({ ownerDeviceId: _o, planId: _p, ...claim }) => (void _o, void _p, claim));
     },
 
     /** Every live claim in the other devices' reports, with the plan it is on (the peer plans view filters them itself). */
     async peerClaims(): Promise<Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }>> {
-      if (!deps.peers) return [];
+      if (!deps.peers && !deps.presence) return [];
       const at = now().getTime();
       const out: Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }> = [];
-      for (const report of await deps.peers.listPeerReports()) {
-        for (const c of report.claims ?? []) {
+      const add = (claims: readonly SharedClaim[], device: string) => {
+        for (const c of claims) {
           const until = Date.parse(c.until);
           if (!(until > at) || until > at + PEER_CLAIM_MAX_AHEAD_MS) continue;
-          out.push({ ownerDeviceId: c.ownerDeviceId, planId: c.planId, scope: c.scope, itemKey: c.itemKey, attemptRef: c.attemptRef, groupId: c.groupId, device: report.hostname ?? report.deviceId, since: c.since, until: c.until });
+          out.push({ ownerDeviceId: c.ownerDeviceId, planId: c.planId, scope: c.scope, itemKey: c.itemKey, attemptRef: c.attemptRef, groupId: c.groupId, device, since: c.since, until: c.until });
         }
+      };
+      // BL-162 (§5.4): a device's presence file is fresher than its report -- when it has one, it alone says what is open there
+      // (a claim given up a moment ago is gone from it, while the report may still carry it). A presence file that cannot be
+      // read leaves the reports to speak.
+      const presence = deps.presence ? await deps.presence.readPeers().catch(() => []) : [];
+      const withPresence = new Set(presence.map((p) => p.deviceId));
+      for (const report of deps.peers ? await deps.peers.listPeerReports() : []) {
+        if (!withPresence.has(report.deviceId)) add(report.claims ?? [], report.hostname ?? report.deviceId);
       }
+      for (const p of presence) add(p.claims, p.hostname ?? p.deviceId);
       return out;
     },
 

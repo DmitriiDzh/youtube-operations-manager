@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { GenerationPlanServices } from "@/lib/generation-plans";
 import { DomainError } from "@/lib/shared-domain";
-import { createClaimPostHandler } from "./[planId]/claim/route";
-import { createPeerClaimPostHandler } from "./peers/[deviceId]/[planId]/claim/route";
+import { createClaimGetHandler, createClaimPostHandler } from "./[planId]/claim/route";
+import { createPeerClaimGetHandler, createPeerClaimPostHandler } from "./peers/[deviceId]/[planId]/claim/route";
 import { createPeerVerdictPostHandler } from "./peers/[deviceId]/[planId]/verdict/route";
 import { createPeersGetHandler } from "./peers/route";
 import { planHandler, type PlanRouteDeps } from "./shared";
@@ -108,4 +108,40 @@ test("AC-SM-03: a verdict or a claim on another device's plan of another channel
   assert.equal((await verdict("UC_japan")(post({ itemKey: "A/1", attemptRef: "job:1", result: "accepted" }), at("R-japan"))).status, 200);
   assert.equal((await claim("UC_tropico")(post({ scope: "group", groupId: "C1", release: true }), at("R-japan"))).status, 200, "a release needs no channel");
   assert.equal(recorded.length, 2);
+});
+
+test("BL-162 §5.4 / AC-SM-03: the quick claims read answers only for the active channel's plan -- this device's or another's -- and 404 otherwise", async () => {
+  const asked: Array<{ planId: string; ownerDeviceId?: string }> = [];
+  const liveClaims = async (input: { planId: string; ownerDeviceId?: string }) => (asked.push(input), []);
+  const deps = (active: string | null) => ({ getSession: async () => ({ user: { id: "u1" } }), activeChannelId: async () => active });
+  const own = (active: string | null) =>
+    createClaimGetHandler({
+      ...deps(active),
+      core: {
+        async assertPlanOfChannel(planId: string, channelId: string | null) {
+          if (!channelId || PLAN_CHANNEL[planId] !== channelId) throw notFound(planId);
+        },
+        liveClaims,
+      },
+    });
+  const peer = (active: string | null) =>
+    createPeerClaimGetHandler({
+      ...deps(active),
+      core: {
+        async assertPeerPlanOfChannel(deviceId: string, planId: string, channelId: string | null) {
+          if (!channelId || PEER_PLAN_CHANNEL[`${deviceId}\u0000${planId}`] !== channelId) throw notFound(planId);
+        },
+        liveClaims,
+      },
+    });
+  const get = new Request("http://127.0.0.1/x");
+  assert.equal((await own("UC_japan")(get, { params: Promise.resolve({ planId: "T-tropico" }) })).status, 404);
+  assert.equal((await own(null)(get, { params: Promise.resolve({ planId: "R-japan" }) })).status, 404);
+  assert.equal((await peer("UC_tropico")(get, { params: Promise.resolve({ deviceId: "win", planId: "R-japan" }) })).status, 404);
+  assert.equal(asked.length, 0, "nothing read for another channel");
+  const ok = await own("UC_japan")(get, { params: Promise.resolve({ planId: "R-japan" }) });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { claims: [] });
+  assert.equal((await peer("UC_japan")(get, { params: Promise.resolve({ deviceId: "win", planId: "R-japan" }) })).status, 200);
+  assert.deepEqual(asked, [{ planId: "R-japan" }, { planId: "R-japan", ownerDeviceId: "win" }]);
 });

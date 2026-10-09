@@ -334,4 +334,5 @@ export const production: Record<keyof typeof en, string> = {
   "review.queue.autoFailed": "автопроверка ✗",
   "review.queue.waitingGroup": "Ждут вердикта · {count}",
   "review.queue.reviewedGroup": "Проверены · {count}",
+  "review.claimedMoved": "Этот трек уже открыт на {device} — здесь открыт следующий.",
 };

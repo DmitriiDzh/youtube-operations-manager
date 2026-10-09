@@ -206,9 +206,12 @@ async function postJson(t: Translate, url: string, body: unknown, init: { keepal
   return data;
 }
 
-/** BL-157 (AC-TC-01): how often the screen renews its claims and reads the other computer's. */
-const CLAIM_HEARTBEAT_MS = 60_000;
-const CLAIMS_REFRESH_MS = 30_000;
+/**
+ * BL-157 (AC-TC-01): how often the screen renews its claims and reads the other computers'. BL-162 (owner, msg 2263; §5.4): a
+ * heartbeat every 30 s (a claim lives 90 s), and the other computers' claims read every 3 s from their small presence files.
+ */
+const CLAIM_HEARTBEAT_MS = 30_000;
+const CLAIMS_REFRESH_MS = 3_000;
 
 type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
@@ -457,17 +460,18 @@ export function PlanReviewScreen({
   // BL-157 (AC-TC-02): the other computers' claims come and go while the screen is open -- read them again now and then
   // (only the claims: the queue itself is not reloaded under the owner's hands).
   useEffect(() => {
+    // BL-162 (§5.4): only the claims, from the light `claim` route -- not the whole queue -- so it can run every few seconds.
     const timer = setInterval(() => {
-      void fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
-        .then(async (res) => (res.ok ? ((await res.json()) as { claims?: PeerQueueResponse["claims"] | PlanReviewClaim[] }) : null))
+      void fetch(`${base}/claim`)
+        .then(async (res) => (res.ok ? ((await res.json()) as { claims?: PlanReviewClaim[] }) : null))
         .then((data) => {
-          if (data) setClaims(claimsFrom(data));
+          if (data?.claims) setClaims(data.claims);
           setNowMs(Date.now());
         })
         .catch(() => undefined);
     }, CLAIMS_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [base, claimsFrom, peerDevice]);
+  }, [base]);
 
   const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
   useEffect(() => {
@@ -562,6 +566,25 @@ export function PlanReviewScreen({
       void postJson(t, `${base}/claim`, { scope: "attempt", itemKey, attemptRef, release: true }, { keepalive: true }).catch(() => undefined);
     };
   }, [base, claimKey, t]);
+  // BL-162 (§5.4 point 5, owner msg 2263): two computers opened the same track within the same seconds -- the one that opened it
+  // first keeps it and this screen moves on to the next free track, but only while nothing was marked or written here yet.
+  const openedAt = useRef<{ key: string; at: number } | null>(null);
+  useEffect(() => {
+    if (claimKey) openedAt.current = { key: claimKey, at: Date.now() };
+  }, [claimKey]);
+  useEffect(() => {
+    if (!entry || entry.verdict !== null || !entries || !claimKey) return;
+    const claim = claimOf(entry, claims, nowMs);
+    const opened = openedAt.current;
+    if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || !(Date.parse(claim.since) < opened.at)) return;
+    const untouched = draft.reasons.length === 0 && draft.rating === null && !draft.note.trim() && draft.marks.length === 0 && draft.openMark === null;
+    if (!untouched) return;
+    const next = nextWaitingIndex(entries, index, skipClaimed);
+    if (next < 0 || next === index) return;
+    go(next);
+    setMessage({ tone: "ok", text: t("review.claimedMoved", { device: claim.device }) });
+  }, [claimKey, claims, draft, entries, entry, go, index, nowMs, skipClaimed, t]);
+
   /** A filter shows its own first waiting attempt. */
   const chooseFilter = useCallback(
     (next: ReviewFilter) => {

@@ -6,7 +6,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
-import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
+import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
 import { createGenerationPlanServices } from "./services";
@@ -30,6 +30,11 @@ export function createGenerationPlansCore() {
     peers: {
       ownDeviceId: async () => (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
       listPeerReports: () => createGenerationPlansShareCoreForProduction().listPeerReports(),
+    },
+    // BL-162 (§5.4): "what is open here" in its own small file, written at once and read straight from disk.
+    presence: {
+      publish: (claims) => createReviewPresenceForProduction().publish({ hostname: hostLabel(), claims }),
+      readPeers: () => createReviewPresenceForProduction().readPeers(),
     },
     // BL-157 (AC-MV-03): a plan move checks its files with the same resolver the player uses.
     files: {

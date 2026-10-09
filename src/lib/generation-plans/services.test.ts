@@ -683,11 +683,21 @@ test("AC-GP2-01: the shared view of this device's plans has no absolute path and
 });
 
 /** Two devices: "mac" owns the plan; "win" sees it through mac's report and sends verdicts back in its own. */
-function twoDevices() {
+function twoDevices(opts: { presence?: boolean } = {}) {
   const reports: Record<string, GenerationPlansReport> = {};
+  // BL-162 (§5.4): the presence files, one per device, when the devices have them.
+  const presenceFiles: Record<string, { hostname: string; claims: SharedClaim[] }> = {};
   let ids = 0;
   const device = (deviceId: string, base: ReturnType<typeof withMedia> | ReturnType<typeof setup>) =>
     createGenerationPlanServices({
+      ...(opts.presence
+        ? {
+            presence: {
+              publish: async (claims: SharedClaim[]) => void (presenceFiles[deviceId] = { hostname: deviceId === "mac" ? "Mac" : "Windows PC", claims: structuredClone(claims) }),
+              readPeers: async () => Object.entries(presenceFiles).filter(([id]) => id !== deviceId).map(([id, f]) => ({ deviceId: id, hostname: f.hostname, claims: f.claims })),
+            },
+          }
+        : {}),
       store: base.store,
       channels: { isConnected: async (id) => id === CHANNEL },
       clock: { now: () => new Date((clockMs += 1000)) },
@@ -703,7 +713,7 @@ function twoDevices() {
   const publish = async (deviceId: string, services: typeof mac) => {
     reports[deviceId] = { format: "ytm-generation-plans", version: 2, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts(), claims: await services.ownClaims() };
   };
-  return { mac, win, macBase, winBase, publish, reports };
+  return { mac, win, macBase, winBase, publish, reports, presenceFiles };
 }
 
 test("AC-GP2-03/04: a verdict given on Windows for a Mac plan travels in Windows' report and the Mac applies it once, as the owner's", async () => {
@@ -1431,7 +1441,8 @@ test("AC-TC-01/02: a track claim reaches the owning device with the computer's n
   await d.publish("win", d.win);
   const [seen] = await claimsOnMac();
   assert.deepEqual([seen.scope, seen.itemKey, seen.attemptRef, seen.device], ["attempt", "C1/F1", "job:j1", "Windows PC"]);
-  assert.equal(Date.parse(seen.until) - Date.parse(seen.since) <= 10 * 60_000 + 1000, true, "about 10 minutes");
+  // BL-162 (owner, msg 2263, MEDIA_UX_REDESIGN_PLAN.md §5.4): a claim now lives 90 s (was 10 min), renewed every 30 s by the screen.
+  assert.equal(Date.parse(seen.until) - Date.parse(seen.since), 90_000, "90 seconds");
   // Heartbeat on the same track: the start stays; moving to another track: one claim, a new start.
   await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
   assert.equal((await d.win.ownClaims())[0].since, seen.since);
@@ -1665,4 +1676,35 @@ test("AC-SC-04: rerun is refused the same way", async () => {
   const item = plan.items.find((i: { templateId?: string }) => i.templateId === "tpl-ace") as { itemKey: string };
   await assert.rejects(m.services.rerun({ planId: "R-0001-S1-music", sessionId: "s1", itemKey: item.itemKey }), (e: unknown) => (e as { code?: string }).code === "media_gpu_host_incompatible");
   assert.equal(m.createdJobs.length, 0);
+});
+
+test("BL-162 §5.4: with presence files a claim reaches the owning device at once, without a report; a release is gone at once too", async () => {
+  const d = twoDevices({ presence: true });
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  // No report from Windows yet: the presence file alone carries the claim.
+  assert.equal("win" in d.reports, false);
+  const live = await d.mac.liveClaims({ planId: "R-0001-S1-music" });
+  assert.deepEqual(live.map((c) => [c.device, c.itemKey, c.attemptRef]), [["Windows PC", "C1/F1", "job:j1"]]);
+  // Windows' report still carries the claim (published before the release); its presence file does not -- and wins.
+  await d.publish("win", d.win);
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1", release: true });
+  assert.equal(d.reports.win.claims?.length, 1, "the older report still names it");
+  assert.deepEqual(await d.mac.liveClaims({ planId: "R-0001-S1-music" }), [], "the presence file says nothing is open");
+  // The other way round: Windows sees what is open on the Mac for the Mac's own plan.
+  await d.mac.claimReview({ planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  assert.deepEqual((await d.win.liveClaims({ planId: "R-0001-S1-music", ownerDeviceId: "mac" })).map((c) => c.device), ["Mac"]);
+});
+
+test("BL-162 §5.4: a device without a presence file (an older build) is still heard through its report", async () => {
+  const d = twoDevices({ presence: true });
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  await d.publish("win", d.win);
+  delete d.presenceFiles.win;
+  assert.deepEqual((await d.mac.liveClaims({ planId: "R-0001-S1-music" })).map((c) => [c.device, c.attemptRef]), [["Windows PC", "job:j1"]]);
 });

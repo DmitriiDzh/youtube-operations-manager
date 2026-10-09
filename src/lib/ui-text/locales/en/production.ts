@@ -333,4 +333,5 @@ export const production = {
   "review.queue.autoFailed": "auto-check ✗",
   "review.queue.waitingGroup": "Waiting for your verdict · {count}",
   "review.queue.reviewedGroup": "Reviewed · {count}",
+  "review.claimedMoved": "{device} already had this track open, so the next one is open here.",
 } as const;
