@@ -176,6 +176,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "The stored day-7 and day-28 milestones of the channel's own videos (BL-166): per milestone its window (publish date .. +6 / +27, Pacific), status (collected / retry / failed), the window totals (views, watch minutes, average view duration and percentage) and the audience-retention curve (up to 100 points) as YouTube returned them, plus the video's stored length. Collected in the background with the Analytics collection, at most 25 per channel per run -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
   },
   {
+    id: "analytics.query_stored_breakdowns",
+    mcpTools: ["agent_get_stored_breakdowns"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "Traffic sources and device types per day as stored by YT Manager (BL-168): views and watch minutes per insightTrafficSourceType and per deviceType, for each public video's first 90 days and for the channel as a whole, summed over a date range or listed by day, with the stored coverage of each. Collected in the background with the Analytics collection, once a day -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
     id: "analytics.query_video_analytics",
     mcpTools: ["agent_query_video_analytics", "analytics_list"],
     domain: "analytics",
