@@ -3,12 +3,13 @@ import test from "node:test";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { createProducerTokenServices } from "@/lib/producer-agent-tokens/services";
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
-import { upsertChannel, upsertVideos } from "@/lib/db";
+import { addChannelRecordAssignment, insertResearchChannel, upsertChannel, upsertVideos } from "@/lib/db";
+import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
 import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
-import { createProducerMcpEndpoint } from "./index";
+import { createProducerMcpEndpoint, type ProducerRefusedCall } from "./index";
 
 // Expected behavior from docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3 (AC-PR-02..07, 09, 10), written before this endpoint, from
 // FO-REQ-0012 §2/§4: a producer token reads any channel connected on this device, one channel per call, through exactly the checks
@@ -67,15 +68,22 @@ function setup(initial: { enabled?: boolean } = {}) {
   const tokens = createProducerTokenServices({ store: memoryTokenStore(), generateSecret: () => String(++n).padStart(43, "s") });
   const state = { enabled: initial.enabled ?? true, createdServers: 0 };
   const calls: Array<{ tool: string; channelId: string | null; outcome: string; errorCode: string | null }> = [];
+  const refused: ProducerRefusedCall[] = [];
   const endpoint = createProducerMcpEndpoint({
     isConnectionEnabled: async () => state.enabled,
     verifyToken: (token) => tokens.verifyToken(token),
+    isProducerTool: (name) => PRODUCER_TOOL_NAMES.includes(name),
+    recordRefusedCall: async (call) => {
+      refused.push(call);
+    },
     createServer: ({ session }) => {
       state.createdServers++;
       const producerSession: ProducerSession = {
-        ...session,
+        tokenId: session.tokenId,
+        reverify: () => session.reverify(),
         resolveChannelUser: async (channelId) => CONNECTED[channelId] ?? null,
         recordCall: async (entry) => {
+          session.noteRecorded(entry.tool);
           calls.push(entry);
         },
         listChannels: async () => [
@@ -87,7 +95,7 @@ function setup(initial: { enabled?: boolean } = {}) {
       return createMcpServer(undefined, { connectionEnabled: true, producerSession });
     },
   });
-  return { endpoint, tokens, state, calls };
+  return { endpoint, tokens, state, calls, refused };
 }
 
 function rpc(body: unknown, headers: Record<string, string> = {}, method = "POST"): Request {
@@ -134,11 +142,19 @@ test("AC-PR-03: tools/list is exactly the closed list, and every channel tool in
     assert.ok(tool.inputSchema.required?.includes("channelId"), `${tool.name} must require channelId`);
   }
   const capabilities = new Map(listAgentCapabilityDescriptors().map((capability) => [capability.id, capability]));
+  // These three READ capabilities predate the registry's `mcpTools` field; each is pinned to its one tool here, so no other tool
+  // (a DRAFT or WRITE one, say) can be mapped onto a capability that lists no tools (review round 1).
+  const PINNED_WITHOUT_MCP_TOOLS: Record<string, string> = {
+    channel_video_list: "video_context.list_videos",
+    query_competitors: "market_intelligence.query_competitors",
+    query_market_intelligence: "market_intelligence.query_market_intelligence",
+  };
   for (const [tool, { capability }] of Object.entries(PRODUCER_CHANNEL_TOOLS)) {
     const descriptor = capabilities.get(capability);
     assert.ok(descriptor, `${tool}: capability ${capability} exists`);
     assert.equal(descriptor.permission, "READ", `${tool} must be a READ capability`);
     if (descriptor.mcpTools) assert.ok(descriptor.mcpTools.includes(tool), `${capability} names ${tool}`);
+    else assert.equal(PINNED_WITHOUT_MCP_TOOLS[tool], capability, `${tool} maps to a capability that names no tool`);
     assert.equal(MCP_TOOL_CLASSIFICATION[tool], "bound");
   }
 });
@@ -151,10 +167,11 @@ test("AC-PR-03: a channel agent's session never lists a producer tool", () => {
 });
 
 test("AC-PR-04: a channel call without channelId is refused at input; a channel not connected here is refused and logged", async () => {
-  const { endpoint, tokens, calls } = setup();
+  const { endpoint, tokens, calls, refused } = setup();
   const token = (await tokens.issueToken({})).token;
   const missing = await toolResult(await endpoint.handle(rpc(call("channel_video_list", {}), bearer(token))));
   assert.equal(missing.isError, true);
+  assert.deepEqual(refused, [{ tool: "channel_video_list", channelId: null, errorCode: "INVALID_PARAMS" }]);
   const unknown = await toolResult(await endpoint.handle(rpc(call("channel_video_list", { channelId: "UC_PR_ELSEWHERE" }), bearer(token))));
   assert.equal(unknown.isError, true);
   assert.equal((payloadOf(unknown.text).error as { code: string }).code, "CHANNEL_NOT_ACTIVE");
@@ -254,4 +271,68 @@ test("a token revoked mid-session is refused on its next call, before any channe
   revoked = true;
   assert.equal((await tools.channel_video_list.handler({ channelId: "UC_PR_X" })).isError, true);
   assert.deepEqual(logged, ["channel_video_list:error:AGENT_TOKEN_INVALID"]);
+});
+
+// Review round 1: calls the MCP layer refuses before any tool runs were missing from the log (FO-REQ-0012 §2.4: every call).
+test("AC-PR-09: an unknown tool, a refused input and a caller credentialRef are logged too; a good call is logged once", async () => {
+  const { endpoint, tokens, calls, refused } = setup();
+  const token = (await tokens.issueToken({})).token;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("apply", { channelId: "UC_PR_X" }), bearer(token))))).isError, true);
+  assert.equal(
+    (await toolResult(await endpoint.handle(rpc(call("producer_portfolio_overview", { startDate: "2025-01-01", endDate: "2026-10-01" }), bearer(token))))).isError,
+    true
+  );
+  assert.equal(
+    (await toolResult(await endpoint.handle(rpc(call("channel_video_list", { channelId: "UC_PR_X", credentialRef: { userId: "user-pr-y" } }), bearer(token))))).isError,
+    true
+  );
+  assert.deepEqual(refused, [
+    { tool: "apply", channelId: "UC_PR_X", errorCode: "TOOL_NOT_FOUND" },
+    { tool: "producer_portfolio_overview", channelId: null, errorCode: "INVALID_PARAMS" },
+    { tool: "channel_video_list", channelId: "UC_PR_X", errorCode: "INVALID_PARAMS" },
+  ]);
+  assert.equal(calls.length, 0);
+  // A batch: the good call is logged by the tool, only the refused one by the endpoint.
+  const batch = [call("producer_list_channels"), { ...call("channel_video_list", {}), id: 3 }];
+  const response = await endpoint.handle(rpc(batch, bearer(token)));
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.map((entry) => entry.tool), ["producer_list_channels"]);
+  assert.deepEqual(refused.at(-1), { tool: "channel_video_list", channelId: null, errorCode: "INVALID_PARAMS" });
+  assert.equal(refused.length, 4);
+});
+
+test("AC-PR-08 input: the portfolio range must be real calendar dates, start before end, at most 366 days", async () => {
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const overview = (startDate: string, endDate: string) =>
+    endpoint.handle(rpc(call("producer_portfolio_overview", { startDate, endDate }), bearer(token))).then(toolResult);
+  assert.equal((await overview("2026-02-01", "2026-02-31")).isError, true);
+  assert.equal((await overview("2026-13-01", "2026-12-31")).isError, true);
+  assert.equal((await overview("2026-10-07", "2026-10-01")).isError, true);
+  assert.equal((await overview("2026-01-01", "2027-01-01")).isError, false); // 365 days apart = 366 days inclusive
+});
+
+test("AC-PR-05: a market record assigned only to channel Y is not readable through channel X", async () => {
+  await seedTwoChannels();
+  await insertResearchChannel({ id: "UC_PR_COMP", reason: "competitor of Y", createdVia: "operator" });
+  await addChannelRecordAssignment("UC_PR_Y", "research_channel", "UC_PR_COMP");
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const read = (channelId: string) =>
+    endpoint.handle(rpc(call("query_market_intelligence", { channelId, watchlistChannelId: "UC_PR_COMP" }), bearer(token))).then(toolResult);
+  const viaX = await read("UC_PR_X");
+  assert.equal(viaX.isError, true);
+  assert.equal((payloadOf(viaX.text).error as { code: string }).code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  const viaY = await read("UC_PR_Y");
+  assert.equal(viaY.isError, false, viaY.text);
+  assert.equal(payloadOf(viaY.text).forChannelId, "UC_PR_Y");
+});
+
+test("AC-PR-02: a producer token is refused by the channel agents' verifier", async () => {
+  const channelTokens = createAgentTokenServices({
+    store: { async replace() {}, async revokeForChannel() { return 0; }, async findActiveByHash() { return null; }, async findByHash() { return null; }, async listActive() { return []; } },
+    getChannelConnectedUserId: async () => "user-pr-x",
+    getLiveChannelIdForUser: async () => "UC_PR_X",
+  });
+  await assert.rejects(channelTokens.verifyToken(`ytom_pr_${"s".repeat(43)}`), (error: unknown) => (error as { code?: string }).code === "AGENT_TOKEN_INVALID");
 });

@@ -114,6 +114,16 @@ async function startServerSession() {
   const { runAllSyncFamiliesOnce } = await import("@/lib/sync-gateway");
   const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
   const { createAgentTokenSyncCoreForProduction } = await import("@/lib/agent-token-sync");
+  const { recordSyncFamilyResult } = await import("@/lib/db");
+  const applyAgentTokensQuietly = async () => {
+    try {
+      await createAgentTokenSyncCoreForProduction().tick();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      createDefaultLogger().error({ event: "agent_tokens.sync_failed", context: { message } });
+      await recordSyncFamilyResult("agent_tokens", { ok: false, error: `applying or publishing tokens: ${message}` }).catch(() => undefined);
+    }
+  };
   const syncFamiliesThenTokens = async () => {
     try {
       // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
@@ -121,11 +131,13 @@ async function startServerSession() {
       // Same gate the "Sync now" route gets from src/proxy.ts.
       await assertDeviceAvailableForMutation(rawSqlClient);
       await runAllSyncFamiliesOnce();
-      // BL-160: apply the agent tokens the other devices just reported, then publish this device's (only when it changed).
-      await createAgentTokenSyncCoreForProduction().tick();
     } catch {
       // Paused (lock/recovery) or failed -- each family records its own outcome; retry next time.
+      return;
     }
+    // BL-160: apply the agent tokens the other devices just reported, then publish this device's (when it changed, or daily). A
+    // failure here is recorded on the family's status and logged -- the file exchange alone may have succeeded (review round 1).
+    await applyAgentTokensQuietly();
   };
   // BL-160: one agent-tokens pass shortly after start (only that family, the others keep their first run at a minute), so tokens
   // issued or revoked elsewhere while this device was off apply within seconds of it starting.
@@ -135,10 +147,11 @@ async function startServerSession() {
       try {
         await assertDeviceAvailableForMutation(rawSqlClient);
         await createAgentTokensSyncRunnerForProduction().runSyncCycle();
-        await createAgentTokenSyncCoreForProduction().tick();
       } catch {
         // Paused or failed: the regular cycle below retries.
+        return;
       }
+      await applyAgentTokensQuietly();
     })();
   }, DEVICE_SYNC_BOOT_DELAY_MS).unref();
   setInterval(() => void syncFamiliesThenTokens(), DRAFT_SYNC_INTERVAL_MS).unref();

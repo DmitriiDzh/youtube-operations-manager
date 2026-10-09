@@ -9,9 +9,19 @@ export type AgentTokensShareDeps = {
   clock?: { now(): Date };
 };
 
-/** BL-160: the agent tokens report -- the shared per-device report mechanics (`../per-device-report`) with this family's schema. */
+/**
+ * BL-160: the agent tokens report -- the shared per-device report mechanics (`../per-device-report`) with this family's schema. A
+ * peer's report is never forgotten: it stays true while its device is quiet, and a revocation in it must still reach a device that
+ * comes back after weeks (independent review, BL-160 round 1).
+ */
 export function createAgentTokensShareCore(deps: AgentTokensShareDeps) {
-  return createPerDeviceReportCore<AgentTokensReport>({ schema: agentTokensReportSchema, label: "agent tokens report", currentVersion: AGENT_TOKENS_REPORT_VERSION, ...deps });
+  return createPerDeviceReportCore<AgentTokensReport>({
+    schema: agentTokensReportSchema,
+    label: "agent tokens report",
+    currentVersion: AGENT_TOKENS_REPORT_VERSION,
+    ...deps,
+    forgetAfterMs: null,
+  });
 }
 
 export type AgentTokensShareCore = ReturnType<typeof createAgentTokensShareCore>;

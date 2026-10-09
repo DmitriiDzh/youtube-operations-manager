@@ -3167,7 +3167,9 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
   (`listAgentTokenRowsForSync`, `applyAgentTokenSyncPlan`: one transaction, revocations before inserts so the role tables' one-active
   indexes hold). Rules: joined by hash; revoked anywhere = revoked (earliest time), never undone; a peer record conflicting with a local row's
   role/channel/account is ignored; one active token per slot, newest `createdAt` wins (tie: larger hash), losers revoked at the winner's
-  `createdAt`. Every device computes the same result from the same records.
+  `createdAt`; a token's `createdAt` is the earliest any device reports (local rows re-dated); a peer record dated more than 5 min ahead
+  is ignored. Every device computes the same result from the same records. The family's peer reports are never forgotten
+  (`forgetAfterMs: null` on the per-device report core) and an unchanged report is republished daily.
 - Timing: `src/instrumentation.ts` runs a step after each 60 s family cycle and once 5 s after start (agent-tokens family only). The three
   token stores call `shareAgentTokenChangeSoon()` after an issue/import/rotate/revoke: a publish-only step (no peer apply, so it also works in
   recovery mode) that pushes the family at once.
@@ -3181,7 +3183,8 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
   `src/lib/producer-agent-tokens` adds `ytom_pr_` on `producer_agent_tokens` (v72, partial unique index, one active).
 - Endpoint: `src/lib/producer-mcp-endpoint` (the factory endpoint's checks; no request-level scope) and `src/app/api/mcp/producer/route.ts`,
   which wires a `ProducerSession` (re-verify, `resolveChannelUser` = the channel's `connected_user_id` if Settings → Channels lists it,
-  `recordCall`, `listChannels`, `portfolioOverview`) into `createMcpServer`'s producer mode.
+  `recordCall`, `listChannels`, `portfolioOverview`) into `createMcpServer`'s producer mode. The endpoint also logs every `tools/call`
+  the MCP layer refused before a tool ran (it peeks at the request body and subtracts the calls the server's log recorded).
 - `createMcpServer` producer mode: `registerTool` routes every tool through `producerRegistration`. A `bound` tool in the closed list
   (`src/mcp/producer-tools.ts`, each entry naming its READ capability) gets `.extend({ channelId })` (required; `query_market_intelligence`'s
   own `channelId` moves to `watchlistChannelId`); its wrapper re-verifies, resolves the channel's account (none: `CHANNEL_NOT_ACTIVE`), runs the

@@ -8,11 +8,13 @@ import {
   insertProducerCallLogEntry,
   listChannelMetricsInRange,
   listStoredVideosByChannel,
+  recordGatewayCallOutcome,
 } from "@/lib/db";
 import { createPortfolioOverviewServices } from "@/lib/portfolio-overview";
 import { createProducerTokenCore } from "@/lib/producer-agent-tokens";
 import { createProducerMcpEndpoint } from "@/lib/producer-mcp-endpoint";
 import { createReachReportsCore } from "@/lib/reach-reports";
+import { PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
 
 // Never cached or prerendered: every call is an authenticated, per-request Producer session.
@@ -35,7 +37,7 @@ async function resolveChannelUser(channelId: string): Promise<string | null> {
   return connected ? ((await getStoredChannel(channelId))?.connectedUserId ?? null) : null;
 }
 
-function createProducerSessionDeps(session: { tokenId: string; reverify(): Promise<void> }): ProducerSession {
+function createProducerSessionDeps(session: { tokenId: string; reverify(): Promise<void>; noteRecorded(tool: string): void }): ProducerSession {
   const portfolio = createPortfolioOverviewServices({
     listChannels,
     async loadChannel(channel, range) {
@@ -55,7 +57,9 @@ function createProducerSessionDeps(session: { tokenId: string; reverify(): Promi
         channelId: channel.channelId,
         title: channel.title,
         metrics,
-        reach: reach ? { state: reach.state, impressions: reach.totals.impressions, ctr: reach.totals.ctr, coveredThrough: reach.coverage.lastDate } : null,
+        reach: reach
+          ? { state: reach.state, impressions: reach.totals.impressions, ctr: reach.totals.ctr, coveredThrough: reach.coverage.lastDate, daysWithData: reach.daily.length }
+          : null,
         videoPublishedAt: videos.map((video) => video.publishedAt),
         lastVideoSyncAt: stored?.lastSyncedAt ?? null,
         lastAnalyticsCollectedAt,
@@ -63,9 +67,13 @@ function createProducerSessionDeps(session: { tokenId: string; reverify(): Promi
     },
   });
   return {
-    ...session,
+    tokenId: session.tokenId,
+    reverify: () => session.reverify(),
     resolveChannelUser,
-    recordCall: (entry) => insertProducerCallLogEntry({ at: new Date(), ...entry }),
+    async recordCall(entry) {
+      session.noteRecorded(entry.tool);
+      await insertProducerCallLogEntry({ at: new Date(), ...entry });
+    },
     listChannels,
     portfolioOverview: async (input) => ({ ...(await portfolio.getOverview(input)) }),
   };
@@ -75,6 +83,11 @@ const endpoint = createProducerMcpEndpoint({
   isConnectionEnabled: getMcpConnectionEnabled,
   verifyToken: (token) => createProducerTokenCore().verifyToken(token),
   createServer: ({ session }) => createMcpServer(undefined, { connectionEnabled: true, producerSession: createProducerSessionDeps(session) }),
+  isProducerTool: (name) => PRODUCER_TOOL_NAMES.includes(name),
+  async recordRefusedCall(call) {
+    await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+    await insertProducerCallLogEntry({ at: new Date(), tool: call.tool, channelId: call.channelId, outcome: "error", errorCode: call.errorCode });
+  },
 });
 
 // Stateless Streamable HTTP: only POST is meaningful. GET/DELETE get the endpoint's own explicit 405

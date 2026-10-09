@@ -16,7 +16,7 @@ function sumMetric(source: PortfolioChannelSource, range: PortfolioRange, metric
 export function buildPortfolioRow(source: PortfolioChannelSource, range: PortfolioRange): PortfolioChannelRow {
   const days = new Set(source.metrics.filter((row) => row.metricDate >= range.startDate && row.metricDate <= range.endDate).map((row) => row.metricDate));
   const hasData = days.size > 0;
-  const reachReady = source.reach?.state === "ready";
+  const reachDays = source.reach?.state === "ready" ? source.reach.daysWithData : 0;
   return {
     channelId: source.channelId,
     title: source.title,
@@ -29,15 +29,19 @@ export function buildPortfolioRow(source: PortfolioChannelSource, range: Portfol
     },
     reach: {
       state: source.reach ? source.reach.state : "unavailable",
-      impressions: reachReady ? source.reach!.impressions : null,
-      ctr: reachReady ? source.reach!.ctr : null,
+      daysWithData: reachDays,
+      impressions: reachDays > 0 ? source.reach!.impressions : null,
+      ctr: reachDays > 0 ? source.reach!.ctr : null,
     },
-    uploads: source.videoPublishedAt.filter((publishedAt) => {
-      const time = Date.parse(publishedAt);
-      if (Number.isNaN(time)) return false;
-      const day = new Date(time).toISOString().slice(0, 10);
-      return day >= range.startDate && day <= range.endDate;
-    }).length,
+    uploads:
+      source.lastVideoSyncAt === null
+        ? null
+        : source.videoPublishedAt.filter((publishedAt) => {
+            const time = Date.parse(publishedAt);
+            if (Number.isNaN(time)) return false;
+            const day = new Date(time).toISOString().slice(0, 10);
+            return day >= range.startDate && day <= range.endDate;
+          }).length,
     freshness: {
       lastVideoSyncAt: source.lastVideoSyncAt?.toISOString() ?? null,
       lastAnalyticsCollectedAt: source.lastAnalyticsCollectedAt?.toISOString() ?? null,

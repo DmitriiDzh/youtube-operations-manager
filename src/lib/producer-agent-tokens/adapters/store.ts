@@ -10,15 +10,16 @@ import type { RoleTokenStore } from "@/lib/role-agent-tokens";
 
 // BL-160: a token issued, imported or revoked here is published to the other devices at once (best effort, never awaited).
 
-export function createProducerTokenStore(): RoleTokenStore {
+/** `onChanged` defaults to publishing the change to the other devices; injectable for tests. */
+export function createProducerTokenStore(onChanged: () => void = shareAgentTokenChangeSoon): RoleTokenStore {
   return {
     async replace(input) {
       await replaceProducerAgentToken(input);
-      shareAgentTokenChangeSoon();
+      onChanged();
     },
     async revoke() {
       const revoked = await revokeProducerAgentTokens();
-      if (revoked > 0) shareAgentTokenChangeSoon();
+      if (revoked > 0) onChanged();
       return revoked;
     },
     findActiveByHash: (tokenHash) => findActiveProducerAgentTokenByHash(tokenHash),

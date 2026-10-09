@@ -39,7 +39,8 @@ export const agentTokensReportSchema = z
     version: z.literal(AGENT_TOKENS_REPORT_VERSION),
     deviceId: z.string().min(1).max(128),
     updatedAt: z.string().datetime({ offset: true }),
-    tokens: z.array(sharedAgentTokenSchema).max(5000),
+    // Revoked tokens stay listed for good (a revocation must never be forgotten); a generous bound, not a working limit.
+    tokens: z.array(sharedAgentTokenSchema).max(50_000),
   })
   .strict();
 

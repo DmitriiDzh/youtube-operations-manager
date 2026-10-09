@@ -463,13 +463,22 @@ export type ProducerSession = {
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
 };
 
-const ISO_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD");
+/** A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). */
+const ISO_DATE = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD")
+  .refine((value) => {
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+  }, "not a calendar date");
 
 export const producerPortfolioOverviewInputSchema = z
   .object({ startDate: ISO_DATE, endDate: ISO_DATE })
   .strict()
   .refine((input) => input.startDate <= input.endDate, { message: "startDate must not be after endDate" })
-  .refine((input) => Date.parse(input.endDate) - Date.parse(input.startDate) <= 365 * 24 * 60 * 60_000, { message: "at most 366 days" });
+  .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 365 * 24 * 60 * 60_000, {
+    message: "at most 366 days",
+  });
 
 /** The error code of a tool error answer, or null. */
 function toolErrorCode(result: ToolResponse): string | null {
@@ -2605,7 +2614,10 @@ export function createMcpServer(
     if (!(config.inputSchema instanceof z.ZodObject)) {
       throw new Error(`Producer tool "${name}" needs an object input schema`);
     }
-    const objectSchema = config.inputSchema as z.ZodObject<z.ZodRawShape>;
+    const fullSchema = config.inputSchema as z.ZodObject<z.ZodRawShape>;
+    // A credentialRef is always refused inside an agent scope (AGENT_SESSION_CREDENTIAL_OVERRIDE): the Producer's schema leaves it
+    // out, so it is refused at input instead of advertised as optional (review round 1).
+    const objectSchema = "credentialRef" in fullSchema.shape ? fullSchema.omit({ credentialRef: true }) : fullSchema;
     const renamed = PRODUCER_RENAMED_CHANNEL_FIELD[name];
     const ownsChannelId = "channelId" in objectSchema.shape && !renamed;
     const inputSchema = objectSchema.extend({
@@ -2615,7 +2627,8 @@ export function createMcpServer(
     const description =
       `Producer: runs for the channel named by \`channelId\` (one of producer_list_channels), exactly as that channel's own agent would call it` +
       (renamed ? `; the watchlist channel this tool's own text calls \`channelId\` is \`${renamed}\` here` : "") +
-      `. ${config.description}`;
+      ". `credentialRef` is not accepted here (the channel's own connected account is used)." +
+      ` ${config.description}`;
     const wrapped = async (args: Record<string, unknown>) => {
       const channelId = String(args.channelId);
       const refuse = async (error: unknown) => {
@@ -2694,7 +2707,7 @@ export function createMcpServer(
     "producer_portfolio_overview",
     {
       description:
-        "One row per connected channel for the same date range, side by side: views, watch minutes, subscribers gained and lost (stored channel-level analytics), impressions and impressions CTR (imported Reach reports), uploads published in the range (synced videos), and when each source was last refreshed. Local data only, never a live YouTube call: a channel or source with no stored data for the range says so instead of showing zeros. Dates are YYYY-MM-DD, inclusive, at most 366 days.",
+        "One row per connected channel for the same date range, side by side: views, watch minutes, subscribers gained and lost (stored channel-level analytics, YouTube's own reporting days), impressions and impressions CTR (imported Reach reports), uploads published in the range (synced videos, by UTC date), and when each source was last refreshed. Local data only, never a live YouTube call: a figure with nothing stored behind it for the range is null, never zero (analytics with no stored day, Reach with no imported day in the range, uploads of a channel whose videos were never synced). Dates are YYYY-MM-DD, inclusive, at most 366 days.",
       inputSchema: producerPortfolioOverviewInputSchema,
     },
     async (args: z.infer<typeof producerPortfolioOverviewInputSchema>) => toolSuccessResult(await producerSession!.portfolioOverview(args))

@@ -28,6 +28,7 @@ export function createAgentTokenSyncStore(): AgentTokenSyncDeps["store"] {
           createdAt: record.createdAt,
           revokedAt: record.revokedAt,
         })),
+        redate: plan.redate.map((item) => ({ role: item.role, tokenHash: item.hash, createdAt: item.createdAt })),
       });
     },
   };

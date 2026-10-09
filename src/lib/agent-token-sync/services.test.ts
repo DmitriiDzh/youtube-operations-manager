@@ -109,6 +109,10 @@ function createDevice(deviceId: string, clock: { now: Date }, options: { connect
     store: {
       listAll: async () => rows.map((row) => ({ ...row })),
       async apply(plan) {
+        for (const item of plan.redate) {
+          const row = rows.find((r) => r.hash === item.hash);
+          if (row && row.createdAt.getTime() > item.createdAt.getTime()) row.createdAt = item.createdAt;
+        }
         for (const item of plan.revoke) {
           const row = rows.find((r) => r.hash === item.hash && r.revokedAt === null);
           if (row) row.revokedAt = item.revokedAt;
@@ -124,6 +128,7 @@ function createDevice(deviceId: string, clock: { now: Date }, options: { connect
       },
     },
     newId,
+    clock: { now: () => clock.now },
   });
   return {
     deviceId,
@@ -195,7 +200,8 @@ test("AC-ST-02: revoking on A stops the token on B; rotating on A swaps old for 
 test("AC-ST-03: a revocation is never undone, even by a report that lists the token as active", async () => {
   const local: AgentTokenRecord[] = [{ hash: "1".repeat(64), role: "factory", channelId: null, userId: null, label: null, createdAt: at("10:00"), revokedAt: at("10:30") }];
   const forged: AgentTokenRecord[] = [{ ...local[0], revokedAt: null, createdAt: at("09:00") }];
-  assert.deepEqual(reconcileAgentTokens(local, forged), { revoke: [], insert: [], ignored: [] });
+  // Still revoked; the only change is the issue time, which takes the earliest any device reports (rule from review round 1).
+  assert.deepEqual(reconcileAgentTokens(local, forged, { now: at("12:00") }), { revoke: [], insert: [], redate: [{ role: "factory", hash: local[0].hash, createdAt: at("09:00") }], ignored: [] });
 
   // End to end: B revoked a factory token; a third device keeps publishing it as active; B still refuses it.
   const clock = { now: at("10:00") };
@@ -216,16 +222,16 @@ test("AC-ST-04: two different active tokens for one slot -- the newer wins on ev
   const older: AgentTokenRecord = { hash: "a".repeat(64), role: "channel", channelId: "UC_A", userId: "user-a", label: null, createdAt: at("10:00"), revokedAt: null };
   const newer: AgentTokenRecord = { ...older, hash: "b".repeat(64), createdAt: at("10:05") };
   // On the device that holds the older one: revoke it as of 10:05, add the newer one.
-  assert.deepEqual(reconcileAgentTokens([older], [newer]), { revoke: [{ role: "channel", hash: older.hash, revokedAt: at("10:05") }], insert: [newer], ignored: [] });
+  assert.deepEqual(reconcileAgentTokens([older], [newer], { now: at("12:00") }), { revoke: [{ role: "channel", hash: older.hash, revokedAt: at("10:05") }], insert: [newer], redate: [], ignored: [] });
   // On the device that holds the newer one: add the older one, already revoked as of 10:05.
-  assert.deepEqual(reconcileAgentTokens([newer], [older]), { revoke: [], insert: [{ ...older, revokedAt: at("10:05") }], ignored: [] });
+  assert.deepEqual(reconcileAgentTokens([newer], [older], { now: at("12:00") }), { revoke: [], insert: [{ ...older, revokedAt: at("10:05") }], redate: [], ignored: [] });
   // Equal times: "c…" > "a…", so the "c…" token wins whichever device computes it.
   const tie: AgentTokenRecord = { ...older, hash: "c".repeat(64) };
-  assert.deepEqual(reconcileAgentTokens([older], [tie]).revoke, [{ role: "channel", hash: older.hash, revokedAt: at("10:00") }]);
-  assert.deepEqual(reconcileAgentTokens([tie], [older]).revoke, []);
+  assert.deepEqual(reconcileAgentTokens([older], [tie], { now: at("12:00") }).revoke, [{ role: "channel", hash: older.hash, revokedAt: at("10:00") }]);
+  assert.deepEqual(reconcileAgentTokens([tie], [older], { now: at("12:00") }).revoke, []);
   // Different channels are different slots: both stay active.
   const otherChannel: AgentTokenRecord = { ...newer, channelId: "UC_B" };
-  assert.deepEqual(reconcileAgentTokens([older], [otherChannel]).revoke, []);
+  assert.deepEqual(reconcileAgentTokens([older], [otherChannel], { now: at("12:00") }).revoke, []);
 });
 
 test("AC-ST-04: factory tokens issued independently on A (10:00) and B (10:05) end as B's on both devices", async () => {
@@ -249,12 +255,12 @@ test("AC-ST-05: a peer record whose hash this device knows under another channel
     { ...own, userId: "user-x", revokedAt: at("10:01") },
     { ...own, role: "producer" as const, channelId: null, userId: null, revokedAt: at("10:01") },
   ]) {
-    assert.deepEqual(reconcileAgentTokens([own], [peer]), { revoke: [], insert: [], ignored: [{ hash: own.hash, reason: "conflicts_with_local" }] });
+    assert.deepEqual(reconcileAgentTokens([own], [peer], { now: at("12:00") }), { revoke: [], insert: [], redate: [], ignored: [{ hash: own.hash, reason: "conflicts_with_local" }] });
   }
   // Two peers describing an unknown hash differently: neither is trusted.
   const p1: AgentTokenRecord = { ...own, hash: "e".repeat(64) };
   const p2: AgentTokenRecord = { ...p1, channelId: "UC_B" };
-  assert.deepEqual(reconcileAgentTokens([], [p1, p2]), { revoke: [], insert: [], ignored: [{ hash: p1.hash, reason: "peers_disagree" }] });
+  assert.deepEqual(reconcileAgentTokens([], [p1, p2], { now: at("12:00") }), { revoke: [], insert: [], redate: [], ignored: [{ hash: p1.hash, reason: "peers_disagree" }] });
 });
 
 test("AC-ST-06 / AC-ST-08: a learned channel token needs the channel connected here under its account; disconnecting only stops it here", async () => {
@@ -362,4 +368,75 @@ test("AC-ST-10 (real database): adopting a winning factory or producer token nev
     client.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Independent review, round 1 (expected values from the same plan rules: a revocation reaches every device, the newest token wins
+// everywhere, a token's createdAt is the earliest any device knows).
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+test("review: a revocation still reaches a device that was off for more than a week (reports never go stale)", async () => {
+  const clock = { now: at("10:00") };
+  const a = createDevice("dev-a", clock, { secrets: [SECRET("f")] });
+  const c = createDevice("dev-c", clock);
+  const token = (await a.factory.issueToken({})).token;
+  await exchange(clock, a, c);
+  assert.ok(await c.factory.verifyToken(token));
+  // C is switched off; A revokes and publishes, then runs on for 8 days with no token change.
+  await a.factory.revokeToken();
+  await a.sync.tick();
+  clock.now = new Date(clock.now.getTime() + 8 * 24 * 60 * 60_000);
+  // C comes back and receives A's (8-day-old) report.
+  await c.share.mergeIncoming(await a.share.exportBytes(), "dev-a");
+  await c.sync.tick();
+  await assert.rejects(c.factory.verifyToken(token), isInvalid);
+});
+
+test("review: an unchanged report is republished after a day, so its date stays fresh", async () => {
+  const clock = { now: at("10:00") };
+  const a = createDevice("dev-a", clock, { secrets: [SECRET("f")] });
+  await a.factory.issueToken({});
+  assert.deepEqual(await a.sync.tick(), { applied: false, published: true });
+  clock.now = new Date(clock.now.getTime() + 23 * 60 * 60_000);
+  assert.deepEqual(await a.sync.tick(), { applied: false, published: false });
+  clock.now = new Date(clock.now.getTime() + 2 * 60 * 60_000);
+  assert.deepEqual(await a.sync.tick(), { applied: false, published: true });
+});
+
+test("review: a peer record dated more than 5 minutes ahead is ignored and cannot win its slot", () => {
+  const now = at("10:00");
+  const own: AgentTokenRecord = { hash: "a".repeat(64), role: "producer", channelId: null, userId: null, label: null, createdAt: at("09:00"), revokedAt: null };
+  const fromTheFuture: AgentTokenRecord = { ...own, hash: "b".repeat(64), createdAt: at("10:06") };
+  assert.deepEqual(reconcileAgentTokens([own], [fromTheFuture], { now }), {
+    revoke: [],
+    insert: [],
+    redate: [],
+    ignored: [{ hash: fromTheFuture.hash, reason: "dated_in_future" }],
+  });
+  // Within 5 minutes it counts (and wins: it is newer).
+  const slightlyAhead: AgentTokenRecord = { ...fromTheFuture, createdAt: at("10:04") };
+  assert.deepEqual(reconcileAgentTokens([own], [slightlyAhead], { now }).revoke, [{ role: "producer", hash: own.hash, revokedAt: at("10:04") }]);
+  // A revocation dated in the future is ignored too.
+  const futureRevocation: AgentTokenRecord = { ...own, revokedAt: at("11:00") };
+  assert.deepEqual(reconcileAgentTokens([own], [futureRevocation], { now }).revoke, []);
+});
+
+test("review: a token imported later on B takes the issue time from A, so every device publishes the same createdAt", async () => {
+  const issued: AgentTokenRecord = { hash: "c".repeat(64), role: "channel", channelId: "UC_A", userId: "user-a", label: null, createdAt: at("10:00"), revokedAt: null };
+  const importedOnB: AgentTokenRecord = { ...issued, createdAt: at("11:00") };
+  assert.deepEqual(reconcileAgentTokens([importedOnB], [issued], { now: at("12:00") }).redate, [{ role: "channel", hash: issued.hash, createdAt: at("10:00") }]);
+  // Never moved later.
+  assert.deepEqual(reconcileAgentTokens([issued], [importedOnB], { now: at("12:00") }).redate, []);
+
+  const clock = { now: at("10:00") };
+  const a = createDevice("dev-a", clock, { secrets: [SECRET("a")] });
+  const b = createDevice("dev-b", clock);
+  const token = (await a.channel.issueToken({ channelId: "UC_A" })).token;
+  clock.now = at("11:00");
+  await b.channel.importToken({ channelId: "UC_A", token });
+  assert.equal(b.rows[0].createdAt.toISOString(), at("11:00").toISOString());
+  await exchange(clock, a, b);
+  assert.equal(b.rows[0].createdAt.toISOString(), at("10:00").toISOString());
+  const published = JSON.parse(new TextDecoder().decode(await b.share.exportBytes())) as { tokens: Array<{ createdAt: string }> };
+  assert.deepEqual(published.tokens.map((t) => t.createdAt), [at("10:00").toISOString()]);
 });

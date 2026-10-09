@@ -76,6 +76,9 @@ One branch `feature/producer-role-synced-tokens`, two backlog items: BL-160 (tok
 - **AC-ST-10** Real database: adopting a winning factory/producer record when another is active locally never violates the
   one-active index; the loser ends revoked.
 - **AC-ST-11** A peer on an older build (no report) changes nothing; import keeps working.
+- Review round 1 additions: a revocation reaches a device that was off for more than a week (reports never go stale; an unchanged
+  report is republished daily); a peer record dated more than 5 min ahead is ignored; a token's `createdAt` is the earliest any device
+  knows (an imported copy is re-dated).
 
 ## 3. BL-161 — the Producer role
 
@@ -129,7 +132,8 @@ One branch `feature/producer-role-synced-tokens`, two backlog items: BL-160 (tok
 - **AC-PR-06** Every channel-scoped result names its `channelId`.
 - **AC-PR-07** `producer_list_channels` returns exactly the connected channels with title and workspace path (or null).
 - **AC-PR-08** `producer_portfolio_overview` totals equal hand-computed sums of fixture rows; it makes no live call.
-- **AC-PR-09** Every producer call, allowed or refused, is logged with tool, channel and outcome; the log is device-local.
+- **AC-PR-09** Every producer call, allowed or refused, is logged with tool, channel and outcome; the log is device-local. (Review round 1:
+  including the calls the MCP layer refuses before any tool runs -- an unknown tool, a refused input.)
 - **AC-PR-10** `producer_get_capabilities` reports role `producer`, Producer API `1.0.0`, its tools, permissions `["READ"]`.
 - **AC-PR-11** Channel tokens see exactly what they saw before (existing tests unchanged).
 

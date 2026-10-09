@@ -32,6 +32,9 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
   store: PerDeviceReportStore;
   ownDeviceId(): Promise<string>;
   clock?: { now(): Date };
+  /** How long a silent peer stays listed (default `PEER_FORGET_AFTER_MS`); null = never forgotten (a report that stays true while
+   * its device is silent, e.g. BL-160's agent tokens, must not drop out after a quiet week). */
+  forgetAfterMs?: number | null;
 }) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -114,7 +117,8 @@ export function createPerDeviceReportCore<R extends PerDeviceReportBase>(deps: {
     /** Every peer's latest report (never this device's own), newest first. */
     async listPeerReports(): Promise<R[]> {
       const own = await deps.ownDeviceId();
-      const cutoff = now().getTime() - PEER_FORGET_AFTER_MS;
+      const forgetAfterMs = deps.forgetAfterMs === undefined ? PEER_FORGET_AFTER_MS : deps.forgetAfterMs;
+      const cutoff = forgetAfterMs === null ? Number.NEGATIVE_INFINITY : now().getTime() - forgetAfterMs;
       return Object.entries(await deps.store.readPeers())
         .map(([key, text]) => parseCached(key, text))
         .filter((r): r is R => r !== null && r.deviceId !== own && Date.parse(r.updatedAt) >= cutoff)

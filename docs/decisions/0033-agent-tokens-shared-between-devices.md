@@ -28,13 +28,18 @@ Syncthing shares between the computers, and expects that file to work on every c
    - a peer record for a known hash under another role, channel or Google account is ignored; peers disagreeing about an unknown
      hash: skipped;
    - one active token per slot (each channel, the factory, the producer): the newest `createdAt` wins (equal: the larger hash),
-     the others are revoked as of the winner's `createdAt`.
+     the others are revoked as of the winner's `createdAt`;
+   - a token's `createdAt` is the earliest any device reports, and a local row is re-dated to it (a token imported later must not
+     look newer than it is);
+   - a peer record created or revoked more than 5 min in the future is ignored (a fast clock must not let a token win for good).
 3. **Applying** is one transaction on this device's own token tables (revocations first, then learned tokens, so the one-active
    indexes never see two active rows). Verification is unchanged: each token module reads only its local table, so a known token
    keeps working when the shared folder is unavailable. A learned channel token still needs the channel connected on that device
    under the Google account recorded at issue (`users.id` is Google's `sub`, the same on every device).
 4. **When**: after every device-sync cycle (60 s) and 5 s after start; an issue, import or revoke on this device publishes at once
-   without applying peers (so a revoke made in recovery mode still leaves the device).
+   without applying peers (so a revoke made in recovery mode still leaves the device). A report is republished at least daily and a
+   peer's report is never forgotten (the per-device report family's 7-day forget window is off for this family), so a revocation
+   still reaches a device that was off for weeks. A failure to apply or publish is logged and shown on the family's status.
 5. **Disconnecting a channel no longer revokes its token** (the revocation would reach every device). The token stops working on that
    device while the channel is not connected there.
 6. **Import stays** for a device on an older build or without the shared folder. The token tables stay out of the snapshot: only
@@ -48,6 +53,9 @@ Syncthing shares between the computers, and expects that file to work on every c
   hash or publish a report. Exposure set unchanged in practice: on the owner's Mac the T9 drive has ownership disabled, so every local
   account can already read the plaintext token files kept in the channel folders, and the service answers loopback calls from every
   account (RISK-105 extended).
-- Rule 3 trusts device clocks; a report dated more than 5 min ahead is refused (per-device report rule).
+- Rule 3 trusts device clocks; a record or report dated more than 5 min ahead is ignored.
+- Residual (review round 1): with three or more devices, two different tokens active for one slot at the same time and one of them
+  imported by hand, a device that hears the others in an unlucky order can revoke both; nothing then works for that slot until a new
+  token is issued (fails closed).
 - A device on a build without BL-160 neither sends nor receives tokens; both computers update.
 - Amends `AGENT_TOKEN_IMPORT_PLAN.md` AC-TI-08 and AC-TI-10 (the requirement changed: owner msg 2200).

@@ -981,10 +981,13 @@ A read-only agent role that reads every channel connected on the device, one cha
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
-  ctr }, uploads, freshness: { lastVideoSyncAt, lastAnalyticsCollectedAt, reachCoveredThrough } }] }` -- stored data only, `null` where nothing is
-  stored (never zero).
-- **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not. **Every call**, refused or not, is logged
-  (`GET /api/producer-agent-token/calls`, below).
+  ctr, daysWithData }, uploads, freshness: { lastVideoSyncAt, lastAnalyticsCollectedAt, reachCoveredThrough } }] }` -- stored data only, `null`
+  where nothing is stored (never zero): analytics with no stored day, Reach with no imported day in the range, `uploads` of a channel whose videos
+  were never synced here. Analytics days are YouTube's reporting days; uploads count by UTC date. Dates must be real calendar dates.
+- **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
+  itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
+  refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`. The channel tools take no `credentialRef` here (the channel's own connected
+  account is used); passing one is refused at input.
 - No DRAFT, WRITE, research or collection request, media session or job.
 
 ## API Route Handlers (selected)

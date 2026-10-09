@@ -13,7 +13,14 @@ export type PortfolioChannelSource = {
   /** Stored channel-level daily rows within the range. */
   metrics: Array<{ metricDate: string; metricName: string; metricValue: number }>;
   /** Imported Reach data for the range, or null when it could not be read. */
-  reach: { state: "no_job" | "waiting_for_first_report" | "ready"; impressions: number; ctr: number | null; coveredThrough: string | null } | null;
+  reach: {
+    state: "no_job" | "waiting_for_first_report" | "ready";
+    impressions: number;
+    ctr: number | null;
+    coveredThrough: string | null;
+    /** Days within the range with imported Reach rows; 0 = nothing imported for the range (the totals then mean nothing). */
+    daysWithData: number;
+  } | null;
   /** `snippet.publishedAt` of every synced video of the channel. */
   videoPublishedAt: string[];
   lastVideoSyncAt: Date | null;
@@ -31,9 +38,9 @@ export type PortfolioChannelRow = {
     subscribersGained: number | null;
     subscribersLost: number | null;
   };
-  reach: { state: "no_job" | "waiting_for_first_report" | "ready" | "unavailable"; impressions: number | null; ctr: number | null };
-  /** Synced videos published within the range (UTC dates). */
-  uploads: number;
+  reach: { state: "no_job" | "waiting_for_first_report" | "ready" | "unavailable"; daysWithData: number; impressions: number | null; ctr: number | null };
+  /** Synced videos published within the range (UTC dates); null when the channel's videos were never synced on this device. */
+  uploads: number | null;
   freshness: { lastVideoSyncAt: string | null; lastAnalyticsCollectedAt: string | null; reachCoveredThrough: string | null };
 };
 

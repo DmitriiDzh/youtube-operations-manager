@@ -25,6 +25,9 @@ export type AgentTokenRecord = {
 export type AgentTokenSyncPlan = {
   revoke: Array<{ role: AgentTokenRole; hash: string; revokedAt: Date }>;
   insert: AgentTokenRecord[];
+  /** Local rows whose `createdAt` another device knows as earlier (e.g. this device imported the token later): stored as that
+   * earlier time, so every device publishes the same `createdAt` and rule 3 sees the same values everywhere. */
+  redate: Array<{ role: AgentTokenRole; hash: string; createdAt: Date }>;
   /** Peer records left out, with the reason (logged; never applied). */
-  ignored: Array<{ hash: string; reason: "conflicts_with_local" | "peers_disagree" }>;
+  ignored: Array<{ hash: string; reason: "conflicts_with_local" | "peers_disagree" | "dated_in_future" }>;
 };

@@ -5,6 +5,9 @@ const sameIdentity = (a: AgentTokenRecord, b: AgentTokenRecord) => a.role === b.
 const slotOf = (record: AgentTokenRecord) => (record.role === "channel" ? `channel:${record.channelId}` : record.role);
 const earlier = (a: Date | null, b: Date | null) => (a === null ? b : b === null ? a : a.getTime() <= b.getTime() ? a : b);
 
+/** A peer record dated further ahead than this is ignored: a fast clock must not let a token win its slot for good. */
+export const MAX_RECORD_FUTURE_SKEW_MS = 5 * 60_000;
+
 /**
  * The rules (plan §2), a pure function so every device computes the same result from the same records:
  * 1. Records are joined by hash. A hash revoked anywhere is revoked (the earliest `revokedAt`); a revocation is never undone.
@@ -12,15 +15,22 @@ const earlier = (a: Date | null, b: Date | null) => (a === null ? b : b === null
  *    peers disagreeing about a hash this device does not know: that hash is skipped.
  * 3. One active token per slot (each channel; the factory; the producer): among a slot's unrevoked tokens the newest `createdAt`
  *    wins (equal times: the larger hash); the others are revoked as of the winner's `createdAt`.
- * Returns what THIS device must change: rows to revoke and tokens to add. A token's `createdAt` is the earliest any device reports.
+ * A peer record dated (created or revoked) more than 5 min after `now` is ignored, whatever the report's own date.
+ * Returns what THIS device must change: rows to revoke, tokens to add, and local rows to re-date. A token's `createdAt` is the
+ * earliest any device reports.
  */
-export function reconcileAgentTokens(local: AgentTokenRecord[], peers: AgentTokenRecord[]): AgentTokenSyncPlan {
+export function reconcileAgentTokens(local: AgentTokenRecord[], peers: AgentTokenRecord[], options: { now?: Date } = {}): AgentTokenSyncPlan {
   const localByHash = new Map(local.map((record) => [record.hash, record]));
   const merged = new Map<string, AgentTokenRecord>(local.map((record) => [record.hash, { ...record }]));
   const ignored: AgentTokenSyncPlan["ignored"] = [];
   const ambiguous = new Set<string>();
+  const latestAllowed = (options.now ?? new Date()).getTime() + MAX_RECORD_FUTURE_SKEW_MS;
 
   for (const peer of peers) {
+    if (peer.createdAt.getTime() > latestAllowed || (peer.revokedAt !== null && peer.revokedAt.getTime() > latestAllowed)) {
+      ignored.push({ hash: peer.hash, reason: "dated_in_future" });
+      continue;
+    }
     const own = localByHash.get(peer.hash);
     if (own && !sameIdentity(own, peer)) {
       ignored.push({ hash: peer.hash, reason: "conflicts_with_local" });
@@ -65,15 +75,17 @@ export function reconcileAgentTokens(local: AgentTokenRecord[], peers: AgentToke
 
   const revoke: AgentTokenSyncPlan["revoke"] = [];
   const insert: AgentTokenRecord[] = [];
+  const redate: AgentTokenSyncPlan["redate"] = [];
   for (const record of merged.values()) {
     const own = localByHash.get(record.hash);
     if (own) {
       if (own.revokedAt === null && record.revokedAt !== null) revoke.push({ role: own.role, hash: own.hash, revokedAt: record.revokedAt });
+      if (record.createdAt.getTime() < own.createdAt.getTime()) redate.push({ role: own.role, hash: own.hash, createdAt: record.createdAt });
     } else {
       insert.push(record);
     }
   }
-  return { revoke, insert, ignored };
+  return { revoke, insert, redate, ignored };
 }
 
 /** What a published report carries of a token (the shape of the `agent-tokens` family's records). */
@@ -90,7 +102,7 @@ export type SharedTokenView = {
 export type AgentTokenSyncDeps = {
   store: {
     listAll(): Promise<AgentTokenRecord[]>;
-    apply(plan: { revoke: AgentTokenSyncPlan["revoke"]; insert: Array<AgentTokenRecord & { id: string }> }): Promise<void>;
+    apply(plan: { revoke: AgentTokenSyncPlan["revoke"]; insert: Array<AgentTokenRecord & { id: string }>; redate: AgentTokenSyncPlan["redate"] }): Promise<void>;
   };
   share: {
     listPeerTokens(): Promise<SharedTokenView[]>;
@@ -100,7 +112,11 @@ export type AgentTokenSyncDeps = {
   pushNow?: () => Promise<unknown>;
   logger?: { info(payload: { event: string; context?: Record<string, unknown> }): void };
   newId?: () => string;
+  clock?: { now(): Date };
 };
+
+/** An unchanged report is still republished this often, so its date stays fresh for every reader (review round 1). */
+export const REPUBLISH_UNCHANGED_AFTER_MS = 24 * 60 * 60_000;
 
 function toRecord(view: SharedTokenView): AgentTokenRecord {
   return { ...view, createdAt: new Date(view.createdAt), revokedAt: view.revokedAt === null ? null : new Date(view.revokedAt) };
@@ -121,28 +137,34 @@ function toView(record: AgentTokenRecord): SharedTokenView {
 
 export function createAgentTokenSyncServices(deps: AgentTokenSyncDeps) {
   const newId = deps.newId ?? randomUUID;
-  let lastPublished: string | null = null;
+  const now = () => (deps.clock ?? { now: () => new Date() }).now();
+  let lastPublished: { text: string; at: number } | null = null;
   let inFlight: Promise<{ applied: boolean; published: boolean }> | null = null;
 
   async function runTick(applyPeers: boolean): Promise<{ applied: boolean; published: boolean }> {
-    const plan = applyPeers
-      ? reconcileAgentTokens(await deps.store.listAll(), (await deps.share.listPeerTokens()).map(toRecord))
-      : { revoke: [], insert: [], ignored: [] };
-    const applied = plan.revoke.length > 0 || plan.insert.length > 0;
+    const plan: AgentTokenSyncPlan = applyPeers
+      ? reconcileAgentTokens(await deps.store.listAll(), (await deps.share.listPeerTokens()).map(toRecord), { now: now() })
+      : { revoke: [], insert: [], redate: [], ignored: [] };
+    const applied = plan.revoke.length > 0 || plan.insert.length > 0 || plan.redate.length > 0;
     if (applied) {
-      await deps.store.apply({ revoke: plan.revoke, insert: plan.insert.map((record) => ({ ...record, id: newId() })) });
-      deps.logger?.info({ event: "agent_tokens.synced", context: { revoked: plan.revoke.length, added: plan.insert.length } });
+      await deps.store.apply({ revoke: plan.revoke, insert: plan.insert.map((record) => ({ ...record, id: newId() })), redate: plan.redate });
+      deps.logger?.info({ event: "agent_tokens.synced", context: { revoked: plan.revoke.length, added: plan.insert.length, redated: plan.redate.length } });
     }
     if (plan.ignored.length > 0) {
       deps.logger?.info({ event: "agent_tokens.peer_records_ignored", context: { count: plan.ignored.length, reasons: [...new Set(plan.ignored.map((i) => i.reason))] } });
     }
-    // Publish what this device now knows; a report only travels when it changed (or once after start).
+    // Publish what this device now knows: when it changed, once after start, and at least daily (a fresh date for every reader).
     const tokens = (await deps.store.listAll()).map(toView).sort((a, b) => (a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0));
     const text = JSON.stringify(tokens);
-    if (text === lastPublished) return { applied, published: false };
+    const at = now().getTime();
+    if (lastPublished && text === lastPublished.text && at - lastPublished.at < REPUBLISH_UNCHANGED_AFTER_MS) return { applied, published: false };
     await deps.share.publish(tokens);
-    lastPublished = text;
-    await deps.pushNow?.().catch(() => undefined);
+    lastPublished = { text, at };
+    if (deps.pushNow) {
+      // A cycle already running may have read the previous report and is handed back; the second push then runs a fresh cycle.
+      await deps.pushNow().catch(() => undefined);
+      await deps.pushNow().catch(() => undefined);
+    }
     return { applied, published: true };
   }
 
