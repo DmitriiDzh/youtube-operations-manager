@@ -5,7 +5,7 @@ import { createAutoCollectAllHandler, type AutoCollectAllDeps } from "./route";
 
 // BL-142: the route gates on a session, collects the active channel before answering and everything else after it,
 // shows only the active channel (ADR 0004), and lets one all-channels run go at a time.
-function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string } = {}) {
+function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string; failBreakdownsFor?: string } = {}) {
   const calls: unknown[] = [];
   const deferred: Array<() => Promise<void>> = [];
   let running = false;
@@ -29,6 +29,12 @@ function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; fai
       const i = input as { channelId: string; credentialRef: { userId: string } };
       calls.push(["milestones", i.channelId, i.credentialRef.userId]);
       if (opts.failMilestonesFor === i.channelId) throw new Error("quota reserve (test)");
+      return { attempted: 0, collected: 0, failed: 0 };
+    },
+    collectDueBreakdowns: async (input: unknown) => {
+      const i = input as { channelId: string; credentialRef: { userId: string } };
+      calls.push(["breakdowns", i.channelId, i.credentialRef.userId]);
+      if (opts.failBreakdownsFor === i.channelId) throw new Error("youtube 503 (test)");
       return { attempted: 0, collected: 0, failed: 0 };
     },
     runHistoryCatchUp: async (input: unknown) => {
@@ -66,12 +72,15 @@ test("BL-142: the active channel is collected before the answer, which shows onl
   assert.equal(isRunning(), true, "the run is held until the background part finishes");
   await deferred[0]();
   // BL-166: then each collected channel's due milestones (the background run lists only the channels it collected).
+  // BL-168 (plan §2 "Runs"): then the same channels' stored breakdowns, after every milestone.
   assert.deepEqual(calls.slice(1), [
     ["background", "uS", "UC_A"],
     ["catchUp", "UC_A", "uS"],
     ["catchUp", "UC_C", "uC"],
     ["milestones", "UC_A", "uS"],
     ["milestones", "UC_C", "uC"],
+    ["breakdowns", "UC_A", "uS"],
+    ["breakdowns", "UC_C", "uC"],
   ]);
   assert.equal(isRunning(), false);
 });
@@ -83,6 +92,20 @@ test("BL-166: one channel's milestones failing never stops the next channel's, a
   assert.deepEqual(calls.filter((c) => (c as string[])[0] === "milestones"), [
     ["milestones", "UC_A", "uS"],
     ["milestones", "UC_C", "uC"],
+  ]);
+  assert.equal(isRunning(), false);
+});
+
+test("AC-VB-15: one channel's breakdowns failing never stops the next channel's; every milestone ran before; the run is released", async () => {
+  const { calls, deferred, deps, isRunning } = setup({ failBreakdownsFor: "UC_A", failMilestonesFor: "UC_C" });
+  await createAutoCollectAllHandler(deps)();
+  await deferred[0]();
+  assert.deepEqual(calls.slice(1), [
+    ["background", "uS", "UC_A"],
+    ["milestones", "UC_A", "uS"],
+    ["milestones", "UC_C", "uC"],
+    ["breakdowns", "UC_A", "uS"],
+    ["breakdowns", "UC_C", "uC"],
   ]);
   assert.equal(isRunning(), false);
 });
@@ -119,8 +142,15 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
   assert.equal(((await res.json()) as { importedFromPeers: number }).importedFromPeers, 2);
   assert.deepEqual(calls, [["importPeers"], ["active", "uS", "UC_A"]]);
   await deferred[0]();
-  // BL-166 added the milestones to the background part; this device's rows are still published last.
-  assert.deepEqual(calls.slice(2), [["background", "uS", "UC_A"], ["milestones", "UC_A", "uS"], ["milestones", "UC_C", "uC"], ["publishLocal"]]);
+  // BL-166 added the milestones to the background part, BL-168 the breakdowns; this device's rows are still published last.
+  assert.deepEqual(calls.slice(2), [
+    ["background", "uS", "UC_A"],
+    ["milestones", "UC_A", "uS"],
+    ["milestones", "UC_C", "uC"],
+    ["breakdowns", "UC_A", "uS"],
+    ["breakdowns", "UC_C", "uC"],
+    ["publishLocal"],
+  ]);
 });
 
 // BL-151 review H3: while the other computer's rows are still being imported, this load does not collect (it would race the
