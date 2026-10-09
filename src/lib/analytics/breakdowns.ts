@@ -78,9 +78,10 @@ export type PlannedBreakdown = {
 /**
  * The subjects to collect now, at most `max`: the channel first, then due videos least recently collected first (never collected first),
  * newest publish date first among equals -- so a video left out by the cap goes first on the next run and none is starved (review of
- * BL-168: a newest-first order left the oldest videos of the window out every day once more than `max` were due). Subjects whose last
- * attempt failed (`retry`, the channel included) come after all the others, in the same order: a subject that keeps getting no answer
- * stops its run (`defer`), so it must not head the queue (second review of BL-168, the milestones' rule). A subject is due when
+ * BL-168: a newest-first order left the oldest videos of the window out every day once more than `max` were due). The batch is chosen by
+ * that order alone; within it, subjects whose last attempt failed (`retry`, the channel included) run last: a subject that keeps getting
+ * no answer stops its run (`defer`), so it must not head the run (second review of BL-168, the milestones' rule), yet it is still chosen
+ * by staleness, so a retry is never shut out by a full batch (third review). A subject is due when
  * its range has a day later than what is stored, or -- for a video whose window has ended -- once for the final reread on or after window
  * end + 7. A stored range for another window start (the publish date moved) counts as never collected. `failed` subjects are never
  * planned; a `retry` waits for its time.
@@ -134,13 +135,8 @@ export function planDueBreakdowns(
   }
   // Never collected (-Infinity) first; `-Infinity - -Infinity` is NaN, which falls through to the next key.
   due.sort((a, b) => a.lastAt - b.lastAt || b.publishedAt - a.publishedAt || a.planned.subject.localeCompare(b.planned.subject));
-  const ordered = [
-    ...(channel && !channel.retry ? [channel] : []),
-    ...due.filter((item) => !item.retry),
-    ...(channel && channel.retry ? [channel] : []),
-    ...due.filter((item) => item.retry),
-  ];
-  return ordered.map((item) => item.planned).slice(0, max);
+  const batch = [...(channel ? [channel] : []), ...due].slice(0, max);
+  return [...batch.filter((item) => !item.retry), ...batch.filter((item) => item.retry)].map((item) => item.planned);
 }
 
 export type BreakdownRowValue = { day: string; value: string; views: number | null; estimatedMinutesWatched: number | null };

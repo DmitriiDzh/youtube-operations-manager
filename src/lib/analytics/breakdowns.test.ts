@@ -39,8 +39,10 @@ import type { MilestoneVideo } from "./milestones";
 // - New days are read from 6 days before the first new one, so after a gap the last stored days, which were still provisional, are
 //   read again (the earlier rule started at the gap). AC-VB-05 and the planning test's retry now start at 09-26.
 // - The channel is never given up after 3 failed attempts (it has no end and no other way back): it is retried a day later, every time.
-// - Second review: subjects whose last attempt failed (`retry`) come after every other due subject. Otherwise a video that keeps getting
-//   no answer (5xx, timeout), never getting a new collection time, headed the queue and stopped every run before the others were read.
+// - Second review: subjects whose last attempt failed (`retry`) run after the others. Otherwise a video that keeps getting no answer (5xx,
+//   timeout), never getting a new collection time, headed the queue and stopped every run before the others were read.
+// - Third review: the batch is still chosen by staleness alone and only ordered that way inside it; putting every retry after every other
+//   due subject before the cap shut a retry out for good whenever more were due than the cap.
 
 const published = (videoId: string, publishedAt: string | null): MilestoneVideo => ({ videoId, publishedAt, privacyStatus: "public", liveBroadcastContent: "none" });
 
@@ -153,6 +155,10 @@ test("second review of BL-168: subjects whose last attempt failed come after eve
   // The channel in retry goes after the videos that are not, and before the video retries.
   const channelRetry: BreakdownState = { ...collected(CHANNEL_SUBJECT, "2026-07-12"), status: "retry", nextAttemptAt: now };
   assert.deepEqual(planDueBreakdowns(videos, [channelRetry, ...states.slice(1)], now).map((p) => p.subject), ["v4", "v3", "v2", CHANNEL_SUBJECT, "x"]);
+  // Third review: with fewer slots than due subjects, the batch is chosen by staleness first (channel, x, then the newest of the rest)
+  // and only ordered with the retry last -- x is not shut out.
+  assert.deepEqual(planDueBreakdowns(videos, states, now, 3).map((p) => p.subject), [CHANNEL_SUBJECT, "v4", "x"]);
+  assert.deepEqual(planDueBreakdowns(videos, [channelRetry, ...states.slice(1)], now, 2).map((p) => p.subject), [CHANNEL_SUBJECT, "x"]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------
