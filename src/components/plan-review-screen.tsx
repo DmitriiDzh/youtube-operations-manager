@@ -569,14 +569,17 @@ export function PlanReviewScreen({
   // BL-162 (§5.4 point 5, owner msg 2263): two computers opened the same track within the same seconds -- the one that opened it
   // first keeps it and this screen moves on to the next free track, but only while nothing was marked or written here yet.
   const openedAt = useRef<{ key: string; at: number } | null>(null);
+  // A track the owner opened by hand from the queue -- knowing another computer is on it -- is never moved away from.
+  const pickedByHand = useRef<string | null>(null);
   useEffect(() => {
     if (claimKey) openedAt.current = { key: claimKey, at: Date.now() };
+    if (pickedByHand.current !== claimKey) pickedByHand.current = null;
   }, [claimKey]);
   useEffect(() => {
     if (!entry || entry.verdict !== null || !entries || !claimKey) return;
     const claim = claimOf(entry, claims, nowMs);
     const opened = openedAt.current;
-    if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || !(Date.parse(claim.since) < opened.at)) return;
+    if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || pickedByHand.current === claimKey || !(Date.parse(claim.since) < opened.at)) return;
     const untouched = draft.reasons.length === 0 && draft.rating === null && !draft.note.trim() && draft.marks.length === 0 && draft.openMark === null;
     if (!untouched) return;
     const next = nextWaitingIndex(entries, index, skipClaimed);
@@ -1205,7 +1208,10 @@ export function PlanReviewScreen({
                       <button
                         type="button"
                         ref={current ? currentRow : undefined}
-                        onClick={() => go(i)}
+                        onClick={() => {
+                          pickedByHand.current = `${e.itemKey}\u0000${e.attemptRef}`;
+                          go(i);
+                        }}
                         title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
                         className={`w-full border-l-2 px-3 py-2 text-left transition-colors ${current ? "border-violet-400 bg-zinc-800" : "border-transparent hover:bg-zinc-800/50"}`}
                       >

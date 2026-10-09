@@ -1469,7 +1469,14 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               k++;
               continue;
             }
-            current = await mutate(planId, (r) => ({ definition: { ...r.definition, groups: r.definition.groups.map((g) => (g.groupId === note.groupId ? { ...g, ownerNote: note.note } : g)) } }));
+            try {
+              current = await mutate(planId, (r) => ({ definition: { ...r.definition, groups: r.definition.groups.map((g) => (g.groupId === note.groupId ? { ...g, ownerNote: note.note } : g)) } }));
+            } catch {
+              // The plan kept changing under another writer, or it closed meanwhile: nothing was written and the note is not
+              // marked handled, so the next tick weighs it again (it is never silently dropped).
+              k++;
+              continue;
+            }
             await record(row.id, "group_note", "owner", details);
             handled.add(note.noteId);
             lastChange.set(note.groupId, written);

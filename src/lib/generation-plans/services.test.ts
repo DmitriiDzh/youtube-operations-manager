@@ -1843,3 +1843,16 @@ test("BL-162: ownerNoteTimes -- the owner's newest, not superseded note change p
   ]);
   assert.deepEqual([...times.entries()], [["C1", Date.parse("2026-10-09T10:05:00.000Z")], ["C2", Date.parse("2026-10-09T10:10:00.000Z")]]);
 });
+
+test("BL-162 §5.2: a note that cannot be written this tick (the plan keeps changing) is not lost -- the next tick applies it", async () => {
+  const { d, macPlan, noteEvents } = await notesSetup();
+  await d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: "Windows: too thin" });
+  await d.publish("win", d.win);
+  const realUpdate = d.macBase.store.updatePlan;
+  d.macBase.store.updatePlan = async () => null; // every compare-and-swap loses, as if another writer always won
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 0, skipped: 1 });
+  assert.equal(noteEvents().length, 0, "nothing recorded, so it is weighed again");
+  d.macBase.store.updatePlan = realUpdate;
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 1, skipped: 0 });
+  assert.equal((await macPlan()).groups[0].ownerNote, "Windows: too thin");
+});
