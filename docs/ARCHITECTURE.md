@@ -3271,7 +3271,7 @@ Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
 
 ## 36. Video milestones: day-7 and day-28 retention and totals (BL-166, FO-REQ-0015 items 1 and 8)
 
-Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75.
+Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75; v76 removes collected rows without a curve (see below).
 
 - **Windows.** `milestoneWindow(publishedAt, M)` = the Pacific publish date .. +M-1 (inclusive); `isMilestoneDue` once today (Pacific) is at
   least `MILESTONE_LAG_DAYS` (reporting lag + 1 = 3) after the window end.
@@ -3281,7 +3281,9 @@ Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75.
   owner the upload time as `publishedAt`. A stored row whose window differs from the one computed now counts as never attempted, and its
   attempts start again at 1 (both writes count attempts per window). Planning reads only key, window, status and retry time
   (`listVideoMilestoneStates`). Each costs two `queryChannelBreakdownReport`
-  calls (gateway, `dimensions` optional): `elapsedVideoTimeRatio` with the five retention metrics, and the four totals with no dimension, both
+  calls (gateway, `dimensions` optional): `elapsedVideoTimeRatio` with `audienceWatchRatio` and `relativeRetentionPerformance` (checked live 2026-10-10: adding `startedWatching`,
+  `stoppedWatching`, `totalSegmentImpressions` makes YouTube answer with no rows, so the first build stored empty curves; v76 deletes those
+  rows so they are collected again), and the four totals with no dimension, both
   `video==<id>` over the window. Only an error about the query counts an attempt (HTTP 400, 404, or a 403 whose reason is not about
   permissions, the project or the rate; `recordVideoMilestoneFailure`: retry after 24 h, `failed` at 3). Reads off, quota, sign-in, channel
   access, 401 and those system 403s stop the run with nothing recorded. No HTTP answer at all, 429 and 5xx stop it too, but

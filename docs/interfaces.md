@@ -466,8 +466,8 @@ Key MCP tools:
   - `agent_get_video_milestones` (BL-166, Agent API 3.9.0, `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md`) — `{ channelId, videoIds? (1-50),
     milestone? (7 | 28), credentialRef? }` → `{ channelId, milestones: [{ videoId, milestoneDays, windowStart, windowEnd, status
     (collected | retry | failed), attempts, lastError, collectedAt, durationSeconds, totals: { views, estimatedMinutesWatched,
-    averageViewDuration, averageViewPercentage }, retention: [{ elapsedVideoTimeRatio, audienceWatchRatio, relativeRetentionPerformance,
-    startedWatching, stoppedWatching, totalSegmentImpressions }] }] }`. The stored day-7 / day-28 milestones of the channel's own videos: window
+    averageViewDuration, averageViewPercentage }, retention: [{ elapsedVideoTimeRatio, audienceWatchRatio, relativeRetentionPerformance }]
+    }] }`. The stored day-7 / day-28 milestones of the channel's own videos: window
     = Pacific publish date .. +6 / +27; collected with the Analytics collection once 3 days have passed after the window, at most 25 per channel
     per run, failed after 3 attempts. Values as YouTube returned them (null / `[]` when it returned none); nothing is computed from the curve.
     Only public videos have milestones (a private or scheduled video's `publishedAt` is its upload time). Milestones not yet due or not yet

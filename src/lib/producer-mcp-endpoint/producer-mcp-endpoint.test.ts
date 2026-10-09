@@ -228,7 +228,7 @@ test("AC-PR-05 / AC-PR-06 / AC-PR-09: each call reads only its own channel's row
 // only stored data; another channel's video behaves like an unknown one. Real handlers on the real (isolated) database.
 test("BL-166 AC-VM-06: agent_get_video_milestones reads only the named channel's stored milestones", async () => {
   await seedTwoChannels();
-  const point = { elapsedVideoTimeRatio: 0.01, audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.5, startedWatching: 0.1, stoppedWatching: 0.02, totalSegmentImpressions: 40 };
+  const point = { elapsedVideoTimeRatio: 0.01, audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.5 };
   const saved = (videoId: string, channelId: string, views: number) => ({
     videoId,
     milestoneDays: 7,
