@@ -79,7 +79,9 @@ for any running export/import/database migration to finish (`npm run operation-l
 and refuses to stop -- a non-zero exit code (1 on Windows, 2 on macOS), nothing started or rebuilt -- if one does not, so the server is
 never killed mid-operation (which is what leaves a stuck operation lock); it then confirms the port is
 free. A stale lock left by an earlier interrupted run is reported but never cleared by these scripts
-(see the app's `/recovery` page or `npm run operation-lock -- clear`).
+(see the app's `/recovery` page or `npm run operation-lock -- clear`). It also refuses, the same way, while a media session runs on
+this computer (`npm run operation-lock -- media-idle`): stopping the app terminates its RunPod pod and fails its queued jobs. Wait
+until the session finishes, stop it in Production, or run `stop --force`.
 
 **To stop safely:** run `scripts\windows\stop.bat` (macOS: `scripts/macos/stop.sh`). Since BL-116 the server runs
 in the background with no window to close (output in `.launcher.log`) and stops by itself about 10 minutes after

@@ -68,7 +68,9 @@ export function worstCasePricePerHr(candidates: GpuCandidate[], fallback: number
   return prices.length > 0 ? Math.max(...prices) : fallback;
 }
 
-const NO_CAPACITY = /could not be placed|no longer any instances|no instances|not enough (gpu|capacity)|insufficient capacity|out of stock|no available/i;
+// FO-MSG-0013 §1 (session 45eddb73, 2026-10-08): "This machine does not have the resources to deploy your pod. Please try a
+// different machine." is a no-capacity answer too -- the next placement or GPU of the list, then the normal wait.
+const NO_CAPACITY = /could not be placed|no longer any instances|no instances|not enough (gpu|capacity)|insufficient capacity|out of stock|no available|does not have the resources|try a different machine/i;
 
 /**
  * How a failed createPod is read: `no_capacity` (try the next candidate / wait), `transient` (RunPod or the network

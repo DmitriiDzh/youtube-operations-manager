@@ -58,6 +58,11 @@ test("AC-FG-04/06: a 400 'could not be placed' is no capacity; 429/5xx/no respon
   const api = (status: number | undefined, message: string) => new DomainError({ code: "runpod_api_unavailable", message, details: status === undefined ? {} : { status } });
   assert.equal(classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: This GPU and data center combination could not be placed.")), "no_capacity");
   assert.equal(classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: There are no longer any instances available with the requested specifications.")), "no_capacity");
+  // FO-MSG-0013 §1: RunPod's own wording of a full machine, seen live on 2026-10-08 (session 45eddb73).
+  assert.equal(
+    classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: This machine does not have the resources to deploy your pod. Please try a different machine.")),
+    "no_capacity"
+  );
   assert.equal(classifyCreatePodFailure(api(400, "RunPod API returned HTTP 400: gpuCount must be at least 1")), "fatal");
   assert.equal(classifyCreatePodFailure(api(402, "RunPod API returned HTTP 402: insufficient balance")), "fatal");
   assert.equal(classifyCreatePodFailure(api(422, "RunPod API returned HTTP 422")), "fatal");
