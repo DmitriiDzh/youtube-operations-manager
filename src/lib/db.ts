@@ -1569,6 +1569,11 @@ export const researchChannels = sqliteTable("research_channels", {
   videosNextPageToken: text("videos_next_page_token"),
   videosCapAtRun: integer("videos_cap_at_run"),
   videosPublishedAfterAtRun: text("videos_published_after_at_run"),
+  // SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014): a paused entry is never collected. Set by the owner, or by the inactivity
+  // detector (`inactive`: no upload for the configured months); cleared only by the owner ("Resume"). Stored state -- the
+  // detector only ever sets it, so a pause outlives the 30-day retention that erases the date it was based on.
+  pausedAt: integer("paused_at", { mode: "timestamp" }),
+  pausedReason: text("paused_reason", { enum: ["inactive", "owner"] }),
 });
 
 /**
@@ -2020,6 +2025,39 @@ export const marketResearchRequests = sqliteTable(
     executionError: text("execution_error"),
   },
   (table) => [index("market_research_requests_status_idx").on(table.status)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): a change an agent
+ * (the Producer) or the system proposes to the watchlist or the hypotheses, for one of our channels. Nothing changes until the owner
+ * approves it in the Web UI; the system then applies it. `dedupe_key` is set only while pending (a partial unique index), so the
+ * same pending proposal is never created twice -- also when two computers evaluate inactivity. No FK (like
+ * `channel_record_assignments`): `target_id` names a watchlist entry, `channel_id` one of our channels.
+ */
+export const agentProposals = sqliteTable(
+  "agent_proposals",
+  {
+    id: text("id").primaryKey(),
+    source: text("source", { enum: ["producer", "system"] }).notNull(),
+    kind: text("kind").notNull(),
+    channelId: text("channel_id"),
+    targetId: text("target_id"),
+    payloadJson: text("payload_json").notNull(),
+    text: text("text").notNull(),
+    status: text("status", { enum: ["pending", "applied", "rejected", "failed"] }).notNull().default("pending"),
+    dedupeKey: text("dedupe_key"),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    decidedAt: integer("decided_at", { mode: "timestamp" }),
+    decidedBy: text("decided_by"),
+    rejectComment: text("reject_comment"),
+    applyError: text("apply_error"),
+    doneAt: integer("done_at", { mode: "timestamp" }),
+  },
+  (table) => [index("agent_proposals_status_idx").on(table.status), uniqueIndex("agent_proposals_pending_dedupe_idx").on(table.dedupeKey)]
 );
 
 /**
@@ -3844,6 +3882,42 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         at TEXT NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_group_notes_at_idx ON generation_plan_peer_group_notes (at)");
+    },
+  },
+  {
+    version: 74,
+    description:
+      "research_channels.paused_at/paused_reason + agent_proposals -- BL-163 (FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md): a paused watchlist entry is never collected; agent/system proposals to the watchlist and hypotheses wait for the owner's approval. Additive; existing rows are not paused",
+    apply: async (client) => {
+      for (const statement of ["ALTER TABLE research_channels ADD COLUMN paused_at INTEGER", "ALTER TABLE research_channels ADD COLUMN paused_reason TEXT"]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute(`CREATE TABLE IF NOT EXISTS agent_proposals (
+        id TEXT PRIMARY KEY NOT NULL,
+        source TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        channel_id TEXT,
+        target_id TEXT,
+        payload_json TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        dedupe_key TEXT,
+        created_via TEXT NOT NULL,
+        agent_api_version TEXT,
+        created_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_by TEXT,
+        reject_comment TEXT,
+        apply_error TEXT,
+        done_at INTEGER
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS agent_proposals_status_idx ON agent_proposals (status)");
+      // NULL keys never collide in SQLite, so only pending rows (which carry the key) are unique.
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS agent_proposals_pending_dedupe_idx ON agent_proposals (dedupe_key)");
     },
   },
 ];

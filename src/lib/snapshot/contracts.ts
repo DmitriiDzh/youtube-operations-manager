@@ -134,6 +134,9 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   // Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §4) -- AI-generation provenance,
   // same RISK-52-avoidance reason, same FK order rule (after its own parent, hypotheses).
   "hypothesis_generation_provenance",
+  // BL-163 (FO-REQ-0014): proposals to the watchlist and hypotheses -- the owner reviews them on either computer. No FK; after
+  // research_channels and hypotheses all the same, which both name.
+  "agent_proposals",
   // Phase 12 slice 12.4 (docs/roadmap/plans/PHASE_12_PLAN.md, owner decision D1) -- per-channel
   // assignment of the Phase 9 market records above. Business data, added from its own first commit
   // (the RISK-52 lesson); no FK, so order is irrelevant.
