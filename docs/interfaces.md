@@ -480,7 +480,8 @@ Key MCP tools:
     insightTrafficSourceType / deviceType), label, views, estimatedMinutesWatched }`. Stored per day as YouTube returned them: each public
     video's first 90 days (Pacific publish date .. +89) and the channel from 90 days before its first collection on; `total` sums each value
     over the requested days within the coverage, most views first. Collected once a day with the Analytics collection (latest day =
-    yesterday, the last 7 days reread, at most 50 subjects per channel per run, failed after 3 attempts). A video of another channel, or one
+    yesterday; each read starts 6 days before its first new day; at most 100 subjects per channel per run, the channel first, then the
+    least recently read videos; a video is failed after 3 attempts, the channel is never given up). A video of another channel, or one
     that is private, scheduled or never synced, is not listed. Local read only (the live read is `agent_query_channel_breakdown`).
   - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
     `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`

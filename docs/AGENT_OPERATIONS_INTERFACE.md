@@ -1139,5 +1139,5 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
 - `agent_get_stored_breakdowns` (capability `analytics.query_stored_breakdowns`, READ) returns views and watch minutes per traffic source
   type and per device type, per day as YouTube returned them, for the channel as a whole or for up to 20 of its videos (each video's first
   90 days), summed over a date range or listed by day, with the stored coverage of each.
-- Collected in the background with the Analytics collection, once a day (2 Analytics API queries per subject, at most 50 subjects per
+- Collected in the background with the Analytics collection, once a day (2 Analytics API queries per subject, at most 100 subjects per
   channel per run); a local read, never a live call. Each computer collects the channels connected on it. Contract: `docs/interfaces.md`.

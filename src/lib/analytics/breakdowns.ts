@@ -28,10 +28,14 @@ export const BREAKDOWN_METRICS = ["views", "estimatedMinutesWatched"] as const;
 export const VIDEO_BREAKDOWN_WINDOW_DAYS = 90;
 /** The channel's first collection reaches this many days back (latest day included). */
 export const CHANNEL_BREAKDOWN_FIRST_DAYS = 90;
-/** YouTube revises recent days: each collection reads the last 7 days of its range again. */
+/** YouTube revises recent days: each collection rereads the 6 stored days before its first new day (a 7-day span with that day). */
 export const BREAKDOWN_REREAD_DAYS = 7;
-/** Subjects (the channel or one video, 2 queries each) per channel per run; a larger backlog finishes over the next runs. */
-export const MAX_BREAKDOWN_SUBJECTS_PER_RUN = 50;
+/**
+ * Subjects (the channel or one video, 2 queries each) per channel per run. Every video in its 90-day window is due daily, so at about 0.8
+ * uploads a day a channel has some 70 due subjects (review of BL-168: the first value, 50, was below that); a larger backlog finishes over
+ * the next runs, least recently collected first.
+ */
+export const MAX_BREAKDOWN_SUBJECTS_PER_RUN = 100;
 export const MAX_BREAKDOWN_ATTEMPTS = 3;
 export const BREAKDOWN_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
 /** The state row of the channel as a whole; every other subject is a video id. */
@@ -53,6 +57,8 @@ export type BreakdownState = {
   collectedThrough: string | null;
   /** The Pacific date of the last successful collection. */
   collectedOn: string | null;
+  /** When the last successful collection happened (orders the queue: least recently collected first). */
+  collectedAt: Date | null;
   status: "collected" | "retry" | "failed";
   nextAttemptAt: Date | null;
 };
@@ -69,10 +75,12 @@ export type PlannedBreakdown = {
 };
 
 /**
- * The subjects to collect now, at most `max`: the channel first, then videos by publish date, newest first (current uploads are never
- * starved by the history backlog). A subject is due when its range has a day later than what is stored, or -- for a video whose window
- * has ended -- once for the final reread on or after window end + 7. A stored range for another window start (the publish date moved)
- * counts as never collected. `failed` subjects are never planned; a `retry` waits for its time.
+ * The subjects to collect now, at most `max`: the channel first, then due videos least recently collected first (never collected first),
+ * newest publish date first among equals -- so a video left out by the cap goes first on the next run and none is starved (review of
+ * BL-168: a newest-first order left the oldest videos of the window out every day once more than `max` were due). A subject is due when
+ * its range has a day later than what is stored, or -- for a video whose window has ended -- once for the final reread on or after window
+ * end + 7. A stored range for another window start (the publish date moved) counts as never collected. `failed` subjects are never
+ * planned; a `retry` waits for its time.
  */
 export function planDueBreakdowns(
   videos: MilestoneVideo[],
@@ -84,7 +92,8 @@ export function planDueBreakdowns(
   const latest = shiftIsoDate(today, -1);
   const stateOf = new Map(states.map((state) => [state.subject, state]));
 
-  const consider = (subject: string, videoId: string | null, rangeStart: string, windowEnd: string | null): PlannedBreakdown | null => {
+  /** The subject's plan if it is due, with when it was last collected (for the queue order). */
+  const consider = (subject: string, videoId: string | null, rangeStart: string, windowEnd: string | null): { planned: PlannedBreakdown; lastAt: number } | null => {
     const through = windowEnd !== null && windowEnd < latest ? windowEnd : latest;
     if (through < rangeStart) return null;
     const stored = stateOf.get(subject);
@@ -92,33 +101,31 @@ export function planDueBreakdowns(
     if (state?.status === "failed") return null;
     if (state?.status === "retry" && state.nextAttemptAt && state.nextAttemptAt.getTime() > now.getTime()) return null;
     const collectedThrough = state?.collectedThrough ?? null;
-    if (collectedThrough === null) return { subject, videoId, rangeStart, from: rangeStart, to: through, fresh: true };
+    const lastAt = state?.collectedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (collectedThrough === null) return { planned: { subject, videoId, rangeStart, from: rangeStart, to: through, fresh: true }, lastAt };
     const newDay = through > collectedThrough;
     const settledOn = windowEnd === null ? null : shiftIsoDate(windowEnd, BREAKDOWN_REREAD_DAYS);
     const finalPass =
       settledOn !== null && collectedThrough === windowEnd && today >= settledOn && (state?.collectedOn ?? "") < settledOn;
     if (!newDay && !finalPass) return null;
-    const dayAfter = shiftIsoDate(collectedThrough, 1);
-    const reread = shiftIsoDate(through, -(BREAKDOWN_REREAD_DAYS - 1));
-    const earlier = dayAfter < reread ? dayAfter : reread;
-    return { subject, videoId, rangeStart, from: earlier > rangeStart ? earlier : rangeStart, to: through, fresh: false };
+    // New days: from 6 days before the first new one, so the stored days that were still provisional are read again -- also after a gap
+    // (review of BL-168). The final pass: the window's last 7 days.
+    const reread = newDay ? shiftIsoDate(collectedThrough, 1 - (BREAKDOWN_REREAD_DAYS - 1)) : shiftIsoDate(through, -(BREAKDOWN_REREAD_DAYS - 1));
+    return { planned: { subject, videoId, rangeStart, from: reread > rangeStart ? reread : rangeStart, to: through, fresh: false }, lastAt };
   };
 
-  const plan: PlannedBreakdown[] = [];
   const channelState = stateOf.get(CHANNEL_SUBJECT);
   const channel = consider(CHANNEL_SUBJECT, null, channelState?.rangeStart ?? shiftIsoDate(latest, -(CHANNEL_BREAKDOWN_FIRST_DAYS - 1)), null);
-  if (channel) plan.push(channel);
 
-  const dated = videos
-    .filter(hasFinalPublishDate)
-    .map((video) => ({ video, at: Date.parse(video.publishedAt as string) }))
-    .sort((a, b) => b.at - a.at || a.video.videoId.localeCompare(b.video.videoId));
-  for (const { video } of dated) {
+  const due: Array<{ planned: PlannedBreakdown; lastAt: number; publishedAt: number }> = [];
+  for (const video of videos.filter(hasFinalPublishDate)) {
     const window = videoBreakdownWindow(video.publishedAt as string);
-    const planned = consider(video.videoId, video.videoId, window.windowStart, window.windowEnd);
-    if (planned) plan.push(planned);
+    const item = consider(video.videoId, video.videoId, window.windowStart, window.windowEnd);
+    if (item) due.push({ ...item, publishedAt: Date.parse(video.publishedAt as string) });
   }
-  return plan.slice(0, max);
+  // Never collected (-Infinity) first; `-Infinity - -Infinity` is NaN, which falls through to the next key.
+  due.sort((a, b) => a.lastAt - b.lastAt || b.publishedAt - a.publishedAt || a.planned.subject.localeCompare(b.planned.subject));
+  return [...(channel ? [channel.planned] : []), ...due.map((item) => item.planned)].slice(0, max);
 }
 
 export type BreakdownRowValue = { day: string; value: string; views: number | null; estimatedMinutesWatched: number | null };
@@ -143,7 +150,7 @@ export function toBreakdownRows(rows: ReportRow[], from: string, to: string): Br
 
 export type StoredBreakdownRow = BreakdownRowValue & { subject: string; breakdown: BreakdownKind };
 
-export type StoredBreakdownStateRow = BreakdownState & { attempts: number; lastError: string | null; collectedAt: Date | null };
+export type StoredBreakdownStateRow = BreakdownState & { attempts: number; lastError: string | null };
 
 export type BreakdownDependencies = {
   clock: { now(): Date };
@@ -192,7 +199,14 @@ export type BreakdownDependencies = {
 };
 
 const credentialRefSchema = z.object({ userId: z.string().min(1) }).strict();
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "must be an ISO date, YYYY-MM-DD");
+/** A real calendar date (2026-02-30 is refused), like `producer_upload_milestones`' dates. */
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be an ISO date, YYYY-MM-DD")
+  .refine((value) => {
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+  }, "not a calendar date");
 export const MAX_BREAKDOWN_READ_DAYS = 92;
 export const collectDueBreakdownsInputSchema = z.object({ credentialRef: credentialRefSchema, channelId: z.string().min(1) }).strict();
 export const listStoredBreakdownsInputSchema = z
@@ -324,7 +338,9 @@ export function createBreakdownServices(deps: BreakdownDependencies) {
             throw error;
           }
           failed += 1;
-          await deps.store.recordFailure({ ...failure, maxAttempts: MAX_BREAKDOWN_ATTEMPTS });
+          // The channel has no end and no other way back, so it is never given up: it is retried a day later, every time (review of
+          // BL-168). A video is given up after MAX_BREAKDOWN_ATTEMPTS.
+          await deps.store.recordFailure({ ...failure, maxAttempts: item.videoId === null ? Number.MAX_SAFE_INTEGER : MAX_BREAKDOWN_ATTEMPTS });
         }
       }
       return { attempted: plan.length, collected, failed };

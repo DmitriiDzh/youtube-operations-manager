@@ -3310,17 +3310,21 @@ Plan: `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md` (AC-VB-01..17). Schema v77.
   .. +89; the channel's range starts 89 days before the latest day of its first collection and has no end. The latest day is yesterday
   (Pacific); a range ends at the earlier of it and the window end.
 - **Planning** (`planDueBreakdowns`, pure). A subject without a usable state (none, or one for another range start: the publish date moved)
-  is read in full (`fresh`). Otherwise it is due while the range end is later than `collected_through`, reading from the earlier of
-  `collected_through + 1` and range end − 6 (revisions and gaps); a video whose window has ended gets one final pass once today is window end
-  + 7 and its last collection was before that, and is never planned again. `failed` subjects are skipped, `retry` ones wait for
-  `next_attempt_at`. At most `MAX_BREAKDOWN_SUBJECTS_PER_RUN` (50): the channel first, then videos by publish date, newest first.
+  is read in full (`fresh`). Otherwise it is due while the range end is later than `collected_through`, reading from 6 days before the
+  first new day (`collected_through` − 5: revisions, also of the provisional days before a gap); a video whose window has ended gets one
+  final pass (window end − 6 .. window end) once today is window end + 7 and its last collection was before that, and is never planned
+  again. `failed` subjects are skipped, `retry` ones wait for `next_attempt_at`. At most `MAX_BREAKDOWN_SUBJECTS_PER_RUN` (100): the
+  channel first, then due videos by `collected_at` ascending (never collected first; newest publish date, then id, among equals), so a
+  video left out by the cap heads the next run's queue (review of BL-168: a newest-first order with a cap of 50 starved the oldest videos
+  of the window every day).
 - **Collection** (`collectDueBreakdowns`). Two `queryChannelBreakdownReport` calls per subject (`day,insightTrafficSourceType` and
   `day,deviceType`, `views` + `estimatedMinutesWatched`, `video==<id>` for a video), saved only when both answered.
   `saveCollectedAnalyticsBreakdown` deletes the subject's rows in from..to (all of them when `fresh`), inserts the answer (only days inside
   the range, one row per day and value) and marks the state collected (`collected_through`, `collected_on` = today Pacific, attempts 0), in
   one `database.batch`. Failures: `failureKind` (`query-failure.ts`, moved unchanged from `milestones.ts`): `stop` rethrows with nothing
   written; `defer` (`deferAnalyticsBreakdown`) puts the subject back by 24 h keeping its attempts and stored range, then rethrows; `attempt`
-  (`recordAnalyticsBreakdownFailure`) counts consecutive failures, `failed` at 3. A state for another range start is reset by both. The core
+  (`recordAnalyticsBreakdownFailure`) counts consecutive failures, `failed` at 3 for a video; the channel is passed an unreachable maximum, so
+  it is retried a day later forever. A state for another range start is reset by both. The core
   wraps it in the analytics quota context and `gateBreakdownCollection` (`isBackgroundReadAllowed("analytics")`); `/api/analytics/
   auto-collect-all` runs it after every channel's milestones, each channel in its own try/catch.
 - **Storage.** `video_breakdown_daily` (key `video_id, breakdown, day, value`; `channel_id`, `views`, `estimated_minutes_watched`; index on

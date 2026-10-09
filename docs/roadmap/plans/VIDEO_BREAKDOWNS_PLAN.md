@@ -30,9 +30,10 @@ the order of DEV-RESP-0018.
 ### When a subject is collected
 
 - **First time:** its whole range so far, one query per breakdown.
-- **After that, once per Pacific day, while a new day exists** (the range end is later than what is stored). It reads from the earlier of
-  (the day after the stored end) and (the range end − 6), up to the range end. YouTube revises recent days, so the last 7 days are read
-  again, and a gap left while the computer was off is filled.
+- **After that, once per Pacific day, while a new day exists** (the range end is later than what is stored). It reads from 6 days before
+  the first new day (the day after the stored end) up to the range end. YouTube revises recent days, so the last 6 stored days are read
+  again, and a gap left while the computer was off is filled. *(Review of BL-168: the first version started at the gap, so the provisional
+  days just before it were never read again.)*
 - **Final pass of a video:** its window has ended and its last collection was before window end + 7. One more collection on or after
   window end + 7 rereads the window's last 7 days. After that the video is never queried again.
 - **Replacing rows.** Within the range read, the stored rows of that subject and breakdown are replaced by YouTube's answer, so a source that
@@ -43,12 +44,18 @@ the order of DEV-RESP-0018.
 
 - Runs after the milestones, for each channel whose Analytics collection did not fail (`/api/analytics/auto-collect-all`, after the response).
   Same "reads enabled" switch (inside the client), quota reserve (`isBackgroundReadAllowed("analytics")`) and quota-history label.
-- **At most 50 subjects per channel per run (100 queries).** The channel goes first, then videos by publish date, newest first, so current
-  uploads are never starved by history. A larger backlog finishes over the next runs. Steady state today is about 46 subjects per channel a day.
+- **At most 100 subjects per channel per run (200 queries).** The channel goes first, then the due videos least recently read first (never
+  read first, the newest publish date first among equals). A video left out is read first on the next run, so none is starved. A larger
+  backlog finishes over the next runs.
+  - *Review of BL-168:* the first version had 50 subjects and a newest-first order. Every video inside its window is due every day, so a
+    channel has about 70 due subjects at 0.8 uploads a day; Tropico Jazz already has 51 videos in their window. The oldest videos of the
+    window were then left out every day and never got their last weeks or their final pass. The earlier estimate of "about 46 subjects a
+    day" was wrong.
 - **Failures use the milestone rules,** with the helper moved to its own file and shared, not copied:
   - reads off, quota, sign-in, channel access, 401 and system 403s stop the run with nothing recorded;
   - no answer, 429 and 5xx stop the run and put that subject back by a day without an attempt;
   - an error about the query (400, 404, another 403) counts an attempt: retry after 24 h, `failed` after 3, then never queried again.
+    **The channel is never `failed`** (it has no end and no other way back): it is retried a day later, every time (review of BL-168).
 
 ### Storage (schema v77, device-local, `authorized`)
 
@@ -66,7 +73,8 @@ the order of DEV-RESP-0018.
   - Input: `{ channelId, videoIds? (1–20), startDate, endDate (≤ 92 days), groupBy?: "total" (default) | "day" }`.
   - Without `videoIds` it returns the channel; with them, those videos.
   - Output per subject:
-    - `coverage { from, through, collectedAt, status }`, or null when never collected;
+    - `coverage { from, through, collectedAt }`, or null when never collected, and `status` (collected | retry | failed | not_collected)
+      with `lastError`;
     - `trafficSources` and `devices`, each row `{ day? , value, label, views, estimatedMinutesWatched }`, raw API value plus readable label;
     - `total` sums each value over the requested days that are stored (simple sums of own data).
   - A video of another channel, or one never synced, is not listed. READ, local only, Agent API 3.9.0 → **3.10.0**, capability
@@ -90,7 +98,8 @@ the order of DEV-RESP-0018.
 - **AC-VB-04** (rolling reread) At 2026-10-11T18:00:00Z the video is read for 2026-10-04..2026-10-10.
   - A stored 10-05 `YT_SEARCH` row that YouTube no longer returns is deleted.
   - The stored 10-03 rows stay.
-- **AC-VB-05** (gap) Last collected through 10-01, on 10-02. At 2026-10-11T18:00:00Z it is read for 2026-10-02..2026-10-10.
+- **AC-VB-05** (gap) Last collected through 10-01, on 10-02. At 2026-10-11T18:00:00Z it is read for 2026-09-26..2026-10-10 (changed by
+  the review: 6 days before the first missing day, 10-02).
 - **AC-VB-06** (final pass) Window end 2026-11-29.
   - Collected on 11-30 through 11-29.
   - Not due on 12-01..12-05.
@@ -103,14 +112,16 @@ the order of DEV-RESP-0018.
   - First run at now 2026-10-10T18:00:00Z reads the channel for 2026-07-12..2026-10-09.
   - Next day it reads 2026-10-04..2026-10-10.
   - The channel is never finalized.
-- **AC-VB-10** (cap) With 60 due videos, one run collects the channel and the 49 newest videos (100 queries). The next run collects the
-  remaining 11.
+- **AC-VB-10** (cap) With 120 due videos never read, one run collects the channel and the 99 newest videos (200 queries). The next run
+  collects the remaining 21. *(Changed by the review: the cap is 100.)* With more due videos than the cap every day, each video is read
+  at least every ceil(due / free slots) days, and a video whose window ended still gets its final pass.
 - **AC-VB-11** (failures)
-  - A 400 counts attempt 1, retries after 24 h and is `failed` after 3.
+  - A 400 counts attempt 1, retries after 24 h and is `failed` after 3. A 404 or a video's own 403 (`forbidden`) counts an attempt too.
+  - The channel failing with a 400 on 5 days is still `retry` with 5 attempts and was tried on each day.
   - A 503, 429 or no answer stops the run and puts the subject back by 24 h with 0 attempts.
   - Quota, reads off, sign-in, 401 and a 403 `quotaExceeded` stop the run with nothing written.
 - **AC-VB-12** (zero rows) An empty answer records the range as collected with no rows. It is not queried again that day.
-- **AC-VB-13** (reads)
+- **AC-VB-13** (reads; exactly 92 days accepted, 93 and a date that does not exist such as 2026-02-30 refused, also through the Producer)
   - Stored traffic rows 10-01 `SUBSCRIBER` 18 views / 451 min and 10-02 `SUBSCRIBER` 2 / 30 give `total` `SUBSCRIBER` 20 / 481 for
     10-01..10-02, and 18 / 451 for 10-01 alone.
   - `groupBy: "day"` returns both rows as stored.

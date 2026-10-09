@@ -329,6 +329,20 @@ test("BL-168 AC-VB-13/16: agent_get_stored_breakdowns via the Producer reads onl
       devices: [{ value: "TV", label: "TV", views: 2, estimatedMinutesWatched: 30 }],
     },
   ]);
+  // The plan's bounds hold on the Producer's path too (its schema is rebuilt from the tool's shape; the handler checks them again):
+  // at most 92 days, start not after end, 1-20 videoIds, real calendar dates.
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `v${i}`);
+  for (const bad of [
+    { channelId: "UC_PR_X", startDate: "2026-07-02", endDate: "2026-10-02" },
+    { channelId: "UC_PR_X", startDate: "2026-10-02", endDate: "2026-10-01" },
+    { channelId: "UC_PR_X", startDate: "2026-10-01", endDate: "2026-10-02", videoIds: ids(21) },
+    { channelId: "UC_PR_X", startDate: "2026-10-01", endDate: "2026-10-02", videoIds: [] },
+    { channelId: "UC_PR_X", startDate: "2026-02-30", endDate: "2026-03-02" },
+  ]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("agent_get_stored_breakdowns", bad), bearer(token))))).isError, true, JSON.stringify(bad));
+  }
+  const ok = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_breakdowns", { channelId: "UC_PR_X", startDate: "2026-07-03", endDate: "2026-10-02", videoIds: ids(20) }), bearer(token))));
+  assert.equal(ok.isError, false, ok.text);
 });
 
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
