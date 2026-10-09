@@ -472,3 +472,32 @@ test("review round 2 (real database): a token issued here between planning and a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("review round 3 (real database): a learned token already registered here meanwhile is left as it is -- never revokes itself", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-token-sync-self-"));
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
+  try {
+    await initializeDatabaseSchema(client);
+    const database = drizzle(client) as unknown as AppDb;
+    const t = (hhmm: string) => new Date(`2026-10-09T${hhmm}:00Z`);
+    // The same channel token imported here at 10:00 after the plan (which learned it from a peer at 10:02) was computed.
+    await client.execute(`INSERT INTO agent_channel_tokens (id, channel_id, user_id, token_hash, created_at) VALUES ('c-here', 'UC_A', 'user-a', 'same-channel', ${t("10:00").getTime() / 1000})`);
+    // The same producer token, equal times.
+    await client.execute(`INSERT INTO producer_agent_tokens (id, token_hash, created_at) VALUES ('p-here', 'same-producer', ${t("10:00").getTime() / 1000})`);
+    await applyAgentTokenSyncPlan(
+      {
+        revoke: [],
+        insert: [
+          { id: "c-peer", role: "channel", tokenHash: "same-channel", channelId: "UC_A", userId: "user-a", label: null, createdAt: t("10:02"), revokedAt: null },
+          { id: "p-peer", role: "producer", tokenHash: "same-producer", channelId: null, userId: null, label: null, createdAt: t("10:00"), revokedAt: null },
+        ],
+      },
+      database
+    );
+    const state = Object.fromEntries((await listAgentTokenRowsForSync(database)).map((row) => [row.tokenHash, row.revokedAt === null ? "active" : row.revokedAt.toISOString()]));
+    assert.deepEqual(state, { "same-channel": "active", "same-producer": "active" });
+  } finally {
+    client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -5996,12 +5996,16 @@ export async function applyAgentTokenSyncPlan(
       await tx.update(table).set({ revokedAt: item.revokedAt }).where(and(eq(table.tokenHash, item.tokenHash), isNull(table.revokedAt)));
     }
     for (const row of plan.insert) {
+      const table = row.role === "channel" ? agentChannelTokens : row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      // A learned hash that meanwhile exists here (issued or imported concurrently) is left exactly as it is -- in particular it must
+      // never be measured against itself below and revoke itself (review round 3).
+      const [known] = await tx.select({ tokenHash: table.tokenHash }).from(table).where(eq(table.tokenHash, row.tokenHash)).limit(1);
+      if (known) continue;
       let revokedAt = row.revokedAt;
       // The plan was computed before this transaction: a token issued, imported or rotated here meanwhile may now be active in the
       // same slot. Rule 3 again, inside the transaction (review round 2): the newer one stays active, the other is revoked as of its
       // `createdAt` -- so the one-active indexes never trip and a channel never has two active tokens.
       if (revokedAt === null) {
-        const table = row.role === "channel" ? agentChannelTokens : row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
         const slot = row.role === "channel" ? and(isNull(table.revokedAt), eq(agentChannelTokens.channelId, row.channelId ?? "")) : isNull(table.revokedAt);
         const [current] = await tx.select({ tokenHash: table.tokenHash, createdAt: table.createdAt }).from(table).where(slot).limit(1);
         if (current) {
@@ -6020,8 +6024,8 @@ export async function applyAgentTokenSyncPlan(
         if (row.channelId === null || row.userId === null) throw new Error("a channel token needs its channel and Google account");
         await tx.insert(agentChannelTokens).values({ ...base, channelId: row.channelId, userId: row.userId }).onConflictDoNothing({ target: agentChannelTokens.tokenHash });
       } else {
-        const table = row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
-        await tx.insert(table).values(base).onConflictDoNothing({ target: table.tokenHash });
+        const roleTable = row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+        await tx.insert(roleTable).values(base).onConflictDoNothing({ target: roleTable.tokenHash });
       }
     }
   });

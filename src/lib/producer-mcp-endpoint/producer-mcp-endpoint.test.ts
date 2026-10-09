@@ -359,3 +359,13 @@ test("AC-PR-09: in a batch, a refused call keeps its own channel; a request reje
   assert.equal((await endpoint.handle(noAccept)).status, 406);
   assert.deepEqual(refused.at(-1), { tool: "producer_list_channels", channelId: null, errorCode: "REQUEST_REJECTED" });
 });
+
+test("AC-PR-09 (review round 3): a tools/call sent as a notification inside a batch is REQUEST_REJECTED, not an input error", async () => {
+  await seedTwoChannels();
+  const { endpoint, tokens, calls, refused } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const notification = { jsonrpc: "2.0", method: "tools/call", params: { name: "channel_video_list", arguments: { channelId: "UC_PR_X" } } };
+  assert.equal((await endpoint.handle(rpc([call("producer_list_channels"), notification], bearer(token)))).status, 200);
+  assert.deepEqual(calls.map((entry) => entry.tool), ["producer_list_channels"]);
+  assert.deepEqual(refused, [{ tool: "channel_video_list", channelId: "UC_PR_X", errorCode: "REQUEST_REJECTED" }]);
+});

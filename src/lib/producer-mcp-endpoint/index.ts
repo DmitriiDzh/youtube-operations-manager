@@ -38,15 +38,19 @@ export type ProducerMcpEndpointDeps = {
   recordRefusedCall(call: ProducerRefusedCall): Promise<void>;
 };
 
-/** The `tools/call` messages of a request body (one message or a batch): their tool names and named channels, bounded. */
-function toolCallsOf(body: unknown): Array<{ tool: string; channelId: string | null }> {
+/**
+ * The `tools/call` messages of a request body (one message or a batch): their tool names and named channels, bounded, and whether
+ * each was sent as a notification (no `id`) -- the MCP layer drops such a call without running it.
+ */
+function toolCallsOf(body: unknown): Array<{ tool: string; channelId: string | null; notification: boolean }> {
   const messages = Array.isArray(body) ? body : [body];
   return messages.flatMap((message) => {
     if (!message || typeof message !== "object" || (message as { method?: unknown }).method !== "tools/call") return [];
     const params = (message as { params?: { name?: unknown; arguments?: { channelId?: unknown } } }).params;
     const tool = typeof params?.name === "string" ? params.name.slice(0, 100) : "(no tool name)";
     const channelId = params?.arguments?.channelId;
-    return [{ tool, channelId: typeof channelId === "string" && channelId.length <= 64 ? channelId : null }];
+    const notification = !("id" in (message as object)) || (message as { id?: unknown }).id === undefined;
+    return [{ tool, channelId: typeof channelId === "string" && channelId.length <= 64 ? channelId : null, notification }];
   });
 }
 
@@ -134,8 +138,9 @@ export function createProducerMcpEndpoint(deps: ProducerMcpEndpointDeps) {
           recorded.splice(index, 1);
           continue;
         }
-        const errorCode = status !== 200 ? "REQUEST_REJECTED" : deps.isProducerTool(call.tool) ? "INVALID_PARAMS" : "TOOL_NOT_FOUND";
-        await deps.recordRefusedCall({ ...call, errorCode }).catch(() => undefined);
+        const errorCode =
+          status !== 200 || call.notification ? "REQUEST_REJECTED" : deps.isProducerTool(call.tool) ? "INVALID_PARAMS" : "TOOL_NOT_FOUND";
+        await deps.recordRefusedCall({ tool: call.tool, channelId: call.channelId, errorCode }).catch(() => undefined);
       }
     }
   }
