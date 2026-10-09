@@ -233,6 +233,9 @@ export const movePlanInputSchema = z.object({ planId: planIdSchema, channelId: z
 
 export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
 
+/** BL-162 (FO-REQ-0013 §2.3): the owner's wave note on ANOTHER device's plan, sent there in this device's report. */
+export const peerGroupNoteInputSchema = z.object({ deviceId: z.string().min(1).max(128), planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
+
 export const rerunRequestInputSchema = z.object({ planId: planIdSchema, itemKey: itemKeySchema, attemptRef: attemptRefSchema.optional(), note: noteSchema.nullable().optional() }).strict();
 
 // -- running a stage (slice 2, AC-GP-09..12) -------------------------------------------------------------------------------

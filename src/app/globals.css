@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* BL-162: the app's own scrollbars (one place for every scrollable area). */
+@import "./ui-kit.css";
 
 /* YouTube Studio-inspired dark palette (this app is dark-only, `dark` class always set in
  * layout.tsx -- no light-mode variant is needed or provided). Named after what each token is

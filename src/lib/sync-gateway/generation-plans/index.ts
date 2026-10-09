@@ -29,3 +29,5 @@ export function createGenerationPlansShareCoreForProduction(): GenerationPlansSh
 }
 
 export * from "./contracts";
+// BL-162: the review presence files (what each computer has open right now), next to the reports.
+export { createReviewPresence, createReviewPresenceForProduction, reviewPresenceSchema, REVIEW_PRESENCE_FORMAT, REVIEW_PRESENCE_MAX_BYTES, type ReviewPresence, type ReviewPresenceCore } from "./presence";

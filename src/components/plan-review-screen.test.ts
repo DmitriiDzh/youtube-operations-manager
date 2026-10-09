@@ -239,3 +239,28 @@ test("AC-WV-02/06: the next-wave offer -- the next wave with a waiting track thi
   assert.equal(nextOpenWave(waves, waves[1], entries, () => false), null, "the chosen wave still waits: no offer");
   assert.equal(nextOpenWave([wave("C1", 1), wave("C2", 0)], wave("C2", 0), [{ id: "x", groupId: "C1", verdict: null }], () => false)?.groupId, "C1", "wraps");
 });
+
+test("BL-162 AC-UX-06: a stage's failed checks come before the passed ones, each group in the validator's order", async () => {
+  const { splitChecks } = await import("./plan-review-screen");
+  const checks = [
+    { id: "held", pass: true },
+    { id: "style", pass: false },
+    { id: "loop", pass: true },
+    { id: "ring", pass: false },
+  ];
+  const { failed, passed } = splitChecks(checks);
+  assert.deepEqual(failed.map((c) => c.id), ["style", "ring"]);
+  assert.deepEqual(passed.map((c) => c.id), ["held", "loop"]);
+  assert.deepEqual(splitChecks([]), { failed: [], passed: [] });
+});
+
+test("BL-162 AC-UX-07: the wave picker shows waves with a waiting track and the chosen one; reviewed ones on request", async () => {
+  const { pickerWaves } = await import("./plan-review-screen");
+  const wave = (groupId: string, passed: number, rejected: number) => ({ groupId, title: `${groupId} long title`, total: 5, reviewed: 5 - passed - rejected, waitingPassed: passed, waitingRejected: rejected, accepted: 0, rejected: 0, overridesValidator: 0 });
+  // C1 and C2 are fully reviewed, C3 waits only on a validator-rejected track, C4 waits on a passed one.
+  const waves = [wave("C1", 0, 0), wave("C2", 0, 0), wave("C3", 0, 1), wave("C4", 2, 0)];
+  assert.deepEqual(pickerWaves(waves, null, false), { shown: [waves[2], waves[3]], reviewed: 2 });
+  assert.deepEqual(pickerWaves(waves, "C1", false).shown.map((w) => w.groupId), ["C1", "C3", "C4"], "the chosen wave stays, in plan order");
+  assert.deepEqual(pickerWaves(waves, null, true).shown.map((w) => w.groupId), ["C1", "C2", "C3", "C4"]);
+  assert.deepEqual(pickerWaves([], null, false), { shown: [], reviewed: 0 });
+});

@@ -34,6 +34,30 @@ export function createPeerClaimPostHandler(deps: PeerClaimRouteDeps) {
   };
 }
 
+/** BL-162 (§5.4): the other computers' live claims on ANOTHER device's plan, for the review screen's quick poll; the active channel's only. */
+export function createPeerClaimGetHandler(deps: Omit<PeerClaimRouteDeps, "publish" | "core"> & { core: Pick<GenerationPlanServices, "assertPeerPlanOfChannel" | "liveClaims"> }) {
+  return async function GET(_request: Request, context: { params: Promise<{ deviceId: string; planId: string }> }) {
+    const session = await deps.getSession();
+    const userId = session?.user?.id;
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    try {
+      const { deviceId, planId } = await context.params;
+      await deps.core.assertPeerPlanOfChannel(deviceId, planId, await deps.activeChannelId(userId));
+      return NextResponse.json({ claims: await deps.core.liveClaims({ planId, ownerDeviceId: deviceId }) });
+    } catch (error) {
+      return planErrorResponse(error);
+    }
+  };
+}
+
+export const GET = createPeerClaimGetHandler({
+  getSession: () => getServerSession(authOptions),
+  get core() {
+    return createGenerationPlansCore();
+  },
+  activeChannelId: activeChannelOf,
+});
+
 export const POST = createPeerClaimPostHandler({
   getSession: () => getServerSession(authOptions),
   get core() {

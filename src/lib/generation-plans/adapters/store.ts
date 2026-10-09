@@ -7,6 +7,8 @@ import {
   upsertGenerationPlanReviewClaim,
   insertGenerationPlanPeerVerdict,
   listGenerationPlanPeerVerdicts,
+  insertGenerationPlanPeerGroupNote,
+  listGenerationPlanPeerGroupNotes,
   insertGenerationPlan,
   insertGenerationPlanEvent,
   linkMediaJobToPlan,
@@ -168,6 +170,8 @@ export function createPlanStore(): PlanStore {
         note: r.note ?? null,
         at: r.at,
       })),
+    insertPeerGroupNote: (n) => insertGenerationPlanPeerGroupNote({ noteId: n.noteId, planId: n.planId, ownerDeviceId: n.ownerDeviceId, groupId: n.groupId, note: n.note, at: n.at }),
+    listPeerGroupNotes: async (sinceIso) => (await listGenerationPlanPeerGroupNotes(sinceIso)).map((r) => ({ noteId: r.noteId, planId: r.planId, ownerDeviceId: r.ownerDeviceId, groupId: r.groupId, note: r.note ?? null, at: r.at })),
     // BL-157 (AC-TC-05): the owner verdicts' history.
     insertVerdictHistory: (planId, h) =>
       insertGenerationPlanVerdictHistory({

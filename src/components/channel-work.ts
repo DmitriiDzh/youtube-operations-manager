@@ -5,13 +5,17 @@ import type { Translate } from "@/lib/ui-text";
 // a count next to each channel in the switcher, and one bell entry per channel and type of work. Pure (no React), so the
 // rules are tested on their own; the summary they read is `GET /api/generation-plans/summary` (`channels`).
 
-/** A plan's review screen (BL-149 AC-RT-07); `device` = another device's plan (its report names it). */
-export function planReviewHref(planId: string, device?: PlanDeviceRef): string {
+/**
+ * A plan's review screen (BL-149 AC-RT-07); `device` = another device's plan (its report names it); BL-162 (AC-UX-09): `wave`
+ * opens it on that wave.
+ */
+export function planReviewHref(planId: string, device?: PlanDeviceRef, wave?: string): string {
   const query = new URLSearchParams();
   if (device) {
     query.set("device", device.deviceId);
     if (device.hostname) query.set("host", device.hostname);
   }
+  if (wave) query.set("wave", wave);
   return `/media/plans/${encodeURIComponent(planId)}/review${query.size > 0 ? `?${query.toString()}` : ""}`;
 }
 

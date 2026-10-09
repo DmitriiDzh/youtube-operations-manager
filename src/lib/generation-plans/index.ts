@@ -6,7 +6,7 @@ import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-
 import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
-import { createGenerationPlansShareCoreForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
+import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
 import { createGenerationPlanServices } from "./services";
@@ -30,6 +30,11 @@ export function createGenerationPlansCore() {
     peers: {
       ownDeviceId: async () => (await createBootstrapConfigStore(appDataPaths.bootstrapConfigPath).ensureExists()).deviceId,
       listPeerReports: () => createGenerationPlansShareCoreForProduction().listPeerReports(),
+    },
+    // BL-162 (§5.4): "what is open here" in its own small file, written at once and read straight from disk.
+    presence: {
+      publish: (claims) => createReviewPresenceForProduction().publish({ hostname: hostLabel(), claims }),
+      readPeers: () => createReviewPresenceForProduction().readPeers(),
     },
     // BL-157 (AC-MV-03): a plan move checks its files with the same resolver the player uses.
     files: {
@@ -81,6 +86,8 @@ export async function publishGenerationPlansShare(): Promise<void> {
   // First take in the verdicts other devices gave on this device's plans, so this report already shows them applied.
   // Its own failure never stops this device's report from going out (independent review).
   await core.applyPeerVerdicts().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' verdicts: ${error instanceof Error ? error.message : String(error)}`));
+  // BL-162 (FO-REQ-0013 §2.3): and the wave notes they wrote on this device's plans.
+  await core.applyPeerGroupNotes().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' wave notes: ${error instanceof Error ? error.message : String(error)}`));
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
     version: GENERATION_PLANS_REPORT_VERSION,
@@ -91,5 +98,7 @@ export async function publishGenerationPlansShare(): Promise<void> {
     verdicts: await core.outgoingVerdicts(),
     // BL-157 (AC-TC-01): this device's "being reviewed here" claims.
     claims: await core.ownClaims(),
+    // BL-162 (v3): the wave notes written here on other devices' plans.
+    groupNotes: await core.outgoingGroupNotes(),
   });
 }

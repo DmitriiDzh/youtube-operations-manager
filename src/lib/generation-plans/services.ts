@@ -29,9 +29,10 @@ import {
   type PlanReviewEntry,
   type PlanTodo,
   type PlanView,
+  sharedNotices,
 } from "./contracts";
 import { createHash } from "node:crypto";
-import type { GenerationPlansReport, SharedClaim, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
+import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
 import { inAppAttempts, planEvents, planProgress, planTodo, reviewBatches, reviewCandidates, secondFloor, type PlanJobRow, type PlanSessionRow } from "./progress";
 import {
   cloneGroupInputSchema,
@@ -50,6 +51,7 @@ import {
   parseWithSchema,
   PLAN_LIMITS,
   peerVerdictInputSchema,
+  peerGroupNoteInputSchema,
   reportInputSchema,
   reviewClaimInputSchema,
   rerunRequestInputSchema,
@@ -98,6 +100,10 @@ export type PlanStore = {
   insertPeerVerdict(verdict: SharedVerdict): Promise<void>;
   /** The outgoing verdicts given since `sinceIso` (older ones are dropped), oldest first. */
   listPeerVerdicts(sinceIso: string): Promise<SharedVerdict[]>;
+  /** BL-162 (FO-REQ-0013 §2.3): wave notes written here on other devices' plans (outgoing). */
+  insertPeerGroupNote(note: SharedGroupNote): Promise<void>;
+  /** The outgoing wave notes written since `sinceIso` (older ones are dropped), oldest first. */
+  listPeerGroupNotes(sinceIso: string): Promise<SharedGroupNote[]>;
   /** BL-157 (AC-TC-05): every owner verdict on this device's plans, with the device it was given on. */
   insertVerdictHistory(planId: string, row: PlanVerdictHistoryRow): Promise<void>;
   /** A plan's verdict history, oldest first. */
@@ -143,6 +149,11 @@ export type PlanServiceDependencies = {
   /** BL-157 (AC-TC-04/05): how this computer is named in a verdict's history (its host name, else its device id). */
   deviceLabel?: () => Promise<string>;
   generateId?: () => string;
+  /**
+   * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.4): the small "what is open here" files -- this device's claims written the moment
+   * they change, the other devices' read straight from disk (absent = claims travel only in the plans report).
+   */
+  presence?: { publish(claims: SharedClaim[]): Promise<void>; readPeers(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; claims: SharedClaim[] }>> };
 };
 
 /** BL-143 phase 2: a peer report older than this is shown as stale (the same 5 minutes as the sessions of other devices). */
@@ -163,10 +174,15 @@ export type PlanRunResult = {
 };
 
 const CAS_RETRIES = 5;
-/** BL-157 (AC-TC-01): a claim lasts this long after the screen last showed it (a heartbeat every minute extends it). */
-export const REVIEW_CLAIM_TTL_MS = 10 * 60_000;
-/** A peer's claim reaching further than this ahead is not believed (a clock far ahead, or a bad report). */
-const PEER_CLAIM_MAX_AHEAD_MS = 15 * 60_000;
+/**
+ * BL-157 (AC-TC-01): a claim lasts this long after the screen last showed it. BL-162 (owner, msg 2263): 90 s with a heartbeat
+ * every 30 s, so a closed screen frees its track within a minute and a half even when its release never arrived.
+ */
+export const REVIEW_CLAIM_TTL_MS = 90_000;
+/** A peer's claim reaching further than this ahead is not believed (a clock far ahead, or a bad report). BL-162: sized to the 90 s claim. */
+const PEER_CLAIM_MAX_AHEAD_MS = REVIEW_CLAIM_TTL_MS + 5 * 60_000;
+/** BL-162: the device-wide queue key of the presence file's writes (no plan id contains this character). */
+const PRESENCE_LOCK_KEY = "\u0000review-presence";
 /** BL-157 (AC-TC-05): how many of an attempt's verdicts the history shows and the report carries. */
 const HISTORY_SHOWN = 10;
 /** BL-157 (AC-MV-02): a job in one of these may still write its output; a plan does not move while it has one. */
@@ -302,19 +318,20 @@ export function validateDefinition(definition: PlanDefinition): void {
   if (problems.length > 0) throw planInvalid(`The plan is not valid: ${problems.slice(0, 10).join("; ")}`, { problems });
 }
 
+// BL-162: `sharedNotices` lives in ./contracts (the Plans card reads it in the browser too); re-exported for this module's callers.
+export { sharedNotices };
+
 /**
- * BL-157 (AC-BL-01): the notices in another device's report (`progress` is that device's derived progress, a loose record):
- * only well-formed ones of the known kinds are taken, anything else is left out.
+ * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2): when each wave's owner note last changed -- the newest `group_note` event of the owner
+ * that was not superseded, at the time the note was WRITTEN (`writtenAt` for one that came from another device, the event's own
+ * time for one written here). The factory's notes (actor "factory") are a different field and do not count. Exported for its test.
  */
-export function sharedNotices(progress: Record<string, unknown>): PlanNotice[] {
-  const raw = Array.isArray(progress.notices) ? (progress.notices as unknown[]) : [];
-  const out: PlanNotice[] = [];
-  for (const n of raw) {
-    if (!n || typeof n !== "object") continue;
-    const x = n as Record<string, unknown>;
-    if (x.kind === "stage_complete" && typeof x.stageId === "string" && typeof x.title === "string") out.push({ kind: "stage_complete", stageId: x.stageId.slice(0, 40), title: x.title.slice(0, 200) });
-    else if (x.kind === "budget_80" || x.kind === "budget_100" || x.kind === "plan_complete") out.push({ kind: x.kind });
-    else if (x.kind === "attempts_exhausted" && typeof x.count === "number" && Number.isFinite(x.count)) out.push({ kind: "attempts_exhausted", count: x.count });
+export function ownerNoteTimes(events: readonly PlanEvent[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const e of events) {
+    if (e.kind !== "group_note" || e.actor !== "owner" || e.details.superseded === true || typeof e.details.groupId !== "string") continue;
+    const at = Date.parse(typeof e.details.writtenAt === "string" ? e.details.writtenAt : e.at);
+    if (Number.isFinite(at) && at > (out.get(e.details.groupId) ?? Number.NEGATIVE_INFINITY)) out.set(e.details.groupId, at);
   }
   return out;
 }
@@ -931,7 +948,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     /** AC-GP-13: the owner's verdict from the Web UI, at the plan's owner-review stage, for an attempt the plan has. */
     async recordOwnerVerdict(input: unknown): Promise<PlanResultRow> {
       const parsed = parseWithSchema(ownerVerdictInputSchema, input, "owner verdict");
-      return serializedPerPlan(parsed.planId, async () => {
+      const saved = await serializedPerPlan(parsed.planId, async () => {
       const row = await requireActive(parsed.planId);
       const stage = row.definition.stages.find((s) => s.kind === "owner_review");
       if (!stage) throw planMismatch(`Plan ${row.id} has no owner review stage`, { planId: row.id });
@@ -982,6 +999,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
       return result;
       });
+      // BL-162 (review): the verdict ended this device's claim on the track -- the presence file says so at once too.
+      await publishPresence();
+      return saved;
     },
 
     /**
@@ -991,11 +1011,17 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     async setGroupNote(input: unknown, actor: PlanActor = "owner"): Promise<PlanView> {
       const parsed = parseWithSchema(groupNoteInputSchema, input, "group note");
       const field = actor === "owner" ? "ownerNote" : "note";
-      const updated = await mutate(parsed.planId, (row) => {
-        if (!row.definition.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${row.id} has no group ${parsed.groupId}`, { planId: row.id, groupId: parsed.groupId });
-        return { definition: { ...row.definition, groups: row.definition.groups.map((g) => (g.groupId === parsed.groupId ? { ...g, [field]: parsed.note } : g)) } };
+      // BL-162 (review): under the plan's lock, like `applyPeerGroupNotes`, so a note from another computer is never weighed
+      // against a stale "last change" and written over this one; `writtenAt` keeps the milliseconds the event time drops.
+      const updated = await serializedPerPlan(parsed.planId, async () => {
+        const writtenAt = now().toISOString();
+        const row = await mutate(parsed.planId, (r) => {
+          if (!r.definition.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${r.id} has no group ${parsed.groupId}`, { planId: r.id, groupId: parsed.groupId });
+          return { definition: { ...r.definition, groups: r.definition.groups.map((g) => (g.groupId === parsed.groupId ? { ...g, [field]: parsed.note } : g)) } };
+        });
+        await record(row.id, "group_note", actor, { groupId: parsed.groupId, note: parsed.note, writtenAt });
+        return row;
       });
-      await record(updated.id, "group_note", actor, { groupId: parsed.groupId, note: parsed.note });
       return view(updated);
     },
 
@@ -1092,6 +1118,22 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   }
 
   // The rest of the public surface (added to the object returned above).
+  /** BL-162 (§5.4): this device's claims, written to its presence file at once; advisory, so a failure is ignored. */
+  async function publishPresence(): Promise<void> {
+    const presence = deps.presence;
+    if (!presence) return;
+    // One device-wide queue (review): the file covers every plan, so two plans' claims written at once must not land in the
+    // wrong order -- each write reads the claims afresh, the last one written is the newest. Called after a plan's lock is
+    // released, so a slow sync folder never holds up a verdict.
+    await serializedPerPlan(PRESENCE_LOCK_KEY, async () => {
+      try {
+        await presence.publish(await deps.store.listClaims(now()));
+      } catch {
+        // The plans report still carries the claims a minute later.
+      }
+    });
+  }
+
   const more = {
     /**
      * AC-GP3-02: how many attempts wait for the owner -- this device's active plans plus other devices' active plans, minus
@@ -1191,7 +1233,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const claimId = claimIdOf(parsed.scope, ownerDeviceId, parsed.planId, parsed.groupId);
       // One plan's claims, one call at a time: a release and the next track's claim sent together never drop the new one
       // (review round 2).
-      return serializedPerPlan(parsed.planId, async () => {
+      const answer = await serializedPerPlan(parsed.planId, async () => {
         if (parsed.release) {
           // Giving up removes only this device's own claim -- found by its id, and for a track only that track's (a track
           // claim moves with the track; review round 1). No plan or channel check: a claim is released even after the plan
@@ -1237,6 +1279,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         });
         return { claimId, until };
       });
+      await publishPresence();
+      return answer;
     },
 
     /** BL-157 (AC-TC-01): this device's live claims, for its report. */
@@ -1248,30 +1292,53 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
      * BL-157 (AC-TC-02): the OTHER devices' live claims on a plan owned by `ownerDeviceId` (this device for its own plans),
      * each named by the device that made it. A claim reaching implausibly far ahead is not believed.
      */
+    /** BL-162 (§5.4): the other computers' live claims on a plan -- this device's (no `ownerDeviceId`) or another's -- for the review screen's quick poll. */
+    async liveClaims(input: { planId: string; ownerDeviceId?: string }): Promise<PlanReviewClaim[]> {
+      return more.claimsOn(input.ownerDeviceId ?? (await ownDeviceId()), input.planId);
+    },
+
     async claimsOn(ownerDeviceId: string, planId: string): Promise<PlanReviewClaim[]> {
       return (await more.peerClaims()).filter((c) => c.ownerDeviceId === ownerDeviceId && c.planId === planId).map(({ ownerDeviceId: _o, planId: _p, ...claim }) => (void _o, void _p, claim));
     },
 
     /** Every live claim in the other devices' reports, with the plan it is on (the peer plans view filters them itself). */
     async peerClaims(): Promise<Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }>> {
-      if (!deps.peers) return [];
+      if (!deps.peers && !deps.presence) return [];
       const at = now().getTime();
       const out: Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }> = [];
-      for (const report of await deps.peers.listPeerReports()) {
-        for (const c of report.claims ?? []) {
+      const add = (claims: readonly SharedClaim[], device: string) => {
+        for (const c of claims) {
           const until = Date.parse(c.until);
           if (!(until > at) || until > at + PEER_CLAIM_MAX_AHEAD_MS) continue;
-          out.push({ ownerDeviceId: c.ownerDeviceId, planId: c.planId, scope: c.scope, itemKey: c.itemKey, attemptRef: c.attemptRef, groupId: c.groupId, device: report.hostname ?? report.deviceId, since: c.since, until: c.until });
+          out.push({ ownerDeviceId: c.ownerDeviceId, planId: c.planId, scope: c.scope, itemKey: c.itemKey, attemptRef: c.attemptRef, groupId: c.groupId, device, since: c.since, until: c.until });
         }
+      };
+      // BL-162 (§5.4): a device's presence file is fresher than its report -- when it has one, it alone says what is open there
+      // (a claim given up a moment ago is gone from it, while the report may still carry it). A presence file that cannot be
+      // read leaves the reports to speak.
+      // Of a device's presence file and its report, the newer one speaks (review: an old presence file left by a failed write,
+      // or by a downgrade, must not hide that device's newer report). Both times come from that device's own clock.
+      const presence = deps.presence ? await deps.presence.readPeers().catch(() => []) : [];
+      const reports = deps.peers ? await deps.peers.listPeerReports() : [];
+      const usePresence = new Set(
+        presence.filter((p) => {
+          const report = reports.find((r) => r.deviceId === p.deviceId);
+          return !report || Date.parse(p.updatedAt) >= Date.parse(report.updatedAt);
+        }).map((p) => p.deviceId)
+      );
+      for (const report of reports) {
+        if (!usePresence.has(report.deviceId)) add(report.claims ?? [], report.hostname ?? report.deviceId);
       }
+      for (const p of presence) if (usePresence.has(p.deviceId)) add(p.claims, p.hostname ?? p.deviceId);
       return out;
     },
 
     /** BL-143 phase 2: the other devices' plans (read-only), each report with its age and whether it is stale. */
-    async peerPlans(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; plans: SharedPlan[] }>> {
+    async peerPlans(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; version: number; plans: SharedPlan[] }>> {
       if (!deps.peers) return [];
       const at = now().getTime();
-      return (await deps.peers.listPeerReports()).map((r) => ({ deviceId: r.deviceId, hostname: r.hostname, updatedAt: r.updatedAt, stale: at - Date.parse(r.updatedAt) > PEER_PLANS_STALE_AFTER_MS, plans: r.plans }));
+      // BL-162: `version` -- a device below 3 cannot take wave notes from here yet.
+      return (await deps.peers.listPeerReports()).map((r) => ({ deviceId: r.deviceId, hostname: r.hostname, updatedAt: r.updatedAt, stale: at - Date.parse(r.updatedAt) > PEER_PLANS_STALE_AFTER_MS, version: r.version, plans: r.plans }));
     },
 
     /**
@@ -1317,6 +1384,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       };
       await deps.store.insertPeerVerdict(verdict);
       await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef));
+      await publishPresence();
       return verdict;
     },
 
@@ -1351,6 +1419,101 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     /** The verdicts this device carries for other devices (the last 30 days). */
     async outgoingVerdicts(): Promise<SharedVerdict[]> {
       return deps.store.listPeerVerdicts(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString());
+    },
+
+    /**
+     * BL-162 (FO-REQ-0013 §2.3, MEDIA_UX_REDESIGN_PLAN.md §5.2): the owner's note on a wave of ANOTHER device's plan -- kept here
+     * and carried in this device's report (version 3) until that device applies it. Refused when that device's report is older
+     * than version 3: it could not read this device's report any more (the verdicts it carries would stop too).
+     */
+    async recordPeerGroupNote(input: unknown): Promise<SharedGroupNote> {
+      const parsed = parseWithSchema(peerGroupNoteInputSchema, input, "wave note");
+      if (!deps.peers || !deps.generateId) throw planInvalid("Wave notes on other devices' plans are not available in this process");
+      const report = (await deps.peers.listPeerReports()).find((r) => r.deviceId === parsed.deviceId);
+      const plan = report?.plans.find((p) => p.planId === parsed.planId);
+      if (!report || !plan) throw planNotFound(parsed.planId);
+      if (report.version < 3) {
+        throw planInvalid(`${report.hostname ?? report.deviceId} runs an older version of the app: update it there to send wave notes`, { reason: "peer_update_required", device: report.hostname ?? report.deviceId });
+      }
+      if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
+      if (!plan.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${parsed.planId} has no group ${parsed.groupId}`, { planId: parsed.planId, groupId: parsed.groupId });
+      const note: SharedGroupNote = { noteId: deps.generateId(), planId: parsed.planId, ownerDeviceId: parsed.deviceId, groupId: parsed.groupId, note: parsed.note, at: now().toISOString() };
+      await deps.store.insertPeerGroupNote(note);
+      return note;
+    },
+
+    /** BL-162: the newest wave note per device, plan and wave written here in the last 30 days -- what this device's report carries. */
+    async outgoingGroupNotes(): Promise<SharedGroupNote[]> {
+      const newest = new Map<string, SharedGroupNote>();
+      for (const n of await deps.store.listPeerGroupNotes(new Date(now().getTime() - PEER_VERDICTS_KEPT_MS).toISOString())) newest.set(`${n.ownerDeviceId}\u0000${n.planId}\u0000${n.groupId}`, n);
+      return [...newest.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-200);
+    },
+
+    /**
+     * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2, AC-NOTE-01..07): the wave notes other devices carry for THIS device's plans. A note
+     * newer -- by when it was WRITTEN -- than the wave's last owner-note change is applied; an older one is recorded as
+     * superseded and changes nothing. Applied or superseded, its id is in a `group_note` event, so it is weighed once.
+     */
+    async applyPeerGroupNotes(): Promise<{ applied: number; skipped: number }> {
+      if (!deps.peers) return { applied: 0, skipped: 0 };
+      const own = await deps.peers.ownDeviceId();
+      const at = now().getTime();
+      const byPlan = new Map<string, Array<{ note: SharedGroupNote; from: string }>>();
+      for (const report of await deps.peers.listPeerReports()) {
+        for (const note of report.groupNotes ?? []) {
+          if (note.ownerDeviceId !== own) continue;
+          const list = byPlan.get(note.planId) ?? [];
+          list.push({ note, from: report.hostname ?? report.deviceId });
+          byPlan.set(note.planId, list);
+        }
+      }
+      let applied = 0;
+      let skipped = 0;
+      for (const [planId, incoming] of byPlan) {
+        const done = await serializedPerPlan(planId, async () => {
+          const row = await deps.store.getPlan(planId);
+          if (!row || row.status !== "active") return { applied: 0, skipped: incoming.length };
+          const events = await deps.store.listEvents(row.id);
+          const handled = new Set(events.filter((e) => e.kind === "group_note" && typeof e.details.noteId === "string").map((e) => e.details.noteId as string));
+          const lastChange = ownerNoteTimes(events);
+          let a = 0;
+          let k = 0;
+          let current = row;
+          for (const { note, from } of [...incoming].sort((x, y) => Date.parse(x.note.at) - Date.parse(y.note.at))) {
+            if (handled.has(note.noteId)) continue;
+            const written = Date.parse(note.at);
+            // A note dated in the future (a fast clock) is not taken: it would block every newer one on that wave.
+            if (!current.definition.groups.some((g) => g.groupId === note.groupId) || !Number.isFinite(written) || written > at + 5 * 60_000) {
+              k++;
+              continue;
+            }
+            const details = { groupId: note.groupId, note: note.note, noteId: note.noteId, fromDevice: from, writtenAt: note.at };
+            const last = lastChange.get(note.groupId);
+            if (last !== undefined && written <= last) {
+              await record(row.id, "group_note", "owner", { ...details, superseded: true });
+              handled.add(note.noteId);
+              k++;
+              continue;
+            }
+            try {
+              current = await mutate(planId, (r) => ({ definition: { ...r.definition, groups: r.definition.groups.map((g) => (g.groupId === note.groupId ? { ...g, ownerNote: note.note } : g)) } }));
+            } catch {
+              // The plan kept changing under another writer, or it closed meanwhile: nothing was written and the note is not
+              // marked handled, so the next tick weighs it again (it is never silently dropped).
+              k++;
+              continue;
+            }
+            await record(row.id, "group_note", "owner", details);
+            handled.add(note.noteId);
+            lastChange.set(note.groupId, written);
+            a++;
+          }
+          return { applied: a, skipped: k };
+        });
+        applied += done.applied;
+        skipped += done.skipped;
+      }
+      return { applied, skipped };
     },
 
     /**
@@ -1522,7 +1685,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           updatedAt: plan.updatedAt,
           closedAt: plan.closedAt,
           stages: plan.stages,
-          groups: plan.groups,
+          // BL-162 (v3): each wave's owner note with the time it was written, so a computer that sent one can tell what became of it.
+          groups: plan.groups.map((g) => {
+            const written = ownerNoteTimes(recorded).get(g.groupId);
+            return { ...g, ownerNoteAt: written === undefined ? null : new Date(written).toISOString() };
+          }),
           items: plan.items.map((i) => ({ itemKey: i.itemKey, groupId: i.groupId, templateLabel: i.templateLabel ?? i.templateId, targetCount: i.targetCount, mode: i.mode })),
           progress: progress as unknown as Record<string, unknown>,
           itemParams,

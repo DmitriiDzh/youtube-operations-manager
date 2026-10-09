@@ -13,6 +13,7 @@ import {
   ComputeCard,
   JobsCard,
   CapacityLogCard,
+  ExchangeCleanupCard,
   NowRunningLine,
   FactoryLimitsCard,
   GpuFallbackCard,
@@ -196,6 +197,7 @@ export function ServersPanel({
         <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
         <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
         <CapacityLogCard />
+        <ExchangeCleanupCard />
       </div>
     </div>
   );
@@ -220,8 +222,8 @@ export function MediaPanel({
   onTabChange?: (tab: MediaTab) => void;
   /** BL-149 re-review: the panel is hidden behind a plan review; Plans stops polling meanwhile. */
   paused?: boolean;
-  /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
-  onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
+  /** BL-149: where the review screen of a plan opens (its own address); absent = in place. BL-162: `wave` = open on that wave. */
+  onReviewPlan?: (planId: string, source?: PeerReviewSource, wave?: string) => void;
   /** Where "now running" leads: Servers → Sessions. */
   sessionsHref?: string;
 }) {

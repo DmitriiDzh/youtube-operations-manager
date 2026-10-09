@@ -66,8 +66,13 @@ export {
   GENERATION_PLANS_REPORT_VERSION,
   generationPlansReportSchema,
   jobOutputPathSchema,
+  createReviewPresence,
+  createReviewPresenceForProduction,
+  reviewPresenceSchema,
+  REVIEW_PRESENCE_FORMAT,
+  REVIEW_PRESENCE_MAX_BYTES,
 } from "./generation-plans";
-export type { GenerationPlansReport, GenerationPlansShareCore, SharedBatch, SharedClaim, SharedPlan, SharedReviewEntry, SharedVerdict, SharedVerdictHistory } from "./generation-plans";
+export type { GenerationPlansReport, GenerationPlansShareCore, ReviewPresence, ReviewPresenceCore, SharedBatch, SharedClaim, SharedGroupNote, SharedPlan, SharedReviewEntry, SharedVerdict, SharedVerdictHistory } from "./generation-plans";
 export { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 // BL-150: the shared Servers → Setup settings (one global Automerge document, an opaque map of values).
 export { createMediaSettingsCoreForProduction } from "./media-settings";

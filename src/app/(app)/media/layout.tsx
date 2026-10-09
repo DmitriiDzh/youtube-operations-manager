@@ -41,7 +41,7 @@ export default function MediaLayout({ children }: { children: ReactNode }) {
               tab={tab}
               paused={reviewing}
               onTabChange={(next) => router.push(`/media/${next}`)}
-              onReviewPlan={(planId, source) => router.push(planReviewHref(planId, source))}
+              onReviewPlan={(planId, source, wave) => router.push(planReviewHref(planId, source, wave))}
             />
           </div>
         </FeatureErrorBoundary>

@@ -26,8 +26,9 @@ test("AC-GP2-02: own report ignored; newer replaces older; older not accepted; f
   assert.deepEqual(await c.mergeIncoming(bytes(report("win", "2026-10-07T11:30:00Z", { hostname: "newer" }))), { accepted: true });
   assert.equal((await c.listPeerReports())[0].hostname, "newer");
   await assert.rejects(c.mergeIncoming(bytes(report("win", "2026-10-07T12:30:00Z"))), /in the future/);
-  // BL-157 (SERVERS_MEDIA_PLAN.md §B): this build reads versions 1 and 2, so the first version it cannot read is 3.
-  await assert.rejects(c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:40:00Z"), version: 3 })), /version 3 is newer/);
+  // BL-157 (SERVERS_MEDIA_PLAN.md §B): this build reads versions 1 and 2. BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2) adds version 3,
+  // so the first version it cannot read is now 4.
+  await assert.rejects(c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:40:00Z"), version: 4 })), /version 4 is newer/);
   await assert.rejects(c.mergeIncoming(new TextEncoder().encode("{")), /unreadable JSON/);
   // A verdict naming an absolute or escaping job output path is not a valid report.
   const bad = report("win", "2026-10-07T11:45:00Z", {
@@ -114,4 +115,21 @@ test("AC-RP-01: version 2 stays strict -- an unknown field or a claim with an un
   const c = core();
   await assert.rejects(c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:00:00Z"), version: 2, plans: [v2Plan], claims: [{ ...claim, scope: "plan" }] })), /invalid generation plans report/);
   await assert.rejects(c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:00:00Z"), version: 2, plans: [{ ...v2Plan, review: [{ ...v2Plan.review[0], extra: 1 }] }] })), /invalid generation plans report/);
+});
+
+// BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2, AC-NOTE-09): version 3 adds the wave notes sent to other devices and each wave's
+// ownerNoteAt; versions 1 and 2 still read; version 3 stays strict.
+test("AC-NOTE-09: a version 3 report with wave notes and ownerNoteAt is read; strict as before", async () => {
+  const c = core();
+  const note = { noteId: "note-0001", planId: "R-0001-S1-music", ownerDeviceId: "mac", groupId: "C14", note: "too bright", at: "2026-10-07T11:05:00Z" };
+  const v3Plan = { ...v2Plan, groups: [{ ...v2Plan.groups[0], ownerNoteAt: "2026-10-07T11:04:00Z" }] };
+  assert.deepEqual(await c.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:10:00Z"), version: 3, plans: [v3Plan], claims: [claim], groupNotes: [note] })), { accepted: true });
+  const [read] = await c.listPeerReports();
+  assert.equal(read.version, 3);
+  assert.deepEqual(read.groupNotes, [note]);
+  assert.equal(read.plans[0].groups[0].ownerNoteAt, "2026-10-07T11:04:00Z");
+  // A cleared note (null) is a note too; an unknown field in a wave note is refused.
+  const other = core();
+  assert.deepEqual(await other.mergeIncoming(bytes({ ...report("win", "2026-10-07T11:10:00Z"), version: 3, groupNotes: [{ ...note, note: null }] })), { accepted: true });
+  await assert.rejects(core().mergeIncoming(bytes({ ...report("win", "2026-10-07T11:10:00Z"), version: 3, groupNotes: [{ ...note, extra: 1 }] })), /invalid generation plans report/);
 });

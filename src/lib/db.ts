@@ -1031,6 +1031,23 @@ export const generationPlanPeerVerdicts = sqliteTable(
 );
 
 /**
+ * Schema v73 (BL-162, FO-REQ-0013 §2.3): wave notes the owner wrote on THIS device for plans owned by ANOTHER device. They
+ * travel in this device's generation plans report (version 3); the owning device applies them. `note` null = cleared.
+ */
+export const generationPlanPeerGroupNotes = sqliteTable(
+  "generation_plan_peer_group_notes",
+  {
+    noteId: text("note_id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    ownerDeviceId: text("owner_device_id").notNull(),
+    groupId: text("group_id").notNull(),
+    note: text("note"),
+    at: text("at").notNull(),
+  },
+  (table) => [index("generation_plan_peer_group_notes_at_idx").on(table.at)]
+);
+
+/**
  * Schema v69 (BL-157, SERVERS_MEDIA_PLAN.md AC-TC-05): every owner verdict on THIS device's plans, given here or applied from
  * another device -- the result row keeps only the newest, this keeps them all, with the device each was given on. Device-local.
  */
@@ -3811,6 +3828,22 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "error_code TEXT)"
       );
       await client.execute("CREATE INDEX IF NOT EXISTS producer_call_log_at_idx ON producer_call_log (at)");
+    },
+  },
+  {
+    version: 73,
+    description:
+      "generation_plan_peer_group_notes -- BL-162 (FO-REQ-0013 §2.3, docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md §5.2): wave notes written on this device for another device's generation plans, carried in this device's plans report (version 3) until that device applies them. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_peer_group_notes (
+        note_id TEXT PRIMARY KEY NOT NULL,
+        plan_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        note TEXT,
+        at TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_group_notes_at_idx ON generation_plan_peer_group_notes (at)");
     },
   },
 ];
@@ -8852,6 +8885,20 @@ export async function insertGenerationPlanPeerVerdict(row: typeof generationPlan
 export async function listGenerationPlanPeerVerdicts(sinceIso: string, database: AppDb = db): Promise<StoredGenerationPlanPeerVerdict[]> {
   await database.delete(generationPlanPeerVerdicts).where(lt(generationPlanPeerVerdicts.at, sinceIso));
   const rows = await database.select().from(generationPlanPeerVerdicts).orderBy(desc(generationPlanPeerVerdicts.at)).limit(1000);
+  return rows.reverse();
+}
+
+export type StoredGenerationPlanPeerGroupNote = typeof generationPlanPeerGroupNotes.$inferSelect;
+
+/** BL-162: one wave note written here for another device's plan. */
+export async function insertGenerationPlanPeerGroupNote(row: typeof generationPlanPeerGroupNotes.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanPeerGroupNotes).values(row);
+}
+
+/** The peer wave notes written since `sinceIso` (newest 1000), oldest first; older ones are deleted (kept 30 days by the caller). */
+export async function listGenerationPlanPeerGroupNotes(sinceIso: string, database: AppDb = db): Promise<StoredGenerationPlanPeerGroupNote[]> {
+  await database.delete(generationPlanPeerGroupNotes).where(lt(generationPlanPeerGroupNotes.at, sinceIso));
+  const rows = await database.select().from(generationPlanPeerGroupNotes).orderBy(desc(generationPlanPeerGroupNotes.at)).limit(1000);
   return rows.reverse();
 }
 
