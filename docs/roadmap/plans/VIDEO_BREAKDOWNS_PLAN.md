@@ -14,6 +14,8 @@ the order of DEV-RESP-0018.
     `NOTIFICATION`; devices `DESKTOP`, `MOBILE`, `TV`, `TABLET`. Rows with 0 views do occur.
 - `video` is a filter here, not a dimension: one query per video per breakdown (DEV-RESP-0018).
 - Each query is 1 Analytics API unit, on the Analytics quota. Recent Analytics use on the Mac: 180–1,120 queries a day.
+  This feature adds, in steady state, about 140–150 queries per channel a day at 0.8 uploads a day (some 70 due subjects, 2 queries
+  each), at most 200 per channel per run (the cap of 100 subjects); the first collection of a channel's history is a one-time extra.
 - Own-channel Analytics data is Authorized Data and may be kept as long as needed (III.E.4.b). Nothing derived is computed (III.E.4.h).
 
 ## 2. Design
