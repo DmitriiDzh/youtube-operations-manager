@@ -93,6 +93,12 @@ export function createMarketIntelligenceCore() {
     rejectMarketCollectionRequestIfPending: store.rejectMarketCollectionRequestIfPending,
     finishMarketCollectionRequestIfRunning: store.finishMarketCollectionRequestIfRunning,
     failInterruptedMarketCollectionRequests: store.failInterruptedMarketCollectionRequests,
+    // BL-163 (docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.A): newest upload, the inactivity setting and the pause.
+    listLatestUploadDates: store.listLatestUploadDates,
+    getMarketIntelligenceInactiveAfterMonths: store.getMarketIntelligenceInactiveAfterMonths,
+    setMarketIntelligenceInactiveAfterMonths: store.setMarketIntelligenceInactiveAfterMonths,
+    setResearchChannelPause: store.setResearchChannelPause,
+    pauseInactiveResearchChannel: store.pauseInactiveResearchChannel,
   });
   // BL-117: API calls made by Research collection / discovery are logged against it in the quota history.
   const guard = createQuotaGuardCore();
@@ -103,7 +109,11 @@ export function createMarketIntelligenceCore() {
     // BL-117 (owner decision 2026-10-03): the AUTOMATIC refresh waits while less than the configured reserve of the daily quota
     // is left, so writes keep headroom (same rule as the Analytics auto-collection).
     runCollectionIfStale: quotaScoped(async (input: unknown) => {
-      if (!(await guard.isBackgroundReadAllowed())) return { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
+      if (!(await guard.isBackgroundReadAllowed())) {
+        // BL-163: the inactivity detector reads only stored data, so it runs even while the refresh waits for quota.
+        await services.evaluateWatchlistInactivity();
+        return { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
+      }
       return services.runCollectionIfStale(input);
     }, context),
     // An approved collection request runs the regular collection for its own channels (same stale window, failed-channel pause and daily
