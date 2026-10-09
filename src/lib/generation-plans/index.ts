@@ -86,6 +86,8 @@ export async function publishGenerationPlansShare(): Promise<void> {
   // First take in the verdicts other devices gave on this device's plans, so this report already shows them applied.
   // Its own failure never stops this device's report from going out (independent review).
   await core.applyPeerVerdicts().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' verdicts: ${error instanceof Error ? error.message : String(error)}`));
+  // BL-162 (FO-REQ-0013 §2.3): and the wave notes they wrote on this device's plans.
+  await core.applyPeerGroupNotes().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' wave notes: ${error instanceof Error ? error.message : String(error)}`));
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
     version: GENERATION_PLANS_REPORT_VERSION,
@@ -96,5 +98,7 @@ export async function publishGenerationPlansShare(): Promise<void> {
     verdicts: await core.outgoingVerdicts(),
     // BL-157 (AC-TC-01): this device's "being reviewed here" claims.
     claims: await core.ownClaims(),
+    // BL-162 (v3): the wave notes written here on other devices' plans.
+    groupNotes: await core.outgoingGroupNotes(),
   });
 }

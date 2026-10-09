@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
-import type { GenerationPlansReport, SharedClaim, SharedVerdict } from "@/lib/sync-gateway";
+import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedVerdict } from "@/lib/sync-gateway";
 import { createGenerationPlanServices, sharedNotices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 
 // BL-143 acceptance criteria AC-GP-01..07 (docs/roadmap/plans/GENERATION_PLANS_PLAN.md §4), written before the services.
@@ -22,6 +22,7 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
   const jobs = seed.jobs ?? [];
   const sessions = seed.sessions ?? [];
   const peerVerdicts: SharedVerdict[] = [];
+  const peerGroupNotes: SharedGroupNote[] = [];
   const history: Array<PlanVerdictHistoryRow & { planId: string }> = [];
   const claims = new Map<string, SharedClaim>();
   const store: PlanStore = {
@@ -59,6 +60,10 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
       peerVerdicts.push(structuredClone(v));
     },
     listPeerVerdicts: async (sinceIso) => peerVerdicts.filter((v) => v.at >= sinceIso).map((v) => structuredClone(v)),
+    async insertPeerGroupNote(n) {
+      peerGroupNotes.push(structuredClone(n));
+    },
+    listPeerGroupNotes: async (sinceIso) => peerGroupNotes.filter((n) => n.at >= sinceIso).map((n) => structuredClone(n)),
     async insertVerdictHistory(planId, row) {
       history.push({ ...structuredClone(row), planId });
     },
@@ -710,8 +715,9 @@ function twoDevices(opts: { presence?: boolean } = {}) {
   const winBase = setup();
   const mac = device("mac", macBase);
   const win = device("win", winBase);
-  const publish = async (deviceId: string, services: typeof mac) => {
-    reports[deviceId] = { format: "ytm-generation-plans", version: 2, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts(), claims: await services.ownClaims() };
+  // BL-162: reports are version 3 with the wave notes sent from the device (`version` lets a test play an older build).
+  const publish = async (deviceId: string, services: typeof mac, version: 1 | 2 | 3 = 3) => {
+    reports[deviceId] = { format: "ytm-generation-plans", version, deviceId, hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date(clockMs).toISOString(), plans: await services.buildSharedPlans(), verdicts: await services.outgoingVerdicts(), claims: await services.ownClaims(), ...(version >= 3 ? { groupNotes: await services.outgoingGroupNotes() } : {}) };
   };
   return { mac, win, macBase, winBase, publish, reports, presenceFiles };
 }
@@ -1707,4 +1713,133 @@ test("BL-162 §5.4: a device without a presence file (an older build) is still h
   await d.publish("win", d.win);
   delete d.presenceFiles.win;
   assert.deepEqual((await d.mac.liveClaims({ planId: "R-0001-S1-music" })).map((c) => [c.device, c.attemptRef]), [["Windows PC", "job:j1"]]);
+});
+
+// BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2-5.3, FO-REQ-0013 §2.3): a wave note written on the computer that does not own the plan.
+// Expected results are worked out by hand from the rules in §5.2 (a note wins when it was WRITTEN after the wave's last
+// owner-note change; the same note is weighed once), not read off the implementation.
+
+async function notesSetup() {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.publish("mac", d.mac);
+  const macPlan = async () => (await d.mac.getPlan({ planId: "R-0001-S1-music" })).plan;
+  const noteEvents = () => d.macBase.events.filter((e) => e.kind === "group_note");
+  return { d, macPlan, noteEvents };
+}
+
+test("AC-NOTE-01: a note written on Windows after the Mac's own edit is applied, as the owner's, naming Windows and when it was written", async () => {
+  const { d, macPlan, noteEvents } = await notesSetup();
+  await d.mac.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "Mac: fine" }); // written first
+  await d.publish("mac", d.mac);
+  const sent = await d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: "Windows: too thin" }); // written later
+  await d.publish("win", d.win);
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 1, skipped: 0 });
+  assert.equal((await macPlan()).groups.find((g) => g.groupId === "C1")?.ownerNote, "Windows: too thin");
+  const last = noteEvents().at(-1)!;
+  assert.deepEqual([last.actor, last.details.fromDevice, last.details.writtenAt, last.details.noteId, last.details.superseded], ["owner", "Windows PC", sent.at, sent.noteId, undefined]);
+  // The Mac's next report says when the current note was written: the Windows note's own time.
+  await d.publish("mac", d.mac);
+  assert.equal(d.reports.mac.plans[0].groups.find((g) => g.groupId === "C1")?.ownerNoteAt, sent.at);
+});
+
+test("AC-NOTE-02: a note written on Windows BEFORE the Mac's own later edit is not applied -- recorded as superseded", async () => {
+  const { d, macPlan, noteEvents } = await notesSetup();
+  await d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: "Windows: too thin" }); // written first
+  await d.publish("win", d.win);
+  await d.mac.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "Mac: fine after all" }); // written later, before the Mac saw it
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 0, skipped: 1 });
+  assert.equal((await macPlan()).groups.find((g) => g.groupId === "C1")?.ownerNote, "Mac: fine after all");
+  assert.deepEqual([noteEvents().at(-1)!.details.superseded, noteEvents().at(-1)!.details.fromDevice], [true, "Windows PC"]);
+});
+
+test("AC-NOTE-03/04: of two notes the later-written one wins, whichever arrives first; a delayed but later-written note still wins", async () => {
+  const { d, macPlan } = await notesSetup();
+  const note = (noteId: string, minutesAgo: number, text: string) => ({ noteId, planId: "R-0001-S1-music", ownerDeviceId: "mac", groupId: "C1", note: text, at: new Date(clockMs - minutesAgo * 60_000).toISOString() });
+  const deliver = async (...notes: ReturnType<typeof note>[]) => {
+    await d.publish("win", d.win);
+    d.reports.win.groupNotes = notes;
+    return d.mac.applyPeerGroupNotes();
+  };
+  // Both in one tick: B (written later) is the result.
+  assert.deepEqual(await deliver(note("note-a-0001", 10, "A"), note("note-b-0001", 5, "B")), { applied: 2, skipped: 0 });
+  assert.equal((await macPlan()).groups[0].ownerNote, "B");
+  // B applied first, then the earlier-written A arrives: B stays, A is superseded.
+  const e = await notesSetup();
+  const deliverE = async (...notes: ReturnType<typeof note>[]) => {
+    await e.d.publish("win", e.d.win);
+    e.d.reports.win.groupNotes = notes;
+    return e.d.mac.applyPeerGroupNotes();
+  };
+  assert.deepEqual(await deliverE(note("note-b-0002", 5, "B")), { applied: 1, skipped: 0 });
+  assert.deepEqual(await deliverE(note("note-a-0002", 10, "A")), { applied: 0, skipped: 1 });
+  assert.equal((await e.macPlan()).groups[0].ownerNote, "B");
+  // AC-NOTE-04: A (written 10 min ago) applied now; B (written 5 min ago) arrives later -- B is newer by writing, so it wins.
+  const f = await notesSetup();
+  const deliverF = async (...notes: ReturnType<typeof note>[]) => {
+    await f.d.publish("win", f.d.win);
+    f.d.reports.win.groupNotes = notes;
+    return f.d.mac.applyPeerGroupNotes();
+  };
+  assert.deepEqual(await deliverF(note("note-a-0003", 10, "A")), { applied: 1, skipped: 0 });
+  assert.deepEqual(await deliverF(note("note-b-0003", 5, "B")), { applied: 1, skipped: 0 });
+  assert.equal((await f.macPlan()).groups[0].ownerNote, "B");
+  void deliver;
+});
+
+test("AC-NOTE-05/07: the same note delivered again changes nothing and adds no event; a null note clears the owner's note", async () => {
+  const { d, macPlan, noteEvents } = await notesSetup();
+  await d.mac.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "Mac: fine" });
+  await d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: null });
+  await d.publish("win", d.win);
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 1, skipped: 0 });
+  assert.equal((await macPlan()).groups[0].ownerNote, null, "cleared");
+  const events = noteEvents().length;
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 0, skipped: 0 }, "delivered again");
+  assert.equal(noteEvents().length, events, "no second event");
+});
+
+test("AC-NOTE-06: a note for an unknown wave, a closed plan or another device's plan changes nothing", async () => {
+  const { d, macPlan, noteEvents } = await notesSetup();
+  await d.publish("win", d.win);
+  const at = new Date(clockMs).toISOString();
+  d.reports.win.groupNotes = [
+    { noteId: "note-unknown-g", planId: "R-0001-S1-music", ownerDeviceId: "mac", groupId: "C99", note: "x", at },
+    { noteId: "note-other-dev", planId: "R-0001-S1-music", ownerDeviceId: "laptop", groupId: "C1", note: "x", at },
+    { noteId: "note-no-plan01", planId: "R-9999", ownerDeviceId: "mac", groupId: "C1", note: "x", at },
+  ];
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 0, skipped: 2 }, "the unknown wave and the unknown plan; the laptop's is not for the Mac");
+  assert.equal((await macPlan()).groups[0].ownerNote ?? null, null);
+  assert.equal(noteEvents().length, 0);
+  // Closed: nothing applied, nothing recorded.
+  await d.mac.closePlan({ planId: "R-0001-S1-music", status: "completed" });
+  d.reports.win.groupNotes = [{ noteId: "note-closed-01", planId: "R-0001-S1-music", ownerDeviceId: "mac", groupId: "C1", note: "x", at }];
+  assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 0, skipped: 1 });
+  assert.equal(noteEvents().length, 0);
+});
+
+test("AC-NOTE-08: a note to a device whose report is older than version 3 is refused (update the app there) and nothing is stored", async () => {
+  const d = twoDevices();
+  await d.mac.createPlan(basePlan());
+  await d.publish("mac", d.mac, 2);
+  await assert.rejects(d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: "x" }), (e: unknown) => isDomainError(e) && e.code === "plan_invalid" && (e.details as { reason?: string }).reason === "peer_update_required");
+  assert.deepEqual(await d.win.outgoingGroupNotes(), []);
+  // Version 3: accepted; an unknown wave is refused.
+  await d.publish("mac", d.mac, 3);
+  await assert.rejects(d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C99", note: "x" }), (e: unknown) => isDomainError(e) && e.code === "plan_mismatch");
+  const ok = await d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: "x" });
+  assert.deepEqual((await d.win.outgoingGroupNotes()).map((n) => n.noteId), [ok.noteId]);
+});
+
+test("BL-162: ownerNoteTimes -- the owner's newest, not superseded note change per wave, by when it was written; the factory's notes do not count", async () => {
+  const { ownerNoteTimes } = await import("./services");
+  const ev = (at: string, actor: string, details: Record<string, unknown>) => ({ at, kind: "group_note", actor, details });
+  const times = ownerNoteTimes([
+    ev("2026-10-09T10:00:00.000Z", "owner", { groupId: "C1" }),
+    ev("2026-10-09T10:20:00.000Z", "owner", { groupId: "C1", writtenAt: "2026-10-09T10:05:00.000Z" }),
+    ev("2026-10-09T10:30:00.000Z", "owner", { groupId: "C1", writtenAt: "2026-10-09T10:25:00.000Z", superseded: true }),
+    ev("2026-10-09T10:40:00.000Z", "factory", { groupId: "C1" }),
+    ev("2026-10-09T10:10:00.000Z", "owner", { groupId: "C2" }),
+  ]);
+  assert.deepEqual([...times.entries()], [["C1", Date.parse("2026-10-09T10:05:00.000Z")], ["C2", Date.parse("2026-10-09T10:10:00.000Z")]]);
 });

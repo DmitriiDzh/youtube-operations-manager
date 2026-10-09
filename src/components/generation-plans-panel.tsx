@@ -6,7 +6,7 @@ import type { SharedPlan } from "@/lib/sync-gateway";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
-import { ownPlanModel, peerPlanModel, waveRows, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
+import { ownPlanModel, peerPlanModel, waveRows, type OutgoingNoteRef, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
 import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
@@ -24,7 +24,7 @@ const secondaryButton = "rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1
 type PlanDetail = PlanView & { events: PlanEvent[]; cursor: string };
 
 /** BL-143 phase 2: another device's plans as its report shows them (the route gives the active channel's only). */
-type PeerDevicePlans = { deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; plans: SharedPlan[] };
+type PeerDevicePlans = { deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; version?: number; plans: SharedPlan[] };
 
 /** "2 min ago" / "1 h ago" for a report's age. Exported for its test. */
 export function describeAge(t: Translate, updatedAt: string, now: number): string {
@@ -208,6 +208,7 @@ export function PlansPanel({
   const [reviewing, setReviewing] = useState<{ planId: string; source?: PeerReviewSource; wave?: string } | null>(null);
   const [peers, setPeers] = useState<PeerDevicePlans[]>([]);
   const [outgoing, setOutgoing] = useState<OutgoingVerdictRef[]>([]);
+  const [outgoingNotes, setOutgoingNotes] = useState<OutgoingNoteRef[]>([]);
 
   const load = useCallback(() => {
     void requestJson<{ plans: PlanView[] }>(t, "/api/generation-plans").then(
@@ -219,10 +220,11 @@ export function PlansPanel({
     );
     // BL-143 phase 2: the other devices' plans (the route gives the active channel's only); a failure here never hides this
     // device's own plans.
-    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdictRef[] }>(t, "/api/generation-plans/peers").then(
+    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdictRef[]; outgoingNotes?: OutgoingNoteRef[] }>(t, "/api/generation-plans/peers").then(
       (data) => {
         setPeers(data.devices);
         setOutgoing(data.outgoing);
+        setOutgoingNotes(data.outgoingNotes ?? []);
       },
       () => setPeers([])
     );
@@ -261,7 +263,7 @@ export function PlansPanel({
 
   // BL-162 (AC-UX-14, FO-REQ-0013 §2.1/§2.6): one list -- this device's plans and the other devices' plans of this channel.
   const inFilter = (status: string) => (filter === "active" ? status === "active" : status !== "active");
-  const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale }, outgoing)));
+  const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale, version: d.version }, outgoing, outgoingNotes)));
   const rows: ListRow[] = [
     ...(plans ?? [])
       .filter((p) => inFilter(p.plan.status))
@@ -569,7 +571,17 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
             </thead>
             <tbody>
               {waves.shown.map((row) => (
-                <WaveTableRow key={row.groupId} planId={model.planId} row={row} editable={model.status === "active" && elsewhere === null} onSaved={onChanged} onReview={model.status === "active" ? () => onReview(row.groupId) : undefined} />
+                <WaveTableRow
+                  key={row.groupId}
+                  planId={model.planId}
+                  row={row}
+                  // BL-162 (FO-REQ-0013 §2.3): another device's wave note goes there through this device's report.
+                  noteTarget={model.status !== "active" ? null : model.device ? (model.notes === "relay" ? { deviceId: model.device.deviceId, name: elsewhere ?? model.device.deviceId } : "update_required") : "own"}
+                  pending={model.pendingNotes[row.groupId] ?? null}
+                  device={elsewhere}
+                  onSaved={onChanged}
+                  onReview={model.status === "active" ? () => onReview(row.groupId) : undefined}
+                />
               ))}
             </tbody>
           </table>
@@ -650,7 +662,25 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
 }
 
 /** One wave in the card's table; a click on its description opens the factory's note and the owner's own note. */
-function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: string; row: WaveRow; editable: boolean; onSaved: () => void; onReview?: () => void }) {
+function WaveTableRow({
+  planId,
+  row,
+  noteTarget,
+  pending,
+  device,
+  onSaved,
+  onReview,
+}: {
+  planId: string;
+  row: WaveRow;
+  /** Where a note goes: this device ("own"), another device through the report, nowhere (closed), or "update the app there". */
+  noteTarget: "own" | { deviceId: string; name: string } | "update_required" | null;
+  /** A note sent from here that the owning device has not shown applied yet. */
+  pending: { note: string | null; at: string } | null;
+  device: string | null;
+  onSaved: () => void;
+  onReview?: () => void;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -661,7 +691,11 @@ function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: st
   const cell = (n: number | undefined, tone: string) => (n && n > 0 ? <span className={tone}>{n}</span> : <span className="text-zinc-600">—</span>);
   const save = async () => {
     try {
-      await postJson(t, `/api/generation-plans/${encodeURIComponent(planId)}/group-note`, { groupId: row.groupId, note: note.trim() ? note : null });
+      const url =
+        noteTarget !== null && typeof noteTarget === "object"
+          ? `/api/generation-plans/peers/${encodeURIComponent(noteTarget.deviceId)}/${encodeURIComponent(planId)}/group-note`
+          : `/api/generation-plans/${encodeURIComponent(planId)}/group-note`;
+      await postJson(t, url, { groupId: row.groupId, note: note.trim() ? note : null });
       setEditing(false);
       setError(null);
       onSaved();
@@ -682,6 +716,11 @@ function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: st
             {row.ownerNote ? (
               <span className="shrink-0 text-amber-300" title={t("plans.ownerNote", { note: row.ownerNote })}>
                 ✎
+              </span>
+            ) : null}
+            {pending && device ? (
+              <span className="shrink-0 text-sky-300" title={t("plans.noteSentWaiting", { device })}>
+                ⏳
               </span>
             ) : null}
           </button>
@@ -706,6 +745,13 @@ function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: st
             {row.dependsOn && <p className="text-zinc-500">{t("plans.after", { group: row.dependsOn })}</p>}
             {row.note && <p className="whitespace-pre-wrap text-zinc-400">{row.note}</p>}
             {!editing && row.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: row.ownerNote })}</p>}
+            {!editing && pending && device && (
+              <p className="whitespace-pre-wrap text-sky-200">
+                {t("plans.noteSentWaiting", { device })}
+                {pending.note ? `: ${pending.note}` : ""}
+              </p>
+            )}
+            {noteTarget === "update_required" && device && <p className="text-zinc-500">{t("plans.noteUpdateRequired", { device })}</p>}
             {editing ? (
               <div className="space-y-1">
                 <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} maxLength={2000} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100" placeholder={t("plans.notePlaceholder")} />
@@ -726,7 +772,7 @@ function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: st
                 </div>
               </div>
             ) : (
-              editable && (
+              (noteTarget === "own" || (noteTarget !== null && typeof noteTarget === "object")) && (
                 <button
                   type="button"
                   onClick={() => {

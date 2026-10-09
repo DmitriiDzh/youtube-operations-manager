@@ -334,4 +334,6 @@ export const production = {
   "review.queue.waitingGroup": "Waiting for your verdict · {count}",
   "review.queue.reviewedGroup": "Reviewed · {count}",
   "review.claimedMoved": "{device} already had this track open, so the next one is open here.",
+  "plans.noteSentWaiting": "Sent, waiting for {device} to apply it",
+  "plans.noteUpdateRequired": "To write a note on this wave from here, update the app on {device}.",
 } as const;

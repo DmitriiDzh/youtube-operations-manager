@@ -136,6 +136,11 @@ export const sharedPlanSchema = z
             note: z.string().max(2000).nullable(),
             /** BL-157 (v2, AC-WV-04): the owner's note on the wave, apart from the factory's `note`. */
             ownerNote: z.string().max(2000).nullable().optional(),
+            /**
+             * BL-162 (v3, FO-REQ-0013 §2.3): when the current owner note was written (on whichever computer), so a computer that
+             * sent a note can tell whether it was applied (same time) or a newer one won; null = no owner note yet.
+             */
+            ownerNoteAt: isoSchema.nullable().optional(),
           })
           .strict()
       )
@@ -177,16 +182,31 @@ export const sharedVerdictSchema = z
   })
   .strict();
 
+/** BL-162 (v3, FO-REQ-0013 §2.3): a wave note this device wrote on another device's plan, carried to that device in this device's report. */
+export const sharedGroupNoteSchema = z
+  .object({
+    noteId: z.string().min(8).max(64),
+    planId: z.string().max(80),
+    ownerDeviceId: z.string().min(1).max(128),
+    groupId: z.string().max(40),
+    /** null = the note is cleared. */
+    note: z.string().max(2000).nullable(),
+    at: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
 /**
  * BL-157 (SERVERS_MEDIA_PLAN.md §B): the report version this build writes. It still reads version 1 (no job channel,
  * history, waves or claims). A version 1 build refuses a version 2 report (every level is strict), so both computers update.
+ * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2): version 3 adds the wave notes sent to other devices (`groupNotes`) and each wave's
+ * `ownerNoteAt`. Read: 1-3. A version 2 build refuses a version 3 report ("update the app"), so both computers update again.
  */
-export const GENERATION_PLANS_REPORT_VERSION = 2;
+export const GENERATION_PLANS_REPORT_VERSION = 3;
 
 export const generationPlansReportSchema = z
   .object({
     format: z.literal(GENERATION_PLANS_REPORT_FORMAT),
-    version: z.union([z.literal(1), z.literal(2)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     deviceId: z.string().min(1).max(128),
     hostname: z.string().max(255).nullable(),
     updatedAt: z.string().datetime({ offset: true }),
@@ -194,10 +214,13 @@ export const generationPlansReportSchema = z
     verdicts: z.array(sharedVerdictSchema).max(1000),
     /** BL-157 (v2, AC-TC-01): this device's live review claims, on any device's plans; absent in a version 1 report. */
     claims: z.array(sharedClaimSchema).max(200).optional(),
+    /** BL-162 (v3): the newest wave note per plan and wave this device wrote on other devices' plans; absent before version 3. */
+    groupNotes: z.array(sharedGroupNoteSchema).max(200).optional(),
   })
   .strict();
 
 export type SharedPlan = z.infer<typeof sharedPlanSchema>;
+export type SharedGroupNote = z.infer<typeof sharedGroupNoteSchema>;
 export type SharedReviewEntry = z.infer<typeof sharedReviewEntrySchema>;
 export type SharedVerdict = z.infer<typeof sharedVerdictSchema>;
 export type GenerationPlansReport = z.infer<typeof generationPlansReportSchema>;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SharedPlan } from "@/lib/sync-gateway";
-import { peerPlanModel, sharedProgress, waveRows } from "./plan-card-model";
+import { peerPlanModel, pendingNotesOf, sharedProgress, waveRows } from "./plan-card-model";
 
 // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.1, FO-REQ-0013): another device's plan shown with the same card -- from that device's
 // report, where `progress` is a loose record an older build may have written with fewer fields.
@@ -65,7 +65,9 @@ test("BL-162 AC-UX-14: another device's version 1 plan gives the card's model --
     m.progress.stages.map((s) => [s.stageId, s.counts.planned, s.counts.done, s.counts.accepted]),
     [["generate", 10, 4, 0]]
   );
-  assert.deepEqual(m.groups[1], { groupId: "C2", title: "C2 recipe", dependsOn: "C1", note: "factory context", ownerNote: "too thin" });
+  // BL-162 (report v3): `ownerNoteAt` is null when the report (here version 1) does not carry it.
+  assert.deepEqual(m.groups[1], { groupId: "C2", title: "C2 recipe", dependsOn: "C1", note: "factory context", ownerNote: "too thin", ownerNoteAt: null });
+  assert.equal(m.notes, "update_required", "a version 1 device cannot take wave notes from here");
   assert.equal(m.groups[0].ownerNote, null, "a version 1 group has no ownerNote");
   assert.equal(m.events.length, 1);
 });
@@ -100,4 +102,30 @@ test("BL-162 AC-UX-10: waves newest first; shown are the waves with tracks waiti
   assert.equal(all.folded, 0);
   assert.equal(all.shown[1].counts, null, "a wave with no progress row yet");
   assert.deepEqual(waveRows({ groups: [], progress: sharedProgress({}) }, false), { shown: [], folded: 0 });
+});
+
+test("BL-162 §5.2: a sent wave note is pending while the owning device's note is older; applied (same time) or overtaken (newer) it is not", () => {
+  const sent = (groupId: string, at: string, note: string | null = "too thin") => ({ ownerDeviceId: "mac", planId: "R-0001", groupId, note, at });
+  const groups = [
+    { groupId: "C1", ownerNoteAt: null }, // nothing there yet
+    { groupId: "C2", ownerNoteAt: "2026-10-09T10:00:00.000Z" }, // older than the note sent at 10:05
+    { groupId: "C3", ownerNoteAt: "2026-10-09T10:05:00.000Z" }, // the sent note itself, applied
+    { groupId: "C4", ownerNoteAt: "2026-10-09T10:09:00.000Z" }, // a newer note there won
+    { groupId: "C5" }, // a version 2 report: no time known
+  ];
+  const pending = pendingNotesOf(groups, [sent("C1", "2026-10-09T10:05:00.000Z"), sent("C2", "2026-10-09T10:05:00.000Z"), sent("C3", "2026-10-09T10:05:00.000Z"), sent("C4", "2026-10-09T10:05:00.000Z"), sent("C5", "2026-10-09T10:05:00.000Z", null)]);
+  assert.deepEqual(Object.keys(pending), ["C1", "C2", "C5"]);
+  assert.deepEqual(pending.C5, { note: null, at: "2026-10-09T10:05:00.000Z" }, "a cleared note waits too");
+  // Of two sent to one wave, the newest counts.
+  assert.deepEqual(pendingNotesOf([{ groupId: "C1", ownerNoteAt: "2026-10-09T10:05:00.000Z" }], [sent("C1", "2026-10-09T10:05:00.000Z"), sent("C1", "2026-10-09T10:07:00.000Z", "newer")]), { C1: { note: "newer", at: "2026-10-09T10:07:00.000Z" } });
+});
+
+test("BL-162 §5.2: another device's plan takes wave notes from here only from version 3; its own sent notes are matched by device and plan", () => {
+  const v3 = { ...device, version: 3 };
+  const m = peerPlanModel(v1Plan(), v3, [], [
+    { ownerDeviceId: "win-1", planId: "R-0001", groupId: "C1", note: "mine", at: "2026-10-09T10:05:00.000Z" },
+    { ownerDeviceId: "other", planId: "R-0001", groupId: "C2", note: "not for this device", at: "2026-10-09T10:05:00.000Z" },
+  ]);
+  assert.equal(m.notes, "relay");
+  assert.deepEqual(Object.keys(m.pendingNotes), ["C1"]);
 });

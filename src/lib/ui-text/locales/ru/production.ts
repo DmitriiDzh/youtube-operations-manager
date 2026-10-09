@@ -335,4 +335,6 @@ export const production: Record<keyof typeof en, string> = {
   "review.queue.waitingGroup": "Ждут вердикта · {count}",
   "review.queue.reviewedGroup": "Проверены · {count}",
   "review.claimedMoved": "Этот трек уже открыт на {device} — здесь открыт следующий.",
+  "plans.noteSentWaiting": "Отправлено, ждём {device}",
+  "plans.noteUpdateRequired": "Чтобы написать заметку к этой волне отсюда, обновите приложение на {device}.",
 };

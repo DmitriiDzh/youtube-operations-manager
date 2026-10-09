@@ -4,6 +4,7 @@ import type { GenerationPlanServices } from "@/lib/generation-plans";
 import { DomainError } from "@/lib/shared-domain";
 import { createClaimGetHandler, createClaimPostHandler } from "./[planId]/claim/route";
 import { createPeerClaimGetHandler, createPeerClaimPostHandler } from "./peers/[deviceId]/[planId]/claim/route";
+import { createPeerGroupNotePostHandler } from "./peers/[deviceId]/[planId]/group-note/route";
 import { createPeerVerdictPostHandler } from "./peers/[deviceId]/[planId]/verdict/route";
 import { createPeersGetHandler } from "./peers/route";
 import { planHandler, type PlanRouteDeps } from "./shared";
@@ -37,7 +38,7 @@ test("AC-SM-03: a plan route runs for the active channel's plan, and answers ano
   assert.equal(ran, 1, "the route body never ran for a plan of another channel");
 });
 
-test("AC-SM-03: the peers list carries only the active channel's plans, the verdicts sent on them and the claims on them", async () => {
+test("AC-SM-03: the peers list carries only the active channel's plans, the verdicts and wave notes sent on them and the claims on them", async () => {
   const plan = (planId: string, channelId: string) => ({ planId, channelId }) as never;
   const verdict = (planId: string) => ({ verdictId: `v-${planId}`, planId, ownerDeviceId: "win", itemKey: "A/1", attemptRef: "job:1", result: "accepted", rating: 8, reasons: [], markers: [], note: "private note", at: "2026-10-08T10:00:00Z" });
   const claim = (planId: string) => ({ ownerDeviceId: "win", planId, scope: "attempt", itemKey: "A/1", attemptRef: "job:1", groupId: null, device: "win-pc", since: "", until: "" });
@@ -45,18 +46,21 @@ test("AC-SM-03: the peers list carries only the active channel's plans, the verd
     createPeersGetHandler({
       getSession: async () => ({ user: { id: "u1" } }),
       core: {
-        peerPlans: async () => [{ deviceId: "win", hostname: "win-pc", updatedAt: "", stale: false, plans: [plan("R-japan", "UC_japan"), plan("T-tropico", "UC_tropico")] }],
+        peerPlans: async () => [{ deviceId: "win", hostname: "win-pc", updatedAt: "", stale: false, version: 3, plans: [plan("R-japan", "UC_japan"), plan("T-tropico", "UC_tropico")] }],
         outgoingVerdicts: async () => [verdict("R-japan"), verdict("T-tropico")] as never,
         peerClaims: async () => [claim("R-japan"), claim("T-tropico")] as never,
+        // BL-162: a wave note names another channel's plan as much as a verdict does.
+        outgoingGroupNotes: async () => [{ noteId: "n-japan-1", planId: "R-japan", ownerDeviceId: "win", groupId: "C1", note: "too thin", at: "2026-10-09T10:00:00Z" }, { noteId: "n-tropico-1", planId: "T-tropico", ownerDeviceId: "win", groupId: "C1", note: "private", at: "2026-10-09T10:00:00Z" }],
       },
       activeChannelId: async () => active,
     });
-  const body = (await (await handler("UC_japan")()).json()) as { devices: Array<{ plans: Array<{ planId: string }> }>; outgoing: Array<{ planId: string }>; claims: Array<{ planId: string }> };
+  const body = (await (await handler("UC_japan")()).json()) as { devices: Array<{ plans: Array<{ planId: string }> }>; outgoing: Array<{ planId: string }>; claims: Array<{ planId: string }>; outgoingNotes: Array<{ planId: string }> };
   assert.deepEqual(body.devices[0].plans.map((p) => p.planId), ["R-japan"]);
   assert.deepEqual(body.outgoing.map((v) => v.planId), ["R-japan"], "a verdict on a Tropico plan is not shown while Japan is active");
   assert.deepEqual(body.claims.map((c) => c.planId), ["R-japan"]);
-  const none = (await (await handler(null)()).json()) as { devices: Array<{ plans: unknown[] }>; outgoing: unknown[]; claims: unknown[] };
-  assert.deepEqual([none.devices[0].plans, none.outgoing, none.claims], [[], [], []]);
+  assert.deepEqual(body.outgoingNotes.map((n) => n.planId), ["R-japan"]);
+  const none = (await (await handler(null)()).json()) as { devices: Array<{ plans: unknown[] }>; outgoing: unknown[]; claims: unknown[]; outgoingNotes: unknown[] };
+  assert.deepEqual([none.devices[0].plans, none.outgoing, none.claims, none.outgoingNotes], [[], [], [], []]);
 });
 
 // Review round 2 (BL-157): the claim and peer-verdict routes check the channel themselves; a release needs no channel.
@@ -144,4 +148,26 @@ test("BL-162 §5.4 / AC-SM-03: the quick claims read answers only for the active
   assert.deepEqual(await ok.json(), { claims: [] });
   assert.equal((await peer("UC_japan")(get, { params: Promise.resolve({ deviceId: "win", planId: "R-japan" }) })).status, 200);
   assert.deepEqual(asked, [{ planId: "R-japan" }, { planId: "R-japan", ownerDeviceId: "win" }]);
+});
+
+test("BL-162 / AC-SM-03: a wave note on another device's plan of another channel is refused (404) and never recorded", async () => {
+  const recorded: unknown[] = [];
+  const handler = (active: string | null) =>
+    createPeerGroupNotePostHandler({
+      getSession: async () => ({ user: { id: "u1" } }),
+      core: {
+        async assertPeerPlanOfChannel(deviceId: string, planId: string, channelId: string | null) {
+          if (!channelId || PEER_PLAN_CHANNEL[`${deviceId}\u0000${planId}`] !== channelId) throw notFound(planId);
+        },
+        recordPeerGroupNote: async (input: unknown) => (recorded.push(input), {}) as never,
+      },
+      activeChannelId: async () => active,
+      publish: async () => undefined,
+    });
+  const at = (planId: string) => ({ params: Promise.resolve({ deviceId: "win", planId }) });
+  assert.equal((await handler("UC_japan")(post({ groupId: "C1", note: "x" }), at("T-tropico"))).status, 404);
+  assert.equal((await handler(null)(post({ groupId: "C1", note: "x" }), at("R-japan"))).status, 404);
+  assert.equal(recorded.length, 0);
+  assert.equal((await handler("UC_japan")(post({ groupId: "C1", note: "too thin", deviceId: "mac", planId: "X" }), at("R-japan"))).status, 200);
+  assert.deepEqual(recorded, [{ groupId: "C1", note: "too thin", deviceId: "win", planId: "R-japan" }], "the address names the device and plan, never the body");
 });
