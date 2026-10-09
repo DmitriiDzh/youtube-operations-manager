@@ -1134,3 +1134,10 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   channel's own videos: the window totals and the 100-point retention curve as YouTube returned them, with the video's stored length.
 - Collected in the background with the Analytics collection (2 Analytics API queries per milestone, at most 25 per channel per run); a local
   read, never a live call. Each computer collects the milestones of the channels connected on it. Contract: `docs/interfaces.md`.
+
+**Stored traffic sources and devices (BL-168, Agent API 3.10.0, `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md`):**
+- `agent_get_stored_breakdowns` (capability `analytics.query_stored_breakdowns`, READ) returns views and watch minutes per traffic source
+  type and per device type, per day as YouTube returned them, for the channel as a whole or for up to 20 of its videos (each video's first
+  90 days), summed over a date range or listed by day, with the stored coverage of each.
+- Collected in the background with the Analytics collection, once a day (2 Analytics API queries per subject, at most 50 subjects per
+  channel per run); a local read, never a live call. Each computer collects the channels connected on it. Contract: `docs/interfaces.md`.

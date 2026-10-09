@@ -77,3 +77,9 @@ every channel's reads without a worker per channel, and nothing else.
 - The Producer session's real deps moved from the route file to `src/lib/producer-mcp-endpoint/session-deps.ts` (a route may export only
   its handlers), so they are tested on a real database; the approval inventory scan covers that directory too.
 - **Not changed:** the DRAFT tools, the permissions, the per-call channel scope.
+
+## Amendment 3 — stored traffic sources and devices (BL-168, FO-REQ-0015 item 2, owner 2026-10-10, Telegram msg 2435)
+
+- Producer API 1.3.0 adds one READ channel tool to the closed list: `agent_get_stored_breakdowns` (capability
+  `analytics.query_stored_breakdowns`), stored data only, in the named channel's scope like every other channel tool.
+- **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.

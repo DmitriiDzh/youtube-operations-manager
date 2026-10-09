@@ -3300,3 +3300,34 @@ Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75; 
   rows of the current window), and `getVideoWindowsReach` (`reach-reports`: one `listDaily` over the span of all
   windows, per-window `daysWithData`, summed impressions, `weightedCtr`), read in each channel's agent scope. A Reach figure is null unless
   Reach is `ready` and the window has a stored day; a failed Reach read gives `reachError` (its error code).
+
+## 37. Stored traffic sources and devices per day (BL-168, FO-REQ-0015 item 2)
+
+Plan: `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md` (AC-VB-01..17). Schema v77.
+
+- **Subjects and ranges** (`src/lib/analytics/breakdowns.ts`). The channel (state subject `channel`) and each video with a final publish
+  date (`hasFinalPublishDate`, shared with the milestones). A video's range is its window, `videoBreakdownWindow` = the Pacific publish date
+  .. +89; the channel's range starts 89 days before the latest day of its first collection and has no end. The latest day is yesterday
+  (Pacific); a range ends at the earlier of it and the window end.
+- **Planning** (`planDueBreakdowns`, pure). A subject without a usable state (none, or one for another range start: the publish date moved)
+  is read in full (`fresh`). Otherwise it is due while the range end is later than `collected_through`, reading from the earlier of
+  `collected_through + 1` and range end − 6 (revisions and gaps); a video whose window has ended gets one final pass once today is window end
+  + 7 and its last collection was before that, and is never planned again. `failed` subjects are skipped, `retry` ones wait for
+  `next_attempt_at`. At most `MAX_BREAKDOWN_SUBJECTS_PER_RUN` (50): the channel first, then videos by publish date, newest first.
+- **Collection** (`collectDueBreakdowns`). Two `queryChannelBreakdownReport` calls per subject (`day,insightTrafficSourceType` and
+  `day,deviceType`, `views` + `estimatedMinutesWatched`, `video==<id>` for a video), saved only when both answered.
+  `saveCollectedAnalyticsBreakdown` deletes the subject's rows in from..to (all of them when `fresh`), inserts the answer (only days inside
+  the range, one row per day and value) and marks the state collected (`collected_through`, `collected_on` = today Pacific, attempts 0), in
+  one `database.batch`. Failures: `failureKind` (`query-failure.ts`, moved unchanged from `milestones.ts`): `stop` rethrows with nothing
+  written; `defer` (`deferAnalyticsBreakdown`) puts the subject back by 24 h keeping its attempts and stored range, then rethrows; `attempt`
+  (`recordAnalyticsBreakdownFailure`) counts consecutive failures, `failed` at 3. A state for another range start is reset by both. The core
+  wraps it in the analytics quota context and `gateBreakdownCollection` (`isBackgroundReadAllowed("analytics")`); `/api/analytics/
+  auto-collect-all` runs it after every channel's milestones, each channel in its own try/catch.
+- **Storage.** `video_breakdown_daily` (key `video_id, breakdown, day, value`; `channel_id`, `views`, `estimated_minutes_watched`; index on
+  `channel_id, video_id`), `channel_breakdown_daily` (key `channel_id, breakdown, day, value`), `analytics_breakdown_state` (key
+  `channel_id, subject`). Classified `authorized`; device-local. Not in the `analytics-data` exchange: its file schema is strict at format
+  version 1, so a new table would make a not-yet-updated peer reject every file.
+- **Reads.** `listStoredBreakdowns` (channel scope) backs `agent_get_stored_breakdowns`: the channel (no `videoIds`) or the requested
+  videos the channel has with a final publish date; rows only for a state of the current range start, inside `range_start ..
+  collected_through` and the requested dates; `total` sums views and minutes per value (null only when every row had none), `day` lists
+  rows; labels from `breakdown-labels.ts` (English).
