@@ -60,3 +60,14 @@ test(`videos with a details read in the last ${VIDEO_DETAILS_REFRESH_DAYS} days 
 test("FO-REQ-0015 item 6: a competitor video's thumbnail is YouTube's own URL for its id (nothing stored)", () => {
   assert.equal(youtubeThumbnailUrl("dQw4w9WgXcQ"), "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
 });
+
+test("a stream that is upcoming or live, or a video without a known duration, is never settled (read again every run)", () => {
+  const rows = [
+    row("a", "upcoming", 1, "youtube.videos.list", null, "upcoming"),
+    row("b", "live", 1, "youtube.videos.list", null, "live"),
+    row("c", "liveWithLength", 1, "youtube.videos.list", 100, "live"),
+    row("d", "ended", 1, "youtube.videos.list", 5400, "none"),
+    row("e", "noLength", 1, "youtube.videos.list", null, "none"),
+  ];
+  assert.deepEqual([...videosWithFreshDetails(rows, NOW)], ["ended"]);
+});

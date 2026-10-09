@@ -250,7 +250,8 @@ export function withKnownVideoDetails<T extends StoredMarketVideoSnapshotForServ
   for (const row of rows) {
     if (!hasVideoDetails(row)) continue;
     const seen = latest.get(row.videoId);
-    if (!seen || row.observedAt.getTime() > seen.observedAt.getTime()) latest.set(row.videoId, row);
+    // `>=`: rows come oldest first, so on an equal time the later-stored row wins.
+    if (!seen || row.observedAt.getTime() >= seen.observedAt.getTime()) latest.set(row.videoId, row);
   }
   return rows.map((row) => {
     const known = latest.get(row.videoId);
@@ -263,10 +264,16 @@ export function withKnownVideoDetails<T extends StoredMarketVideoSnapshotForServ
   });
 }
 
-/** The videos of `rows` whose details were read within `days` of `now` (they need no new `videos.list`). */
+/**
+ * The videos of `rows` whose details were read within `days` of `now` and are settled (they need no new `videos.list`). A stream that is
+ * `live` or `upcoming`, or a video with no known duration, is never settled: it is read again on every collection until it has its
+ * duration (review: an ended stream otherwise kept showing "upcoming" for 20 days).
+ */
 export function videosWithFreshDetails(rows: StoredMarketVideoSnapshotForService[], now: Date, days: number = VIDEO_DETAILS_REFRESH_DAYS): Set<string> {
   const since = now.getTime() - days * 24 * 60 * 60 * 1000;
-  return new Set(rows.filter((row) => hasVideoDetails(row) && row.observedAt.getTime() >= since).map((row) => row.videoId));
+  const settled = (row: StoredMarketVideoSnapshotForService) =>
+    (row.durationSeconds ?? null) !== null && row.liveBroadcastContent !== "live" && row.liveBroadcastContent !== "upcoming";
+  return new Set(rows.filter((row) => hasVideoDetails(row) && settled(row) && row.observedAt.getTime() >= since).map((row) => row.videoId));
 }
 
 /**
@@ -1517,8 +1524,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                     freshDetails.add(row.videoId);
                   }
                   videoSnapshots = [...videoSnapshots.filter((row) => !detailedIds.has(row.videoId)), ...detailed];
-                } catch {
-                  // the unit is spent either way; nothing else changes
+                } catch (error) {
+                  // The unit is spent either way, and the batch rows stay (the details are read on a later run). An exhausted quota
+                  // is not swallowed: it ends this run like the fallback below would (review).
+                  if (isDomainError(error) && error.code === "youtube_quota_exceeded") throw error;
                 }
               }
             } catch {

@@ -970,6 +970,9 @@ function createFixture(overrides?: {
   rejectedPageTokens?: string[];
   /** "batch": videos.batchGetStats answers for any requested ids; "list": batch throws and videos.list answers for any ids. */
   autoStats?: "batch" | "list";
+  /** FO-REQ-0015 item 4: makes the details read (videos.list after a successful batch) fail, or answer with given details. */
+  detailsError?: () => Error | null;
+  detailsFor?: (videoId: string) => { durationSeconds: number | null; liveBroadcastContent: string | null };
 }) {
   const store = createFakeStore();
   const feedCalls: unknown[] = [];
@@ -1038,6 +1041,8 @@ function createFixture(overrides?: {
         // (part snippet,contentDetails,statistics), it answers for every requested public video with its duration and live
         // status -- what batchGetStats does not return.
         if (overrides?.autoStats === "batch") {
+          const failure = overrides.detailsError?.();
+          if (failure) throw failure;
           return args.videoIds.map((videoId) => ({
             videoId,
             title: "",
@@ -1045,8 +1050,7 @@ function createFixture(overrides?: {
             viewCount: 1,
             likeCount: 1,
             commentCount: 1,
-            durationSeconds: 600,
-            liveBroadcastContent: "none",
+            ...(overrides.detailsFor ? overrides.detailsFor(videoId) : { durationSeconds: 600, liveBroadcastContent: "none" }),
           }));
         }
         return overrides?.publicVideoSnapshots ?? [];
@@ -4317,23 +4321,25 @@ test("depth: a rejected cursor restarts from page 1's own next page -- stored pa
     playlistPages: [PAGE_A, PAGE_B, PAGE_C, PAGE_D],
     autoStats: "batch",
   });
-  store.setQuotaBudget(5);
+  // FO-REQ-0015 item 4 (each new page also spends its details read): budget 7 = channels.list (6), page 1 (5) + details (4),
+  // page 2 (4-2>=0: 3) + details (2), page 3 (2-2>=0: 1) + details (0); page 4 is not affordable. 150 stored, cursor page-4 -- the
+  // same state as before the change, so the rejected cursor (page-4) and the restart's cursor (page-3) still differ (review).
+  store.setQuotaBudget(7);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 200, publishedAfter: null });
-  // FO-REQ-0015 item 4 (each new page also spends its details read): budget 5 = channels.list (4), page 1 (3) + details (2),
-  // page 2 (2-2>=0: 1) + details (0); page 3 is not affordable. 100 stored, cursor page-3.
   await services.runCollectionIfStale(RUN_INPUT);
-  assert.equal(store.videoSnapshots.length, 100);
+  assert.equal(store.videoSnapshots.length, 150);
 
-  setRejectedPageTokens(["page-3"]);
+  setRejectedPageTokens(["page-4"]);
   setNow(new Date(T0.getTime() + DAY_MS));
-  // channels.list (4 left), page 1 (3; details fresh, no read), cursor page-3 rejected but charged (2), restart: page 2 (1) = all stored
-  // -> no snapshots, no details read; page 3 needs 2 > 1: stop.
+  store.setQuotaBudget(5);
+  // channels.list (4 left), page 1 (3; details fresh, no read), cursor page-4 rejected but charged (2), restart: page 2 (1) = all stored
+  // -> no snapshots, no details read; page 3 needs 2 > 1: stop, with page-3 as the cursor (never the rejected page-4).
   const second = await services.runCollectionIfStale(RUN_INPUT);
   assert.equal(second.unitsSpent, 4);
   assert.equal(second.failed, 0);
-  assert.equal(distinctStored(store), 100, "nothing new yet");
-  assert.equal(store.videoSnapshots.length, 150, "only page 1's 50 videos were re-observed; the stored videos of page 2 were not duplicated");
+  assert.equal(distinctStored(store), 150, "nothing new yet");
+  assert.equal(store.videoSnapshots.length, 200, "only page 1's 50 videos were re-observed; the stored videos of page 2 were not duplicated");
   assert.equal(store.videoSnapshots.filter((row) => row.videoId.startsWith("b")).length, 50, "each b-video has exactly one snapshot");
   const row = store.channels.get(VALID_CHANNEL_ID)!;
   assert.deepEqual([row.videosComplete, row.videosNextPageToken], [0, "page-3"]);
@@ -5532,4 +5538,95 @@ test("BL-156: every candidate one search inserts or re-finds is last seen at tha
     [b?.firstSeenAt.toISOString(), b?.lastSeenAt.toISOString(), store.discoveryCandidates.get("UC_A00000000000000000000")?.lastSeenAt.toISOString()],
     ["2026-10-07T00:00:00.000Z", "2026-10-07T00:00:00.000Z", "2026-10-07T00:00:00.000Z"]
   );
+});
+
+// ---- FO-REQ-0015 item 4: the details read (review findings) -----------------------------------------------------------------------
+
+test("details: the read stores videos.list rows (600 s, none) and agents see them, with each video's own thumbnail URL", async () => {
+  const { store, services, setNow, videoSnapshotCalls } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A], autoStats: "batch" });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(store.videoSnapshots.length, 50);
+  assert.deepEqual([...new Set(store.videoSnapshots.map((row) => `${row.source}|${row.durationSeconds}|${row.liveBroadcastContent}`))], ["youtube.videos.list|600|none"]);
+  // Next day: details are fresh, so page 1's refresh is batch-only (no details read) and those rows store no details of their own...
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const callsBefore = videoSnapshotCalls.length;
+  await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(videoSnapshotCalls.length, callsBefore, "no second details read within 20 days");
+  const batchRows = store.videoSnapshots.filter((row) => row.source === "youtube.videos.batchGetStats");
+  assert.equal(batchRows.length, 50);
+  assert.ok(batchRows.every((row) => (row.durationSeconds ?? null) === null), "nothing copied into storage");
+  // ...but every row an agent reads carries the video's known details and its thumbnail.
+  const context = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  const a1 = context.videoSnapshots.filter((row) => row.videoId === "a1");
+  assert.equal(a1.length, 2);
+  assert.ok(a1.every((row) => row.durationSeconds === 600 && row.liveBroadcastContent === "none"));
+  assert.equal(a1[0].thumbnailUrl, "https://i.ytimg.com/vi/a1/hqdefault.jpg");
+});
+
+test("details: a failed read keeps the batch rows (1 unit spent, the run still succeeds) and is tried again on the next run", async () => {
+  let failing = true;
+  const { store, services, setNow, videoSnapshotCalls } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A],
+    autoStats: "batch",
+    detailsError: () => (failing ? new Error("videos.list down (test)") : null),
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  // channels.list 1 + page 1 1 + the failed details read 1 = 3.
+  const first = await services.runCollectionIfStale(RUN_INPUT);
+  assert.deepEqual([first.succeeded, first.failed, first.unitsSpent], [1, 0, 3]);
+  assert.ok(store.videoSnapshots.every((row) => row.source === "youtube.videos.batchGetStats"));
+  failing = false;
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const callsBefore = videoSnapshotCalls.length;
+  await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(videoSnapshotCalls.length, callsBefore + 1, "read again: no details were stored");
+  assert.equal(store.videoSnapshots.filter((row) => row.source === "youtube.videos.list").length, 50);
+});
+
+test("details: an exhausted quota on the read ends the channel's collection as failed, never as a silent success", async () => {
+  const { store, services } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A],
+    autoStats: "batch",
+    detailsError: () => new DomainError({ code: "youtube_quota_exceeded", message: "quota (test)" }),
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+  assert.deepEqual([result.succeeded, result.failed], [0, 1]);
+});
+
+test("details: a stream that is upcoming or live is read again on every run until it has its duration", async () => {
+  let live: string = "upcoming";
+  const { store, services, setNow, videoSnapshotCalls } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [["s1"]],
+    autoStats: "batch",
+    detailsFor: () => (live === "none" ? { durationSeconds: 5400, liveBroadcastContent: "none" } : { durationSeconds: null, liveBroadcastContent: live }),
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.runCollectionIfStale(RUN_INPUT); // upcoming
+  live = "live";
+  setNow(new Date(T0.getTime() + DAY_MS));
+  await services.runCollectionIfStale(RUN_INPUT); // read again: live
+  live = "none";
+  setNow(new Date(T0.getTime() + 2 * DAY_MS));
+  await services.runCollectionIfStale(RUN_INPUT); // read again: ended, 1 h 30 min
+  setNow(new Date(T0.getTime() + 3 * DAY_MS));
+  await services.runCollectionIfStale(RUN_INPUT); // settled: no read
+  assert.equal(videoSnapshotCalls.length, 3);
+  const context = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  // The fake store stamps rows with the wall clock (all within the same millisecond or two here), so "newest" is the last row read.
+  const newest = context.videoSnapshots[context.videoSnapshots.length - 1];
+  assert.equal(newest.source, "youtube.videos.batchGetStats");
+  assert.deepEqual([newest.durationSeconds, newest.liveBroadcastContent], [5400, "none"]);
+  assert.equal(store.videoSnapshots.length, 4);
 });
