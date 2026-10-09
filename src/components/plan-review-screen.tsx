@@ -470,7 +470,6 @@ export function PlanReviewScreen({
   }, [base, claimsFrom, peerDevice]);
 
   const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
-  const waiting = entries?.filter((e) => e.verdict === null).length ?? 0;
   useEffect(() => {
     currentRow.current?.scrollIntoView({ block: "nearest" });
   }, [index, entries]);
@@ -765,7 +764,7 @@ export function PlanReviewScreen({
                       close();
                     }}
                     title={w?.title}
-                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${wave === id ? "bg-indigo-500/20 text-white" : "text-zinc-200 hover:bg-zinc-800"}`}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${wave === id ? "bg-violet-500/20 text-white" : "text-zinc-200 hover:bg-zinc-800"}`}
                   >
                     <span className="w-14 shrink-0 font-mono">{id ?? t("review.wave.all")}</span>
                     <span className="min-w-0 flex-1 truncate text-xs text-zinc-500">{w && w.title !== w.groupId ? w.title : ""}</span>
@@ -841,16 +840,16 @@ export function PlanReviewScreen({
           {/* AC-UX-01: the view switches, each with its caption, in one place. */}
           <Popover trigger={<>{t("review.view.label")} ▾</>} triggerClassName={toolButton} align="right" panelClassName="w-80 space-y-3 p-3 text-sm text-zinc-200">
             <label className="flex cursor-pointer items-center gap-3">
-              <ToggleSwitch label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
+              <ToggleSwitch tone="violet" label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
               <span>{t("review.matchLoudness")}</span>
             </label>
             <label className="flex cursor-pointer items-center gap-3">
-              <ToggleSwitch label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
+              <ToggleSwitch tone="violet" label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
               <span>{t("review.spectrogram")}</span>
             </label>
             <div className="space-y-1">
               <label className="flex cursor-pointer items-center gap-3">
-                <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
+                <ToggleSwitch tone="violet" label={t("review.blind")} checked={blind} onChange={setBlind} />
                 <span>{t("review.blindShort")}</span>
               </label>
               <p className="pl-14 text-xs text-zinc-500">{t("review.blindInfo")}</p>
@@ -862,56 +861,81 @@ export function PlanReviewScreen({
       {entries && entries.length === 0 ? (
         <p className="p-6 text-sm text-zinc-500">{t("review.empty")}</p>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[14rem_minmax(0,1fr)_19rem] divide-x divide-zinc-800">
+        <div className="grid min-h-0 flex-1 grid-cols-[16rem_minmax(0,1fr)_19rem] divide-x divide-zinc-800">
           {/* Column 1: the queue (AC-UX-15) -- every track of the walk with its state; a click opens it. */}
           <div className="flex min-h-0 flex-col">
-            <div className="border-b border-zinc-800 px-3 py-2 text-xs text-zinc-400">{t("review.queue.counts", { waiting, reviewed: reviewedHere })}</div>
             {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
             {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
               <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
                 <p>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</p>
                 {nextWave && (
-                  <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-indigo-600 px-2.5 py-1 font-medium text-white hover:bg-indigo-500">
+                  <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
                     {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
                   </button>
                 )}
               </div>
             )}
-            <ul className="min-h-0 flex-1 overflow-y-auto py-1 [scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin]">
-              {(entries ?? []).map((e, i) => {
-                const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
-                const current = i === index;
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {(() => {
+                const row = (e: PlanReviewEntry, i: number) => {
+                  const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
+                  const current = i === index;
+                  const auto = validatorOfEntry(e);
+                  return (
+                    <li key={`${e.itemKey}\u0000${e.attemptRef}`}>
+                      <button
+                        type="button"
+                        ref={current ? currentRow : undefined}
+                        onClick={() => go(i)}
+                        title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
+                        className={`w-full border-l-2 px-3 py-2 text-left transition-colors ${current ? "border-violet-400 bg-zinc-800" : "border-transparent hover:bg-zinc-800/50"}`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className={`min-w-0 truncate text-sm font-medium ${current ? "text-white" : "text-zinc-200"}`}>{shortKey(e.itemKey)}</span>
+                          {e.verdict ? (
+                            <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] ${e.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"}`}>
+                              {e.verdict.result === "accepted" ? "✓" : "✗"}
+                              {e.verdict.rating !== null ? ` ${e.verdict.rating}/10` : ""}
+                            </span>
+                          ) : claim ? (
+                            <span className="ml-auto shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span>
+                          ) : null}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-2 whitespace-nowrap text-xs text-zinc-500">
+                          {e.seed !== null ? <span>{t("review.queue.seed", { seed: String(e.seed) })}</span> : null}
+                          {/* Blind mode keeps the queue blind too. */}
+                          {!blind && auto !== null ? <span className={`ml-auto ${auto === "rejected" ? "text-amber-400" : "text-emerald-500/80"}`}>{auto === "rejected" ? t("review.queue.autoFailed") : t("review.queue.autoPassed")}</span> : null}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                };
+                const all = (entries ?? []).map((e, i) => ({ e, i }));
+                const open = all.filter(({ e }) => e.verdict === null);
+                const done = all.filter(({ e }) => e.verdict !== null);
+                const heading = (text: string) => <p className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">{text}</p>;
                 return (
-                  <li key={`${e.itemKey}\u0000${e.attemptRef}`}>
-                    <button
-                      type="button"
-                      ref={current ? currentRow : undefined}
-                      onClick={() => go(i)}
-                      title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
-                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${current ? "bg-indigo-500/20 text-white" : "text-zinc-300 hover:bg-zinc-800/70"}`}
-                    >
-                      <span className={`w-4 shrink-0 text-center ${e.verdict?.result === "accepted" ? "text-emerald-400" : e.verdict ? "text-red-400" : claim ? "text-sky-300" : "text-amber-300"}`}>
-                        {e.verdict?.result === "accepted" ? "✓" : e.verdict ? "✗" : claim ? "●" : "○"}
-                      </span>
-                      <span className="min-w-0 truncate font-mono">{shortKey(e.itemKey)}</span>
-                      <span className="text-xs text-zinc-500">{e.seed ?? ""}</span>
-                      <span className="ml-auto flex items-center gap-1 text-xs">
-                        {claim ? <span className="text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span> : null}
-                        {!hideFindings && validatorOfEntry(e) === "rejected" ? (
-                          <span className="text-amber-400" title={t("review.queue.validatorRejected")}>
-                            ⚠
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                  </li>
+                  <>
+                    {open.length > 0 && (
+                      <section>
+                        {heading(t("review.queue.waitingGroup", { count: open.length }))}
+                        <ul>{open.map(({ e, i }) => row(e, i))}</ul>
+                      </section>
+                    )}
+                    {done.length > 0 && (
+                      <section>
+                        {heading(t("review.queue.reviewedGroup", { count: done.length }))}
+                        <ul>{done.map(({ e, i }) => row(e, i))}</ul>
+                      </section>
+                    )}
+                  </>
                 );
-              })}
-            </ul>
+              })()}
+            </div>
           </div>
 
           {/* Column 2: the track, the player and the verdict right under it. */}
-          <div className="min-h-0 overflow-y-auto p-4 [scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin]">
+          <div className="min-h-0 overflow-y-auto p-4">
             {entry && (
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -1038,16 +1062,23 @@ export function PlanReviewScreen({
                 {/* The verdict, right under the player (AC-UX-02): the two decisions first, then rating, reasons, comment. */}
                 <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
                   <div className="flex flex-wrap items-center gap-3">
-                    <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-lg bg-emerald-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">
+                    {/* Owner, msg 2269 p.4: calm tinted decisions with their key, not two loud fills. */}
+                    <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-5 py-2.5 text-base font-medium text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 disabled:opacity-50">
+                      <span aria-hidden="true">✓</span>
                       {t("review.accept")}
+                      {/* ui-text-ignore: a keyboard key */}
+                      <kbd className="ml-1 rounded border border-emerald-500/40 px-1.5 text-xs font-normal text-emerald-300/80">A</kbd>
                     </button>
-                    <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-lg bg-red-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-red-500 disabled:opacity-50">
+                    <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-base font-medium text-rose-200 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20 disabled:opacity-50">
+                      <span aria-hidden="true">✗</span>
                       {t("review.reject")}
+                      {/* ui-text-ignore: a keyboard key */}
+                      <kbd className="ml-1 rounded border border-rose-500/40 px-1.5 text-xs font-normal text-rose-300/80">R</kbd>
                     </button>
                     <div className="ml-auto flex flex-wrap items-center gap-1 text-xs text-zinc-400">
                       <span className="mr-1">{t("review.rating")}</span>
                       {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-                        <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-8 w-8 rounded-md text-sm ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
+                        <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-8 w-8 rounded-md text-sm ${draft.rating === n ? "bg-violet-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
                           {n}
                         </button>
                       ))}
@@ -1091,7 +1122,8 @@ export function PlanReviewScreen({
                     ))}
                     {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does. */}
                     <span className="flex items-center gap-1">
-                      <button type="button" disabled={device !== null} onClick={() => void askRerun()} className="text-zinc-300 underline-offset-2 hover:text-white hover:underline disabled:cursor-not-allowed disabled:text-zinc-600 disabled:no-underline">
+                      <button type="button" disabled={device !== null} onClick={() => void askRerun()} className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50">
+                        <span aria-hidden="true">↻</span>
                         {device !== null ? t("review.rerunOnDevice", { device }) : t("review.askRerun")}
                       </button>
                       <InfoTooltip>{t("review.askRerunInfo")}</InfoTooltip>
@@ -1122,7 +1154,7 @@ export function PlanReviewScreen({
           </div>
 
           {/* Column 3: the auto-check, always in view (owner, msg 2254 p.2) -- the failed checks first (AC-UX-06). */}
-          <aside className="min-h-0 space-y-3 overflow-y-auto p-3 [scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin]">
+          <aside className="min-h-0 space-y-3 overflow-y-auto p-3">
             <h4 className="flex items-baseline justify-between gap-2 text-sm font-medium text-zinc-200">
               {t("review.why.validator")}
               {!hideFindings && allChecks.length > 0 && <span className="text-xs font-normal text-zinc-500">{t("review.checks.passed", { passed: allChecks.filter((c) => c.pass).length, total: allChecks.length })}</span>}

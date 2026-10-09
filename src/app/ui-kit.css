@@ -1,0 +1,37 @@
+/*
+ * UI kit: scrollbars (BL-162; owner, Telegram 2026-10-09, msg 2269 -- "лифты для скрола всегда базовые ярко серые... создать
+ * свой ui-kit / модуль для этого элемента интерфейса, чтобы он был в том же стиле что и остальной UI"). One place for every
+ * scrollable area of the app: thin, dark, in the interface's own greys, brighter on hover. `color-scheme: dark` also gives
+ * the browser's own controls (a select's list, a date field) their dark look.
+ */
+:root {
+  color-scheme: dark;
+  --scrollbar-thumb: #3f3f46;
+  --scrollbar-thumb-hover: #52525b;
+  --scrollbar-track: transparent;
+}
+
+/* Firefox, and Chrome/Edge 121+ (which then ignore the ::-webkit-scrollbar rules below). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Safari and older Chromium. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}

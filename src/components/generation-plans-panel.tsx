@@ -18,7 +18,7 @@ import { useT } from "./ui-text-provider";
 // it from the jobs, sessions and results when read -- this view only shows it. Polls while the tab is open.
 
 const POLL_MS = 10_000;
-const primaryButton = "rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50";
+const primaryButton = "rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50";
 const secondaryButton = "rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50";
 
 type PlanDetail = PlanView & { events: PlanEvent[]; cursor: string };
@@ -110,7 +110,7 @@ export function describeNotice(t: Translate, notice: PlanNotice): { text: string
   }
 }
 
-const NOTICE_TONES = { ok: "border-emerald-500/40 text-emerald-300", warn: "border-amber-500/40 text-amber-300", bad: "border-red-500/50 text-red-300", info: "border-indigo-500/40 text-indigo-300" } as const;
+const NOTICE_TONES = { ok: "border-emerald-500/40 text-emerald-300", warn: "border-amber-500/40 text-amber-300", bad: "border-red-500/50 text-red-300", info: "border-violet-500/40 text-violet-300" } as const;
 
 /** An event in one line. Exported for its test. */
 const JOB_EVENT_KEYS: Record<string, UiTextKey> = {
@@ -165,7 +165,7 @@ export function describeEvent(t: Translate, event: PlanEvent, channelName: (chan
   }
 }
 
-function Bar({ percent, tone = "bg-indigo-500" }: { percent: number; tone?: string }) {
+function Bar({ percent, tone = "bg-violet-500" }: { percent: number; tone?: string }) {
   return (
     <div className="h-2 w-full overflow-hidden rounded bg-zinc-800" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
       <div className={`h-full ${tone}`} style={{ width: `${percent}%` }} />
@@ -304,7 +304,7 @@ export function PlansPanel({
         <ul className="space-y-2">
           {rows.map((r) => (
             <li key={r.key}>
-              <button type="button" onClick={() => open(selected === r.key ? null : r.key)} className={`w-full space-y-1 rounded-lg border px-3 py-2 text-left ${selected === r.key ? "border-indigo-500 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"}`}>
+              <button type="button" onClick={() => open(selected === r.key ? null : r.key)} className={`w-full space-y-1 rounded-lg border px-3 py-2 text-left ${selected === r.key ? "border-violet-500 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"}`}>
                 <div className="flex flex-wrap items-baseline gap-2 text-sm">
                   <span className="font-medium text-zinc-100">{r.title}</span>
                   <span className="font-mono text-xs text-zinc-500">{r.planId}</span>
@@ -452,7 +452,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
           </p>
           {model.note && (
             <p className={`text-xs text-zinc-400 ${showNote ? "whitespace-pre-wrap" : "truncate"}`}>
-              <button type="button" onClick={() => setShowNote((v) => !v)} className="mr-1.5 text-indigo-300 hover:underline">
+              <button type="button" onClick={() => setShowNote((v) => !v)} className="mr-1.5 text-violet-300 hover:underline">
                 {showNote ? t("plans.note.less") : t("plans.note.more")}
               </button>
               {model.note}
@@ -499,7 +499,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
           onClick={model.waiting > 0 ? () => onReview() : undefined}
         />
         <Kpi label={t("plans.kpi.accepted")} value={String(ownerStage ? ownerStage.counts.accepted + ownerStage.counts.done : 0)} tone="text-emerald-300" sub={ownerStage && ownerStage.counts.rejected > 0 ? t("plans.kpi.rejected", { count: ownerStage.counts.rejected }) : null} />
-        {generate && <Kpi label={t("plans.kpi.generated")} value={`${generate.counts.done} / ${generate.counts.planned}`} bar={{ percent: describeStage(t, generate.kind, generate.counts).percent, tone: "bg-indigo-500" }} sub={generate.counts.failed > 0 ? t("plans.stage.failed", { count: generate.counts.failed }) : null} />}
+        {generate && <Kpi label={t("plans.kpi.generated")} value={`${generate.counts.done} / ${generate.counts.planned}`} bar={{ percent: describeStage(t, generate.kind, generate.counts).percent, tone: "bg-violet-500" }} sub={generate.counts.failed > 0 ? t("plans.stage.failed", { count: generate.counts.failed }) : null} />}
         <Kpi
           label={t("plans.kpi.budget")}
           value={progress.budget.usd !== null ? t("plans.spendOf", { spent: progress.spend.usd.toFixed(2), budget: progress.budget.usd.toFixed(2) }) : t("unit.usd", { value: progress.spend.usd.toFixed(2) })}
@@ -541,7 +541,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
               ) : (
                 <span className="flex items-center gap-1.5 text-xs text-zinc-300">
                   <label className="flex cursor-pointer items-center gap-2">
-                    <ToggleSwitch label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
+                    <ToggleSwitch tone="violet" label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
                     <span>{t("plans.reviewRejected")}</span>
                   </label>
                   <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
@@ -574,7 +574,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
             </tbody>
           </table>
           {(waves.folded > 0 || showAllWaves) && (
-            <button type="button" onClick={() => setShowAllWaves((v) => !v)} className="w-full border-t border-zinc-800 px-3 py-2 text-left text-xs text-indigo-300 hover:bg-zinc-950">
+            <button type="button" onClick={() => setShowAllWaves((v) => !v)} className="w-full border-t border-zinc-800 px-3 py-2 text-left text-xs text-violet-300 hover:bg-zinc-950">
               {showAllWaves ? t("plans.waves.fewer") : t("plans.waves.more", { count: waves.folded })}
             </button>
           )}
@@ -582,7 +582,7 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
       )}
 
       <div className="flex flex-wrap items-center gap-4 text-xs">
-        <button type="button" onClick={() => setShowItems((v) => !v)} className="text-indigo-300 hover:underline">
+        <button type="button" onClick={() => setShowItems((v) => !v)} className="text-violet-300 hover:underline">
           {showItems ? t("plans.hideItems") : t("plans.showItems", { count: progress.items.length })}
         </button>
       </div>
@@ -693,7 +693,7 @@ function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: st
         <td className="px-3 py-2 text-right">
           {/* AC-UX-09: this wave's own review. */}
           {counts && counts.waitingReview > 0 && onReview ? (
-            <button type="button" onClick={onReview} className="rounded-md border border-indigo-500/60 px-2.5 py-1 text-xs font-medium text-indigo-200 hover:bg-indigo-500/15">
+            <button type="button" onClick={onReview} className="w-full rounded-md border border-violet-500/50 px-2.5 py-1 text-xs font-medium text-violet-200 hover:bg-violet-500/15">
               {t("plans.reviewWaiting", { count: counts.waitingReview })}
             </button>
           ) : null}
@@ -733,7 +733,7 @@ function WaveTableRow({ planId, row, editable, onSaved, onReview }: { planId: st
                     setNote(row.ownerNote ?? "");
                     setEditing(true);
                   }}
-                  className="text-indigo-300 hover:underline"
+                  className="text-violet-300 hover:underline"
                 >
                   ✎ {row.ownerNote ? t("plans.editNote") : t("plans.addNote")}
                 </button>

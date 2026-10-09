@@ -132,7 +132,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
         // BL-162 (AC-UX-02): the waveform is the screen's main element.
         height,
         waveColor: "#52525b",
-        progressColor: "#818cf8",
+        progressColor: "#a78bfa",
         cursorColor: "#e4e4e7",
         normalize: true,
         // Independent review: wavesurfer decodes at 8 kHz by default -- the spectrogram and the loudness measurement need
@@ -241,8 +241,18 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
             ))}
       </div>
       <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-        <button type="button" onClick={() => void wave.current?.playPause()} disabled={!state.ready} className="min-w-20 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
-          {state.playing ? t("review.player.pause") : t("review.player.play")}
+        {/* BL-162 (owner, msg 2269 p.4): a round, light play control in the player's own style, apart from the verdict colours. */}
+        <button
+          type="button"
+          onClick={() => void wave.current?.playPause()}
+          disabled={!state.ready}
+          aria-label={state.playing ? t("review.player.pause") : t("review.player.play")}
+          title={state.playing ? t("review.player.pause") : t("review.player.play")}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-900 transition-colors hover:bg-white disabled:opacity-40"
+        >
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden="true">
+            {state.playing ? <path d="M6 5h4v14H6zM14 5h4v14h-4z" /> : <path d="M8 5v14l11-7z" />}
+          </svg>
         </button>
         <span className="font-mono">
           {formatPlayerTime(state.time)} / {formatPlayerTime(state.duration)}
