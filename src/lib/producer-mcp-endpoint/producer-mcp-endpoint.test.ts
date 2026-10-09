@@ -440,18 +440,19 @@ test("BL-163 AC-PR-01/03: the proposal tools reach only the session's proposal s
   // An unknown kind never reaches the store.
   const unknownKind = await toolResult(await endpoint.handle(rpc(call("producer_propose", { ...args, kind: "watchlist.approve" }), bearer(token))));
   assert.equal(unknownKind.isError, true);
-  await endpoint.handle(rpc(call("producer_list_proposals", { status: "rejected" }), bearer(token)));
+  const listed = await toolResult(await endpoint.handle(rpc(call("producer_list_proposals", { status: "rejected", channelId: "UC_PR_X" }), bearer(token))));
+  assert.deepEqual(payloadOf(listed.text), { proposals: [], forChannelId: "UC_PR_X" }, "a list filtered to a channel names it");
   await endpoint.handle(rpc(call("producer_mark_proposals_done", { proposalIds: ["p1"] }), bearer(token)));
   assert.deepEqual(proposalCalls, [
     ["submit", args],
     ["submit", { ...args, kind: "watchlist.delete" }],
-    ["list", { status: "rejected" }],
+    ["list", { status: "rejected", channelId: "UC_PR_X" }],
     ["markDone", { proposalIds: ["p1"] }],
   ]);
   assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId, entry.outcome, entry.errorCode]), [
     ["producer_propose", "UC_PR_X", "ok", null],
     ["producer_propose", "UC_PR_X", "error", "AGENT_PROPOSAL_DUPLICATE"],
-    ["producer_list_proposals", null, "ok", null],
+    ["producer_list_proposals", "UC_PR_X", "ok", null],
     ["producer_mark_proposals_done", null, "ok", null],
   ]);
   assert.deepEqual(refused, [{ tool: "producer_propose", channelId: "UC_PR_X", errorCode: "INVALID_PARAMS" }], "only the refused input is logged as refused");

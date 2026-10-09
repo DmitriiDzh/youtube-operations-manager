@@ -1,5 +1,5 @@
 /**
- * The in-app MCP endpoint of the read-only Producer role (BL-161, FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3).
+ * The in-app MCP endpoint of the Producer role -- reads, plus proposals the owner approves (BL-161, BL-163, FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3).
  * `src/app/api/mcp/producer/route.ts` is a thin adapter over `createProducerMcpEndpoint().handle`.
  *
  * The same checks as the Factory Operator's endpoint, with its own token type (`ytom_pr_`) and verifier. Unlike the channel endpoint

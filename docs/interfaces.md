@@ -1000,13 +1000,18 @@ changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical co
     `{ statement, evidenceNotes }`. Refused at submit: `CHANNEL_NOT_ACTIVE` (channel not connected here), `RESEARCH_CHANNEL_NOT_AVAILABLE`
     (an entry this channel does not follow, or none), `AGENT_PROPOSAL_NOT_APPLICABLE` (e.g. pausing a paused entry, adding one the channel
     already follows), `AGENT_PROPOSAL_DUPLICATE` (`details.proposalId`; one pending pause / resume / delete per entry whoever proposed it,
-    the system's own deletion proposal included; add / unfollow per entry and channel), `validation_failed`.
-  - `producer_list_proposals` `{ channelId?, status?, includeDone? = false }` → `{ proposals }` -- the Producer's own, newest first:
+    the system's own deletion proposal included -- `details.source` says whose, and a system one is not in the Producer's list; add /
+    unfollow per entry and channel), `validation_failed`, and the device gate's `operation_lock_held` / `device_in_recovery_mode`
+    (also on mark-done). `text` is stored until 90 days after the decision; the owner's card shows the entry's current newest-upload
+    date next to it, so the text need not repeat other channels' statistics (kept 30 days at most).
+  - `producer_list_proposals` `{ channelId?, status? }` → `{ proposals }` (plus `forChannelId` when `channelId` is given) -- the
+    Producer's own, newest first, at most 500, never the ones it marked read, never decided ones past 90 days; a read that deletes nothing:
     `{ proposalId, source: "producer", kind, channelId, targetId, payload, text, status: pending | applied | rejected | failed, createdAt,
     decidedAt, rejectComment, applyError, doneAt }`.
   - `producer_mark_proposals_done` `{ proposalIds (1-100) }` → `{ marked, notMarked }`: a decided proposal leaves the store; a pending one is
     never marked. Decided proposals also leave 90 days after the decision; pending ones never expire.
-  - These calls are logged under the `channelId` they name (null when none), and `producer_propose`'s answer carries `forChannelId`.
+  - These calls are logged under the `channelId` they name (null when none), and every answer to a call that names one carries
+    `forChannelId`.
 - No WRITE, research or collection request, media session or job.
 
 ## API Route Handlers (selected)
@@ -1088,13 +1093,17 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
 
 Web UI only: no MCP tool, CLI command or agent-operations code reaches these (`src/lib/agent-proposals/agent-proposal-approval-inventory.test.ts`).
 
-- `GET /api/agent-proposals?view=pending|decided` → `{ proposals, pendingCount }` -- every source (Producer and system); each proposal as on the
-  Producer side plus `channelTitle`, `targetLabel` (the entry's handle while it is on the watchlist) and `decidedBy` (the approving session user).
+- `GET /api/agent-proposals?view=pending|decided` → `{ proposals, pendingCount }` -- every source (Producer and system); pending (at most 500)
+  or the 200 newest decided ones still kept; each proposal as on the Producer side plus `channelTitle`, `targetLabel` (the entry's handle
+  while it is on the watchlist), `targetLatestUploadPublishedAt` (the entry's current newest upload, read live from the watchlist; never
+  stored on the proposal) and `decidedBy` (the approving session user). `pendingCount` is a SQL count. A read: it deletes nothing.
 - `POST /api/agent-proposals/[proposalId]/approve` (no body) → `{ proposal }`: claims it atomically (`pending -> applied`), then makes the change
   through the same services the UI uses (watchlist add, our-channel links, pause/resume, delete; `createHypothesis` with `createdVia: "mcp"`,
   `createdBy: "producer"`). A change that cannot be made leaves it `failed` with `applyError` (HTTP 200), never retried. `AGENT_PROPOSAL_NOT_PENDING`
   (409) once decided, `AGENT_PROPOSAL_NOT_FOUND` (404), `AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE` (409, the proposal stays pending) for a hypothesis
-  whose channel is not the session's active channel.
+  whose channel is not the session's active channel (also when it stops being active during the approval), `AGENT_PROPOSAL_NOT_APPLICABLE`
+  (409, stays pending) for an add whose channel is no longer connected. Approve and reject also delete decided proposals that are done or
+  past 90 days.
 - `POST /api/agent-proposals/[proposalId]/reject` `{ comment }` (required, 1-2000 after trimming) → `{ proposal }`; nothing else changes.
 - `GET /api/market-intelligence/summary` `pending.agentProposals` counts the pending ones into `pending.total` (the Research inbox badge).
 
@@ -1109,7 +1118,7 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `POST /api/market-intelligence/channels/[channelId]/fetch-public-snapshot` — the one slice-3 action making a real `channels.list` call; records a free-text evidence row
 - `POST /api/market-intelligence/collect-if-stale` (Phase 9 slice 9B) — repeatable, budget-aware auto-refresh: every watchlisted channel stale by >24h gets a channel snapshot + up to 50 newest video snapshots, gated by the operator-set daily unit budget (`marketIntelligenceDailyQuotaBudgetUnits`, Settings tab); triggered once per dashboard mount (chained after the two Phase 8 analytics calls), real mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; no request body
 - `POST /api/market-intelligence/channels/[channelId]/pause` `{ paused: boolean }` → `{ channel }` (BL-163, FO-REQ-0014 §A): the owner pauses (reason `owner`) or resumes a watchlist entry; a paused entry is never collected. Only a state change is written (a paused entry keeps its first reason; resuming stamps `resumedAt`, after which the detector does not pause it again for the same silence). `RESEARCH_CHANNEL_NOT_AVAILABLE` (404) for an entry not on the watchlist.
-- `GET/POST /api/market-intelligence/inactivity` `{ inactiveAfterMonths: 1..60 }` (BL-163): "inactive after N months without uploads", default 6. An entry whose newest stored upload (`MAX(published_at)` of its retained video snapshots) is older is paused (reason `inactive`) with one pending system proposal `watchlist.delete`, evaluated at the start and end of every collection pass. Every watchlist read (these routes, `watchlist-table`, `query_competitors`, `query_market_overview`) carries `latestUploadPublishedAt` (raw, null when unknown), `inactive`, `pausedAt`, `pausedReason`.
+- `GET/POST /api/market-intelligence/inactivity` `{ inactiveAfterMonths: 1..60 }` (BL-163): "inactive after N months without uploads", default 6. An entry whose newest stored upload (`MAX(published_at)` of its retained video snapshots) is older is paused (reason `inactive`) with one pending system proposal `watchlist.delete`, evaluated at the start and end of every collection pass. Every watchlist read (these routes, `watchlist-table`, `query_competitors`, `query_market_overview`, `query_market_intelligence`'s channel record) carries `latestUploadPublishedAt` (raw, null when unknown), `inactive`, `pausedAt`, `pausedReason`; `watchlist-table`'s `status` is `paused` for a paused entry (not a warning). The system proposal stores N, never the upload date. The setting is per computer (RISK-121).
 - `GET/POST /api/market-intelligence/collection-depth` and `GET/POST /api/market-intelligence/channels/[channelId]/collection-depth` (operator request 2026-10-04) — the global default and a watchlist entry's override of the competitor collection depth (`maxVideosPerChannel` integer 1..2000 or null, `publishedAfter` `YYYY-MM-DD` or null; null = default / unset = 50 videos, no date), plus (per channel) `collectionProgress` (videos stored, complete, estimated first-collection units). Session only, like the other watchlist routes; Web UI only, no MCP/CLI write contract. MCP read side: `query_market_overview` per-channel `collection`, `query_market_intelligence` `collectionProgress`, data-quality flag `feed_fallback_used`.
 - `GET /api/market-intelligence/discover` (Phase 13 slice 13.4) — today's `search.list` usage against its own bucket (`{ searchesUsedToday, dailyLimit: 100, quotaDayStartedAt }`, the quota day starting at midnight Pacific)
 - `POST /api/market-intelligence/discover` (Phase 9 slice 9C; quota revised in Phase 13 slice 13.4) — `{ query }`; one `search.list` call (1 unit from its own bucket of 100 calls a day, refused when that bucket is used up; it does not draw on the collection budget), only ever called from an explicit Research-tab UI click, never automatic; upserts discovery candidates (dedup against the watchlist and existing candidates)

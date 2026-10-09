@@ -45,7 +45,6 @@ export const listProducerProposalsInputSchema = z
   .object({
     channelId: ourChannelIdSchema.optional(),
     status: z.enum(AGENT_PROPOSAL_STATUSES).optional(),
-    includeDone: z.boolean().optional(),
   })
   .strict();
 

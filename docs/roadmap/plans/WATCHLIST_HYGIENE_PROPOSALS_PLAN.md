@@ -41,8 +41,8 @@ before the code.
 - **Auto-pause.** It is evaluated after each collection run, and over all entries at the start of a run. An entry that is
   inactive and not yet paused gets two things in one transaction:
   - `pausedAt`, with reason `inactive`;
-  - a **system proposal "delete completely"**, whose text names the newest upload date. At most one pending proposal per
-    entry.
+  - a **system proposal "delete completely"**. It records N, not the upload date (another channel's API data, kept 30 days at
+    most); the owner's card shows the entry's current date from the watchlist. At most one pending proposal per entry.
 - **What a pause means.** A paused entry is never collected. Schema v74 adds `research_channels.paused_at` and
   `paused_reason`.
 - **Pause is stored state; inactivity is only a detector that sets it.** After 30 days the paused entry's date is gone, by
@@ -98,11 +98,22 @@ before the code.
 - **Cleanup.** A decided proposal is deleted when the Producer marks it done, or 90 days after the decision. Pending ones
   never expire. (Implemented lazily: every list and every mark-done purges.)
 - **As built (2026-10-09):**
-  - `watchlist.add` takes the competitor's `UC...` id only: resolving a handle would need a YouTube call.
+  - Kinds and payloads are as in `src/lib/agent-proposals/schemas.ts`: `watchlist.add` `{ competitorChannelId (UC... only),
+    reason, handleOrUrl? }` -- resolving a handle would need a YouTube call; the reason and handle are stored only for a new entry.
+  - One `channel_id` per proposal plus `target_id`, `dedupe_key` and `created_via`. The unique index is on `dedupe_key`, which only
+    pending rows hold: pause / resume / delete one per entry, add / unfollow per entry and channel.
+  - The Producer's proposal tools are producer-only (not run in a channel's scope); the service itself checks that the channel is
+    connected and follows the entry.
+  - The approval inventory also scans `src/app/api/mcp`.
+  - Cleanup runs on the gated writes only; reads hide expired rows without deleting them.
+  - A paused entry has the collection status `paused`, outside "needs attention".
+  - The setting N is per computer (RISK-121); the detector sees no date for an entry whose newest upload is older than its
+    collection-depth `publishedAfter` limit (nothing is stored for it), so such an entry is never auto-paused.
   - A hypothesis is approved only while the proposal's channel is the owner's active channel (`createHypothesis` requires it).
     Otherwise approval is refused with `AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE` and the proposal stays pending.
   - Approve claims the proposal (`pending → applied`) before applying, and a throw sets `failed`. There is no separate
-    `approved` state (RISK-120).
+    `approved` state (RISK-120). An add whose channel is no longer connected is refused before the claim (stays pending); a
+    hypothesis whose channel stops being active mid-approval is reopened (stays pending).
 - **Integrity tests.** An inventory test fails if `src/mcp`, `src/cli` or `src/lib/agent-operations` can reach approve,
   reject or apply. The Producer READ test changes from "only READ" to "READ, plus exactly these two DRAFT tools".
 
@@ -110,15 +121,17 @@ before the code.
 
 - **AC-WH-01** An entry whose newest retained upload is 7 months old is shown inactive. One with no known upload date is
   not.
-- **AC-WH-02** The auto-pause pauses an inactive entry and creates exactly one pending system deletion proposal. Its text
-  names the newest upload date. Repeated evaluation creates no second one, including a concurrent one (unique index).
+- **AC-WH-02** The auto-pause pauses an inactive entry and creates exactly one pending system deletion proposal. It names the
+  months, never the upload date (changed after independent review: storing the date kept another channel's API data past 30 days,
+  III.E.4.d). Repeated evaluation creates no second one, including a concurrent one (unique index).
   Fixture at N = 6: entry A with snapshots at 7 and 8 months gets paused plus 1 proposal. Entry B with a snapshot at
   5 months is untouched. Entry C with no snapshots is untouched. A second run adds nothing.
 - **AC-WH-07** A paused entry stays paused when its date later disappears, and rejecting its deletion proposal does not
   resume it.
 - **AC-WH-03** A paused entry is never claimed for collection, whether automatically or by an approved collection request.
 - **AC-WH-04** Resume clears the pause and stamps `resumedAt`. The detector does not pause the entry again for the same
-  silence; a newer upload that then goes quiet again does count. A change of N takes effect at the next evaluation.
+  silence (a resume made while it was already inactive); a resume from an earlier, unrelated pause does not shield it; a newer upload
+  that then goes quiet again does count. A change of N takes effect at the next evaluation.
 - **AC-WH-05** Delete completely also removes the entry's channel links and its pending proposals.
 - **AC-WH-06** The read tools and Research → Channels show `latestUploadPublishedAt`, `inactive` and the pause.
 - **AC-PR-01** A Producer proposal is stored `pending` with its text. Nothing in the watchlist or hypotheses changes until

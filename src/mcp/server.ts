@@ -77,7 +77,7 @@ import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/mar
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
-import { AGENT_PROPOSAL_KINDS } from "@/lib/agent-proposals/contracts";
+import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
   createChannelWorkspacesCore,
   getChannelWorkspaceInputSchema,
@@ -479,25 +479,11 @@ const ISO_DATE = z
     return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
   }, "not a calendar date");
 
-// BL-163 (FO-REQ-0014 §C): the proposal tools' inputs. `payload` is checked per kind by the proposal service.
-export const producerProposeInputSchema = z
-  .object({
-    channelId: z.string().min(1).max(64).describe("The channel of ours the proposal is for (one of producer_list_channels)."),
-    kind: z.enum(AGENT_PROPOSAL_KINDS),
-    text: z.string().min(1).max(4000).describe("Your explanation for the owner: what, why, and the evidence. Shown on the proposal card."),
-    payload: z.record(z.string(), z.unknown()).describe("The kind's own fields -- see the tool description."),
-  })
-  .strict();
-
-export const producerListProposalsInputSchema = z
-  .object({
-    channelId: z.string().min(1).max(64).optional(),
-    status: z.enum(["pending", "applied", "rejected", "failed"]).optional(),
-    includeDone: z.boolean().optional(),
-  })
-  .strict();
-
-export const producerMarkProposalsDoneInputSchema = z.object({ proposalIds: z.array(z.string().min(1).max(100)).min(1).max(100) }).strict();
+// BL-163 (FO-REQ-0014 §C): the proposal tools' inputs are the proposal service's own schemas (one definition, no drift); `payload`
+// is checked per kind by the service.
+export const producerProposeInputSchema = submitProducerProposalInputSchema;
+export const producerListProposalsInputSchema = listProducerProposalsInputSchema;
+export const producerMarkProposalsDoneInputSchema = markProposalsDoneInputSchema;
 
 export const producerPortfolioOverviewInputSchema = z
   .object({ startDate: ISO_DATE, endDate: ISO_DATE })
@@ -2524,7 +2510,7 @@ export function createMcpServer(
     // process -- and `reverify` re-checks the token so a revocation lands even mid-request
     // (AC-P12-02). The scope itself is entered by the endpoint, not here, so tests can inject this.
     agentSession?: { tokenId: string; channelId: string; reverify(): Promise<void> } | null;
-    // BL-161: the read-only Producer of THIS request (`src/lib/producer-mcp-endpoint`, a producer token it just verified). The
+    // BL-161: the Producer (READ, plus its BL-163 proposal tools) of THIS request (`src/lib/producer-mcp-endpoint`, a producer token it just verified). The
     // server then registers only the Producer's closed list (`./producer-tools.ts`): each channel tool needs a `channelId` and
     // runs inside THAT channel's agent scope, entered here per call (never per request), so it sees exactly what the channel's
     // own agent sees through the same checks. Never together with `agentSession`.
@@ -2755,13 +2741,13 @@ export function createMcpServer(
     "producer_propose",
     {
       description:
-        "Propose ONE change to the research watchlist or the hypotheses of one of our channels. It changes nothing: the owner sees it in YT Manager (Research → Inbox, \"Agent proposals\") with your `text`, approves it in one click, or rejects it with a required comment. Read the outcome with producer_list_proposals. `channelId` = the channel of ours it is for (one of producer_list_channels); `text` = what, why and the evidence (e.g. \"no upload since 2023-11-29\"). `kind` and its `payload`: " +
-        "watchlist.add {competitorChannelId: the competitor's UC... channel id (a handle or URL is not accepted -- no YouTube call is made), reason: why it is watched (stored on the entry), handleOrUrl?: shown in the list} -- adds it to the watchlist if needed and makes this channel follow it; " +
+        "Propose ONE change to the research watchlist or the hypotheses of one of our channels. It changes nothing: the owner sees it in YT Manager (Research → Inbox, \"Agent proposals\") with your `text`, approves it in one click, or rejects it with a required comment. Read the outcome with producer_list_proposals. `channelId` = the channel of ours it is for (one of producer_list_channels); `text` (1-4000 characters after trimming) = what and why. The owner's card already shows the entry's current newest-upload date and pause next to your text, and your text is stored until 90 days after the decision, while other channels' YouTube data may be kept 30 days at most (YouTube API policy) -- so cite the entry, not its statistics. `kind` and its `payload` (strict): " +
+        "watchlist.add {competitorChannelId: the competitor's UC... channel id (a handle or URL is not accepted -- no YouTube call is made), reason: why it is watched -- stored on the entry when the entry is new, handleOrUrl?: shown in the list, also only for a new entry} -- adds it to the watchlist if needed and makes this channel follow it; " +
         "watchlist.unfollow {researchChannelId} -- this channel stops following it, the entry stays for the others; " +
         "watchlist.pause / watchlist.resume {researchChannelId} -- stops / restarts its collection, for every channel; " +
         "watchlist.delete {researchChannelId} -- deletes it from the watchlist completely, with its stored history, for every channel; " +
-        "hypothesis.add {statement, evidenceNotes} -- a new hypothesis of this channel, created as yours (createdVia mcp) when approved. " +
-        "Every watchlist kind except add must name an entry this channel follows (query_competitors with this channelId). Refused at once: an entry the channel does not follow (RESEARCH_CHANNEL_NOT_AVAILABLE), a channel not connected here (CHANNEL_NOT_ACTIVE), a change that does not fit the current state, e.g. pausing a paused entry (AGENT_PROPOSAL_NOT_APPLICABLE), and the same proposal already waiting (AGENT_PROPOSAL_DUPLICATE -- pause, resume and delete: one per entry, whoever proposed it, the system's own deletion proposals for inactive entries included). Returns the stored proposal (status pending).",
+        "hypothesis.add {statement, evidenceNotes} -- a new hypothesis of this channel, created as yours (createdBy producer, createdVia mcp) when approved. " +
+        "Every watchlist kind except add must name an entry this channel follows (query_competitors with this channelId). Refused at once: an entry the channel does not follow (RESEARCH_CHANNEL_NOT_AVAILABLE), a channel not connected here (CHANNEL_NOT_ACTIVE), a change that does not fit the current state, e.g. pausing a paused entry (AGENT_PROPOSAL_NOT_APPLICABLE), the same proposal already waiting (AGENT_PROPOSAL_DUPLICATE, details.proposalId and details.source -- pause, resume and delete: one per entry, whoever proposed it, the system's own deletion proposals for inactive entries included, which producer_list_proposals does not list; add and unfollow: per entry and channel), a payload that does not match its kind (validation_failed), and while the app is paused for a device handoff or recovery (operation_lock_held / device_in_recovery_mode). Returns { proposal } (status pending) and forChannelId.",
       inputSchema: producerProposeInputSchema,
     },
     async (args: z.infer<typeof producerProposeInputSchema>) => toolSuccessResult({ proposal: await producerSession!.proposals.submit(args) })
@@ -2771,7 +2757,7 @@ export function createMcpServer(
     "producer_list_proposals",
     {
       description:
-        "Your proposals, newest first, with their status: pending (waiting for the owner), applied (approved and made), rejected (with the owner's `rejectComment` -- the reason, for you), failed (approved, but the change could not be made: `applyError`; never retried by itself). Optional filters: channelId, status; includeDone (default false) also lists the ones you marked read before they leave the store. Mark decided ones read with producer_mark_proposals_done. A decided proposal leaves the store when you mark it, or 90 days after the decision; a pending one never expires. A local read.",
+        "Your proposals, newest first (at most 500), with their status: pending (waiting for the owner), applied (approved and made), rejected (with the owner's `rejectComment` -- the reason, for you), failed (approved, but the change could not be made: `applyError`; never retried by itself). Optional filters: channelId (the answer then also carries forChannelId), status. Mark decided ones read with producer_mark_proposals_done: they leave the store at once and are not listed again; a decided proposal is also gone 90 days after the decision; a pending one never expires. A local read that changes nothing.",
       inputSchema: producerListProposalsInputSchema,
     },
     async (args: z.infer<typeof producerListProposalsInputSchema>) => toolSuccessResult(await producerSession!.proposals.list(args))
@@ -2781,7 +2767,7 @@ export function createMcpServer(
     "producer_mark_proposals_done",
     {
       description:
-        "Mark decided proposals (applied, rejected or failed) as read: they leave the proposal store. A pending one is never marked (it stays for the owner). Returns `marked` and `notMarked` (pending, unknown, already gone, or not yours). Up to 100 ids per call.",
+        "Mark decided proposals (applied, rejected or failed) as read: they leave the proposal store. A pending one is never marked (it stays for the owner). Returns `marked` and `notMarked` (pending, unknown, already gone, or not yours). Up to 100 ids per call. Refused while the app is paused for a device handoff or recovery (operation_lock_held / device_in_recovery_mode).",
       inputSchema: producerMarkProposalsDoneInputSchema,
     },
     async (args: z.infer<typeof producerMarkProposalsDoneInputSchema>) => toolSuccessResult(await producerSession!.proposals.markDone(args))
@@ -3379,7 +3365,7 @@ export function createMcpServer(
     "query_market_intelligence",
     {
       description:
-        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count, feed_fallback_used = the newest collection got only the ~15 newest uploads from the RSS feed because the uploads-playlist call failed, so the video list is shorter than normal; never a fabricated flag when there's simply no data yet) and collectionProgress (the channel's collection depth and progress: maxVideosPerChannel, publishedAfter, videosStored, complete, completeReason, same meaning as `collection` in query_market_overview). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt, and the activity fields latestUploadPublishedAt / inactive / pausedAt / pausedReason, as in query_market_overview), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count, feed_fallback_used = the newest collection got only the ~15 newest uploads from the RSS feed because the uploads-playlist call failed, so the video list is shorter than normal; never a fabricated flag when there's simply no data yet) and collectionProgress (the channel's collection depth and progress: maxVideosPerChannel, publishedAfter, videosStored, complete, completeReason, same meaning as `collection` in query_market_overview). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
       inputSchema: getWatchlistEntryInputSchema,
     },
     (args) => handlers.queryMarketIntelligence(args)

@@ -227,9 +227,12 @@ export type InactivityProposalRow = {
 
 /** BL-163: `months` calendar months before `now` (UTC). */
 export function monthsBefore(now: Date, months: number): Date {
-  const at = new Date(now.getTime());
-  at.setUTCMonth(at.getUTCMonth() - months);
-  return at;
+  // Calendar months, the day clamped to the target month's last day (Aug 31 minus 6 months is Feb 28, not Mar 3).
+  const target = now.getUTCFullYear() * 12 + now.getUTCMonth() - months;
+  const year = Math.floor(target / 12);
+  const month = target - year * 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(now.getUTCDate(), lastDay), now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds(), now.getUTCMilliseconds()));
 }
 
 /**
@@ -1049,21 +1052,29 @@ export const COLLECTION_WARNING_FLAGS: ReadonlySet<DataQualityFlag> = new Set<Da
   "feed_fallback_used",
 ]);
 
-export type CollectionStatus = "current" | "attention" | "failed" | "never_collected";
+export type CollectionStatus = "current" | "attention" | "failed" | "never_collected" | "paused";
 
 /**
  * BL-140: one rule for "does this channel need attention", shared by getMarketOverview's collection warnings (the
  * summary line's count) and getWatchlistTable's status (the Channels filter that count links to), so the two can never
- * disagree. Anything but "current" is a warning.
+ * disagree. Anything but "current" and "paused" is a warning (`isCollectionWarning`). BL-163: a paused entry is "paused"
+ * whatever its data says -- it is not collected on purpose, so its ageing data is not a problem to attend to.
  */
 export function classifyCollectionStatus(input: {
   neverObserved: boolean;
   latestRunStatus: "success" | "skipped_quota_limited" | "failed" | null;
   dataQualityFlags: readonly DataQualityFlag[];
+  paused?: boolean;
 }): CollectionStatus {
+  if (input.paused) return "paused";
   if (input.neverObserved) return "never_collected";
   if (input.latestRunStatus === "failed") return "failed";
   return input.dataQualityFlags.some((flag) => COLLECTION_WARNING_FLAGS.has(flag)) ? "attention" : "current";
+}
+
+/** The statuses the summary line counts as "needs attention" (and the Channels filter it links to shows). */
+export function isCollectionWarning(status: CollectionStatus): boolean {
+  return status === "attention" || status === "failed" || status === "never_collected";
 }
 
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
@@ -1095,9 +1106,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       if (row.pausedAt) continue;
       const activity = activityIn(ctx, row);
       if (!activity.inactive || !activity.latestUploadPublishedAt) continue;
-      // The owner resumed it after this silence began: their call, not paused again for the same silence (AC-WH-04).
-      if (row.resumedAt && row.resumedAt.getTime() >= Date.parse(activity.latestUploadPublishedAt)) continue;
-      const day = activity.latestUploadPublishedAt.slice(0, 10);
+      // The owner resumed it while it was already inactive: their call, not paused again for the same silence (AC-WH-04). A
+      // resume from an unrelated pause, before the silence reached N months, does not count.
+      if (row.resumedAt && monthsBefore(row.resumedAt, ctx.months).getTime() >= Date.parse(activity.latestUploadPublishedAt)) continue;
       const done = await deps.pauseInactiveResearchChannel({
         researchChannelId: row.id,
         at: ctx.now,
@@ -1107,9 +1118,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           kind: "watchlist.delete",
           channelId: null,
           targetId: row.id,
-          payloadJson: JSON.stringify({ researchChannelId: row.id, latestUploadPublishedAt: activity.latestUploadPublishedAt, inactiveAfterMonths: ctx.months }),
+          // No upload date is stored here: it is another channel's API data, kept 30 days at most (III.E.4.d), and a proposal may
+          // wait longer. The owner's card shows the entry's current date from the watchlist itself.
+          payloadJson: JSON.stringify({ researchChannelId: row.id, inactiveAfterMonths: ctx.months }),
           // ui-text-ignore: a stored record for the agents; the interface words it from the payload
-          text: `No upload since ${day} (more than ${ctx.months} months): collection is paused; proposed to delete ${row.handleOrUrl ?? row.id} from the watchlist.`,
+          text: `No upload for more than ${ctx.months} months: collection is paused; proposed to delete ${row.handleOrUrl ?? row.id} from the watchlist.`,
           dedupeKey: `watchlist.delete|${row.id}`,
           createdVia: "system",
           agentApiVersion: null,
@@ -1119,6 +1132,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       if (done) paused.push(row.id);
     }
     return { paused };
+  }
+
+  async function evaluateInactivitySafely(): Promise<void> {
+    try {
+      await evaluateInactivity();
+    } catch (error) {
+      console.error("[market-intelligence] inactivity detector failed; collection goes on", error);
+    }
   }
 
   /**
@@ -2182,8 +2203,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           neverObserved: state.neverObserved,
           latestRunStatus: state.latestRun?.status ?? null,
           dataQualityFlags: state.dataQualityFlags,
+          paused: channel.pausedAt !== null,
         });
-        if (status !== "current") warningCount += 1;
+        if (isCollectionWarning(status)) warningCount += 1;
       }
       const { candidates } = await services.listDiscoveryCandidates();
       return { watchlistCount: channels.length, warningCount, newDiscoveryCount: candidates.filter((c) => c.status === "new").length };
@@ -2206,7 +2228,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           videosObserved: number;
           latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
           dataQualityFlags: DataQualityFlag[];
-          status: "current" | "attention" | "failed" | "never_collected";
+          status: CollectionStatus;
         } & WatchlistActivity
       >;
     }> {
@@ -2245,6 +2267,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             neverObserved: state.neverObserved,
             latestRunStatus: run?.status ?? null,
             dataQualityFlags: state.dataQualityFlags,
+            paused: channel.pausedAt !== null,
           }),
         });
       }
@@ -2316,8 +2339,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         // to independently recompute `channelSnapshots.length === 0` itself.
         // The same rule getWatchlistTable's status uses (BL-140), so the summary's count matches the Channels filter.
         if (
-          classifyCollectionStatus({ neverObserved: summary.neverObserved, latestRunStatus: latestRun?.status ?? null, dataQualityFlags: narrowedFlags }) !==
-          "current"
+          isCollectionWarning(
+            classifyCollectionStatus({ neverObserved: summary.neverObserved, latestRunStatus: latestRun?.status ?? null, dataQualityFlags: narrowedFlags, paused: channel.pausedAt !== null })
+          )
         ) {
           collectionWarnings.push({
             channelId: channel.channelId,
@@ -2860,9 +2884,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     }> {
       const parsedInput = parseWithSchema(runCollectionIfStaleInputSchema, input, "run collection if stale input");
       // BL-163 (AC-WH-02/03): pause the inactive entries first (they are not collected), and again after the run (fresh dates).
-      await evaluateInactivity();
+      // A detector failure never stops the collection (AGENTS.md §M): it tries again on the next pass.
+      await evaluateInactivitySafely();
       const { attempted, succeeded, failed, quotaLimited, unitsSpent } = await collectStaleChannels(parsedInput);
-      await evaluateInactivity();
+      await evaluateInactivitySafely();
       return parseWithSchema(
         runCollectionIfStaleOutputSchema,
         { attempted, succeeded, failed, quotaLimited, unitsSpent },

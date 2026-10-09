@@ -3232,10 +3232,16 @@ Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
   and `pausedReason`; nothing is computed from another channel's statistics (III.E.4.h).
 - Pause is stored state (`research_channels.paused_at`, `paused_reason` `inactive` | `owner`, `resumed_at`); inactivity only sets it.
   `claimStaleResearchChannelsForCollection` skips paused rows, so neither auto-collection nor an approved collection request collects them.
-- Detector: `evaluateInactivity` runs before and after `collectStaleChannels` in `runCollectionIfStale` (and on demand). It skips paused
-  entries, unknown dates, active ones and entries resumed after their newest upload, and for the rest calls `pauseInactiveResearchChannel`:
+- Detector: `evaluateInactivity` runs before and after `collectStaleChannels` in `runCollectionIfStale` (and on demand; also when the
+  refresh waits for the quota reserve, since it reads only stored data). A detector failure is logged and never fails the collection. It
+  skips paused entries, unknown dates, active ones and entries the owner resumed while already inactive (`monthsBefore(resumedAt, N) >=
+  newest upload`; a resume from an unrelated pause earlier does not shield), and for the rest calls `pauseInactiveResearchChannel`:
   one transaction that pauses only a still-unpaused row and inserts the system proposal `watchlist.delete` with `onConflictDoNothing` on the
-  pending dedupe key (`watchlist.delete|<id>`), so two connections or two passes add one.
+  pending dedupe key (`watchlist.delete|<id>`), so two connections or two passes add one. The proposal stores N, not the upload date
+  (another channel's API data may be kept 30 days at most, a proposal can wait longer); the owner's card reads the entry's current date
+  from the watchlist. `monthsBefore` counts calendar months and clamps the day (Aug 31 minus 6 months is Feb 28).
+- A paused entry has its own collection status `paused` (`classifyCollectionStatus`), which `isCollectionWarning` leaves out of the
+  "needs attention" count and filter.
 - `setResearchChannelPause` writes only a state change (a paused entry keeps its first reason; resuming stamps `resumed_at`).
   `deleteResearchChannel` also deletes the entry's `channel_record_assignments` rows and its pending proposals.
 
@@ -3253,6 +3259,11 @@ Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
 - Apply goes through public cores only: `market-intelligence` (`addToWatchlist` with `createdVia: "mcp"`, `setWatchlistPause`,
   `removeFromWatchlist`, `getWatchlistEntry`, `listWatchlist` for labels), `market-assignments` (`listAssignments` / `setAssignment` for
   follow and unfollow) and `decision-engine` (`createHypothesis`, `createdBy: "producer"`). None of them depends on this module (§M).
-- Cleanup is lazy: every list and every mark-done purges decided rows that are done or decided more than 90 days ago.
+- Cleanup runs only on the gated writes (approve, reject, mark-done; never on a read, so nothing is deleted during a device handoff):
+  decided rows that are done, or decided more than 90 days ago, are deleted. Reads leave such rows out without deleting them.
+- Counts and lists: the inbox count is a SQL `COUNT` of pending rows; lists are capped (500 for the Producer and the owner's pending
+  list, 200 newest decided for the owner).
+- Late refusals that keep the proposal pending: an add whose channel is no longer connected (checked before the claim) and a
+  hypothesis whose channel stopped being the active one between the check and the creation (the claim is reopened).
 - Two entry points: `createAgentProposalSubmitCore` (wired into `ProducerSession.proposals` by the Producer route) and
   `createAgentProposalReviewCore` (the Web routes and the summary count). The approval inventory test pins that split.

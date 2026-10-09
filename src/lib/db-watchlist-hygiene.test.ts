@@ -25,7 +25,7 @@ import {
   type AppDb,
   type NewAgentProposal,
 } from "@/lib/db";
-import { createMarketIntelligenceServices } from "@/lib/market-intelligence/services";
+import { createMarketIntelligenceServices, monthsBefore, watchlistActivityOf } from "@/lib/market-intelligence/services";
 
 // BL-163 (docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §3): the watchlist pause, the inactivity detector and the proposal
 // store against a real throwaway libSQL database. Expected values are worked out by hand from the plan's rules (N = 6 months,
@@ -89,7 +89,11 @@ test("AC-WH-01/02: the detector pauses only the entry whose known newest upload 
   const proposals = await listAgentProposals({}, db);
   assert.equal(proposals.length, 1);
   assert.deepEqual([proposals[0].source, proposals[0].kind, proposals[0].targetId, proposals[0].status, proposals[0].dedupeKey], ["system", "watchlist.delete", A, "pending", `watchlist.delete|${A}`]);
-  assert.match(proposals[0].text, /2026-03-09/);
+  // The stored proposal holds no upload date: it is another channel's API data, kept 30 days at most (III.E.4.d), and a proposal
+  // can wait longer. The card reads the entry's current date from the watchlist instead (plan §2.A, independent review).
+  assert.doesNotMatch(proposals[0].text + proposals[0].payloadJson, /2026-0[23]-09/);
+  assert.deepEqual(JSON.parse(proposals[0].payloadJson), { researchChannelId: A, inactiveAfterMonths: 6 });
+  assert.match(proposals[0].text, /more than 6 months/);
   // A second run changes nothing (AC-WH-02).
   assert.deepEqual(await svc.evaluateWatchlistInactivity(), { paused: [] });
   assert.equal((await listAgentProposals({}, db)).length, 1);
@@ -209,4 +213,30 @@ test("AC-PR-02/03/06: the proposal store -- one pending per key, an atomic decis
   await decideAgentProposal("p3", { status: "rejected", at: NOW, by: "owner", rejectComment: "no" }, db);
   assert.deepEqual(await markAgentProposalsDone(["p3"], NOW, { source: "producer" }, db), ["p3"]);
   assert.equal(await purgeAgentProposals(NOW, 90 * day, db), 1);
+});
+
+test("monthsBefore: calendar months, the day clamped to the target month's end", () => {
+  const at = (iso: string, months: number) => monthsBefore(new Date(iso), months).toISOString();
+  assert.equal(at("2026-10-09T12:00:00.000Z", 6), "2026-04-09T12:00:00.000Z");
+  assert.equal(at("2026-08-31T08:30:00.000Z", 6), "2026-02-28T08:30:00.000Z", "not March 3");
+  assert.equal(at("2028-08-31T00:00:00.000Z", 6), "2028-02-29T00:00:00.000Z", "leap year");
+  assert.equal(at("2026-03-31T00:00:00.000Z", 1), "2026-02-28T00:00:00.000Z");
+  assert.equal(at("2026-02-15T00:00:00.000Z", 14), "2024-12-15T00:00:00.000Z", "across years");
+});
+
+test("AC-WH-01 boundary: an upload exactly N months old is not yet inactive; one millisecond older is", () => {
+  const now = new Date("2026-08-31T08:30:00.000Z");
+  const row = { pausedAt: null, pausedReason: null };
+  assert.equal(watchlistActivityOf(row, new Date("2026-02-28T08:30:00.000Z"), 6, now).inactive, false);
+  assert.equal(watchlistActivityOf(row, new Date("2026-02-28T08:29:59.999Z"), 6, now).inactive, true);
+  assert.equal(watchlistActivityOf(row, new Date("2026-03-02T00:00:00.000Z"), 6, now).inactive, false, "an early-March upload is not inactive on Aug 31");
+});
+
+test("AC-WH-04: a pause and resume for another reason, before the silence reached N months, does not shield the entry", async () => {
+  const { db } = await freshDb();
+  await seed(db);
+  // A's newest upload is 2026-03-09. The owner paused it on 03-20 and resumed it on 04-01 -- long before it was inactive (09-09).
+  await setResearchChannelPause(A, { at: new Date("2026-03-20T00:00:00.000Z"), reason: "owner" }, new Date("2026-03-20T00:00:00.000Z"), db);
+  await setResearchChannelPause(A, null, new Date("2026-04-01T00:00:00.000Z"), db);
+  assert.deepEqual(await detector(db, { next: 0 }).evaluateWatchlistInactivity(), { paused: [A] });
 });

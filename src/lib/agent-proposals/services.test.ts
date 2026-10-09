@@ -6,6 +6,7 @@ import test from "node:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import {
+  countPendingAgentProposals,
   decideAgentProposal,
   deleteResearchChannel,
   failAgentProposal,
@@ -16,6 +17,7 @@ import {
   listAgentProposals,
   markAgentProposalsDone,
   purgeAgentProposals,
+  reopenAgentProposal,
   type AppDb,
 } from "@/lib/db";
 import { createAgentProposalServices, type AgentProposalStore, type StoredProposal, type WatchlistPort } from "./services";
@@ -48,12 +50,16 @@ function storeOn(db: AppDb): AgentProposalStore {
     fail: (id, error) => failAgentProposal(id, error, db),
     markDone: (ids, at, filter) => markAgentProposalsDone(ids, at, filter, db),
     purge: (now, keepMs) => purgeAgentProposals(now, keepMs, db),
+    countPending: () => countPendingAgentProposals(db),
+    reopen: (id) => reopenAgentProposal(id, db),
   };
 }
 
 type Entry = { followers: string[]; pausedAt: string | null; handleOrUrl: string | null };
 
-async function setup(options: { activeChannel?: string | null; onRemove?: (id: string) => Promise<void> } = {}) {
+async function setup(
+  options: { activeChannel?: string | null; onRemove?: (id: string) => Promise<void>; hypothesisError?: () => Error | null; connected?: string[] } = {}
+) {
   const db = await freshDb();
   const entries = new Map<string, Entry>([
     [A, { followers: [OURS_1, OURS_2], pausedAt: null, handleOrUrl: "@alpha" }],
@@ -83,7 +89,7 @@ async function setup(options: { activeChannel?: string | null; onRemove?: (id: s
       if (options.onRemove) await options.onRemove(id);
       entries.delete(id);
     },
-    labels: async () => new Map([...entries].map(([id, entry]) => [id, entry.handleOrUrl ?? id])),
+    describe: async () => new Map([...entries].map(([id, entry]) => [id, { label: entry.handleOrUrl ?? id, latestUploadPublishedAt: id === A ? "2026-03-09T10:00:00.000Z" : null }])),
   };
   let next = 0;
   const services = createAgentProposalServices({
@@ -93,14 +99,17 @@ async function setup(options: { activeChannel?: string | null; onRemove?: (id: s
     watchlist,
     hypotheses: {
       add: async (input, ctx) => {
+        const failure = options.hypothesisError?.();
+        if (failure) throw failure;
         calls.push(`hypothesis ${input.channelId} "${input.statement}" / "${input.evidenceNotes}" by ${ctx.userId}`);
       },
       activeChannelOf: async () => (options.activeChannel === undefined ? OURS_1 : options.activeChannel),
     },
-    listConnectedChannels: async () => [
-      { channelId: OURS_1, title: "Rural Japan" },
-      { channelId: OURS_2, title: "Tropico" },
-    ],
+    listConnectedChannels: async () =>
+      [
+        { channelId: OURS_1, title: "Rural Japan" },
+        { channelId: OURS_2, title: "Tropico" },
+      ].filter((channel) => (options.connected ?? [OURS_1, OURS_2]).includes(channel.channelId)),
     assertDeviceAvailable: async () => {},
   });
   return { db, services, calls, entries };
@@ -249,11 +258,12 @@ test("A system deletion proposal is approved the same way; rejecting it leaves t
   await system("sys-b", B);
   const owner = await services.listOwnerProposals({ view: "pending" });
   assert.equal(owner.pendingCount, 2);
+  // The card names the entry and shows its current newest upload, read live from the watchlist (never stored on the proposal).
   assert.deepEqual(
-    owner.proposals.map((p) => [p.proposalId, p.source, p.channelTitle, p.targetLabel]).sort(),
+    owner.proposals.map((p) => [p.proposalId, p.source, p.channelTitle, p.targetLabel, p.targetLatestUploadPublishedAt]).sort(),
     [
-      ["sys-a", "system", null, "@alpha"],
-      ["sys-b", "system", null, B],
+      ["sys-a", "system", null, "@alpha", "2026-03-09T10:00:00.000Z"],
+      ["sys-b", "system", null, B, null],
     ]
   );
   assert.equal((await services.approveAgentProposal({ proposalId: "sys-a" }, { userId: OWNER })).status, "applied");
@@ -284,4 +294,43 @@ test("AC-PR-03: the Producer reads the outcome and the comment; marking a decide
   });
   assert.equal(await getAgentProposal(rejected.proposalId, db), null, "marked done = left the store");
   assert.deepEqual((await services.listProducerProposals({})).proposals.map((p) => p.proposalId), [pending.proposalId]);
+});
+
+test("Approve: a watchlist.add whose channel is no longer connected waits (nothing is added); a channel switch mid-approval re-opens a hypothesis", async () => {
+  const connected = [OURS_1, OURS_2];
+  let switched = false;
+  const { services, calls, db } = await setup({
+    connected,
+    hypothesisError: () => (switched ? Object.assign(new Error("not active"), { name: "DomainError", code: "CHANNEL_NOT_ACTIVE" }) : null),
+  });
+  const v = { agentApiVersion: "1.1.0" };
+  const add = await services.submitProducerProposal(propose("watchlist.add", { competitorChannelId: C, reason: "r" }), v);
+  connected.splice(connected.indexOf(OURS_1), 1);
+  await rejectsWith(services.approveAgentProposal({ proposalId: add.proposalId }, { userId: OWNER }), "AGENT_PROPOSAL_NOT_APPLICABLE");
+  assert.equal((await getAgentProposal(add.proposalId, db))?.status, "pending");
+  assert.deepEqual(calls, []);
+
+  connected.push(OURS_1);
+  const hypothesis = await services.submitProducerProposal(propose("hypothesis.add", { statement: "s", evidenceNotes: "e" }), v);
+  switched = true;
+  await rejectsWith(services.approveAgentProposal({ proposalId: hypothesis.proposalId }, { userId: OWNER }), "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE");
+  const reopened = await getAgentProposal(hypothesis.proposalId, db);
+  assert.deepEqual([reopened?.status, reopened?.decidedAt, reopened?.decidedBy], ["pending", null, null]);
+  switched = false;
+  assert.equal((await services.approveAgentProposal({ proposalId: hypothesis.proposalId }, { userId: OWNER })).status, "applied");
+});
+
+test("Reads delete nothing: a decided proposal past 90 days is not listed but stays until a gated write purges it", async () => {
+  const { db, services } = await setup();
+  await insertAgentProposal(
+    { id: "old", source: "producer", kind: "watchlist.pause", channelId: OURS_1, targetId: A, payloadJson: "{}", text: "x", dedupeKey: null, createdVia: "mcp", agentApiVersion: "1.1.0", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    db
+  );
+  await decideAgentProposal("old", { status: "rejected", at: new Date("2026-07-01T00:00:00.000Z"), by: OWNER, rejectComment: "no" }, db); // 100 days before NOW
+  assert.deepEqual((await services.listProducerProposals({})).proposals, []);
+  assert.deepEqual((await services.listOwnerProposals({ view: "decided" })).proposals, []);
+  assert.notEqual(await getAgentProposal("old", db), null, "a read deleted nothing");
+  await services.markProducerProposalsDone({ proposalIds: ["unknown"] });
+  assert.equal(await getAgentProposal("old", db), null, "the gated write purged it");
+  assert.equal(await services.countPendingProposals(), 0);
 });

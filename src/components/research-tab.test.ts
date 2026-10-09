@@ -65,7 +65,8 @@ test("AC-R1-4: the summary line names counts, warnings, budget, searches and pen
     { text: "1 new discovery", tone: "plain", goTo: "discover" },
     { text: "Collection budget today: 120 of 500 units", tone: "plain" },
     { text: "Searches left today: 97 of 100", tone: "plain" },
-    { text: "2 requests waiting for you", tone: "warn", goTo: "inbox" },
+    // BL-163 (FO-REQ-0014 §C7): the count now includes agent proposals, so it no longer says "requests".
+    { text: "2 waiting for your decision", tone: "warn", goTo: "inbox" },
   ]);
 });
 
@@ -127,6 +128,12 @@ test("AC-R3-1/§4.1: 'needs attention' is every status but current -- the set th
   assert.deepEqual(ids(filterWatchlistRows(rows, { ...noFilter, status: "needs_attention" })), ["UCb", "UCc", "UCd"]);
   assert.deepEqual(ids(filterWatchlistRows(rows, { ...noFilter, status: "failed" })), ["UCc"]);
   assert.deepEqual(ids(filterWatchlistRows(rows, { ...noFilter, status: "current" })), ["UCa"]);
+});
+
+test("BL-163: a paused entry is its own status -- never in 'needs attention' (it is not collected on purpose), and filterable", () => {
+  const withPaused = [...rows, row("UCeeeeeeeeeeeeeeeeeeeeee", "@quiet", "inactive", "paused")];
+  assert.deepEqual(ids(filterWatchlistRows(withPaused, { ...noFilter, status: "needs_attention" })), ["UCb", "UCc", "UCd"]);
+  assert.deepEqual(ids(filterWatchlistRows(withPaused, { ...noFilter, status: "paused" })), ["UCe"]);
 });
 
 test("§4.3/decision 3: 'visible to channel X' keeps only channels assigned to X; unassigned channels are never visible", () => {

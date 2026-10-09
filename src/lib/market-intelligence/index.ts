@@ -110,8 +110,9 @@ export function createMarketIntelligenceCore() {
     // is left, so writes keep headroom (same rule as the Analytics auto-collection).
     runCollectionIfStale: quotaScoped(async (input: unknown) => {
       if (!(await guard.isBackgroundReadAllowed())) {
-        // BL-163: the inactivity detector reads only stored data, so it runs even while the refresh waits for quota.
-        await services.evaluateWatchlistInactivity();
+        // BL-163: the inactivity detector reads only stored data, so it runs even while the refresh waits for quota. Its failure
+        // never fails this call.
+        await services.evaluateWatchlistInactivity().catch((error: unknown) => console.error("[market-intelligence] inactivity detector failed", error));
         return { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
       }
       return services.runCollectionIfStale(input);

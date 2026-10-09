@@ -931,7 +931,7 @@ export const getWatchlistTableOutputSchema = z
             .strict()
             .nullable(),
           dataQualityFlags: z.array(dataQualityFlagSchema),
-          status: z.enum(["current", "attention", "failed", "never_collected"]),
+          status: z.enum(["current", "attention", "failed", "never_collected", "paused"]),
         })
         .strict()
     ),

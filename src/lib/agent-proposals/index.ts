@@ -47,9 +47,9 @@ function createAgentProposalsCore() {
       async remove(researchChannelId) {
         await marketIntelligence.removeFromWatchlist({ channelId: researchChannelId });
       },
-      async labels() {
+      async describe() {
         const { channels } = await marketIntelligence.listWatchlist();
-        return new Map(channels.map((channel) => [channel.channelId, channel.handleOrUrl ?? channel.channelId]));
+        return new Map(channels.map((channel) => [channel.channelId, { label: channel.handleOrUrl ?? channel.channelId, latestUploadPublishedAt: channel.latestUploadPublishedAt }]));
       },
     },
     hypotheses: {

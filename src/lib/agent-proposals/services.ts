@@ -45,7 +45,18 @@ export type AgentProposalStore = {
   /** `created: false` = a pending proposal with the same dedupe key exists (returned), nothing written. */
   insert(row: Omit<StoredProposal, "status" | "decidedAt" | "decidedBy" | "rejectComment" | "applyError" | "doneAt">): Promise<{ proposal: StoredProposal; created: boolean }>;
   get(id: string): Promise<StoredProposal | null>;
-  list(filter: { source?: AgentProposalSource; channelId?: string; status?: AgentProposalStatus; includeDone?: boolean }): Promise<StoredProposal[]>;
+  /** `decided` = every status but pending; `decidedSince` hides decided ones decided before it (not yet purged). */
+  list(filter: {
+    source?: AgentProposalSource;
+    channelId?: string;
+    status?: AgentProposalStatus | "decided";
+    includeDone?: boolean;
+    decidedSince?: Date;
+    limit?: number;
+  }): Promise<StoredProposal[]>;
+  countPending(): Promise<number>;
+  /** Back to pending from `applied` (a claim whose change could not be made for a reason that is not the proposal's). */
+  reopen(id: string): Promise<void>;
   /** Atomic: only a pending proposal moves; null otherwise. */
   decide(id: string, decision: { status: "applied" | "rejected"; at: Date; by: string; rejectComment?: string | null }): Promise<StoredProposal | null>;
   fail(id: string, error: string): Promise<void>;
@@ -62,7 +73,8 @@ export type WatchlistPort = {
   setFollowers(researchChannelId: string, channelIds: string[]): Promise<void>;
   setPause(researchChannelId: string, paused: boolean): Promise<void>;
   remove(researchChannelId: string): Promise<void>;
-  labels(): Promise<Map<string, string>>;
+  /** For the owner's cards: each entry's name and its current newest-upload date (retained data only, null when unknown). */
+  describe(): Promise<Map<string, { label: string; latestUploadPublishedAt: string | null }>>;
 };
 
 export type HypothesesPort = {
@@ -83,6 +95,7 @@ export type AgentProposalDependencies = {
 };
 
 const KEEP_MS = AGENT_PROPOSAL_KEEP_DAYS * 24 * 60 * 60 * 1000;
+const OWNER_DECIDED_LIMIT = 200;
 
 function parsePayload(json: string): Record<string, unknown> {
   try {
@@ -240,11 +253,19 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
       return toProposal(stored.proposal);
     },
 
-    /** Producer (AC-PR-03): its own proposals, newest first, with the outcome and the owner's comment on a rejection. */
+    /**
+     * Producer (AC-PR-03): its own proposals, newest first (at most 500), with the outcome and the owner's comment on a rejection.
+     * A read: it deletes nothing (the purge runs on the gated writes); a decided one past the keep window is simply not listed.
+     */
     async listProducerProposals(input: unknown): Promise<{ proposals: AgentProposal[] }> {
       const parsed = parseWithSchema(listProducerProposalsInputSchema, input, "list proposals input");
-      await deps.store.purge(deps.clock.now(), KEEP_MS).catch(() => 0);
-      const rows = await deps.store.list({ source: "producer", channelId: parsed.channelId, status: parsed.status, includeDone: parsed.includeDone ?? false });
+      const rows = await deps.store.list({
+        source: "producer",
+        channelId: parsed.channelId,
+        status: parsed.status,
+        includeDone: false,
+        decidedSince: new Date(deps.clock.now().getTime() - KEEP_MS),
+      });
       return { proposals: rows.map(toProposal) };
     },
 
@@ -254,33 +275,45 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
       await deps.assertDeviceAvailable();
       const ids = [...new Set(parsed.proposalIds)];
       const marked = await deps.store.markDone(ids, deps.clock.now(), { source: "producer" });
-      await deps.store.purge(deps.clock.now(), KEEP_MS).catch(() => 0);
+      // Behind the device gate, like every write: the marked ones, and any past the keep window, leave the store.
+      await deps.store.purge(deps.clock.now(), KEEP_MS);
       return { marked, notMarked: ids.filter((id) => !marked.includes(id)) };
     },
 
-    /** Owner (Web UI only): pending proposals, or the decided ones still in the store, with names for the ids. */
+    /**
+     * Owner (Web UI only): the pending proposals, or the newest decided ones still kept, with names for the ids and each entry's
+     * current newest-upload date. A read: nothing is deleted here.
+     */
     async listOwnerProposals(input: unknown): Promise<{ proposals: OwnerAgentProposal[]; pendingCount: number }> {
       const parsed = parseWithSchema(listOwnerProposalsInputSchema, input, "list owner proposals input");
-      await deps.store.purge(deps.clock.now(), KEEP_MS).catch(() => 0);
-      const all = await deps.store.list({});
-      const pending = all.filter((row) => row.status === "pending");
-      const rows = parsed.view === "pending" ? pending : all.filter((row) => row.status !== "pending");
-      const [labels, channels] = await Promise.all([deps.watchlist.labels().catch(() => new Map<string, string>()), deps.listConnectedChannels().catch(() => [])]);
+      const rows =
+        parsed.view === "pending"
+          ? await deps.store.list({ status: "pending" })
+          : await deps.store.list({ status: "decided", includeDone: false, decidedSince: new Date(deps.clock.now().getTime() - KEEP_MS), limit: OWNER_DECIDED_LIMIT });
+      const [entries, channels, pendingCount] = await Promise.all([
+        deps.watchlist.describe().catch(() => new Map<string, { label: string; latestUploadPublishedAt: string | null }>()),
+        deps.listConnectedChannels().catch(() => []),
+        deps.store.countPending(),
+      ]);
       const titles = new Map(channels.map((channel) => [channel.channelId, channel.title]));
       return {
-        pendingCount: pending.length,
-        proposals: rows.map((row) => ({
-          ...toProposal(row),
-          channelTitle: row.channelId ? (titles.get(row.channelId) ?? null) : null,
-          targetLabel: row.targetId ? (labels.get(row.targetId) ?? null) : null,
-          decidedBy: row.decidedBy,
-        })),
+        pendingCount,
+        proposals: rows.map((row) => {
+          const entry = row.targetId ? entries.get(row.targetId) : undefined;
+          return {
+            ...toProposal(row),
+            channelTitle: row.channelId ? (titles.get(row.channelId) ?? null) : null,
+            targetLabel: entry?.label ?? null,
+            targetLatestUploadPublishedAt: entry?.latestUploadPublishedAt ?? null,
+            decidedBy: row.decidedBy,
+          };
+        }),
       };
     },
 
     /** Owner (Web UI only): the number the Research inbox badge counts. */
     async countPendingProposals(): Promise<number> {
-      return (await deps.store.list({ status: "pending" })).length;
+      return deps.store.countPending();
     },
 
     /**
@@ -293,6 +326,10 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
       await deps.assertDeviceAvailable();
       const row = await deps.store.get(parsed.proposalId);
       if (!row || row.status !== "pending") return notFoundOrNotPending(parsed.proposalId);
+      if (row.kind === "watchlist.add" && !(await deps.listConnectedChannels()).some((channel) => channel.channelId === row.channelId)) {
+        // Checked before the claim: adding the entry and then failing to link it would leave an unfollowed entry being collected.
+        throw notApplicable("The proposal's channel is no longer connected on this computer", { proposalId: row.id, channelId: row.channelId });
+      }
       if (row.kind === "hypothesis.add" && (await deps.hypotheses.activeChannelOf(ctx.userId)) !== row.channelId) {
         // Checked before the claim, so the proposal keeps waiting rather than failing.
         throw new DomainError({
@@ -306,10 +343,20 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
       try {
         await applyAgentProposal(claimed, ctx);
       } catch (error) {
+        if (claimed.kind === "hypothesis.add" && isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE") {
+          // The owner switched channel between the check and the creation: it waits again, as if not yet approved.
+          await deps.store.reopen(claimed.id);
+          throw new DomainError({
+            code: "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE",
+            message: "A hypothesis is added to the active channel: switch to the proposal's channel first",
+            details: { proposalId: claimed.id, channelId: claimed.channelId },
+          });
+        }
         await deps.store.fail(claimed.id, errorMessage(error));
       }
+      await deps.store.purge(deps.clock.now(), KEEP_MS).catch(() => 0);
       const after = (await deps.store.get(claimed.id)) ?? claimed;
-      return { ...toProposal(after), channelTitle: null, targetLabel: null, decidedBy: after.decidedBy };
+      return { ...toProposal(after), channelTitle: null, targetLabel: null, targetLatestUploadPublishedAt: null, decidedBy: after.decidedBy };
     },
 
     /** Owner (Web UI only, AC-PR-02): a comment is required -- it is the Producer's only explanation. Nothing else changes. */
@@ -318,7 +365,8 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
       await deps.assertDeviceAvailable();
       const decided = await deps.store.decide(parsed.proposalId, { status: "rejected", at: deps.clock.now(), by: ctx.userId, rejectComment: parsed.comment });
       if (!decided) return notFoundOrNotPending(parsed.proposalId);
-      return { ...toProposal(decided), channelTitle: null, targetLabel: null, decidedBy: decided.decidedBy };
+      await deps.store.purge(deps.clock.now(), KEEP_MS).catch(() => 0);
+      return { ...toProposal(decided), channelTitle: null, targetLabel: null, targetLatestUploadPublishedAt: null, decidedBy: decided.decidedBy };
     },
   };
 }

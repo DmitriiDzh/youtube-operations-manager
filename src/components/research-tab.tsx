@@ -192,7 +192,7 @@ export function ResearchTab({
       <div className={tab === "inbox" ? "space-y-6" : "hidden"}>
         <p className="text-sm text-zinc-400">{t("research.inbox.intro")}</p>
         <FeatureErrorBoundary label={t("research.boundary.agentProposals")}>
-          <AgentProposalsPanel onChanged={onChanged} />
+          <AgentProposalsPanel onChanged={onChanged} pendingCount={summary?.pending.agentProposals ?? null} />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={t("research.boundary.requests")}>
           <MarketResearchRequestsPanel onChanged={onChanged} />

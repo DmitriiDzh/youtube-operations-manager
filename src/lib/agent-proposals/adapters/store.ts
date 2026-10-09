@@ -1,4 +1,5 @@
 import {
+  countPendingAgentProposals,
   decideAgentProposal,
   failAgentProposal,
   getAgentProposal,
@@ -6,6 +7,7 @@ import {
   listAgentProposals,
   markAgentProposalsDone,
   purgeAgentProposals,
+  reopenAgentProposal,
 } from "@/lib/db";
 import type { AgentProposalStore, StoredProposal } from "../services";
 
@@ -18,5 +20,7 @@ export function createAgentProposalStore(): AgentProposalStore {
     fail: (id, error) => failAgentProposal(id, error),
     markDone: (ids, at, filter) => markAgentProposalsDone(ids, at, filter),
     purge: (now, keepMs) => purgeAgentProposals(now, keepMs),
+    countPending: () => countPendingAgentProposals(),
+    reopen: (id) => reopenAgentProposal(id),
   };
 }

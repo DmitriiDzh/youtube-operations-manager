@@ -47,5 +47,13 @@ export type AgentProposal = {
   doneAt: string | null;
 };
 
-/** The owner's view adds names for the ids, so a card can say in plain words what will change. */
-export type OwnerAgentProposal = AgentProposal & { channelTitle: string | null; targetLabel: string | null; decidedBy: string | null };
+/**
+ * The owner's view adds names for the ids, so a card can say in plain words what will change, and the entry's current newest-upload
+ * date (read live from the watchlist, which keeps it at most 30 days -- never stored on the proposal).
+ */
+export type OwnerAgentProposal = AgentProposal & {
+  channelTitle: string | null;
+  targetLabel: string | null;
+  targetLatestUploadPublishedAt: string | null;
+  decidedBy: string | null;
+};

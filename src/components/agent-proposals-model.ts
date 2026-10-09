@@ -17,6 +17,8 @@ export type OwnerProposalView = {
   doneAt: string | null;
   channelTitle: string | null;
   targetLabel: string | null;
+  /** The entry's current newest upload, read live from the watchlist (retained data only); never stored on the proposal. */
+  targetLatestUploadPublishedAt: string | null;
 };
 
 /**
@@ -43,4 +45,26 @@ export function describeProposalAction(p: OwnerProposalView): { key: UiTextKey; 
     default:
       return { key: "agentProposals.action.unknown", values: { kind: p.kind }, subject: entry };
   }
+}
+
+/**
+ * A system deletion proposal is worded by the interface (the stored `text` is the English record of it), so it reads in the owner's
+ * language: the months setting at detection, and the entry's newest upload while the watchlist still holds it (null once it aged
+ * out of the 30-day window).
+ */
+export function systemInactiveFacts(p: OwnerProposalView): { latestUploadPublishedAt: string | null; inactiveAfterMonths: number } | null {
+  if (p.source !== "system" || p.kind !== "watchlist.delete") return null;
+  const { inactiveAfterMonths } = p.payload;
+  return typeof inactiveAfterMonths === "number" ? { latestUploadPublishedAt: p.targetLatestUploadPublishedAt, inactiveAfterMonths } : null;
+}
+
+/** A stored apply error is "CODE: message" when it came from a domain error; the code lets the interface translate it. */
+export function parseApplyError(applyError: string): { error: string | null; message: string } {
+  const match = /^([A-Za-z_]+): ([\s\S]*)$/.exec(applyError);
+  return match ? { error: match[1], message: match[2] } : { error: null, message: applyError };
+}
+
+/** Decided proposals, most recently decided first (an old proposal that just failed must not sit at the bottom). */
+export function sortDecided(rows: OwnerProposalView[]): OwnerProposalView[] {
+  return [...rows].sort((a, b) => (b.decidedAt ?? "").localeCompare(a.decidedAt ?? ""));
 }

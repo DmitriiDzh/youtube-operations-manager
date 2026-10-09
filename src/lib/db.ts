@@ -2033,7 +2033,7 @@ export const marketResearchRequests = sqliteTable(
 /**
  * SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): a change an agent
  * (the Producer) or the system proposes to the watchlist or the hypotheses, for one of our channels. Nothing changes until the owner
- * approves it in the Web UI; the system then applies it. `dedupe_key` is set only while pending (a partial unique index), so the
+ * approves it in the Web UI; the system then applies it. `dedupe_key` is set only while pending (a unique index; SQLite lets many rows hold NULL), so the
  * same pending proposal is never created twice -- also when two computers evaluate inactivity. No FK (like
  * `channel_record_assignments`): `target_id` names a watchlist entry, `channel_id` one of our channels.
  */
@@ -9289,15 +9289,18 @@ export type NewAgentProposal = Omit<typeof agentProposals.$inferInsert, "status"
 export type StoredAgentProposal = typeof agentProposals.$inferSelect;
 
 /**
- * Inserts a pending proposal unless one with the same `dedupeKey` is already pending (the partial unique index): then nothing is
+ * Inserts a pending proposal unless one with the same `dedupeKey` is already pending (the unique index on a key only pending rows hold): then nothing is
  * written and that pending one is returned with `created: false`.
  */
 export async function insertAgentProposal(row: NewAgentProposal, database: AppDb = db): Promise<{ proposal: StoredAgentProposal; created: boolean }> {
-  const inserted = await database.insert(agentProposals).values({ ...row, status: "pending" }).onConflictDoNothing().returning();
-  if (inserted.length > 0) return { proposal: inserted[0], created: true };
-  const existing = row.dedupeKey ? (await database.select().from(agentProposals).where(eq(agentProposals.dedupeKey, row.dedupeKey)).limit(1))[0] : undefined;
-  if (!existing) throw new Error(`Proposal ${row.id} was not stored and no pending duplicate was found`);
-  return { proposal: existing, created: false };
+  // A second attempt covers the duplicate being decided (its key released) between the conflict and the read.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const inserted = await database.insert(agentProposals).values({ ...row, status: "pending" }).onConflictDoNothing().returning();
+    if (inserted.length > 0) return { proposal: inserted[0], created: true };
+    const existing = row.dedupeKey ? (await database.select().from(agentProposals).where(eq(agentProposals.dedupeKey, row.dedupeKey)).limit(1))[0] : undefined;
+    if (existing) return { proposal: existing, created: false };
+  }
+  throw new Error(`Proposal ${row.id} was not stored and no pending duplicate was found`);
 }
 
 /**
@@ -9321,16 +9324,28 @@ export async function getAgentProposal(id: string, database: AppDb = db): Promis
   return (await database.select().from(agentProposals).where(eq(agentProposals.id, id)).limit(1))[0] ?? null;
 }
 
-/** Newest first. `source`/`channelId`/`status` narrow it; `includeDone: false` leaves out the ones the proposer marked done. */
+/**
+ * Newest first. `source`/`channelId`/`status` narrow it (`decided`: every status but pending); `includeDone: false` leaves out the
+ * ones the proposer marked done; `decidedSince` leaves out decided ones decided before it (kept until the next purge, never shown).
+ */
 export async function listAgentProposals(
-  filter: { source?: "producer" | "system"; channelId?: string; status?: StoredAgentProposal["status"]; includeDone?: boolean; limit?: number } = {},
+  filter: {
+    source?: "producer" | "system";
+    channelId?: string;
+    status?: StoredAgentProposal["status"] | "decided";
+    includeDone?: boolean;
+    decidedSince?: Date;
+    limit?: number;
+  } = {},
   database: AppDb = db
 ): Promise<StoredAgentProposal[]> {
   const conditions = [];
   if (filter.source) conditions.push(eq(agentProposals.source, filter.source));
   if (filter.channelId) conditions.push(eq(agentProposals.channelId, filter.channelId));
-  if (filter.status) conditions.push(eq(agentProposals.status, filter.status));
+  if (filter.status === "decided") conditions.push(ne(agentProposals.status, "pending"));
+  else if (filter.status) conditions.push(eq(agentProposals.status, filter.status));
   if (filter.includeDone === false) conditions.push(isNull(agentProposals.doneAt));
+  if (filter.decidedSince) conditions.push(or(eq(agentProposals.status, "pending"), gte(agentProposals.decidedAt, filter.decidedSince))!);
   return database
     .select()
     .from(agentProposals)
@@ -9354,6 +9369,23 @@ export async function decideAgentProposal(
     .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "pending")))
     .returning();
   return rows[0] ?? null;
+}
+
+/** How many proposals wait for the owner (the inbox badge), counted in SQL, not from a capped list. */
+export async function countPendingAgentProposals(database: AppDb = db): Promise<number> {
+  const [row] = await database.select({ n: sql<number>`count(*)` }).from(agentProposals).where(eq(agentProposals.status, "pending"));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * A claimed proposal whose change turned out not to be makeable for a reason that is not the proposal's fault (the owner switched
+ * channel in between): back to pending, as if never decided. Only from `applied`.
+ */
+export async function reopenAgentProposal(id: string, database: AppDb = db): Promise<void> {
+  await database
+    .update(agentProposals)
+    .set({ status: "pending", decidedAt: null, decidedBy: null })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "applied")));
 }
 
 /** An approved proposal whose change could not be made: `failed` with the error (never retried silently). */
