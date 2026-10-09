@@ -1,6 +1,6 @@
 # Media section UX redesign: Plans, Review, Jobs (plan)
 
-**Status: APPROVED, implemented on the branch, review pending (BL-162).** Owner, Telegram 2026-10-09 (msg 2244): concept accepted, FO-REQ-0013 in the same
+**Status: DONE, merged into `dev` in 85404fe (owner msg 2302), not released (BL-162).** Owner, Telegram 2026-10-09 (msg 2244): concept accepted, FO-REQ-0013 in the same
 branch, built directly in the app (no prototype). Branch: `feature/media-ux-redesign`, one merge approval at the end.
 
 **Source.** Owner, Telegram 2026-10-09 (msg 2232): "Оцени как выглядит раздел media и экраны проверки треков. Действуй как
