@@ -369,3 +369,12 @@ test("AC-PR-09 (review round 3): a tools/call sent as a notification inside a ba
   assert.deepEqual(calls.map((entry) => entry.tool), ["producer_list_channels"]);
   assert.deepEqual(refused, [{ tool: "channel_video_list", channelId: "UC_PR_X", errorCode: "REQUEST_REJECTED" }]);
 });
+
+test("AC-PR-09 (review round 4): a notification before the same call in a batch never takes the call's log entry", async () => {
+  const { endpoint, tokens, calls, refused } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const notification = { jsonrpc: "2.0", method: "tools/call", params: { name: "producer_list_channels", arguments: {} } };
+  assert.equal((await endpoint.handle(rpc([notification, call("producer_list_channels")], bearer(token)))).status, 200);
+  assert.deepEqual(calls.map((entry) => [entry.tool, entry.outcome]), [["producer_list_channels", "ok"]]);
+  assert.deepEqual(refused, [{ tool: "producer_list_channels", channelId: null, errorCode: "REQUEST_REJECTED" }]);
+});

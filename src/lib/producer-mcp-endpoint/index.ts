@@ -133,7 +133,8 @@ export function createProducerMcpEndpoint(deps: ProducerMcpEndpointDeps) {
       // Every tools/call the server's own log did not record (matched by tool AND channel) never reached a tool. Log it here: as
       // refused by the transport when it rejected the request as a whole, else as an unknown tool or a refused input.
       for (const call of calls) {
-        const index = recorded.indexOf(callKey(call.tool, call.channelId));
+        // A notification never runs, so it can never be the call a recorded entry belongs to (review round 4).
+        const index = call.notification ? -1 : recorded.indexOf(callKey(call.tool, call.channelId));
         if (index >= 0) {
           recorded.splice(index, 1);
           continue;
