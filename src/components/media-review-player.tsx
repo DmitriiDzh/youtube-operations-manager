@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { useT } from "./ui-text-provider";
 
 // BL-143 (ADR 0029 decision 5, MEDIA_REVIEW_TOOLS.md §2 group A): a generic player for one audio file -- waveform with a
@@ -71,9 +71,11 @@ export type MediaReviewPlayerProps = {
   frequencyMarks?: FrequencyMark[];
   /** Called when this track starts playing (A/B: the reference must stop then). */
   onPlayStart?: () => void;
+  /** BL-162 (AC-UX-02): controls shown at the end of the transport row (the review screen's A/B), so they sit with Play. */
+  toolbar?: ReactNode;
 };
 
-export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart }, ref) {
+export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlayerProps>(function MediaReviewPlayer({ src, markers, volume = 1, spectrogram = false, onDecoded, frequencyMarks = [], onPlayStart, toolbar }, ref) {
   const t = useT();
   const container = useRef<HTMLDivElement | null>(null);
   const spectrogramContainer = useRef<HTMLDivElement | null>(null);
@@ -125,7 +127,8 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       instance = WaveSurfer.create({
         container: container.current,
         url: src,
-        height: 96,
+        // BL-162 (AC-UX-02): the waveform is the screen's main element.
+        height: 128,
         waveColor: "#52525b",
         progressColor: "#818cf8",
         cursorColor: "#e4e4e7",
@@ -221,7 +224,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
 
   return (
     <div className="space-y-2">
-      <div ref={container} className="min-h-24 w-full rounded-md bg-zinc-950" />
+      <div ref={container} className="min-h-32 w-full rounded-md bg-zinc-950" />
       <div className={spectrogram ? "relative w-full" : "hidden"} style={{ height: SPECTROGRAM_HEIGHT }}>
         <div ref={spectrogramContainer} className="absolute inset-0" />
         {spectrogram &&
@@ -235,8 +238,8 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
               </div>
             ))}
       </div>
-      <div className="flex items-center gap-3 text-xs text-zinc-400">
-        <button type="button" onClick={() => void wave.current?.playPause()} disabled={!state.ready} className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+        <button type="button" onClick={() => void wave.current?.playPause()} disabled={!state.ready} className="min-w-20 rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
           {state.playing ? t("review.player.pause") : t("review.player.play")}
         </button>
         <span className="font-mono">
@@ -264,6 +267,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
         {!selection && state.ready && <span className="text-zinc-500">{t("review.player.dragHint")}</span>}
         {!state.ready && !state.error && <span>{t("review.player.loading")}</span>}
         {state.error && <span className="text-red-400">{state.error}</span>}
+        {toolbar && <div className="ml-auto flex flex-wrap items-center gap-2">{toolbar}</div>}
       </div>
     </div>
   );

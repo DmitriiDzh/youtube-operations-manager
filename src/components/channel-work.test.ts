@@ -84,6 +84,12 @@ test("AC-BL-05: a review address names another device's plan by its device and h
   assert.equal(planReviewHref("R 1", { deviceId: "win", hostname: null }), "/media/plans/R%201/review?device=win");
 });
 
+test("BL-162 AC-UX-09: a review address may open a wave, on this device's plan or another's", () => {
+  assert.equal(planReviewHref("R-1", undefined, "C14"), "/media/plans/R-1/review?wave=C14");
+  assert.equal(planReviewHref("R-1", { deviceId: "win", hostname: "PC" }, "C10A"), "/media/plans/R-1/review?device=win&host=PC&wave=C10A");
+  assert.equal(planReviewHref("R-1", undefined, ""), "/media/plans/R-1/review", "an empty wave is no wave");
+});
+
 test("AC-BL-04 (review round 1): one entry per plan and notice kind -- a plan's completed stages are one entry naming them all", () => {
   const work2 = work({
     channelId: "UC_x",
