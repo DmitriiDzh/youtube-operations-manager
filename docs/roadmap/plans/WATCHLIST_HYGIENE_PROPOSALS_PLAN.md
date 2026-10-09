@@ -44,6 +44,9 @@ before the code.
     entry.
 - **What a pause means.** A paused entry is never collected. Schema v74 adds `research_channels.paused_at` and
   `paused_reason`.
+- **Pause is stored state; inactivity is only a detector that sets it.** After 30 days the paused entry's date is gone, by
+  retention, and `inactive` reads false. The pause stays all the same, so the system proposal's text records the date
+  seen at detection. The date is never stored on `research_channels`, which is classified `notApiData`.
 - **Owner actions** in Research → Channels:
   - "Resume collection" clears the pause. If the entry is still inactive, the next evaluation pauses it again, so after a
     rejected deletion the owner resumes it on purpose.
@@ -64,17 +67,25 @@ before the code.
   - `status` (`pending` → `applied` | `rejected` | `failed`), `createdAt`;
   - `decidedAt`, `decidedBy`, `rejectComment` (required on reject), `applyError`;
   - `doneAt` (the proposer marked it read), `agentApiVersion`.
+- **One of our channels per proposal** (advisor review, told to the owner): every Producer call already runs inside one named
+  channel's scope, so a proposal belongs to that channel (`channelId`, single). "Two of our channels" means two proposals. The
+  entry it names must be visible to that channel (`assertAvailableToAgent`), except for `watchlist.add`.
 - **Kinds (v1):**
-  - `watchlist.add` `{ channelId (UC…) | handle, followers: ourChannelIds[] }`;
-  - `watchlist.follow` `{ researchChannelId, add: ourChannelIds[], remove: ourChannelIds[] }`;
+  - `watchlist.add` `{ competitor: UC… id | handle/URL, reason }`: add the competitor, or link an existing one, to this channel;
+  - `watchlist.unfollow` `{ researchChannelId }`: this channel stops following it, and the entry stays for the others;
   - `watchlist.pause` / `watchlist.resume` `{ researchChannelId }`;
-  - `watchlist.delete` `{ researchChannelId }`;
-  - `hypothesis.add` `{ channelId (ours) | null, statement, evidenceNotes }`.
+  - `watchlist.delete` `{ researchChannelId }`: deleted completely, for every channel;
+  - `hypothesis.add` `{ statement, evidenceNotes }`: a hypothesis for this channel. On approval it is created with
+    `createdVia: "mcp"` and `createdBy` naming the Producer. This supersedes PHASE_10_SLICE_2_PLAN's "hypothesis creation
+    is Web-only" for this approved path only.
 - **Producer tools** (Producer API 1.1.0):
   - `producer_propose` (DRAFT): one proposal. It is validated on submit: the entry exists, the channels are connected,
     and there is no duplicate pending proposal for the same kind and target.
   - `producer_list_proposals` (READ): its proposals with status and, for a rejected one, the comment.
   - `producer_mark_proposals_done` (DRAFT): marks decided proposals as read.
+- **Sync and uniqueness.** `agent_proposals` travels in the device snapshot after `research_channels` and `hypotheses`, like
+  `market_research_requests`. It is classified `notApiData`. A partial unique index on `(kind, target_id) WHERE status =
+  'pending'` makes the system's deletion proposal idempotent, even when both computers evaluate.
 - **Owner UI.** An "Agent proposals" panel heads Research → Inbox, with a count badge. Each card shows:
   - the proposer (Producer or system);
   - its text;
@@ -92,8 +103,12 @@ before the code.
 
 - **AC-WH-01** An entry whose newest retained upload is 7 months old is shown inactive. One with no known upload date is
   not.
-- **AC-WH-02** The auto-pause pauses an inactive entry and creates exactly one pending system deletion proposal. Repeated
-  evaluation creates no second one.
+- **AC-WH-02** The auto-pause pauses an inactive entry and creates exactly one pending system deletion proposal. Its text
+  names the newest upload date. Repeated evaluation creates no second one, including a concurrent one (unique index).
+  Fixture at N = 6: entry A with snapshots at 7 and 8 months gets paused plus 1 proposal. Entry B with a snapshot at
+  5 months is untouched. Entry C with no snapshots is untouched. A second run adds nothing.
+- **AC-WH-07** A paused entry stays paused when its date later disappears, and rejecting its deletion proposal does not
+  resume it.
 - **AC-WH-03** A paused entry is never claimed for collection, whether automatically or by an approved collection request.
 - **AC-WH-04** Resume clears the pause. The setting change (N) takes effect at the next evaluation.
 - **AC-WH-05** Delete completely also removes the entry's channel links and its pending proposals.
