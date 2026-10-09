@@ -3983,6 +3983,14 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS video_milestones_channel_idx ON video_milestones (channel_id)");
     },
   },
+  {
+    version: 76,
+    description:
+      "video_milestones -- BL-166 fix: milestones collected before the curve query was corrected got no curve (YouTube returns no rows for the five-metric query); collected rows without a curve are removed so they are collected again. Data only",
+    apply: async (client) => {
+      await client.execute("DELETE FROM video_milestones WHERE status = 'collected' AND (retention_json IS NULL OR retention_json = '[]')");
+    },
+  },
 ];
 
 /**

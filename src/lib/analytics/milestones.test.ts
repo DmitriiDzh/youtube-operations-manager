@@ -12,6 +12,7 @@ import {
   listVideoMilestones,
   recordVideoMilestoneFailure,
   saveCollectedVideoMilestone,
+  SCHEMA_MIGRATIONS,
   type AppDb,
 } from "@/lib/db";
 import { DomainError } from "./contracts";
@@ -93,17 +94,20 @@ test("AC-VM-03: at most 25 per run -- never-attempted first, oldest window first
   assert.deepEqual(planDueMilestones(mixed, states, now).map((p) => `${p.videoId}/${p.milestoneDays}`), ["c/7", "g/7", "b/7"]);
 });
 
+let lastClient: ReturnType<typeof createLibsqlClient> | null = null;
+
 async function freshDb(): Promise<AppDb> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "milestones-"));
   const client = createLibsqlClient({ url: `file:${path.join(dir, "t.db")}` });
   await initializeDatabaseSchema(client);
+  lastClient = client;
   return drizzle(client) as unknown as AppDb;
 }
 
 const NOW = new Date("2026-10-09T20:00:00Z");
 const CURVE = [
-  { dimensionValues: ["0.02"], metrics: { audienceWatchRatio: 0.9, relativeRetentionPerformance: 0.6, startedWatching: 0.01, stoppedWatching: 0.05, totalSegmentImpressions: 10 } },
-  { dimensionValues: ["0.01"], metrics: { audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.7, startedWatching: 0.9, stoppedWatching: 0.1, totalSegmentImpressions: 12 } },
+  { dimensionValues: ["0.02"], metrics: { audienceWatchRatio: 0.9, relativeRetentionPerformance: 0.6 } },
+  { dimensionValues: ["0.01"], metrics: { audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.7 } },
 ];
 const TOTALS = [{ dimensionValues: [], metrics: { views: 340, estimatedMinutesWatched: 1500, averageViewDuration: 264, averageViewPercentage: 7.3 } }];
 
@@ -164,7 +168,8 @@ test("AC-VM-02: a due milestone costs 2 queries -- the curve and the window tota
     endDate: "2026-09-07",
     filters: "video==v1",
     dimensions: "elapsedVideoTimeRatio",
-    metricNames: ["audienceWatchRatio", "relativeRetentionPerformance", "startedWatching", "stoppedWatching", "totalSegmentImpressions"],
+    // BL-166 fix (2026-10-10, checked live): the five-metric query gets no rows from YouTube; the curve is these two metrics.
+    metricNames: ["audienceWatchRatio", "relativeRetentionPerformance"],
   });
   assert.deepEqual(queries[1], {
     channelId: "UC_ours",
@@ -187,8 +192,8 @@ test("AC-VM-02: a due milestone costs 2 queries -- the curve and the window tota
       durationSeconds: 7200,
       totals: { views: 340, estimatedMinutesWatched: 1500, averageViewDuration: 264, averageViewPercentage: 7.3 },
       retention: [
-        { elapsedVideoTimeRatio: 0.01, audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.7, startedWatching: 0.9, stoppedWatching: 0.1, totalSegmentImpressions: 12 },
-        { elapsedVideoTimeRatio: 0.02, audienceWatchRatio: 0.9, relativeRetentionPerformance: 0.6, startedWatching: 0.01, stoppedWatching: 0.05, totalSegmentImpressions: 10 },
+        { elapsedVideoTimeRatio: 0.01, audienceWatchRatio: 1.2, relativeRetentionPerformance: 0.7 },
+        { elapsedVideoTimeRatio: 0.02, audienceWatchRatio: 0.9, relativeRetentionPerformance: 0.6 },
       ],
     },
   ]);
@@ -360,4 +365,38 @@ test("AC-VM-06: reads are the session channel's own stored milestones; another c
   const queriesBefore = queries.length;
   await assert.rejects(services.listVideoMilestones({ channelId: "UC_other" }), (error: { code?: string }) => error.code === "CHANNEL_NOT_ACTIVE");
   assert.equal(queries.length, queriesBefore, "a read never queries YouTube");
+});
+
+test("v76 (BL-166 fix): collected milestones without a curve are removed, so they are collected again; the rest stay", async () => {
+  const db = await freshDb();
+  const row = (videoId: string, retentionJson: string) => ({
+    videoId,
+    milestoneDays: 7,
+    channelId: "UC_ours",
+    windowStart: "2026-09-01",
+    windowEnd: "2026-09-07",
+    views: 30,
+    estimatedMinutesWatched: 60,
+    averageViewDuration: 120,
+    averageViewPercentage: 25,
+    retentionJson,
+    at: NOW,
+  });
+  await saveCollectedVideoMilestone(row("empty", "[]"), db);
+  await saveCollectedVideoMilestone(row("curve", JSON.stringify([{ elapsedVideoTimeRatio: 0.01, audienceWatchRatio: 1, relativeRetentionPerformance: 0.5 }])), db);
+  await recordVideoMilestoneFailure(
+    { videoId: "retrying", milestoneDays: 7, channelId: "UC_ours", windowStart: "2026-09-01", windowEnd: "2026-09-07", error: "HTTP 400", at: NOW, retryAt: NOW, maxAttempts: 3 },
+    db
+  );
+  const v76 = SCHEMA_MIGRATIONS.find((migration) => migration.version === 76);
+  assert.ok(v76);
+  await v76.apply(lastClient!);
+  assert.deepEqual((await listVideoMilestones("UC_ours", {}, db)).map((r) => [r.videoId, r.status]), [
+    ["curve", "collected"],
+    ["retrying", "retry"],
+  ]);
+  // Collected again: the removed milestone is planned as never attempted, the one with a curve is not.
+  const states = await listVideoMilestoneStates("UC_ours", db);
+  const plan = planDueMilestones([published("empty", "2026-09-01T17:00:00Z"), published("curve", "2026-09-01T17:00:00Z")], states, NOW);
+  assert.deepEqual(plan.filter((p) => p.milestoneDays === 7).map((p) => p.videoId), ["empty"]);
 });

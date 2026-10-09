@@ -7,7 +7,8 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
 
 - **Retention curve.** `reports.query` with dimension `elapsedVideoTimeRatio` returns 100 points (0.01 … 1.00), one video per query
   (`filters=video==<id>`), no `day`. The curve covers every view in startDate..endDate. Data arrives 48–72 h late.
-  - Metrics: `audienceWatchRatio`, `relativeRetentionPerformance`, `startedWatching`, `stoppedWatching`, `totalSegmentImpressions`.
+  - Metrics: `audienceWatchRatio`, `relativeRetentionPerformance` (documented also: `startedWatching`, `stoppedWatching`,
+    `totalSegmentImpressions`; checked live 2026-10-10, adding them makes YouTube answer with no rows, so they are not requested).
   - YT Manager already reads it live for the Web UI: `getVideoRetentionCurve`, through the gateway's `queryChannelBreakdownReport`.
 - **Totals for a window** come from the same query without a dimension: `views`, `estimatedMinutesWatched`, `averageViewDuration`,
   `averageViewPercentage`, each as YouTube computes it for that window.
@@ -36,7 +37,7 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
 - **Storage.** New table `video_milestones` (schema v75), primary key (video_id, milestone_days), with:
   - `channel_id`, `window_start`, `window_end`, `collected_at`;
   - `views`, `estimated_minutes_watched`, `average_view_duration`, `average_view_percentage`, each null when YouTube returned none;
-  - `retention_json`: up to 100 points of the five metrics, as returned. `[]` when YouTube returned none, e.g. below its unpublished
+  - `retention_json`: up to 100 points of the two metrics, as returned. `[]` when YouTube returned none, e.g. below its unpublished
     threshold.
   - It is classified `authorized` and is device-local: each computer collects its own channels' milestones.
 - **Reads.**
@@ -58,7 +59,7 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
 - **AC-VM-01** A video published 2026-09-01 (Pacific) has its day-7 window 09-01..09-07, due from 09-10, and its day-28 window
   09-01..09-28, due from 10-01. Neither is due a day earlier.
 - **AC-VM-02** A due milestone is collected with 2 queries:
-  - the curve: `elapsedVideoTimeRatio`, the five metrics, `video==<id>`, the window;
+  - the curve: `elapsedVideoTimeRatio`, the two metrics, `video==<id>`, the window;
   - the totals: no dimension, the four metrics, the same filter and window.
   - The stored row holds exactly what was returned. A collected milestone is never queried again.
 - **AC-VM-03** At most 25 milestones per channel per run, the oldest due first. The next run continues.

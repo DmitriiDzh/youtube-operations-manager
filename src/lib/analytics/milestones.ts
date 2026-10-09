@@ -23,7 +23,12 @@ export const MAX_MILESTONE_ATTEMPTS = 3;
 export const MILESTONE_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
 /** Retention data arrives 48-72 h after a day; one day more than the daily rows' lag. */
 export const MILESTONE_LAG_DAYS = ANALYTICS_REPORTING_LAG_DAYS + 1;
-export const RETENTION_METRICS = ["audienceWatchRatio", "relativeRetentionPerformance", "startedWatching", "stoppedWatching", "totalSegmentImpressions"] as const;
+/**
+ * The curve's metrics. Checked live on 2026-10-10: with `startedWatching`, `stoppedWatching` and `totalSegmentImpressions` added, YouTube
+ * answers the same query with no rows (no error), so every curve came back empty; with these two it returns the 100 points (the same
+ * pair the Content tab's live curve has always used).
+ */
+export const RETENTION_METRICS = ["audienceWatchRatio", "relativeRetentionPerformance"] as const;
 export const MILESTONE_TOTAL_METRICS = ["views", "estimatedMinutesWatched", "averageViewDuration", "averageViewPercentage"] as const;
 
 function shiftIsoDate(date: string, days: number): string {
@@ -141,9 +146,6 @@ type RetentionPoint = {
   elapsedVideoTimeRatio: number;
   audienceWatchRatio: number | null;
   relativeRetentionPerformance: number | null;
-  startedWatching: number | null;
-  stoppedWatching: number | null;
-  totalSegmentImpressions: number | null;
 };
 
 export type VideoMilestone = {
@@ -251,9 +253,6 @@ function toRetention(rows: BreakdownRow[]): RetentionPoint[] {
       elapsedVideoTimeRatio: Number(row.dimensionValues[0]),
       audienceWatchRatio: metricOrNull(row, "audienceWatchRatio"),
       relativeRetentionPerformance: metricOrNull(row, "relativeRetentionPerformance"),
-      startedWatching: metricOrNull(row, "startedWatching"),
-      stoppedWatching: metricOrNull(row, "stoppedWatching"),
-      totalSegmentImpressions: metricOrNull(row, "totalSegmentImpressions"),
     }))
     .filter((point) => Number.isFinite(point.elapsedVideoTimeRatio))
     .sort((a, b) => a.elapsedVideoTimeRatio - b.elapsedVideoTimeRatio);
