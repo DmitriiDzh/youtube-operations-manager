@@ -114,6 +114,7 @@ const DOMAIN_ERROR_STATUS = {
   plan_closed: 409,
   plan_mismatch: 422,
   plan_invalid: 422,
+  plan_verdict_exists: 409,
   change_set_incomplete: 500,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,
@@ -159,6 +160,11 @@ const DOMAIN_ERROR_STATUS = {
   LOGICAL_PATH_ALREADY_EXISTS: 409,
   LOGICAL_PATH_VALUE_INVALID: 400,
   LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE: 409,
+  AGENT_PROPOSAL_NOT_FOUND: 404,
+  AGENT_PROPOSAL_NOT_PENDING: 409,
+  AGENT_PROPOSAL_DUPLICATE: 409,
+  AGENT_PROPOSAL_NOT_APPLICABLE: 409,
+  AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

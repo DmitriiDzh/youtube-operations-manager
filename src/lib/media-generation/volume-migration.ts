@@ -97,7 +97,7 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
       const { volumeId } = parseWithSchema(deleteNetworkVolumeInputSchema, input, "delete network volume");
       const settings = await deps.base.getSettings();
       if (settings.networkVolumeId === volumeId) {
-        throw new DomainError({ code: "validation_failed", message: "This is the volume the app uses; switch to another volume first (Production → Setup).", details: { volumeId } });
+        throw new DomainError({ code: "validation_failed", message: "This is the volume the app uses; switch to another volume first (Servers → Setup).", details: { volumeId } });
       }
       const client = await deps.base.resolveRunpodClient();
       const volume = await client.getNetworkVolume(volumeId);
@@ -128,7 +128,7 @@ export function createVolumeMigrationServices(deps: VolumeMigrationDeps) {
     async probeCrossVolumeCopy(): Promise<VolumeCopyProbeReport> {
       const settings = await deps.base.getSettings();
       if (!settings.datacenterId || !settings.networkVolumeId) {
-        throw new DomainError({ code: "media_generation_not_configured", message: "Choose the datacenter and the network volume first (Production → Setup)." });
+        throw new DomainError({ code: "media_generation_not_configured", message: "Choose the datacenter and the network volume first (Servers → Setup)." });
       }
       const sourceVolumeId = settings.networkVolumeId;
       const notes: string[] = [];

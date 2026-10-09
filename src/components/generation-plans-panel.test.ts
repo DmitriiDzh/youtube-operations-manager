@@ -50,3 +50,23 @@ test("notices read as short chips with a tone (AC-GP3-01)", async () => {
   assert.equal(describeNotice({ kind: "review_waiting", count: 3, passed: 3, rejected: 0 }).text, "3 waiting for your verdict");
   assert.equal(describeNotice({ kind: "review_waiting", count: 12, passed: 5, rejected: 7 }).text, "12 waiting for your verdict (5 passed, 7 rejected by the validator)");
 });
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-MV-07): a plan move has its own words in every interface language, with the channels'
+// names (an unknown channel shows its id).
+test("AC-MV-07: plan_moved names both channels by name when known, by id otherwise", () => {
+  const names: Record<string, string> = { UC_tropico: "Tropico Jazz", UC_japan: "Rural Japan Music" };
+  const event = { at: "", kind: "plan_moved", actor: "factory", details: { from: "UC_tropico", to: "UC_japan", checked: 34 } };
+  assert.equal(panel.describeEvent(t, event, (id) => names[id] ?? id), "moved from Tropico Jazz to Rural Japan Music");
+  assert.equal(panel.describeEvent(createTranslator("ru"), event, (id) => names[id] ?? id), "перенесён из Tropico Jazz в Rural Japan Music");
+  assert.equal(panel.describeEvent(t, { ...event, details: { from: "UC_gone", to: "UC_japan", checked: 0 } }, (id) => names[id] ?? id), "moved from UC_gone to Rural Japan Music");
+});
+
+// BL-157 (AC-WV-05): "wave done" in the plan's event log.
+test("AC-WV-05: group_reviewed names the wave and the owner's counts", () => {
+  assert.equal(describeEvent({ at: "", kind: "group_reviewed", actor: "owner", details: { groupId: "C14", accepted: 12, rejected: 28, overridesValidator: 3 } }), "wave C14 reviewed: 12 accepted, 28 rejected");
+});
+
+// BL-157 (review round 1, AC-TC-05): an older verdict from the other computer is kept, not applied -- the log says so.
+test("AC-TC-05: a superseded peer verdict reads as kept in the history", () => {
+  assert.equal(describeEvent({ at: "", kind: "peer_verdict", actor: "owner", details: { fromDevice: "Windows PC", itemKey: "C1/F1", result: "rejected", superseded: true } }), "older verdict from Windows PC C1/F1: rejected (kept in the history; a newer one stands)");
+});

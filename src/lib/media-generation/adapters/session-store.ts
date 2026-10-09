@@ -52,6 +52,9 @@ function fromDb(row: StoredMediaSession): StoredSessionRow {
     capacityNextAttemptAt: row.capacityNextAttemptAt ?? null,
     capacityWaitUntil: row.capacityWaitUntil ?? null,
     planId: row.planId ?? null,
+    minCudaVersion: row.minCudaVersion ?? null,
+    usedMinCudaVersion: row.usedMinCudaVersion ?? null,
+    hostCudaVersion: row.hostCudaVersion ?? null,
   };
 }
 

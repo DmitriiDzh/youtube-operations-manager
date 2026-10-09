@@ -2,10 +2,15 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { validatorOfEntry, type PlanCheck, type PlanMarker, type PlanReference, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { historyEntryOfVerdict, validatorOfEntry, type PlanCheck, type PlanExistingVerdict, type PlanMarker, type PlanReference, type PlanReviewBatch, type PlanReviewClaim, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
 import { ToggleSwitch } from "./toggle-switch";
+import { ConfirmDialog } from "./confirm-dialog";
+import { InfoTooltip } from "./info-tooltip";
+import { Popover } from "./popover";
+import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
 
@@ -43,6 +48,21 @@ const REVIEW_REASON_KEYS: Record<(typeof REVIEW_REASONS)[number], UiTextKey> = {
   "sounds like the others": "review.reason.soundsLikeOthers",
   "not melodic / boring": "review.reason.notMelodic",
   "unwanted beat / drums": "review.reason.unwantedBeat",
+};
+
+/** BL-162 (owner, Telegram 2026-10-09 msg 2254 p.3): an icon per reason, so the buttons read at a glance. */
+// ui-text-ignore: pictograms, not text
+const REVIEW_REASON_ICONS: Record<(typeof REVIEW_REASONS)[number], string> = {
+  "thin / sparse": "🕳️",
+  "dropout / pause": "⏸️",
+  "abrupt start": "⚡",
+  "dead tail / abrupt end": "✂️",
+  "ringing / whine": "🔔",
+  "wrong instrument": "🎻",
+  "stuck loop": "🔁",
+  "sounds like the others": "👥",
+  "not melodic / boring": "😴",
+  "unwanted beat / drums": "🥁",
 };
 
 /** A verdict / result in words (accepted, rejected); any other value shows as it is. */
@@ -93,13 +113,32 @@ export function reviewKeyAction(key: string): ReviewKeyAction | null {
   }
 }
 
-/** The next attempt still waiting after `from` (wrapping), else -1. Exported for its test. */
-export function nextWaitingIndex(entries: Array<{ verdict: unknown }>, from: number): number {
+/** The next attempt still waiting after `from` (wrapping), else -1; `skip` (BL-157: claimed elsewhere) passes over one. Exported for its test. */
+export function nextWaitingIndex<T extends { verdict: unknown }>(entries: T[], from: number, skip: (entry: T) => boolean = () => false): number {
   for (let step = 1; step <= entries.length; step++) {
     const i = (from + step) % entries.length;
-    if (entries[i].verdict === null) return i;
+    if (entries[i].verdict === null && !skip(entries[i])) return i;
   }
   return -1;
+}
+
+/** BL-157 (AC-TC-02): one step of the arrows/keys from `from` in `direction`, wrapping, passing over skipped entries; `from` when all are. Exported for its test. */
+export function stepIndex<T>(entries: T[], from: number, direction: 1 | -1, skip: (entry: T) => boolean): number {
+  const n = entries.length;
+  for (let step = 1; step < n; step++) {
+    const i = (((from + direction * step) % n) + n) % n;
+    if (!skip(entries[i])) return i;
+  }
+  return from;
+}
+
+/** BL-157 (AC-TC-02, AC-WV-06): another device's live claim on this entry -- on the track itself or on its whole wave. Exported for its test. */
+export function claimOf(entry: Pick<PlanReviewEntry, "itemKey" | "attemptRef" | "groupId">, claims: readonly PlanReviewClaim[], nowMs: number): PlanReviewClaim | null {
+  return (
+    claims.find(
+      (c) => Date.parse(c.until) > nowMs && ((c.scope === "attempt" && c.itemKey === entry.itemKey && c.attemptRef === entry.attemptRef) || (c.scope === "group" && c.groupId !== null && c.groupId === entry.groupId))
+    ) ?? null
+  );
 }
 
 /** AC-GP3-04: the loudness the validator measured for this attempt (the latest stage's `metrics.lufs`), or null. Exported for its test. */
@@ -149,12 +188,32 @@ export function findingMarkers(entry: Pick<PlanReviewEntry, "stages">): ReviewMa
   );
 }
 
-async function postJson(t: Translate, url: string, body: unknown): Promise<unknown> {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { message?: string }).message ?? t("review.requestFailed", { status: String(res.status) }));
+/** A refused request with its code and details (BL-157: `plan_verdict_exists` carries what is already there). */
+class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+    readonly details: unknown
+  ) {
+    super(message);
+  }
+}
+
+async function postJson(t: Translate, url: string, body: unknown, init: { keepalive?: boolean } = {}): Promise<unknown> {
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), ...init });
+  const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string; details?: unknown };
+  if (!res.ok) throw new RequestError(data.message ?? t("review.requestFailed", { status: String(res.status) }), data.error ?? null, data.details);
   return data;
 }
+
+/**
+ * BL-157 (AC-TC-01): how often the screen renews its claims and reads the other computers'. BL-162 (owner, msg 2263; §5.4): a
+ * heartbeat every 30 s (a claim lives 90 s), and the other computers' claims read every 3 s from their small presence files.
+ */
+const CLAIM_HEARTBEAT_MS = 30_000;
+const CLAIMS_REFRESH_MS = 3_000;
+/** BL-162 (§5.4): how long after opening a track the "the other computer opened it first" move may still happen. */
+const AUTO_MOVE_WINDOW_MS = 20_000;
 
 type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
 const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
@@ -192,11 +251,87 @@ export function failedChecksOf(entry: Pick<PlanReviewEntry, "stages">): FailedCh
     }));
 }
 
+/** BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-01/05): one wave of the queue -- how many of its entries wait (by the validator) and how many were reviewed. */
+export type WaveSummary = {
+  groupId: string;
+  title: string;
+  total: number;
+  reviewed: number;
+  waitingPassed: number;
+  waitingRejected: number;
+  /** The owner's verdicts in the wave, for the "wave done" summary. */
+  accepted: number;
+  rejected: number;
+  /** Accepted although the validator rejected them. */
+  overridesValidator: number;
+};
+
+/**
+ * The waves that have entries, in the plan's wave order (`batches`), then any wave the batches do not name (an older
+ * report), by first appearance. Entries in no wave are not a wave. Exported for its test.
+ */
+export function waveSummaries(entries: Array<Pick<PlanReviewEntry, "groupId" | "verdict" | "stages"> & { validator?: PlanReviewEntry["validator"] }>, batches: Array<Pick<PlanReviewBatch, "groupId" | "title">>): WaveSummary[] {
+  const order = [...batches.map((b) => b.groupId), ...entries.map((e) => e.groupId).filter((g): g is string => g !== null)];
+  const ids = [...new Set(order)].filter((id) => entries.some((e) => e.groupId === id));
+  return ids.map((groupId) => {
+    const mine = entries.filter((e) => e.groupId === groupId);
+    const waiting = mine.filter((e) => e.verdict === null);
+    const reviewed = mine.filter((e) => e.verdict !== null);
+    const accepted = reviewed.filter((e) => e.verdict?.result === "accepted");
+    const rejectedByValidator = waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
+    return {
+      groupId,
+      title: batches.find((b) => b.groupId === groupId)?.title ?? groupId,
+      total: mine.length,
+      reviewed: reviewed.length,
+      waitingPassed: waiting.length - rejectedByValidator,
+      waitingRejected: rejectedByValidator,
+      accepted: accepted.length,
+      rejected: reviewed.filter((e) => e.verdict?.result === "rejected").length,
+      overridesValidator: accepted.filter((e) => validatorOfEntry(e) === "rejected").length,
+    };
+  });
+}
+
+/**
+ * AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has a waiting track
+ * this computer may take -- review round 5 (AC-WV-06): one whose waiting tracks another computer has all claimed, or took
+ * whole, is not offered (`skip` is the screen's claimed-elsewhere rule). Exported for its test.
+ */
+export function nextOpenWave<E extends Pick<PlanReviewEntry, "groupId" | "verdict">>(waves: WaveSummary[], chosen: WaveSummary | null, entries: E[], skip: (entry: E) => boolean): WaveSummary | null {
+  if (!chosen || chosen.waitingPassed + chosen.waitingRejected > 0) return null;
+  const at = waves.findIndex((w) => w.groupId === chosen.groupId);
+  const open = (w: WaveSummary) => entries.some((e) => e.groupId === w.groupId && e.verdict === null && !skip(e));
+  return [...waves.slice(at + 1), ...waves.slice(0, at)].find((w) => w.waitingPassed + w.waitingRejected > 0 && open(w)) ?? null;
+}
+
+/** The entries the screen walks: the validator filter, then the chosen wave (null = all waves). Exported for its test. */
+export function visibleEntries<T extends Pick<PlanReviewEntry, "stages" | "groupId"> & { validator?: PlanReviewEntry["validator"] }>(entries: T[], filter: ReviewFilter, wave: string | null): T[] {
+  const filtered = filterEntries(entries, filter);
+  return wave === null ? filtered : filtered.filter((e) => e.groupId === wave);
+}
+
+/** BL-162 (AC-UX-06): a stage's checks, the failed ones first (in the validator's order), then the passed ones. Exported for its test. */
+export function splitChecks<C extends { pass: boolean }>(checks: readonly C[]): { failed: C[]; passed: C[] } {
+  return { failed: checks.filter((c) => !c.pass), passed: checks.filter((c) => c.pass) };
+}
+
+/**
+ * BL-162 (AC-UX-07): the waves the picker shows -- those with a waiting track and the chosen one, in the plan's order; the
+ * fully reviewed ones only when the owner asks for them (`reviewed` counts those). Exported for its test.
+ */
+export function pickerWaves(waves: readonly WaveSummary[], chosen: string | null, showReviewed: boolean): { shown: WaveSummary[]; reviewed: number } {
+  const open = (w: WaveSummary) => w.waitingPassed + w.waitingRejected > 0;
+  return { shown: waves.filter((w) => showReviewed || open(w) || w.groupId === chosen), reviewed: waves.filter((w) => !open(w)).length };
+}
+
 /** BL-143 phase 2: the queue of ANOTHER device's plan, from its report, with the verdicts sent from here still waiting. */
 export type PeerReviewSource = { deviceId: string; hostname: string | null };
 
 type PeerQueueResponse = {
-  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[] }> }>;
+  /** BL-157 (AC-TC-02): the other devices' live claims, with the plan each is on. */
+  claims?: Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }>;
+  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[]; batches?: PlanReviewBatch[] }> }>;
   outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
 };
 
@@ -220,12 +355,37 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
   });
 }
 
-export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planId: string; onClose: () => void; onChanged?: () => void; source?: PeerReviewSource }) {
+export function PlanReviewScreen({
+  planId,
+  onClose,
+  onChanged,
+  source,
+  initialWave = null,
+}: {
+  planId: string;
+  onClose: () => void;
+  onChanged?: () => void;
+  source?: PeerReviewSource;
+  /** BL-162 (AC-UX-09): open on this wave (`?wave=`); its first waiting, unclaimed track is on screen. */
+  initialWave?: string | null;
+}) {
   const { t, formatNumber, language } = useUiText();
+  const { channel } = useAppChannel();
   const [allEntries, setEntries] = useState<PlanReviewEntry[] | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>("all");
-  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06).
-  const entries = useMemo(() => (allEntries ? filterEntries(allEntries, filter) : null), [allEntries, filter]);
+  // BL-157 (AC-WV-01/02): the chosen wave (null = all waves) and each wave's context.
+  const [wave, setWave] = useState<string | null>(null);
+  const [batches, setBatches] = useState<PlanReviewBatch[]>([]);
+  // BL-157 (AC-TC-01..04): the other computers' claims and a verdict waiting for "Replace?". BL-162 (owner, msg 2254 p.5 / 2263):
+  // what is "in work" follows what is open -- no "take this wave" and no "show claimed ones too"; a claimed track is still
+  // opened by a click in the queue.
+  const [claims, setClaims] = useState<PlanReviewClaim[]>([]);
+  // The attempt the question is about travels with it: "Replace" confirms exactly that track (review round 3).
+  const [confirmReplace, setConfirmReplace] = useState<{ result: "accepted" | "rejected"; existing: PlanExistingVerdict; itemKey: string; attemptRef: string } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const freshClaims = useRef<PlanReviewClaim[]>([]);
+  // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06) and wave (BL-157).
+  const entries = useMemo(() => (allEntries ? visibleEntries(allEntries, filter, wave) : null), [allEntries, filter, wave]);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [blind, setBlind] = useState(false);
@@ -240,19 +400,38 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const referenceAudio = useRef<HTMLAudioElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  // BL-162: "copied" after the attempt's id went to the clipboard.
+  const [copied, setCopied] = useState(false);
   const player = useRef<ReviewPlayerHandle | null>(null);
+  // BL-162 (AC-UX-15): the queue keeps the open track in view.
+  const currentRow = useRef<HTMLButtonElement | null>(null);
   const peerDevice = source?.deviceId;
   const peerName = source?.hostname ?? null;
   const base = peerDevice ? `/api/generation-plans/peers/${encodeURIComponent(peerDevice)}/${encodeURIComponent(planId)}` : `/api/generation-plans/${encodeURIComponent(planId)}`;
+
+  /** BL-157 (AC-TC-02): the other computers' claims on THIS plan, from either answer. */
+  const claimsFrom = useCallback(
+    (data: { claims?: PeerQueueResponse["claims"] | PlanReviewClaim[] }): PlanReviewClaim[] =>
+      peerDevice
+        ? ((data.claims ?? []) as NonNullable<PeerQueueResponse["claims"]>).filter((c) => c.ownerDeviceId === peerDevice && c.planId === planId)
+        : ((data.claims ?? []) as PlanReviewClaim[]),
+    [peerDevice, planId]
+  );
 
   /** The queue, freshest from the server; `[]` (with the message shown) when it cannot be read. */
   const load = useCallback(
     (): Promise<PlanReviewEntry[]> =>
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
-          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; message?: string } & Partial<PeerQueueResponse>;
+          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; batches?: PlanReviewBatch[]; message?: string } & Partial<PeerQueueResponse>;
           if (!res.ok) throw new Error(errorText(t, data, t("review.loadFailedStatus", { status: String(res.status) }), { showErrorField: false }));
-          setReferences(peerDevice ? (data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId)?.references ?? []) : (data.references ?? []));
+          const peerPlan = peerDevice ? data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId) : undefined;
+          setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
+          setBatches(peerDevice ? (peerPlan?.batches ?? []) : (data.batches ?? []));
+          const fresh = claimsFrom(data);
+          freshClaims.current = fresh;
+          setClaims(fresh);
+          setNowMs(Date.now());
           const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
           setEntries(list);
           return list;
@@ -261,15 +440,45 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
           setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.loadFailed") });
           return [];
         }),
-    [base, peerDevice, peerName, planId, t]
+    [base, claimsFrom, peerDevice, peerName, planId, t]
   );
 
+  // A track another computer is on is passed over by the arrows and auto-advance (AC-TC-02); the queue still opens it on a click.
+  const skipClaimed = useCallback((e: PlanReviewEntry) => e.verdict === null && claimOf(e, claims, nowMs) !== null, [claims, nowMs]);
+  /** The same rule against the claims `load` just read -- the state above only catches up on the next render (review round 1). */
+  const skipFresh = useCallback((e: PlanReviewEntry) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) !== null, []);
+
   useEffect(() => {
-    void load().then((list) => setIndex(Math.max(0, list.findIndex((e) => e.verdict === null))));
-  }, [load]);
+    // First open: the first waiting track no other computer is on (its claims arrive with the same answer). BL-162 (AC-UX-09):
+    // with `?wave=`, that wave is chosen first -- after the queue arrived, so the same rule picks its track.
+    void load().then((list) => {
+      const start = initialWave !== null && list.some((e) => e.groupId === initialWave) ? initialWave : null;
+      if (start !== null) setWave(start);
+      const walk = start === null ? list : list.filter((e) => e.groupId === start);
+      setIndex(Math.max(0, walk.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null)));
+    });
+  }, [initialWave, load]);
+
+  // BL-157 (AC-TC-02): the other computers' claims come and go while the screen is open -- read them again now and then
+  // (only the claims: the queue itself is not reloaded under the owner's hands).
+  useEffect(() => {
+    // BL-162 (§5.4): only the claims, from the light `claim` route -- not the whole queue -- so it can run every few seconds.
+    const timer = setInterval(() => {
+      void fetch(`${base}/claim`)
+        .then(async (res) => (res.ok ? ((await res.json()) as { claims?: PlanReviewClaim[] }) : null))
+        .then((data) => {
+          if (data?.claims) setClaims(data.claims);
+          setNowMs(Date.now());
+        })
+        .catch(() => undefined);
+    }, CLAIMS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [base]);
 
   const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
-  const waiting = entries?.filter((e) => e.verdict === null).length ?? 0;
+  useEffect(() => {
+    currentRow.current?.scrollIntoView({ block: "nearest" });
+  }, [index, entries]);
 
   /** Back to A whenever the attempt changes (the reference never keeps playing under another track). */
   const stopB = useCallback(() => {
@@ -289,46 +498,132 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   );
 
   const submit = useCallback(
-    async (result: "accepted" | "rejected") => {
+    async (result: "accepted" | "rejected", replace = false) => {
       if (!entry || busy) return;
+      // BL-157 (AC-TC-04): a track that already has a verdict asks first. A verdict sent from this computer is asked about by
+      // the server (its 409 names this computer, which the screen cannot name itself -- review round 6).
+      const sentHere = entry.verdict?.note?.startsWith(SENT_NOTE_PREFIX) ?? false;
+      if (!replace && entry.verdict && !sentHere) {
+        setConfirmReplace({
+          result,
+          itemKey: entry.itemKey,
+          attemptRef: entry.attemptRef,
+          existing: { result: entry.verdict.result, rating: entry.verdict.rating, device: entry.pendingFrom ?? historyEntryOfVerdict(entry.history, entry.verdict)?.device ?? null, at: entry.verdict.at },
+        });
+        return;
+      }
       setBusy(true);
       try {
         const marks = draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks;
-        await postJson(t, `${base}/verdict`, { itemKey: entry.itemKey, attemptRef: entry.attemptRef, result, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks, ...(draft.note.trim() ? { note: draft.note.trim() } : {}) });
+        await postJson(t, `${base}/verdict`, {
+          itemKey: entry.itemKey,
+          attemptRef: entry.attemptRef,
+          result,
+          ...(replace ? { replace: true } : {}),
+          ...(draft.rating !== null ? { rating: draft.rating } : {}),
+          reasons: draft.reasons,
+          markers: marks,
+          ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+        });
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
-        const list = filterEntries(await load(), filter);
+        const list = visibleEntries(await load(), filter, wave);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
-        const next = nextWaitingIndex(list, here >= 0 ? here : index);
+        const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
         setDraft(emptyDraft());
         stopB();
         setIndex(next >= 0 ? next : Math.max(0, here));
       } catch (error) {
+        // The screen's data was stale: the server found a verdict there -- ask now (AC-TC-04).
+        if (error instanceof RequestError && error.code === "plan_verdict_exists") {
+          const existing = (error.details as { existing?: PlanExistingVerdict } | undefined)?.existing;
+          if (existing) {
+            setConfirmReplace({ result, existing, itemKey: entry.itemKey, attemptRef: entry.attemptRef });
+            return;
+          }
+        }
         setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
       } finally {
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, filter, index, load, onChanged, stopB, t]
+    [base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
   );
+
+  // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
+  // moving on moves the claim, leaving the screen gives them up. Claims are advisory: a failure is ignored.
+  // Always claimed while open and waiting, whatever the other computer claims (review round 6: dropping a claim already held
+  // when the other computer's claim arrives let both walk onto the same track). Claim ids are per device, so they never
+  // collide; the "next wave" offer already avoids leading onto another computer's tracks (`nextOpenWave`).
+  const claimKey = entry && entry.verdict === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
+  useEffect(() => {
+    if (!claimKey) return;
+    const [itemKey, attemptRef] = claimKey.split("\u0000");
+    const send = () => void postJson(t, `${base}/claim`, { scope: "attempt", itemKey, attemptRef }).catch(() => undefined);
+    send();
+    const timer = setInterval(send, CLAIM_HEARTBEAT_MS);
+    return () => {
+      clearInterval(timer);
+      void postJson(t, `${base}/claim`, { scope: "attempt", itemKey, attemptRef, release: true }, { keepalive: true }).catch(() => undefined);
+    };
+  }, [base, claimKey, t]);
+  // BL-162 (§5.4 point 5, owner msg 2263): two computers opened the same track within the same seconds -- the one that opened it
+  // first keeps it and this screen moves on to the next free track, but only while nothing was marked or written here yet.
+  const openedAt = useRef<{ key: string; at: number } | null>(null);
+  // A track the owner opened by hand from the queue -- knowing another computer is on it -- is never moved away from.
+  const pickedByHand = useRef<string | null>(null);
+  useEffect(() => {
+    if (claimKey) openedAt.current = { key: claimKey, at: Date.now() };
+    if (pickedByHand.current !== claimKey) pickedByHand.current = null;
+  }, [claimKey]);
+  useEffect(() => {
+    if (!entry || entry.verdict !== null || !entries || !claimKey) return;
+    const claim = claimOf(entry, claims, nowMs);
+    const opened = openedAt.current;
+    // Only in the first seconds after opening (review): a claim that arrives later (an older build's report) never pulls a track
+    // away from the owner mid-listen -- the "being reviewed on" line says it instead.
+    if (!claim || claim.scope !== "attempt" || !opened || opened.key !== claimKey || pickedByHand.current === claimKey || nowMs - opened.at > AUTO_MOVE_WINDOW_MS || !(Date.parse(claim.since) < opened.at)) return;
+    const untouched = draft.reasons.length === 0 && draft.rating === null && !draft.note.trim() && draft.marks.length === 0 && draft.openMark === null;
+    if (!untouched) return;
+    const next = nextWaitingIndex(entries, index, skipClaimed);
+    if (next < 0 || next === index) return;
+    go(next);
+    setMessage({ tone: "ok", text: t("review.claimedMoved", { device: claim.device }) });
+  }, [claimKey, claims, draft, entries, entry, go, index, nowMs, skipClaimed, t]);
 
   /** A filter shows its own first waiting attempt. */
   const chooseFilter = useCallback(
     (next: ReviewFilter) => {
       stopB();
       setFilter(next);
-      setIndex(Math.max(0, filterEntries(allEntries ?? [], next).findIndex((e) => e.verdict === null)));
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], next, wave).findIndex((e) => e.verdict === null && !skipClaimed(e))));
       setDraft(emptyDraft());
       setMessage(null);
     },
-    [allEntries, stopB]
+    [allEntries, skipClaimed, stopB, wave]
   );
+  /** BL-157 (AC-WV-02): a wave shows its own first waiting attempt; null = all waves. */
+  const chooseWave = useCallback(
+    (next: string | null) => {
+      stopB();
+      setWave(next);
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], filter, next).findIndex((e) => e.verdict === null && !skipClaimed(e))));
+      setDraft(emptyDraft());
+      setMessage(null);
+    },
+    [allEntries, filter, skipClaimed, stopB]
+  );
+  const waves = useMemo(() => waveSummaries(allEntries ?? [], batches), [allEntries, batches]);
+  const chosenWave = wave === null ? null : (waves.find((w) => w.groupId === wave) ?? null);
+  const chosenBatch = wave === null ? null : (batches.find((b) => b.groupId === wave) ?? null);
+  // AC-WV-02: when the chosen wave has nothing waiting, the next wave (in plan order, wrapping) that still has something.
+  const nextWave = useMemo(() => nextOpenWave(waves, chosenWave, allEntries ?? [], skipClaimed), [allEntries, chosenWave, skipClaimed, waves]);
   const filterCounts = useMemo(() => {
-    const list = allEntries ?? [];
+    const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);
     const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter((e) => e.verdict === null).length;
     return { all: waitingIn("all"), passed: waitingIn("passed"), rejected: waitingIn("rejected"), anyRejected: list.some((e) => validatorOfEntry(e) === "rejected") };
-  }, [allEntries]);
+  }, [allEntries, wave]);
 
   const mark = useCallback(() => {
     const at = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
@@ -379,6 +674,8 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // BL-157 (AC-TC-04): while "Replace?" is open, the dialog has the keyboard.
+      if (confirmReplace) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -406,14 +703,14 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
       }
       else if (action === "accept") void submit("accepted");
       else if (action === "reject") void submit("rejected");
-      else if (action === "next") go(index + 1);
-      else if (action === "previous") go(index - 1);
+      else if (action === "next") go(stepIndex(entries ?? [], index, 1, skipClaimed));
+      else if (action === "previous") go(stepIndex(entries ?? [], index, -1, skipClaimed));
       else if (action === "mark") mark();
       else if (action === "ab") toggleAB();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, index, mark, submit, toggleAB, onB]);
+  }, [confirmReplace, entries, go, index, mark, skipClaimed, submit, toggleAB, onB]);
 
   // The reference's volume follows the loudness switch while it plays.
   useEffect(() => {
@@ -438,237 +735,559 @@ export function PlanReviewScreen({ planId, onClose, onChanged, source }: { planI
   const src = entry ? `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` : null;
   const hideFindings = blind && entry?.verdict === null;
 
+  const segment = (selected: boolean) => `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${selected ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`;
+  const toolButton = "flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700";
+  const picker = pickerWaves(waves, wave, true);
+  const allWaiting = (allEntries ?? []).filter((e) => e.verdict === null).length;
+  const reviewedHere = (entries ?? []).filter((e) => e.verdict !== null).length;
+  const takenElsewhere = (groupId: string) => claims.find((c) => c.scope === "group" && c.groupId === groupId && Date.parse(c.until) > nowMs) ?? null;
+  const device = source ? (source.hostname ?? source.deviceId) : null;
+  /** The item key without the chosen wave's prefix ("C14/V04" → "V04" inside C14). */
+  const shortKey = (itemKey: string) => (wave !== null && itemKey.startsWith(`${wave}/`) ? itemKey.slice(wave.length + 1) : itemKey);
+  const copyAttempt = (attemptRef: string) => {
+    void navigator.clipboard?.writeText(attemptRef).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => undefined
+    );
+  };
+  const allChecks = entry ? entry.stages.flatMap((st) => st.checks) : [];
+
+  // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §2.1, owner msgs 2254/2263): a review workstation -- one toolbar, then three columns that
+  // fill the screen and scroll on their own: the player with the verdict under it, the auto-check, and the wave's queue (owner,
+  // msg 2276: the queue on the right).
   return (
-    <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-base font-semibold text-zinc-100">
-          {t("review.title", { plan: planId })}
-          {source ? <span className="ml-2 text-xs font-normal text-zinc-400">{t("review.onDevice", { device: source.hostname ?? source.deviceId })}</span> : null}
-        </h3>
-        <span className="text-xs text-zinc-400">{entries ? t("review.queueCounts", { waiting, total: entries.length }) : t("common.loading")}</span>
-        <div className="ml-auto flex items-center gap-3">
-          <ToggleSwitch label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
-          <ToggleSwitch label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
-          <ToggleSwitch label={t("review.blind")} checked={blind} onChange={setBlind} />
-          <button type="button" onClick={onClose} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
-            {t("review.backToPlan")}
-          </button>
+    <div className="flex h-[calc(100vh-6.25rem)] min-h-[34rem] flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+      {/* The toolbar (AC-UX-04): back, whose plan, the wave picker, progress, the validator filter, the wave's details, View. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
+        <button type="button" onClick={onClose} className={toolButton}>
+          ← {t("review.backToPlan")}
+        </button>
+        <div className="flex min-w-0 items-center gap-1.5 text-sm">
+          {channel?.title ? <span className="max-w-40 truncate text-zinc-500">{channel.title}</span> : null}
+          <span className="font-mono text-zinc-300">{planId}</span>
+          <span className="text-zinc-600">›</span>
+          {/* AC-UX-07: the waves as a list -- those with tracks waiting first, the reviewed ones under them. */}
+          <Popover
+            trigger={
+              <>
+                <span className="font-medium text-white">{wave ?? t("review.wave.all")}</span>
+                <span className="text-zinc-400">{wave === null ? allWaiting : (chosenWave ? chosenWave.waitingPassed + chosenWave.waitingRejected : 0)}</span>
+                <span className="text-zinc-500">▾</span>
+              </>
+            }
+            triggerClassName={toolButton}
+            label={t("review.wave.label")}
+            panelClassName="max-h-[60vh] w-80 overflow-y-auto p-1"
+          >
+            {(close) => {
+              const option = (w: WaveSummary | null) => {
+                const id = w?.groupId ?? null;
+                const left = w ? w.waitingPassed + w.waitingRejected : allWaiting;
+                return (
+                  <button
+                    key={id ?? "all"}
+                    type="button"
+                    onClick={() => {
+                      chooseWave(id);
+                      close();
+                    }}
+                    title={w?.title}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${wave === id ? "bg-violet-500/20 text-white" : "text-zinc-200 hover:bg-zinc-800"}`}
+                  >
+                    <span className="w-14 shrink-0 font-mono">{id ?? t("review.wave.all")}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-zinc-500">{w && w.title !== w.groupId ? w.title : ""}</span>
+                    {w && takenElsewhere(w.groupId) ? <span className="text-xs text-sky-300">{t("review.wave.takenMark")}</span> : null}
+                    {left > 0 ? <span className="rounded bg-amber-500/15 px-1.5 text-xs text-amber-300">{left}</span> : <span className="text-xs text-emerald-400">✓</span>}
+                  </button>
+                );
+              };
+              const open = picker.shown.filter((w) => w.waitingPassed + w.waitingRejected > 0);
+              const done = picker.shown.filter((w) => w.waitingPassed + w.waitingRejected === 0);
+              return (
+                <>
+                  {option(null)}
+                  {open.map(option)}
+                  {done.length > 0 && <p className="px-2 pb-1 pt-2 text-[11px] uppercase tracking-wide text-zinc-500">{t("review.wave.reviewedGroup")}</p>}
+                  {done.map(option)}
+                </>
+              );
+            }}
+          </Popover>
+        </div>
+        {entries && entries.length > 0 && (
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <div className="h-1.5 w-24 overflow-hidden rounded bg-zinc-800">
+              <div className="h-full bg-emerald-500" style={{ width: `${Math.round((reviewedHere / entries.length) * 100)}%` }} />
+            </div>
+            {t("review.progress", { reviewed: reviewedHere, total: entries.length })}
+          </div>
+        )}
+        {(filterCounts.anyRejected || filter !== "all") && (
+          <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
+            {(["all", "passed", "rejected"] as const).map((f) => (
+              <button key={f} type="button" role="tab" aria-selected={filter === f} onClick={() => chooseFilter(f)} className={segment(filter === f)}>
+                {t(f === "all" ? "review.filter.all" : f === "passed" ? "review.filter.passed" : "review.filter.rejected", { count: filterCounts[f] })}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          {device && <span className="rounded-full border border-sky-900 px-2 py-0.5 text-xs text-sky-200">{t("review.onDevice", { device })}</span>}
+          {/* AC-UX-03: the wave's details on request. */}
+          {chosenWave && (
+            <Popover trigger={<>ⓘ {t("review.wave.about")}</>} triggerClassName={toolButton} align="right" panelClassName="max-h-[70vh] w-[32rem] max-w-[80vw] space-y-2 overflow-y-auto p-3 text-xs text-zinc-300">
+              <p className="text-sm font-medium text-zinc-100">{chosenWave.title}</p>
+              {chosenBatch?.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: chosenBatch.ownerNote })}</p>}
+              {chosenBatch?.note && <p className="whitespace-pre-wrap">{chosenBatch.note}</p>}
+              <p className="text-zinc-400">
+                {[
+                  chosenBatch?.firstAt ? t("review.wave.date", { date: formatDisplayDate(chosenBatch.firstAt) }) : null,
+                  chosenBatch && chosenBatch.templates.length > 0 ? t("review.wave.templates", { templates: chosenBatch.templates.join(", ") }) : null,
+                  chosenBatch && chosenBatch.validator.passed + chosenBatch.validator.rejected > 0
+                    ? t("review.wave.passRate", {
+                        passed: chosenBatch.validator.passed,
+                        total: chosenBatch.validator.passed + chosenBatch.validator.rejected,
+                        percent: Math.round((chosenBatch.validator.passed / (chosenBatch.validator.passed + chosenBatch.validator.rejected)) * 100),
+                      })
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+              {chosenBatch && chosenBatch.differingParams.length > 0 && (
+                <ul className="max-h-64 space-y-1 overflow-y-auto text-zinc-400">
+                  {chosenBatch.differingParams.map((p) => (
+                    <li key={p.name}>
+                      <span className="font-mono text-zinc-300">{p.name}</span>: {p.values.map((v) => String(v)).join(" | ")}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Popover>
+          )}
+          {/* AC-UX-01: the view switches, each with its caption, in one place. */}
+          <Popover trigger={<>{t("review.view.label")} ▾</>} triggerClassName={toolButton} align="right" panelClassName="w-80 space-y-3 p-3 text-sm text-zinc-200">
+            <label className="flex cursor-pointer items-center gap-3">
+              <ToggleSwitch tone="violet" label={t("review.matchLoudness")} checked={matchLoudness} onChange={setMatchLoudness} />
+              <span>{t("review.matchLoudness")}</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-3">
+              <ToggleSwitch tone="violet" label={t("review.spectrogram")} checked={showSpectrogram} onChange={setShowSpectrogram} />
+              <span>{t("review.spectrogram")}</span>
+            </label>
+            <div className="space-y-1">
+              <label className="flex cursor-pointer items-center gap-3">
+                <ToggleSwitch tone="violet" label={t("review.blind")} checked={blind} onChange={setBlind} />
+                <span>{t("review.blindShort")}</span>
+              </label>
+              <p className="pl-14 text-xs text-zinc-500">{t("review.blindInfo")}</p>
+            </div>
+          </Popover>
         </div>
       </div>
-      {/* Kept while a filter other than All is chosen, so a queue whose rejects went away never hides its way back. */}
-      {(filterCounts.anyRejected || filter !== "all") && (
-        <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
-          {(["all", "passed", "rejected"] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              role="tab"
-              aria-selected={filter === f}
-              onClick={() => chooseFilter(f)}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${filter === f ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
-            >
-              {t(f === "all" ? "review.filter.all" : f === "passed" ? "review.filter.passed" : "review.filter.rejected", { count: filterCounts[f] })}
-            </button>
-          ))}
-        </div>
-      )}
-      {entries && entries.length === 0 && <p className="text-sm text-zinc-500">{t("review.empty")}</p>}
-      {entry && (
-        <>
-          <div className="flex flex-wrap items-baseline gap-2 text-sm">
-            <button type="button" onClick={() => go(index - 1)} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.previous")}>
-              ←
-            </button>
-            <span className="font-mono text-zinc-100">{entry.itemKey}</span>
-            <span className="text-xs text-zinc-500">
-              {entry.seed !== null
-                ? t("review.attemptMetaSeed", { attempt: entry.attemptRef, seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 })
-                : t("review.attemptMeta", { attempt: entry.attemptRef, index: index + 1, total: entries?.length ?? 0 })}
-            </span>
-            <button type="button" onClick={() => go(index + 1)} className="text-zinc-400 hover:text-zinc-100" aria-label={t("review.next")}>
-              →
-            </button>
-            {entry.verdict && (
-              <span className={`ml-auto text-xs ${entry.verdict.result === "accepted" ? "text-emerald-400" : "text-red-400"}`}>
-                {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
-                {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
-                {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
-              </span>
-            )}
-          </div>
-          {!hideFindings && validatorOfEntry(entry) === "rejected" && failedChecksOf(entry).length > 0 && (
-            <p className="rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-200">
-              <span className="font-medium">{t("review.failedChecks")}</span>{" "}
-              {failedChecksOf(entry)
-                .map((c) =>
-                  [
-                    t(c.severity === "fail" ? "review.failedCheck.fail" : "review.failedCheck.warn", { label: c.label, value: String(c.value ?? "—"), threshold: String(c.threshold ?? "—") }),
-                    c.offPercent !== null ? t("review.failedCheck.off", { percent: String(c.offPercent) }) : null,
-                    c.atSeconds ? t("review.atRange", { start: formatPlayerTime(c.atSeconds[0]), end: formatPlayerTime(c.atSeconds[1]) }) : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" ")
-                )
-                .join(" · ")}
-            </p>
-          )}
-          {entry.playable && src ? (
-            <>
-              <MediaReviewPlayer
-                key={src}
-                ref={player}
-                src={src}
-                markers={markers}
-                spectrogram={showSpectrogram}
-                onPlayStart={() => {
-                  // Starting A (its own Play button) stops B.
-                  if (referenceAudio.current && !referenceAudio.current.paused) referenceAudio.current.pause();
-                  setOnB(false);
-                }}
-                frequencyMarks={hideFindings ? [] : frequencyMarksOf(t, entry)}
-                volume={matchLoudness ? matchedVolume(lufsOf) : 1}
-                onDecoded={(audio) => {
-                  // Measured only when the validator gave no LUFS (AC-GP3-04).
-                  if (reportedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
-                }}
-              />
-              <p className="text-xs text-zinc-500">
-                {lufsOf === null
-                  ? t("review.loudnessUnknown")
-                  : t(reportedLufs(entry) !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
-                {matchLoudness && lufsOf !== null ? ` · ${t("review.playedAt", { percent: Math.round(matchedVolume(lufsOf) * 100), target: LOUDNESS_TARGET_LUFS })}` : ""}
-              </p>
-              {chosen && (
-                <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                  <span>{t("review.compareWith")}</span>
-                  <select
-                    value={chosen.id}
-                    onChange={(e) => {
-                      stopB();
-                      setReferenceId(e.target.value);
-                    }}
-                    className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
-                  >
-                    {offered.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.nearest ? "★ " : ""}
-                        {r.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
-                    {onB ? t("review.abOnB", { label: chosen.label }) : t("review.ab")}
-                  </button>
-                  {offered.some((r) => r.nearest) && <span className="text-zinc-500">{t("review.nearestHint")}</span>}
-                  {matchLoudness && chosen.lufs === null && <span className="text-amber-300">{t("review.referenceNoLufs")}</span>}
-                  <audio
-                    ref={referenceAudio}
-                    src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
-                    preload="metadata"
-                    onEnded={() => {
-                      // The reference ran out: back to A where it would be.
-                      const at = referenceAudio.current?.currentTime ?? 0;
-                      setOnB(false);
-                      player.current?.playFrom(at);
-                    }}
-                    className="hidden"
-                  />
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="text-sm text-zinc-500">{t("review.nothingToPlay")}</p>
-          )}
 
-          <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-1.5">
-                {REVIEW_REASONS.map((reason) => {
-                  const on = draft.reasons.includes(reason);
-                  return (
-                    <button key={reason} type="button" onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))} className={`rounded-full border px-2.5 py-0.5 text-xs ${on ? "border-red-400 bg-red-500/20 text-red-200" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"}`}>
-                      {t(REVIEW_REASON_KEYS[reason])}
+      {/* Review: the first load still running, or failed -- said, not three empty columns. */}
+      {entries === null ? (
+        <p className={`p-6 text-sm ${message?.tone === "error" ? "text-red-400" : "text-zinc-500"}`}>{message?.tone === "error" ? message.text : t("common.loading")}</p>
+      ) : entries.length === 0 ? (
+        <p className="p-6 text-sm text-zinc-500">{t("review.empty")}</p>
+      ) : (
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_19rem_16rem] divide-x divide-zinc-800">
+          {/* Left: the track, the player and the verdict right under it. */}
+          <div className="min-h-0 overflow-y-auto p-4">
+            {entry && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <h2 className="font-mono text-xl font-semibold text-white">{entry.itemKey}</h2>
+                  <span className="text-sm text-zinc-500">
+                    {entry.seed !== null ? t("review.trackMeta", { seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 }) : t("review.trackMetaNoSeed", { index: index + 1, total: entries?.length ?? 0 })}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <button type="button" onClick={() => go(stepIndex(entries ?? [], index, -1, skipClaimed))} className="rounded px-2 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.previous")} title={t("review.previous")}>
+                      ←
                     </button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-1 text-xs text-zinc-400">
-                {t("review.rating")}
-                {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-                  <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-6 w-6 rounded ${draft.rating === n ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
-                    {n}
-                  </button>
-                ))}
-                <span className="ml-1 text-zinc-500">/ 10</span>
-              </div>
-              <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={2} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100" />
-              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
-                  {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
-                </button>
-                {draft.marks.map((m, i) => (
-                  <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
-                    {formatPlayerTime(m.start)}
-                    {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
-                    <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
-                      ×
+                    <button type="button" onClick={() => go(stepIndex(entries ?? [], index, 1, skipClaimed))} className="rounded px-2 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.next")} title={t("review.next")}>
+                      →
                     </button>
                   </span>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50">
-                  {t("review.accept")}
-                </button>
-                <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="rounded-md bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50">
-                  {t("review.reject")}
-                </button>
-                {!source && (
-                  <button type="button" onClick={() => void askRerun()} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700">
-                    {t("review.askRerun")}
+                  {/* AC-UX-05: the attempt's id is copied, not shown. */}
+                  <button type="button" onClick={() => copyAttempt(entry.attemptRef)} title={`${t("review.copyId")}: ${entry.attemptRef}`} className="rounded border border-zinc-800 px-1.5 text-[11px] text-zinc-500 hover:border-zinc-600 hover:text-zinc-200">
+                    {copied ? t("review.copied") : t("review.copyIdShort")}
                   </button>
+                  {entry.verdict && (
+                    <span className={`ml-auto rounded-full px-2.5 py-0.5 text-xs ${entry.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
+                      {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
+                      {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
+                      {entry.pendingFrom ? ` · ${t("review.beingApplied", { device: entry.pendingFrom })}` : ""}
+                      {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
+                    </span>
+                  )}
+                </div>
+                {/* BL-157 (AC-TC-02): another computer is on this track (or its wave) right now. */}
+                {(() => {
+                  const claim = claimOf(entry, claims, nowMs);
+                  return claim && entry.verdict === null ? (
+                    <p className="rounded-md border border-sky-900/60 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-200">{t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) })}</p>
+                  ) : null;
+                })()}
+                {/* BL-153 AC-RR-07: a rejected attempt's failed checks in one line by the player -- fail before warn, with the miss. */}
+                {!hideFindings && validatorOfEntry(entry) === "rejected" && failedChecksOf(entry).length > 0 && (
+                  <p className="rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-200">
+                    <span className="font-medium">{t("review.failedChecks")}</span>{" "}
+                    {failedChecksOf(entry)
+                      .map((c) =>
+                        [
+                          t(c.severity === "fail" ? "review.failedCheck.fail" : "review.failedCheck.warn", { label: c.label, value: String(c.value ?? "—"), threshold: String(c.threshold ?? "—") }),
+                          c.offPercent !== null ? t("review.failedCheck.off", { percent: String(c.offPercent) }) : null,
+                          c.atSeconds ? t("review.atRange", { start: formatPlayerTime(c.atSeconds[0]), end: formatPlayerTime(c.atSeconds[1]) }) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")
+                      )
+                      .join(" · ")}
+                  </p>
+                )}
+                {entry.playable && src ? (
+                  <div className="space-y-1.5">
+                    <MediaReviewPlayer
+                      key={src}
+                      ref={player}
+                      src={src}
+                      height={160}
+                      markers={markers}
+                      spectrogram={showSpectrogram}
+                      onPlayStart={() => {
+                        // Starting A (its own Play button) stops B.
+                        if (referenceAudio.current && !referenceAudio.current.paused) referenceAudio.current.pause();
+                        setOnB(false);
+                      }}
+                      frequencyMarks={hideFindings ? [] : frequencyMarksOf(t, entry)}
+                      volume={matchLoudness ? matchedVolume(lufsOf) : 1}
+                      onDecoded={(audio) => {
+                        // Measured only when the validator gave no LUFS (AC-GP3-04).
+                        if (reportedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
+                      }}
+                      toolbar={
+                        chosen ? (
+                          <>
+                            <span>{t("review.compareWith")}</span>
+                            <select
+                              value={chosen.id}
+                              onChange={(e) => {
+                                stopB();
+                                setReferenceId(e.target.value);
+                              }}
+                              title={offered.some((r) => r.nearest) ? t("review.nearestHint") : undefined}
+                              className="max-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
+                            >
+                              {offered.map((r) => (
+                                <option key={r.id} value={r.id}>
+                                  {r.nearest ? "★ " : ""}
+                                  {r.label}
+                                </option>
+                              ))}
+                            </select>
+                            <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
+                              {onB ? t("review.abOnB", { label: chosen.label }) : t("review.ab")}
+                            </button>
+                            <audio
+                              ref={referenceAudio}
+                              src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
+                              preload="metadata"
+                              onEnded={() => {
+                                // The reference ran out: back to A where it would be.
+                                const at = referenceAudio.current?.currentTime ?? 0;
+                                setOnB(false);
+                                player.current?.playFrom(at);
+                              }}
+                              className="hidden"
+                            />
+                          </>
+                        ) : undefined
+                      }
+                    />
+                    <p className="text-[11px] text-zinc-500">
+                      {lufsOf === null
+                        ? t("review.loudnessUnknown")
+                        : t(reportedLufs(entry) !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                      {matchLoudness && lufsOf !== null ? ` · ${t("review.playedAt", { percent: Math.round(matchedVolume(lufsOf) * 100), target: LOUDNESS_TARGET_LUFS })}` : ""}
+                      {matchLoudness && chosen && chosen.lufs === null ? <span className="ml-2 text-amber-300">{t("review.referenceNoLufs")}</span> : null}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-zinc-500">{t("review.nothingToPlay")}</p>
+                )}
+
+                {/* The verdict, right under the player (AC-UX-02): the two decisions first, then rating, reasons, comment. */}
+                <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {/* Owner, msg 2269 p.4: calm tinted decisions with their key, not two loud fills. */}
+                    <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-5 py-2.5 text-base font-medium text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 disabled:opacity-50">
+                      <span aria-hidden="true">✓</span>
+                      {t("review.accept")}
+                      {/* ui-text-ignore: a keyboard key */}
+                      <kbd className="ml-1 rounded border border-emerald-500/40 px-1.5 text-xs font-normal text-emerald-300/80">A</kbd>
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-base font-medium text-rose-200 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20 disabled:opacity-50">
+                      <span aria-hidden="true">✗</span>
+                      {t("review.reject")}
+                      {/* ui-text-ignore: a keyboard key */}
+                      <kbd className="ml-1 rounded border border-rose-500/40 px-1.5 text-xs font-normal text-rose-300/80">R</kbd>
+                    </button>
+                    <div className="ml-auto flex flex-wrap items-center gap-1 text-xs text-zinc-400">
+                      <span className="mr-1">{t("review.rating")}</span>
+                      {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                        <button key={n} type="button" onClick={() => setDraft((d) => ({ ...d, rating: d.rating === n ? null : n }))} className={`h-8 w-8 rounded-md text-sm ${draft.rating === n ? "bg-violet-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <p className="text-xs text-zinc-400">
+                      {t("review.reasons.label")} <span className="text-zinc-600">· {t("review.reasons.hint")}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {REVIEW_REASONS.map((reason) => {
+                        const on = draft.reasons.includes(reason);
+                        return (
+                          <button
+                            key={reason}
+                            type="button"
+                            aria-pressed={on}
+                            onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
+                            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}
+                          >
+                            <span aria-hidden="true">{REVIEW_REASON_ICONS[reason]}</span>
+                            {t(REVIEW_REASON_KEYS[reason])}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+                    <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
+                      {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
+                    </button>
+                    {draft.marks.map((m, i) => (
+                      <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                        {formatPlayerTime(m.start)}
+                        {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
+                        <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does. */}
+                    <span className="flex items-center gap-1">
+                      <button type="button" disabled={device !== null} onClick={() => void askRerun()} className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50">
+                        <span aria-hidden="true">↻</span>
+                        {device !== null ? t("review.rerunOnDevice", { device }) : t("review.askRerun")}
+                      </button>
+                      <InfoTooltip>{t("review.askRerunInfo")}</InfoTooltip>
+                    </span>
+                    <span className="ml-auto flex items-center gap-1 text-zinc-500">
+                      {t("review.shortcutsTitle")}
+                      <InfoTooltip>{t("review.shortcuts")}</InfoTooltip>
+                    </span>
+                  </div>
+                  {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}
+                </section>
+
+                {/* BL-157 (AC-TC-05): every verdict of this track, with the computer and the time. */}
+                {entry.history && entry.history.length > 0 && (
+                  <details className="text-xs text-zinc-500">
+                    <summary className="cursor-pointer">{t("review.history.title", { count: entry.history.length })}</summary>
+                    <ul className="mt-1 space-y-0.5">
+                      {entry.history.map((h, i) => (
+                        <li key={`${h.at}-${i}`}>
+                          {t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" })}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 )}
               </div>
-              <p className="text-xs text-zinc-500">{t("review.shortcuts")}</p>
-              {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}
-            </div>
-            <div className="space-y-3 text-xs">
-              {hideFindings ? (
-                <p className="text-zinc-500">{t("review.blindNote")}</p>
-              ) : (
-                entry.stages.map((stage) => (
-                  <div key={stage.stageId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-zinc-200">{stage.stageId}</span>
-                      <span className={stage.result === "accepted" || stage.result === "done" ? "text-emerald-400" : "text-red-400"}>{resultLabel(t, stage.result)}</span>
+            )}
+          </div>
+
+          {/* Middle: the auto-check, always in view (owner, msg 2254 p.2) -- the failed checks first (AC-UX-06). */}
+          <aside className="min-h-0 space-y-3 overflow-y-auto p-3">
+            <h4 className="flex items-baseline justify-between gap-2 text-sm font-medium text-zinc-200">
+              {t("review.why.validator")}
+              {!hideFindings && allChecks.length > 0 && <span className="text-xs font-normal text-zinc-500">{t("review.checks.passed", { passed: allChecks.filter((c) => c.pass).length, total: allChecks.length })}</span>}
+            </h4>
+            {!entry ? null : hideFindings ? (
+              <p className="text-xs text-zinc-500">{t("review.blindNote")}</p>
+            ) : (
+              entry.stages.map((stage) => {
+                const { failed, passed } = splitChecks(stage.checks);
+                const ok = stage.result === "accepted" || stage.result === "done";
+                return (
+                  <div key={stage.stageId} className="space-y-1">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-zinc-400">{stage.stageId}</span>
+                      <span className={`rounded-full px-2 py-0.5 ${ok ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>{resultLabel(t, stage.result)}</span>
                     </div>
-                    {stage.checks.map((c) => (
-                      <div key={c.id} className={c.pass ? "text-zinc-400" : "text-red-300"}>
-                        {c.pass ? "✓" : "✗"} {c.label ?? c.id}: {c.value === null ? "—" : String(c.value)}
-                        {c.unit ? ` ${c.unit}` : ""}
-                        {c.threshold !== null ? ` ${t("review.limit", { value: String(c.threshold) })}` : ""}
-                        {c.atSeconds ? ` ${t("review.atTime", { time: formatPlayerTime(c.atSeconds[0]) })}` : ""}
-                        {c.detail ? ` · ${c.detail}` : ""}
+                    {[...failed, ...passed].map((c) => (
+                      <div key={c.id} className={`flex items-start gap-2 rounded-md px-2 py-1 ${c.pass ? "" : "bg-red-500/10 ring-1 ring-red-500/40"}`}>
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${c.pass ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500 text-white"}`}>{c.pass ? "✓" : "✗"}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2 text-sm">
+                            <span className={c.pass ? "text-zinc-300" : "font-medium text-red-200"}>{c.label ?? c.id}</span>
+                            <span className={`shrink-0 font-mono text-xs ${c.pass ? "text-zinc-400" : "text-red-200"}`}>
+                              {c.value === null ? "—" : String(c.value)}
+                              {c.unit ? ` ${c.unit}` : ""}
+                            </span>
+                          </div>
+                          {(c.threshold !== null || c.atSeconds || c.detail) && (
+                            <div className="text-[11px] text-zinc-500">
+                              {c.threshold !== null ? t("review.limit", { value: String(c.threshold) }) : ""}
+                              {c.atSeconds ? (
+                                <>
+                                  {" "}
+                                  <button type="button" onClick={() => c.atSeconds && player.current?.playFrom(c.atSeconds[0])} className="underline decoration-dotted underline-offset-2 hover:text-white">
+                                    {t("review.atTime", { time: formatPlayerTime(c.atSeconds[0]) })}
+                                  </button>
+                                </>
+                              ) : null}
+                              {c.detail ? ` · ${c.detail}` : ""}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
                     {Object.keys(stage.metrics).length > 0 && (
-                      <div className="text-zinc-500">
+                      <p className="px-2 text-[11px] text-zinc-500">
+                        <span className="text-zinc-400">{t("review.checks.metrics")}: </span>
                         {Object.entries(stage.metrics)
                           .map(([k, v]) => `${k} ${String(v)}`)
                           .join(" · ")}
-                      </div>
+                      </p>
                     )}
-                    {stage.note && <div className="text-zinc-400">{stage.note}</div>}
+                    {stage.note && <p className="px-2 text-xs text-zinc-400">{stage.note}</p>}
                   </div>
-                ))
-              )}
-              <div className="space-y-0.5 rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-zinc-400">
-                <div className="font-medium text-zinc-200">{t("review.generation")}</div>
-                {Object.entries(entry.params).length === 0 ? <div className="text-zinc-500">{t("review.noParams")}</div> : Object.entries(entry.params).map(([k, v]) => <div key={k}>{k}: {String(v)}</div>)}
+                );
+              })
+            )}
+            {entry && (
+              <details className="border-t border-zinc-800 pt-2 text-xs text-zinc-400">
+                <summary className="cursor-pointer text-zinc-300">{t("review.generationDetails")}</summary>
+                <div className="mt-1 space-y-0.5">
+                  {Object.entries(entry.params).length === 0 ? (
+                    <div className="text-zinc-500">{t("review.noParams")}</div>
+                  ) : (
+                    Object.entries(entry.params).map(([k, v]) => (
+                      <div key={k} className="break-words">
+                        <span className="font-mono text-zinc-300">{k}</span>: {String(v)}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </details>
+            )}
+          </aside>
+          {/* The queue, rightmost (owner, msg 2276) (AC-UX-15) -- every track of the walk with its state; a click opens it. */}
+          <div className="flex min-h-0 flex-col">
+            {/* AC-WV-05: the wave is done -- its summary, and the next wave that still waits. */}
+            {chosenWave && chosenWave.waitingPassed + chosenWave.waitingRejected === 0 && (
+              <div className="space-y-1.5 border-b border-zinc-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+                <p>{t("review.wave.done", { accepted: chosenWave.accepted, rejected: chosenWave.rejected, overrides: chosenWave.overridesValidator })}</p>
+                {nextWave && (
+                  <button type="button" onClick={() => chooseWave(nextWave.groupId)} className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
+                    {t("review.wave.next", { wave: nextWave.groupId, count: nextWave.waitingPassed + nextWave.waitingRejected })}
+                  </button>
+                )}
               </div>
+            )}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {(() => {
+                const row = (e: PlanReviewEntry, i: number) => {
+                  const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
+                  const current = i === index;
+                  const auto = validatorOfEntry(e);
+                  return (
+                    <li key={`${e.itemKey}\u0000${e.attemptRef}`}>
+                      <button
+                        type="button"
+                        ref={current ? currentRow : undefined}
+                        onClick={() => {
+                          // The open track again: nothing to do (review: `go` would clear the verdict being written).
+                          if (i === index) return;
+                          pickedByHand.current = `${e.itemKey}\u0000${e.attemptRef}`;
+                          go(i);
+                        }}
+                        title={claim ? t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) }) : undefined}
+                        className={`w-full border-l-2 px-3 py-2 text-left transition-colors ${current ? "border-violet-400 bg-zinc-800" : "border-transparent hover:bg-zinc-800/50"}`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className={`min-w-0 truncate text-sm font-medium ${current ? "text-white" : "text-zinc-200"}`}>{shortKey(e.itemKey)}</span>
+                          {e.verdict ? (
+                            <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] ${e.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"}`}>
+                              {e.verdict.result === "accepted" ? "✓" : "✗"}
+                              {e.verdict.rating !== null ? ` ${e.verdict.rating}/10` : ""}
+                            </span>
+                          ) : claim ? (
+                            <span className="ml-auto shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span>
+                          ) : null}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-2 whitespace-nowrap text-xs text-zinc-500">
+                          {e.seed !== null ? <span>{t("review.queue.seed", { seed: String(e.seed) })}</span> : null}
+                          {/* Blind mode keeps the queue blind too. */}
+                          {!blind && auto !== null ? <span className={`ml-auto ${auto === "rejected" ? "text-amber-400" : "text-emerald-500/80"}`}>{auto === "rejected" ? t("review.queue.autoFailed") : t("review.queue.autoPassed")}</span> : null}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                };
+                const all = (entries ?? []).map((e, i) => ({ e, i }));
+                const open = all.filter(({ e }) => e.verdict === null);
+                const done = all.filter(({ e }) => e.verdict !== null);
+                const heading = (text: string) => <p className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">{text}</p>;
+                return (
+                  <>
+                    {open.length > 0 && (
+                      <section>
+                        {heading(t("review.queue.waitingGroup", { count: open.length }))}
+                        <ul>{open.map(({ e, i }) => row(e, i))}</ul>
+                      </section>
+                    )}
+                    {done.length > 0 && (
+                      <section>
+                        {heading(t("review.queue.reviewedGroup", { count: done.length }))}
+                        <ul>{done.map(({ e, i }) => row(e, i))}</ul>
+                      </section>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
-        </>
+
+        </div>
+      )}
+      {confirmReplace && (
+        <ConfirmDialog
+          title={t("review.replace.title")}
+          description={t(confirmReplace.existing.device ? "review.replace.descriptionDevice" : "review.replace.description", {
+            device: confirmReplace.existing.device ?? "",
+            time: formatDisplayDateTime(confirmReplace.existing.at),
+            result: resultLabel(t, confirmReplace.existing.result),
+            rating: confirmReplace.existing.rating !== null ? ` ${confirmReplace.existing.rating}/10` : "",
+          })}
+          confirmLabel={t("review.replace.confirm")}
+          onCancel={() => setConfirmReplace(null)}
+          onConfirm={() => {
+            const { result, itemKey, attemptRef } = confirmReplace;
+            setConfirmReplace(null);
+            // Only the track the question named; if the screen moved meanwhile, nothing is sent.
+            if (entry?.itemKey === itemKey && entry.attemptRef === attemptRef) void submit(result, true);
+          }}
+        />
       )}
     </div>
   );

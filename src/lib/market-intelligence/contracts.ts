@@ -26,6 +26,21 @@ export type ResearchChannel = {
   handleOrUrl: string | null;
   reason: string;
   addedAt: string;
+} & WatchlistActivity;
+
+/**
+ * BL-163 (FO-REQ-0014 §A, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md): a watchlist entry's activity.
+ * `latestUploadPublishedAt` is the newest publish date among its retained video snapshots (null = not known; never estimated);
+ * `inactive` = known and older than the configured months; `pausedAt`/`pausedReason` = the stored pause (never collected while set).
+ */
+/** BL-163: the default of "inactive after N months without uploads" (owner decision, FO-REQ-0014 §1). */
+export const DEFAULT_INACTIVE_AFTER_MONTHS = 6;
+
+export type WatchlistActivity = {
+  latestUploadPublishedAt: string | null;
+  inactive: boolean;
+  pausedAt: string | null;
+  pausedReason: "inactive" | "owner" | null;
 };
 
 export type ResearchEvidence = {
@@ -110,6 +125,11 @@ export type MarketVideoSnapshot = {
   /** SCHEMA_MIGRATIONS v47 -- `null` = not captured (older snapshots, or a path that did not return it); never 0. */
   durationSeconds: number | null;
   liveBroadcastContent: string | null;
+  /**
+   * FO-REQ-0015 item 6: YouTube's own image URL for the video (`i.ytimg.com/vi/<videoId>/hqdefault.jpg`), built from the id -- the image
+   * itself is never fetched or stored here.
+   */
+  thumbnailUrl: string;
   source: string;
 };
 

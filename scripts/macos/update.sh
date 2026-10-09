@@ -1,7 +1,9 @@
 #!/bin/sh
 # YouTube Operations Manager - macOS update (rebuild after replacing program files).
 set -e
-cd "$(dirname "$0")/../.."
+# Absolute script folder, taken before the cd (see start.sh: from update.command "$(dirname "$0")" is ".").
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
 echo "=== YouTube Operations Manager - update (rebuild after replacing program files) ==="
 echo "This only rebuilds the application in this folder. Your database and settings live under"
@@ -13,13 +15,21 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-"$(dirname "$0")/stop.sh" || exit 1
+# BL-158: under the system service a stopped server is started again at once, so building here would race it.
+. "$SCRIPT_DIR/service-env.sh"
+if service_installed; then
+  echo "[ERROR] The application runs as a system service on this Mac. In a git checkout it rebuilds by itself when"
+  echo "        the checked-out commit changes -- run stop.sh to restart it now. For a release folder without git:"
+  echo "        uninstall-service.command, then this script, then install-service.command again."
+  exit 1
+fi
 
-echo "Installing dependencies for this version..."
-npm install
+"$SCRIPT_DIR/stop.sh" || exit 1
 
-echo "Rebuilding..."
-npm run build
+echo "Installing dependencies and rebuilding this version..."
+# The one build rule, forced: off the real database while building (RISK-63), the marker written only after a complete
+# build, so an interrupted update is rebuilt by the next start instead of being served.
+"$SCRIPT_DIR/build-if-stale.sh" --force
 
 echo ""
 echo "Update complete. Run start.sh to launch the updated application."

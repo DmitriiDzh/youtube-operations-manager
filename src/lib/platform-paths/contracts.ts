@@ -48,7 +48,7 @@ export type AppPaths = {
    * reasoning `migrationBackupsDir` above already uses for its own whole-database backups).
    */
   changeDraftsDiscardedBackupsDir: string;
-  /** BL-150: the shared Production → Setup settings document (sync-gateway `media-settings`). */
+  /** BL-150: the shared Servers → Setup settings document (sync-gateway `media-settings`). */
   mediaSettingsDocDir: string;
   mediaSettingsSyncFallbackDir: string;
   mediaSettingsDiscardedBackupsDir: string;
@@ -79,6 +79,9 @@ export type AppPaths = {
   /** BL-143 phase 2: this device's generation plans report and the peers' latest reports (`src/lib/sync-gateway/generation-plans/`). */
   generationPlansShareDir: string;
   generationPlansSyncFallbackDir: string;
+  /** BL-160: this device's agent tokens report and the peers' latest reports (`src/lib/sync-gateway/agent-tokens/`). */
+  agentTokensShareDir: string;
+  agentTokensSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

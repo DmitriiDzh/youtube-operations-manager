@@ -2151,7 +2151,8 @@ binding without modification. The few reads that never called `assertActiveChann
 - It is a SHA-256 hash with the `ytom_ch_` prefix, stored device-locally. Since BL-130 (ADR 0024) the plaintext is
   `ytom_ch_<channelId>.<secret>`; verification also requires the embedded id to equal the row's channel (legacy tokens
   without it still verify). The operator can register an already-issued token on another device (`importToken`, same
-  identity check as issuing, only into the embedded channel); each device keeps its own row, so revocation is per device (RISK-108).
+  identity check as issuing, only into the embedded channel). Since BL-160 (ADR 0033, §34) tokens and revocations also reach every
+  device through the `agent-tokens` sync family, so a revocation is no longer per device (RISK-108 resolved).
 - It records the Google identity that owned the channel live at issue time; credentials come
   from there, never from `channels.connected_user_id`.
 - The token is verified once at process entry, which enters the scope, and re-verified on every
@@ -2377,12 +2378,14 @@ re-attempts (at most every 3 s), so clearing the lock needs no restart; (4) `/re
 and `/api/operation-lock` (exempt in `src/proxy.ts`) use `ungatedRecoveryClient`, independent of
 initialization and session; (5) the same `OperationLockControl` is shown in the Merge tab and as a
 dashboard banner for non-export locks; (6) `npm run operation-lock -- status|clear` works with the
-app stopped; `wait-idle` is what `stop.bat`/`stop.sh` run before killing the server (and `start` runs `stop` when port 3000 is busy), so a server is never killed mid-operation. Clearing is always an explicit operator action, a compare-and-delete on the exact lock
+app stopped; `wait-idle` is what `stop.bat`/`stop.sh` run before killing the server (and `start` runs `stop` when port 3000 is busy), so a server is never killed mid-operation. FO-MSG-0013: they then run `media-idle`, which refuses (unless the script gets `--force`) while a media session on this computer is `approved`/`starting`/`running`/`stopping` -- stopping the app terminates its pod (AC-P14-09) and fails its queued jobs. Clearing is always an explicit operator action, a compare-and-delete on the exact lock
 shown; a holder that looks alive needs `force` plus the typed word CLEAR. See RISK-91.
 
 **Not done, by design.**
 - No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released
-  operation lock. The idle shutdown does flush, since nothing is in flight.
+  operation lock. The idle shutdown does flush, since nothing is in flight. Under the macOS system
+  service (BL-158, ADR 0032) idleness only ends the session (Live writes reset) and the process
+  stays, so there is no final flush; the regular sync tick keeps exporting.
 - No concurrent editing.
 
 See RISK-89.
@@ -2471,7 +2474,7 @@ The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTO
   `SNAPSHOT_TRANSFERRED_TABLES` and not in sync-gateway, by owner decision (each machine configures only its own values). Reads filter on the bootstrap
   `deviceId`; a read never creates it, never touches the filesystem and returns the stored string exactly as stored. Only the operator routes
   (`/api/logical-paths`, session required) create, set (validated once with `src/lib/local-path-validation`, like Phase 11) or delete.
-- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity. It can also be registered by operator import of an already-issued token (BL-130, ADR 0024); revocation is per device.
+- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity. It can also be registered by operator import of an already-issued token (BL-130, ADR 0024); since BL-160 (§34) it and its revocation reach every device by themselves.
   It lives in its own table so that a channel token can never be looked up as a factory token or the reverse; the prefix check rejects a foreign
   token before any lookup.
 
@@ -2853,7 +2856,8 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   sessions, per local day and month); `stopInner` is shared by the owner's Stop and `factoryStopSession`; `getFactorySession` hides every
   non-factory session from the factory route.
 - **CUDA host check and re-placement (BL-155, `docs/roadmap/plans/CUDA_HOSTS_PLAN.md`, FO-REQ-0007, no schema change).** Setting
-  `minCudaVersion` (12.8 default, null = no create-pod filter and no host-version check) → every createPod sends
+  `minCudaVersion` (12.8 default; null and no session minimum (BL-159) = no create-pod filter and no host-version check -- the
+  host's version is still read, for display only) → every createPod sends
   `gpu.allowedCudaVersions` = the known versions ≥ it (`cuda-host.ts`, pure); no matching host is RunPod's "no capacity". Before
   `running` the start reads the host's CUDA -- first from the pod answer itself (`cudaVersion`, seen live 2026-10-08), else gateway `getPodHostCudaVersion` (GraphQL `pod.machine.machineSystem.cudaVersion`) -- on
   each RUNNING poll until it gets a value or the container is up (then unknown = not blocking), and always requires a `cuda` device
@@ -2870,6 +2874,17 @@ approved per session and always terminated), jobs (ComfyUI prompts whose outputs
   `lastSeenAliveAt` no earlier than its placement/sighting. The watcher stops a `starting` session (every session, not only
   re-placements) at `maxMinutes` counted from `startedAt` -- "max minutes reached (N) while starting". Factory jobs carry an
   `errorCode` derived from their error text (Factory API 1.7.0); release-when-done with every job failed says "all jobs failed".
+- **A minimum CUDA per session and per template (BL-159, `docs/roadmap/plans/PER_SESSION_CUDA_PLAN.md`, FO-REQ-0011, schema v71).**
+  `factory_media_start_session { minCudaVersion? }` or the started template's top-level `minCudaVersion` (call wins) is the session's
+  own minimum (`media_sessions.min_cuda_version`; channel agents and the Web UI cannot set it). `startApproved` computes
+  `higherCudaVersion(owner, own)` at every start and capacity retry -- the owner's setting is the floor (owner's decision) -- writes it
+  at once to `used_min_cuda_version` (so a session waiting for capacity shows why), and uses it for `allowedCudaVersions`, the host
+  check and the mismatch text. The host's CUDA is read with or without a minimum (without one a failed read, even a 401, is unknown)
+  and written to `host_cuda_version` and to that placement's own capacity-log row (`insertMediaCapacityAttempt` returns the id,
+  `setMediaCapacityAttemptHostCuda`); going back to `approved` for a re-placement clears it. `jobs.ts` `assertHostFitsTemplate`
+  refuses `createJob` and `validateJobParams({ sessionId })` with `media_gpu_host_incompatible` when a template's
+  `media_workflow_templates.min_cuda_version` is above the session's KNOWN host; `generation-plans` `checkJobs` passes that code
+  through (not `plan_mismatch`). Strict template files: a build without BL-159 marks one carrying `minCudaVersion` invalid (RISK-116).
 - **Concurrent sessions, Production section, balance (slice 6, ADR 0023 amendment 1, schema v58).** Requests are
   never refused for another open session; `approveSession` runs the preconditions, clears a crash-stale exclusive
   volume lock (`volumeLock.activeHolder`), then `pending → approved` as ONE `UPDATE` guarded by "active sessions <
@@ -3026,3 +3041,299 @@ The Web UI shows every text in the person's interface language: English or Russi
   - `apiErrorText`: a failed API answer `{ error: <DomainErrorCode>, message }`. English shows the server's message exactly as before; another language shows `errors.<code>` in words with the server's message as the detail; an unknown code shows the server's text.
 - **Choosing the language.** `requestUiLanguage()` (`ui-text/server.ts`) in the root layout: the `ui_language` cookie (set by `PUT /api/ui-language`, `{ language: null }` = system) wins; else the first supported language of `Accept-Language` (the browser on the same computer follows the system language); else English. A cookie and not `app_settings`: the root layout renders every page, the recovery page included, which must work while the database cannot open. The choice is per browser profile on a computer and never syncs between devices. The layout sets `<html lang>` and passes `language`, `source` and `systemLanguage` to `UiTextProvider`; components call `useT()` / `useUiText()`. A change calls `router.refresh()`, so the whole interface re-renders without a reload.
 - **Keeping it complete.** `locales.test.ts` (every language has every key, same placeholders, unique keys across areas, well-formed plurals) and `literal-text.inventory.test.ts` (the scan in `src/test-support/ui-text-literals.ts` fails on English JSX text, text attributes and sentence-like strings in `src/components` / `src/app`; a non-interface string is marked `ui-text-ignore` with a reason).
+
+## 33. Servers and Media, other channels' work, plan move, reviewing from two computers (BL-157, ADR 0031)
+
+Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Branch `feature/servers-media`.
+
+- **Sections.**
+  - `/servers/<tab>` (`ServersPanel`) holds the shared infrastructure:
+    - Sessions, every channel's, named via `useChannelNames`, with a channel filter;
+    - Models and Templates;
+    - Setup, with the capacity log.
+  - `/media/<tab>` (`MediaPanel`) holds the active channel's Plans (and `/media/plans/<id>/review`) and Jobs, plus
+    `NowRunningLine`. It remounts when the channel changes.
+  - `production/[[...rest]]` redirects with `productionRedirectTarget`: plans and jobs go to Media, everything else to Servers.
+  - The tab lists live in `section-tabs.ts` (`SERVERS_TABS`, `MEDIA_TABS`).
+- **Active-channel scoping of Media (ADR 0004 (b)).**
+  - `generation-plans/shared.ts` `planHandler` calls `core.assertPlanOfChannel(planId, activeChannelOf(userId))` first. The
+    audition and reference handlers do the same check through `assertVisible`. The peer routes use `assertPeerPlanOfChannel`,
+    with the channel named in the report.
+  - The plans list and the peer plans list filter on the server. The peers list also filters the verdicts sent from here and
+    the other devices' claims to the plans it shows. Jobs use `GET /api/media-generation/jobs?scope=active`.
+  - With no active channel, everything is empty or `not_found`.
+- **Other channels' work (exception to ADR 0004: counts and names -- plan, wave and stage titles and notice kinds; never
+  tracks, files or verdicts).**
+  - `core.channelSummary({ activeChannelId, connectedChannelIds })` returns, per connected channel:
+    - waiting passed / rejected;
+    - the plans with waiting tracks;
+    - each wave's waiting count;
+    - the plans' notices other than `review_waiting`. Another device's notices are read from its report with `sharedNotices`,
+      which keeps only well-formed known kinds.
+  - Other devices' plans count, minus the verdicts sent from here. A channel not connected here is never counted.
+  - `GET /api/generation-plans/summary` puts the active channel's counts on top (the Media badge) and `channels` beside them.
+    The layout polls it every 60 s and when the channel changes.
+  - The channel switcher shows `waitingLabel`.
+  - The bell (`device-sync-bell.tsx`) shows `otherChannelEntries`:
+    - one entry per non-active channel and type of work, derived on every poll;
+    - entries cannot be dismissed, and the dot is sky blue;
+    - an entry's button runs `activateStoredChannel`, waits until `channel.id` matches, then `router.push`es the place.
+  - The pure rules are in `components/channel-work.ts`.
+- **Plan move (`movePlan`, `factory_plan_move`).**
+  - It is serialized per plan and uses the plan's compare-and-swap.
+  - Refused (`plan_invalid`) when:
+    - the plan is not active (`plan_closed`);
+    - the target is the same channel;
+    - the target is not connected;
+    - the target has no workspace;
+    - the plan has an unfinished job;
+    - any file is missing.
+  - The file check goes through the `files` port: `resolveSentToYtmFile` in the target workspace, the player's own rules. It
+    covers every distinct `auditionFile` of every result row and every reference. The answer reports
+    `{ checked, missing (≤ 500), missingCount, unfinishedJobs, moved }`. `checkOnly` writes nothing.
+  - On success it records `plan_moved { from, to, checked }`.
+  - A plan changed during the check (its revision moved) is refused, to be asked again. The factory's plan-linked
+    `create_job` runs under the same lock (`withPlanLock`, on the trimmed plan id), so a move cannot pass between its check and
+    the job's creation.
+  - Only the factory links a job or a session to a plan. A channel agent's `agent_create_media_job` refuses a `plan` field and
+    `agent_request_media_session` a `planId`. The operator's `POST /api/media-generation/jobs` and `/sessions` and the CLI
+    `media job-create` drop them.
+  - `PlanJobRow.channelId` (`media_jobs.channel_id`) makes `resolveAudition` of a job output use the job's channel. The report's
+    `jobChannelId` does the same for the other device.
+- **Plans report version 2** (`GENERATION_PLANS_REPORT_VERSION`; the reader accepts 1 and 2, and every level stays strict).
+  - On a review entry: `jobChannelId` and `history` (≤ 10).
+  - On a plan: `batches` (`reviewBatches`).
+  - On a group: `ownerNote`.
+  - On the report: `claims` (≤ 200).
+- **Plans report version 3 (BL-162, FO-REQ-0013; the reader accepts 1–3).**
+  - On a group: `ownerNoteAt` -- when the current owner note was written (`ownerNoteTimes`: the newest not-superseded owner
+    `group_note` event, by `writtenAt` for one that came from another device).
+  - On the report: `groupNotes` (≤ 200) -- the newest wave note per device, plan and wave written here on another device's plan
+    (schema v73, `generation_plan_peer_group_notes`, kept 30 days).
+  - `applyPeerGroupNotes` runs with `applyPeerVerdicts` before each report: a note written after the wave's last owner-note
+    change is applied (`ownerNote` set, `group_note { noteId, fromDevice, writtenAt }`); an older one is recorded with
+    `superseded: true`. A note id already in an event is passed over; a note dated > 5 min ahead, for an unknown wave or a
+    closed plan is skipped.
+  - `recordPeerGroupNote` refuses a device whose report is below version 3 (`plan_invalid`, `peer_update_required`).
+- **Waves.**
+  - `reviewBatches` (pure, in `progress.ts`) returns per group: title, `note`, `ownerNote`, earliest attempt, templates, the
+    params that differ between the group's items, and passed / rejected at the stage before `owner_review`.
+  - `setGroupNote` from the owner writes `ownerNote`; from the factory it writes `note`. An upsert keeps `ownerNote`.
+  - `recordGroupsReviewed` compares the review entries before and after an owner verdict, given here or applied from a peer. A
+    wave that goes from waiting to none records `group_reviewed { groupId, accepted, rejected, overridesValidator }`.
+  - The review screen:
+    - lists the waves (`waveSummaries`);
+    - walks one wave together with the validator filter (`visibleEntries`);
+    - shows the wave's context card, its "done" summary and the next wave;
+    - heads the screen with "<channel> · Review · <plan> · <wave>".
+- **Two computers.**
+  - **History (schema v69, `generation_plan_verdict_history`, device-local on the owning device).**
+    - `recordOwnerVerdict` appends a row with `deviceLabel`, the host name.
+    - `applyPeerVerdicts` appends a row with the sending device and the verdict's own note. A peer verdict older than the
+      stored one is not applied but is still appended, and is recorded once as `peer_verdict { superseded: true }`.
+    - `seedHistory`: before the first history row of an attempt, a current verdict stored before v69 goes in first. Its device
+      is read from the note's ` (from <device>)` suffix only when a `peer_verdict` event from that device on that item proves the
+      relay. Otherwise it is this device, and the note is kept whole. A replacement or an older peer verdict therefore never hides
+      it. History rows are clamped to the report's bounds when they are shared.
+    - `planEvents(..., history)` emits one `owner_verdict` per history row, with `device`. A key with no history row gets one
+      event from the result row.
+  - **Claims (schema v70, `generation_plan_review_claims`, this device's own).**
+    - `claimReview` takes `{ deviceId?, planId, scope: attempt|group, itemKey/attemptRef | groupId, release? }`.
+    - The claim id is a sha256 of (scope, owning device, plan[, group]). That gives one track claim per plan, which moves with
+      the track, and one claim per wave.
+    - A claim lasts 90 s (BL-162; was 10 minutes). `since` is kept while the same track is renewed. A verdict here ends this
+      device's claim on that track.
+    - The claim routes (`[planId]/claim`, `peers/[deviceId]/[planId]/claim`) publish the report at once.
+    - `claimReview` runs under the plan's lock, so a release and the next claim sent together keep the new claim. A release
+      removes only this device's own claim (the same track) and needs no plan or channel, so it works after a channel switch.
+    - `claimsOn` and `peerClaims` read the peers' live claims. A claim that reaches more than 15 minutes ahead is ignored.
+    - The screen (BL-162):
+      - renews its claims every 30 s and releases them on leaving (`keepalive`);
+      - reads the others' claims every 3 s from `GET .../claim` (not the whole queue);
+      - passes over claimed tracks (`claimOf`, `stepIndex`, `nextWaitingIndex(skip)`); the queue column still opens one on a
+        click ("show them too" and "take this wave" were removed: what is in work follows what is open, owner msg 2263);
+      - when two computers opened the same track within the sync delay, the later opener moves on to the next free track,
+        but only while its verdict draft is untouched.
+  - **Presence files (BL-162, `sync-gateway/generation-plans/presence.ts`).** Each device writes its live claims into
+    `<sync folder>/generation-plans/global/<deviceId>.presence.json` (`ytm-review-presence` v1, strict, ≤ 256 KB read)
+    the moment a claim changes; `peerClaims` reads the others' files straight from disk and, for a device that has one,
+    ignores the claims in its (older) report. A file must name the device it is named after. The sync runner only reads
+    `*.automerge`, so it never sees these files.
+  - **Pending verdicts.**
+    - On the owning device, `pendingPeerVerdicts` uses the same rules as `applyPeerVerdicts`.
+    - `withPending` overlays a not-yet-applied verdict from another device as given (`pendingFrom`), in the queue, `summary` and
+      `channelSummary` (`ownerQueue`). The owner's plan list and plan card (`listPlans` / `getPlan` with `ownerView`) adjust the
+      items' and waves' waiting counts and the `review_waiting` notice the same way (`ownerProgress`). The factory's reads do not.
+  - **Replace guard.**
+    - `recordOwnerVerdict` and `recordPeerVerdict` refuse an existing verdict without `replace`: one here, relayed, sent from
+      here, or pending from a peer. The error is `plan_verdict_exists` (409, `planVerdictExists`) with
+      `{ existing: { result, rating, device, at } }`.
+    - The screen asks first (`ConfirmDialog`) and asks again on a 409.
+- **Limits** (RISK-114, RISK-119):
+  - claims are advisory and arrive within the sync delay (seconds with the presence files and a 1 s Syncthing watch delay);
+  - both computers must run the same report version (3 since BL-162).
+- **Screens (BL-162, `docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md`).** The review screen is a window-high workstation:
+  a toolbar (back, plan, wave picker, progress, validator filter, "About the wave", "View") and three columns -- the player
+  with the verdict under it, the auto-check, the queue. The Plans list holds this device's and the other devices' plans of
+  the channel; one card (`plan-card-model.ts` adapts another device's report defensively) with KPI tiles, a stage funnel and
+  a waves table; actions that change the plan are shown disabled "on <computer>" for another device's plan.
+
+## 34. Agent tokens shared between devices, and the Producer role (BL-160, BL-161, ADR 0033, ADR 0034)
+
+Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-role-synced-tokens`, not merged.
+
+**Tokens across devices (BL-160).**
+- `src/lib/sync-gateway/agent-tokens` is a per-device report family (the `media-sessions` shape): each device writes only its own report of
+  the agent tokens it knows -- `{hash, role, channelId, userId, label, createdAt, revokedAt}`, never the token -- and keeps the peers' latest
+  reports. It merges nothing and imports nothing from the token modules; `run-all-families.ts` runs it with the others.
+- `src/lib/agent-token-sync` owns the rules (`reconcileAgentTokens`, a pure function) and applies them through `db.ts`
+  (`listAgentTokenRowsForSync`, `applyAgentTokenSyncPlan`: one transaction, revocations before inserts so the role tables' one-active
+  indexes hold). Rules: joined by hash; revoked anywhere = revoked (earliest time), never undone; a peer record conflicting with a local row's
+  role/channel/account is ignored; one active token per slot, newest `createdAt` wins (tie: larger hash), losers revoked at the winner's
+  `createdAt`; a token's `createdAt` is the earliest any device reports (local rows re-dated); a peer record dated more than 5 min ahead
+  is ignored. Every device computes the same result from the same records. The family's peer reports are never forgotten
+  (`forgetAfterMs: null` on the per-device report core) and an unchanged report is republished daily.
+- Timing: `src/instrumentation.ts` runs a step after each 60 s family cycle and once 5 s after start (agent-tokens family only); while
+  the database is paused (recovery mode, an operation lock) it still exchanges the agent-tokens files, without applying. The three
+  token stores call `shareAgentTokenChangeSoon()` after an issue/import/rotate/revoke: a publish-only step (no peer apply, so it also works in
+  recovery mode) that pushes the family at once.
+- Verification is untouched: each token module reads its own table; a learned channel token still needs the channel connected here under the
+  recorded Google account (`users.id` = Google `sub`). The token tables stay out of the snapshot. `POST /api/channel-connections/disconnect`
+  no longer revokes the channel's token.
+- Trust: the shared folder's reports are unsigned (RISK-117).
+
+**The Producer role (BL-161).**
+- Token: `src/lib/role-agent-tokens` is the role-token logic extracted from `factory-agent-tokens` (now a thin wrapper);
+  `src/lib/producer-agent-tokens` adds `ytom_pr_` on `producer_agent_tokens` (v72, partial unique index, one active).
+- Endpoint: `src/lib/producer-mcp-endpoint` (the factory endpoint's checks; no request-level scope) and `src/app/api/mcp/producer/route.ts`,
+  which wires a `ProducerSession` (re-verify, `resolveChannelUser` = the channel's `connected_user_id` if Settings → Channels lists it,
+  `recordCall`, `listChannels`, `portfolioOverview`) into `createMcpServer`'s producer mode. The endpoint also logs every `tools/call`
+  the MCP layer refused before a tool ran (it peeks at the request body and subtracts the calls the server's log recorded).
+- `createMcpServer` producer mode: `registerTool` routes every tool through `producerRegistration`. A `bound` tool in the closed list
+  (`src/mcp/producer-tools.ts`, each entry naming its READ capability) gets `.extend({ channelId })` (required; `query_market_intelligence`'s
+  own `channelId` moves to `watchlistChannelId`); its wrapper re-verifies, resolves the channel's account (none: `CHANNEL_NOT_ACTIVE`), runs the
+  unchanged handler inside `runInAgentSession({tokenId, channelId, userId})` for that one call, logs it, and adds `forChannelId`. The
+  `producer-only` tools (classification class) run without a scope; one that names a `channelId` (the proposal tools, BL-163) is logged under
+  it and answers with `forChannelId`, so the endpoint matches the call to the server's own log entry. A channel session never registers a producer tool; the SDK registration
+  is still one call.
+- `src/lib/portfolio-overview` adds up stored data per channel (`channel_metrics_daily`, Reach totals read in the channel's scope, synced
+  videos' `publishedAt`, freshness); a source with nothing stored is `null`, not zero.
+- `producer_call_log` (v72) records every call with tool, channel, outcome and error code; pruned to 90 days on insert; shown on the Producer
+  card (`GET /api/producer-agent-token/calls`).
+
+## 35. Watchlist hygiene and agent proposals (BL-163, FO-REQ-0014, ADR 0034 Amendment 1)
+
+Plan: `docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`. Schema v74.
+
+**Activity and pause (market-intelligence).**
+- Read model: `listLatestUploadDates` = `MAX(published_at)` of each entry's retained video snapshots (the 30-day window applies to API rows,
+  so a paused entry's date fades). `watchlistActivityOf` derives `inactive` = known and older than `monthsBefore(now, N)`; N is the
+  `market_intelligence_inactive_after_months` setting (default 6, 1-60). Every watchlist read carries the raw date, `inactive`, `pausedAt`
+  and `pausedReason`; nothing is computed from another channel's statistics (III.E.4.h).
+- Pause is stored state (`research_channels.paused_at`, `paused_reason` `inactive` | `owner`, `resumed_at`); inactivity only sets it.
+  `claimStaleResearchChannelsForCollection` skips paused rows, so neither auto-collection nor an approved collection request collects them.
+- Detector: `evaluateInactivity` runs before and after `collectStaleChannels` in `runCollectionIfStale` (and on demand; also when the
+  refresh waits for the quota reserve, since it reads only stored data). A detector failure is logged and never fails the collection. It
+  skips paused entries, unknown dates, active ones and entries the owner resumed while already inactive (`monthsBefore(resumedAt, N) >=
+  newest upload`; a resume from an unrelated pause earlier does not shield), and for the rest calls `pauseInactiveResearchChannel`:
+  one transaction that pauses only a still-unpaused row and inserts the system proposal `watchlist.delete` with `onConflictDoNothing` on the
+  pending dedupe key (`watchlist.delete|<id>`), so two connections or two passes add one. The proposal stores N, not the upload date
+  (another channel's API data may be kept 30 days at most, a proposal can wait longer); the owner's card reads the entry's current date
+  from the watchlist. `monthsBefore` counts calendar months and clamps the day (Aug 31 minus 6 months is Feb 28).
+- A paused entry has its own collection status `paused` (`classifyCollectionStatus`), which `isCollectionWarning` leaves out of the
+  "needs attention" count and filter.
+- `setResearchChannelPause` writes only a state change (a paused entry keeps its first reason; resuming stamps `resumed_at`).
+  `deleteResearchChannel` also deletes the entry's `channel_record_assignments` rows and its pending proposals.
+
+**Agent proposals (`src/lib/agent-proposals/`).**
+- Store: `agent_proposals` (source `producer` | `system`, kind, `channel_id`, `target_id`, `payload_json`, `text`, status
+  `pending | applied | rejected | failed`, `dedupe_key` with a unique index -- cleared when decided, so it binds only pending rows --,
+  decision fields, `done_at`). In the device snapshot; `notApiData`.
+- Services: `submitProducerProposal` checks the channel is connected, the payload per kind (strict zod), and the current state through
+  the watchlist port (the entry exists and this channel follows it; pause needs an active entry, resume a paused one; add refuses an entry the
+  channel already follows), then inserts; a pending duplicate is `AGENT_PROPOSAL_DUPLICATE`. `approveAgentProposal` checks (for a
+  hypothesis) that the proposal's channel is the session's active channel -- `createHypothesis` requires it -- then claims (`decide` to
+  `applied`, atomic on `status = pending`) and only then applies; a throw is stored as `failed` with its message (RISK-120 for a stop in
+  between). Claim-first is what makes a double approve apply once, and keeps a deletion (which drops the entry's pending proposals) from
+  dropping the proposal being applied. `rejectAgentProposal` requires a trimmed comment.
+- Apply goes through public cores only: `market-intelligence` (`addToWatchlist` with `createdVia: "mcp"`, `setWatchlistPause`,
+  `removeFromWatchlist`, `getWatchlistEntry`, `listWatchlist` for labels), `market-assignments` (`listAssignments` / `setAssignment` for
+  follow and unfollow) and `decision-engine` (`createHypothesis`, `createdBy: "producer"`). None of them depends on this module (§M).
+- Cleanup runs only on the gated writes (approve, reject, mark-done; never on a read, so nothing is deleted during a device handoff):
+  decided rows that are done, or decided more than 90 days ago, are deleted. Reads leave such rows out without deleting them.
+- Counts and lists: the inbox count is a SQL `COUNT` of pending rows; lists are capped (500 for the Producer and the owner's pending
+  list, 200 newest decided for the owner).
+- Late refusals that keep the proposal pending: an add whose channel is no longer connected (checked before the claim) and a
+  hypothesis whose channel stopped being the active one between the check and the creation (the claim is reopened).
+- Two entry points: `createAgentProposalSubmitCore` (wired into `ProducerSession.proposals` by the Producer session deps,
+  `src/lib/producer-mcp-endpoint/session-deps.ts` since BL-166) and
+  `createAgentProposalReviewCore` (the Web routes and the summary count). The approval inventory test pins that split.
+
+## 36. Video milestones: day-7 and day-28 retention and totals (BL-166, FO-REQ-0015 items 1 and 8)
+
+Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75; v76 removes collected rows without a curve (see below).
+
+- **Windows.** `milestoneWindow(publishedAt, M)` = the Pacific publish date .. +M-1 (inclusive); `isMilestoneDue` once today (Pacific) is at
+  least `MILESTONE_LAG_DAYS` (reporting lag + 1 = 3) after the window end.
+- **Collection** (`createVideoMilestoneServices.collectDueMilestones`, analytics core). `planDueMilestones` takes never-attempted milestones by
+  window end, then retries whose `next_attempt_at` has passed, at most 25 per channel per run. Only videos with a final publish date
+  (`hasFinalPublishDate`: public, not an upcoming premiere or stream) are planned -- while a video is private or scheduled, YouTube gives its
+  owner the upload time as `publishedAt`. A stored row whose window differs from the one computed now counts as never attempted, and its
+  attempts start again at 1 (both writes count attempts per window). Planning reads only key, window, status and retry time
+  (`listVideoMilestoneStates`). Each costs two `queryChannelBreakdownReport`
+  calls (gateway, `dimensions` optional): `elapsedVideoTimeRatio` with `audienceWatchRatio` and `relativeRetentionPerformance` (checked live 2026-10-10: adding `startedWatching`,
+  `stoppedWatching`, `totalSegmentImpressions` makes YouTube answer with no rows, so the first build stored empty curves; v76 deletes those
+  rows so they are collected again), and the four totals with no dimension, both
+  `video==<id>` over the window. Only an error about the query counts an attempt (HTTP 400, 404, or a 403 whose reason is not about
+  permissions, the project or the rate; `recordVideoMilestoneFailure`: retry after 24 h, `failed` at 3). Reads off, quota, sign-in, channel
+  access, 401 and those system 403s stop the run with nothing recorded. No HTTP answer at all, 429 and 5xx stop it too, but
+  `deferVideoMilestone` first puts that milestone back by 24 h without an attempt, so one video that keeps getting a 5xx cannot hold the
+  channel's queue (it is then retried once a day, never marked `failed`). The core wraps it in the analytics
+  quota context and `gateMilestoneCollection` (`isBackgroundReadAllowed("analytics")`). `/api/analytics/auto-collect-all` runs it after the daily rows for each channel whose collection
+  did not fail, each in its own try/catch.
+- **Storage.** `video_milestones` (primary key `video_id, milestone_days`): status, attempts, last error, next attempt, collected time, the
+  four totals and `retention_json` (as returned, `[]` when none). Classified `authorized`; device-local (not in the snapshot, not synced).
+- **Reads.** `listVideoMilestones` (channel scope, joins each row with the video's stored `durationSeconds`, drops rows whose video the
+  channel does not have or whose window the video no longer has) backs `agent_get_video_milestones`. `producer_upload_milestones` is built by `createUploadMilestonesServices`
+  (`src/lib/portfolio-overview/upload-milestones.ts`): published uploads by UTC date in the range, windows and the publish rule from the
+  analytics helpers (passed in, so the module does not import analytics), stored totals of those videos (`listVideoMilestoneTotals`, only
+  rows of the current window), and `getVideoWindowsReach` (`reach-reports`: one `listDaily` over the span of all
+  windows, per-window `daysWithData`, summed impressions, `weightedCtr`), read in each channel's agent scope. A Reach figure is null unless
+  Reach is `ready` and the window has a stored day; a failed Reach read gives `reachError` (its error code).
+
+## 37. Stored traffic sources and devices per day (BL-168, FO-REQ-0015 item 2)
+
+Plan: `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md` (AC-VB-01..17). Schema v77.
+
+- **Subjects and ranges** (`src/lib/analytics/breakdowns.ts`). The channel (state subject `channel`) and each video with a final publish
+  date (`hasFinalPublishDate`, shared with the milestones). A video's range is its window, `videoBreakdownWindow` = the Pacific publish date
+  .. +89; the channel's range starts 89 days before the latest day of its first collection and has no end. The latest day is yesterday
+  (Pacific); a range ends at the earlier of it and the window end.
+- **Planning** (`planDueBreakdowns`, pure). A subject without a usable state (none, or one for another range start: the publish date moved)
+  is read in full (`fresh`). Otherwise it is due while the range end is later than `collected_through`, reading from 6 days before the
+  first new day (`collected_through` − 5: revisions, also of the provisional days before a gap); a video whose window has ended gets one
+  final pass (window end − 6 .. window end) once today is window end + 7 and its last collection was before that, and is never planned
+  again. `failed` subjects are skipped, `retry` ones wait for `next_attempt_at`. At most `MAX_BREAKDOWN_SUBJECTS_PER_RUN` (100): the
+  channel first, then due videos by `collected_at` ascending (never collected first; newest publish date, then id, among equals), so a
+  video left out by the cap heads the next run's queue (review of BL-168: a newest-first order with a cap of 50 starved the oldest videos
+  of the window every day). The batch is cut by that order alone; inside it, subjects in `retry` (the channel included) run last: a
+  deferred subject ends its run, so heading it, it would stop every run before the others were read (second review), while ordering all
+  retries after all other due subjects before the cut would shut them out whenever more are due than the cap (third review).
+- **Collection** (`collectDueBreakdowns`). Two `queryChannelBreakdownReport` calls per subject (`day,insightTrafficSourceType` and
+  `day,deviceType`, `views` + `estimatedMinutesWatched`, `video==<id>` for a video), saved only when both answered.
+  `saveCollectedAnalyticsBreakdown` deletes the subject's rows in from..to (all of them when `fresh`), inserts the answer (only days inside
+  the range, one row per day and value) and marks the state collected (`collected_through`, `collected_on` = today Pacific, attempts 0), in
+  one `database.batch`. Failures: `failureKind` (`query-failure.ts`, moved unchanged from `milestones.ts`): `stop` rethrows with nothing
+  written; `defer` (`deferAnalyticsBreakdown`) puts the subject back by 24 h keeping its attempts and stored range, then rethrows; `attempt`
+  (`recordAnalyticsBreakdownFailure`) counts consecutive failures, `failed` at 3 for a video; the channel is passed an unreachable maximum, so
+  it is retried a day later forever. A state for another range start is reset by both. The core
+  wraps it in the analytics quota context and `gateBreakdownCollection` (`isBackgroundReadAllowed("analytics")`); `/api/analytics/
+  auto-collect-all` runs it after every channel's milestones, each channel in its own try/catch.
+- **Storage.** `video_breakdown_daily` (key `video_id, breakdown, day, value`; `channel_id`, `views`, `estimated_minutes_watched`; index on
+  `channel_id, video_id`), `channel_breakdown_daily` (key `channel_id, breakdown, day, value`), `analytics_breakdown_state` (key
+  `channel_id, subject`). Classified `authorized`; device-local. Not in the `analytics-data` exchange: its file schema is strict at format
+  version 1, so a new table would make a not-yet-updated peer reject every file.
+- **Reads.** `listStoredBreakdowns` (channel scope) backs `agent_get_stored_breakdowns`: the channel (no `videoIds`) or the requested
+  videos the channel has with a final publish date; rows only for a state of the current range start, inside `range_start ..
+  collected_through` and the requested dates; `total` sums views and minutes per value (null only when every row had none), `day` lists
+  rows; labels from `breakdown-labels.ts` (English).

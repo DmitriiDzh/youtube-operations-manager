@@ -70,7 +70,10 @@ original draft below proposed):**
   hypothesis-creation name. Given the reserved name is the one concrete signal of what this slice
   was meant to cover, and `AGENTS.md` §C favors the smaller slice, hypothesis creation stays
   human-only (Web UI) for now — a natural, separately-assignable next increment, not silently
-  dropped.
+  dropped. **Later (BL-163, 2026-10-09):** the Producer may *propose* a hypothesis
+  (`producer_propose` kind `hypothesis.add`); it is created only when the owner approves the
+  proposal in the Web UI (`createdVia: "mcp"`). No agent creates one directly
+  (`docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md`, ADR 0034 Amendment 1).
 - Evidence auto-linking (§1 above).
 - Recording outcomes/retrospectives via MCP/CLI (`createExperimentOutcome`) — plausible future
   agent capability ("review results, produce retrospectives" per §6), but not the one reserved

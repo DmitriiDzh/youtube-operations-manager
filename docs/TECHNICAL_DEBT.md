@@ -280,6 +280,9 @@ Verified: `npm test`, lint, build, and a production-server smoke test (`/`, `/ap
     (`live_writes_session_lease_at`) is fresh.
   - The web server renews the lease every 30 s (`src/instrumentation.ts`) and resets the toggle
     at start and on graceful end.
+  - Under the macOS system service (BL-158, ADR 0032) the process does not end by idleness, so the
+    idle window itself ends the session: it resets the toggle and the process stays (RISK-115). A reset
+    that fails there is logged and retried at the next idle check, since no process exit backs it up.
   - The lease TTL is 3 min.
   - Previously the toggle was reset on every process's database initialization. That let every
     MCP/CLI process switch the operator's toggle off mid-session and could strand a Batch in
@@ -1781,6 +1784,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** read-only. The factory tools expose logical path strings (including `factory_only` ones) and channel ids, titles and workspace paths; no credentials, account identities, videos or analytics, and no write.
 - **Possible fix:** OS-level isolation per agent (rejected by the owner for channel agents, Phase 12 D0(b)); or a short-lived token handed over per session. Re-evaluate if the factory tools ever gain a write or a broader read.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
+- **2026-10-09 extension (BL-158, BL-161):** the owner keeps every token in plaintext in a file in its agent's folder on the T9 drive, whose ownership is disabled, and since BL-158 the service answers loopback calls from every account on the Mac. So any local account (the second Mac user included) can read any token file and call any agent endpoint with it -- now including the Producer's, which reads every channel. Possible fix: keep token files outside the shared drive or enable ownership on it. Owner informed (msg 2205).
 
 ## RISK-106 — Media generation: per-device key file has no rotation/backup; RunPod REST v2 list shapes unverified live — OPEN, 2026-10-05
 
@@ -1797,7 +1801,9 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** the live spike before any real use. **Status:** open.
 - **Slice 6 addition (2026-10-05):** (5) the Production balance reads RunPod's *legacy* GraphQL API (REST v2 has no balance endpoint); if RunPod retires it, the panel degrades to the v2 billing spend (no balance figure) -- re-check when RunPod announces a v2 balance endpoint. (6) With concurrent sessions the daily-cap check at approve is not atomic between two simultaneous approves (only the concurrency count is); the watcher stops every session once the day's total reaches the cap, so the overshoot is bounded by one watch interval of the sessions that slipped through.
 
-## RISK-108 — Agent tokens: one token may be valid on several devices, revocation is per device — OPEN, 2026-10-05
+## RISK-108 — Agent tokens: one token may be valid on several devices, revocation is per device — RESOLVED, 2026-10-09 (BL-160, ADR 0033)
+
+- **Resolved:** the owner chose synced tokens (msg 2200). A revocation now reaches every device through the `agent-tokens` family; the trust this places in the shared folder is RISK-117.
 
 - **What:** Since BL-130 (ADR 0024) the operator can register the same channel or Factory Operator token on several devices by pasting it. Each device keeps its own hash row (still device-local, nothing synced), so revoking or rotating on one device leaves the token valid on every other device where it was entered.
 - **Effect:** a leaked token must be revoked on each such device; until then it works there. Exposure boundary unchanged: loopback-only endpoints, same-OS-user readers (RISK-105, `docs/AGENT_ISOLATION_SETUP.md` §5).
@@ -1837,4 +1843,92 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Also (BL-142):** `POST /api/analytics/auto-collect-all` does the same for the Analytics collection, weekly report and history catch-up (Analytics API reads with each channel's token). Bounded by the same active-channel check, the BL-117 quota reserve, a 6-hour in-process backoff for a failing background channel (`channel-fanout`; a restart allows one early retry), and one run at a time; a background channel's "not collected" reason is only logged, not stored.
 - **Accepted because:** the owner asked for it (Telegram 2026-10-06, msgs 1865 and 1874); this is a single-operator, local app where every connected channel is the owner's.
 - **Re-evaluate:** if the app ever serves more than one operator, or a connected channel can belong to someone else.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-114 — Two computers can still rate the same track: review claims are advisory — OPEN, 2026-10-08
+
+- **What:** BL-157 (ADR 0031, FO-REQ-0009 §6). "Being reviewed on <computer>" claims travel in the plans report, which reaches the other computer in 1.5–3 minutes. A track opened on both computers within that window is not marked on either, so it can be rated twice.
+- **Bounded by:**
+  - Replacing a verdict needs `replace`. Any existing verdict counts: given here, relayed, sent from here, or on its way from the other device (`plan_verdict_exists`, 409). The second rating therefore asks first once the first rating has arrived.
+  - The verdict history keeps both ratings, with device and time.
+  - Newest wins, by the time the owner gave the verdict, as before (ADR 0029). A verdict dated more than 5 minutes ahead is refused.
+  - A claim published by this device goes out at once (the report is rewritten on the claim). Only the transport (Syncthing and the 60 s sync tick) is slow.
+- **Also:** the plans report is version 2. A computer on an older build refuses it ("version 2 is newer than this app understands") and keeps showing the other computer's last version 1 report until it updates. This is a one-time cost of the bump, not a lasting gap.
+- **Accepted because:** there is no shared server between the computers, and a lock over files would either block the owner when the other computer is off or still be only a hint (ADR 0031). The owner asked for claims as markers plus a confirmation, not a lock.
+- **Re-evaluate:** if the devices ever share a live connection, or if double ratings show up in the history in practice.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-115 — macOS system service: node holds Full Disk Access, the server runs all the time — OPEN, 2026-10-08
+
+- **What:** BL-158 (ADR 0032). The optional launchd daemon runs the server as the owner's account from power-on, so another Mac account can use the app.
+  - macOS lets a launchd job into `~/Documents` (the repository) and the external drive (the sync folder) only with Full Disk Access, and judges by the job's executable. The owner grants it to node's binary. Any launchd job that runs this node then has full disk access.
+  - A Homebrew node upgrade replaces the binary and silently drops the grant. The service then cannot read the repository and keeps retrying (every 30 s while node cannot load the runner, every 5 min after a failed check or build), logged in `~/Library/Logs/YouTubeOperationsManager/service.log`.
+  - The server is reachable on `127.0.0.1:3000` from every account on the Mac, all the time (it was reachable from every account before too, but only while the owner had it running). Each account still signs in with Google in its own browser, and what it sees follows that Google user (ADR 0004); signing in with the same Google accounts as the owner shows the owner's channels.
+  - Live writes: unchanged rule (RISK-09) — the 10-minute idle window that used to stop the server now ends the session and switches Live writes off. A window left open in a background account keeps the session (and Live writes) alive, like any open window.
+  - The service rebuilds unattended whenever the checked-out commit changes. It does so only on `dev`/`main` (checked before the build and before the start), and the launcher build now runs with `NODE_TEST_CONTEXT=1`, so `next build` no longer opens the real database (RISK-63's root cause, for `start.sh` and `update.sh` too; Windows `start.bat` and `update.bat` still build without it). A manual `npm run build` in the same folder at the same moment would still collide with the service's build: build in the separate worktree, as already done for feature work.
+- **Bounded by:** the second account on this Mac is an administrator anyway (it can read every file); the grant is the same kind the Syncthing daemon on this Mac already has; the service is opt-in and removed with `uninstall-service.command`.
+- **Re-evaluate:** if the Mac gets an account that is not trusted with the channels, or if node upgrades keep breaking the service (then pin a node binary for the service).
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner chose start at power-on, 2026-10-08, msg 2154).
+
+## RISK-116 — A registry template with minCudaVersion is invalid on a build without BL-159 — OPEN, 2026-10-09
+
+- **What:** BL-159 (FO-REQ-0011, `docs/roadmap/plans/PER_SESSION_CUDA_PLAN.md`). Registry template files are validated strictly. A computer on an older build marks a template that declares `minCudaVersion` invalid and keeps the version it had installed, so the new version (and its minimum) is missing there until it updates.
+- **Bounded by:** nothing breaks on the newer build; the older one keeps working with its installed copy. Same one-time cost as the v2 plans report (RISK-114).
+- **What to do:** update both computers before the operator writes `minCudaVersion` into a template file (stated in the release note).
+- **Re-evaluate:** if template files gain more optional fields often enough that a tolerant reader is worth it.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-117 — Agent tokens are accepted from the shared folder's unsigned reports — OPEN, 2026-10-09
+
+- **What:** BL-160 (ADR 0033). Each device publishes its agent token hashes in the `agent-tokens` family and applies the others' reports; nothing in "YT Manager Data" is signed. Whoever can write that folder (any account on the Mac, the drive has ownership disabled; any Syncthing peer) can publish a report that registers a token of their own for any role or channel, or revokes one (a hash already revoked never comes back; a record that conflicts with a local row is ignored).
+- **Bounded by:** loopback-only endpoints; a registered channel token still needs the channel connected on the device under its recorded Google account; no agent role can write to YouTube without the Web approvals. In practice the same people can already read the plaintext token files kept on that drive (RISK-105 extension).
+- **Also:** "newest wins" trusts device clocks (a record or report more than 5 min ahead is ignored); a device that is off accepts a revoked token until it syncs (reports never go stale, so it does once it is back); a device on an older build neither sends nor receives tokens; with three or more devices, two concurrent tokens for one slot and a hand import, both can end revoked (fails closed: issue a new one).
+- **Possible fix:** sign reports with a key that never enters the shared folder (needs a per-device key exchange), or keep the token files and the data folder on storage only the owner's account can write.
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner msgs 2205/2207).
+
+## RISK-118 — An MCP batch with a cancellation notification can hang its request — OPEN, 2026-10-09
+
+- **What:** found by the BL-161 review (round 2), pre-existing on all three agent endpoints (`/api/mcp`, `/api/mcp/factory`, `/api/mcp/producer`). A JSON-RPC batch `[tools/call id:N, notifications/cancelled {requestId:N}]` makes the SDK's stateless transport never answer the call, so `handleRequest` never resolves and that request's server and transport stay open.
+- **Bounded by:** a valid agent token and a loopback caller; it ties up only that request (the agent's own client waits); nothing is read or written by it.
+- **Possible fix:** a timeout around `handleRequest` in the three endpoints, or refusing `notifications/cancelled` in stateless mode. The Producer endpoint already refuses such a batch (and one that repeats a request id) before the transport sees it (BL-161 review round 5); `/api/mcp` and `/api/mcp/factory` still have the gap.
+- **Gate(s):** none. **Status:** open.
+
+## RISK-119 — Plans report version 3 and presence files: both computers must update; device clocks decide ties — OPEN, 2026-10-09
+
+- **What:** BL-162 (`docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md` §5, FO-REQ-0013). The plans report is version 3. A computer on an older build refuses it ("version 3 is newer") and stops seeing the other computer's plans and verdicts until it updates, as with version 2 (RISK-114). A wave note to a computer still on version 2 is refused (`peer_update_required`). Wave notes ("written later wins") and the same-track tie-break of the review screen ("opened earlier keeps it") compare times from two computers' clocks.
+- **Bounded by:** nothing is lost: the verdict history keeps every rating; a superseded note is recorded as an event; a note or verdict dated more than 5 min ahead is not taken; claims stay advisory (a verdict still asks before replacing one). The presence file holds only claims (plan, track, times, host name).
+- **Clocks (review):** a claim lives 90 s and is renewed every 30 s, and a reader compares its `until` (writer's clock) with its own clock. A reader whose clock runs about 60 s fast sees claims flicker; about 90 s fast it misses them (the old 10-minute claim tolerated about 9 min). A claim reaching more than 90 s + 5 min ahead is not believed.
+- **What to do:** update both computers together (stated in the release note); set Syncthing's watch delay for the shared folder to 1 s so claims arrive in seconds; keep the computers' clocks synced (macOS/Windows network time is on by default).
+- **Re-evaluate:** if a third computer joins (presence and notes are per device, nothing assumes two, but the tie-break is pairwise), or if clocks drift (then use the order the owning device received them).
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner, msgs 2244/2263).
+
+## RISK-120 — An approved agent proposal reads "applied" if the app stops between the claim and the change — OPEN, 2026-10-09
+
+- **What:** BL-163 (`docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md` §2.C). Approving claims the proposal first (`pending -> applied`,
+  atomic), then makes the change; a failure stores `failed` with the error. If the process stops between the two (crash, power loss), the
+  proposal reads `applied` though the change was not made. Claiming first is deliberate: it makes a double approve apply once, and lets a
+  deletion drop the entry's other pending proposals without dropping the one being applied.
+- **Bounded by:** each change is one local write through an existing service (milliseconds), nothing touches YouTube, and the watchlist or the
+  hypotheses list shows the real state; the owner can make the change by hand.
+- **Re-evaluate:** if a proposal kind gets a long or external apply step (then add an `approved` state with a resume on start).
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-121 — "Inactive after N months" is set per computer, while pauses and proposals sync — OPEN, 2026-10-09
+
+- **What:** BL-163. The setting lives in `app_settings` (device-local, like the collection budget), but `research_channels` pauses and
+  `agent_proposals` travel in the device snapshot. Two computers with different N pause and propose different entries, and each one's
+  pauses reach the other.
+- **Bounded by:** a pause only stops collection and a deletion still needs the owner's approval; the proposal records the N it used.
+- **What to do:** set the same N on both computers (Settings → API).
+- **Re-evaluate:** if the two values ever need to differ, or when the BL-150 shared-settings document takes non-media settings.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-122 — A Producer proposal's free text may quote other channels' YouTube data longer than 30 days — OPEN, 2026-10-09
+
+- **What:** BL-163. `producer_propose`'s `text` is the agent's own explanation, stored until 90 days after the decision (a pending one
+  indefinitely). If the agent copies another channel's statistics or dates into it, they outlive the 30-day limit (III.E.4.d). The
+  system's own proposals store no such data (the card reads the current date from the watchlist).
+- **Bounded by:** the tool description asks for the entry to be cited, not its statistics, and says why; the text is the owner's to read
+  and is deleted with the proposal.
+- **Re-evaluate:** if the policy review asks for enforcement (then blank `text` 30 days after creation, keeping the decision).
 - **Gate(s):** none. **Status:** open, accepted tradeoff.

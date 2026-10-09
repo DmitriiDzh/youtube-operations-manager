@@ -1,6 +1,8 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { createAnalyticsStoreAdapter } from "./adapters/store";
+import { createAnalyticsStoreAdapter, createBreakdownStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
+import { createBreakdownServices, gateBreakdownCollection } from "./breakdowns";
+import { createVideoMilestoneServices, gateMilestoneCollection } from "./milestones";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
@@ -61,8 +63,34 @@ export function createAnalyticsCore() {
       return services.runAutoCollectionIfStale(input);
     }, context),
   };
+  // BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): day-7 / day-28 milestones, a background read like the catch-up -- same
+  // reads switch (inside the client), same quota reserve, same quota-history label.
+  const milestoneStore = createVideoMilestoneStoreAdapter();
+  const milestones = createVideoMilestoneServices({
+    clock: { now: () => new Date() },
+    authResolver: defaultAuthResolver(),
+    channelAccess: createChannelAccessCore(),
+    videoStore: milestoneStore.videoStore,
+    youtubeApi: createAnalyticsYoutubeApiAdapter(),
+    store: milestoneStore.store,
+  });
+  // BL-168 (docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md): stored traffic sources and devices per day -- the same background read
+  // rules as the milestones.
+  const breakdownStore = createBreakdownStoreAdapter();
+  const breakdowns = createBreakdownServices({
+    clock: { now: () => new Date() },
+    authResolver: defaultAuthResolver(),
+    channelAccess: createChannelAccessCore(),
+    videoStore: breakdownStore.videoStore,
+    youtubeApi: createAnalyticsYoutubeApiAdapter(),
+    store: breakdownStore.store,
+  });
   return {
     ...core,
+    collectDueMilestones: quotaScoped(gateMilestoneCollection(guard, milestones.collectDueMilestones), context),
+    listVideoMilestones: milestones.listVideoMilestones,
+    collectDueBreakdowns: quotaScoped(gateBreakdownCollection(guard, breakdowns.collectDueBreakdowns), context),
+    listStoredBreakdowns: breakdowns.listStoredBreakdowns,
     // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the
     // quota-guarded functions above, never the raw services, so background channels keep the same reserve and quota
     // attribution.
@@ -87,6 +115,10 @@ export { beginAllChannelsRun, endAllChannelsRun } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";
 export { buildChannelOverviewView } from "./overview-view";
+export { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, listVideoMilestonesInputSchema, milestoneWindow } from "./milestones";
+export type { VideoMilestone } from "./milestones";
+export { listStoredBreakdownsInputSchema } from "./breakdowns";
+export type { ListStoredBreakdownsResult } from "./breakdowns";
 export type { ChannelOverviewView } from "./overview-view";
 export type { Granularity } from "./granularity";
 export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";

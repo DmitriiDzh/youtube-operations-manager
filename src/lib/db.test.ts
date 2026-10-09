@@ -1000,8 +1000,9 @@ test("recordGatewayCallOutcome: prunes events older than the retention window on
 // sync_family_status (2026-09-23, Merge-tab redesign) -- persistent per-family last-sync outcome,
 // upserted (one row per family), unlike gateway_call_events' own append-only rolling window above.
 // BL-138 (owner, 2026-10-06) added a fourth family, media_sessions; BL-143 phase 2 (2026-10-07) a fifth, generation_plans; BL-150
-// (2026-10-07) a sixth, media_settings: the requirement "every known family has a row" is unchanged.
-test("getSyncFamilyStatuses: every family (six since BL-150) reports a never-synced row before any cycle completes", () =>
+// (2026-10-07) a sixth, media_settings; BL-160 (2026-10-09) a seventh, agent_tokens: the requirement "every known family has a
+// row" is unchanged.
+test("getSyncFamilyStatuses: every family (seven since BL-160) reports a never-synced row before any cycle completes", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -1010,7 +1011,7 @@ test("getSyncFamilyStatuses: every family (six since BL-150) reports a never-syn
 
     assert.deepEqual(
       statuses.map((s) => s.family).sort(),
-      ["ai_connections", "change_drafts", "editorial_profile", "generation_plans", "media_sessions", "media_settings"]
+      ["agent_tokens", "ai_connections", "change_drafts", "editorial_profile", "generation_plans", "media_sessions", "media_settings"]
     );
     for (const s of statuses) {
       assert.equal(s.lastSyncedAt, null);
@@ -3388,7 +3389,7 @@ test("BL-132 upsertFactoryMediaWorkflowTemplate: installs and replaces factory r
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
-    const factoryRow = (version: number, name: string) => ({ id: "flux-tpl", name, description: null, version, workflowJson: "{}", parametersJson: "[]", outputNodeIdsJson: "[]", nodeCount: 1, registrySha256: `sha-${version}`, modelsJson: "[]", gpuJson: null });
+    const factoryRow = (version: number, name: string) => ({ id: "flux-tpl", name, description: null, version, workflowJson: "{}", parametersJson: "[]", outputNodeIdsJson: "[]", nodeCount: 1, registrySha256: `sha-${version}`, modelsJson: "[]", gpuJson: null, minCudaVersion: null });
     const installed = await upsertFactoryMediaWorkflowTemplate(factoryRow(3, "v3"), isolatedDb);
     assert.deepEqual([installed?.id, installed?.version, installed?.source, installed?.registrySha256], ["flux-tpl", 3, "factory", "sha-3"]);
     const replaced = await upsertFactoryMediaWorkflowTemplate(factoryRow(4, "v4"), isolatedDb);

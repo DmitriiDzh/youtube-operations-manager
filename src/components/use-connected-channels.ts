@@ -62,6 +62,15 @@ export function useConnectedChannels() {
     void syncThenFetch();
   }, [fetchChannels]);
 
+  // BL-157 (review round 1): a switch made elsewhere -- the bell, Settings → Channels -- also changes which row is active here.
+  useEffect(() => {
+    function onSwitch(event: Event) {
+      if ((event as CustomEvent<ChannelSwitchEventDetail>).detail?.phase === "activated") void fetchChannels();
+    }
+    window.addEventListener(CHANNEL_SWITCH_EVENT, onSwitch);
+    return () => window.removeEventListener(CHANNEL_SWITCH_EVENT, onSwitch);
+  }, [fetchChannels]);
+
   return { channels, refetch: fetchChannels };
 }
 

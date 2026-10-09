@@ -57,6 +57,62 @@ export function resolveIdleTimeoutMs(env: Record<string, string | undefined> = p
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60_000) : DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS;
 }
 
+/**
+ * What an expired idle window does (BL-158). `exit`: the process ends (the launcher-started server, BL-116).
+ * `end-session`: the macOS system service (owner, 2026-10-08: started at power-on so the second Mac account can work
+ * without the owner) must never stop by idleness, but Live writes still live only as long as a session (RISK-09), so
+ * the same window ends the session instead -- once per idle period, again after new activity goes idle.
+ * Only `YTOM_SERVICE_MODE=1`, set by the service's launchd job, selects it; anything else keeps today's exit.
+ */
+export type IdleAction = "exit" | "end-session";
+
+export function resolveIdleAction(env: Record<string, string | undefined> = process.env): IdleAction {
+  return env.YTOM_SERVICE_MODE === "1" ? "end-session" : "exit";
+}
+
+/**
+ * The handler an expired idle window runs (`src/instrumentation.ts`), built here so each action's behaviour is tested.
+ * `end-session` (BL-158): reset Live writes, then report -- it never stops pods, flushes or exits; the process goes on.
+ * Resolves false when the reset failed, so the watcher tries again: under the service nothing else would ever switch
+ * Live writes off (the process keeps renewing the session lease), unlike the exit below.
+ * `exit` (BL-116): reset Live writes (best effort: the process is going away and the lease lapses within its TTL), stop
+ * a running generation pod (AC-P14-09), publish unexported changes, then exit -- in that order, and the exit happens
+ * even when an earlier step fails.
+ */
+export function createIdleHandler(
+  action: IdleAction,
+  steps: {
+    resetLiveWrites: () => Promise<void>;
+    stopPods: () => Promise<unknown>;
+    flush: () => Promise<unknown>;
+    exit: () => void;
+    onSessionEnded: () => void;
+    onSessionEndFailed: (error: unknown) => void;
+  }
+): () => Promise<boolean> {
+  if (action === "end-session") {
+    return () =>
+      steps.resetLiveWrites().then(
+        () => {
+          steps.onSessionEnded();
+          return true;
+        },
+        (error: unknown) => {
+          steps.onSessionEndFailed(error);
+          return false;
+        }
+      );
+  }
+  return () =>
+    steps
+      .resetLiveWrites()
+      .catch(() => undefined)
+      .then(() => steps.stopPods())
+      .then(() => steps.flush())
+      .then(() => true)
+      .finally(() => steps.exit());
+}
+
 export type IdleDecision = "stay" | "defer" | "exit";
 
 /**
@@ -81,28 +137,38 @@ export function decideIdleShutdown(args: {
  * needs to call it, since the process is expected to exit once idle). The interval is `unref`'d
  * so it is never itself a reason the process stays alive -- the server's own listening socket is
  * what keeps the process running normally, exactly as intended. */
-export function startIdleShutdownWatcher(
-  opts: {
-    timeoutMs?: number;
-    checkIntervalMs?: number;
-    onIdle?: () => void;
-    /** True while work is running that an exit would cut short (BL-116). A throwing check counts as busy. */
-    isBusy?: () => boolean | Promise<boolean>;
-    maxDeferralMs?: number;
-  } = {}
-): () => void {
+type IdleWatcherCommon = {
+  timeoutMs?: number;
+  checkIntervalMs?: number;
+  /** True while work is running that an exit would cut short (BL-116). A throwing check counts as busy. */
+  isBusy?: () => boolean | Promise<boolean>;
+  maxDeferralMs?: number;
+};
+/** Default `exit`: onIdle once, then stop watching (the process is going away). */
+type ExitIdleWatcher = IdleWatcherCommon & { action?: "exit"; onIdle?: () => unknown };
+/**
+ * `end-session` (BL-158): onIdle once per idle period and keep watching. onIdle must report whether the session really
+ * ended (the Live-writes reset worked): only `true` counts, anything else -- false, a rejection -- is tried again at the
+ * next check. Typed as required so a wrapper that drops the result cannot silently turn the retry off.
+ */
+type EndSessionIdleWatcher = IdleWatcherCommon & { action: "end-session"; onIdle: () => Promise<boolean> };
+
+export function startIdleShutdownWatcher(opts: ExitIdleWatcher | EndSessionIdleWatcher = {}): () => void {
   const timeoutMs = opts.timeoutMs ?? resolveIdleTimeoutMs();
   const checkIntervalMs = opts.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
-  const onIdle = opts.onIdle ?? (() => process.exit(0));
+  const onIdle: () => unknown = opts.onIdle ?? (() => process.exit(0));
+  const action = opts.action ?? "exit";
 
   let checking = false;
   let exiting = false; // the exit sequence (flush, then process.exit) must start once, however long it takes
+  let endedSessionActivityAt: number | null = null; // end-session: the idle period already handled
   const interval = setInterval(() => {
     if (checking || exiting) return;
     checking = true;
     void (async () => {
       try {
         const lastActivityAt = getLastActivityAt();
+        if (lastActivityAt === endedSessionActivityAt) return; // no activity since that session ended
         let busy = false;
         if (opts.isBusy && isIdleTimeoutExceeded({ lastActivityAt, now: new Date(), timeoutMs })) {
           try {
@@ -111,10 +177,23 @@ export function startIdleShutdownWatcher(
             busy = true; // cannot tell: do not cut work short
           }
         }
+        // Activity that arrived while isBusy was being checked starts a new window: never act on the stale stamp.
+        if (getLastActivityAt() !== lastActivityAt) return;
         const decision = decideIdleShutdown({ lastActivityAt, now: new Date(), timeoutMs, busy, maxDeferralMs: opts.maxDeferralMs });
         if (decision === "exit") {
-          exiting = true;
-          onIdle();
+          if (action === "end-session") {
+            let ended = false;
+            try {
+              ended = (await onIdle()) === true;
+            } catch {
+              ended = false;
+            }
+            if (ended) endedSessionActivityAt = lastActivityAt; // otherwise the next check tries again
+          } else {
+            exiting = true;
+            const result = onIdle();
+            if (result instanceof Promise) result.catch(() => undefined); // the process is exiting either way
+          }
         }
       } finally {
         checking = false;

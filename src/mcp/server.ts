@@ -5,7 +5,7 @@ import { loadEnvConfig } from "@next/env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
-import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { recordGatewayCallOutcome } from "@/lib/db";
@@ -30,7 +30,7 @@ import {
   listSyncedVideosInputSchema,
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
-import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
+import { createAnalyticsCore, listStoredBreakdownsInputSchema, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import {
   createChangeSetFromGenerationInputSchema,
@@ -74,8 +74,10 @@ import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServ
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
-import { assertAgentSession } from "@/lib/agent-session";
+import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
+import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
   createChannelWorkspacesCore,
   getChannelWorkspaceInputSchema,
@@ -152,6 +154,8 @@ type AnalyticsCoreSubset = Pick<
   | "getComparableAgeComparison"
   | "listWeeklyReports"
   | "getWeeklyReport"
+  | "listVideoMilestones"
+  | "listStoredBreakdowns"
 >;
 
 // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): registered directly here, not
@@ -250,10 +254,16 @@ function withoutStopReasons(progress: unknown): unknown {
 const agentListMediaTemplatesInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
 // Derived from the core's own schemas (review round 21): the bounds an agent sees are exactly the ones the core enforces;
 // only the caller-identity field (`requestedBy`/`createdBy`) is the server's to set, never the agent's.
-const agentRequestMediaSessionInputSchema = requestSessionInputSchema.omit({ requestedBy: true });
+// BL-157 (review round 6): a session is linked to a generation plan only by the factory, checked by the plans module
+// (ADR 0029 §6) -- never by a channel agent, so `planId` is not the agent's to set (as `plan` on a job, round 3).
+// BL-159 (review): a session's own minimum host CUDA is the Factory Operator's, through factory_media_start_session -- not an
+// agent's (the owner's Web UI does not show it, so an agent-raised floor would make the owner's approval wait unexplained).
+const agentRequestMediaSessionInputSchema = requestSessionInputSchema.omit({ requestedBy: true, planId: true, minCudaVersion: true });
 const agentGetMediaSessionInputSchema = z.object({ channelId: mediaChannelIdSchema, sessionId: z.string().min(1).max(64).optional() }).strict();
 const agentGetMediaLimitsInputSchema = z.object({ channelId: mediaChannelIdSchema }).strict();
-const agentCreateMediaJobInputSchema = createJobInputSchema.omit({ createdBy: true });
+// BL-157 (review round 3): a job is linked to a generation plan only by the factory, checked by the plans module and under
+// the plan's lock (ADR 0029 §4, ADR 0031) -- never by a channel agent, so `plan` is not the agent's to set.
+const agentCreateMediaJobInputSchema = createJobInputSchema.omit({ createdBy: true, plan: true });
 const agentGetMediaJobInputSchema = z
   .object({ channelId: mediaChannelIdSchema, jobId: z.string().min(1).max(64).optional(), sessionId: z.string().min(1).max(64).optional() })
   .strict();
@@ -336,6 +346,8 @@ type McpToolHandlers = {
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
+  agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
+  agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
@@ -443,6 +455,79 @@ function toolSuccessResult(payload: Record<string, unknown>): ToolResponse {
     content: [{ type: "text", text: JSON.stringify(payload) }],
     structuredContent: payload,
   };
+}
+
+/** BL-161: what the Producer endpoint gives the server (`src/app/api/mcp/producer/route.ts` wires the real ones). */
+export type ProducerSession = {
+  tokenId: string;
+  reverify(): Promise<void>;
+  /** The Google account the channel is connected under on THIS device, or null when it is not connected here. */
+  resolveChannelUser(channelId: string): Promise<string | null>;
+  recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
+  listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
+  portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+  /** BL-166: every connected channel's uploads in the range with their day-7 / day-28 milestones and Reach (stored data only). */
+  uploadMilestones(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+  /** BL-163: the Producer's side of the proposal store -- submit, list its own, mark read. Approving is not here (Web UI only). */
+  proposals: {
+    submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    markDone(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+};
+
+/** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
+const ISO_DATE = calendarDateSchema;
+
+// BL-163 (FO-REQ-0014 §C): the proposal tools' inputs are the proposal service's own schemas (one definition, no drift); `payload`
+// is checked per kind by the service.
+export const producerProposeInputSchema = submitProducerProposalInputSchema;
+export const producerListProposalsInputSchema = listProducerProposalsInputSchema;
+export const producerMarkProposalsDoneInputSchema = markProposalsDoneInputSchema;
+
+/** BL-166: the Producer's upload milestones -- the same date rules as the portfolio overview, at most 92 days (one answer lists every upload). */
+export const producerUploadMilestonesInputSchema = z
+  .object({ startDate: ISO_DATE, endDate: ISO_DATE })
+  .strict()
+  .refine((input) => input.startDate <= input.endDate, { message: "startDate must not be after endDate" })
+  .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 91 * 24 * 60 * 60_000, {
+    message: "at most 92 days",
+  });
+
+export const producerPortfolioOverviewInputSchema = z
+  .object({ startDate: ISO_DATE, endDate: ISO_DATE })
+  .strict()
+  .refine((input) => input.startDate <= input.endDate, { message: "startDate must not be after endDate" })
+  .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 365 * 24 * 60 * 60_000, {
+    message: "at most 366 days",
+  });
+
+/** The error code of a tool error answer, or null. */
+function toolErrorCode(result: ToolResponse): string | null {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? "") as { error?: { code?: unknown } };
+    return typeof parsed.error?.code === "string" ? parsed.error.code : null;
+  } catch {
+    return null;
+  }
+}
+
+/** BL-161 (AC-PR-06): every Producer answer names the channel it is for, as `forChannelId` (a tool's own `channelId` may mean
+ * another channel, e.g. a watchlist entry's). */
+function withForChannel(result: ToolResponse, channelId: string): ToolResponse {
+  if (result.structuredContent) {
+    const payload = { ...result.structuredContent, forChannelId: channelId };
+    return { ...result, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
+  }
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? "") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...result, content: [{ type: "text", text: JSON.stringify({ ...(parsed as Record<string, unknown>), forChannelId: channelId }) }] };
+    }
+  } catch {
+    // not JSON: left as it is
+  }
+  return result;
 }
 
 function mapValidationErrorResult(error: z.ZodError): ToolResponse {
@@ -1335,7 +1420,7 @@ export function createMcpToolHandlers(
 
     // -- Phase 14 slice 5: remote media generation (PHASE_14_PLAN.md §2.7) ---------------------------------------------------------
     // Every tool asserts the caller's channelId is the active/bound channel first; a session/job of another channel is reported as
-    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Production → Sessions).
+    // not found, never disclosed. The agent can REQUEST a session and READ it; only a human approves/starts/stops it (Servers → Sessions).
 
     async agentListMediaTemplates(input: unknown): Promise<ToolResponse> {
       const parsedInput = agentListMediaTemplatesInputSchema.safeParse(input);
@@ -1414,7 +1499,16 @@ export function createMcpToolHandlers(
         // Another channel's plan behaves like one that does not exist.
         if (view.plan.channelId !== parsedInput.data.channelId) return notFound();
         // Error texts (a job's error, a session's failure reason) can name local paths: left out for agents.
-        const events = view.events.map((e) => ({ ...e, details: withoutErrorTexts(e.details) as Record<string, unknown> }));
+        // BL-157 (ADR 0004/0031, review round 8): a moved plan's event names both channels -- the other one is not this
+        // agent's to see, so a move reaches it without the channel ids.
+        const events = view.events.map((e) => {
+          const details = withoutErrorTexts(e.details) as Record<string, unknown>;
+          if (e.kind !== "plan_moved") return { ...e, details };
+          const { from: _from, to: _to, ...rest } = details;
+          void _from;
+          void _to;
+          return { ...e, details: rest };
+        });
         return toolSuccessResult({ plan: agentPlanView(view), events, more: view.more, cursor: view.cursor });
       } catch (error) {
         return toolErrorResult(error);
@@ -1600,6 +1694,44 @@ export function createMcpToolHandlers(
       try {
         const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
         const result = await reachReportsCore.getChannelReach({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md) -- the stored day-7 / day-28 milestones of the channel's videos. A LOCAL read,
+     * no Google call; `listVideoMilestones` checks the active channel itself, and a video of another channel is simply not listed.
+     */
+    async agentGetVideoMilestones(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listVideoMilestonesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listVideoMilestones({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * BL-168 (docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md) -- the stored traffic sources and devices per day of the channel or its videos.
+     * A LOCAL read, no Google call; `listStoredBreakdowns` checks the active channel itself, and a video of another channel is not listed.
+     */
+    async agentGetStoredBreakdowns(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listStoredBreakdownsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listStoredBreakdowns({ ...parsedInput.data, credentialRef });
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
@@ -2317,6 +2449,10 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
     // BL-114 -- a pure local read, ungated.
     agentQueryChannelReach: handlers.agentQueryChannelReach,
+    // BL-166 -- a pure local read, ungated.
+    agentGetVideoMilestones: handlers.agentGetVideoMilestones,
+    // BL-168 -- a pure local read, ungated.
+    agentGetStoredBreakdowns: handlers.agentGetStoredBreakdowns,
     // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
     agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
@@ -2425,10 +2561,19 @@ export function createMcpServer(
     // process -- and `reverify` re-checks the token so a revocation lands even mid-request
     // (AC-P12-02). The scope itself is entered by the endpoint, not here, so tests can inject this.
     agentSession?: { tokenId: string; channelId: string; reverify(): Promise<void> } | null;
+    // BL-161: the Producer (READ, plus its BL-163 proposal tools) of THIS request (`src/lib/producer-mcp-endpoint`, a producer token it just verified). The
+    // server then registers only the Producer's closed list (`./producer-tools.ts`): each channel tool needs a `channelId` and
+    // runs inside THAT channel's agent scope, entered here per call (never per request), so it sees exactly what the channel's
+    // own agent sees through the same checks. Never together with `agentSession`.
+    producerSession?: ProducerSession | null;
   } = {}
 ) {
   const connectionEnabled = options.connectionEnabled ?? false;
   const agentSession = options.agentSession ?? null;
+  const producerSession = options.producerSession ?? null;
+  if (agentSession && producerSession) {
+    throw new Error("an MCP server serves either a channel agent or the Producer, never both");
+  }
 
   const server = new McpServer({
     name: "youtube-video-metadata",
@@ -2448,7 +2593,7 @@ export function createMcpServer(
     config: { description: string; inputSchema: z.ZodTypeAny },
     handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
   ) {
-    if (!connectionEnabled || !agentSession) {
+    if (!connectionEnabled || (!agentSession && !producerSession)) {
       return;
     }
     const toolClass = MCP_TOOL_CLASSIFICATION[name];
@@ -2456,9 +2601,21 @@ export function createMcpServer(
       // AC-P12-08: a tool nobody classified must never be exposed silently.
       throw new Error(`MCP tool "${name}" is not classified in src/mcp/tool-classification.ts`);
     }
-    if (toolClass !== "bound") {
+    const registration = producerSession
+      ? producerRegistration(producerSession, name, toolClass, config, handler)
+      : agentSession && toolClass === "bound"
+        ? { config, handler: channelAgentHandler(agentSession, handler) }
+        : null;
+    if (!registration) {
       return;
     }
+    server.registerTool(name, registration.config as never, registration.handler as never);
+  }
+
+  function channelAgentHandler(
+    session: { tokenId: string; reverify(): Promise<void> },
+    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
+  ) {
     // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
     // 2026-09-22). When MCP connection is off, this wrapper never even runs (registerTool
     // returns above), so there is no failed call to count there, only an absent tool -- but a
@@ -2466,10 +2623,10 @@ export function createMcpServer(
     // gateway category, exactly like the other gateways record their own rejections. (BL-091's
     // per-capability zones were retired in Phase 12, owner decision D4 -- one agent owns all of
     // its channel's work; see docs/decisions/0011-retire-agent-capability-zones.md.)
-    const countedHandler = (async (args: never) => {
+    return (async (args: never) => {
       try {
-        assertAgentSession(agentSession.tokenId);
-        await agentSession.reverify();
+        assertAgentSession(session.tokenId);
+        await session.reverify();
       } catch (error) {
         await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
         return toolErrorResult(error);
@@ -2477,8 +2634,205 @@ export function createMcpServer(
       await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
       return handler(args);
     }) as typeof handler;
-    server.registerTool(name, config as never, countedHandler as never);
   }
+
+  // BL-161 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3): the Producer's registration. Its own tools run as they are; a channel
+  // tool from the closed list gets a required `channelId`, is refused for a channel not connected on this device, and runs
+  // inside that channel's agent scope -- the same confinement as the channel's own agent, entered for this one call. Every call,
+  // allowed or refused, goes to the Producer's call log, and every answer names the channel it is for (`forChannelId`).
+  function producerRegistration(
+    session: ProducerSession,
+    name: string,
+    toolClass: string,
+    config: { description: string; inputSchema: z.ZodTypeAny },
+    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
+  ): { config: { description: string; inputSchema: z.ZodTypeAny }; handler: (args: never) => Promise<ToolResponse> } | null {
+    const record = async (entry: { channelId: string | null; result: ToolResponse }) => {
+      await session
+        .recordCall({ tool: name, channelId: entry.channelId, outcome: entry.result.isError ? "error" : "ok", errorCode: entry.result.isError ? toolErrorCode(entry.result) : null })
+        .catch(() => undefined);
+    };
+    if (toolClass === "producer-only") {
+      const wrapped = async (args: never) => {
+        // A producer tool that names one of our channels (BL-163's proposal tools) is logged under it, by the endpoint's own rule
+        // (a string of at most 64 characters), so the endpoint matches the call to this entry; the answer names it too.
+        const named = (args as { channelId?: unknown } | undefined)?.channelId;
+        const channelId = typeof named === "string" && named.length <= 64 ? named : null;
+        const finish = (result: ToolResponse) => (channelId ? withForChannel(result, channelId) : result);
+        let result: ToolResponse;
+        try {
+          await session.reverify();
+        } catch (error) {
+          await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+          result = toolErrorResult(error);
+          await record({ channelId, result });
+          return finish(result);
+        }
+        await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+        try {
+          result = await handler(args);
+        } catch (error) {
+          result = toolErrorResult(error);
+        }
+        await record({ channelId, result });
+        return finish(result);
+      };
+      return { config, handler: wrapped };
+    }
+    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS)) return null;
+    if (!(config.inputSchema instanceof z.ZodObject)) {
+      throw new Error(`Producer tool "${name}" needs an object input schema`);
+    }
+    // Rebuilt from the shape as a strict object (review round 2: `.omit` throws on a refined schema, which would take every Producer
+    // request down). A credentialRef is always refused inside an agent scope (AGENT_SESSION_CREDENTIAL_OVERRIDE): the Producer's schema
+    // leaves it out, so it is refused at input instead of advertised as optional. The tool's own handler still validates its input.
+    const { credentialRef: _credentialRef, ...shape } = (config.inputSchema as z.ZodObject<z.ZodRawShape>).shape;
+    void _credentialRef;
+    const renamed = PRODUCER_RENAMED_CHANNEL_FIELD[name];
+    const ownsChannelId = "channelId" in shape && !renamed;
+    const inputSchema = z
+      .object({
+        ...shape,
+        ...(renamed ? { [renamed]: shape.channelId } : {}),
+        channelId: z.string().min(1).max(64).describe("The channel this call reads (one of producer_list_channels)."),
+      })
+      .strict();
+    const description =
+      `Producer: runs for the channel named by \`channelId\` (one of producer_list_channels), exactly as that channel's own agent would call it` +
+      (renamed ? `; the watchlist channel this tool's own text calls \`channelId\` is \`${renamed}\` here` : "") +
+      `. ${config.description} -- On the Producer endpoint \`credentialRef\` is not accepted, whatever the text above says: the channel's own connected account is always used.`;
+    const wrapped = async (args: Record<string, unknown>) => {
+      const channelId = String(args.channelId);
+      const refuse = async (error: unknown) => {
+        await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+        const result = toolErrorResult(error);
+        await record({ channelId, result });
+        return withForChannel(result, channelId);
+      };
+      let userId: string | null;
+      try {
+        await session.reverify();
+        userId = await session.resolveChannelUser(channelId);
+      } catch (error) {
+        return refuse(error);
+      }
+      if (!userId) {
+        return refuse(
+          new DomainError({
+            code: "CHANNEL_NOT_ACTIVE",
+            message: "This channel is not connected on this computer -- producer_list_channels lists the channels you can read.",
+            details: { channelId },
+          })
+        );
+      }
+      await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+      const forwarded: Record<string, unknown> = { ...args };
+      if (renamed) {
+        forwarded.channelId = args[renamed];
+        delete forwarded[renamed];
+      } else if (!ownsChannelId) {
+        delete forwarded.channelId;
+      }
+      let result: ToolResponse;
+      try {
+        result = (await runInAgentSession({ tokenId: session.tokenId, channelId, userId }, async () => {
+          assertAgentSession(session.tokenId);
+          return handler(forwarded as never);
+        })) as ToolResponse;
+      } catch (error) {
+        result = toolErrorResult(error);
+      }
+      await record({ channelId, result });
+      return withForChannel(result, channelId);
+    };
+    return { config: { description, inputSchema }, handler: wrapped as (args: never) => Promise<ToolResponse> };
+  }
+
+  registerTool(
+    "producer_get_capabilities",
+    {
+      description:
+        "The Producer role's own report: its API version, its permissions (READ, plus DRAFT for its proposals only) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes, spends, or starts anything: the only DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () =>
+      toolSuccessResult({
+        role: "producer",
+        producerApiVersion: PRODUCER_API_VERSION,
+        permissions: ["READ", "DRAFT"],
+        channelRequired: true,
+        tools: [...PRODUCER_TOOL_NAMES],
+        draftTools: [...PRODUCER_DRAFT_TOOLS],
+      })
+  );
+
+  registerTool(
+    "producer_list_channels",
+    {
+      description:
+        "Every channel connected on this computer (Settings → Channels), with its title and the production-workspace folder set for it on this computer (null when none is set). These are the channels the other Producer tools accept as `channelId`. A local read, no YouTube call.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () => toolSuccessResult({ channels: await producerSession!.listChannels() })
+  );
+
+  registerTool(
+    "producer_portfolio_overview",
+    {
+      description:
+        "One row per connected channel for the same date range, side by side: views, watch minutes, subscribers gained and lost (stored channel-level analytics, YouTube's own reporting days), impressions and impressions CTR (imported Reach reports), uploads published in the range (synced videos, by UTC date), and when each source was last refreshed. Local data only, never a live YouTube call: a figure with nothing stored behind it for the range is null, never zero (analytics with no stored day, Reach with no imported day in the range, uploads of a channel whose videos were never synced). Dates are YYYY-MM-DD, inclusive, at most 366 days.",
+      inputSchema: producerPortfolioOverviewInputSchema,
+    },
+    async (args: z.infer<typeof producerPortfolioOverviewInputSchema>) => toolSuccessResult(await producerSession!.portfolioOverview(args))
+  );
+
+  registerTool(
+    "producer_upload_milestones",
+    {
+      description:
+        "For each connected channel, its public uploads published in the range (synced videos, by UTC date like producer_portfolio_overview; a private, scheduled or upcoming video is not listed), oldest first, each with its day-7 and day-28 milestones (BL-166): `windowStart`/`windowEnd` (YouTube Analytics' Pacific dates: publish date .. +6 / +27), `status` (collected | retry -- a query failed, tried again later | failed -- given up after 3 attempts | due -- waiting for its collection run | not_due -- the window or the 3-day reporting lag after it is not over), `collectedAt`, `totals` (views, estimatedMinutesWatched, averageViewDuration in seconds, averageViewPercentage, as YouTube returned them for the window; null unless collected) and `reach` over the same window from the imported Reach reports (`daysWithData`; `impressions` summed and `ctr` impressions-weighted, both null when no Reach day is stored in the window -- a window still open has only its days so far). `reachState` is the channel's Reach state (no_job, waiting_for_first_report, ready, or unavailable when it could not be read -- `reachError` then names why, e.g. CHANNEL_NOT_ACTIVE). `uploads` is null for a channel whose videos were never synced on this computer. No retention curves: agent_get_video_milestones with the channelId returns them. Local data only, never a live YouTube call; milestones are collected by the computer the channel is connected on. Dates are YYYY-MM-DD, inclusive, at most 92 days.",
+      inputSchema: producerUploadMilestonesInputSchema,
+    },
+    async (args: z.infer<typeof producerUploadMilestonesInputSchema>) => toolSuccessResult(await producerSession!.uploadMilestones(args))
+  );
+
+  // BL-163 (FO-REQ-0014 §C, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): the Producer proposes, the owner decides in
+  // the Web UI, the system applies. These tools reach only the proposal store's Producer side (`ProducerSession.proposals`).
+  registerTool(
+    "producer_propose",
+    {
+      description:
+        "Propose ONE change to the research watchlist or the hypotheses of one of our channels. It changes nothing: the owner sees it in YT Manager (Research → Inbox, \"Agent proposals\") with your `text`, approves it in one click, or rejects it with a required comment. Read the outcome with producer_list_proposals. `channelId` = the channel of ours it is for (one of producer_list_channels); `text` (1-4000 characters after trimming) = what and why. The owner's card already shows the entry's current newest-upload date and pause next to your text, and your text is stored until 90 days after the decision, while other channels' YouTube data may be kept 30 days at most (YouTube API policy) -- so cite the entry, not its statistics. `kind` and its `payload` (strict): " +
+        "watchlist.add {competitorChannelId: the competitor's UC... channel id (a handle or URL is not accepted -- no YouTube call is made), reason: why it is watched -- stored on the entry when the entry is new, handleOrUrl?: shown in the list, also only for a new entry} -- adds it to the watchlist if needed and makes this channel follow it; " +
+        "watchlist.unfollow {researchChannelId} -- this channel stops following it, the entry stays for the others; " +
+        "watchlist.pause / watchlist.resume {researchChannelId} -- stops / restarts its collection, for every channel; " +
+        "watchlist.delete {researchChannelId} -- deletes it from the watchlist completely, with its stored history, for every channel; " +
+        "hypothesis.add {statement, evidenceNotes} -- a new hypothesis of this channel, created as yours (createdBy producer, createdVia mcp) when approved. " +
+        "Every watchlist kind except add must name an entry this channel follows (query_competitors with this channelId). Refused at once: an entry the channel does not follow (RESEARCH_CHANNEL_NOT_AVAILABLE), a channel not connected here (CHANNEL_NOT_ACTIVE), a change that does not fit the current state, e.g. pausing a paused entry (AGENT_PROPOSAL_NOT_APPLICABLE), the same proposal already waiting (AGENT_PROPOSAL_DUPLICATE, details.proposalId and details.source -- pause, resume and delete: one per entry, whoever proposed it, the system's own deletion proposals for inactive entries included, which producer_list_proposals does not list; add and unfollow: per entry and channel), a payload that does not match its kind (validation_failed), and while the app is paused for a device handoff or recovery (operation_lock_held / device_in_recovery_mode). Returns { proposal } (status pending) and forChannelId.",
+      inputSchema: producerProposeInputSchema,
+    },
+    async (args: z.infer<typeof producerProposeInputSchema>) => toolSuccessResult({ proposal: await producerSession!.proposals.submit(args) })
+  );
+
+  registerTool(
+    "producer_list_proposals",
+    {
+      description:
+        "Your proposals, newest first (at most 500), with their status: pending (waiting for the owner), applied (approved and made), rejected (with the owner's `rejectComment` -- the reason, for you), failed (approved, but the change could not be made: `applyError`; never retried by itself). Optional filters: channelId (the answer then also carries forChannelId), status. Mark decided ones read with producer_mark_proposals_done: they leave the store at once and are not listed again; a decided proposal is also gone 90 days after the decision; a pending one never expires. A local read that changes nothing.",
+      inputSchema: producerListProposalsInputSchema,
+    },
+    async (args: z.infer<typeof producerListProposalsInputSchema>) => toolSuccessResult(await producerSession!.proposals.list(args))
+  );
+
+  registerTool(
+    "producer_mark_proposals_done",
+    {
+      description:
+        "Mark decided proposals (applied, rejected or failed) as read: they leave the proposal store. A pending one is never marked (it stays for the owner). Returns `marked` and `notMarked` (pending, unknown, already gone, or not yours). Up to 100 ids per call. Refused while the app is paused for a device handoff or recovery (operation_lock_held / device_in_recovery_mode).",
+      inputSchema: producerMarkProposalsDoneInputSchema,
+    },
+    async (args: z.infer<typeof producerMarkProposalsDoneInputSchema>) => toolSuccessResult(await producerSession!.proposals.markDone(args))
+  );
 
   registerTool(
     "write_context",
@@ -2716,7 +3070,7 @@ export function createMcpServer(
     "channel_video_list",
     {
       description:
-        "List a synchronized channel's videos with their existing localization languages. Read-only. credentialRef is OPTIONAL and falls back to active local auth context. With no other input it returns every field of every video, which for a large channel is very big (descriptions, thumbnails, etags, localizations): pass `fields` (e.g. [\"title\",\"publishedAt\",\"viewCount\"]; videoId is always included) and/or `limit`/`offset` (limit max 500) to get a slim, paged answer {channelId, videos, total, offset, nextOffset} -- nextOffset is null on the last page.",
+        "List a synchronized channel's videos with their existing localization languages. Read-only. credentialRef is OPTIONAL and falls back to active local auth context. With no other input it returns every field of every video, which for a large channel is very big (descriptions, thumbnails, etags, localizations): pass `fields` (e.g. [\"title\",\"publishedAt\",\"viewCount\",\"durationSeconds\"]; videoId is always included; `durationSeconds` and `liveBroadcastContent` -- none / live / upcoming -- are null when unknown, and `thumbnails` holds YouTube's own image URLs) and/or `limit`/`offset` (limit max 500) to get a slim, paged answer {channelId, videos, total, offset, nextOffset} -- nextOffset is null on the last page.",
       inputSchema: listSyncedVideosInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.channelVideoList(args)
@@ -2746,7 +3100,7 @@ export function createMcpServer(
     "analytics_data_quality",
     {
       description:
-        "Data-quality diagnostics for a channel's collected Analytics data over a date range. `covered` means a completed collection run's window included the date (or a metric row exists) -- NOT that data is present: see `coveredWithoutData` (covered dates with no stored row: zero-activity days or data YouTube had not reported yet) and `provisionalDates` (covered dates inside the re-collection window, expected to be refreshed by the next automatic run). Dates before the channel was created (`channelStartDate`) are `notApplicableRange`, never uncovered; `coveredRanges`/`uncoveredRanges` give compact ranges, and missing history is back-filled automatically. Details: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them. A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Data-quality diagnostics for a channel's collected Analytics data over a date range. `covered` means a completed collection run's window included the date (or a metric row exists) -- NOT that data is present: see `coveredWithoutData` (covered dates with no stored row: zero-activity days or data YouTube had not reported yet) and `provisionalDates` (covered dates inside the re-collection window, expected to be refreshed by the next automatic run). Dates before the channel was created (`channelStartDate`) are `notApplicableRange`, never uncovered; `coveredRanges`/`uncoveredRanges` give compact ranges, and missing history is back-filled automatically. Details: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them (`videosWithSkips`: `{ videoId, skipCount, lastSkippedAt, lastSkippedRange: { startDate, endDate } }` -- listed only when the LATEST run overlapping the range skipped the video; a skip is per video and run, never per day, so `lastSkippedRange` is that run's whole window). A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: getDataQualityReportInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.analyticsDataQuality(args)
@@ -2860,6 +3214,26 @@ export function createMcpServer(
       inputSchema: getChannelReachInputObjectSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelReach(args)
+  );
+
+  registerTool(
+    "agent_get_video_milestones",
+    {
+      description:
+        "The stored day-7 and day-28 milestones of the channel's own videos (BL-166). A milestone's window runs from the video's publish date (YouTube Analytics' Pacific date) to publish date + 6 (day 7) or + 27 (day 28), inclusive. YT Manager queries a window once it and YouTube's reporting lag are over (3 days after its last day), during the dashboard's Analytics collection, at most 25 per channel per run, oldest first: a longer backlog fills over several runs. Each milestone: `status` (collected | retry -- a query failed, it is tried again on a later run | failed -- given up after 3 attempts), `attempts`, `lastError`, `collectedAt`, `durationSeconds` (the video's stored length, null when unknown, so a point of the curve can be placed in time), `totals` (views, estimatedMinutesWatched, averageViewDuration in seconds, averageViewPercentage -- each as YouTube returned it for the window, null when it returned none) and `retention`: up to 100 points of the audience-retention curve (elapsedVideoTimeRatio 0.01 .. 1.00, with audienceWatchRatio and relativeRetentionPerformance), as returned -- [] when YouTube returned none (e.g. too few views) or the milestone is not collected. Only public videos have milestones (while a video is private or scheduled, its publishedAt is its upload time); a milestone not due yet, or due but not attempted yet, is not listed, nor one collected for a window the video no longer has (its publish date moved) until it is collected again. Optional `videoIds` (1-50) and `milestone` (7 or 28) narrow the answer; a videoId of another channel is simply not listed. A LOCAL read, never a live YouTube call; each computer collects the milestones of the channels connected on it. Nothing is computed from the curve (e.g. no 'retention at 30 s'). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listVideoMilestonesInputSchema,
+    },
+    (args) => handlers.agentGetVideoMilestones(args)
+  );
+
+  registerTool(
+    "agent_get_stored_breakdowns",
+    {
+      description:
+        "Stored traffic sources and device types per day (BL-168): views and estimatedMinutesWatched per `insightTrafficSourceType` (e.g. SUBSCRIBER, RELATED_VIDEO, YT_SEARCH, YT_CHANNEL, YT_OTHER_PAGE, EXT_URL, PLAYLIST, NOTIFICATION, NO_LINK_OTHER) and per `deviceType` (e.g. DESKTOP, MOBILE, TV, TABLET), as YouTube Analytics returned them. Without `videoIds` the answer is the channel as a whole (`channel`); with `videoIds` (1-20) it is those videos (`videos`). YT Manager stores each public video's first 90 days (its Pacific publish date .. +89, see `window`) and the channel from 90 days before its first collection on, once a day during the dashboard's Analytics collection (yesterday is the latest day; each read starts 6 days before its first new day, since YouTube revises recent days; at most 100 subjects per channel per run, the channel first, then the least recently read videos, so a video left out is read on the next run). `coverage` (from, through, collectedAt) says which days are stored and when they were last read; null with `status: not_collected` when they never were. `status` is collected | retry (a query failed, tried again later; `lastError`) | failed (a video given up after 3 attempts; the channel is never given up). `groupBy: total` (default) sums each value over startDate..endDate within the coverage, most views first; `groupBy: day` lists the stored rows. A day with no row for a value had no views from it (or lies outside the coverage); a 0 can occur. The channel's sum across sources can differ slightly from its total views, as YouTube reports it. Each row has the raw API `value` and a readable `label`. A videoId of another channel, or of a private, scheduled or never-synced video, is not listed. A LOCAL read, never a live YouTube call (agent_query_channel_breakdown is the live one); each computer collects the channels connected on it. Dates are YYYY-MM-DD, inclusive, at most 92 days. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listStoredBreakdownsInputSchema,
+    },
+    (args) => handlers.agentGetStoredBreakdowns(args)
   );
 
   registerTool(
@@ -2992,7 +3366,7 @@ export function createMcpServer(
     "agent_list_asset_performance",
     {
       description:
-        "Owner spec §16: joins the existing asset catalog (linkedVideoId -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube, no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus lifetimeCountersAsOf -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (performanceMetric + a REQUIRED, caller-supplied performanceDayOffset -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as agent_find_comparable_videos) is additionally computed only when both are given, and is honestly null (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage. sort: 'lifetimeViewCount' ranks by a NON-age-fair total that structurally favors older videos -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count) is excluded, counted in excludedForMissingLink. Does NOT support thumbnail-CTR/impressions-based questions (this application's own analytics collection never fetches YouTube's impressions/CTR metrics at all, never approximated via card/annotation click-through metrics), metadata/version linkage (no temporal precision on linkedVideoId), or experiment/outcome linkage (Phase 10, not built yet). Never reads Content Proposal reference associations -- a structurally different, draft/unactioned relationship. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when performanceMetric is requested. limit is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
+        "Owner spec §16: joins the existing asset catalog (linkedVideoId -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube, no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus lifetimeCountersAsOf -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (performanceMetric + a REQUIRED, caller-supplied performanceDayOffset -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as agent_find_comparable_videos) is additionally computed only when both are given, and is honestly null (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage. sort: 'lifetimeViewCount' ranks by a NON-age-fair total that structurally favors older videos -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count) is excluded, counted in excludedForMissingLink. Does NOT include thumbnail impressions/CTR -- read them with agent_query_channel_reach (per video and day with groupBy video_day; never approximated here via card/annotation click-through metrics) -- and does NOT support metadata/version linkage (no temporal precision on linkedVideoId) or experiment/outcome linkage (experiments in the Decisions list are not linked to videos yet). Never reads Content Proposal reference associations -- a structurally different, draft/unactioned relationship. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when performanceMetric is requested. limit is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
       // Same SDK-facing relaxed-schema pattern as agent_find_comparable_videos above.
       inputSchema: listAssetPerformanceSdkInputSchema,
     },
@@ -3036,7 +3410,7 @@ export function createMcpServer(
     "query_market_overview",
     {
       description:
-        "Compact bulk read of the research watchlist: several channels in ONE call, paged (limit default 50, max 200; offset; nextOffset is null on the last page). Per channel: channelId, handleOrUrl, its newest stored channel snapshot (observedAt, subscriberCount, viewCount, videoCount, hiddenSubscriberCount -- raw values as stored, null when none), channelSnapshotCount, videoSnapshotCount (stored snapshot ROWS: a video snapshotted in several runs counts several times), uniqueVideoCount (distinct videoId among them), latestVideoSnapshotAt (newest observedAt among them, null when none), evidenceCount, dataQualityFlags and `collection` (how deep this channel's uploads are collected: maxVideosPerChannel = the cap of distinct videos kept, publishedAfter = YYYY-MM-DD limit or null, videosStored = distinct videos stored now, complete = false while the first/deeper collection is still under way or has not run yet -- the Manager continues it on its own across days within the daily unit budget -- and true once it reached the cap, the date or the end of the channel's uploads, completeReason = cap | date | exhausted; videosStored below maxVideosPerChannel with complete true simply means the channel has fewer uploads or older snapshots aged out of the 30-day window; the operator sets the depth in Settings and on each watchlist entry, not you) -- no evidence text and no snapshot lists (use query_market_intelligence for one channel's detail, or agent_export_research_data to get every row as files). Omit channelIds for every watchlist channel you may see; naming one you cannot see fails with RESEARCH_CHANNEL_NOT_AVAILABLE. Other channels' API-sourced snapshots are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d). Nothing is computed from competitor statistics (no ranking, rate or median: III.E.4.h). A local read only, never a live YouTube call.",
+        "Compact bulk read of the research watchlist: several channels in ONE call, paged (limit default 50, max 200; offset; nextOffset is null on the last page). Per channel: channelId, handleOrUrl, its newest stored channel snapshot (observedAt, subscriberCount, viewCount, videoCount, hiddenSubscriberCount -- raw values as stored, null when none), channelSnapshotCount, videoSnapshotCount (stored snapshot ROWS: a video snapshotted in several runs counts several times), uniqueVideoCount (distinct videoId among them), latestVideoSnapshotAt (newest observedAt among them, null when none), evidenceCount, dataQualityFlags and `collection` (how deep this channel's uploads are collected: maxVideosPerChannel = the cap of distinct videos kept, publishedAfter = YYYY-MM-DD limit or null, videosStored = distinct videos stored now, complete = false while the first/deeper collection is still under way or has not run yet -- the Manager continues it on its own across days within the daily unit budget -- and true once it reached the cap, the date or the end of the channel's uploads, completeReason = cap | date | exhausted; videosStored below maxVideosPerChannel with complete true simply means the channel has fewer uploads or older snapshots aged out of the 30-day window; the operator sets the depth in Settings and on each watchlist entry, not you), plus the watchlist activity fields: latestUploadPublishedAt (the newest publishedAt among the channel's stored video snapshots, raw, null when none is stored -- it fades with the 30-day window once collection stops), inactive (true only when that date is known and older than the operator's 'inactive after N months' setting, default 6), pausedAt and pausedReason (inactive = paused automatically, owner = paused by the operator; a paused channel is not collected) -- no evidence text and no snapshot lists (use query_market_intelligence for one channel's detail, or agent_export_research_data to get every row as files). Omit channelIds for every watchlist channel you may see; naming one you cannot see fails with RESEARCH_CHANNEL_NOT_AVAILABLE. Other channels' API-sourced snapshots are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d). Nothing is computed from competitor statistics (no ranking, rate or median: III.E.4.h). A local read only, never a live YouTube call.",
       inputSchema: listResearchOverviewInputSchema,
     },
     (args) => handlers.queryMarketOverview(args)
@@ -3062,7 +3436,7 @@ export function createMcpServer(
     "query_competitors",
     {
       description:
-        "List every channel currently on the research watchlist (channelId, handleOrUrl, reason it was added, addedAt) -- no evidence attached, just the roster. A local read only, never a live YouTube call. Global data, not scoped to any owned channel -- these are channels the operator does not necessarily own (docs/roadmap/plans/PHASE_9_PLAN.md).",
+        "List every channel currently on the research watchlist (channelId, handleOrUrl, reason it was added, addedAt, and the activity fields latestUploadPublishedAt / inactive / pausedAt / pausedReason with the same meaning as in query_market_overview) -- no evidence attached, just the roster. A local read only, never a live YouTube call. Global data, not scoped to any owned channel -- these are channels the operator does not necessarily own (docs/roadmap/plans/PHASE_9_PLAN.md).",
       inputSchema: queryCompetitorsInputSchema,
     },
     (args) => handlers.queryCompetitors(args)
@@ -3072,7 +3446,7 @@ export function createMcpServer(
     "query_market_intelligence",
     {
       description:
-        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count, feed_fallback_used = the newest collection got only the ~15 newest uploads from the RSS feed because the uploads-playlist call failed, so the video list is shorter than normal; never a fabricated flag when there's simply no data yet) and collectionProgress (the channel's collection depth and progress: maxVideosPerChannel, publishedAfter, videosStored, complete, completeReason, same meaning as `collection` in query_market_overview). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt, and the activity fields latestUploadPublishedAt / inactive / pausedAt / pausedReason, as in query_market_overview), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A; each video row has durationSeconds and liveBroadcastContent -- the video's newest values read within the last 30 days, null when none -- and thumbnailUrl, YouTube's own image URL) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count, feed_fallback_used = the newest collection got only the ~15 newest uploads from the RSS feed because the uploads-playlist call failed, so the video list is shorter than normal; never a fabricated flag when there's simply no data yet) and collectionProgress (the channel's collection depth and progress: maxVideosPerChannel, publishedAfter, videosStored, complete, completeReason, same meaning as `collection` in query_market_overview). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
       inputSchema: getWatchlistEntryInputSchema,
     },
     (args) => handlers.queryMarketIntelligence(args)
@@ -3149,7 +3523,7 @@ export function createMcpServer(
   );
 
   // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7): remote media generation on RunPod/ComfyUI. The agent requests a
-  // SESSION (one GPU pod with caps), a human approves it in Production → Sessions, then the agent submits JOBS freely until the session is
+  // SESSION (one GPU pod with caps), a human approves it in Servers → Sessions, then the agent submits JOBS freely until the session is
   // stopped (idle / minutes / USD cap / human). No tool here can approve, start or stop a session.
   registerTool(
     "agent_list_media_templates",
@@ -3165,7 +3539,7 @@ export function createMcpServer(
     "agent_request_media_session",
     {
       description:
-        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human), releaseWhenDone? (true = the pod is stopped by itself one minute after the session's last job finished; false = it stays up until the idle timeout or your release; omitted = the owner's setting in Production -> Setup, on by default -- pass false when you submit a probe job first and the rest later) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Production -> Sessions; you can neither approve nor start it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. When you are done, end the session yourself with agent_release_media_session (or request it with releaseWhenDone) instead of leaving it to the idle timeout. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Production -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: asks the human to start a generation SESSION -- one RunPod GPU pod running ComfyUI -- with caps { maxMinutes? (default from Settings), maxUsd?, reason? (max 500, shown to the human), releaseWhenDone? (true = the pod is stopped by itself one minute after the session's last job finished; false = it stays up until the idle timeout or your release; omitted = the owner's setting in Servers -> Setup, on by default -- pass false when you submit a probe job first and the rest later) }. Creating the request costs nothing and makes no RunPod call: it stores a PENDING session with a local estimate (estimateUsd = the saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap (a request that does not fit is still created and flagged). The human approves or rejects it in Servers -> Sessions; you can neither approve nor start it. Once status is `running`, submit jobs with agent_create_media_job; the pod is terminated automatically when idle (no job traffic for the owner's idle timeout), at maxMinutes, at maxUsd, or when the human stops it -- so submit jobs promptly and check agent_get_media_session before each one. When you are done, end the session yourself with agent_release_media_session (or request it with releaseWhenDone) instead of leaving it to the idle timeout. Several sessions may be requested and run at once (each its own pod on the shared model volume); how many may hold a pod at the same time is the owner's maxConcurrentSessions (agent_get_media_limits) -- an approve beyond it waits, the request stays pending. Errors: media_generation_not_configured (the operator has not finished Settings -> RunPod / Servers -> Setup), media_settings_invalid (GPU price unknown). Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentRequestMediaSessionInputSchema,
     },
     (args) => handlers.agentRequestMediaSession(args)
@@ -3175,7 +3549,7 @@ export function createMcpServer(
     "agent_get_media_session",
     {
       description:
-        "Phase 14: one session by sessionId, or (no sessionId) this channel's recent sessions (latest 20). Fields: status (pending|approved|starting|running|stopping|done|failed|rejected|interrupted), requestedBy, maxMinutes, maxUsd, estimateUsd, fitsToday, costPerHr (the pod's real $/h once started), podId, startedAt/readyAt/stoppedAt, secondsUsed and usdCharged (live while running), stopReason, error. `running` is the only state in which jobs can be submitted. Local read only, never the proxy token. A session of another channel behaves like one that does not exist (media_session_not_found). Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: one session by sessionId, or (no sessionId) this channel's recent sessions (latest 20). Fields: status (pending|approved|starting|running|stopping|done|failed|rejected|interrupted), requestedBy, maxMinutes, maxUsd, estimateUsd, fitsToday, costPerHr (the pod's real $/h once started), podId, startedAt/readyAt/stoppedAt, secondsUsed and usdCharged (live while running), stopReason, error, minCudaVersion / usedMinCudaVersion / hostCudaVersion (BL-159: the session's own minimum host CUDA, the minimum its last placement attempt used, and the pod's host CUDA; null = none / no filter or not attempted yet / not known yet). `running` is the only state in which jobs can be submitted. Local read only, never the proxy token. A session of another channel behaves like one that does not exist (media_session_not_found). Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentGetMediaSessionInputSchema,
     },
     (args) => handlers.agentGetMediaSession(args)
@@ -3185,7 +3559,7 @@ export function createMcpServer(
     "agent_get_media_limits",
     {
       description:
-        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> RunPod / Production -> Setup), openSessions (this channel's non-terminal sessions, oldest first), openSession (the first of them, kept for compatibility), maxConcurrentSessions (how many sessions may hold a pod at once on this device), activeSessionCount (how many do now, any channel) and deviceHasOpenSession (true when ANY channel has a non-terminal session; informational -- it no longer blocks a request). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
+        "Phase 14: the owner's media limits and what is left today, in USD: maxUsdPerDay, spentTodayUsd, remainingTodayUsd, defaultMaxMinutes, idleMinutes (a running session with no job traffic for this long is terminated), watchIntervalSeconds, ready/missing (whether the operator finished Settings -> RunPod / Servers -> Setup), openSessions (this channel's non-terminal sessions, oldest first), openSession (the first of them, kept for compatibility), maxConcurrentSessions (how many sessions may hold a pod at once on this device), activeSessionCount (how many do now, any channel) and deviceHasOpenSession (true when ANY channel has a non-terminal session; informational -- it no longer blocks a request). Local read only. Use it before agent_request_media_session. Requires channelId to be the caller's currently-active channel.",
       inputSchema: agentGetMediaLimitsInputSchema,
     },
     (args) => handlers.agentGetMediaLimits(args)
@@ -3195,7 +3569,7 @@ export function createMcpServer(
     "agent_create_media_job",
     {
       description:
-        "Phase 14: submits one generation job to a RUNNING session's ComfyUI: { sessionId, templateId, params: { <parameter name>: value } }. Parameters are validated against the template's declared parameters BEFORE anything is sent (media_job_params_invalid lists every problem: unknown name, missing required, wrong type, out of bounds, not in enum, input path not relative or wrong extension); a missing optional parameter takes its default. An image/audio/video input parameter takes a path relative to your workspace's 99 Data Exchange/Sent to YTM/ (e.g. 'refs/frame.png'); the file is checked (inside that folder, a regular file, within maxBytes) and uploaded to the server for this job only before ComfyUI gets the prompt -- media_input_unavailable when it is missing, too large or cannot be uploaded; your file in Sent to YTM is never deleted, and the uploaded copy is removed from the server after the job ends. The Save nodes' filename_prefix is rewritten per job, so outputs always land under the job's own folder. Returns the job (status `submitted`, promptId); generation and transfer continue in the background: poll agent_get_media_job until status is done|failed|cancelled. When `done`, outputs[].localPath are absolute paths under <channel workspace>/99 Data Exchange/From YTM/media/<jobId>/ (the same folder agent_get_channel_workspace returns) and assetIds are the catalog entries registered for them (agent_get_asset_context) with full provenance; the files are deleted from the server volume once pulled. Errors: media_session_invalid_state (session not running), media_template_not_found, comfyui_rejected (ComfyUI refused the prompt -- its node/input errors are in the message and on the failed job), comfyui_unavailable (the pod's ComfyUI could not be reached), media_workspace_unavailable (the operator has not set this channel's workspace folder, so outputs cannot be received). Every submit and poll counts as session activity (resets the idle timeout). Requires channelId to be the caller's currently-active channel and the session to belong to it.",
+        "Phase 14: submits one generation job to a RUNNING session's ComfyUI: { sessionId, templateId, params: { <parameter name>: value } }. Parameters are validated against the template's declared parameters BEFORE anything is sent (media_job_params_invalid lists every problem: unknown name, missing required, wrong type, out of bounds, not in enum, input path not relative or wrong extension); a missing optional parameter takes its default. An image/audio/video input parameter takes a path relative to your workspace's 99 Data Exchange/Sent to YTM/ (e.g. 'refs/frame.png'); the file is checked (inside that folder, a regular file, within maxBytes) and uploaded to the server for this job only before ComfyUI gets the prompt -- media_input_unavailable when it is missing, too large or cannot be uploaded; your file in Sent to YTM is never deleted, and the uploaded copy is removed from the server after the job ends. The Save nodes' filename_prefix is rewritten per job, so outputs always land under the job's own folder. A template that needs a newer host CUDA (its minCudaVersion) than the session's known host is refused with media_gpu_host_incompatible before anything is sent (BL-159). Returns the job (status `submitted`, promptId); generation and transfer continue in the background: poll agent_get_media_job until status is done|failed|cancelled. When `done`, outputs[].localPath are absolute paths under <channel workspace>/99 Data Exchange/From YTM/media/<jobId>/ (the same folder agent_get_channel_workspace returns) and assetIds are the catalog entries registered for them (agent_get_asset_context) with full provenance; the files are deleted from the server volume once pulled. Errors: media_session_invalid_state (session not running), media_template_not_found, comfyui_rejected (ComfyUI refused the prompt -- its node/input errors are in the message and on the failed job), comfyui_unavailable (the pod's ComfyUI could not be reached), media_workspace_unavailable (the operator has not set this channel's workspace folder, so outputs cannot be received). Every submit and poll counts as session activity (resets the idle timeout). Requires channelId to be the caller's currently-active channel and the session to belong to it.",
       inputSchema: agentCreateMediaJobInputSchema,
     },
     (args) => handlers.agentCreateMediaJob(args)

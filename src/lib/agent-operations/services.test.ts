@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "3.8.0"); // MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
+  assert.equal(result.agentApiVersion, "3.10.0"); // MINOR 3.10.0 (BL-168, VIDEO_BREAKDOWNS_PLAN.md §2 "Reads"): new READ capability analytics.query_stored_breakdowns; MINOR 3.9.0 (BL-166, VIDEO_MILESTONES_PLAN.md §2 "Versions"): new READ capability analytics.query_video_milestones; MINOR 3.6.0 (BL-135): agent_release_media_session + releaseWhenDone; MINOR 3.5.0 (BL-132): media template input parameters (image/audio/video), job inputs[], template source/models; before that 3.3.0 (Factory Operator access, logical path registry tools) on top of 3.2.0 + MINOR 3.4.0: the seven media_generation capabilities (Phase 14 slice 5, PHASE_14_PLAN.md §2.7) and agent_get_media_limits openSessions/maxConcurrentSessions/activeSessionCount (slice 6)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));

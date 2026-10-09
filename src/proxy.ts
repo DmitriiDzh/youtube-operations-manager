@@ -67,6 +67,8 @@ const EXEMPT_STOP_SWITCH_ROUTES = new Set([
   "DELETE /api/agent-tokens",
   // Factory Operator token (BL-129): revoking it is the same kind of stop switch as revoking a channel agent's token.
   "DELETE /api/factory-agent-token",
+  // Producer token (BL-161): the same kind of stop switch.
+  "DELETE /api/producer-agent-token",
   "POST /api/channel-connections/disconnect",
 ]);
 

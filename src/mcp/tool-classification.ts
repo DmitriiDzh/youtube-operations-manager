@@ -9,8 +9,11 @@
  * - `operator-only`: never registered in an agent session. Identity/selection switching (hole #1/#2),
  *   and the global operations workspace (owner decision D2: channel folders only). Market tools are
  *   `bound`: their results are narrowed to records assigned to the agent's channel (D1, slice 12.4).
+ * - `producer-only` (BL-161): the Producer role's own tools (reads, and BL-163's proposal tools), registered only on its endpoint
+ *   (`/api/mcp/producer`), never in a channel session. Which `bound` tools the Producer also gets is the
+ *   closed list in `src/mcp/producer-tools.ts`.
  */
-export type McpToolClass = "bound" | "operator-only";
+export type McpToolClass = "bound" | "operator-only" | "producer-only";
 
 export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = Object.freeze({
   write_context: "bound",
@@ -50,6 +53,8 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_get_video_context: "bound",
   agent_query_channel_analytics: "bound",
   agent_query_channel_reach: "bound",
+  agent_get_video_milestones: "bound",
+  agent_get_stored_breakdowns: "bound",
   agent_query_channel_breakdown: "bound",
   agent_query_video_analytics: "bound",
   agent_list_assets: "bound",
@@ -91,4 +96,12 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_get_media_job: "bound",
   agent_cancel_media_job: "bound",
   agent_release_media_session: "bound",
+  // BL-161: the Producer role's own tools.
+  producer_get_capabilities: "producer-only",
+  producer_list_channels: "producer-only",
+  producer_portfolio_overview: "producer-only",
+  producer_upload_milestones: "producer-only",
+  producer_propose: "producer-only",
+  producer_list_proposals: "producer-only",
+  producer_mark_proposals_done: "producer-only",
 });

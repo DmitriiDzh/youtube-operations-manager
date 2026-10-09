@@ -76,7 +76,7 @@ export type MediaSettings = {
   factoryMaxMinutesPerSession: number;
   factoryMaxUsdPerDay: number;
   factoryMaxUsdPerMonth: number;
-  /** Owner, Telegram 2026-10-06 (msgs 1807/1810): the owner's OWN session requests (Production → Sessions) are stopped by
+  /** Owner, Telegram 2026-10-06 (msgs 1807/1810): the owner's OWN session requests (Servers → Sessions) are stopped by
    * themselves one minute after their last job finished (BL-135 releaseWhenDone). Since DEV-MSG-0001 (owner 2026-10-07 msg 1939)
    * it is the default of EVERY request that omits the flag -- agents' and the factory's too; an explicit flag wins. */
   ownerReleaseWhenDone: boolean;
@@ -150,7 +150,8 @@ export type MediaSessionRequester = "operator" | "agent" | "factory";
 /** BL-133: an ordered list of GPU types to try, optionally bounded by VRAM and price (a request's or a template's). */
 export type MediaGpuPlan = { candidates: string[]; minVramGb: number | null; maxPricePerHr: number | null };
 /** BL-133: one createPod attempt as the capacity log records it. */
-export type MediaCapacityAttempt = { at: string; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null };
+/** `hostCudaVersion` (BL-159): on a `placed` entry, the host's CUDA once known (from the create answer or the host check); else null. */
+export type MediaCapacityAttempt = { at: string; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null; hostCudaVersion: string | null };
 export const MEDIA_SESSION_TERMINAL_STATUSES: readonly MediaSessionStatus[] = ["done", "failed", "rejected", "interrupted"];
 export const MEDIA_SESSION_NON_TERMINAL_STATUSES: readonly MediaSessionStatus[] = MEDIA_SESSION_STATUSES.filter((s) => !MEDIA_SESSION_TERMINAL_STATUSES.includes(s));
 
@@ -165,6 +166,13 @@ export type MediaSession = {
   approvedBy: "owner" | "factory" | null;
   /** BL-133: the GPU candidates this session was asked to try (null = the device's GPU + its fallback list). */
   gpuPlan: MediaGpuPlan | null;
+  /** BL-159: the session's own minimum host CUDA version (from the start call, else its template); null = the owner's setting only. */
+  minCudaVersion: string | null;
+  /** BL-159: the minimum the last placement attempt used -- the higher of the owner's setting and the session's own; null = no
+   * filter, or no placement attempted yet (a pending session; the immediate answer of a start). */
+  usedMinCudaVersion: string | null;
+  /** BL-159: the CUDA version of the current pod's host (RunPod: the highest CUDA its driver supports); null = not known yet. */
+  hostCudaVersion: string | null;
   /** BL-133: while `waiting_capacity` -- when the next start attempt is due and when the wait ends. */
   capacity: { attempts: number; nextAttemptAt: string | null; waitUntil: string | null } | null;
   reason: string | null;
@@ -207,8 +215,9 @@ export type MediaFactorySettingsView = {
   /** The device-wide limits every session (owner's and factory's) is also held to. `spentTodayUsd` is THIS device's spend only
    * (a start also counts other devices on the same RunPod account, BL-138). */
   device: { maxUsdPerDay: number; spentTodayUsd: number; maxConcurrentSessions: number; idleMinutes: number };
-  /** `minCudaVersion` since BL-155 (Factory API 1.7.0): the lowest host-driver CUDA a pod may land on; null = no filter. */
-  gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType; minCudaVersion: string | null };
+  /** `minCudaVersion` since BL-155 (Factory API 1.7.0): the lowest host-driver CUDA a pod may land on; null = no filter.
+   * `cudaVersions` since BL-159 (Factory API 1.9.0): the values a minimum may take, ascending. */
+  gpu: { gpuTypeId: string | null; fallbackIds: string[]; minVramGb: number | null; maxPricePerHr: number | null; onDemandPricePerHr: number | null; cloudType: MediaCloudType; minCudaVersion: string | null; cudaVersions: string[] };
   capacity: { retrySeconds: number; waitMinutes: number };
 };
 
@@ -292,6 +301,8 @@ export type MediaWorkflowTemplate = {
   models: MediaModelReference[];
   /** BL-133: the GPUs a registry template asks for (null = none declared). */
   gpu: MediaGpuPlan | null;
+  /** BL-159: the lowest host CUDA version a registry template needs (null = none declared). */
+  minCudaVersion: string | null;
   parameters: MediaTemplateParameter[];
   /** Node ids whose `filename_prefix` is rewritten to `<jobId>/...` so outputs land in the job's folder. */
   outputNodeIds: string[];

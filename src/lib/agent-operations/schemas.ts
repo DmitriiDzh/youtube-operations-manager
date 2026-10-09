@@ -159,6 +159,8 @@ const videoMetadataContextSchema = z
     defaultLanguage: z.string().nullable(),
     defaultAudioLanguage: z.string().nullable(),
     lastSyncedAt: z.string(),
+    durationSeconds: z.number().int().nullable(),
+    liveBroadcastContent: z.string().nullable(),
   })
   .strict();
 

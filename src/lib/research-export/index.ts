@@ -39,7 +39,17 @@ export function createResearchExportCore() {
       await marketAssignments.assertAvailableToAgent("research_channel", researchChannelId);
       const context = await marketIntelligence.getWatchlistEntryContext({ channelId: researchChannelId });
       return {
-        channel: { channelId: context.channel.channelId, handleOrUrl: context.channel.handleOrUrl },
+        channel: {
+          channelId: context.channel.channelId,
+          handleOrUrl: context.channel.handleOrUrl,
+          // BL-163: the entry's activity (newest upload, inactive, pause).
+          activity: {
+            latestUploadPublishedAt: context.channel.latestUploadPublishedAt,
+            inactive: context.channel.inactive,
+            pausedAt: context.channel.pausedAt,
+            pausedReason: context.channel.pausedReason,
+          },
+        },
         evidenceCount: context.evidence.length,
         channelSnapshots: context.channelSnapshots,
         videoSnapshots: context.videoSnapshots,

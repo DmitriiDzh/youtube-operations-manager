@@ -9,7 +9,7 @@ import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import type { BatchItem } from "drizzle-orm/batch";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -675,8 +675,9 @@ export const channelRecordAssignments = sqliteTable(
  * (which an explicit-id `channel_sync` can overwrite). At most one non-revoked row per channel
  * (one agent = one channel, owner decision): issuing a new token revokes the previous one.
  *
- * Device-local: NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway` -- an agent is
- * configured per machine, the same reasoning as `agent_connections`.
+ * NOT in `SNAPSHOT_TRANSFERRED_TABLES`. Since BL-160 (ADR 0033) the `agent-tokens` sync-gateway family
+ * shares the hashes (never the tokens) with the owner's other devices and `src/lib/agent-token-sync`
+ * fills this table from theirs; a snapshot never does, so it cannot roll a revocation back.
  */
 export const agentChannelTokens = sqliteTable("agent_channel_tokens", {
   id: text("id").primaryKey(),
@@ -824,6 +825,11 @@ export const mediaSessions = sqliteTable(
     capacityWaitUntil: integer("capacity_wait_until", { mode: "timestamp" }),
     /** Schema v66 (BL-143, ADR 0029): the generation plan this session works for (its whole cost counts there). */
     planId: text("plan_id"),
+    // Schema v71 (BL-159, FO-REQ-0011): the session's own minimum host CUDA (call or template), the minimum the last
+    // placement used (the higher of it and the owner's setting), and the current pod's host CUDA (null until known).
+    minCudaVersion: text("min_cuda_version"),
+    usedMinCudaVersion: text("used_min_cuda_version"),
+    hostCudaVersion: text("host_cuda_version"),
   },
   (table) => [index("media_sessions_open_slot_idx").on(table.openSlot), index("media_sessions_status_idx").on(table.status)]
 );
@@ -859,6 +865,8 @@ export const mediaWorkflowTemplates = sqliteTable("media_workflow_templates", {
   modelsJson: text("models_json"),
   /** Schema v64 (BL-133): a registry template's GPU plan `{ candidates, minVramGb, maxPricePerHr }`. */
   gpuJson: text("gpu_json"),
+  /** Schema v71 (BL-159): the lowest host CUDA version a registry template needs. */
+  minCudaVersion: text("min_cuda_version"),
 });
 
 export const MEDIA_JOB_STATUSES = ["queued", "submitted", "generating", "transferring", "done", "failed", "cancelled"] as const;
@@ -928,6 +936,8 @@ export const mediaCapacityAttempts = sqliteTable(
     pricePerHr: real("price_per_hr"),
     result: text("result").notNull(),
     detail: text("detail"),
+    /** Schema v71 (BL-159): on a `placed` entry, the host's CUDA version once known. */
+    hostCudaVersion: text("host_cuda_version"),
   },
   (table) => [index("media_capacity_attempts_at_idx").on(table.at)]
 );
@@ -1020,6 +1030,69 @@ export const generationPlanPeerVerdicts = sqliteTable(
   (table) => [index("generation_plan_peer_verdicts_at_idx").on(table.at)]
 );
 
+/**
+ * Schema v73 (BL-162, FO-REQ-0013 §2.3): wave notes the owner wrote on THIS device for plans owned by ANOTHER device. They
+ * travel in this device's generation plans report (version 3); the owning device applies them. `note` null = cleared.
+ */
+export const generationPlanPeerGroupNotes = sqliteTable(
+  "generation_plan_peer_group_notes",
+  {
+    noteId: text("note_id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    ownerDeviceId: text("owner_device_id").notNull(),
+    groupId: text("group_id").notNull(),
+    note: text("note"),
+    at: text("at").notNull(),
+  },
+  (table) => [index("generation_plan_peer_group_notes_at_idx").on(table.at)]
+);
+
+/**
+ * Schema v69 (BL-157, SERVERS_MEDIA_PLAN.md AC-TC-05): every owner verdict on THIS device's plans, given here or applied from
+ * another device -- the result row keeps only the newest, this keeps them all, with the device each was given on. Device-local.
+ */
+export const generationPlanVerdictHistory = sqliteTable(
+  "generation_plan_verdict_history",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    planId: text("plan_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    attemptRef: text("attempt_ref").notNull(),
+    result: text("result").notNull(),
+    rating: integer("rating"),
+    reasonsJson: text("reasons_json"),
+    markersJson: text("markers_json"),
+    note: text("note"),
+    /** The computer it was given on (its host name, else its device id). */
+    device: text("device").notNull(),
+    /** When the owner gave it (that device's clock), ISO. */
+    at: text("at").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("generation_plan_verdict_history_plan_idx").on(table.planId, table.itemKey, table.attemptRef)]
+);
+
+/**
+ * Schema v70 (BL-157, AC-TC-01/AC-WV-06): this device's "being reviewed here" claims -- a track (`attempt`) or a wave
+ * (`group`) of a plan owned by `owner_device_id` (this device's own id for its own plans). Published in this device's plans
+ * report; advisory, not a lock. Times in ms. Device-local.
+ */
+export const generationPlanReviewClaims = sqliteTable(
+  "generation_plan_review_claims",
+  {
+    claimId: text("claim_id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    ownerDeviceId: text("owner_device_id").notNull(),
+    scope: text("scope", { enum: ["attempt", "group"] }).notNull(),
+    itemKey: text("item_key"),
+    attemptRef: text("attempt_ref"),
+    groupId: text("group_id"),
+    since: integer("since", { mode: "timestamp_ms" }).notNull(),
+    until: integer("until", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("generation_plan_review_claims_plan_idx").on(table.ownerDeviceId, table.planId)]
+);
+
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -1091,7 +1164,7 @@ export const logicalPathValues = sqliteTable(
  * version 60 (51 on dev; renumbered at the Phase 14 merge). The Factory Operator role's own agent token (`ytom_fo_...`): SHA-256 hash only, one active
  * row at a time, NO channel and NO Google identity (unlike `agentChannelTokens`). Deliberately a
  * separate table, so a channel token can never be looked up as a factory token or the reverse.
- * Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway`.
+ * NOT in `SNAPSHOT_TRANSFERRED_TABLES`; shared between devices by the `agent-tokens` family since BL-160 (as `agentChannelTokens`).
  */
 export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
   id: text("id").primaryKey(),
@@ -1101,6 +1174,34 @@ export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
     .notNull()
     .$defaultFn(() => new Date()),
   revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
+ * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3), SCHEMA_MIGRATIONS version 72. The Producer role's own
+ * agent token (`ytom_pr_...`): the same shape and rules as `factoryAgentTokens` (hash only, one active row, no channel, no Google
+ * identity), a separate table so no other token can be looked up as a producer token or the reverse.
+ */
+export const producerAgentTokens = sqliteTable("producer_agent_tokens", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
+ * BL-161, SCHEMA_MIGRATIONS version 72: one row per Producer MCP tool call, allowed or refused (FO-REQ-0012 §2.4: the owner sees
+ * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert.
+ */
+export const producerCallLog = sqliteTable("producer_call_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  at: integer("at", { mode: "timestamp" }).notNull(),
+  tool: text("tool").notNull(),
+  channelId: text("channel_id"),
+  outcome: text("outcome").notNull(),
+  errorCode: text("error_code"),
 });
 
 /**
@@ -1216,6 +1317,95 @@ export const channelMetricsDaily = sqliteTable(
       .$defaultFn(() => new Date()),
   },
   (table) => [primaryKey({ columns: [table.channelId, table.metricDate, table.metricName] })]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 75 (BL-166, FO-REQ-0015 items 1/8, docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): a video's day-7 and day-28
+ * milestone -- the audience-retention curve and the window totals YouTube Analytics returns for publish date .. +6 / +27 (Pacific). One
+ * row per attempted milestone: `collected` (the answer, as returned), `retry` (a failed attempt, retried from `next_attempt_at`) or
+ * `failed` (gave up after the maximum attempts; never queried again). Own-channel Analytics data (Authorized, III.E.4.b), device-local.
+ */
+export const videoMilestones = sqliteTable(
+  "video_milestones",
+  {
+    videoId: text("video_id").notNull(),
+    milestoneDays: integer("milestone_days").notNull(),
+    channelId: text("channel_id").notNull(),
+    windowStart: text("window_start").notNull(),
+    windowEnd: text("window_end").notNull(),
+    status: text("status", { enum: ["collected", "retry", "failed"] }).notNull(),
+    attempts: integer("attempts").notNull(),
+    lastError: text("last_error"),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp" }),
+    collectedAt: integer("collected_at", { mode: "timestamp" }),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+    averageViewDuration: real("average_view_duration"),
+    averageViewPercentage: real("average_view_percentage"),
+    retentionJson: text("retention_json"),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.videoId, table.milestoneDays] }), index("video_milestones_channel_idx").on(table.channelId)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 77 (BL-168, FO-REQ-0015 item 2, docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md): views and watch minutes per
+ * day per traffic source (`traffic_source`) and per device type (`device_type`), as YouTube Analytics returned them -- for each own
+ * video's first 90 days (`video_breakdown_daily`) and for the channel as a whole (`channel_breakdown_daily`). A day with no row had no
+ * views from that value, or lies outside the stored range (`analytics_breakdown_state`). Own-channel Analytics data (Authorized,
+ * III.E.4.b), device-local.
+ */
+export const videoBreakdownDaily = sqliteTable(
+  "video_breakdown_daily",
+  {
+    videoId: text("video_id").notNull(),
+    breakdown: text("breakdown", { enum: ["traffic_source", "device_type"] }).notNull(),
+    day: text("day").notNull(),
+    value: text("value").notNull(),
+    channelId: text("channel_id").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.videoId, table.breakdown, table.day, table.value] }),
+    index("video_breakdown_daily_channel_idx").on(table.channelId, table.videoId),
+  ]
+);
+
+export const channelBreakdownDaily = sqliteTable(
+  "channel_breakdown_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    breakdown: text("breakdown", { enum: ["traffic_source", "device_type"] }).notNull(),
+    day: text("day").notNull(),
+    value: text("value").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.breakdown, table.day, table.value] })]
+);
+
+/**
+ * v77 (BL-168): what is stored for each subject -- the channel (`subject = 'channel'`) or one video (its id): the range start, the last
+ * collected day and the Pacific date of that collection, and the attempt bookkeeping of the milestones (`retry` from `next_attempt_at`,
+ * `failed` after the maximum attempts, never queried again).
+ */
+export const analyticsBreakdownState = sqliteTable(
+  "analytics_breakdown_state",
+  {
+    channelId: text("channel_id").notNull(),
+    subject: text("subject").notNull(),
+    rangeStart: text("range_start").notNull(),
+    collectedThrough: text("collected_through"),
+    collectedOn: text("collected_on"),
+    collectedAt: integer("collected_at", { mode: "timestamp" }),
+    status: text("status", { enum: ["collected", "retry", "failed"] }).notNull(),
+    attempts: integer("attempts").notNull(),
+    lastError: text("last_error"),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp" }),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.subject] })]
 );
 
 /**
@@ -1468,6 +1658,14 @@ export const researchChannels = sqliteTable("research_channels", {
   videosNextPageToken: text("videos_next_page_token"),
   videosCapAtRun: integer("videos_cap_at_run"),
   videosPublishedAfterAtRun: text("videos_published_after_at_run"),
+  // SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014): a paused entry is never collected. Set by the owner, or by the inactivity
+  // detector (`inactive`: no upload for the configured months); cleared only by the owner ("Resume"). Stored state -- the
+  // detector only ever sets it, so a pause outlives the 30-day retention that erases the date it was based on.
+  pausedAt: integer("paused_at", { mode: "timestamp" }),
+  pausedReason: text("paused_reason", { enum: ["inactive", "owner"] }),
+  // When the owner last resumed it: the detector does not pause it again for the same silence (an upload newer than this resume
+  // that then goes quiet again does count).
+  resumedAt: integer("resumed_at", { mode: "timestamp" }),
 });
 
 /**
@@ -1919,6 +2117,39 @@ export const marketResearchRequests = sqliteTable(
     executionError: text("execution_error"),
   },
   (table) => [index("market_research_requests_status_idx").on(table.status)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): a change an agent
+ * (the Producer) or the system proposes to the watchlist or the hypotheses, for one of our channels. Nothing changes until the owner
+ * approves it in the Web UI; the system then applies it. `dedupe_key` is set only while pending (a unique index; SQLite lets many rows hold NULL), so the
+ * same pending proposal is never created twice -- also when two computers evaluate inactivity. No FK (like
+ * `channel_record_assignments`): `target_id` names a watchlist entry, `channel_id` one of our channels.
+ */
+export const agentProposals = sqliteTable(
+  "agent_proposals",
+  {
+    id: text("id").primaryKey(),
+    source: text("source", { enum: ["producer", "system"] }).notNull(),
+    kind: text("kind").notNull(),
+    channelId: text("channel_id"),
+    targetId: text("target_id"),
+    payloadJson: text("payload_json").notNull(),
+    text: text("text").notNull(),
+    status: text("status", { enum: ["pending", "applied", "rejected", "failed"] }).notNull().default("pending"),
+    dedupeKey: text("dedupe_key"),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    decidedAt: integer("decided_at", { mode: "timestamp" }),
+    decidedBy: text("decided_by"),
+    rejectComment: text("reject_comment"),
+    applyError: text("apply_error"),
+    doneAt: integer("done_at", { mode: "timestamp" }),
+  },
+  (table) => [index("agent_proposals_status_idx").on(table.status), uniqueIndex("agent_proposals_pending_dedupe_idx").on(table.dedupeKey)]
 );
 
 /**
@@ -3638,6 +3869,227 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 69,
+    description:
+      "generation_plan_verdict_history -- BL-157 (FO-REQ-0009 §6.4): every owner verdict on this device's plans with the device it was given on (the result row keeps only the newest). Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_verdict_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        attempt_ref TEXT NOT NULL,
+        result TEXT NOT NULL,
+        rating INTEGER,
+        reasons_json TEXT,
+        markers_json TEXT,
+        note TEXT,
+        device TEXT NOT NULL,
+        at TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_verdict_history_plan_idx ON generation_plan_verdict_history (plan_id, item_key, attempt_ref)");
+    },
+  },
+  {
+    version: 70,
+    description:
+      "generation_plan_review_claims -- BL-157 (FO-REQ-0009 §6.1/§7.3): this device's 'being reviewed here' claims on a track or a wave, published in its plans report (advisory). Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_review_claims (
+        claim_id TEXT PRIMARY KEY NOT NULL,
+        plan_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        item_key TEXT,
+        attempt_ref TEXT,
+        group_id TEXT,
+        since INTEGER NOT NULL,
+        until INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_review_claims_plan_idx ON generation_plan_review_claims (owner_device_id, plan_id)");
+    },
+  },
+  {
+    version: 71,
+    description:
+      "media_sessions.min_cuda_version/used_min_cuda_version/host_cuda_version + media_capacity_attempts.host_cuda_version + media_workflow_templates.min_cuda_version -- BL-159 (FO-REQ-0011, docs/roadmap/plans/PER_SESSION_CUDA_PLAN.md): a session's or template's own minimum host CUDA (only raising the owner's setting) and the host's CUDA shown. Additive nullable columns, device-local",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE media_sessions ADD COLUMN min_cuda_version TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN used_min_cuda_version TEXT",
+        "ALTER TABLE media_sessions ADD COLUMN host_cuda_version TEXT",
+        "ALTER TABLE media_capacity_attempts ADD COLUMN host_cuda_version TEXT",
+        "ALTER TABLE media_workflow_templates ADD COLUMN min_cuda_version TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 72,
+    description:
+      "producer_agent_tokens + producer_call_log -- BL-161 (FO-REQ-0012, docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3): the read-only Producer role's own agent token (SHA-256 hash only, one active, no channel; shared between devices by the agent-tokens family, BL-160) and its device-local per-call log. Additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS producer_agent_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS producer_agent_tokens_one_active_idx ON producer_agent_tokens((1)) WHERE revoked_at IS NULL"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS producer_call_log (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "at INTEGER NOT NULL, " +
+          "tool TEXT NOT NULL, " +
+          "channel_id TEXT, " +
+          "outcome TEXT NOT NULL, " +
+          "error_code TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS producer_call_log_at_idx ON producer_call_log (at)");
+    },
+  },
+  {
+    version: 73,
+    description:
+      "generation_plan_peer_group_notes -- BL-162 (FO-REQ-0013 §2.3, docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md §5.2): wave notes written on this device for another device's generation plans, carried in this device's plans report (version 3) until that device applies them. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_peer_group_notes (
+        note_id TEXT PRIMARY KEY NOT NULL,
+        plan_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        note TEXT,
+        at TEXT NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_group_notes_at_idx ON generation_plan_peer_group_notes (at)");
+    },
+  },
+  {
+    version: 74,
+    description:
+      "research_channels.paused_at/paused_reason/resumed_at + agent_proposals -- BL-163 (FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md): a paused watchlist entry is never collected; agent/system proposals to the watchlist and hypotheses wait for the owner's approval. Additive; existing rows are not paused",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE research_channels ADD COLUMN paused_at INTEGER",
+        "ALTER TABLE research_channels ADD COLUMN paused_reason TEXT",
+        "ALTER TABLE research_channels ADD COLUMN resumed_at INTEGER",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute(`CREATE TABLE IF NOT EXISTS agent_proposals (
+        id TEXT PRIMARY KEY NOT NULL,
+        source TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        channel_id TEXT,
+        target_id TEXT,
+        payload_json TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        dedupe_key TEXT,
+        created_via TEXT NOT NULL,
+        agent_api_version TEXT,
+        created_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_by TEXT,
+        reject_comment TEXT,
+        apply_error TEXT,
+        done_at INTEGER
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS agent_proposals_status_idx ON agent_proposals (status)");
+      // NULL keys never collide in SQLite, so only pending rows (which carry the key) are unique.
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS agent_proposals_pending_dedupe_idx ON agent_proposals (dedupe_key)");
+    },
+  },
+  {
+    version: 75,
+    description:
+      "video_milestones -- BL-166 (FO-REQ-0015 items 1/8, docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): each video's day-7 and day-28 retention curve and window totals from YouTube Analytics, with per-milestone attempts. Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_milestones (
+        video_id TEXT NOT NULL,
+        milestone_days INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        window_start TEXT NOT NULL,
+        window_end TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_error TEXT,
+        next_attempt_at INTEGER,
+        collected_at INTEGER,
+        views REAL,
+        estimated_minutes_watched REAL,
+        average_view_duration REAL,
+        average_view_percentage REAL,
+        retention_json TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (video_id, milestone_days)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_milestones_channel_idx ON video_milestones (channel_id)");
+    },
+  },
+  {
+    version: 76,
+    description:
+      "video_milestones -- BL-166 fix: milestones collected before the curve query was corrected got no curve (YouTube returns no rows for the five-metric query); collected rows without a curve are removed so they are collected again. Data only",
+    apply: async (client) => {
+      await client.execute("DELETE FROM video_milestones WHERE status = 'collected' AND (retention_json IS NULL OR retention_json = '[]')");
+    },
+  },
+  {
+    version: 77,
+    description:
+      "video_breakdown_daily, channel_breakdown_daily, analytics_breakdown_state -- BL-168 (FO-REQ-0015 item 2, docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md): traffic sources and devices per day for each own video's first 90 days and for the channel, with what is stored per subject. Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_breakdown_daily (
+        video_id TEXT NOT NULL,
+        breakdown TEXT NOT NULL,
+        day TEXT NOT NULL,
+        value TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (video_id, breakdown, day, value)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_breakdown_daily_channel_idx ON video_breakdown_daily (channel_id, video_id)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_breakdown_daily (
+        channel_id TEXT NOT NULL,
+        breakdown TEXT NOT NULL,
+        day TEXT NOT NULL,
+        value TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (channel_id, breakdown, day, value)
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS analytics_breakdown_state (
+        channel_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        range_start TEXT NOT NULL,
+        collected_through TEXT,
+        collected_on TEXT,
+        collected_at INTEGER,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_error TEXT,
+        next_attempt_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, subject)
+      )`);
     },
   },
 ];
@@ -5701,6 +6153,197 @@ export async function listActiveFactoryAgentTokens(database: AppDb = db): Promis
   return database.select(factoryAgentTokenColumns).from(factoryAgentTokens).where(isNull(factoryAgentTokens.revokedAt));
 }
 
+// BL-161: the Producer role's token -- the same four operations as the factory token's, on its own table.
+
+export type StoredProducerAgentToken = StoredFactoryAgentToken;
+
+const producerAgentTokenColumns = {
+  id: producerAgentTokens.id,
+  label: producerAgentTokens.label,
+  createdAt: producerAgentTokens.createdAt,
+  revokedAt: producerAgentTokens.revokedAt,
+};
+
+/** Revokes any active producer token and inserts the new one in ONE transaction (at most one active, also by index). */
+export async function replaceProducerAgentToken(
+  input: { id: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx.update(producerAgentTokens).set({ revokedAt: now }).where(isNull(producerAgentTokens.revokedAt));
+    await tx.insert(producerAgentTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when there was no active token). */
+export async function revokeProducerAgentTokens(database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(producerAgentTokens)
+    .set({ revokedAt: new Date() })
+    .where(isNull(producerAgentTokens.revokedAt))
+    .returning({ id: producerAgentTokens.id });
+  return revoked.length;
+}
+
+export async function findActiveProducerAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredProducerAgentToken | null> {
+  const rows = await database
+    .select(producerAgentTokenColumns)
+    .from(producerAgentTokens)
+    .where(and(eq(producerAgentTokens.tokenHash, tokenHash), isNull(producerAgentTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function findProducerAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredProducerAgentToken | null> {
+  const rows = await database
+    .select(producerAgentTokenColumns)
+    .from(producerAgentTokens)
+    .where(eq(producerAgentTokens.tokenHash, tokenHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveProducerAgentTokens(database: AppDb = db): Promise<StoredProducerAgentToken[]> {
+  return database.select(producerAgentTokenColumns).from(producerAgentTokens).where(isNull(producerAgentTokens.revokedAt));
+}
+
+// BL-160 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §2): the three agent token tables as one list of records, and one transaction
+// that applies what `src/lib/agent-token-sync` decided from the other devices' reports. The hashes leave this layer; the tokens
+// themselves are never stored anywhere.
+
+export type AgentTokenSyncRole = "channel" | "factory" | "producer";
+
+export type AgentTokenSyncRow = {
+  role: AgentTokenSyncRole;
+  tokenHash: string;
+  channelId: string | null;
+  userId: string | null;
+  label: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+};
+
+export async function listAgentTokenRowsForSync(database: AppDb = db): Promise<AgentTokenSyncRow[]> {
+  const [channel, factory, producer] = await Promise.all([
+    database
+      .select({ tokenHash: agentChannelTokens.tokenHash, channelId: agentChannelTokens.channelId, userId: agentChannelTokens.userId, label: agentChannelTokens.label, createdAt: agentChannelTokens.createdAt, revokedAt: agentChannelTokens.revokedAt })
+      .from(agentChannelTokens),
+    database
+      .select({ tokenHash: factoryAgentTokens.tokenHash, label: factoryAgentTokens.label, createdAt: factoryAgentTokens.createdAt, revokedAt: factoryAgentTokens.revokedAt })
+      .from(factoryAgentTokens),
+    database
+      .select({ tokenHash: producerAgentTokens.tokenHash, label: producerAgentTokens.label, createdAt: producerAgentTokens.createdAt, revokedAt: producerAgentTokens.revokedAt })
+      .from(producerAgentTokens),
+  ]);
+  return [
+    ...channel.map((row) => ({ role: "channel" as const, ...row })),
+    ...factory.map((row) => ({ role: "factory" as const, channelId: null, userId: null, ...row })),
+    ...producer.map((row) => ({ role: "producer" as const, channelId: null, userId: null, ...row })),
+  ];
+}
+
+/**
+ * Applies a sync decision in ONE transaction: revocations first (only rows still active -- a revoked row is never touched
+ * again), then the learned tokens. Ordered so the one-active indexes of the role tables never see two active rows. A learned hash
+ * that meanwhile exists here (issued or imported concurrently) is left as it is.
+ */
+export async function applyAgentTokenSyncPlan(
+  plan: {
+    revoke: Array<{ role: AgentTokenSyncRole; tokenHash: string; revokedAt: Date }>;
+    insert: Array<AgentTokenSyncRow & { id: string }>;
+    /** Local rows another device knows as created earlier: only ever moved earlier, never later. */
+    redate?: Array<{ role: AgentTokenSyncRole; tokenHash: string; createdAt: Date }>;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const redate = plan.redate ?? [];
+  if (plan.revoke.length === 0 && plan.insert.length === 0 && redate.length === 0) return;
+  await database.transaction(async (tx) => {
+    for (const item of redate) {
+      const table = item.role === "channel" ? agentChannelTokens : item.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      await tx.update(table).set({ createdAt: item.createdAt }).where(and(eq(table.tokenHash, item.tokenHash), gt(table.createdAt, item.createdAt)));
+    }
+    for (const item of plan.revoke) {
+      const table = item.role === "channel" ? agentChannelTokens : item.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      await tx.update(table).set({ revokedAt: item.revokedAt }).where(and(eq(table.tokenHash, item.tokenHash), isNull(table.revokedAt)));
+    }
+    for (const row of plan.insert) {
+      const table = row.role === "channel" ? agentChannelTokens : row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      // A learned hash that meanwhile exists here (issued or imported concurrently) is left exactly as it is -- in particular it must
+      // never be measured against itself below and revoke itself (review round 3).
+      const [known] = await tx.select({ tokenHash: table.tokenHash }).from(table).where(eq(table.tokenHash, row.tokenHash)).limit(1);
+      if (known) continue;
+      let revokedAt = row.revokedAt;
+      // The plan was computed before this transaction: a token issued, imported or rotated here meanwhile may now be active in the
+      // same slot. Rule 3 again, inside the transaction (review round 2): the newer one stays active, the other is revoked as of its
+      // `createdAt` -- so the one-active indexes never trip and a channel never has two active tokens.
+      if (revokedAt === null) {
+        const slot = row.role === "channel" ? and(isNull(table.revokedAt), eq(agentChannelTokens.channelId, row.channelId ?? "")) : isNull(table.revokedAt);
+        const [current] = await tx.select({ tokenHash: table.tokenHash, createdAt: table.createdAt }).from(table).where(slot).limit(1);
+        if (current) {
+          const currentWins =
+            current.createdAt.getTime() > row.createdAt.getTime() ||
+            (current.createdAt.getTime() === row.createdAt.getTime() && current.tokenHash > row.tokenHash);
+          if (currentWins) {
+            revokedAt = current.createdAt;
+          } else {
+            await tx.update(table).set({ revokedAt: row.createdAt }).where(and(eq(table.tokenHash, current.tokenHash), isNull(table.revokedAt)));
+          }
+        }
+      }
+      const base = { id: row.id, tokenHash: row.tokenHash, label: row.label, createdAt: row.createdAt, revokedAt };
+      if (row.role === "channel") {
+        if (row.channelId === null || row.userId === null) throw new Error("a channel token needs its channel and Google account");
+        await tx.insert(agentChannelTokens).values({ ...base, channelId: row.channelId, userId: row.userId }).onConflictDoNothing({ target: agentChannelTokens.tokenHash });
+      } else {
+        const roleTable = row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+        await tx.insert(roleTable).values(base).onConflictDoNothing({ target: roleTable.tokenHash });
+      }
+    }
+  });
+}
+
+export type ProducerCallLogEntry = {
+  id: number;
+  at: Date;
+  tool: string;
+  channelId: string | null;
+  outcome: "ok" | "error";
+  errorCode: string | null;
+};
+
+/** How long a Producer call stays in the log (BL-161). */
+export const PRODUCER_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
+
+/** BL-161: records one Producer tool call and drops rows older than the retention, in one transaction. */
+export async function insertProducerCallLogEntry(
+  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.insert(producerCallLog).values(entry);
+    await tx.delete(producerCallLog).where(lt(producerCallLog.at, new Date(entry.at.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)));
+  });
+}
+
+/** BL-161: the newest Producer calls first, within the retention (a row past it is gone even if no call has pruned it yet). */
+export async function listProducerCallLogEntries(limit: number, database: AppDb = db, now: Date = new Date()): Promise<ProducerCallLogEntry[]> {
+  const rows = await database
+    .select()
+    .from(producerCallLog)
+    .where(gte(producerCallLog.at, new Date(now.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)))
+    .orderBy(desc(producerCallLog.at), desc(producerCallLog.id))
+    .limit(limit);
+  return rows.map((row) => ({ ...row, outcome: row.outcome === "ok" ? "ok" : "error" }));
+}
+
 export type GatewayTrafficCategory =
   | "data_api_reads"
   | "analytics_reads"
@@ -5804,9 +6447,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;
@@ -7987,12 +8630,23 @@ export type MediaControlEventRow = { id: number; at: Date; actor: string; action
 
 /** BL-132: appends one audit row (model pull/cancel/delete, template install/update/remove/sync). Never updated or deleted. */
 /** BL-133: one createPod attempt; rows older than 90 days are pruned on the way. */
+/** Returns the new row's id (BL-159: the host's CUDA is written onto that `placed` row once known). */
 export async function insertMediaCapacityAttempt(
-  row: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: string; detail: string | null },
+  row: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: string; detail: string | null; hostCudaVersion?: string | null },
   database: AppDb = db
-): Promise<void> {
-  await database.insert(mediaCapacityAttempts).values(row);
-  await database.delete(mediaCapacityAttempts).where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)));
+): Promise<number> {
+  const [inserted] = await database.insert(mediaCapacityAttempts).values(row).returning({ id: mediaCapacityAttempts.id });
+  // The prune is housekeeping: its failure must not hide the new row's id (BL-159 writes the host's CUDA onto it later).
+  await database
+    .delete(mediaCapacityAttempts)
+    .where(lt(mediaCapacityAttempts.at, new Date(row.at.getTime() - 90 * 24 * 60 * 60 * 1000)))
+    .catch(() => undefined);
+  return inserted.id;
+}
+
+/** BL-159: the host's CUDA version, once the host check reads it, on that placement's own capacity-log row. */
+export async function setMediaCapacityAttemptHostCuda(id: number, hostCudaVersion: string, database: AppDb = db): Promise<void> {
+  await database.update(mediaCapacityAttempts).set({ hostCudaVersion }).where(eq(mediaCapacityAttempts.id, id));
 }
 
 /** Newest first, optionally since a time and for one GPU type. */
@@ -8284,7 +8938,7 @@ export async function listMediaWorkflowTemplates(database: AppDb = db): Promise<
  * taken by a local template.
  */
 export async function upsertFactoryMediaWorkflowTemplate(
-  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null },
+  row: { id: string; name: string; description: string | null; version: number; workflowJson: string; parametersJson: string; outputNodeIdsJson: string; nodeCount: number; registrySha256: string; modelsJson: string; gpuJson: string | null; minCudaVersion: string | null },
   database: AppDb = db
 ): Promise<StoredMediaWorkflowTemplate | null> {
   const now = new Date();
@@ -8480,6 +9134,52 @@ export async function listGenerationPlanPeerVerdicts(sinceIso: string, database:
   return rows.reverse();
 }
 
+export type StoredGenerationPlanPeerGroupNote = typeof generationPlanPeerGroupNotes.$inferSelect;
+
+/** BL-162: one wave note written here for another device's plan. */
+export async function insertGenerationPlanPeerGroupNote(row: typeof generationPlanPeerGroupNotes.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanPeerGroupNotes).values(row);
+}
+
+/** The peer wave notes written since `sinceIso` (newest 1000), oldest first; older ones are deleted (kept 30 days by the caller). */
+export async function listGenerationPlanPeerGroupNotes(sinceIso: string, database: AppDb = db): Promise<StoredGenerationPlanPeerGroupNote[]> {
+  await database.delete(generationPlanPeerGroupNotes).where(lt(generationPlanPeerGroupNotes.at, sinceIso));
+  const rows = await database.select().from(generationPlanPeerGroupNotes).orderBy(desc(generationPlanPeerGroupNotes.at)).limit(1000);
+  return rows.reverse();
+}
+
+export type StoredGenerationPlanVerdictHistory = typeof generationPlanVerdictHistory.$inferSelect;
+
+/** BL-157 (AC-TC-05): one owner verdict appended to the plan's verdict history. */
+export async function insertGenerationPlanVerdictHistory(row: typeof generationPlanVerdictHistory.$inferInsert, database: AppDb = db): Promise<void> {
+  await database.insert(generationPlanVerdictHistory).values(row);
+}
+
+/** A plan's verdict history, oldest first (by the time given, then the order recorded). */
+export async function listGenerationPlanVerdictHistory(planId: string, database: AppDb = db): Promise<StoredGenerationPlanVerdictHistory[]> {
+  return database.select().from(generationPlanVerdictHistory).where(eq(generationPlanVerdictHistory.planId, planId)).orderBy(asc(generationPlanVerdictHistory.at), asc(generationPlanVerdictHistory.id)).limit(20_000);
+}
+
+export type StoredGenerationPlanReviewClaim = typeof generationPlanReviewClaims.$inferSelect;
+
+/** BL-157 (AC-TC-01): sets this device's claim (one per id; the caller decides the id, so a track claim moves in place). */
+export async function upsertGenerationPlanReviewClaim(row: typeof generationPlanReviewClaims.$inferInsert, database: AppDb = db): Promise<void> {
+  await database
+    .insert(generationPlanReviewClaims)
+    .values(row)
+    .onConflictDoUpdate({ target: generationPlanReviewClaims.claimId, set: { planId: row.planId, ownerDeviceId: row.ownerDeviceId, scope: row.scope, itemKey: row.itemKey ?? null, attemptRef: row.attemptRef ?? null, groupId: row.groupId ?? null, since: row.since, until: row.until } });
+}
+
+export async function deleteGenerationPlanReviewClaim(claimId: string, database: AppDb = db): Promise<void> {
+  await database.delete(generationPlanReviewClaims).where(eq(generationPlanReviewClaims.claimId, claimId));
+}
+
+/** This device's live claims (expired ones are deleted first). */
+export async function listGenerationPlanReviewClaims(now: Date, database: AppDb = db): Promise<StoredGenerationPlanReviewClaim[]> {
+  await database.delete(generationPlanReviewClaims).where(lte(generationPlanReviewClaims.until, now));
+  return database.select().from(generationPlanReviewClaims).orderBy(asc(generationPlanReviewClaims.since)).limit(200);
+}
+
 /** Every job of a plan (no limit beyond a safety cap: a plan has at most a few thousand attempts). */
 export async function listMediaJobsByPlan(planId: string, database: AppDb = db): Promise<StoredMediaJob[]> {
   return database.select().from(mediaJobs).where(eq(mediaJobs.planId, planId)).orderBy(asc(mediaJobs.createdAt)).limit(10_000);
@@ -8588,6 +9288,10 @@ export type StoredResearchChannel = {
   videosNextPageToken: string | null;
   videosCapAtRun: number | null;
   videosPublishedAfterAtRun: string | null;
+  // BL-163 (FO-REQ-0014 §A).
+  pausedAt: Date | null;
+  pausedReason: "inactive" | "owner" | null;
+  resumedAt: Date | null;
 };
 
 export async function insertResearchChannel(
@@ -8703,8 +9407,548 @@ export async function deleteResearchChannel(id: string, database: AppDb = db): P
     await tx
       .delete(marketDiscoveryCandidates)
       .where(and(eq(marketDiscoveryCandidates.id, id), eq(marketDiscoveryCandidates.status, "promoted")));
+    // BL-163 (FO-REQ-0014 §B, AC-WH-05): "delete completely" -- the entry's links to our channels go too (they were left behind),
+    // and so does any pending proposal about it (it could only fail now). Decided proposals stay, as the record of the decision.
+    await tx.delete(channelRecordAssignments).where(and(eq(channelRecordAssignments.recordKind, "research_channel"), eq(channelRecordAssignments.recordId, id)));
+    await tx.delete(agentProposals).where(and(eq(agentProposals.targetId, id), eq(agentProposals.status, "pending")));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
+}
+
+// ---------------------------------------------------------------------------
+// BL-163 (FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md): watchlist pause, newest uploads, agent proposals.
+// ---------------------------------------------------------------------------
+
+/**
+ * Each watchlist entry's newest known upload: `MAX(published_at)` of its retained video snapshots (API rows only within the
+ * retention window, like every other read). An entry with none is absent -- never guessed.
+ */
+export async function listLatestUploadDates(database: AppDb = db): Promise<Map<string, Date>> {
+  const rows = await database
+    .select({ researchChannelId: marketVideoSnapshots.researchChannelId, latest: sql<number | null>`MAX(${marketVideoSnapshots.publishedAt})` })
+    .from(marketVideoSnapshots)
+    .where(or(gte(marketVideoSnapshots.observedAt, apiRetentionCutoff()), notInArray(marketVideoSnapshots.source, API_SNAPSHOT_SOURCES)))
+    .groupBy(marketVideoSnapshots.researchChannelId);
+  const out = new Map<string, Date>();
+  for (const row of rows) {
+    const seconds = row.latest === null ? NaN : Number(row.latest);
+    if (Number.isFinite(seconds)) out.set(row.researchChannelId, new Date(seconds * 1000));
+  }
+  return out;
+}
+
+/** The owner's pause, or resume (`pause: null`, stamped `resumedAt = at`). A resume clears any reason. */
+export async function setResearchChannelPause(id: string, pause: { at: Date; reason: "inactive" | "owner" } | null, at: Date = new Date(), database: AppDb = db): Promise<boolean> {
+  // Only a state change is written: pausing a paused entry keeps its original date and reason, and resuming an active entry
+  // stamps no `resumedAt` (which would otherwise shield its current silence from the detector, AC-WH-04).
+  const rows = await database
+    .update(researchChannels)
+    .set(pause ? { pausedAt: pause.at, pausedReason: pause.reason } : { pausedAt: null, pausedReason: null, resumedAt: at })
+    .where(and(eq(researchChannels.id, id), pause ? isNull(researchChannels.pausedAt) : isNotNull(researchChannels.pausedAt)))
+    .returning({ id: researchChannels.id });
+  if (rows.length > 0) return true;
+  return (await database.select({ id: researchChannels.id }).from(researchChannels).where(eq(researchChannels.id, id)).limit(1)).length > 0;
+}
+
+export type NewAgentProposal = Omit<typeof agentProposals.$inferInsert, "status" | "decidedAt" | "decidedBy" | "rejectComment" | "applyError" | "doneAt">;
+export type StoredAgentProposal = typeof agentProposals.$inferSelect;
+
+/**
+ * Inserts a pending proposal unless one with the same `dedupeKey` is already pending (the unique index on a key only pending rows hold): then nothing is
+ * written and that pending one is returned with `created: false`.
+ */
+export async function insertAgentProposal(row: NewAgentProposal, database: AppDb = db): Promise<{ proposal: StoredAgentProposal; created: boolean }> {
+  // A second attempt covers the duplicate being decided (its key released) between the conflict and the read.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const inserted = await database.insert(agentProposals).values({ ...row, status: "pending" }).onConflictDoNothing().returning();
+    if (inserted.length > 0) return { proposal: inserted[0], created: true };
+    const existing = row.dedupeKey ? (await database.select().from(agentProposals).where(eq(agentProposals.dedupeKey, row.dedupeKey)).limit(1))[0] : undefined;
+    if (existing) return { proposal: existing, created: false };
+  }
+  throw new Error(`Proposal ${row.id} was not stored and no pending duplicate was found`);
+}
+
+/**
+ * AC-WH-02: the inactivity detector's one step for an entry -- pause it (only if not paused yet) and file the system's deletion
+ * proposal, in one transaction. Returns whether it paused it.
+ */
+export async function pauseInactiveResearchChannel(args: { researchChannelId: string; at: Date; proposal: NewAgentProposal }, database: AppDb = db): Promise<boolean> {
+  return database.transaction(async (tx) => {
+    const paused = await tx
+      .update(researchChannels)
+      .set({ pausedAt: args.at, pausedReason: "inactive" })
+      .where(and(eq(researchChannels.id, args.researchChannelId), isNull(researchChannels.pausedAt)))
+      .returning({ id: researchChannels.id });
+    if (paused.length === 0) return false;
+    await tx.insert(agentProposals).values({ ...args.proposal, status: "pending" }).onConflictDoNothing();
+    return true;
+  });
+}
+
+export async function getAgentProposal(id: string, database: AppDb = db): Promise<StoredAgentProposal | null> {
+  return (await database.select().from(agentProposals).where(eq(agentProposals.id, id)).limit(1))[0] ?? null;
+}
+
+/**
+ * Newest first. `source`/`channelId`/`status` narrow it (`decided`: every status but pending); `includeDone: false` leaves out the
+ * ones the proposer marked done; `decidedSince` leaves out decided ones decided before it (kept until the next purge, never shown).
+ */
+export async function listAgentProposals(
+  filter: {
+    source?: "producer" | "system";
+    channelId?: string;
+    status?: StoredAgentProposal["status"] | "decided";
+    includeDone?: boolean;
+    decidedSince?: Date;
+    limit?: number;
+  } = {},
+  database: AppDb = db
+): Promise<StoredAgentProposal[]> {
+  const conditions = [];
+  if (filter.source) conditions.push(eq(agentProposals.source, filter.source));
+  if (filter.channelId) conditions.push(eq(agentProposals.channelId, filter.channelId));
+  if (filter.status === "decided") conditions.push(ne(agentProposals.status, "pending"));
+  else if (filter.status) conditions.push(eq(agentProposals.status, filter.status));
+  if (filter.includeDone === false) conditions.push(isNull(agentProposals.doneAt));
+  if (filter.decidedSince) conditions.push(or(eq(agentProposals.status, "pending"), gte(agentProposals.decidedAt, filter.decidedSince))!);
+  return database
+    .select()
+    .from(agentProposals)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(agentProposals.createdAt))
+    .limit(filter.limit ?? 500);
+}
+
+/**
+ * The owner's decision, atomic: only a pending proposal moves (`pending -> applied | rejected`), its dedupe key is released. `null`
+ * = it was not pending any more (decided elsewhere, or deleted with its entry).
+ */
+export async function decideAgentProposal(
+  id: string,
+  decision: { status: "applied" | "rejected"; at: Date; by: string; rejectComment?: string | null },
+  database: AppDb = db
+): Promise<StoredAgentProposal | null> {
+  const rows = await database
+    .update(agentProposals)
+    .set({ status: decision.status, decidedAt: decision.at, decidedBy: decision.by, rejectComment: decision.rejectComment ?? null, dedupeKey: null })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** How many proposals wait for the owner (the inbox badge), counted in SQL, not from a capped list. */
+export async function countPendingAgentProposals(database: AppDb = db): Promise<number> {
+  const [row] = await database.select({ n: sql<number>`count(*)` }).from(agentProposals).where(eq(agentProposals.status, "pending"));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * A claimed proposal whose change turned out not to be makeable for a reason that is not the proposal's fault (the owner switched
+ * channel in between): back to pending, as if never decided. Only from `applied`.
+ */
+export async function reopenAgentProposal(id: string, database: AppDb = db): Promise<void> {
+  await database
+    .update(agentProposals)
+    .set({ status: "pending", decidedAt: null, decidedBy: null })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "applied")));
+}
+
+/** An approved proposal whose change could not be made: `failed` with the error (never retried silently). */
+export async function failAgentProposal(id: string, error: string, database: AppDb = db): Promise<void> {
+  await database
+    .update(agentProposals)
+    .set({ status: "failed", applyError: error.slice(0, 2000) })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "applied")));
+}
+
+/** The proposer read these decided proposals: marked done (a pending one is never touched). Returns the ids marked. */
+export async function markAgentProposalsDone(ids: string[], at: Date, filter: { source: "producer" | "system" }, database: AppDb = db): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await database
+    .update(agentProposals)
+    .set({ doneAt: at })
+    .where(and(inArray(agentProposals.id, ids), ne(agentProposals.status, "pending"), eq(agentProposals.source, filter.source), isNull(agentProposals.doneAt)))
+    .returning({ id: agentProposals.id });
+  return rows.map((r) => r.id);
+}
+
+/** AC-PR-06: decided proposals leave the store once marked done or `keepMs` after the decision; pending ones never. */
+export async function purgeAgentProposals(now: Date, keepMs: number, database: AppDb = db): Promise<number> {
+  const rows = await database
+    .delete(agentProposals)
+    .where(and(ne(agentProposals.status, "pending"), or(isNotNull(agentProposals.doneAt), lt(agentProposals.decidedAt, new Date(now.getTime() - keepMs)))))
+    .returning({ id: agentProposals.id });
+  return rows.length;
+}
+
+const MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY = "market_intelligence_inactive_after_months";
+export const DEFAULT_INACTIVE_AFTER_MONTHS = 6;
+
+/** BL-163: "inactive after N months without uploads" (default 6; a corrupted value reads as the default). */
+export async function getMarketIntelligenceInactiveAfterMonths(database: AppDb = db): Promise<number> {
+  const raw = await getAppSetting(MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY, database);
+  const parsed = raw === null || raw === "" ? NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : DEFAULT_INACTIVE_AFTER_MONTHS;
+}
+
+export async function setMarketIntelligenceInactiveAfterMonths(months: number, database: AppDb = db): Promise<void> {
+  await setAppSetting(MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY, String(months), database);
+}
+
+export type StoredVideoMilestone = typeof videoMilestones.$inferSelect;
+
+/** BL-166: every attempted milestone of one channel (any status). */
+export async function listVideoMilestones(
+  channelId: string,
+  filter: { videoIds?: string[]; milestoneDays?: number } = {},
+  database: AppDb = db
+): Promise<StoredVideoMilestone[]> {
+  const conditions = [eq(videoMilestones.channelId, channelId)];
+  if (filter.videoIds) conditions.push(inArray(videoMilestones.videoId, filter.videoIds.length > 0 ? filter.videoIds : [""]));
+  if (filter.milestoneDays !== undefined) conditions.push(eq(videoMilestones.milestoneDays, filter.milestoneDays));
+  return database.select().from(videoMilestones).where(and(...conditions)).orderBy(asc(videoMilestones.videoId), asc(videoMilestones.milestoneDays));
+}
+
+/** BL-166 (review): what the collection plans from -- key, window, status and retry time, without the stored curve. */
+export async function listVideoMilestoneStates(
+  channelId: string,
+  database: AppDb = db
+): Promise<Array<{ videoId: string; milestoneDays: number; windowStart: string; windowEnd: string; status: StoredVideoMilestone["status"]; nextAttemptAt: Date | null }>> {
+  return database
+    .select({
+      videoId: videoMilestones.videoId,
+      milestoneDays: videoMilestones.milestoneDays,
+      windowStart: videoMilestones.windowStart,
+      windowEnd: videoMilestones.windowEnd,
+      status: videoMilestones.status,
+      nextAttemptAt: videoMilestones.nextAttemptAt,
+    })
+    .from(videoMilestones)
+    .where(eq(videoMilestones.channelId, channelId));
+}
+
+/** BL-166 (review): the Producer's upload milestones -- the stored totals of these videos, without the stored curve. */
+export async function listVideoMilestoneTotals(
+  channelId: string,
+  videoIds: string[],
+  database: AppDb = db
+): Promise<
+  Array<{
+    videoId: string;
+    milestoneDays: number;
+    windowStart: string;
+    windowEnd: string;
+    status: StoredVideoMilestone["status"];
+    collectedAt: Date | null;
+    views: number | null;
+    estimatedMinutesWatched: number | null;
+    averageViewDuration: number | null;
+    averageViewPercentage: number | null;
+  }>
+> {
+  if (videoIds.length === 0) return [];
+  return database
+    .select({
+      videoId: videoMilestones.videoId,
+      milestoneDays: videoMilestones.milestoneDays,
+      windowStart: videoMilestones.windowStart,
+      windowEnd: videoMilestones.windowEnd,
+      status: videoMilestones.status,
+      collectedAt: videoMilestones.collectedAt,
+      views: videoMilestones.views,
+      estimatedMinutesWatched: videoMilestones.estimatedMinutesWatched,
+      averageViewDuration: videoMilestones.averageViewDuration,
+      averageViewPercentage: videoMilestones.averageViewPercentage,
+    })
+    .from(videoMilestones)
+    .where(and(eq(videoMilestones.channelId, channelId), inArray(videoMilestones.videoId, videoIds)));
+}
+
+/** BL-166: a milestone's answer, as returned -- `collected`, never queried again. */
+export async function saveCollectedVideoMilestone(
+  row: {
+    videoId: string;
+    milestoneDays: number;
+    channelId: string;
+    windowStart: string;
+    windowEnd: string;
+    views: number | null;
+    estimatedMinutesWatched: number | null;
+    averageViewDuration: number | null;
+    averageViewPercentage: number | null;
+    retentionJson: string;
+    at: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status: "collected" as const,
+    lastError: null,
+    nextAttemptAt: null,
+    collectedAt: row.at,
+    views: row.views,
+    estimatedMinutesWatched: row.estimatedMinutesWatched,
+    averageViewDuration: row.averageViewDuration,
+    averageViewPercentage: row.averageViewPercentage,
+    retentionJson: row.retentionJson,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, attempts: 1, ...values })
+    .onConflictDoUpdate({
+      target: [videoMilestones.videoId, videoMilestones.milestoneDays],
+      // Attempts count per window: a video whose publish date moved (a scheduled video going public) starts again at 1.
+      set: {
+        ...values,
+        attempts: sql`CASE WHEN ${videoMilestones.windowStart} = ${row.windowStart} AND ${videoMilestones.windowEnd} = ${row.windowEnd} THEN ${videoMilestones.attempts} + 1 ELSE 1 END`,
+      },
+    });
+}
+
+/**
+ * BL-166 (second review): a milestone whose query got no usable answer (no HTTP answer, 429, 5xx) is put back until `retryAt` without
+ * counting an attempt, so the run can stop without the same milestone heading the queue again on the next run.
+ */
+export async function deferVideoMilestone(
+  row: { videoId: string; milestoneDays: number; channelId: string; windowStart: string; windowEnd: string; error: string; at: Date; retryAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status: "retry" as const,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: row.retryAt,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, attempts: 0, ...values })
+    .onConflictDoUpdate({
+      target: [videoMilestones.videoId, videoMilestones.milestoneDays],
+      // Attempts are kept for the same window and start from 0 for a new one (the same rule as the other two writes).
+      set: {
+        ...values,
+        attempts: sql`CASE WHEN ${videoMilestones.windowStart} = ${row.windowStart} AND ${videoMilestones.windowEnd} = ${row.windowEnd} THEN ${videoMilestones.attempts} ELSE 0 END`,
+      },
+    });
+}
+
+/**
+ * BL-166: a failed attempt. Below `maxAttempts` the milestone is retried from `retryAt`; at it, the milestone is `failed` and never
+ * queried again (a video YouTube keeps refusing must not hold the queue).
+ */
+export async function recordVideoMilestoneFailure(
+  row: { videoId: string; milestoneDays: number; channelId: string; windowStart: string; windowEnd: string; error: string; at: Date; retryAt: Date; maxAttempts: number },
+  database: AppDb = db
+): Promise<"retry" | "failed"> {
+  const previous = (
+    await database
+      .select({ attempts: videoMilestones.attempts, windowStart: videoMilestones.windowStart, windowEnd: videoMilestones.windowEnd })
+      .from(videoMilestones)
+      .where(and(eq(videoMilestones.videoId, row.videoId), eq(videoMilestones.milestoneDays, row.milestoneDays)))
+      .limit(1)
+  )[0];
+  // Attempts count per window (a moved publish date starts again at 1).
+  const sameWindow = previous !== undefined && previous.windowStart === row.windowStart && previous.windowEnd === row.windowEnd;
+  const attempts = (sameWindow ? previous.attempts : 0) + 1;
+  const status = attempts >= row.maxAttempts ? ("failed" as const) : ("retry" as const);
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status,
+    attempts,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: status === "retry" ? row.retryAt : null,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, ...values })
+    .onConflictDoUpdate({ target: [videoMilestones.videoId, videoMilestones.milestoneDays], set: values });
+  return status;
+}
+
+export type StoredAnalyticsBreakdownState = typeof analyticsBreakdownState.$inferSelect;
+
+/** BL-168: every subject's state of one channel (the channel itself and each video collected or attempted). */
+export async function listAnalyticsBreakdownStates(channelId: string, database: AppDb = db): Promise<StoredAnalyticsBreakdownState[]> {
+  return database.select().from(analyticsBreakdownState).where(eq(analyticsBreakdownState.channelId, channelId));
+}
+
+type BreakdownRowInput = { day: string; value: string; views: number | null; estimatedMinutesWatched: number | null };
+const BREAKDOWN_INSERT_CHUNK = 400;
+
+/**
+ * BL-168: one subject's answer, in one atomic batch -- the subject's stored rows in `from`..`to` (every row of the subject when `fresh`)
+ * are replaced by the answer, so a value YouTube no longer reports for a reread day is gone too, and the state records the range as
+ * collected (attempts back to 0). Days outside the range are not touched.
+ */
+export async function saveCollectedAnalyticsBreakdown(
+  row: {
+    channelId: string;
+    subject: string;
+    videoId: string | null;
+    rangeStart: string;
+    from: string;
+    to: string;
+    fresh: boolean;
+    rows: Record<"traffic_source" | "device_type", BreakdownRowInput[]>;
+    collectedOn: string;
+    at: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [];
+  const kinds = ["traffic_source", "device_type"] as const;
+  if (row.videoId !== null) {
+    const videoId = row.videoId;
+    const scope = row.fresh
+      ? eq(videoBreakdownDaily.videoId, videoId)
+      : and(eq(videoBreakdownDaily.videoId, videoId), gte(videoBreakdownDaily.day, row.from), lte(videoBreakdownDaily.day, row.to));
+    writes.push(database.delete(videoBreakdownDaily).where(scope));
+    const values = kinds.flatMap((breakdown) => row.rows[breakdown].map((r) => ({ videoId, breakdown, day: r.day, value: r.value, channelId: row.channelId, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched })));
+    for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+      writes.push(database.insert(videoBreakdownDaily).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+    }
+  } else {
+    const scope = row.fresh
+      ? eq(channelBreakdownDaily.channelId, row.channelId)
+      : and(eq(channelBreakdownDaily.channelId, row.channelId), gte(channelBreakdownDaily.day, row.from), lte(channelBreakdownDaily.day, row.to));
+    writes.push(database.delete(channelBreakdownDaily).where(scope));
+    const values = kinds.flatMap((breakdown) => row.rows[breakdown].map((r) => ({ channelId: row.channelId, breakdown, day: r.day, value: r.value, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched })));
+    for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+      writes.push(database.insert(channelBreakdownDaily).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+    }
+  }
+  const state = {
+    rangeStart: row.rangeStart,
+    collectedThrough: row.to,
+    collectedOn: row.collectedOn,
+    collectedAt: row.at,
+    status: "collected" as const,
+    attempts: 0,
+    lastError: null,
+    nextAttemptAt: null,
+    updatedAt: row.at,
+  };
+  writes.push(
+    database
+      .insert(analyticsBreakdownState)
+      .values({ channelId: row.channelId, subject: row.subject, ...state })
+      .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: state })
+  );
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+async function previousBreakdownState(channelId: string, subject: string, database: AppDb) {
+  return (
+    await database
+      .select()
+      .from(analyticsBreakdownState)
+      .where(and(eq(analyticsBreakdownState.channelId, channelId), eq(analyticsBreakdownState.subject, subject)))
+      .limit(1)
+  )[0];
+}
+
+/**
+ * BL-168: a subject whose query got no usable answer (no HTTP answer, 429, 5xx) is put back until `retryAt` without counting an attempt.
+ * What is stored for the same range is kept; a state of another range start (the publish date moved) starts over.
+ */
+export async function deferAnalyticsBreakdown(
+  row: { channelId: string; subject: string; rangeStart: string; error: string; at: Date; retryAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  const previous = await previousBreakdownState(row.channelId, row.subject, database);
+  const same = previous !== undefined && previous.rangeStart === row.rangeStart;
+  const values = {
+    rangeStart: row.rangeStart,
+    collectedThrough: same ? previous.collectedThrough : null,
+    collectedOn: same ? previous.collectedOn : null,
+    collectedAt: same ? previous.collectedAt : null,
+    status: "retry" as const,
+    attempts: same ? previous.attempts : 0,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: row.retryAt,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(analyticsBreakdownState)
+    .values({ channelId: row.channelId, subject: row.subject, ...values })
+    .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: values });
+}
+
+/**
+ * BL-168: a failed attempt (an error about the query itself). Consecutive failures count; below `maxAttempts` the subject is retried
+ * from `retryAt`, at it the subject is `failed` and never queried again. What is stored for the same range is kept.
+ */
+export async function recordAnalyticsBreakdownFailure(
+  row: { channelId: string; subject: string; rangeStart: string; error: string; at: Date; retryAt: Date; maxAttempts: number },
+  database: AppDb = db
+): Promise<"retry" | "failed"> {
+  const previous = await previousBreakdownState(row.channelId, row.subject, database);
+  const same = previous !== undefined && previous.rangeStart === row.rangeStart;
+  const attempts = (same ? previous.attempts : 0) + 1;
+  const status = attempts >= row.maxAttempts ? ("failed" as const) : ("retry" as const);
+  const values = {
+    rangeStart: row.rangeStart,
+    collectedThrough: same ? previous.collectedThrough : null,
+    collectedOn: same ? previous.collectedOn : null,
+    collectedAt: same ? previous.collectedAt : null,
+    status,
+    attempts,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: status === "retry" ? row.retryAt : null,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(analyticsBreakdownState)
+    .values({ channelId: row.channelId, subject: row.subject, ...values })
+    .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: values });
+  return status;
+}
+
+/**
+ * BL-168: stored rows of one channel in startDate..endDate -- the channel's own (subject `'channel'`) and/or those of the given videos,
+ * always within this channel.
+ */
+export async function listAnalyticsBreakdownRows(
+  channelId: string,
+  subjects: string[],
+  startDate: string,
+  endDate: string,
+  database: AppDb = db
+): Promise<Array<{ subject: string; breakdown: "traffic_source" | "device_type"; day: string; value: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  const videoIds = subjects.filter((subject) => subject !== "channel");
+  const out: Array<{ subject: string; breakdown: "traffic_source" | "device_type"; day: string; value: string; views: number | null; estimatedMinutesWatched: number | null }> = [];
+  if (subjects.includes("channel")) {
+    const rows = await database
+      .select()
+      .from(channelBreakdownDaily)
+      .where(and(eq(channelBreakdownDaily.channelId, channelId), gte(channelBreakdownDaily.day, startDate), lte(channelBreakdownDaily.day, endDate)));
+    for (const r of rows) out.push({ subject: "channel", breakdown: r.breakdown, day: r.day, value: r.value, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched });
+  }
+  if (videoIds.length > 0) {
+    const rows = await database
+      .select()
+      .from(videoBreakdownDaily)
+      .where(
+        and(
+          eq(videoBreakdownDaily.channelId, channelId),
+          inArray(videoBreakdownDaily.videoId, videoIds),
+          gte(videoBreakdownDaily.day, startDate),
+          lte(videoBreakdownDaily.day, endDate)
+        )
+      );
+    for (const r of rows) out.push({ subject: r.videoId, breakdown: r.breakdown, day: r.day, value: r.value, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -8902,6 +10146,8 @@ export async function claimStaleResearchChannelsForCollection(
   const conditions = [
     or(isNull(researchChannels.lastAutoCollectedAt), lt(researchChannels.lastAutoCollectedAt, args.staleCutoff)),
     or(isNull(researchChannels.collectionClaimedAt), lt(researchChannels.collectionClaimedAt, args.claimExpiryCutoff)),
+    // BL-163 (AC-WH-03): a paused entry is never collected -- not by the automatic run, not by an approved collection request.
+    isNull(researchChannels.pausedAt),
   ];
   if (args.excludeResearchChannelIds.length > 0) {
     conditions.push(notInArray(researchChannels.id, args.excludeResearchChannelIds));

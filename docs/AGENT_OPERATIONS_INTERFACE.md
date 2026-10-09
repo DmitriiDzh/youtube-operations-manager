@@ -934,7 +934,9 @@ which happens to fulfil two capability names this interface reserved back in sli
 plugs into this interface.
 
 - **`query_competitors`** (MCP)/`agent competitors` (CLI) -- every channel on the research
-  watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached.
+  watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached. Since BL-163 each
+  entry also carries `latestUploadPublishedAt` (raw, null when unknown), `inactive`, `pausedAt` and
+  `pausedReason` (as `query_market_overview`; additive, no version bump).
 - **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId <UC...>` (CLI) -- one
   watchlisted channel's own record plus its evidence history (Phase 13: another channel's API-sourced rows
   only within the last 30 days, operator-entered rows at any age); `RESEARCH_CHANNEL_NOT_AVAILABLE`
@@ -1126,3 +1128,16 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   - for one plan, its events. These include the owner's listening verdicts (rating out of 10, reasons, time markers, note);
     job error texts are left out.
 - An agent cannot create, change, run or close a plan. Contract: `docs/interfaces.md`.
+
+**Video milestones (BL-166, Agent API 3.9.0, `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md`):**
+- `agent_get_video_milestones` (capability `analytics.query_video_milestones`, READ) returns the stored day-7 and day-28 milestones of the
+  channel's own videos: the window totals and the 100-point retention curve as YouTube returned them, with the video's stored length.
+- Collected in the background with the Analytics collection (2 Analytics API queries per milestone, at most 25 per channel per run); a local
+  read, never a live call. Each computer collects the milestones of the channels connected on it. Contract: `docs/interfaces.md`.
+
+**Stored traffic sources and devices (BL-168, Agent API 3.10.0, `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md`):**
+- `agent_get_stored_breakdowns` (capability `analytics.query_stored_breakdowns`, READ) returns views and watch minutes per traffic source
+  type and per device type, per day as YouTube returned them, for the channel as a whole or for up to 20 of its videos (each video's first
+  90 days), summed over a date range or listed by day, with the stored coverage of each.
+- Collected in the background with the Analytics collection, once a day (2 Analytics API queries per subject, at most 100 subjects per
+  channel per run); a local read, never a live call. Each computer collects the channels connected on it. Contract: `docs/interfaces.md`.

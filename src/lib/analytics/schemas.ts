@@ -227,6 +227,7 @@ const dataQualityVideoSkipSchema = z
     videoId: z.string().min(1),
     skipCount: z.number().int().positive(),
     lastSkippedAt: z.string(),
+    lastSkippedRange: z.object({ startDate: z.string(), endDate: z.string() }).strict(),
   })
   .strict();
 

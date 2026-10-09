@@ -39,6 +39,11 @@ export type VideoSkipSummary = {
    * "latest run wins" doc comment). */
   skipCount: number;
   lastSkippedAt: string;
+  /**
+   * FO-MSG-0013 §4: the requested window of that latest run -- the dates whose per-video rows it could not collect for this video
+   * (a skip is per video and run, never per day), so a reader can mark only the windows that overlap it.
+   */
+  lastSkippedRange: { startDate: string; endDate: string };
 };
 
 export type DataQualityReport = {
@@ -147,6 +152,7 @@ export function computeDataQualityReport(args: {
       // at all already means the LATEST attempt failed (see rule above).
       skipCount: totalSkipCounts.get(videoId) ?? 1,
       lastSkippedAt: latestOverlappingRun!.ranAt.toISOString(),
+      lastSkippedRange: { startDate: latestOverlappingRun!.requestedStartDate, endDate: latestOverlappingRun!.requestedEndDate },
     }))
     .sort((a, b) => b.skipCount - a.skipCount);
 

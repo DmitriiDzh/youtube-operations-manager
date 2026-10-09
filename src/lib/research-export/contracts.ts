@@ -68,8 +68,11 @@ export type ResearchCollectionProgress = {
 };
 
 /** What the export reads about one watchlist channel -- a subset of `getWatchlistEntryContext`, already narrowed to what the caller may see. */
+/** BL-163 (FO-REQ-0014 §A1): a watchlist entry's activity -- the raw newest upload date (never "days since": III.E.4.h), inactive, pause. */
+export type WatchlistActivityForExport = { latestUploadPublishedAt: string | null; inactive: boolean; pausedAt: string | null; pausedReason: "inactive" | "owner" | null };
+
 export type WatchlistContextForExport = {
-  channel: { channelId: string; handleOrUrl: string | null };
+  channel: { channelId: string; handleOrUrl: string | null; activity?: WatchlistActivityForExport };
   evidenceCount: number;
   channelSnapshots: Array<{
     observedAt: string;
@@ -159,6 +162,14 @@ export type ResearchOverviewEntry = {
   uniqueVideoCount: number;
   /** Newest `observedAt` among the stored video snapshots; `null` when there are none. */
   latestVideoSnapshotAt: string | null;
+  /**
+   * BL-163 (FO-REQ-0014 §A1): the newest PUBLISH date among the stored video snapshots (`null` = not known), whether that makes the
+   * entry inactive (older than the owner's "inactive after N months"), and its pause (a paused entry is not collected).
+   */
+  latestUploadPublishedAt: string | null;
+  inactive: boolean;
+  pausedAt: string | null;
+  pausedReason: "inactive" | "owner" | null;
   evidenceCount: number;
   dataQualityFlags: string[];
   /** Collection depth and progress of this channel (see `ResearchCollectionProgress`). */

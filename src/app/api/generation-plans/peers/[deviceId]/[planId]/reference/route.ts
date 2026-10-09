@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createGenerationPlansCore } from "@/lib/generation-plans";
+import { activeChannelOf } from "../../../../shared";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createReferenceGetHandler } from "../../../../[planId]/audition/serve";
@@ -16,6 +17,7 @@ export async function GET(request: Request, context: { params: Promise<{ deviceI
   const { deviceId, planId } = await context.params;
   const handler = createReferenceGetHandler({
     getSession: () => getServerSession(authOptions),
+    assertVisible: async (userId) => createGenerationPlansCore().assertPeerPlanOfChannel(deviceId, planId, await activeChannelOf(userId)),
     resolveReference: (input) => createGenerationPlansCore().resolvePeerReference({ ...input, deviceId }),
     async workspaceOf(channelId) {
       const workspace = await createChannelWorkspacesCore().getWorkspace({ channelId });

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import type { GenerationPlan } from "./contracts";
-import { planProgress, type PlanJobRow, type PlanSessionRow } from "./progress";
+import type { GenerationPlan, PlanResultRow } from "./contracts";
+import { planProgress, reviewBatches, type PlanJobRow, type PlanSessionRow } from "./progress";
 
 // AC-GP-11 and AC-GP-16 (GENERATION_PLANS_PLAN.md §4). Expected numbers are worked out by hand from the rules below.
 
@@ -29,6 +29,7 @@ const session = (over: Partial<PlanSessionRow>): PlanSessionRow => ({ id: "s", s
 const job = (id: string, sessionId: string, seconds: number): PlanJobRow => ({
   id,
   sessionId,
+  channelId: "UC_x",
   stageId: "generate",
   itemKey: "A/1",
   seed: null,
@@ -130,4 +131,59 @@ test("phase 3 review: plan_complete waits for the later stages; an until_accepte
   const both = [row("job:a", "validate", "rejected"), row("job:b", "validate", "rejected")];
   const k = kinds(until, jobs, both);
   assert.ok(k.includes("attempts_exhausted") && !k.includes("plan_complete"), k.join(","));
+});
+
+// BL-157 (SERVERS_MEDIA_PLAN.md AC-WV-03, FO-REQ-0009 §7.2): each wave's context card, worked out by hand from the rules.
+test("AC-WV-03: a wave's context -- notes, earliest attempt, templates, the params that differ, the validator's passed/rejected", () => {
+  const wavePlan: GenerationPlan = {
+    ...plan,
+    stages: [
+      { stageId: "generate", title: "G", kind: "in_app" },
+      { stageId: "validate", title: "V", kind: "external" },
+      { stageId: "owner_review", title: "R", kind: "owner_review" },
+    ],
+    groups: [
+      { groupId: "C14", title: "C14 new instruments", dependsOn: null, note: "LM planner off", ownerNote: "too bright" },
+      { groupId: "C15", title: "C15", dependsOn: "C14", note: null },
+    ],
+    items: [
+      { itemKey: "C14/F1", groupId: "C14", templateLabel: "ACE-Step 1.5", templateId: "t-ace", variant: null, targetCount: 2, mode: "fixed", maxAttempts: null, params: { prompt: "koto", duration: 120, bpm: 70 }, seeds: [] },
+      { itemKey: "C14/F2", groupId: "C14", templateLabel: null, templateId: "t-ace-xl", variant: null, targetCount: 2, mode: "fixed", maxAttempts: null, params: { prompt: "shamisen", duration: 120 }, seeds: [] },
+      { itemKey: "C14/F3", groupId: "C14", templateLabel: "ACE-Step 1.5", templateId: "t-ace", variant: null, targetCount: 2, mode: "fixed", maxAttempts: null, params: { prompt: "koto", duration: 90 }, seeds: [] },
+      { itemKey: "C15/F1", groupId: "C15", templateLabel: null, templateId: "t-ace", variant: null, targetCount: 1, mode: "fixed", maxAttempts: null, params: {}, seeds: [] },
+    ],
+  };
+  const jobs = [
+    { ...job("j1", "s", 60), itemKey: "C14/F1", createdAt: t("2026-10-08T09:30:00Z") },
+    { ...job("j2", "s", 60), itemKey: "C14/F2", createdAt: t("2026-10-08T09:10:00Z") },
+  ];
+  const row = (itemKey: string, attemptRef: string, result: PlanResultRow["result"], at: string, stageId = "validate"): PlanResultRow => ({
+    stageId, itemKey, attemptRef, result, reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at,
+  });
+  const results = [
+    row("C14/F1", "job:j1", "accepted", "2026-10-08T10:00:00Z"),
+    row("C14/F2", "job:j2", "rejected", "2026-10-08T10:00:00Z"),
+    // An imported attempt reported before any job of the wave: the earliest.
+    row("C14/F3", "ext:a", "rejected", "2026-10-08T08:45:00Z"),
+    row("C14/F3", "ext:b", "failed", "2026-10-08T10:05:00Z"),
+    // The owner's verdict is not the validator's.
+    row("C14/F1", "job:j1", "rejected", "2026-10-08T11:00:00Z", "owner_review"),
+  ];
+  const [c14, c15] = reviewBatches(wavePlan, jobs, results);
+  assert.deepEqual(c14, {
+    groupId: "C14",
+    title: "C14 new instruments",
+    note: "LM planner off",
+    ownerNote: "too bright",
+    firstAt: "2026-10-08T08:45:00.000Z",
+    templates: ["ACE-Step 1.5", "t-ace-xl"],
+    // duration 120/120/90 and prompt koto/shamisen/koto differ; bpm is on one item only (one value): not "differing".
+    differingParams: [
+      { name: "prompt", values: ["koto", "shamisen"] },
+      { name: "duration", values: [120, 90] },
+    ],
+    validator: { passed: 1, rejected: 2 },
+  });
+  assert.deepEqual(c15, { groupId: "C15", title: "C15", note: null, ownerNote: null, firstAt: null, templates: ["t-ace"], differingParams: [], validator: { passed: 0, rejected: 0 } });
+  assert.deepEqual(reviewBatches(plan, [], []), [], "a plan without waves has no wave context");
 });

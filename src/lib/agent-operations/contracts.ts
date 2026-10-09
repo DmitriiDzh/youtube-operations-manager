@@ -59,7 +59,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "3.8.0";
+export const AGENT_API_VERSION = "3.10.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -235,6 +235,9 @@ export type VideoMetadataContext = {
   /** ISO instant of this video's own last sync -- see `ChannelContext.lastSyncedAt`'s own note on
    * why this is never fabricated. */
   lastSyncedAt: string;
+  /** FO-REQ-0015 item 6: the stored length in seconds and YouTube's `liveBroadcastContent`; null when unknown. */
+  durationSeconds: number | null;
+  liveBroadcastContent: string | null;
 };
 
 export type VideoContext = {

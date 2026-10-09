@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getMediaSessionJobSummary, insertMediaCapacityAttempt, listMediaCapacityAttempts, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getMediaSessionJobSummary, insertMediaCapacityAttempt, listMediaCapacityAttempts, setMediaCapacityAttemptHostCuda, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -125,7 +125,7 @@ function buildCore(jobScheduling: JobScheduling) {
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     jobSummary: (sessionId) => getMediaSessionJobSummary(sessionId),
-    capacityLog: { record: (attempt) => insertMediaCapacityAttempt(attempt) },
+    capacityLog: { record: (attempt) => insertMediaCapacityAttempt(attempt), setHostCuda: (attemptId, host) => setMediaCapacityAttemptHostCuda(attemptId, host) },
     events: createMediaControlEventSink(),
     base,
     createComfyClient: ({ baseUrl, token }) => createComfyUiClient({ baseUrl, token }),
@@ -157,7 +157,7 @@ function buildCore(jobScheduling: JobScheduling) {
           throw error;
         }
         return session.status === "running"
-          ? { sessionId: session.sessionId, channelId: session.channelId, podId: session.podId, gpuTypeId: session.gpuTypeId, costPerHr: session.costPerHr }
+          ? { sessionId: session.sessionId, channelId: session.channelId, podId: session.podId, gpuTypeId: session.gpuTypeId, costPerHr: session.costPerHr, hostCudaVersion: session.hostCudaVersion }
           : null;
       },
       comfyClientForSession: (sessionId) => sessions.comfyClientForSession(sessionId),
@@ -249,6 +249,7 @@ function buildCore(jobScheduling: JobScheduling) {
       pricePerHr: row.pricePerHr ?? null,
       result: row.result as MediaCapacityAttempt["result"],
       detail: row.detail ?? null,
+      hostCudaVersion: row.hostCudaVersion ?? null,
     }));
   // BL-138: the RunPod account id (a GraphQL read). Kept an hour when known, 5 minutes when it could not be read, and dropped
   // as soon as the stored credentials change (independent review: a replaced or imported key may be another account).

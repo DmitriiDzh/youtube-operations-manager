@@ -231,6 +231,17 @@ test("syncChannel exposes existing localization languages per video", async () =
   });
 });
 
+// FO-REQ-0015 item 6: channel_video_list carries the stored length (630 s in this fixture) and YouTube's live status (none given here,
+// so null -- unknown, never invented), and both can be asked for by name.
+test("listSyncedVideos returns each video's stored duration and live status, also as requested fields", async () => {
+  const { services } = createServicesFixture({ videoIds: ["v1"] });
+  const synced = await services.syncChannel({ credentialRef: { userId: "user-1" } });
+  const listed = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: synced.channel.channelId });
+  assert.deepEqual([listed.videos[0]?.durationSeconds, listed.videos[0]?.liveBroadcastContent], [630, null]);
+  const slim = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: synced.channel.channelId, fields: ["durationSeconds", "liveBroadcastContent"] });
+  assert.deepEqual(slim.videos[0], { videoId: "v1", durationSeconds: 630, liveBroadcastContent: null });
+});
+
 test("syncChannel re-sync replaces prior video rows for the same channel without duplication", async () => {
   const { services, store } = createServicesFixture({ videoIds: ["v1", "v2"] });
 

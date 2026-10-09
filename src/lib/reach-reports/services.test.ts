@@ -53,6 +53,7 @@ function createFixture(opts: {
     upsertJob: [] as unknown[],
     resolveArgs: [] as unknown[],
     attempts: [] as Array<Parameters<ReachReportsDependencies["store"]["recordAttempt"]>[0]>,
+    listDaily: [] as Array<{ channelId: string; startDate: string; endDate: string }>,
   };
   const activeChannelId = opts.activeChannelId === undefined ? "UC_X" : opts.activeChannelId;
 
@@ -100,7 +101,8 @@ function createFixture(opts: {
         calls.imports.push({ reportId: args.reportId, rows: args.rows });
         return opts.importOutcomes?.[args.reportId] ?? { outcome: "imported", replacedReports: 0 };
       },
-      async listDaily() {
+      async listDaily(channelId, range) {
+        calls.listDaily.push({ channelId, ...range });
         return opts.dailyRows ?? [];
       },
       async getCoverage() {
@@ -495,6 +497,69 @@ test("getChannelReach with a videoId filter scopes daily, videos and totals to t
   assert.deepEqual(result.videos.map((v) => v.videoId), ["vidA"]);
   assert.equal(result.totals.impressions, 40);
   assert.equal(result.videoDaily, undefined, "no videoDaily unless groupBy is asked for");
+});
+
+// BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md §2, AC-VM-07): Reach over each upload's milestone window -- impressions summed,
+// CTR impressions-weighted (the same rule as getChannelReach), days without a stored row absent, never zero. Expected values by hand.
+test("getVideoWindowsReach: each video's own window, one stored read for the span of all windows", async () => {
+  const { services, calls } = createFixture({
+    storedJob: { jobId: "job-1", jobCreatedAt: "2026-09-20T00:00:00Z" },
+    coverage: { firstDate: "2026-09-25", lastDate: "2026-10-30", importedFiles: 30 },
+    dailyRows: [
+      { date: "2026-10-01", videoId: "vidA", impressions: 100, ctr: 0.25 },
+      { date: "2026-10-03", videoId: "vidA", impressions: 300, ctr: 0.125 },
+      { date: "2026-10-08", videoId: "vidA", impressions: 1000, ctr: 0.5 },
+      { date: "2026-10-02", videoId: "vidB", impressions: 50, ctr: null },
+      // Before every window: never counted.
+      { date: "2026-09-30", videoId: "vidA", impressions: 7777, ctr: 0.9 },
+    ],
+  });
+  const result = await services.getVideoWindowsReach({
+    ...SYNC,
+    windows: [
+      { videoId: "vidA", startDate: "2026-10-01", endDate: "2026-10-07" },
+      { videoId: "vidA", startDate: "2026-10-01", endDate: "2026-10-28" },
+      { videoId: "vidB", startDate: "2026-10-02", endDate: "2026-10-08" },
+      { videoId: "vidC", startDate: "2026-10-05", endDate: "2026-10-11" },
+    ],
+  });
+  assert.deepEqual(calls.listDaily, [{ channelId: "UC_X", startDate: "2026-10-01", endDate: "2026-10-28" }]);
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.windows.slice(0, 1), [
+    // 100 + 300 impressions on 2 days; clicks 25 + 37.5 = 62.5 -> 62.5 / 400.
+    { videoId: "vidA", startDate: "2026-10-01", endDate: "2026-10-07", daysWithData: 2, impressions: 400, ctr: 0.15625 },
+  ]);
+  // 10-08 joins the 28-day window: 1400 impressions on 3 days; clicks 62.5 + 500 = 562.5.
+  assert.equal(result.windows[1].daysWithData, 3);
+  assert.equal(result.windows[1].impressions, 1400);
+  assert.ok(Math.abs((result.windows[1].ctr ?? NaN) - 562.5 / 1400) < 1e-12);
+  // A row without a CTR: its impressions count, its clicks are unknown -> ctr null, never 0.
+  assert.deepEqual(result.windows[2], { videoId: "vidB", startDate: "2026-10-02", endDate: "2026-10-08", daysWithData: 1, impressions: 50, ctr: null });
+  // Nothing stored for the video: 0 days, so its 0 impressions mean "nothing imported".
+  assert.deepEqual(result.windows[3], { videoId: "vidC", startDate: "2026-10-05", endDate: "2026-10-11", daysWithData: 0, impressions: 0, ctr: null });
+});
+
+test("getVideoWindowsReach: no windows reads nothing; another channel fails closed; bad windows and a span over 400 days are refused", async () => {
+  const empty = createFixture({ storedJob: null });
+  assert.deepEqual(await empty.services.getVideoWindowsReach({ ...SYNC, windows: [] }), { channelId: "UC_X", state: "no_job", windows: [] });
+  assert.deepEqual(empty.calls.listDaily, []);
+
+  const other = createFixture({ activeChannelId: "UC_OTHER" });
+  await assert.rejects(
+    () => other.services.getVideoWindowsReach({ ...SYNC, windows: [{ videoId: "v", startDate: "2026-10-01", endDate: "2026-10-07" }] }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+  assert.deepEqual(other.calls.listDaily, []);
+
+  const { services } = createFixture();
+  const isValidation = (error: unknown) => error instanceof DomainError && error.code === "validation_failed";
+  await assert.rejects(() => services.getVideoWindowsReach({ ...SYNC, windows: [{ videoId: "v", startDate: "2026-10-07", endDate: "2026-10-01" }] }), isValidation);
+  await assert.rejects(() => services.getVideoWindowsReach({ ...SYNC, windows: [{ videoId: "v", startDate: "2026-02-30", endDate: "2026-03-01" }] }), isValidation);
+  const spread = [
+    { videoId: "v", startDate: "2025-01-01", endDate: "2025-01-07" },
+    { videoId: "w", startDate: "2026-02-01", endDate: "2026-02-07" },
+  ];
+  await assert.rejects(() => services.getVideoWindowsReach({ ...SYNC, windows: spread }), isValidation, "402 days from first start to last end");
 });
 
 test("getChannelReach groupBy video_day is capped at 5000 rows and says so; an unknown groupBy value is rejected", async () => {

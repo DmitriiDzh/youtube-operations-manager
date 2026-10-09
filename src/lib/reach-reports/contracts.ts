@@ -86,6 +86,14 @@ export type GetChannelReachResult = {
 
 export const TOP_VIDEOS_LIMIT = 50;
 
+/**
+ * BL-166: one video's Reach over one window. `daysWithData` counts the days of the window with a stored row for that video; with 0,
+ * `impressions` is 0 and `ctr` null, and the pair means "nothing imported", never "no impressions".
+ */
+export type VideoWindowReach = { videoId: string; startDate: string; endDate: string; daysWithData: number; impressions: number; ctr: number | null };
+
+export type GetVideoWindowsReachResult = { channelId: string; state: ReachState; windows: VideoWindowReach[] };
+
 /** `groupBy: "video_day"` returns at most this many rows; `videoDailyTruncated` says when more existed (narrow the range or pass a videoId). */
 export const MAX_VIDEO_DAY_ROWS = 5000;
 

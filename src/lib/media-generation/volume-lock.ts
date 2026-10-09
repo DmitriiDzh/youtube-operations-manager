@@ -57,12 +57,12 @@ export type VolumeLock = {
 };
 
 export function describeActiveSessions(count: number): string {
-  return `${count} generation session${count === 1 ? " is" : "s are"} using the network volume; stop ${count === 1 ? "it" : "them"} first (Production → Sessions).`;
+  return `${count} generation session${count === 1 ? " is" : "s are"} using the network volume; stop ${count === 1 ? "it" : "them"} first (Servers → Sessions).`;
 }
 
 export function describeVolumeLockHolder(holder: string): string {
-  if (holder.startsWith("session:")) return `A generation session (${holder.slice("session:".length)}) is open on the network volume; stop it first (Production → Sessions).`;
-  if (holder.startsWith("pull:")) return `A model pull (${holder.slice("pull:".length)}) is writing to the network volume; wait for it to finish (Production → Models).`;
+  if (holder.startsWith("session:")) return `A generation session (${holder.slice("session:".length)}) is open on the network volume; stop it first (Servers → Sessions).`;
+  if (holder.startsWith("pull:")) return `A model pull (${holder.slice("pull:".length)}) is writing to the network volume; wait for it to finish (Servers → Models).`;
   if (holder.startsWith("pod:")) return `An operator pod (${holder.slice("pod:".length)}) has the network volume mounted; terminate it first (media pod-terminate).`;
   if (holder.startsWith("delete:")) return "A model is being deleted from the network volume; try again in a moment.";
   return `The network volume is busy (${holder}).`;

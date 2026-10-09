@@ -3,13 +3,20 @@
 #
 # Stops the running server -- but never in the middle of an export/import/schema migration: an
 # interrupted one is exactly what leaves a stuck operation lock. Same principles as
-# scripts/windows/stop.bat (keep the two in step): (1) find the listener on port $PORT, (2) wait for
+# scripts/windows/stop.bat (keep the two in step; only the macOS refusal exit code 2 below is BL-158's own): (1) find the
+# listener on port $PORT, (2) wait for
 # any RUNNING operation to finish (`operation-lock wait-idle`; refuse to stop if it does not within
 # 2 minutes), (3) stop the process, (4) confirm the port is actually free. Exit code 0 = nothing
-# left running, 1 = not stopped (start.sh/update.sh must not go on).
-cd "$(dirname "$0")/../.."
+# left running, 1 = not stopped (start.sh/update.sh must not go on; under the BL-158 service: signalled but
+# not exited yet), 2 = refused before signalling anything because an operation is running (also "not
+# stopped"; BL-158's start.sh keeps that server). FO-MSG-0013: it also refuses (exit 2) while a media session runs on this computer
+# -- stopping terminates its pod and fails its queued jobs -- unless called with --force.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 PIDFILE="$(pwd)/.launcher.pid"
 PORT="${PORT:-3000}"
+FORCE=""
+[ "$1" = "--force" ] && FORCE=1
 
 echo "Stopping YouTube Operations Manager..."
 
@@ -25,7 +32,16 @@ if [ -n "$PORT_PIDS" ]; then
   if ! npm run --silent operation-lock -- wait-idle --timeout 120; then
     echo "[ERROR] The application was NOT stopped: a running operation did not finish (or could not be checked)."
     echo "        Stopping it now could leave a stuck lock. Wait and try again, or see the /recovery page."
-    exit 1
+    exit 2
+  fi
+  if [ -z "$FORCE" ]; then
+    echo "Checking that no media session is running on this computer..."
+    if ! npm run --silent operation-lock -- media-idle; then
+      echo "[ERROR] The application was NOT stopped: a media session is running here (or this could not be checked)."
+      echo "        Stopping now would terminate its pod and fail its queued jobs. Wait until it finishes, stop it in"
+      echo "        Production, or run stop.sh --force."
+      exit 2
+    fi
   fi
   for PID in $PORT_PIDS; do
     if kill "$PID" 2>/dev/null; then
@@ -39,6 +55,29 @@ else
 fi
 
 rm -f "$PIDFILE"
+
+# BL-158: under the system service launchd starts the server again at once (rebuilding first if the checked-out commit
+# changed), so the port does not stay free -- here "stopped" means the old process has exited, and stopping is how the
+# service is restarted. Removing the service for good is uninstall-service.command.
+. "$SCRIPT_DIR/service-env.sh"
+if [ -n "$PORT_PIDS" ] && service_installed; then
+  ATTEMPT=0
+  while [ "$ATTEMPT" -lt 30 ]; do
+    ALIVE=""
+    for PID in $PORT_PIDS; do
+      if kill -0 "$PID" 2>/dev/null; then ALIVE=1; fi
+    done
+    if [ -z "$ALIVE" ]; then
+      echo "Done -- the server process has exited. The system service starts it again by itself"
+      echo "(uninstall-service.command removes the service for good)."
+      exit 0
+    fi
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep 1
+  done
+  echo "[WARN] The server process is still running after 30 s -- it may need more time."
+  exit 1
+fi
 
 if [ -n "$PORT_PIDS" ]; then
   # Shutdown is asynchronous (SIGTERM is a request, not instant) -- wait briefly for the port to

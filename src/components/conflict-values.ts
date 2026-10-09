@@ -4,7 +4,7 @@
 
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 
-/** Production → Setup fields (BL-150), in the words the Setup page uses. */
+/** Servers → Setup fields (BL-150), in the words the Setup page uses. */
 export const SETTING_LABELS: Record<string, { labelKey: UiTextKey; unit?: "usd" | "usd_per_hr" | "minutes" | "seconds" | "gb" }> = {
   datacenterId: { labelKey: "setupField.datacenterId" },
   gpuTypeId: { labelKey: "setupField.gpuTypeId" },

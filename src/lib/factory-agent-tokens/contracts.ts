@@ -15,7 +15,7 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError };
  * Operator role's own agent token. Unlike a channel token (`src/lib/agent-tokens`) it is bound to NO
  * channel and NO Google identity: it carries no credentials at all. It is presented as a Bearer
  * credential on the factory MCP endpoint only; the operator issues it in Settings. Only its SHA-256
- * hash is stored, device-local.
+ * hash is stored; since BL-160 the hash (never the token) is shared with the owner's other devices.
  */
 
 /** Distinct from the channel-token prefix (`ytom_ch_`), so each endpoint rejects the other's tokens

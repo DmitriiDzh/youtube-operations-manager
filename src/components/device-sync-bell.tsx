@@ -5,12 +5,20 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { PlanChannelWork } from "@/lib/generation-plans/contracts";
+import { otherChannelEntries } from "./channel-work";
+import { useChannelNames } from "./use-channel-names";
 
 /**
  * Automatic device sync notifications (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7): a bell in
  * the header showing what the server-side sync last did, and anything that needs a human --
  * above all a divergence (both computers changed data). The choice itself is made in the Merge
  * tab, which shows what differs between the two versions (owner, Telegram 2026-10-06, msg 1758).
+ *
+ * BL-157 (docs/roadmap/plans/SERVERS_MEDIA_PLAN.md AC-BL-04..07, FO-REQ-0009 §3a, owner msg 2119): the bell also lists the open
+ * Media work of every channel that is NOT active -- one entry per channel and type of work, with the channel's avatar and
+ * name and a button that switches to it and opens the place. Entries come from the summary on every poll, so they update in
+ * place and go away only when the work is done; they cannot be dismissed.
  */
 
 type Notice = {
@@ -62,8 +70,20 @@ function BellIcon() {
   );
 }
 
-export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: () => void }) {
+export function DeviceSyncBell({
+  onReviewDivergence,
+  activeChannelId = null,
+  channelWork = [],
+  onOpenChannelWork,
+}: {
+  onReviewDivergence?: () => void;
+  activeChannelId?: string | null;
+  channelWork?: readonly PlanChannelWork[];
+  onOpenChannelWork?: (channelId: string, href: string) => void;
+}) {
   const t = useT();
+  const { channels: channelLabels, nameOf } = useChannelNames();
+  const entries = otherChannelEntries(t, channelWork, activeChannelId);
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
@@ -123,7 +143,9 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
     ? "bg-red-500"
     : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
       ? "bg-amber-400"
-      : null;
+      : entries.length > 0
+        ? "bg-sky-400"
+        : null;
 
   return (
     <div className="relative" ref={panelRef}>
@@ -137,7 +159,41 @@ export function DeviceSyncBell({ onReviewDivergence }: { onReviewDivergence?: ()
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-96 space-y-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
+        <div className="absolute right-0 z-50 mt-2 max-h-[80vh] w-96 space-y-3 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
+          {entries.length > 0 && (
+            <div className="space-y-2 border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-semibold text-zinc-100">{t("channelWork.title")}</h3>
+              {entries.map((entry) => {
+                const thumbnail = channelLabels?.find((c) => c.channelId === entry.channelId)?.thumbnailUrl ?? null;
+                return (
+                  <div key={entry.key} className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5">
+                    {thumbnail ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={thumbnail} alt="" className="mt-0.5 h-7 w-7 shrink-0 rounded-full" />
+                    ) : (
+                      <div className="mt-0.5 h-7 w-7 shrink-0 rounded-full bg-zinc-700" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      {/* ui-text-ignore: a channel's own name (data) */}
+                      <p className="truncate text-xs font-medium text-zinc-100">{nameOf(entry.channelId)}</p>
+                      <p className="text-xs text-zinc-300">{entry.text}</p>
+                    </div>
+                    {onOpenChannelWork && (
+                      <button
+                        onClick={() => {
+                          setOpen(false);
+                          onOpenChannelWork(entry.channelId, entry.href);
+                        }}
+                        className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
+                      >
+                        {t("channelWork.open")}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div>
             <h3 className="text-sm font-semibold text-zinc-100">{t("shell.deviceSync")}</h3>
             <p className="mt-1 text-xs text-zinc-400">{status ? t(STATE_LABEL[status.state]) : t("common.loading")}</p>

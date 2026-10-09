@@ -57,6 +57,8 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     mediaSessionsSyncFallbackDir: path.join(appDataDir, "media-sessions-sync-local"),
     generationPlansShareDir: path.join(appDataDir, "generation-plans-share"),
     generationPlansSyncFallbackDir: path.join(appDataDir, "generation-plans-sync-local"),
+    agentTokensShareDir: path.join(appDataDir, "agent-tokens-share"),
+    agentTokensSyncFallbackDir: path.join(appDataDir, "agent-tokens-sync-local"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

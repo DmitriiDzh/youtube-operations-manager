@@ -25,9 +25,17 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * 1.6.0 (BL-153, FO-REQ-0008): validator-rejected attempts in the owner's review queue (`reviewRejected`);
  * 1.7.0 (BL-155, FO-REQ-0007): jobs carry `errorCode` (`media_gpu_host_incompatible` when the error says the host's CUDA driver
  * is too old), a start on incompatible hosts fails with `media_gpu_host_incompatible`, release-when-done of a session whose
- * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`.
+ * every job failed stops with `all jobs failed (release when done)`, and the settings read shows `gpu.minCudaVersion`;
+ * 1.8.0 (BL-157, FO-REQ-0009): `factory_plan_move` moves an active plan to another connected channel (its files checked in
+ * that channel's Sent to YTM first, `checkOnly` to check only); the events `plan_moved` and `group_reviewed` (the owner's
+ * verdicts finished a wave); the owner's wave note is `groups[].ownerNote` (the factory's stays `note`);
+ * 1.9.0 (BL-159, FO-REQ-0011): `factory_media_start_session` takes `minCudaVersion` (a registry template may declare one too),
+ * which may only raise the owner's setting; sessions show `minCudaVersion`, `usedMinCudaVersion` and `hostCudaVersion`, a
+ * capacity-log `placed` entry shows `hostCudaVersion`, the settings read lists `gpu.cudaVersions`, and a job or plan run whose
+ * template needs a newer host CUDA than the session's known host is refused with `media_gpu_host_incompatible`; a start's
+ * `templateId` is looked up even when `gpu` is given (an unknown one is `media_template_not_found`); templates list `minCudaVersion`.
  */
-export const FACTORY_API_VERSION = "1.7.0";
+export const FACTORY_API_VERSION = "1.9.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -68,6 +76,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_plan_run_stage",
   "factory_plan_rerun",
   "factory_plan_clone_group",
+  // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
+  "factory_plan_move",
 ] as const;
 
 /**
@@ -95,6 +105,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_run_stage",
   "factory_plan_rerun",
   "factory_plan_clone_group",
+  // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
+  "factory_plan_move",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -128,7 +140,7 @@ export type FactoryToolDeps = {
     adoptTemplate(input: { templateId: string; newTemplateId: string }): Promise<Record<string, unknown>>;
     getSettings(): Promise<Record<string, unknown>>;
     // BL-133.
-    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string }): Promise<Record<string, unknown>>;
+    startSession(input: { channelId: string; maxMinutes?: number; maxUsd?: number; templateId?: string; gpu?: { candidates: string[]; minVramGb?: number | null; maxPricePerHr?: number | null }; releaseWhenDone?: boolean; planId?: string; minCudaVersion?: string }): Promise<Record<string, unknown>>;
     getSession(input: { sessionId?: string }): Promise<Record<string, unknown>>;
     endSession(input: { sessionId: string }): Promise<Record<string, unknown>>;
     createJob(input: { sessionId: string; templateId: string; params: Record<string, string | number | boolean>; planId?: string; itemKey?: string; seed?: number }): Promise<Record<string, unknown>>;
@@ -149,6 +161,7 @@ export type FactoryToolDeps = {
     runStage(input: unknown): Promise<Record<string, unknown>>;
     rerun(input: unknown): Promise<Record<string, unknown>>;
     cloneGroup(input: unknown): Promise<Record<string, unknown>>;
+    move(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -235,6 +248,9 @@ const startSessionInput = z
     releaseWhenDone: z.boolean().optional(),
     /** BL-143: the generation plan this session works for (its whole cost counts there). */
     planId: z.string().min(2).max(80).optional(),
+    /** BL-159: the session's own minimum host CUDA version (only raises the owner's setting). The shape is checked here; the
+     * media core accepts only the versions RunPod knows (gpu.cudaVersions). */
+    minCudaVersion: z.string().regex(/^\d{1,2}\.\d{1,2}$/).optional(),
   })
   .strict();
 const sessionIdInput = z.object({ sessionId: z.string().min(1).max(64) }).strict();
@@ -433,7 +449,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_list_templates",
     {
       description:
-        "List this computer's media workflow templates: { templates: [{ templateId, version, source ('factory' from the registry, 'owner' = local), name, description, parameters, models, modelsMissing, updatedAt }], lastSync }. modelsMissing = declared models not on the volume (null when the volume could not be listed). Read-only.",
+        "List this computer's media workflow templates: { templates: [{ templateId, version, source ('factory' from the registry, 'owner' = local), name, description, parameters, models, modelsMissing, minCudaVersion (1.9.0: the lowest host CUDA the template needs, null = none), updatedAt }], lastSync }. modelsMissing = declared models not on the volume (null when the volume could not be listed). Read-only.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.listTemplates())
@@ -459,7 +475,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_delete_template",
     {
       description:
-        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Production → Models, recent actions).",
+        "Delete one LOCAL (owner-imported, source 'owner') workflow template from this computer: { templateId } -> { deleted: true }. Agree it with the owner in chat first; there is no second approval and no undo. A registry template (source 'factory') is refused (media_template_invalid): remove it from the registry index instead. Unknown id -> media_template_not_found. Its models are then no longer 'usedBy' it. Recorded as done by the Factory Operator (Web UI: Servers → Models, recent actions).",
       inputSchema: templateIdInput,
     },
     async (args) => {
@@ -487,7 +503,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_settings",
     {
       description:
-        "Read the owner's factory settings (Production → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
+        "Read the owner's factory settings (Servers → Setup) without a session: { settings: { factorySessionsEnabled, limits: { maxUsdPerSession, maxMinutesPerSession, maxUsdPerDay, maxUsdPerMonth }, spentOrReservedUsd: { today, thisMonth } (your sessions' spend plus what open ones may still spend up to their caps -- what a start is checked against), device: { maxUsdPerDay, spentTodayUsd (this computer only; a start also counts other computers on the same RunPod account), maxConcurrentSessions, idleMinutes }, gpu: { gpuTypeId, fallbackIds, minVramGb, maxPricePerHr, onDemandPricePerHr, cloudType, minCudaVersion (1.7.0: the lowest host CUDA a pod may land on, null = any), cudaVersions (1.9.0: the values a minimum may take, ascending) }, capacity: { retrySeconds, waitMinutes } } }. Days and months are this computer's local calendar. No secrets. Read-only, no RunPod call.",
       inputSchema: emptyInput,
     },
     async () => successResult(await deps.media.getSettings())
@@ -499,7 +515,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_start_session",
     {
       description:
-        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Pods are placed only on hosts whose CUDA driver supports the owner's minimum (gpu.minCudaVersion in factory_media_get_settings, 12.8 by default); before running, the host is checked again (its CUDA version, and a cuda device in ComfyUI) -- an incompatible pod is terminated and placed again at most twice, then the session fails with media_gpu_host_incompatible (1.7.0). With release-when-done, a session whose every job failed stops with stopReason 'all jobs failed (release when done)' (1.7.0). Poll factory_media_get_session.",
+        "Start a GPU session yourself: { channelId (the connected channel whose workspace receives the outputs), maxMinutes?, maxUsd? (both default to the owner's factory per-session limits), templateId? (use that registry template's GPU list and its minCudaVersion) | gpu? { candidates: [GPU type ids in order], minVramGb?, maxPricePerHr? }, minCudaVersion? (1.9.0: one of gpu.cudaVersions; this session's own minimum host CUDA, wins over the template's; it may only RAISE the owner's minimum -- a lower value is used as the owner's), releaseWhenDone? (true = the pod stops by itself one minute after the last job finished, stopReason 'released after last job ...'; false = it stays up until the idle timeout or your stop; omitted = the owner's setting, on by default) }. Within ALL of the owner's factory limits (the switch, per session, the factory's day and month) and the device's own limits, it is approved by you and the pod starts at once -> { session, approved: true }. Otherwise it is created pending for the owner -> { session, approved: false, heldBy: which limit }. GPUs are tried in order in the volume's datacenter; if none can be placed the session waits as waiting_capacity (no pod, no cost) and is retried every 30 s until the owner's wait limit, then fails with media_no_capacity. Pods are placed only on hosts whose CUDA driver supports the higher of the owner's minimum (gpu.minCudaVersion in factory_media_get_settings, 12.8 by default) and the session's own (1.9.0); before running, the host is checked again (its CUDA version, and a cuda device in ComfyUI) -- an incompatible pod is terminated and placed again at most twice, then the session fails with media_gpu_host_incompatible (1.7.0). With release-when-done, a session whose every job failed stops with stopReason 'all jobs failed (release when done)' (1.7.0). Poll factory_media_get_session.",
       inputSchema: startSessionInput,
     },
     async (args) => {
@@ -513,7 +529,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_get_session",
     {
       description:
-        "One of YOUR sessions by sessionId ({ session }: status pending|approved|waiting_capacity|starting|running|stopping|done|failed|rejected|interrupted, approvedBy, gpuTypeId it got, costPerHr, capacity { attempts, nextAttemptAt, waitUntil }, usdCharged, error), or your recent sessions ({ sessions }). Sessions you did not start are not visible. Read-only.",
+        "One of YOUR sessions by sessionId ({ session }: status pending|approved|waiting_capacity|starting|running|stopping|done|failed|rejected|interrupted, approvedBy, gpuTypeId it got, costPerHr, capacity { attempts, nextAttemptAt, waitUntil }, usdCharged, error, minCudaVersion (the session's own, null = the owner's only), usedMinCudaVersion (the minimum its last placement attempt used; null = no filter, or none attempted yet -- the start's own answer may still show null), hostCudaVersion (the current pod's host CUDA, null = not known yet) -- 1.9.0), or your recent sessions ({ sessions }). Sessions you did not start are not visible. Read-only.",
       inputSchema: optionalSessionIdInput,
     },
     async (args) => successResult(await deps.media.getSession(parseInput(optionalSessionIdInput, args)))
@@ -536,7 +552,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_create_job",
     {
       description:
-        "Submit a generation job to one of YOUR running sessions: { sessionId, templateId, params }. The same contract as the channel agents' agent_create_media_job (parameters validated first; image/audio/video inputs are paths relative to the session channel's 99 Data Exchange/Sent to YTM/; outputs and manifest.json land in that channel's From YTM/media/<jobId>/). Poll factory_media_get_job.",
+        "Submit a generation job to one of YOUR running sessions: { sessionId, templateId, params }. The same contract as the channel agents' agent_create_media_job (parameters validated first; image/audio/video inputs are paths relative to the session channel's 99 Data Exchange/Sent to YTM/; outputs and manifest.json land in that channel's From YTM/media/<jobId>/). A template whose minCudaVersion is above the session host's known CUDA is refused with media_gpu_host_incompatible before anything runs (1.9.0). Poll factory_media_get_job.",
       inputSchema: createJobInput,
     },
     async (args) => {
@@ -572,7 +588,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "factory_media_capacity_log",
     {
       description:
-        "Every pod start attempt on this computer, newest first: { attempts: [{ at, sessionId, datacenterId, gpuTypeId, pricePerHr, result: placed|no_capacity|error, detail }] } -- { since? (ISO time), gpuTypeId?, limit? (default 100, max 500) }. Kept 90 days. Use it to judge whether a GPU is usually available. Read-only.",
+        "Every pod start attempt on this computer, newest first: { attempts: [{ at, sessionId, datacenterId, gpuTypeId, pricePerHr, result: placed|no_capacity|error, detail, hostCudaVersion (1.9.0: on a placed entry, the host's CUDA once known; else null) }] } -- { since? (ISO time), gpuTypeId?, limit? (default 100, max 500) }. Kept 90 days. Use it to judge whether a GPU is usually available. Read-only.",
       inputSchema: capacityLogInput,
     },
     async (args) => successResult(await deps.media.capacityLog(parseInput(capacityLogInput, args)))
@@ -626,6 +642,12 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     (input) => deps.plans.update(input)
   );
   planWrite(
+    "factory_plan_move",
+    "Move an active plan to another channel connected on this computer (1.8.0): { planId, channelId, checkOnly?: boolean } -> { planId, from, to, checked, missing, missingCount, unfinishedJobs, moved }. Copy the plan's files into the new channel's '99 Data Exchange/Sent to YTM/' first: every auditionFile reported on the plan and every reference file is checked there (checked = how many distinct files; missing lists up to 500 of the missingCount not found). checkOnly: true only checks and changes nothing. Without it, a missing file or an unfinished job of the plan (queued or running) refuses the move with plan_invalid (details: checked, missing, missingCount / unfinishedJobs) and nothing changes. After the move, the auditionFiles and references play from the new channel; an attempt with no auditionFile plays its job's output from the channel the job ran on; runs and plan-linked sessions need the new channel. Jobs, sessions, results, verdicts, events and spend stay with the plan (same planId). Event plan_moved { from, to, checked }. Errors: plan_closed, plan_invalid (same channel, channel not connected, no workspace folder, files missing, unfinished jobs), plan_not_found.",
+    z.object({ planId: z.string(), channelId: z.string(), checkOnly: z.boolean().optional() }).strict(),
+    (input) => deps.plans.move(input)
+  );
+  planWrite(
     "factory_plan_close",
     "Close a plan: { planId, status: completed | cancelled, note? } -> { plan, progress }. Only the status changes: running jobs, sessions and files are not touched (cancel jobs with factory_media_cancel_job). A closed plan refuses every change (plan_closed).",
     z.object({ planId: z.string(), status: z.string(), note: z.string().nullable().optional() }).strict(),
@@ -633,7 +655,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planRead(
     "factory_plan_get",
-    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, rerun_requested, plan_*. In-app counts are read from the jobs themselves. Read-only.",
+    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, group_reviewed { groupId, accepted, rejected, overridesValidator } (1.8.0: the owner's verdicts took the wave's waiting count to zero -- recorded once per completion), rerun_requested, plan_moved { from, to, checked } (1.8.0), plan_*. Groups carry ownerNote (1.8.0: the owner's note on the wave; note is the factory's context, never overwritten by the owner). In-app counts are read from the jobs themselves. Read-only.",
     z.object({ planId: z.string(), since: z.string().optional() }).strict(),
     (input) => deps.plans.get(input)
   );
@@ -657,7 +679,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_run_stage",
-    "Create the jobs a plan still needs, in one of YOUR running sessions for the plan's channel: { planId, sessionId, itemKeys? | groupId? (default: every item) } -> { created: [{ itemKey, jobId, seed }], skipped: [{ itemKey, missing, reason }], stoppedAt }. Per item: fixed -- up to what the target still misses; until_accepted -- as many as the target still misses (accepted + pending counted), within maxAttempts. An item that lists seeds gets one job per unused seed (a failed or interrupted attempt frees its seed) and is never run without one: when its seeds run out it is listed in skipped. An item without seeds gets that many jobs. At most 200 jobs per call (more: plan_mismatch; run per group or item). Runs of one plan are serialized. Each job gets the item's params, plus its seed in the template's 'seed' parameter. Every job is checked first (session running, yours, the plan's channel and not another plan's; template and params valid); any problem refuses all (plan_mismatch) and creates nothing. Input files (image/audio/video params from Sent to YTM) are checked only when each job is created. If creating a job fails after the checks (e.g. ComfyUI down), the jobs before it exist and stoppedAt says where it stopped. The session is linked to the plan for its spend. Nothing ever runs without this call.",
+    "Create the jobs a plan still needs, in one of YOUR running sessions for the plan's channel: { planId, sessionId, itemKeys? | groupId? (default: every item) } -> { created: [{ itemKey, jobId, seed }], skipped: [{ itemKey, missing, reason }], stoppedAt }. Per item: fixed -- up to what the target still misses; until_accepted -- as many as the target still misses (accepted + pending counted), within maxAttempts. An item that lists seeds gets one job per unused seed (a failed or interrupted attempt frees its seed) and is never run without one: when its seeds run out it is listed in skipped. An item without seeds gets that many jobs. At most 200 jobs per call (more: plan_mismatch; run per group or item). Runs of one plan are serialized. Each job gets the item's params, plus its seed in the template's 'seed' parameter. Every job is checked first (session running, yours, the plan's channel and not another plan's; template and params valid); any problem refuses all (plan_mismatch) and creates nothing -- except a template whose minCudaVersion is above the session host's known CUDA, refused with media_gpu_host_incompatible (1.9.0: start a session with that minimum). Input files (image/audio/video params from Sent to YTM) are checked only when each job is created. If creating a job fails after the checks (e.g. ComfyUI down), the jobs before it exist and stoppedAt says where it stopped. The session is linked to the plan for its spend. Nothing ever runs without this call.",
     z.object({ planId: z.string(), sessionId: z.string(), itemKeys: z.array(z.string()).optional(), groupId: z.string().optional() }).strict(),
     (input) => deps.plans.runStage(input)
   );

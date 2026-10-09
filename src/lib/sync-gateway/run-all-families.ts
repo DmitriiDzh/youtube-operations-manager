@@ -5,6 +5,7 @@ import { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connecti
 import { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
 import { createGenerationPlansSyncRunnerForProduction } from "./generation-plans-sync";
 import { createMediaSettingsSyncRunnerForProduction } from "./media-settings-sync";
+import { createAgentTokensSyncRunnerForProduction } from "./agent-tokens-sync";
 
 /** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
  * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
@@ -35,7 +36,7 @@ async function runAndRecord<T>(
  * process-wide guard in `runAllSyncFamiliesOnce` below.
  */
 async function runAllOnce() {
-  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings] = await Promise.all([
+  const [changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens] = await Promise.all([
     runAndRecord("change_drafts", () => createChangeDraftsSyncCoreForProduction().runSyncCycle()),
     runAndRecord("editorial_profile", () => createEditorialProfileSyncRunnerForProduction().runSyncCycle()),
     runAndRecord("ai_connections", () => createAiConnectionsCatalogSyncRunnerForProduction().runSyncCycle()),
@@ -43,10 +44,12 @@ async function runAllOnce() {
     runAndRecord("media_sessions", () => createMediaSessionsSyncRunnerForProduction().runSyncCycle()),
     // BL-143 phase 2: this device's generation plans (and its verdicts on others' plans) out, the other devices' in.
     runAndRecord("generation_plans", () => createGenerationPlansSyncRunnerForProduction().runSyncCycle()),
-    // BL-150: the shared Production → Setup settings (one Automerge document; media-generation applies it on its own tick).
+    // BL-150: the shared Servers → Setup settings (one Automerge document; media-generation applies it on its own tick).
     runAndRecord("media_settings", () => createMediaSettingsSyncRunnerForProduction().runSyncCycle()),
+    // BL-160: the agent tokens this device knows (hashes only) out, the other devices' in; agent-token-sync applies them.
+    runAndRecord("agent_tokens", () => createAgentTokensSyncRunnerForProduction().runSyncCycle()),
   ]);
-  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings };
+  return { changeDrafts, editorialProfile, aiConnections, mediaSessions, generationPlans, mediaSettings, agentTokens };
 }
 
 type AllFamiliesResult = Awaited<ReturnType<typeof runAllOnce>>;

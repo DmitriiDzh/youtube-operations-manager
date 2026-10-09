@@ -108,9 +108,11 @@ test("computeDataQualityReport: aggregates repeated skips for the same video, ke
     now: FAR_FUTURE_NOW,
   });
 
+  // FO-MSG-0013 §4: each entry also names the window of the latest run that skipped it (09-06..09-10 here).
+  const latestWindow = { startDate: "2026-09-06", endDate: "2026-09-10" };
   assert.deepEqual(report.videosWithSkips, [
-    { videoId: "v1", skipCount: 2, lastSkippedAt: "2026-09-11T00:00:00.000Z" },
-    { videoId: "v2", skipCount: 1, lastSkippedAt: "2026-09-11T00:00:00.000Z" },
+    { videoId: "v1", skipCount: 2, lastSkippedAt: "2026-09-11T00:00:00.000Z", lastSkippedRange: latestWindow },
+    { videoId: "v2", skipCount: 1, lastSkippedAt: "2026-09-11T00:00:00.000Z", lastSkippedRange: latestWindow },
   ]);
 });
 
@@ -137,7 +139,10 @@ test("computeDataQualityReport: a run overlapping only the edge of the requested
     now: FAR_FUTURE_NOW,
   });
 
-  assert.deepEqual(report.videosWithSkips, [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-11T00:00:00.000Z" }]);
+  // The run's own window, not clipped to the requested range (FO-MSG-0013 §4).
+  assert.deepEqual(report.videosWithSkips, [
+    { videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-11T00:00:00.000Z", lastSkippedRange: { startDate: "2026-09-05", endDate: "2026-09-10" } },
+  ]);
 });
 
 // Found by independent review, 2026-09-23: every real collection run attempts every
@@ -173,7 +178,7 @@ test("computeDataQualityReport: skipCount reflects total historical skips, even 
   });
 
   assert.deepEqual(report.videosWithSkips, [
-    { videoId: "v1", skipCount: 3, lastSkippedAt: "2026-09-16T00:00:00.000Z" },
+    { videoId: "v1", skipCount: 3, lastSkippedAt: "2026-09-16T00:00:00.000Z", lastSkippedRange: { startDate: "2026-09-11", endDate: "2026-09-15" } },
   ]);
 });
 

@@ -397,6 +397,8 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
     ["POST", "/api/settings"],
     ["DELETE", "/api/agent-tokens"],
     ["DELETE", "/api/factory-agent-token"],
+    // BL-161: revoking the Producer's token is the same kind of stop switch.
+    ["DELETE", "/api/producer-agent-token"],
     ["POST", "/api/channel-connections/disconnect"],
   ];
   const neighbours: Array<[string, string]> = [
@@ -406,6 +408,8 @@ test("AC-H4: stop switches are exempt from recovery mode only; the operation loc
     // BL-130 AC-TI-12: importing a token is a registration, not a stop switch.
     ["POST", "/api/agent-tokens/import"],
     ["POST", "/api/factory-agent-token/import"],
+    ["POST", "/api/producer-agent-token"],
+    ["POST", "/api/producer-agent-token/import"],
     ["PUT", "/api/logical-paths/value"],
     ["DELETE", "/api/logical-paths"],
     ["POST", "/api/channel-connections/disconnect/extra"],
@@ -451,6 +455,23 @@ test("proxy gates the market-assignments PUT route like any other real mutation"
   try {
     const response = await proxy(new NextRequest(new Request("http://localhost/api/market-assignments", { method: "PUT" })));
     assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// BL-163: the owner's proposal decisions and the watchlist pause / inactivity settings are real mutations, gated like the rest.
+test("proxy gates the agent-proposal approve/reject and the watchlist pause/inactivity routes like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    for (const path of [
+      "/api/agent-proposals/p-1/approve",
+      "/api/agent-proposals/p-1/reject",
+      "/api/market-intelligence/channels/UCaaaaaaaaaaaaaaaaaaaaaa/pause",
+      "/api/market-intelligence/inactivity",
+    ]) {
+      assert.equal((await proxy(mutatingRequest(path))).status, 409, path);
+    }
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

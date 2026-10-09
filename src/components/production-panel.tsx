@@ -3,7 +3,7 @@
 import { formatDisplayDateUtc } from "@/lib/shared-formatting";
 import { errorText } from "@/lib/ui-text";
 import { useT } from "./ui-text-provider";
-import type { Translate } from "@/lib/ui-text";
+import type { Translate, UiTextKey } from "@/lib/ui-text";
 import type { PeerReviewSource } from "./plan-review-screen";
 import { SettingsSyncNotice } from "./settings-sync-notice";
 import { useCallback, useEffect, useState } from "react";
@@ -13,6 +13,8 @@ import {
   ComputeCard,
   JobsCard,
   CapacityLogCard,
+  ExchangeCleanupCard,
+  NowRunningLine,
   FactoryLimitsCard,
   GpuFallbackCard,
   LimitsCard,
@@ -26,13 +28,12 @@ import {
 } from "./media-generation-settings";
 import { PlansPanel } from "./generation-plans-panel";
 
-// Phase 14 slice 6 (owner, Telegram 2026-10-05, msg 1549; PHASE_14_PLAN.md §5.2, AC-P14-26): the Production section --
-// remote media generation's day-to-day work. Tabs are ordered by how often they are visited: the work tabs on the left
-// (Sessions, Jobs, Models, Workflow templates), the setup tab on the right. The header shows the connected RunPod
-// account's balance and today's spend. The RunPod keys themselves stay in Settings → RunPod.
+// Phase 14 slice 6 (owner, Telegram 2026-10-05, msg 1549; PHASE_14_PLAN.md §5.2, AC-P14-26): remote media generation's
+// day-to-day work, the setup tab on the right. BL-157 (SERVERS_MEDIA_PLAN.md, FO-REQ-0009): split into Servers (shared) and
+// Media (the active channel's). The Servers header shows the RunPod balance and today's spend; the keys stay in Settings.
 
-import { PRODUCTION_TABS, type ProductionTab } from "./section-tabs";
-export { PRODUCTION_TABS };
+import { MEDIA_TABS, SERVERS_TABS, type MediaTab, type ServersTab } from "./section-tabs";
+export { MEDIA_TABS, SERVERS_TABS };
 
 /** The balance is a RunPod call: on open, on demand, and once a minute while Production is open. */
 const BALANCE_POLL_MS = 60_000;
@@ -123,24 +124,45 @@ function BalanceHeader({ configured, limits, activeElsewhere = 0 }: { configured
   );
 }
 
-export function ProductionPanel({
+/** The tab bar of a section: work tabs on the left, a setup tab (if any) on the right. */
+function TabBar<V extends string>({ tabs, current, onSelect }: { tabs: ReadonlyArray<{ value: V; labelKey: UiTextKey; side?: "work" | "setup" }>; current: V; onSelect: (tab: V) => void }) {
+  const t = useT();
+  const button = (item: (typeof tabs)[number]) => (
+    <button
+      key={item.value}
+      type="button"
+      onClick={() => onSelect(item.value)}
+      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${current === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+    >
+      {t(item.labelKey)}
+    </button>
+  );
+  const setup = tabs.filter((item) => item.side === "setup");
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{tabs.filter((item) => item.side !== "setup").map(button)}</div>
+      {setup.length > 0 && <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{setup.map(button)}</div>}
+    </div>
+  );
+}
+
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-SM-01, FO-REQ-0009 §1): Servers -- the shared GPU and model infrastructure, the same for
+ * every channel: the balance, sessions of every channel (and of the other devices), models, templates and the setup with
+ * storage, limits and the capacity log.
+ */
+export function ServersPanel({
   activeChannelId = null,
   tab: routeTab,
   onTabChange,
-  onReviewPlan,
-  paused = false,
 }: {
   activeChannelId?: string | null;
-  /** BL-149: the sub-tab from the address (`/production/<tab>`), with navigation on a click; absent = local state. */
-  tab?: ProductionTab;
-  onTabChange?: (tab: ProductionTab) => void;
-  /** BL-149 re-review: the panel is hidden behind a plan review; Plans stops polling meanwhile. */
-  paused?: boolean;
-  /** BL-149: where the review screen of a plan opens (its own address); absent = in place. */
-  onReviewPlan?: (planId: string, source?: PeerReviewSource) => void;
+  /** The sub-tab from the address (`/servers/<tab>`), with navigation on a click; absent = local state. */
+  tab?: ServersTab;
+  onTabChange?: (tab: ServersTab) => void;
 }) {
   const t = useT();
-  const [ownTab, setOwnTab] = useState<ProductionTab>("sessions");
+  const [ownTab, setOwnTab] = useState<ServersTab>("sessions");
   const tab = routeTab ?? ownTab;
   const setTab = onTabChange ?? setOwnTab;
   const [limits, setLimits] = useState<MediaSessionLimits | null>(null);
@@ -150,35 +172,15 @@ export function ProductionPanel({
   if (loadError) return <p className="text-sm text-red-400">{loadError}</p>;
   if (!overview) return <p className="text-sm text-zinc-500">{t("common.loading")}</p>;
 
-  const tabButton = (item: (typeof PRODUCTION_TABS)[number]) => (
-    <button
-      key={item.value}
-      type="button"
-      onClick={() => setTab(item.value)}
-      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === item.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
-    >
-      {t(item.labelKey)}
-    </button>
-  );
-
   // Every tab stays mounted and is only hidden (like Settings' sub-tabs): Sessions keeps polling -- the header's counts
   // and an agent's new request stay current whichever tab is open.
   return (
     <div className="max-w-5xl space-y-6">
       <BalanceHeader configured={overview.credentials.configured} limits={limits} activeElsewhere={activeElsewhere} />
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((item) => item.side === "work").map(tabButton)}</div>
-        <div className="ml-auto inline-flex gap-1 rounded-lg bg-zinc-950 p-1">{PRODUCTION_TABS.filter((item) => item.side === "setup").map(tabButton)}</div>
-      </div>
+      <TabBar tabs={SERVERS_TABS} current={tab} onSelect={setTab} />
       <div className={tab === "sessions" ? "space-y-6" : "hidden"}>
         <SessionsCard ready={overview.ready} activeChannelId={activeChannelId} onLimits={setLimits} />
         <OtherDevicesCard ready={overview.credentials.configured} onActiveElsewhere={setActiveElsewhere} />
-      </div>
-      <div className={tab === "jobs" ? "space-y-6" : "hidden"}>
-        <JobsCard activeChannelId={activeChannelId} />
-      </div>
-      <div className={tab === "plans" ? "space-y-6" : "hidden"}>
-        <PlansPanel active={tab === "plans" && !paused} onReview={onReviewPlan} />
       </div>
       <div className={tab === "models" ? "space-y-6" : "hidden"}>
         <ModelsCard configured={overview.credentials.configured && Boolean(overview.settings.networkVolumeId)} active={tab === "models"} />
@@ -195,6 +197,48 @@ export function ProductionPanel({
         <GpuFallbackCard settings={overview.settings} onChanged={refresh} />
         <FactoryLimitsCard settings={overview.settings} onChanged={refresh} />
         <CapacityLogCard />
+        <ExchangeCleanupCard />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * BL-157 (AC-SM-01/03/06, FO-REQ-0009 §2): Media -- what the owner reviews for the ACTIVE channel: its plans (with the
+ * review) and its jobs, plus a line while a session of this channel generates. The routes behind it return only the active
+ * channel's plans and jobs; the section remounts when the channel changes.
+ */
+export function MediaPanel({
+  activeChannelId = null,
+  tab: routeTab,
+  onTabChange,
+  onReviewPlan,
+  paused = false,
+  sessionsHref = "/servers/sessions",
+}: {
+  activeChannelId?: string | null;
+  /** The sub-tab from the address (`/media/<tab>`), with navigation on a click; absent = local state. */
+  tab?: MediaTab;
+  onTabChange?: (tab: MediaTab) => void;
+  /** BL-149 re-review: the panel is hidden behind a plan review; Plans stops polling meanwhile. */
+  paused?: boolean;
+  /** BL-149: where the review screen of a plan opens (its own address); absent = in place. BL-162: `wave` = open on that wave. */
+  onReviewPlan?: (planId: string, source?: PeerReviewSource, wave?: string) => void;
+  /** Where "now running" leads: Servers → Sessions. */
+  sessionsHref?: string;
+}) {
+  const [ownTab, setOwnTab] = useState<MediaTab>("plans");
+  const tab = routeTab ?? ownTab;
+  const setTab = onTabChange ?? setOwnTab;
+  return (
+    <div className="max-w-5xl space-y-6">
+      <NowRunningLine activeChannelId={activeChannelId} sessionsHref={sessionsHref} />
+      <TabBar tabs={MEDIA_TABS} current={tab} onSelect={setTab} />
+      <div className={tab === "plans" ? "space-y-6" : "hidden"}>
+        <PlansPanel active={tab === "plans" && !paused} onReview={onReviewPlan} />
+      </div>
+      <div className={tab === "jobs" ? "space-y-6" : "hidden"}>
+        <JobsCard activeChannelId={activeChannelId} />
       </div>
     </div>
   );

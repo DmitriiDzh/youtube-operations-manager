@@ -6,7 +6,7 @@
  * verbatim; `src/lib/video-metadata/contracts.ts` re-exports every name unchanged.
  */
 import { randomUUID } from "node:crypto";
-import type { ZodError, ZodType } from "zod";
+import { z, type ZodError, type ZodType } from "zod";
 
 export function createIdGenerator() {
   return () => randomUUID();
@@ -162,6 +162,8 @@ export type DomainErrorCode =
   | "plan_closed"
   | "plan_mismatch"
   | "plan_invalid"
+  // BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-04): the attempt already has a verdict and the request did not say `replace`.
+  | "plan_verdict_exists"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
@@ -235,7 +237,13 @@ export type DomainErrorCode =
   | "LOGICAL_PATH_NOT_FOUND"
   | "LOGICAL_PATH_ALREADY_EXISTS"
   | "LOGICAL_PATH_VALUE_INVALID"
-  | "LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE";
+  | "LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE"
+  // BL-163 (docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C) -- agent proposals the owner approves or rejects.
+  | "AGENT_PROPOSAL_NOT_FOUND"
+  | "AGENT_PROPOSAL_NOT_PENDING"
+  | "AGENT_PROPOSAL_DUPLICATE"
+  | "AGENT_PROPOSAL_NOT_APPLICABLE"
+  | "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;
@@ -302,3 +310,15 @@ export type ResolvedCredentials = {
   tokenExpiry?: number;
   scopeSet: Set<string>;
 };
+
+/**
+ * A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). The one definition for tool inputs that
+ * take dates (the Producer's upload milestones and portfolio overview, BL-168's stored breakdowns).
+ */
+export const calendarDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD")
+  .refine((value) => {
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+  }, "not a calendar date");

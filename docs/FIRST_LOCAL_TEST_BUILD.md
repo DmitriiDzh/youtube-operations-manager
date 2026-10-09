@@ -76,10 +76,12 @@ not this script's).
 when the app is already running: it stops the running instance first (whatever listens on port 3000),
 then starts and rebuilds as usual. `stop` (also used by `start`/`update`) first waits up to 2 minutes
 for any running export/import/database migration to finish (`npm run operation-lock -- wait-idle`)
-and refuses to stop -- exit code 1, nothing started or rebuilt -- if one does not, so the server is
+and refuses to stop -- a non-zero exit code (1 on Windows, 2 on macOS), nothing started or rebuilt -- if one does not, so the server is
 never killed mid-operation (which is what leaves a stuck operation lock); it then confirms the port is
 free. A stale lock left by an earlier interrupted run is reported but never cleared by these scripts
-(see the app's `/recovery` page or `npm run operation-lock -- clear`).
+(see the app's `/recovery` page or `npm run operation-lock -- clear`). It also refuses, the same way, while a media session runs on
+this computer (`npm run operation-lock -- media-idle`): stopping the app terminates its RunPod pod and fails its queued jobs. Wait
+until the session finishes, stop it in Production, or run `stop --force`.
 
 **To stop safely:** run `scripts\windows\stop.bat` (macOS: `scripts/macos/stop.sh`). Since BL-116 the server runs
 in the background with no window to close (output in `.launcher.log`) and stops by itself about 10 minutes after
@@ -113,8 +115,15 @@ From the project root:
 
 Same behavior as the Windows script: checks Node.js and `.env.local`, installs dependencies if
 needed, then runs the same rebuild-staleness check described in §3 step 4 (git-commit-marker
-comparison in a checkout, falling back to "rebuild only if `.next` is missing" otherwise), starts
-the server, opens your default browser, and prints where its data lives. Never touches git, the
+comparison in a checkout), starts
+the server, opens your default browser, and prints where its data lives. Since BL-158 the macOS
+rule (`scripts/macos/build-if-stale.sh`, shared by `start.sh`, `update.sh` and the system service)
+is stricter than Windows': a folder without git also gets a marker (`no-git`), missing
+`node_modules` or a missing marker always means a full install and build, the marker is removed
+before building and written only after a complete build (an interrupted install or build is never
+served), and `next build` runs with `NODE_TEST_CONTEXT=1` so it never opens the real database. If git
+cannot report the commit (e.g. after a macOS update), a present marker counts as complete and a build
+writes `git-unavailable`, so it is redone once git works again. Never touches git, the
 network, or your working tree — no `git pull`, nothing (see §3's note on why, and what changed
 2026-09-21).
 
@@ -126,12 +135,29 @@ double-clickable delegate for `stop.sh`/`update.sh` below.
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`), or
 double-click `stop.command`. You also don't strictly need to remember this: a production server
 (`start.sh`/`start.command`, i.e. `npm run start`) started via these scripts shuts itself down
-automatically after 60 minutes with no web request at all (owner instruction, 2026-09-25, widened
-from an original 5 minutes on 2026-09-29 -- `src/lib/idle-shutdown.ts`) -- scoped to this one
+automatically 10 minutes after the last open window (owner instruction, 2026-09-25; 5 → 60 minutes
+on 2026-09-29, 60 → 10 with the page heartbeat on 2026-10-03, BL-116 -- `src/lib/idle-shutdown.ts`) -- scoped to this one
 server process only; an MCP or CLI session stays
 unaffected either way, since neither depends on this server being up (each reads the local
 database directly). This auto-shutdown never arms during `next dev`, only in a real production
 process.
+
+**Optional: run it as a system service (BL-158, ADR 0032).** So that another account on the same Mac
+can use the app without you being logged in, the server can run as a launchd daemon under your
+account, started when the Mac is switched on (with FileVault: once anyone unlocks it):
+
+1. Give node Full Disk Access: System Settings → Privacy & Security → Full Disk Access → "+" →
+   Cmd+Shift+G → the real node binary (e.g. `/opt/homebrew/Cellar/node/<version>/bin/node`) → enable
+   it. Repeat after every node upgrade.
+2. Double-click `scripts/macos/install-service.command` and enter an administrator password.
+
+The other account then opens `http://localhost:3000` and signs in with Google in its own browser. The service builds
+and runs only while this folder is on the `dev` or `main` branch.
+Under the service the server is never stopped by idleness — 10 minutes without an open window only
+switch Live writes off. `start.command` still opens the app (and restarts the service when the
+checked-out commit changed), `stop.command` restarts it, `update.command` refuses.
+`uninstall-service.command` removes the service and returns to the behavior above. Logs:
+`~/Library/Logs/YouTubeOperationsManager/service.log` (the service) and `.launcher.log` (the server).
 
 **To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh` (or
 double-click `update.command`), then `start.sh`/`start.command`. A git checkout running directly

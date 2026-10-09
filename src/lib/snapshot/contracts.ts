@@ -42,6 +42,10 @@ export type { SqlExecutor };
  *   - `factory_agent_tokens` (Factory Operator access, `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`
  *     F2) -- the Factory Operator role's agent credential (hash only), device-local by design exactly
  *     like `agent_channel_tokens`; never a RISK-52-style omission.
+ *   - Since BL-160 (`docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §2) the three token tables (with
+ *     `producer_agent_tokens`, BL-161) are filled across devices by the `agent-tokens` sync family
+ *     (hashes only, per-token rules in `src/lib/agent-token-sync`), never by a snapshot: a snapshot
+ *     import must not roll back a revocation made since the snapshot was taken.
  *   - `rules` (auto-add-to-playlist rules, from the project's original pre-rewrite baseline) -- this feature's own
  *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
  *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is
@@ -130,6 +134,9 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   // Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §4) -- AI-generation provenance,
   // same RISK-52-avoidance reason, same FK order rule (after its own parent, hypotheses).
   "hypothesis_generation_provenance",
+  // BL-163 (FO-REQ-0014): proposals to the watchlist and hypotheses -- the owner reviews them on either computer. No FK; after
+  // research_channels and hypotheses all the same, which both name.
+  "agent_proposals",
   // Phase 12 slice 12.4 (docs/roadmap/plans/PHASE_12_PLAN.md, owner decision D1) -- per-channel
   // assignment of the Phase 9 market records above. Business data, added from its own first commit
   // (the RISK-52 lesson); no FK, so order is irrelevant.
@@ -161,6 +168,10 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   video_metrics_daily: "accepted limitation (RISK-52, ARCHITECTURE §14.7): collected metrics stay local",
   analytics_collection_runs: "collection bookkeeping for the local metrics above",
   analytics_weekly_reports: "rebuilt from the device's own local metrics",
+  video_milestones: "accepted limitation (RISK-52, same as video_metrics_daily): each computer collects its own channels' milestones (BL-166)",
+  video_breakdown_daily: "accepted limitation (RISK-52, same as video_milestones): each computer collects its own channels' breakdowns (BL-168)",
+  channel_breakdown_daily: "accepted limitation (RISK-52, same as video_milestones): each computer collects its own channels' breakdowns (BL-168)",
+  analytics_breakdown_state: "collection bookkeeping for the local breakdowns above (BL-168)",
   creative_assets: "accepted limitation (RISK-52)",
   content_proposals: "accepted limitation (RISK-52)",
   content_proposal_artifacts: "accepted limitation (RISK-52), child of content_proposals",
@@ -175,8 +186,10 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   channel_workspaces: "per-device local filesystem paths (Phase 11)",
   logical_paths: "per-device registry of named local paths (Factory Operator access, plan F1)",
   logical_path_values: "per-device local filesystem path values of the registry (Factory Operator access, plan F1)",
-  agent_channel_tokens: "per-machine agent credentials (Phase 12)",
-  factory_agent_tokens: "per-machine Factory Operator agent credential hash (Factory Operator access, plan F2)",
+  agent_channel_tokens: "agent credential hashes (Phase 12); shared between devices by the agent-tokens sync family, never by a snapshot (BL-160)",
+  factory_agent_tokens: "Factory Operator agent credential hash (plan F2); shared by the agent-tokens sync family, never by a snapshot (BL-160)",
+  producer_agent_tokens: "Producer agent credential hash (BL-161); shared by the agent-tokens sync family, never by a snapshot (BL-160)",
+  producer_call_log: "per-device log of the Producer agent's calls (BL-161)",
   agent_connections: "retired (ADR 0011), table kept inert",
   agent_capability_zones: "retired (ADR 0011), table kept inert",
   app_settings: "per-device settings and toggles (Live writes, MCP, reads, ...)",
@@ -203,6 +216,9 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   generation_plan_results: "results of this device's generation plans (BL-143); they belong to the owning device's plan",
   generation_plan_events: "events of this device's generation plans (BL-143)",
   generation_plan_peer_verdicts: "verdicts given on this device for another device's plans (BL-143 phase 2); they travel in this device's sync report, not in a snapshot",
+  generation_plan_peer_group_notes: "wave notes written on this device for another device's plans (BL-162); they travel in this device's sync report, not in a snapshot",
+  generation_plan_verdict_history: "the verdict history of this device's generation plans (BL-157); it belongs to the owning device's plan",
+  generation_plan_review_claims: "this device's short-lived 'being reviewed here' claims (BL-157); they travel in this device's sync report, not in a snapshot",
 });
 
 /**

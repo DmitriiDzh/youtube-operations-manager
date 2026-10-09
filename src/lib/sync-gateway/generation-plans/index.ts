@@ -2,12 +2,12 @@ import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import { createPerDeviceReportCore } from "../per-device-report";
 import { createFsPerDeviceReportStore } from "../per-device-report/fs-store";
-import { generationPlansReportSchema, type GenerationPlansReport } from "./contracts";
+import { GENERATION_PLANS_REPORT_VERSION, generationPlansReportSchema, type GenerationPlansReport } from "./contracts";
 
 // BL-143 phase 2: the generation plans report family -- the shared per-device report mechanics with this family's schema.
 
 export function createGenerationPlansShareCore(deps: Omit<Parameters<typeof createPerDeviceReportCore<GenerationPlansReport>>[0], "schema" | "label">) {
-  return createPerDeviceReportCore<GenerationPlansReport>({ schema: generationPlansReportSchema, label: "generation plans report", ...deps });
+  return createPerDeviceReportCore<GenerationPlansReport>({ schema: generationPlansReportSchema, label: "generation plans report", currentVersion: GENERATION_PLANS_REPORT_VERSION, ...deps });
 }
 export type GenerationPlansShareCore = ReturnType<typeof createGenerationPlansShareCore>;
 
@@ -29,3 +29,5 @@ export function createGenerationPlansShareCoreForProduction(): GenerationPlansSh
 }
 
 export * from "./contracts";
+// BL-162: the review presence files (what each computer has open right now), next to the reports.
+export { createReviewPresence, createReviewPresenceForProduction, reviewPresenceSchema, REVIEW_PRESENCE_FORMAT, REVIEW_PRESENCE_MAX_BYTES, type ReviewPresence, type ReviewPresenceCore } from "./presence";

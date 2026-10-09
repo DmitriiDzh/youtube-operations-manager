@@ -15,6 +15,16 @@ import {
   saveChannelDailyMetric,
   upsertVideoMetric,
   upsertWeeklyReport,
+  listVideoMilestones,
+  listVideoMilestoneStates,
+  deferVideoMilestone,
+  recordVideoMilestoneFailure,
+  saveCollectedVideoMilestone,
+  listAnalyticsBreakdownStates,
+  listAnalyticsBreakdownRows,
+  saveCollectedAnalyticsBreakdown,
+  deferAnalyticsBreakdown,
+  recordAnalyticsBreakdownFailure,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -25,6 +35,53 @@ import {
 // videos/channels" acceptance criterion; see ../write-path-inventory.test.ts for the automated
 // check). `markAnalyticsAutoCollected` is the one legitimate exception -- it writes a single
 // `channels` column dedicated to this module's own concern, never any other field on that row.
+/** BL-166: the milestone service's store (`milestones.ts`): video lengths and publish dates, and the milestone rows. */
+export function createVideoMilestoneStoreAdapter() {
+  return {
+    videoStore: {
+      async listVideos(channelId: string) {
+        return (await listStoredVideosByChannel(channelId)).map((record) => ({
+          videoId: record.videoId,
+          publishedAt: record.publishedAt ?? null,
+          privacyStatus: record.privacyStatus ?? null,
+          liveBroadcastContent: record.liveBroadcastContent ?? null,
+          durationSeconds: record.durationSeconds ?? null,
+        }));
+      },
+    },
+    store: {
+      list: (channelId: string, filter?: { videoIds?: string[]; milestoneDays?: number }) => listVideoMilestones(channelId, filter),
+      listStates: (channelId: string) => listVideoMilestoneStates(channelId),
+      saveCollected: (row: Parameters<typeof saveCollectedVideoMilestone>[0]) => saveCollectedVideoMilestone(row),
+      recordFailure: (row: Parameters<typeof recordVideoMilestoneFailure>[0]) => recordVideoMilestoneFailure(row),
+      defer: (row: Parameters<typeof deferVideoMilestone>[0]) => deferVideoMilestone(row),
+    },
+  };
+}
+
+/** BL-168: the stored breakdowns' store (`breakdowns.ts`): publish dates and visibility of the channel's videos, and the breakdown rows. */
+export function createBreakdownStoreAdapter() {
+  return {
+    videoStore: {
+      async listVideos(channelId: string) {
+        return (await listStoredVideosByChannel(channelId)).map((record) => ({
+          videoId: record.videoId,
+          publishedAt: record.publishedAt ?? null,
+          privacyStatus: record.privacyStatus ?? null,
+          liveBroadcastContent: record.liveBroadcastContent ?? null,
+        }));
+      },
+    },
+    store: {
+      listStates: (channelId: string) => listAnalyticsBreakdownStates(channelId),
+      saveCollected: (row: Parameters<typeof saveCollectedAnalyticsBreakdown>[0]) => saveCollectedAnalyticsBreakdown(row),
+      defer: (row: Parameters<typeof deferAnalyticsBreakdown>[0]) => deferAnalyticsBreakdown(row),
+      recordFailure: (row: Parameters<typeof recordAnalyticsBreakdownFailure>[0]) => recordAnalyticsBreakdownFailure(row),
+      listRows: (channelId: string, subjects: string[], startDate: string, endDate: string) => listAnalyticsBreakdownRows(channelId, subjects, startDate, endDate),
+    },
+  };
+}
+
 export function createAnalyticsStoreAdapter() {
   return {
     videoStore: {

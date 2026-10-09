@@ -168,6 +168,22 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "Thumbnail impressions and click-through rate (CTR) per video per day for a date range, from YouTube's Reporting API Reach report that this app downloads and stores locally -- a LOCAL read, no live YouTube call. Neither metric is available from the Analytics API. Returns `state` (`no_job` / `waiting_for_first_report` / `ready`) so an empty result is never mistaken for zero, plus daily points, per-video totals and impressions-weighted totals; the first report file arrives up to 48 hours after the subscription is created, and data only exists from the day Google started producing files.",
   },
   {
+    id: "analytics.query_video_milestones",
+    mcpTools: ["agent_get_video_milestones"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "The stored day-7 and day-28 milestones of the channel's own videos (BL-166): per milestone its window (publish date .. +6 / +27, Pacific), status (collected / retry / failed), the window totals (views, watch minutes, average view duration and percentage) and the audience-retention curve (up to 100 points) as YouTube returned them, plus the video's stored length. Collected in the background with the Analytics collection, at most 25 per channel per run -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "analytics.query_stored_breakdowns",
+    mcpTools: ["agent_get_stored_breakdowns"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "Traffic sources and device types per day as stored by YT Manager (BL-168): views and watch minutes per insightTrafficSourceType and per deviceType, for each public video's first 90 days and for the channel as a whole, summed over a date range or listed by day, with the stored coverage of each. Collected in the background with the Analytics collection, once a day -- a LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
     id: "analytics.query_video_analytics",
     mcpTools: ["agent_query_video_analytics", "analytics_list"],
     domain: "analytics",
@@ -289,7 +305,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "asset_performance",
     permission: "READ",
     description:
-      "Owner spec §16: joins the existing asset catalog (`linkedVideoId` -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube and carrying no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus `lifetimeCountersAsOf` -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (`performanceMetric` + a REQUIRED, caller-supplied `performanceDayOffset` -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as comparable_content.find_comparable_videos, never a second implementation) is additionally computed only when both are given, and is honestly `null` (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage -- a normal case for a video published before regular collection began. `sort: \"lifetimeViewCount\"` ranks by a NON-age-fair total that structurally favors older videos (more time to accumulate views) -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row, never grounds for exclusion; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count, since a channel-scoped read cannot further distinguish 'never synced' from 'on another channel') is excluded, counted in `excludedForMissingLink`, never silently dropped. Does NOT support thumbnail-CTR/impressions-based questions ('which thumbnails were used by high-CTR videos') -- this application's own analytics collection never fetches YouTube's impressions/CTR metrics at all, and this is never approximated via card/annotation click-through metrics (a different signal). Does NOT support metadata/version linkage (no temporal precision on `linkedVideoId`) or experiment/outcome linkage (Phase 10, not built yet). Never reads Content Proposal reference associations (`content_proposal_artifacts`) -- a structurally different, draft/unactioned relationship, never conflated with actual asset usage. `credentialRef` is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when `performanceMetric` is requested. `limit` is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
+      "Owner spec §16: joins the existing asset catalog (`linkedVideoId` -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube and carrying no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus `lifetimeCountersAsOf` -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (`performanceMetric` + a REQUIRED, caller-supplied `performanceDayOffset` -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as comparable_content.find_comparable_videos, never a second implementation) is additionally computed only when both are given, and is honestly `null` (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage -- a normal case for a video published before regular collection began. `sort: \"lifetimeViewCount\"` ranks by a NON-age-fair total that structurally favors older videos (more time to accumulate views) -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row, never grounds for exclusion; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count, since a channel-scoped read cannot further distinguish 'never synced' from 'on another channel') is excluded, counted in `excludedForMissingLink`, never silently dropped. Does NOT include thumbnail impressions/CTR -- those are stored separately from YouTube's Reach reports and read with analytics.query_channel_reach (per video and day with groupBy video_day); this capability never approximates them via card/annotation click-through metrics (a different signal). Does NOT support metadata/version linkage (no temporal precision on `linkedVideoId`) or experiment/outcome linkage (experiments in the decision engine are not linked to videos yet). Never reads Content Proposal reference associations (`content_proposal_artifacts`) -- a structurally different, draft/unactioned relationship, never conflated with actual asset usage. `credentialRef` is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when `performanceMetric` is requested. `limit` is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
   },
   // Phase 9 slice 4 (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- fulfils the two capability
   // names reserved in `PLANNED_FUTURE_CAPABILITIES` since Phase 7. Both registered directly as
@@ -320,7 +336,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "market_intelligence",
     permission: "READ",
     description:
-      "Compact bulk read of the research watchlist: several channels in one paged call, each with its newest raw channel snapshot and snapshot/evidence counts (no evidence text, no snapshot lists). Other channels' API-sourced snapshots only for the last 30 days (YouTube API policy III.E.4.d); nothing computed from competitor statistics (III.E.4.h). Implemented as the `query_market_overview` MCP tool (`src/lib/research-export/`). Local read only, never a live YouTube call.",
+      "Compact bulk read of the research watchlist: several channels in one paged call, each with its newest raw channel snapshot, snapshot/evidence counts and its activity (the newest stored upload date, an inactive flag from the operator's months setting, and the pause) -- no evidence text, no snapshot lists. Other channels' API-sourced snapshots only for the last 30 days (YouTube API policy III.E.4.d); nothing computed from competitor statistics (III.E.4.h). Implemented as the `query_market_overview` MCP tool (`src/lib/research-export/`). Local read only, never a live YouTube call.",
   },
   // Research export (ADR 0019): the Manager writes flat CSV/JSON files of watchlist snapshots (and our own channel's videos) into the
   // channel's workspace `99 Data Exchange/From YTM/` folder so a script can read them. DRAFT, not READ: it creates local files and a ledger row (never
@@ -427,7 +443,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "The local production-workspace folder path the operator set for a channel on THIS device (Settings -> Channels), returned as an absolute path string, or { configured: false } when none is set (never an empty-string path). Implemented as the `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command (`src/lib/channel-workspaces/`). This application never opens, lists, reads, writes, or re-validates anything inside the folder -- the string is returned exactly as stored, even if the folder has since been moved or deleted. Device-local: never synced or handed off, and a path set on another device is never returned. Read-only: no agent-callable way exists to set or clear it -- only the operator, through the Settings UI (`PUT /api/channel-workspaces`), the same self-authorization concern owner spec §17 raised for `local_path` asset registration. Requires channelId to be the caller's currently-active channel.",
   },
   // Phase 14 slice 5 (docs/roadmap/plans/PHASE_14_PLAN.md §2.7) -- remote media generation on RunPod/ComfyUI. An agent REQUESTS a
-  // session and READS it; a human approves/starts/stops it in Production → Sessions (Web-only, fenced by session-approval-inventory.test.ts).
+  // session and READS it; a human approves/starts/stops it in Servers → Sessions (Web-only, fenced by session-approval-inventory.test.ts).
   // Inside a running session the agent submits jobs freely; outputs land in the channel's workspace `99 Data Exchange/From YTM/media/`.
   {
     id: "media_generation.list_media_templates",
@@ -443,7 +459,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "media_generation",
     permission: "DRAFT",
     description:
-      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Production -> Sessions; the agent can neither approve, start nor stop it. Several sessions may be open at once; at most maxConcurrentSessions hold a pod at the same time (bounded at approve). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
+      "Asks the human to start a generation session (one RunPod GPU pod running ComfyUI) with caps { maxMinutes?, maxUsd?, reason? }. Stores a PENDING session with a local estimate (saved GPU price x maxMinutes / 60, an upper bound) and fitsToday against the owner's daily USD cap; makes no RunPod call and spends nothing. The human approves or rejects it in Servers -> Sessions; the agent can neither approve, start nor stop it. Several sessions may be open at once; at most maxConcurrentSessions hold a pod at the same time (bounded at approve). Implemented as the `agent_request_media_session` MCP tool. Mutates local application state, gated like agent_create_collection_request.",
   },
   {
     id: "media_generation.get_media_session",
@@ -609,6 +625,8 @@ type StoredVideoForContext = {
   defaultAudioLanguage: string | null;
   existingLocalizations: Record<string, { title: string; description: string }>;
   lastSyncedAt: Date;
+  durationSeconds?: number | null;
+  liveBroadcastContent?: string | null;
 };
 
 type StoredEditorialProfileForContext = {
@@ -823,6 +841,9 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
           defaultLanguage: video.defaultLanguage,
           defaultAudioLanguage: video.defaultAudioLanguage,
           lastSyncedAt: video.lastSyncedAt.toISOString(),
+          // FO-REQ-0015 item 6: stored by the sync, null when unknown.
+          durationSeconds: video.durationSeconds ?? null,
+          liveBroadcastContent: video.liveBroadcastContent ?? null,
         };
       }
 

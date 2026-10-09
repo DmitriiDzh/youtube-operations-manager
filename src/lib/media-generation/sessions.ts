@@ -3,6 +3,7 @@ import type { ComfyUiClient, RunpodApiClient, RunpodPod } from "@/lib/media-gate
 import {
   COMFY_PROXY_PORT,
   DomainError,
+  MEDIA_CUDA_VERSIONS,
   MEDIA_SESSION_ACTIVE_STATUSES,
   MEDIA_SESSION_NON_TERMINAL_STATUSES,
   type MediaSession,
@@ -13,7 +14,7 @@ import {
   type MediaSessionStatus,
   type MediaSettings,
 } from "./contracts";
-import { allowedCudaVersionsFor, comfyCudaDevice, hostCudaTooOld } from "./cuda-host";
+import { allowedCudaVersionsFor, comfyCudaDevice, higherCudaVersion, hostCudaTooOld } from "./cuda-host";
 import { classifyCreatePodFailure, resolveGpuCandidates, type GpuCandidate } from "./gpu-plan";
 import { findLivePodByName, terminateAndConfirm as terminateAndConfirmPod, type TerminateOutcome } from "./pod-lifecycle";
 import { describeVolumeLockHolder, type VolumeLock } from "./volume-lock";
@@ -70,6 +71,10 @@ export type StoredSessionRow = {
   capacityWaitUntil?: Date | null;
   /** Schema v66 (BL-143): the generation plan this session works for. */
   planId?: string | null;
+  // Schema v71 (BL-159); absent on rows written before it.
+  minCudaVersion?: string | null;
+  usedMinCudaVersion?: string | null;
+  hostCudaVersion?: string | null;
   /** When this app last saw the pod alive (schema v54): the billable window of a pod found already gone closes here. */
   lastSeenAliveAt: Date | null;
   /** When this app's terminate DELETE went through (schema v57): a retried stop that finds the pod gone bills to here. */
@@ -137,7 +142,12 @@ export type SessionServiceDependencies = {
   /** Tests only: let a watcher tick wait for the capacity retry it fires (production fires it in the background). */
   awaitCapacityRetries?: boolean;
   /** BL-133: the capacity log -- one call per createPod attempt (best effort: a failed record never fails a start). */
-  capacityLog?: { record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null }): Promise<void> };
+  capacityLog?: {
+    /** Returns the entry's id when the log keeps one (BL-159: the placement's own row gets the host's CUDA later). */
+    record(attempt: { at: Date; sessionId: string; datacenterId: string | null; gpuTypeId: string; pricePerHr: number | null; result: "placed" | "no_capacity" | "error"; detail: string | null; hostCudaVersion?: string | null }): Promise<number | void>;
+    /** BL-159: the host's CUDA version, once the host check reads it, on that placement's `placed` entry. */
+    setHostCuda?(attemptId: number, hostCudaVersion: string): Promise<void>;
+  };
   /** BL-135: the session's jobs, for "release when done" (late-bound to the job services in `index.ts`). */
   jobSummary?(sessionId: string): Promise<{ total: number; open: number; failed: number; lastFinishedAt: Date | null }>;
 };
@@ -223,6 +233,9 @@ export function toPublicSession(row: StoredSessionRow, now: Date): MediaSession 
     planId: row.planId ?? null,
     approvedBy: row.approvedBy ?? (row.approvedAt ? "owner" : null),
     gpuPlan: row.gpuPlanJson ? (JSON.parse(row.gpuPlanJson) as MediaGpuPlan) : null,
+    minCudaVersion: row.minCudaVersion ?? null,
+    usedMinCudaVersion: row.usedMinCudaVersion ?? null,
+    hostCudaVersion: row.hostCudaVersion ?? null,
     capacity:
       row.status === "waiting_capacity" || (row.capacityAttempts ?? 0) > 0
         ? { attempts: row.capacityAttempts ?? 0, nextAttemptAt: iso(row.capacityNextAttemptAt ?? null), waitUntil: iso(row.capacityWaitUntil ?? null) }
@@ -548,7 +561,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (spent >= settings.maxUsdPerDay || round2(spent + reservedUsd + row.estimateUsd) > settings.maxUsdPerDay) {
       throw new DomainError({
         code: "media_daily_cap_reached",
-        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent${others.otherSpentTodayUsd > 0 ? ` ($${others.otherSpentTodayUsd} of it on your other devices)` : ""}, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Production → Setup, or wait. The request stays pending.`,
+        message: `Today's media spend cap ($${settings.maxUsdPerDay}) does not cover this session: $${spent} spent${others.otherSpentTodayUsd > 0 ? ` ($${others.otherSpentTodayUsd} of it on your other devices)` : ""}, $${reservedUsd} reserved by the other active sessions, estimate $${row.estimateUsd}. Lower maxMinutes/maxUsd, raise the cap in Servers → Setup, or wait. The request stays pending.`,
         details: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: spent, otherDevicesSpentTodayUsd: others.otherSpentTodayUsd, reservedUsd, estimateUsd: row.estimateUsd },
       });
     }
@@ -558,7 +571,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     if (row.gpuTypeId !== settings.gpuTypeId || row.datacenterId !== settings.datacenterId || row.costPerHr !== settings.gpuOnDemandPricePerHr) {
       throw new DomainError({
         code: "media_settings_invalid",
-        message: `Production → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
+        message: `Servers → Setup changed since this request was made (requested: ${row.gpuTypeId ?? "no GPU"} in ${row.datacenterId ?? "no datacenter"} at $${row.costPerHr ?? "?"}/h; now: ${settings.gpuTypeId ?? "no GPU"} in ${settings.datacenterId ?? "no datacenter"} at $${settings.gpuOnDemandPricePerHr ?? "?"}/h). Reject it and request a new session so the estimate and the record match what will be billed.`,
         details: { sessionId, requested: { gpuTypeId: row.gpuTypeId, datacenterId: row.datacenterId, costPerHr: row.costPerHr }, current: { gpuTypeId: settings.gpuTypeId, datacenterId: settings.datacenterId, costPerHr: settings.gpuOnDemandPricePerHr } },
       });
     }
@@ -589,7 +602,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const active = (await deps.store.listOpen()).filter(isActive);
       throw new DomainError({
         code: "media_session_conflict",
-        message: `${active.length + others.otherActiveSessions} of ${settings.maxConcurrentSessions} concurrent sessions are already active${others.otherActiveSessions > 0 ? ` (${others.otherActiveSessions} on your other devices)` : ""} (the limit in Production → Setup); stop one or wait for one to finish. The request stays pending.`,
+        message: `${active.length + others.otherActiveSessions} of ${settings.maxConcurrentSessions} concurrent sessions are already active${others.otherActiveSessions > 0 ? ` (${others.otherActiveSessions} on your other devices)` : ""} (the limit in Servers → Setup); stop one or wait for one to finish. The request stays pending.`,
         details: { sessionId, activeSessions: active.map((r) => r.id), otherDevicesActiveSessions: others.otherActiveSessions, maxConcurrentSessions: settings.maxConcurrentSessions },
       });
     }
@@ -656,11 +669,13 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
   }
 
   /** BL-133: one capacity-log row (best effort). */
-  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: "placed" | "no_capacity" | "error", detail: string | null): Promise<void> {
+  async function recordAttempt(sessionId: string, settings: MediaSettings, candidate: GpuCandidate, result: "placed" | "no_capacity" | "error", detail: string | null, hostCudaVersion: string | null = null): Promise<number | null> {
     try {
-      await deps.capacityLog?.record({ at: deps.clock.now(), sessionId, datacenterId: settings.datacenterId, gpuTypeId: candidate.gpuTypeId, pricePerHr: candidate.pricePerHr, result, detail: detail ? detail.slice(0, 500) : null });
+      const id = await deps.capacityLog?.record({ at: deps.clock.now(), sessionId, datacenterId: settings.datacenterId, gpuTypeId: candidate.gpuTypeId, pricePerHr: candidate.pricePerHr, result, detail: detail ? detail.slice(0, 500) : null, hostCudaVersion });
+      return typeof id === "number" ? id : null;
     } catch (error) {
       log(`[media] could not record a capacity attempt: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -701,6 +716,12 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
     // device GPU and its fallback list -- filtered by VRAM, price cap and the volume's datacenter. "No capacity" moves on;
     // a fatal answer ends the start as before; when nobody can be placed the session WAITS (no pod, nothing billed).
     const plan = approved.gpuPlanJson ? (JSON.parse(approved.gpuPlanJson) as MediaGpuPlan) : null;
+    // BL-159 (PER_SESSION_CUDA_PLAN.md AC-SC-01): the session's own minimum (call or template) may only raise the owner's. It is
+    // computed here, at every start and capacity retry, because the owner's setting is shared and can change meanwhile.
+    const minCudaVersion = higherCudaVersion(settings.minCudaVersion, approved.minCudaVersion ?? null);
+    // Shown from the first attempt on (review): a session waiting for capacity or failing without a pod says which minimum its
+    // createPod calls asked for -- the reason a raised minimum can find no host. Best effort; the row may have moved on.
+    await deps.store.transition(approved.id, ["approved"], { status: "approved", usedMinCudaVersion: minCudaVersion }).catch(() => null);
     // An unreadable catalog is not a reason to refuse a start: the listed candidates are then tried as they are.
     const catalog = await Promise.resolve()
       .then(() => client.listGpuTypes({ cloud: settings.cloudType }))
@@ -727,6 +748,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       let pod: RunpodPod | null = null;
       let used: GpuCandidate | null = null;
       let placedAt = deps.clock.now();
+      /** BL-159: this placement's own `placed` capacity-log entry (the host's CUDA goes there once known). */
+      let placedEntryId: number | null = null;
       const failures: string[] = [];
       // After a re-placement the row's window is already open: an early end is billed to the last confirmed terminate.
       const endedEarly = () => (placement > 0 && lastTerminatedAt ? { stoppedAt: lastTerminatedAt } : {});
@@ -743,7 +766,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         }
       };
       const candidateOf = (existing: RunpodPod, fallback: GpuCandidate): GpuCandidate => candidates.find((c) => c.gpuTypeId === existing.gpuTypeId) ?? fallback;
-      const allowedCudaVersions = allowedCudaVersionsFor(settings.minCudaVersion);
+      const allowedCudaVersions = allowedCudaVersionsFor(minCudaVersion);
       for (const [index, candidate] of candidates.entries()) {
         placedAt = deps.clock.now();
         if (placement === 0) startedAt = placedAt;
@@ -753,7 +776,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             log(`[media] pod ${existing.id} of session ${sessionId} already exists (an earlier attempt); continuing with it`);
             pod = existing;
             used = candidateOf(existing, candidate);
-            await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt");
+            placedEntryId = await recordAttempt(sessionId, settings, used, "placed", "adopted: created by an earlier attempt", existing.cudaVersion ?? null);
             break;
           }
         }
@@ -770,7 +793,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             env: { COMFY_TOKEN: token },
           });
           used = candidate;
-          await recordAttempt(sessionId, settings, candidate, "placed", null);
+          placedEntryId = await recordAttempt(sessionId, settings, candidate, "placed", null, pod.cudaVersion ?? null);
           break;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -795,7 +818,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             log(`[media] createPod failed (${message}) but pod ${orphan.id} exists under ${podNameFor(sessionId)}; continuing with it`);
             pod = orphan;
             used = candidateOf(orphan, candidate);
-            await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`);
+            placedEntryId = await recordAttempt(sessionId, settings, used, "placed", `adopted after: ${message}`, orphan.cudaVersion ?? null);
             break;
           }
           const kind = classifyCreatePodFailure(error);
@@ -909,6 +932,9 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
           gpuTypeId: used.gpuTypeId,
           costPerHr: windowPrice,
           capacityNextAttemptAt: null,
+          // BL-159 (AC-SC-01/02): the minimum this placement used, and the host's CUDA if the create answer named it.
+          usedMinCudaVersion: minCudaVersion,
+          hostCudaVersion: pod.cudaVersion ?? null,
         });
       } catch (error) {
         return abortStart(`could not record the pod: ${error instanceof Error ? error.message : String(error)}`);
@@ -980,12 +1006,22 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         try {
           return await client.getPodHostCudaVersion(pod.id);
         } catch (error) {
-          if (error instanceof DomainError && error.code === "media_credentials_invalid") throw error;
+          // BL-159 (review): without a minimum the read is for display only -- nothing it returns may stop a start.
+          if (error instanceof DomainError && error.code === "media_credentials_invalid" && minCudaVersion !== null) throw error;
           log(`[media] could not read the CUDA version of pod ${pod.id}'s host: ${error instanceof Error ? error.message : String(error)}`);
           return null;
         }
       };
       const seenAlive = () => deps.store.markSeenAlive(sessionId, deps.clock.now()).catch(() => undefined); // a DB hiccup is not a reason to abort
+      /** BL-159 (AC-SC-02): the host's CUDA on the session and on this placement's own `placed` capacity entry (best effort, never aborts). */
+      const recordHostCuda = async (host: string): Promise<void> => {
+        try {
+          await deps.store.transition(sessionId, ["starting"], { status: "starting", hostCudaVersion: host });
+          if (placedEntryId !== null) await deps.capacityLog?.setHostCuda?.(placedEntryId, host);
+        } catch (error) {
+          log(`[media] could not record the host CUDA of session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
       try {
         for (;;) {
           const polled = await getPodTolerant();
@@ -1007,12 +1043,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
             // BL-155 (AC-CU-02): RunPod has put the pod on a machine once it is RUNNING -- read that host's CUDA before the image
             // download is waited for, so a too-old driver costs seconds, not minutes. A failed or empty read is asked again on
             // the next poll; only once the container is up is the version taken as unknown (review round 4).
-            if (current.status === "RUNNING" && !hostChecked && settings.minCudaVersion !== null) {
+            // BL-159 (AC-SC-02): read with or without a minimum, so the host's version is always shown.
+            if (current.status === "RUNNING" && !hostChecked) {
               // The pod answer itself names the host's CUDA (owner, msg 2093); the GraphQL read is the fallback.
               const host = current.cudaVersion ?? (await readHostCuda());
               if (host !== null || current.containerUptimeSec !== null) hostChecked = true;
-              if (hostCudaTooOld(host, settings.minCudaVersion)) {
-                mismatch = `CUDA driver too old: host ${host} < ${settings.minCudaVersion}`;
+              if (host !== null) await recordHostCuda(host);
+              if (hostCudaTooOld(host, minCudaVersion)) {
+                mismatch = `CUDA driver too old: host ${host} < ${minCudaVersion}`;
                 break;
               }
             }
@@ -1074,7 +1112,8 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       // Back to `approved` with no pod BEFORE the next createPod: a crash from here on is reconciled by the name search like
       // any start (a `starting` row would point at the dead pod and orphan the new one). `approvedAt` restarts the
       // abandoned-start clock for this placement; no `error` (that would mark the start abandoned while this request works).
-      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, approvedAt: deps.clock.now(), error: null });
+      // BL-159: the dead pod's host CUDA goes with it -- the new host's is read once it runs.
+      const back = await deps.store.transition(sessionId, ["starting"], { status: "approved", podId: null, comfyUiProxyUrl: null, hostCudaVersion: null, approvedAt: deps.clock.now(), error: null });
       // An operator Stop (or the watcher) took the row meanwhile: its outcome stands, nothing new is placed.
       if (!back) return toPublicSession(await requireRow(sessionId), deps.clock.now());
       current = back;
@@ -1235,7 +1274,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         limits: { maxUsdPerSession: settings.factoryMaxUsdPerSession, maxMinutesPerSession: settings.factoryMaxMinutesPerSession, maxUsdPerDay: settings.factoryMaxUsdPerDay, maxUsdPerMonth: settings.factoryMaxUsdPerMonth },
         spentOrReservedUsd: { today, thisMonth: month },
         device: { maxUsdPerDay: settings.maxUsdPerDay, spentTodayUsd: deviceSpent, maxConcurrentSessions: settings.maxConcurrentSessions, idleMinutes: settings.idleMinutes },
-        gpu: { gpuTypeId: settings.gpuTypeId, fallbackIds: [...settings.gpuFallbackIds], minVramGb: settings.gpuMinVramGb, maxPricePerHr: settings.gpuMaxPricePerHr, onDemandPricePerHr: settings.gpuOnDemandPricePerHr, cloudType: settings.cloudType, minCudaVersion: settings.minCudaVersion },
+        gpu: { gpuTypeId: settings.gpuTypeId, fallbackIds: [...settings.gpuFallbackIds], minVramGb: settings.gpuMinVramGb, maxPricePerHr: settings.gpuMaxPricePerHr, onDemandPricePerHr: settings.gpuOnDemandPricePerHr, cloudType: settings.cloudType, minCudaVersion: settings.minCudaVersion, cudaVersions: [...MEDIA_CUDA_VERSIONS] },
         capacity: { retrySeconds: settings.capacityRetrySeconds, waitMinutes: settings.capacityWaitMinutes },
       };
     },
@@ -1274,7 +1313,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         throw new DomainError({ code: "media_generation_not_configured", message: `Media generation is not ready: ${overview.missing.join(", ")}.`, details: { missing: overview.missing } });
       }
       if (settings.gpuOnDemandPricePerHr === null) {
-        throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Production → Setup." });
+        throw new DomainError({ code: "media_settings_invalid", message: "The GPU's price is unknown -- reload the catalog and save the GPU again in Servers → Setup." });
       }
       const maxMinutes = parsed.maxMinutes ?? settings.defaultMaxMinutes;
       // The upper bound is whichever cap bites first: the minutes at the saved price, or the session's own USD cap.
@@ -1319,6 +1358,10 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         releaseWhenDone: parsed.releaseWhenDone ?? settings.ownerReleaseWhenDone,
         gpuPlanJson: parsed.gpu ? JSON.stringify({ candidates: parsed.gpu.candidates, minVramGb: parsed.gpu.minVramGb ?? null, maxPricePerHr: parsed.gpu.maxPricePerHr ?? null }) : null,
         planId: parsed.planId ?? null,
+        // BL-159: the session's own minimum; the minimum actually used and the host's version are set at placement.
+        minCudaVersion: parsed.minCudaVersion ?? null,
+        usedMinCudaVersion: null,
+        hostCudaVersion: null,
       });
       return toPublicSession(row, now);
     },
@@ -1381,8 +1424,14 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       releaseWhenDone?: boolean;
       /** BL-143: the plan this session works for (checked by the caller with the plans module). */
       planId?: string;
+      /** BL-159: the call's own minimum host CUDA version (wins over the template's, also when lower); checked by requestSession. */
+      minCudaVersion?: string;
+      /** BL-159: the minimum declared by the template the session was started with (`templateId`), if any. */
+      templateMinCudaVersion?: string | null;
     }): Promise<{ session: MediaSession; approved: boolean; heldBy: string | null }> {
       const settings = await deps.base.getSettings();
+      // BL-159 (AC-SC-01): the call's value, else the template's; either may only raise the owner's floor (at placement).
+      const ownMinCuda = input.minCudaVersion ?? input.templateMinCudaVersion ?? undefined;
       const pending = await services.requestSession({
         channelId: input.channelId,
         maxMinutes: input.maxMinutes ?? settings.factoryMaxMinutesPerSession,
@@ -1391,6 +1440,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
         ...(input.releaseWhenDone !== undefined ? { releaseWhenDone: input.releaseWhenDone } : {}),
         ...(input.gpu ? { gpu: input.gpu } : {}),
         ...(input.planId ? { planId: input.planId } : {}),
+        ...(ownMinCuda ? { minCudaVersion: ownMinCuda } : {}),
         requestedBy: "factory",
       });
       const row = await requireRow(pending.sessionId);
@@ -1399,7 +1449,7 @@ export function createMediaSessionServices(deps: SessionServiceDependencies) {
       const worst = row.maxUsd ?? row.estimateUsd;
       const [today, month] = await Promise.all([factorySpendUsd(startOfLocalDay(now), now, row.id), factorySpendUsd(startOfLocalMonth(now), now, row.id)]);
       const held = !settings.factorySessionsEnabled
-        ? "Factory sessions are switched off (Production → Setup)"
+        ? "Factory sessions are switched off (Servers → Setup)"
         : row.maxMinutes > settings.factoryMaxMinutesPerSession
           ? `${row.maxMinutes} min is over the factory's ${settings.factoryMaxMinutesPerSession} min per session`
           : worst > settings.factoryMaxUsdPerSession

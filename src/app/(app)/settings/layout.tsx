@@ -6,6 +6,7 @@ import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
 import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
 import { MarketIntelligenceCollectionDepthSettings } from "@/components/market-intelligence-collection-depth-settings";
+import { MarketIntelligenceInactivitySettings } from "@/components/market-intelligence-inactivity-settings";
 import { QuotaReserveSettings } from "@/components/quota-reserve-settings";
 import { RetentionSettings } from "@/components/retention-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
@@ -13,6 +14,7 @@ import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
 import { LogicalPathsSettings } from "@/components/logical-paths-settings";
 import { FactoryAgentTokenSettings } from "@/components/factory-agent-token-settings";
+import { ProducerAgentTokenSettings } from "@/components/producer-agent-token-settings";
 import { OperatorCliSettings } from "@/components/operator-cli-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
@@ -98,6 +100,9 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         <FeatureErrorBoundary label={section("settingsCard.competitorDepth")}>
           <MarketIntelligenceCollectionDepthSettings />
         </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("settingsCard.competitorInactivity")}>
+          <MarketIntelligenceInactivitySettings />
+        </FeatureErrorBoundary>
       </div>
 
       <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
@@ -121,6 +126,9 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.factoryToken")}>
           <FactoryAgentTokenSettings />
+        </FeatureErrorBoundary>
+        <FeatureErrorBoundary label={section("settingsCard.producerToken")}>
+          <ProducerAgentTokenSettings />
         </FeatureErrorBoundary>
         <FeatureErrorBoundary label={section("settingsCard.aiProviders")}>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
