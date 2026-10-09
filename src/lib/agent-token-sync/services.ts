@@ -15,7 +15,8 @@ export const MAX_RECORD_FUTURE_SKEW_MS = 5 * 60_000;
  *    peers disagreeing about a hash this device does not know: that hash is skipped.
  * 3. One active token per slot (each channel; the factory; the producer): among a slot's unrevoked tokens the newest `createdAt`
  *    wins (equal times: the larger hash); the others are revoked as of the winner's `createdAt`.
- * A peer record dated (created or revoked) more than 5 min after `now` is ignored, whatever the report's own date.
+ * A peer record created more than 5 min after `now` is ignored, whatever the report's own date; one revoked more than 5 min after
+ * `now` counts as revoked now.
  * Returns what THIS device must change: rows to revoke, tokens to add, and local rows to re-date. A token's `createdAt` is the
  * earliest any device reports.
  */
@@ -26,11 +27,14 @@ export function reconcileAgentTokens(local: AgentTokenRecord[], peers: AgentToke
   const ambiguous = new Set<string>();
   const latestAllowed = (options.now ?? new Date()).getTime() + MAX_RECORD_FUTURE_SKEW_MS;
 
-  for (const peer of peers) {
-    if (peer.createdAt.getTime() > latestAllowed || (peer.revokedAt !== null && peer.revokedAt.getTime() > latestAllowed)) {
-      ignored.push({ hash: peer.hash, reason: "dated_in_future" });
+  for (const original of peers) {
+    if (original.createdAt.getTime() > latestAllowed) {
+      ignored.push({ hash: original.hash, reason: "dated_in_future" });
       continue;
     }
+    // A revocation dated in the future still counts, as of now: it can only stop a token, never win a slot (review round 2).
+    const peer =
+      original.revokedAt !== null && original.revokedAt.getTime() > latestAllowed ? { ...original, revokedAt: new Date(latestAllowed - MAX_RECORD_FUTURE_SKEW_MS) } : original;
     const own = localByHash.get(peer.hash);
     if (own && !sameIdentity(own, peer)) {
       ignored.push({ hash: peer.hash, reason: "conflicts_with_local" });

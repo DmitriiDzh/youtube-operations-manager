@@ -124,15 +124,28 @@ async function startServerSession() {
       await recordSyncFamilyResult("agent_tokens", { ok: false, error: `applying or publishing tokens: ${message}` }).catch(() => undefined);
     }
   };
+  const { createAgentTokensSyncRunnerForProduction } = await import("@/lib/sync-gateway");
+  /** Whether the database may be written now (not in recovery mode, no export/import holding the operation lock). */
+  const databaseWritable = () =>
+    assertDeviceAvailableForMutation(rawSqlClient).then(
+      () => true,
+      () => false
+    );
+  /** BL-160, review round 2: while the database waits (recovery mode, an operation lock) the agent-tokens report FILE still
+   * travels -- a revoke made in recovery mode (revoke is a stop switch) must reach the other devices. File work only, no database. */
+  const exchangeAgentTokenFilesOnly = () => createAgentTokensSyncRunnerForProduction().runSyncCycle().catch(() => undefined);
   const syncFamiliesThenTokens = async () => {
+    // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
+    // governs snapshot handoff only; draft sync already ran from every open tab regardless.
+    // Same gate the "Sync now" route gets from src/proxy.ts.
+    if (!(await databaseWritable())) {
+      await exchangeAgentTokenFilesOnly();
+      return;
+    }
     try {
-      // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
-      // governs snapshot handoff only; draft sync already ran from every open tab regardless.
-      // Same gate the "Sync now" route gets from src/proxy.ts.
-      await assertDeviceAvailableForMutation(rawSqlClient);
       await runAllSyncFamiliesOnce();
     } catch {
-      // Paused (lock/recovery) or failed -- each family records its own outcome; retry next time.
+      // Failed -- each family records its own outcome; retry next time.
       return;
     }
     // BL-160: apply the agent tokens the other devices just reported, then publish this device's (when it changed, or daily). A
@@ -141,17 +154,11 @@ async function startServerSession() {
   };
   // BL-160: one agent-tokens pass shortly after start (only that family, the others keep their first run at a minute), so tokens
   // issued or revoked elsewhere while this device was off apply within seconds of it starting.
-  const { createAgentTokensSyncRunnerForProduction } = await import("@/lib/sync-gateway");
   setTimeout(() => {
     void (async () => {
-      try {
-        await assertDeviceAvailableForMutation(rawSqlClient);
-        await createAgentTokensSyncRunnerForProduction().runSyncCycle();
-      } catch {
-        // Paused or failed: the regular cycle below retries.
-        return;
-      }
-      await applyAgentTokensQuietly();
+      const writable = await databaseWritable();
+      await exchangeAgentTokenFilesOnly();
+      if (writable) await applyAgentTokensQuietly();
     })();
   }, DEVICE_SYNC_BOOT_DELAY_MS).unref();
   setInterval(() => void syncFamiliesThenTokens(), DRAFT_SYNC_INTERVAL_MS).unref();

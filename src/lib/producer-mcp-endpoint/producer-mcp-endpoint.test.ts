@@ -83,7 +83,7 @@ function setup(initial: { enabled?: boolean } = {}) {
         reverify: () => session.reverify(),
         resolveChannelUser: async (channelId) => CONNECTED[channelId] ?? null,
         recordCall: async (entry) => {
-          session.noteRecorded(entry.tool);
+          session.noteRecorded(entry.tool, entry.channelId);
           calls.push(entry);
         },
         listChannels: async () => [
@@ -335,4 +335,27 @@ test("AC-PR-02: a producer token is refused by the channel agents' verifier", as
     getLiveChannelIdForUser: async () => "UC_PR_X",
   });
   await assert.rejects(channelTokens.verifyToken(`ytom_pr_${"s".repeat(43)}`), (error: unknown) => (error as { code?: string }).code === "AGENT_TOKEN_INVALID");
+});
+
+// Review round 2: a refused call is logged under ITS channel (matched by tool and channel), and a request the transport rejects as a
+// whole is logged as REQUEST_REJECTED, not as an input error.
+test("AC-PR-09: in a batch, a refused call keeps its own channel; a request rejected by the transport is REQUEST_REJECTED", async () => {
+  await seedTwoChannels();
+  const { endpoint, tokens, calls, refused } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const batch = [
+    call("channel_video_list", { channelId: "UC_PR_X", limit: -5 }),
+    { ...call("channel_video_list", { channelId: "UC_PR_Y" }), id: 3 },
+  ];
+  assert.equal((await endpoint.handle(rpc(batch, bearer(token)))).status, 200);
+  assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId, entry.outcome]), [["channel_video_list", "UC_PR_Y", "ok"]]);
+  assert.deepEqual(refused, [{ tool: "channel_video_list", channelId: "UC_PR_X", errorCode: "INVALID_PARAMS" }]);
+
+  const noAccept = new Request("http://127.0.0.1:3000/api/mcp/producer", {
+    method: "POST",
+    headers: { host: "127.0.0.1:3000", "content-type": "application/json", ...bearer(token) },
+    body: JSON.stringify(call("producer_list_channels")),
+  });
+  assert.equal((await endpoint.handle(noAccept)).status, 406);
+  assert.deepEqual(refused.at(-1), { tool: "producer_list_channels", channelId: null, errorCode: "REQUEST_REJECTED" });
 });

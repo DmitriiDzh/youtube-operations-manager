@@ -31,13 +31,15 @@ Syncthing shares between the computers, and expects that file to work on every c
      the others are revoked as of the winner's `createdAt`;
    - a token's `createdAt` is the earliest any device reports, and a local row is re-dated to it (a token imported later must not
      look newer than it is);
-   - a peer record created or revoked more than 5 min in the future is ignored (a fast clock must not let a token win for good).
-3. **Applying** is one transaction on this device's own token tables (revocations first, then learned tokens, so the one-active
-   indexes never see two active rows). Verification is unchanged: each token module reads only its local table, so a known token
+   - a peer record created more than 5 min in the future is ignored (a fast clock must not let a token win for good); one revoked
+     more than 5 min in the future counts as revoked now (a revocation can only stop a token).
+3. **Applying** is one transaction on this device's own token tables (re-dating, revocations, then learned tokens; rule 3 is checked
+   again inside the transaction against a token issued here meanwhile, so the one-active indexes never see two active rows). Verification is unchanged: each token module reads only its local table, so a known token
    keeps working when the shared folder is unavailable. A learned channel token still needs the channel connected on that device
    under the Google account recorded at issue (`users.id` is Google's `sub`, the same on every device).
 4. **When**: after every device-sync cycle (60 s) and 5 s after start; an issue, import or revoke on this device publishes at once
-   without applying peers (so a revoke made in recovery mode still leaves the device). A report is republished at least daily and a
+   without applying peers, and while the database is paused (recovery mode, an operation lock) the scheduled step still exchanges
+   the report files -- so a revoke made in recovery mode still leaves the device. Applying waits for the database. A report is republished at least daily and a
    peer's report is never forgotten (the per-device report family's 7-day forget window is off for this family), so a revocation
    still reaches a device that was off for weeks. A failure to apply or publish is logged and shown on the family's status.
 5. **Disconnecting a channel no longer revokes its token** (the revocation would reach every device). The token stops working on that

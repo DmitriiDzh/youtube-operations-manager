@@ -3170,7 +3170,8 @@ Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-r
   `createdAt`; a token's `createdAt` is the earliest any device reports (local rows re-dated); a peer record dated more than 5 min ahead
   is ignored. Every device computes the same result from the same records. The family's peer reports are never forgotten
   (`forgetAfterMs: null` on the per-device report core) and an unchanged report is republished daily.
-- Timing: `src/instrumentation.ts` runs a step after each 60 s family cycle and once 5 s after start (agent-tokens family only). The three
+- Timing: `src/instrumentation.ts` runs a step after each 60 s family cycle and once 5 s after start (agent-tokens family only); while
+  the database is paused (recovery mode, an operation lock) it still exchanges the agent-tokens files, without applying. The three
   token stores call `shareAgentTokenChangeSoon()` after an issue/import/rotate/revoke: a publish-only step (no peer apply, so it also works in
   recovery mode) that pushes the family at once.
 - Verification is untouched: each token module reads its own table; a learned channel token still needs the channel connected here under the

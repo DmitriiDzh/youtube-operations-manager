@@ -1885,3 +1885,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Also:** "newest wins" trusts device clocks (a record or report more than 5 min ahead is ignored); a device that is off accepts a revoked token until it syncs (reports never go stale, so it does once it is back); a device on an older build neither sends nor receives tokens; with three or more devices, two concurrent tokens for one slot and a hand import, both can end revoked (fails closed: issue a new one).
 - **Possible fix:** sign reports with a key that never enters the shared folder (needs a per-device key exchange), or keep the token files and the data folder on storage only the owner's account can write.
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner msgs 2205/2207).
+
+## RISK-118 — An MCP batch with a cancellation notification can hang its request — OPEN, 2026-10-09
+
+- **What:** found by the BL-161 review (round 2), pre-existing on all three agent endpoints (`/api/mcp`, `/api/mcp/factory`, `/api/mcp/producer`). A JSON-RPC batch `[tools/call id:N, notifications/cancelled {requestId:N}]` makes the SDK's stateless transport never answer the call, so `handleRequest` never resolves and that request's server and transport stay open.
+- **Bounded by:** a valid agent token and a loopback caller; it ties up only that request (the agent's own client waits); nothing is read or written by it.
+- **Possible fix:** a timeout around `handleRequest` in the three endpoints, or refusing `notifications/cancelled` in stateless mode.
+- **Gate(s):** none. **Status:** open.
+

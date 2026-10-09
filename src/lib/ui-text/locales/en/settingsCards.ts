@@ -122,7 +122,7 @@ export const settingsCards = {
   "settingsCards.producerCalls.refresh": "Refresh",
   "settingsCards.producerCalls.loadFailed": "Could not load the Producer's calls.",
   "settingsCards.producerCalls.empty": "No calls yet.",
-  "settingsCards.producerCalls.refused": "refused",
+  "settingsCards.producerCalls.failed": "failed",
   "settingsCards.disconnect": "Disconnect",
   "settingsCards.disconnecting": "Disconnecting…",
   "settingsCards.disconnectFailed": "Disconnect failed",

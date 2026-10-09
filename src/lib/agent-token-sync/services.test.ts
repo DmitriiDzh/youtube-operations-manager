@@ -403,7 +403,7 @@ test("review: an unchanged report is republished after a day, so its date stays 
   assert.deepEqual(await a.sync.tick(), { applied: false, published: true });
 });
 
-test("review: a peer record dated more than 5 minutes ahead is ignored and cannot win its slot", () => {
+test("review: a peer record created more than 5 minutes ahead is ignored and cannot win its slot", () => {
   const now = at("10:00");
   const own: AgentTokenRecord = { hash: "a".repeat(64), role: "producer", channelId: null, userId: null, label: null, createdAt: at("09:00"), revokedAt: null };
   const fromTheFuture: AgentTokenRecord = { ...own, hash: "b".repeat(64), createdAt: at("10:06") };
@@ -416,9 +416,9 @@ test("review: a peer record dated more than 5 minutes ahead is ignored and canno
   // Within 5 minutes it counts (and wins: it is newer).
   const slightlyAhead: AgentTokenRecord = { ...fromTheFuture, createdAt: at("10:04") };
   assert.deepEqual(reconcileAgentTokens([own], [slightlyAhead], { now }).revoke, [{ role: "producer", hash: own.hash, revokedAt: at("10:04") }]);
-  // A revocation dated in the future is ignored too.
+  // A revocation dated in the future still stops the token, as of now (review round 2: it can never win a slot).
   const futureRevocation: AgentTokenRecord = { ...own, revokedAt: at("11:00") };
-  assert.deepEqual(reconcileAgentTokens([own], [futureRevocation], { now }).revoke, []);
+  assert.deepEqual(reconcileAgentTokens([own], [futureRevocation], { now }).revoke, [{ role: "producer", hash: own.hash, revokedAt: now }]);
 });
 
 test("review: a token imported later on B takes the issue time from A, so every device publishes the same createdAt", async () => {
@@ -439,4 +439,36 @@ test("review: a token imported later on B takes the issue time from A, so every 
   assert.equal(b.rows[0].createdAt.toISOString(), at("10:00").toISOString());
   const published = JSON.parse(new TextDecoder().decode(await b.share.exportBytes())) as { tokens: Array<{ createdAt: string }> };
   assert.deepEqual(published.tokens.map((t) => t.createdAt), [at("10:00").toISOString()]);
+});
+
+test("review round 2 (real database): a token issued here between planning and applying never leaves two active in a slot", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-token-sync-race-"));
+  const client = createLibsqlClient({ url: `file:${path.join(dir, "test.db")}` });
+  try {
+    await initializeDatabaseSchema(client);
+    const database = drizzle(client) as unknown as AppDb;
+    const t = (hhmm: string) => new Date(`2026-10-09T${hhmm}:00Z`);
+    // Issued here at 10:10 after the plan was computed; the plan still adds a peer's active factory token from 10:05.
+    await client.execute(`INSERT INTO factory_agent_tokens (id, token_hash, created_at) VALUES ('f-here', 'here-1010', ${t("10:10").getTime() / 1000})`);
+    await applyAgentTokenSyncPlan(
+      { revoke: [], insert: [{ id: "f-peer", role: "factory", tokenHash: "peer-1005", channelId: null, userId: null, label: null, createdAt: t("10:05"), revokedAt: null }] },
+      database
+    );
+    // A peer's NEWER channel token arrives while an older one is active here: the newer one wins, the older is revoked as of it.
+    await client.execute(`INSERT INTO agent_channel_tokens (id, channel_id, user_id, token_hash, created_at) VALUES ('c-here', 'UC_A', 'user-a', 'here-1000', ${t("10:00").getTime() / 1000})`);
+    await applyAgentTokenSyncPlan(
+      { revoke: [], insert: [{ id: "c-peer", role: "channel", tokenHash: "peer-1015", channelId: "UC_A", userId: "user-a", label: null, createdAt: t("10:15"), revokedAt: null }] },
+      database
+    );
+    const state = Object.fromEntries((await listAgentTokenRowsForSync(database)).map((row) => [row.tokenHash, row.revokedAt === null ? "active" : row.revokedAt.toISOString()]));
+    assert.deepEqual(state, {
+      "here-1010": "active",
+      "peer-1005": t("10:10").toISOString(),
+      "here-1000": t("10:15").toISOString(),
+      "peer-1015": "active",
+    });
+  } finally {
+    client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

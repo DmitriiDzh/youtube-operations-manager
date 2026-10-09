@@ -38,8 +38,9 @@ every channel's reads without a worker per channel, and nothing else.
    watchlist channel is `watchlistChannelId` there.
 5. **Every channel-tool answer names its channel** (`forChannelId`) and **every call is logged** (`producer_call_log`, v72,
    device-local, 90 days), shown on the Producer card in Settings → AI Agent: the server logs each call that reaches a tool; the
-   endpoint logs each `tools/call` the MCP layer refused before any tool ran (`TOOL_NOT_FOUND` for an unknown or non-Producer tool,
-   `INVALID_PARAMS` for a refused input, e.g. a missing `channelId` or a `credentialRef`, which the Producer's schemas leave out).
+   endpoint logs each `tools/call` that never reached a tool, matched by tool and channel (`TOOL_NOT_FOUND` for an unknown or
+   non-Producer tool, `INVALID_PARAMS` for a refused input, e.g. a missing `channelId` or a `credentialRef`, which the Producer's schemas
+   leave out, `REQUEST_REJECTED` when the transport rejected the whole request).
    The log is best effort: a failed log write does not fail the read (fail-open, like the traffic counter).
 6. **The portfolio overview** reads the stored data of every connected channel directly (channel-level analytics, synced videos,
    freshness; Reach through the channel's scope) -- it is the Producer's own read of what the device stores, not a channel tool. A

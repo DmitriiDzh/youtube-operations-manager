@@ -47,7 +47,7 @@ function ProducerCallLog() {
               <span>{call.channelId ? (call.channelTitle ?? call.channelId) : "—"}</span>
               {call.outcome === "error" && (
                 <span className="text-red-400">
-                  {t("settingsCards.producerCalls.refused")}
+                  {t("settingsCards.producerCalls.failed")}
                   {call.errorCode ? ` (${call.errorCode})` : ""}
                 </span>
               )}

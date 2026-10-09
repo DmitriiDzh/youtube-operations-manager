@@ -123,7 +123,7 @@ export const settingsCards: Record<keyof typeof en, string> = {
   "settingsCards.producerCalls.refresh": "Обновить",
   "settingsCards.producerCalls.loadFailed": "Не удалось загрузить вызовы Producer.",
   "settingsCards.producerCalls.empty": "Вызовов пока не было.",
-  "settingsCards.producerCalls.refused": "отказ",
+  "settingsCards.producerCalls.failed": "ошибка",
   "settingsCards.disconnect": "Отключить",
   "settingsCards.disconnecting": "Отключение…",
   "settingsCards.disconnectFailed": "Не удалось отключить",

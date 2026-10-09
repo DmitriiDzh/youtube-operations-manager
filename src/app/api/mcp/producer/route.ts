@@ -37,7 +37,7 @@ async function resolveChannelUser(channelId: string): Promise<string | null> {
   return connected ? ((await getStoredChannel(channelId))?.connectedUserId ?? null) : null;
 }
 
-function createProducerSessionDeps(session: { tokenId: string; reverify(): Promise<void>; noteRecorded(tool: string): void }): ProducerSession {
+function createProducerSessionDeps(session: { tokenId: string; reverify(): Promise<void>; noteRecorded(tool: string, channelId: string | null): void }): ProducerSession {
   const portfolio = createPortfolioOverviewServices({
     listChannels,
     async loadChannel(channel, range) {
@@ -71,7 +71,7 @@ function createProducerSessionDeps(session: { tokenId: string; reverify(): Promi
     reverify: () => session.reverify(),
     resolveChannelUser,
     async recordCall(entry) {
-      session.noteRecorded(entry.tool);
+      session.noteRecorded(entry.tool, entry.channelId);
       await insertProducerCallLogEntry({ at: new Date(), ...entry });
     },
     listChannels,

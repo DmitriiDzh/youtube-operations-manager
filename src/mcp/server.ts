@@ -2614,21 +2614,24 @@ export function createMcpServer(
     if (!(config.inputSchema instanceof z.ZodObject)) {
       throw new Error(`Producer tool "${name}" needs an object input schema`);
     }
-    const fullSchema = config.inputSchema as z.ZodObject<z.ZodRawShape>;
-    // A credentialRef is always refused inside an agent scope (AGENT_SESSION_CREDENTIAL_OVERRIDE): the Producer's schema leaves it
-    // out, so it is refused at input instead of advertised as optional (review round 1).
-    const objectSchema = "credentialRef" in fullSchema.shape ? fullSchema.omit({ credentialRef: true }) : fullSchema;
+    // Rebuilt from the shape as a strict object (review round 2: `.omit` throws on a refined schema, which would take every Producer
+    // request down). A credentialRef is always refused inside an agent scope (AGENT_SESSION_CREDENTIAL_OVERRIDE): the Producer's schema
+    // leaves it out, so it is refused at input instead of advertised as optional. The tool's own handler still validates its input.
+    const { credentialRef: _credentialRef, ...shape } = (config.inputSchema as z.ZodObject<z.ZodRawShape>).shape;
+    void _credentialRef;
     const renamed = PRODUCER_RENAMED_CHANNEL_FIELD[name];
-    const ownsChannelId = "channelId" in objectSchema.shape && !renamed;
-    const inputSchema = objectSchema.extend({
-      ...(renamed ? { [renamed]: objectSchema.shape.channelId } : {}),
-      channelId: z.string().min(1).max(64).describe("The channel this call reads (one of producer_list_channels)."),
-    });
+    const ownsChannelId = "channelId" in shape && !renamed;
+    const inputSchema = z
+      .object({
+        ...shape,
+        ...(renamed ? { [renamed]: shape.channelId } : {}),
+        channelId: z.string().min(1).max(64).describe("The channel this call reads (one of producer_list_channels)."),
+      })
+      .strict();
     const description =
       `Producer: runs for the channel named by \`channelId\` (one of producer_list_channels), exactly as that channel's own agent would call it` +
       (renamed ? `; the watchlist channel this tool's own text calls \`channelId\` is \`${renamed}\` here` : "") +
-      ". `credentialRef` is not accepted here (the channel's own connected account is used)." +
-      ` ${config.description}`;
+      `. ${config.description} -- On the Producer endpoint \`credentialRef\` is not accepted, whatever the text above says: the channel's own connected account is always used.`;
     const wrapped = async (args: Record<string, unknown>) => {
       const channelId = String(args.channelId);
       const refuse = async (error: unknown) => {

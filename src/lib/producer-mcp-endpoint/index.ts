@@ -17,10 +17,13 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * The verified Producer session of one request. `noteRecorded` is called by the server's call log for each tool call it records, so
  * the endpoint can log the calls the MCP layer refused before any tool ran (an unknown tool, an input the schema rejects).
  */
-export type ProducerMcpSession = { tokenId: string; reverify(): Promise<void>; noteRecorded(tool: string): void };
+export type ProducerMcpSession = { tokenId: string; reverify(): Promise<void>; noteRecorded(tool: string, channelId: string | null): void };
 
-/** A `tools/call` the MCP layer answered without reaching a tool: what the endpoint logs for it. */
-export type ProducerRefusedCall = { tool: string; channelId: string | null; errorCode: "TOOL_NOT_FOUND" | "INVALID_PARAMS" };
+/**
+ * A `tools/call` that never reached a tool: an unknown tool, an input the schema refused, or a request the transport rejected
+ * outright (a wrong `Accept` header or protocol version, a malformed message, a call sent as a notification).
+ */
+export type ProducerRefusedCall = { tool: string; channelId: string | null; errorCode: "TOOL_NOT_FOUND" | "INVALID_PARAMS" | "REQUEST_REJECTED" };
 
 export type ProducerMcpEndpointDeps = {
   /** The persisted "MCP connection" toggle, read fresh on every request (same master switch as channel agents). */
@@ -97,10 +100,11 @@ export function createProducerMcpEndpoint(deps: ProducerMcpEndpointDeps) {
     }
 
     const recorded: string[] = [];
+    const callKey = (tool: string, channelId: string | null) => `${tool}\u0000${channelId ?? ""}`;
     const session: ProducerMcpSession = {
       tokenId: binding.tokenId,
-      noteRecorded(tool) {
-        recorded.push(tool);
+      noteRecorded(tool, channelId) {
+        recorded.push(callKey(tool, channelId));
       },
       async reverify() {
         const current = await deps.verifyToken(token);
@@ -114,21 +118,24 @@ export function createProducerMcpEndpoint(deps: ProducerMcpEndpointDeps) {
     // No `runInAgentSession` here, on purpose: the server enters the scope of the channel each call names, per call.
     const server = deps.createServer({ session });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    let status = 500;
     try {
       await server.connect(transport);
-      return await transport.handleRequest(request);
+      const response = await transport.handleRequest(request);
+      status = response.status;
+      return response;
     } finally {
       await transport.close();
-      // Every tools/call the server's own log did not record never reached a tool: the MCP layer refused it. Log it here.
+      // Every tools/call the server's own log did not record (matched by tool AND channel) never reached a tool. Log it here: as
+      // refused by the transport when it rejected the request as a whole, else as an unknown tool or a refused input.
       for (const call of calls) {
-        const index = recorded.indexOf(call.tool);
+        const index = recorded.indexOf(callKey(call.tool, call.channelId));
         if (index >= 0) {
           recorded.splice(index, 1);
           continue;
         }
-        await deps
-          .recordRefusedCall({ ...call, errorCode: deps.isProducerTool(call.tool) ? "INVALID_PARAMS" : "TOOL_NOT_FOUND" })
-          .catch(() => undefined);
+        const errorCode = status !== 200 ? "REQUEST_REJECTED" : deps.isProducerTool(call.tool) ? "INVALID_PARAMS" : "TOOL_NOT_FOUND";
+        await deps.recordRefusedCall({ ...call, errorCode }).catch(() => undefined);
       }
     }
   }

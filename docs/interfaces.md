@@ -986,7 +986,8 @@ A read-only agent role that reads every channel connected on the device, one cha
   were never synced here. Analytics days are YouTube's reporting days; uploads count by UTC date. Dates must be real calendar dates.
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
-  refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`. The channel tools take no `credentialRef` here (the channel's own connected
+  refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`
+  header) as `REQUEST_REJECTED`. The channel tools take no `credentialRef` here (the channel's own connected
   account is used); passing one is refused at input.
 - No DRAFT, WRITE, research or collection request, media session or job.
 
