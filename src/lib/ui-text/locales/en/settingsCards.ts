@@ -49,7 +49,7 @@ export const settingsCards = {
   "settingsCards.depth.videosPerChannel": "Videos per channel (1–2000)",
   "settingsCards.depth.earliestDate": "Earliest publish date (YYYY-MM-DD)",
   "settingsCards.depth.noLimit": "no limit",
-  "settingsCards.depth.estimate": "First collection of a channel ≈ {first} units (up to {worst} if batch statistics are unavailable); later collections ≈ {steady} units per channel.",
+  "settingsCards.depth.estimate": "First collection of a channel ≈ {first} units (with each video's duration); later collections ≈ {steady} units per channel.",
   "settingsCards.copy": "Copy",
   "settingsCards.copied": "Copied",
   "settingsCards.mcp.info": "Off by default. While off, the app's MCP endpoint refuses every agent request with a clear error. Turning this on is the master switch only: an agent also needs its channel's agent token (Settings → Channels), sent as a Bearer token. With a valid token it sees only that channel's tools and data. The separate Live writes toggle, under API, still gates any real YouTube write. Unlike Live writes, this persists across restarts. Changes apply to the very next request, with no client restart.",

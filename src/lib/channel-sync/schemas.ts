@@ -48,6 +48,8 @@ const syncedVideoSchema = z
     commentCount: z.number().int().nullable(),
     likeCount: z.number().int().nullable(),
     publishAt: z.string().nullable(),
+    durationSeconds: z.number().int().nullable().optional(),
+    liveBroadcastContent: z.string().nullable().optional(),
   })
   .strict();
 
@@ -97,6 +99,8 @@ export const SYNCED_VIDEO_FIELDS = [
   "commentCount",
   "likeCount",
   "publishAt",
+  "durationSeconds",
+  "liveBroadcastContent",
 ] as const;
 
 export const listSyncedVideosInputSchema = z
