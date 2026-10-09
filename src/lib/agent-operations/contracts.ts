@@ -235,6 +235,9 @@ export type VideoMetadataContext = {
   /** ISO instant of this video's own last sync -- see `ChannelContext.lastSyncedAt`'s own note on
    * why this is never fabricated. */
   lastSyncedAt: string;
+  /** FO-REQ-0015 item 6: the stored length in seconds and YouTube's `liveBroadcastContent`; null when unknown. */
+  durationSeconds: number | null;
+  liveBroadcastContent: string | null;
 };
 
 export type VideoContext = {

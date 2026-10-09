@@ -52,6 +52,10 @@ export type SyncedVideo = {
   commentCount: number | null;
   likeCount: number | null;
   publishAt: string | null;
+  /** FO-REQ-0015 item 6: stored by the sync (`contentDetails.duration`, seconds; null when unknown, never 0). */
+  durationSeconds?: number | null;
+  /** FO-REQ-0015 item 6: YouTube's own `snippet.liveBroadcastContent` (`none` | `live` | `upcoming`), null when unknown. */
+  liveBroadcastContent?: string | null;
 };
 
 export type ChannelForSync = {

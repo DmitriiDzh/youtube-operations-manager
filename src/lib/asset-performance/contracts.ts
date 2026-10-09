@@ -22,14 +22,13 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError };
  * Deliberately NOT supported (see `docs/acceptance/PHASE_7_ACCEPTANCE.md` §5 for the full
  * reasoning against owner spec §16's own text):
  * - Thumbnail-CTR/impressions-based questions ("which thumbnails were used by high-CTR videos")
- *   -- this application's own analytics collection never fetches YouTube's `impressions`/
- *   `impressionClickThroughRate` metrics at all; no such data exists anywhere in this application
- *   to expose, and it is never approximated via `cardClickRate`/`annotationClickThroughRate`
- *   (an entirely different signal).
+ *   -- impressions/CTR are not Analytics API metrics; since BL-114 they are stored from YouTube's
+ *   Reach reports (`src/lib/reach-reports`) and read there, not joined here, and they are never
+ *   approximated via `cardClickRate`/`annotationClickThroughRate` (an entirely different signal).
  * - `metadata/version` linkage -- `linkedVideoId` has no time range and is never independently
  *   verified (a thumbnail may have been swapped since the association was recorded).
- * - `experiment/outcome` linkage -- belongs to Phase 10 (the Experiment Engine), which doesn't
- *   exist yet.
+ * - `experiment/outcome` linkage -- the decision engine (Phase 10) has experiments, but they are not
+ *   linked to videos (FO-REQ-0015 item 3 proposes it).
  * - Content Proposal reference associations (`content_proposal_artifacts`, a proposal's own
  *   `referenceAssetIds`/`referenceVideoIds`) -- a structurally DIFFERENT relationship (draft,
  *   unactioned reference/inspiration material a proposal cites, never "this asset was actually

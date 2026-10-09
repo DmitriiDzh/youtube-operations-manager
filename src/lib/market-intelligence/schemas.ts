@@ -212,6 +212,7 @@ export const marketVideoSnapshotSchema = z
     // did not return it) -- never 0. `liveBroadcastContent` is YouTube's own value ("none" | "live" | "upcoming").
     durationSeconds: z.number().int().nonnegative().nullable(),
     liveBroadcastContent: z.string().nullable(),
+    thumbnailUrl: z.string(),
     source: z.string(),
   })
   .strict();

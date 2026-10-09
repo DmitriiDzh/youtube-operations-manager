@@ -125,6 +125,11 @@ export type MarketVideoSnapshot = {
   /** SCHEMA_MIGRATIONS v47 -- `null` = not captured (older snapshots, or a path that did not return it); never 0. */
   durationSeconds: number | null;
   liveBroadcastContent: string | null;
+  /**
+   * FO-REQ-0015 item 6: YouTube's own image URL for the video (`i.ytimg.com/vi/<videoId>/hqdefault.jpg`), built from the id -- the image
+   * itself is never fetched or stored here.
+   */
+  thumbnailUrl: string;
   source: string;
 };
 

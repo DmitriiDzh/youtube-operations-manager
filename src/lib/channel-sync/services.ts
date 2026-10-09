@@ -156,6 +156,8 @@ function mapStoredVideo(record: StoredVideoRecord): SyncedVideo {
     commentCount: record.commentCount,
     likeCount: record.likeCount,
     publishAt: record.publishAt,
+    durationSeconds: record.durationSeconds ?? null,
+    liveBroadcastContent: record.liveBroadcastContent ?? null,
   };
 }
 

@@ -11,15 +11,17 @@ import {
 
 // Expected values are worked out by hand from the operator request (2026-10-04), not read from the implementation.
 
-test("estimateCollectionUnits: 1 channels.list + one page per 50 videos; worst case adds one videos.list per page", () => {
-  // [cap, first collection, worst case]
+test("estimateCollectionUnits: 1 channels.list + per 50 videos one page and one videos.list (details, FO-REQ-0015 item 4)", () => {
+  // [cap, first collection, worst case] -- FO-REQ-0015 item 4 changed the first collection: each page now reads its videos' duration
+  // and live status with videos.list (batchGetStats returns neither), the unit that was only the fallback's before, so the first
+  // collection equals the old worst case.
   const cases: Array<[number, number, number]> = [
-    [1, 2, 3],
-    [50, 2, 3],
-    [51, 3, 5],
-    [100, 3, 5],
-    [120, 4, 7],
-    [2000, 41, 81],
+    [1, 3, 3],
+    [50, 3, 3],
+    [51, 5, 5],
+    [100, 5, 5],
+    [120, 7, 7],
+    [2000, 81, 81],
   ];
   for (const [cap, first, worst] of cases) {
     const estimate = estimateCollectionUnits(cap);
