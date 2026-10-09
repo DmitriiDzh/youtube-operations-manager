@@ -1,6 +1,6 @@
 # Stored traffic sources and devices per video and per channel (BL-168, FO-REQ-0015 item 2)
 
-**Status: IN PROGRESS** on `feature/fo-req-0015-breakdowns`. Owner, Telegram 2026-10-10 (msg 2435, «Да, начинай»): FO-REQ-0015 step 3 in
+**Status: DONE, merged into `dev` (merge 2f98796, owner Telegram msg 2457).** Branch `feature/fo-req-0015-breakdowns`. Owner, Telegram 2026-10-10 (msg 2435, «Да, начинай»): FO-REQ-0015 step 3 in
 the order of DEV-RESP-0018.
 
 ## 1. Facts (checked live 2026-10-10, Tropico Jazz, read-only probe)
