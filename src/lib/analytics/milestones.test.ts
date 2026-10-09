@@ -6,6 +6,7 @@ import test from "node:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { createLibsqlClient } from "@/lib/libsql-client";
 import {
+  deferVideoMilestone,
   initializeDatabaseSchema,
   listVideoMilestoneStates,
   listVideoMilestones,
@@ -32,8 +33,10 @@ import {
 //   `publishedAt` while a video is private or scheduled). Other videos are not planned, and a stored milestone whose window no longer
 //   matches the publish date is collected again (attempts start again at 1) and is not returned until then.
 // - Only an error about the query itself counts an attempt (HTTP 400, 404, or a 403 that is not about permissions, the project or the
-//   rate). No HTTP answer, 401, 429, 5xx and a system 403 stop the run with nothing counted -- the previous AC-VM-04 test failed a video
-//   with a plain Error (no HTTP status), which is now such a stop, so it uses a Google-shaped 400.
+//   rate). Reads off, quota, sign-in, 401 and a system 403 stop the run with nothing recorded; no HTTP answer, 429 and 5xx stop it too
+//   but put that milestone back by a day without an attempt (second review: otherwise one video that keeps getting a 5xx would head the
+//   queue forever). The previous AC-VM-04 test failed a video with a plain Error (no HTTP status), which is now such a deferral, so it
+//   uses a Google-shaped 400.
 
 /** A public, already published video (the only kind that has milestones). */
 const published = (videoId: string, publishedAt: string | null): MilestoneVideo => ({ videoId, publishedAt, privacyStatus: "public", liveBroadcastContent: "none" });
@@ -141,6 +144,7 @@ function setup(
       listStates: (channelId) => listVideoMilestoneStates(channelId, db),
       saveCollected: (row) => saveCollectedVideoMilestone(row, db),
       recordFailure: (row) => recordVideoMilestoneFailure(row, db),
+      defer: (row) => deferVideoMilestone(row, db),
     },
   });
   return { services, queries, clock, videos };
@@ -226,7 +230,7 @@ test("AC-VM-04: one video's failure counts an attempt and the others go on; it i
   assert.equal(queries.length, queriesBefore);
 });
 
-test("AC-VM-04: a 404 or a video's own 403 counts an attempt; reads off, quota, no answer, 401, 429, 5xx and a system 403 stop the run, counting nothing", async () => {
+test("AC-VM-04: a 404 or a video's own 403 counts an attempt; reads off, quota, 401 and a system 403 stop the run, recording nothing", async () => {
   for (const error of [googleError(404, "notFound"), googleError(403, "forbidden")]) {
     const db = await freshDb();
     const { services } = setup(db, { fail: () => error });
@@ -235,20 +239,59 @@ test("AC-VM-04: a 404 or a video's own 403 counts an attempt; reads off, quota, 
   const stops: Error[] = [
     new DomainError({ code: "analytics_reads_disabled", message: "reads off (test)" }),
     new DomainError({ code: "youtube_quota_exceeded", message: "quota (test)" }),
-    Object.assign(new Error("getaddrinfo ENOTFOUND youtubeanalytics.googleapis.com (test)"), { code: "ENOTFOUND" }),
     googleError(401, "authError"),
-    googleError(429, "rateLimitExceeded"),
-    googleError(503, "backendError"),
     googleError(403, "insufficientPermissions"),
   ];
   for (const error of stops) {
     const db = await freshDb();
     const { services, queries } = setup(db, { fail: () => error });
     await assert.rejects(services.collectDueMilestones(RUN), (thrown: unknown) => thrown === error, error.message);
-    // The first query failed and the run stopped there: no other video was tried, and no attempt is stored.
+    // The first query failed and the run stopped there: no other video was tried, and nothing is stored.
     assert.equal(queries.length, 1, error.message);
     assert.deepEqual(await listVideoMilestones("UC_ours", {}, db), [], error.message);
   }
+});
+
+test("AC-VM-04: no HTTP answer, 429 or 5xx stop the run and put that milestone back a day, counting no attempt", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const deferrals: Error[] = [
+    Object.assign(new Error("getaddrinfo ENOTFOUND youtubeanalytics.googleapis.com (test)"), { code: "ENOTFOUND" }),
+    googleError(429, "rateLimitExceeded"),
+    googleError(503, "backendError"),
+  ];
+  for (const error of deferrals) {
+    const db = await freshDb();
+    const { services, queries } = setup(db, { fail: () => error });
+    await assert.rejects(services.collectDueMilestones(RUN), (thrown: unknown) => thrown === error, error.message);
+    assert.equal(queries.length, 1, error.message);
+    // The first planned milestone (v1 day 7, window end 09-07) is put back until NOW + 1 day; nothing else is touched.
+    assert.deepEqual(
+      (await listVideoMilestones("UC_ours", {}, db)).map((r) => [r.videoId, r.milestoneDays, r.status, r.attempts, r.nextAttemptAt?.toISOString(), r.lastError]),
+      [["v1", 7, "retry", 0, new Date(NOW.getTime() + day).toISOString(), error.message]],
+      error.message
+    );
+  }
+});
+
+test("second review of BL-166: a video that keeps getting a 500 does not hold the channel's queue", async () => {
+  const db = await freshDb();
+  const { services } = setup(db, { fail: (videoId) => (videoId === "v1" ? googleError(500, "internalError") : null) });
+  // Plan on 10-09, oldest window end first: v1/7 (09-07), v2/7 (09-08), v1/28 (09-28), v2/28 (09-29).
+  // Run 1: v1/7 gets a 500 -> put back, run stops.
+  await assert.rejects(services.collectDueMilestones(RUN));
+  // Run 2: v2/7 collected, then v1/28 gets a 500 -> put back, run stops.
+  await assert.rejects(services.collectDueMilestones(RUN));
+  // Run 3: only v2/28 is left before the put-back ones are due again.
+  assert.deepEqual(await services.collectDueMilestones(RUN), { attempted: 1, collected: 1, failed: 0 });
+  assert.deepEqual(
+    (await listVideoMilestones("UC_ours", {}, db)).map((r) => [r.videoId, r.milestoneDays, r.status, r.attempts]),
+    [
+      ["v1", 7, "retry", 0],
+      ["v1", 28, "retry", 0],
+      ["v2", 7, "collected", 1],
+      ["v2", 28, "collected", 1],
+    ]
+  );
 });
 
 test("AC-VM-04: while the quota reserve holds background reads back, nothing is queried", async () => {

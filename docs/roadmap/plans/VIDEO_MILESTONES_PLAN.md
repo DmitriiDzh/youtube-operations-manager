@@ -30,8 +30,9 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
   - **Added by the independent review (2026-10-10):** only public videos that are not upcoming premieres or streams are collected
     (while a video is private or scheduled, YouTube gives its owner the upload time as `publishedAt`). A stored milestone whose window no
     longer matches the publish date is collected again, attempts from 1, and is not returned until then. Only an error about the query
-    itself (400, 404, a 403 not about permissions, project or rate) counts an attempt; no answer, 401, 429, 5xx and system 403s stop
-    the run with nothing counted.
+    itself (400, 404, a 403 not about permissions, project or rate) counts an attempt; reads off, quota, sign-in, 401 and system 403s
+    stop the run with nothing recorded; no answer, 429 and 5xx stop it and put that milestone back by a day without an attempt (second
+    review: otherwise one video with a lasting 5xx would hold the channel's queue).
 - **Storage.** New table `video_milestones` (schema v75), primary key (video_id, milestone_days), with:
   - `channel_id`, `window_start`, `window_end`, `collected_at`;
   - `views`, `estimated_minutes_watched`, `average_view_duration`, `average_view_percentage`, each null when YouTube returned none;

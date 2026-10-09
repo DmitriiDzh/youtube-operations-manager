@@ -3284,7 +3284,9 @@ Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75.
   calls (gateway, `dimensions` optional): `elapsedVideoTimeRatio` with the five retention metrics, and the four totals with no dimension, both
   `video==<id>` over the window. Only an error about the query counts an attempt (HTTP 400, 404, or a 403 whose reason is not about
   permissions, the project or the rate; `recordVideoMilestoneFailure`: retry after 24 h, `failed` at 3). Reads off, quota, sign-in, channel
-  access, no HTTP answer at all, 401, 429, 5xx and those system 403s stop the run with nothing counted. The core wraps it in the analytics
+  access, 401 and those system 403s stop the run with nothing recorded. No HTTP answer at all, 429 and 5xx stop it too, but
+  `deferVideoMilestone` first puts that milestone back by 24 h without an attempt, so one video that keeps getting a 5xx cannot hold the
+  channel's queue (it is then retried once a day, never marked `failed`). The core wraps it in the analytics
   quota context and `gateMilestoneCollection` (`isBackgroundReadAllowed("analytics")`). `/api/analytics/auto-collect-all` runs it after the daily rows for each channel whose collection
   did not fail, each in its own try/catch.
 - **Storage.** `video_milestones` (primary key `video_id, milestone_days`): status, attempts, last error, next attempt, collected time, the

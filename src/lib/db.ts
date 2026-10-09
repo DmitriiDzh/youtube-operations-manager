@@ -9601,6 +9601,36 @@ export async function saveCollectedVideoMilestone(
 }
 
 /**
+ * BL-166 (second review): a milestone whose query got no usable answer (no HTTP answer, 429, 5xx) is put back until `retryAt` without
+ * counting an attempt, so the run can stop without the same milestone heading the queue again on the next run.
+ */
+export async function deferVideoMilestone(
+  row: { videoId: string; milestoneDays: number; channelId: string; windowStart: string; windowEnd: string; error: string; at: Date; retryAt: Date },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: row.channelId,
+    windowStart: row.windowStart,
+    windowEnd: row.windowEnd,
+    status: "retry" as const,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: row.retryAt,
+    updatedAt: row.at,
+  };
+  await database
+    .insert(videoMilestones)
+    .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, attempts: 0, ...values })
+    .onConflictDoUpdate({
+      target: [videoMilestones.videoId, videoMilestones.milestoneDays],
+      // Attempts are kept for the same window and start from 0 for a new one (the same rule as the other two writes).
+      set: {
+        ...values,
+        attempts: sql`CASE WHEN ${videoMilestones.windowStart} = ${row.windowStart} AND ${videoMilestones.windowEnd} = ${row.windowEnd} THEN ${videoMilestones.attempts} ELSE 0 END`,
+      },
+    });
+}
+
+/**
  * BL-166: a failed attempt. Below `maxAttempts` the milestone is retried from `retryAt`; at it, the milestone is `failed` and never
  * queried again (a video YouTube keeps refusing must not hold the queue).
  */

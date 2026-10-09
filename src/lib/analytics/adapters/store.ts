@@ -17,6 +17,7 @@ import {
   upsertWeeklyReport,
   listVideoMilestones,
   listVideoMilestoneStates,
+  deferVideoMilestone,
   recordVideoMilestoneFailure,
   saveCollectedVideoMilestone,
 } from "@/lib/db";
@@ -48,6 +49,7 @@ export function createVideoMilestoneStoreAdapter() {
       listStates: (channelId: string) => listVideoMilestoneStates(channelId),
       saveCollected: (row: Parameters<typeof saveCollectedVideoMilestone>[0]) => saveCollectedVideoMilestone(row),
       recordFailure: (row: Parameters<typeof recordVideoMilestoneFailure>[0]) => recordVideoMilestoneFailure(row),
+      defer: (row: Parameters<typeof deferVideoMilestone>[0]) => deferVideoMilestone(row),
     },
   };
 }
