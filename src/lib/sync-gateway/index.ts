@@ -54,6 +54,10 @@ export { createMediaSessionsShareCoreForProduction } from "./media-sessions";
 export type { MediaSessionsReport, SharedMediaSession, SharedSessionJobs, SharedJobProgress } from "./media-sessions";
 export { MEDIA_SESSIONS_REPORT_FORMAT, MEDIA_SESSIONS_REPORT_VERSION, SHARED_CURRENT_JOBS_MAX, sharedSessionJobsSchema } from "./media-sessions";
 export { createMediaSessionsSyncRunnerForProduction } from "./media-sessions-sync";
+export { createAgentTokensShareCoreForProduction, createAgentTokensShareCore } from "./agent-tokens";
+export type { AgentTokensReport, SharedAgentToken, AgentTokensShareCore, AgentTokensReportStore } from "./agent-tokens";
+export { AGENT_TOKENS_REPORT_FORMAT, AGENT_TOKENS_REPORT_VERSION } from "./agent-tokens";
+export { createAgentTokensSyncRunnerForProduction } from "./agent-tokens-sync";
 // BL-143 phase 2: generation plans of every device (per-device reports, `./per-device-report`).
 export {
   createGenerationPlansShareCoreForProduction,

@@ -5934,6 +5934,72 @@ export async function listActiveProducerAgentTokens(database: AppDb = db): Promi
   return database.select(producerAgentTokenColumns).from(producerAgentTokens).where(isNull(producerAgentTokens.revokedAt));
 }
 
+// BL-160 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §2): the three agent token tables as one list of records, and one transaction
+// that applies what `src/lib/agent-token-sync` decided from the other devices' reports. The hashes leave this layer; the tokens
+// themselves are never stored anywhere.
+
+export type AgentTokenSyncRole = "channel" | "factory" | "producer";
+
+export type AgentTokenSyncRow = {
+  role: AgentTokenSyncRole;
+  tokenHash: string;
+  channelId: string | null;
+  userId: string | null;
+  label: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+};
+
+export async function listAgentTokenRowsForSync(database: AppDb = db): Promise<AgentTokenSyncRow[]> {
+  const [channel, factory, producer] = await Promise.all([
+    database
+      .select({ tokenHash: agentChannelTokens.tokenHash, channelId: agentChannelTokens.channelId, userId: agentChannelTokens.userId, label: agentChannelTokens.label, createdAt: agentChannelTokens.createdAt, revokedAt: agentChannelTokens.revokedAt })
+      .from(agentChannelTokens),
+    database
+      .select({ tokenHash: factoryAgentTokens.tokenHash, label: factoryAgentTokens.label, createdAt: factoryAgentTokens.createdAt, revokedAt: factoryAgentTokens.revokedAt })
+      .from(factoryAgentTokens),
+    database
+      .select({ tokenHash: producerAgentTokens.tokenHash, label: producerAgentTokens.label, createdAt: producerAgentTokens.createdAt, revokedAt: producerAgentTokens.revokedAt })
+      .from(producerAgentTokens),
+  ]);
+  return [
+    ...channel.map((row) => ({ role: "channel" as const, ...row })),
+    ...factory.map((row) => ({ role: "factory" as const, channelId: null, userId: null, ...row })),
+    ...producer.map((row) => ({ role: "producer" as const, channelId: null, userId: null, ...row })),
+  ];
+}
+
+/**
+ * Applies a sync decision in ONE transaction: revocations first (only rows still active -- a revoked row is never touched
+ * again), then the learned tokens. Ordered so the one-active indexes of the role tables never see two active rows. A learned hash
+ * that meanwhile exists here (issued or imported concurrently) is left as it is.
+ */
+export async function applyAgentTokenSyncPlan(
+  plan: {
+    revoke: Array<{ role: AgentTokenSyncRole; tokenHash: string; revokedAt: Date }>;
+    insert: Array<AgentTokenSyncRow & { id: string }>;
+  },
+  database: AppDb = db
+): Promise<void> {
+  if (plan.revoke.length === 0 && plan.insert.length === 0) return;
+  await database.transaction(async (tx) => {
+    for (const item of plan.revoke) {
+      const table = item.role === "channel" ? agentChannelTokens : item.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      await tx.update(table).set({ revokedAt: item.revokedAt }).where(and(eq(table.tokenHash, item.tokenHash), isNull(table.revokedAt)));
+    }
+    for (const row of plan.insert) {
+      const base = { id: row.id, tokenHash: row.tokenHash, label: row.label, createdAt: row.createdAt, revokedAt: row.revokedAt };
+      if (row.role === "channel") {
+        if (row.channelId === null || row.userId === null) throw new Error("a channel token needs its channel and Google account");
+        await tx.insert(agentChannelTokens).values({ ...base, channelId: row.channelId, userId: row.userId }).onConflictDoNothing({ target: agentChannelTokens.tokenHash });
+      } else {
+        const table = row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+        await tx.insert(table).values(base).onConflictDoNothing({ target: table.tokenHash });
+      }
+    }
+  });
+}
+
 export type ProducerCallLogEntry = {
   id: number;
   at: Date;
@@ -6066,9 +6132,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;

@@ -1,7 +1,6 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createAgentTokenCore } from "@/lib/agent-tokens";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
@@ -30,9 +29,10 @@ export async function POST(request: Request) {
     }
 
     const result = await createChannelConnectionsCore().disconnectChannel(channelId);
-    // Phase 12 (review round 2): disconnecting a channel also revokes its agent token -- the token
-    // is already unusable (verifyToken requires a live connection), this just keeps the record honest.
-    await createAgentTokenCore().revokeToken({ channelId });
+    // BL-160 (owner, Telegram 2026-10-09, msgs 2205/2207): disconnecting no longer revokes the channel's agent token. Tokens are
+    // shared between devices, so a revocation here would stop the token on every device. It stops working on THIS device anyway
+    // (verifyToken requires the channel connected here under the account it was issued for) and works again if the channel is
+    // reconnected under that account; Revoke in Settings is the one action that stops it everywhere.
     const forceSignOut = result.disconnectedUserId === session.user.id;
     return NextResponse.json({ ...result, forceSignOut });
   } catch (error) {

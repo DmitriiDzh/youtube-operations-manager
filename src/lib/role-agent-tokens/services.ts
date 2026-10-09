@@ -78,7 +78,7 @@ export function createRoleTokenServices(deps: RoleTokenServiceDependencies) {
         if (existing.revokedAt !== null) {
           throw new DomainError({
             code: "AGENT_TOKEN_IMPORT_REVOKED",
-            message: "this token was revoked on this device and cannot be used here again -- issue a new one",
+            message: "this token was revoked and cannot be used again -- issue a new one",
           });
         }
         return toSummary(existing);

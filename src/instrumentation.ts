@@ -113,19 +113,35 @@ async function startServerSession() {
   const { rawSqlClient } = await import("@/lib/db");
   const { runAllSyncFamiliesOnce } = await import("@/lib/sync-gateway");
   const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
-  setInterval(() => {
+  const { createAgentTokenSyncCoreForProduction } = await import("@/lib/agent-token-sync");
+  const syncFamiliesThenTokens = async () => {
+    try {
+      // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
+      // governs snapshot handoff only; draft sync already ran from every open tab regardless.
+      // Same gate the "Sync now" route gets from src/proxy.ts.
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      await runAllSyncFamiliesOnce();
+      // BL-160: apply the agent tokens the other devices just reported, then publish this device's (only when it changed).
+      await createAgentTokenSyncCoreForProduction().tick();
+    } catch {
+      // Paused (lock/recovery) or failed -- each family records its own outcome; retry next time.
+    }
+  };
+  // BL-160: one agent-tokens pass shortly after start (only that family, the others keep their first run at a minute), so tokens
+  // issued or revoked elsewhere while this device was off apply within seconds of it starting.
+  const { createAgentTokensSyncRunnerForProduction } = await import("@/lib/sync-gateway");
+  setTimeout(() => {
     void (async () => {
       try {
-        // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
-        // governs snapshot handoff only; draft sync already ran from every open tab regardless.
-        // Same gate the "Sync now" route gets from src/proxy.ts.
         await assertDeviceAvailableForMutation(rawSqlClient);
-        await runAllSyncFamiliesOnce();
+        await createAgentTokensSyncRunnerForProduction().runSyncCycle();
+        await createAgentTokenSyncCoreForProduction().tick();
       } catch {
-        // Paused (lock/recovery) or failed -- each family records its own outcome; retry next time.
+        // Paused or failed: the regular cycle below retries.
       }
     })();
-  }, DRAFT_SYNC_INTERVAL_MS).unref();
+  }, DEVICE_SYNC_BOOT_DELAY_MS).unref();
+  setInterval(() => void syncFamiliesThenTokens(), DRAFT_SYNC_INTERVAL_MS).unref();
 
   // Phase 13 slice 13.2 (docs/roadmap/plans/PHASE_13_PLAN.md, owner decision D1 = a): other people's
   // channel data fetched from the YouTube API is kept at most 30 days (Developer Policies III.E.4.d).

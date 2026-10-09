@@ -42,6 +42,10 @@ export type { SqlExecutor };
  *   - `factory_agent_tokens` (Factory Operator access, `docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md`
  *     F2) -- the Factory Operator role's agent credential (hash only), device-local by design exactly
  *     like `agent_channel_tokens`; never a RISK-52-style omission.
+ *   - Since BL-160 (`docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §2) the three token tables (with
+ *     `producer_agent_tokens`, BL-161) are filled across devices by the `agent-tokens` sync family
+ *     (hashes only, per-token rules in `src/lib/agent-token-sync`), never by a snapshot: a snapshot
+ *     import must not roll back a revocation made since the snapshot was taken.
  *   - `rules` (auto-add-to-playlist rules, from the project's original pre-rewrite baseline) -- this feature's own
  *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
  *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is
@@ -175,9 +179,9 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   channel_workspaces: "per-device local filesystem paths (Phase 11)",
   logical_paths: "per-device registry of named local paths (Factory Operator access, plan F1)",
   logical_path_values: "per-device local filesystem path values of the registry (Factory Operator access, plan F1)",
-  agent_channel_tokens: "per-machine agent credentials (Phase 12)",
-  factory_agent_tokens: "per-machine Factory Operator agent credential hash (Factory Operator access, plan F2)",
-  producer_agent_tokens: "per-machine Producer agent credential hash (BL-161)",
+  agent_channel_tokens: "agent credential hashes (Phase 12); shared between devices by the agent-tokens sync family, never by a snapshot (BL-160)",
+  factory_agent_tokens: "Factory Operator agent credential hash (plan F2); shared by the agent-tokens sync family, never by a snapshot (BL-160)",
+  producer_agent_tokens: "Producer agent credential hash (BL-161); shared by the agent-tokens sync family, never by a snapshot (BL-160)",
   producer_call_log: "per-device log of the Producer agent's calls (BL-161)",
   agent_connections: "retired (ADR 0011), table kept inert",
   agent_capability_zones: "retired (ADR 0011), table kept inert",

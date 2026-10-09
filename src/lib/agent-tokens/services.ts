@@ -120,8 +120,9 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
      * Operator-only (BL-130). Registers on THIS device a token already issued on another one, so one
      * agent configuration works on every device. Same checks as issuing; the plaintext never leaves
      * this function (errors never carry it) and only its hash is stored. Like issuing, it revokes the
-     * channel's previous active token here. Re-importing the active token is a no-op; a token this
-     * device revoked is refused, never re-activated. Revocation stays per device.
+     * channel's previous active token here. Re-importing the active token is a no-op; a revoked token
+     * is refused, never re-activated. Since BL-160 tokens and revocations also reach every device by
+     * themselves (`src/lib/agent-token-sync`); import remains for a device without the shared folder.
      */
     async importToken(input: unknown): Promise<AgentTokenSummary> {
       const parsed = parseWithSchema(importAgentTokenInputSchema, input, "import agent token input");
@@ -161,7 +162,7 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
         if (existing.revokedAt !== null) {
           throw new DomainError({
             code: "AGENT_TOKEN_IMPORT_REVOKED",
-            message: "this token was revoked on this device and cannot be used here again -- issue a new one",
+            message: "this token was revoked and cannot be used again -- issue a new one",
           });
         }
         if (existing.channelId !== parsed.channelId) {
