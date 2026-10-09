@@ -1,6 +1,6 @@
 # Video milestones: day-7 and day-28 retention and totals (BL-166, FO-REQ-0015 items 1 and 8)
 
-**Status: BUILT on `feature/fo-req-0015-milestones`, waiting for the owner's merge decision.** Owner, Telegram 2026-10-09 (msgs 2380–2381): FO-REQ-0015 in the order of DEV-RESP-0018, step 2
+**Status: DONE, merged into `dev` (merge 0cb3ebb, owner Telegram msg 2424).** Owner, Telegram 2026-10-09 (msgs 2380–2381): FO-REQ-0015 in the order of DEV-RESP-0018, step 2
 after the quick fixes. Branch `feature/fo-req-0015-milestones`.
 
 ## 1. Facts (checked 2026-10-09)
