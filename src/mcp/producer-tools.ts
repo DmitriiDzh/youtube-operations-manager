@@ -1,12 +1,13 @@
 /**
- * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3, ADR 0034) -- what the read-only Producer role may call on its
- * own endpoint (`/api/mcp/producer`). A closed list: a channel tool reaches the Producer only by being named here, and every
- * entry names the capability (`src/lib/agent-operations` registry) whose permission class must be READ -- the inventory test
- * fails the suite otherwise, so no DRAFT or WRITE tool can be added by accident.
+ * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3, ADR 0034) -- what the Producer role may call on its own
+ * endpoint (`/api/mcp/producer`). A closed list: a channel tool reaches the Producer only by being named here, and every entry
+ * names the capability (`src/lib/agent-operations` registry) whose permission class must be READ -- the inventory test fails the
+ * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident. Its only DRAFT tools are its own proposal tools
+ * (BL-163, `PRODUCER_DRAFT_TOOLS`): a proposal changes nothing until the owner approves it in the Web UI.
  */
 
 /** The Producer API's own version, independent of `AGENT_API_VERSION` and `FACTORY_API_VERSION`. */
-export const PRODUCER_API_VERSION = "1.0.0";
+export const PRODUCER_API_VERSION = "1.1.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -47,7 +48,21 @@ export const PRODUCER_RENAMED_CHANNEL_FIELD: Readonly<Record<string, string>> = 
 });
 
 /** The Producer's own tools (never registered for a channel agent). */
-export const PRODUCER_ONLY_TOOLS = ["producer_get_capabilities", "producer_list_channels", "producer_portfolio_overview"] as const;
+export const PRODUCER_ONLY_TOOLS = [
+  "producer_get_capabilities",
+  "producer_list_channels",
+  "producer_portfolio_overview",
+  "producer_propose",
+  "producer_list_proposals",
+  "producer_mark_proposals_done",
+] as const;
+
+/**
+ * BL-163 (FO-REQ-0014 §C, ADR 0034 Amendment 1): the Producer's DRAFT tools -- exactly these two, the test pins the list. They store
+ * a proposal, or mark a decided one read; neither changes the watchlist or the hypotheses. Approving, rejecting and applying are
+ * Web-UI-only (`agent-proposal-approval-inventory.test.ts`).
+ */
+export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done"] as const;
 
 /** Every tool the Producer endpoint lists, in order. */
 export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([...PRODUCER_ONLY_TOOLS, ...Object.keys(PRODUCER_CHANNEL_TOOLS)]);

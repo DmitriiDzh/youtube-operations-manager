@@ -1201,11 +1201,16 @@ test("AC-MI-07: add/list/record/list-evidence round trips return the expected sh
     { channelId: VALID_CHANNEL_ID, handleOrUrl: "@example", reason: "Fast-growing in the same niche" },
     { createdVia: "web_ui" }
   );
+  // BL-163 (FO-REQ-0014 §A): every entry now carries its activity -- a new entry has no known upload and is not paused.
   assert.deepEqual(added, {
     channelId: VALID_CHANNEL_ID,
     handleOrUrl: "@example",
     reason: "Fast-growing in the same niche",
     addedAt: added.addedAt,
+    latestUploadPublishedAt: null,
+    inactive: false,
+    pausedAt: null,
+    pausedReason: null,
   });
 
   const list = await services.listWatchlist();

@@ -65,7 +65,8 @@ test("AC-R1-4: the summary line names counts, warnings, budget, searches and pen
     { text: "1 new discovery", tone: "plain", goTo: "discover" },
     { text: "Collection budget today: 120 of 500 units", tone: "plain" },
     { text: "Searches left today: 97 of 100", tone: "plain" },
-    { text: "2 requests waiting for you", tone: "warn", goTo: "inbox" },
+    // BL-163 (FO-REQ-0014 §C7): the count now includes agent proposals, so it no longer says "requests".
+    { text: "2 waiting for your decision", tone: "warn", goTo: "inbox" },
   ]);
 });
 
@@ -104,7 +105,7 @@ test("AC-R2-3: the Videos table has no derived-metric columns", async () => {
 
 type Row = Parameters<typeof filterWatchlistRows>[0][number];
 function row(channelId: string, handleOrUrl: string | null, reason: string, status: Row["status"]): Row {
-  return { channelId, handleOrUrl, reason, addedAt: "2026-10-01T00:00:00.000Z", latestObservation: null, videosObserved: 0, latestRun: null, dataQualityFlags: [], status };
+  return { channelId, handleOrUrl, reason, addedAt: "2026-10-01T00:00:00.000Z", latestObservation: null, videosObserved: 0, latestRun: null, dataQualityFlags: [], status, latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null };
 }
 const rows: Row[] = [
   row("UCaaaaaaaaaaaaaaaaaaaaaa", "@lofigirl", "lofi reference", "current"),
@@ -129,6 +130,12 @@ test("AC-R3-1/§4.1: 'needs attention' is every status but current -- the set th
   assert.deepEqual(ids(filterWatchlistRows(rows, { ...noFilter, status: "current" })), ["UCa"]);
 });
 
+test("BL-163: a paused entry is its own status -- never in 'needs attention' (it is not collected on purpose), and filterable", () => {
+  const withPaused = [...rows, row("UCeeeeeeeeeeeeeeeeeeeeee", "@quiet", "inactive", "paused")];
+  assert.deepEqual(ids(filterWatchlistRows(withPaused, { ...noFilter, status: "needs_attention" })), ["UCb", "UCc", "UCd"]);
+  assert.deepEqual(ids(filterWatchlistRows(withPaused, { ...noFilter, status: "paused" })), ["UCe"]);
+});
+
 test("§4.3/decision 3: 'visible to channel X' keeps only channels assigned to X; unassigned channels are never visible", () => {
   const assignments = new Map([
     ["UCaaaaaaaaaaaaaaaaaaaaaa", ["UCmine1", "UCmine2"]],
@@ -144,7 +151,8 @@ test("AC-R3-1/R3-3: Channels is a table read from the watchlist-table route, the
   const panel = sourceInEnglish(await readFile(path.join(process.cwd(), "src", "components", "market-research-panel.tsx"), "utf8"));
   assert.match(panel, /fetch\("\/api\/market-intelligence\/watchlist-table"\)/);
   const headers = [...panel.matchAll(/<th[^>]*>"([^<"]+)"<\/th>/g)].map((m) => m[1]);
-  assert.deepEqual(headers, ["Channel", "Reason", "Subscribers (as of)", "Videos observed", "Last collected", "Status", "Visible to"]);
+  // BL-163 (FO-REQ-0014): a "Latest upload" column, and the per-channel visibility column named for what it is.
+  assert.deepEqual(headers, ["Channel", "Reason", "Subscribers (as of)", "Videos observed", "Latest upload", "Last collected", "Status", "Followed by our channels"]);
   assert.match(panel, /\{addOpen && \(\s*<BlockingDialog label="Add a channel to the watchlist"/);
   // The chip editor appears exactly once, inside the drawer's "Visible to agents of" section.
   assert.equal(panel.match(/<MarketChannelAssignment/g)?.length, 1);

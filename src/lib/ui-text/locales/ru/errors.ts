@@ -152,4 +152,9 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.LOGICAL_PATH_ALREADY_EXISTS": "Логический путь с таким именем уже есть.",
   "errors.LOGICAL_PATH_VALUE_INVALID": "Эту папку нельзя использовать для логического пути.",
   "errors.LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE": "У этого логического пути нет папки на этом компьютере.",
+  "errors.AGENT_PROPOSAL_NOT_FOUND": "Этого предложения больше нет.",
+  "errors.AGENT_PROPOSAL_NOT_PENDING": "По этому предложению уже принято решение.",
+  "errors.AGENT_PROPOSAL_DUPLICATE": "Такое же предложение уже ждёт решения.",
+  "errors.AGENT_PROPOSAL_NOT_APPLICABLE": "Предложение не подходит к текущему состоянию списка.",
+  "errors.AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE": "Сначала переключитесь на канал предложения: гипотеза добавляется в активный канал.",
 };

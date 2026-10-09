@@ -1901,3 +1901,34 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **What to do:** update both computers together (stated in the release note); set Syncthing's watch delay for the shared folder to 1 s so claims arrive in seconds; keep the computers' clocks synced (macOS/Windows network time is on by default).
 - **Re-evaluate:** if a third computer joins (presence and notes are per device, nothing assumes two, but the tie-break is pairwise), or if clocks drift (then use the order the owning device received them).
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner, msgs 2244/2263).
+
+## RISK-120 — An approved agent proposal reads "applied" if the app stops between the claim and the change — OPEN, 2026-10-09
+
+- **What:** BL-163 (`docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md` §2.C). Approving claims the proposal first (`pending -> applied`,
+  atomic), then makes the change; a failure stores `failed` with the error. If the process stops between the two (crash, power loss), the
+  proposal reads `applied` though the change was not made. Claiming first is deliberate: it makes a double approve apply once, and lets a
+  deletion drop the entry's other pending proposals without dropping the one being applied.
+- **Bounded by:** each change is one local write through an existing service (milliseconds), nothing touches YouTube, and the watchlist or the
+  hypotheses list shows the real state; the owner can make the change by hand.
+- **Re-evaluate:** if a proposal kind gets a long or external apply step (then add an `approved` state with a resume on start).
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-121 — "Inactive after N months" is set per computer, while pauses and proposals sync — OPEN, 2026-10-09
+
+- **What:** BL-163. The setting lives in `app_settings` (device-local, like the collection budget), but `research_channels` pauses and
+  `agent_proposals` travel in the device snapshot. Two computers with different N pause and propose different entries, and each one's
+  pauses reach the other.
+- **Bounded by:** a pause only stops collection and a deletion still needs the owner's approval; the proposal records the N it used.
+- **What to do:** set the same N on both computers (Settings → API).
+- **Re-evaluate:** if the two values ever need to differ, or when the BL-150 shared-settings document takes non-media settings.
+- **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-122 — A Producer proposal's free text may quote other channels' YouTube data longer than 30 days — OPEN, 2026-10-09
+
+- **What:** BL-163. `producer_propose`'s `text` is the agent's own explanation, stored until 90 days after the decision (a pending one
+  indefinitely). If the agent copies another channel's statistics or dates into it, they outlive the 30-day limit (III.E.4.d). The
+  system's own proposals store no such data (the card reads the current date from the watchlist).
+- **Bounded by:** the tool description asks for the entry to be cited, not its statistics, and says why; the text is the owner's to read
+  and is deleted with the proposal.
+- **Re-evaluate:** if the policy review asks for enforcement (then blank `text` 30 days after creation, keeping the decision).
+- **Gate(s):** none. **Status:** open, accepted tradeoff.

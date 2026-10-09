@@ -13,6 +13,7 @@ export const settings: Record<keyof typeof en, string> = {
   "settingsCard.quotaReserve": "Резерв квоты",
   "settingsCard.marketCollection": "Сбор рыночных данных",
   "settingsCard.competitorDepth": "Глубина сбора по конкурентам",
+  "settingsCard.competitorInactivity": "Неактивные конкуренты",
   "settingsCard.channels": "Каналы",
   "settingsCard.mcp": "Подключение MCP",
   "settingsCard.operatorCli": "CLI оператора",

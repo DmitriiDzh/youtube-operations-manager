@@ -76,7 +76,8 @@ import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
+import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
   createChannelWorkspacesCore,
   getChannelWorkspaceInputSchema,
@@ -461,6 +462,12 @@ export type ProducerSession = {
   recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
   listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
   portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+  /** BL-163: the Producer's side of the proposal store -- submit, list its own, mark read. Approving is not here (Web UI only). */
+  proposals: {
+    submit(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    list(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    markDone(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
 };
 
 /** A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). */
@@ -471,6 +478,12 @@ const ISO_DATE = z
     const time = Date.parse(`${value}T00:00:00Z`);
     return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
   }, "not a calendar date");
+
+// BL-163 (FO-REQ-0014 §C): the proposal tools' inputs are the proposal service's own schemas (one definition, no drift); `payload`
+// is checked per kind by the service.
+export const producerProposeInputSchema = submitProducerProposalInputSchema;
+export const producerListProposalsInputSchema = listProducerProposalsInputSchema;
+export const producerMarkProposalsDoneInputSchema = markProposalsDoneInputSchema;
 
 export const producerPortfolioOverviewInputSchema = z
   .object({ startDate: ISO_DATE, endDate: ISO_DATE })
@@ -2497,7 +2510,7 @@ export function createMcpServer(
     // process -- and `reverify` re-checks the token so a revocation lands even mid-request
     // (AC-P12-02). The scope itself is entered by the endpoint, not here, so tests can inject this.
     agentSession?: { tokenId: string; channelId: string; reverify(): Promise<void> } | null;
-    // BL-161: the read-only Producer of THIS request (`src/lib/producer-mcp-endpoint`, a producer token it just verified). The
+    // BL-161: the Producer (READ, plus its BL-163 proposal tools) of THIS request (`src/lib/producer-mcp-endpoint`, a producer token it just verified). The
     // server then registers only the Producer's closed list (`./producer-tools.ts`): each channel tool needs a `channelId` and
     // runs inside THAT channel's agent scope, entered here per call (never per request), so it sees exactly what the channel's
     // own agent sees through the same checks. Never together with `agentSession`.
@@ -2590,14 +2603,19 @@ export function createMcpServer(
     };
     if (toolClass === "producer-only") {
       const wrapped = async (args: never) => {
+        // A producer tool that names one of our channels (BL-163's proposal tools) is logged under it, by the endpoint's own rule
+        // (a string of at most 64 characters), so the endpoint matches the call to this entry; the answer names it too.
+        const named = (args as { channelId?: unknown } | undefined)?.channelId;
+        const channelId = typeof named === "string" && named.length <= 64 ? named : null;
+        const finish = (result: ToolResponse) => (channelId ? withForChannel(result, channelId) : result);
         let result: ToolResponse;
         try {
           await session.reverify();
         } catch (error) {
           await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
           result = toolErrorResult(error);
-          await record({ channelId: null, result });
-          return result;
+          await record({ channelId, result });
+          return finish(result);
         }
         await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
         try {
@@ -2605,8 +2623,8 @@ export function createMcpServer(
         } catch (error) {
           result = toolErrorResult(error);
         }
-        await record({ channelId: null, result });
-        return result;
+        await record({ channelId, result });
+        return finish(result);
       };
       return { config, handler: wrapped };
     }
@@ -2683,16 +2701,17 @@ export function createMcpServer(
     "producer_get_capabilities",
     {
       description:
-        "The Producer role's own report: its API version, that every permission is READ, and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here drafts, writes, spends, or starts anything.",
+        "The Producer role's own report: its API version, its permissions (READ, plus DRAFT for its proposals only) and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here writes, spends, or starts anything: the only DRAFT tools (draftTools) store a proposal or mark one read, and a proposal changes nothing until the owner approves it in YT Manager.",
       inputSchema: z.object({}).strict(),
     },
     async () =>
       toolSuccessResult({
         role: "producer",
         producerApiVersion: PRODUCER_API_VERSION,
-        permissions: ["READ"],
+        permissions: ["READ", "DRAFT"],
         channelRequired: true,
         tools: [...PRODUCER_TOOL_NAMES],
+        draftTools: [...PRODUCER_DRAFT_TOOLS],
       })
   );
 
@@ -2714,6 +2733,44 @@ export function createMcpServer(
       inputSchema: producerPortfolioOverviewInputSchema,
     },
     async (args: z.infer<typeof producerPortfolioOverviewInputSchema>) => toolSuccessResult(await producerSession!.portfolioOverview(args))
+  );
+
+  // BL-163 (FO-REQ-0014 §C, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): the Producer proposes, the owner decides in
+  // the Web UI, the system applies. These tools reach only the proposal store's Producer side (`ProducerSession.proposals`).
+  registerTool(
+    "producer_propose",
+    {
+      description:
+        "Propose ONE change to the research watchlist or the hypotheses of one of our channels. It changes nothing: the owner sees it in YT Manager (Research → Inbox, \"Agent proposals\") with your `text`, approves it in one click, or rejects it with a required comment. Read the outcome with producer_list_proposals. `channelId` = the channel of ours it is for (one of producer_list_channels); `text` (1-4000 characters after trimming) = what and why. The owner's card already shows the entry's current newest-upload date and pause next to your text, and your text is stored until 90 days after the decision, while other channels' YouTube data may be kept 30 days at most (YouTube API policy) -- so cite the entry, not its statistics. `kind` and its `payload` (strict): " +
+        "watchlist.add {competitorChannelId: the competitor's UC... channel id (a handle or URL is not accepted -- no YouTube call is made), reason: why it is watched -- stored on the entry when the entry is new, handleOrUrl?: shown in the list, also only for a new entry} -- adds it to the watchlist if needed and makes this channel follow it; " +
+        "watchlist.unfollow {researchChannelId} -- this channel stops following it, the entry stays for the others; " +
+        "watchlist.pause / watchlist.resume {researchChannelId} -- stops / restarts its collection, for every channel; " +
+        "watchlist.delete {researchChannelId} -- deletes it from the watchlist completely, with its stored history, for every channel; " +
+        "hypothesis.add {statement, evidenceNotes} -- a new hypothesis of this channel, created as yours (createdBy producer, createdVia mcp) when approved. " +
+        "Every watchlist kind except add must name an entry this channel follows (query_competitors with this channelId). Refused at once: an entry the channel does not follow (RESEARCH_CHANNEL_NOT_AVAILABLE), a channel not connected here (CHANNEL_NOT_ACTIVE), a change that does not fit the current state, e.g. pausing a paused entry (AGENT_PROPOSAL_NOT_APPLICABLE), the same proposal already waiting (AGENT_PROPOSAL_DUPLICATE, details.proposalId and details.source -- pause, resume and delete: one per entry, whoever proposed it, the system's own deletion proposals for inactive entries included, which producer_list_proposals does not list; add and unfollow: per entry and channel), a payload that does not match its kind (validation_failed), and while the app is paused for a device handoff or recovery (operation_lock_held / device_in_recovery_mode). Returns { proposal } (status pending) and forChannelId.",
+      inputSchema: producerProposeInputSchema,
+    },
+    async (args: z.infer<typeof producerProposeInputSchema>) => toolSuccessResult({ proposal: await producerSession!.proposals.submit(args) })
+  );
+
+  registerTool(
+    "producer_list_proposals",
+    {
+      description:
+        "Your proposals, newest first (at most 500), with their status: pending (waiting for the owner), applied (approved and made), rejected (with the owner's `rejectComment` -- the reason, for you), failed (approved, but the change could not be made: `applyError`; never retried by itself). Optional filters: channelId (the answer then also carries forChannelId), status. Mark decided ones read with producer_mark_proposals_done: they leave the store at once and are not listed again; a decided proposal is also gone 90 days after the decision; a pending one never expires. A local read that changes nothing.",
+      inputSchema: producerListProposalsInputSchema,
+    },
+    async (args: z.infer<typeof producerListProposalsInputSchema>) => toolSuccessResult(await producerSession!.proposals.list(args))
+  );
+
+  registerTool(
+    "producer_mark_proposals_done",
+    {
+      description:
+        "Mark decided proposals (applied, rejected or failed) as read: they leave the proposal store. A pending one is never marked (it stays for the owner). Returns `marked` and `notMarked` (pending, unknown, already gone, or not yours). Up to 100 ids per call. Refused while the app is paused for a device handoff or recovery (operation_lock_held / device_in_recovery_mode).",
+      inputSchema: producerMarkProposalsDoneInputSchema,
+    },
+    async (args: z.infer<typeof producerMarkProposalsDoneInputSchema>) => toolSuccessResult(await producerSession!.proposals.markDone(args))
   );
 
   registerTool(
@@ -3272,7 +3329,7 @@ export function createMcpServer(
     "query_market_overview",
     {
       description:
-        "Compact bulk read of the research watchlist: several channels in ONE call, paged (limit default 50, max 200; offset; nextOffset is null on the last page). Per channel: channelId, handleOrUrl, its newest stored channel snapshot (observedAt, subscriberCount, viewCount, videoCount, hiddenSubscriberCount -- raw values as stored, null when none), channelSnapshotCount, videoSnapshotCount (stored snapshot ROWS: a video snapshotted in several runs counts several times), uniqueVideoCount (distinct videoId among them), latestVideoSnapshotAt (newest observedAt among them, null when none), evidenceCount, dataQualityFlags and `collection` (how deep this channel's uploads are collected: maxVideosPerChannel = the cap of distinct videos kept, publishedAfter = YYYY-MM-DD limit or null, videosStored = distinct videos stored now, complete = false while the first/deeper collection is still under way or has not run yet -- the Manager continues it on its own across days within the daily unit budget -- and true once it reached the cap, the date or the end of the channel's uploads, completeReason = cap | date | exhausted; videosStored below maxVideosPerChannel with complete true simply means the channel has fewer uploads or older snapshots aged out of the 30-day window; the operator sets the depth in Settings and on each watchlist entry, not you) -- no evidence text and no snapshot lists (use query_market_intelligence for one channel's detail, or agent_export_research_data to get every row as files). Omit channelIds for every watchlist channel you may see; naming one you cannot see fails with RESEARCH_CHANNEL_NOT_AVAILABLE. Other channels' API-sourced snapshots are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d). Nothing is computed from competitor statistics (no ranking, rate or median: III.E.4.h). A local read only, never a live YouTube call.",
+        "Compact bulk read of the research watchlist: several channels in ONE call, paged (limit default 50, max 200; offset; nextOffset is null on the last page). Per channel: channelId, handleOrUrl, its newest stored channel snapshot (observedAt, subscriberCount, viewCount, videoCount, hiddenSubscriberCount -- raw values as stored, null when none), channelSnapshotCount, videoSnapshotCount (stored snapshot ROWS: a video snapshotted in several runs counts several times), uniqueVideoCount (distinct videoId among them), latestVideoSnapshotAt (newest observedAt among them, null when none), evidenceCount, dataQualityFlags and `collection` (how deep this channel's uploads are collected: maxVideosPerChannel = the cap of distinct videos kept, publishedAfter = YYYY-MM-DD limit or null, videosStored = distinct videos stored now, complete = false while the first/deeper collection is still under way or has not run yet -- the Manager continues it on its own across days within the daily unit budget -- and true once it reached the cap, the date or the end of the channel's uploads, completeReason = cap | date | exhausted; videosStored below maxVideosPerChannel with complete true simply means the channel has fewer uploads or older snapshots aged out of the 30-day window; the operator sets the depth in Settings and on each watchlist entry, not you), plus the watchlist activity fields: latestUploadPublishedAt (the newest publishedAt among the channel's stored video snapshots, raw, null when none is stored -- it fades with the 30-day window once collection stops), inactive (true only when that date is known and older than the operator's 'inactive after N months' setting, default 6), pausedAt and pausedReason (inactive = paused automatically, owner = paused by the operator; a paused channel is not collected) -- no evidence text and no snapshot lists (use query_market_intelligence for one channel's detail, or agent_export_research_data to get every row as files). Omit channelIds for every watchlist channel you may see; naming one you cannot see fails with RESEARCH_CHANNEL_NOT_AVAILABLE. Other channels' API-sourced snapshots are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d). Nothing is computed from competitor statistics (no ranking, rate or median: III.E.4.h). A local read only, never a live YouTube call.",
       inputSchema: listResearchOverviewInputSchema,
     },
     (args) => handlers.queryMarketOverview(args)
@@ -3298,7 +3355,7 @@ export function createMcpServer(
     "query_competitors",
     {
       description:
-        "List every channel currently on the research watchlist (channelId, handleOrUrl, reason it was added, addedAt) -- no evidence attached, just the roster. A local read only, never a live YouTube call. Global data, not scoped to any owned channel -- these are channels the operator does not necessarily own (docs/roadmap/plans/PHASE_9_PLAN.md).",
+        "List every channel currently on the research watchlist (channelId, handleOrUrl, reason it was added, addedAt, and the activity fields latestUploadPublishedAt / inactive / pausedAt / pausedReason with the same meaning as in query_market_overview) -- no evidence attached, just the roster. A local read only, never a live YouTube call. Global data, not scoped to any owned channel -- these are channels the operator does not necessarily own (docs/roadmap/plans/PHASE_9_PLAN.md).",
       inputSchema: queryCompetitorsInputSchema,
     },
     (args) => handlers.queryCompetitors(args)
@@ -3308,7 +3365,7 @@ export function createMcpServer(
     "query_market_intelligence",
     {
       description:
-        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count, feed_fallback_used = the newest collection got only the ~15 newest uploads from the RSS feed because the uploads-playlist call failed, so the video list is shorter than normal; never a fabricated flag when there's simply no data yet) and collectionProgress (the channel's collection depth and progress: maxVideosPerChannel, publishedAfter, videosStored, complete, completeReason, same meaning as `collection` in query_market_overview). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt, and the activity fields latestUploadPublishedAt / inactive / pausedAt / pausedReason, as in query_market_overview), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count, feed_fallback_used = the newest collection got only the ~15 newest uploads from the RSS feed because the uploads-playlist call failed, so the video list is shorter than normal; never a fabricated flag when there's simply no data yet) and collectionProgress (the channel's collection depth and progress: maxVideosPerChannel, publishedAfter, videosStored, complete, completeReason, same meaning as `collection` in query_market_overview). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
       inputSchema: getWatchlistEntryInputSchema,
     },
     (args) => handlers.queryMarketIntelligence(args)

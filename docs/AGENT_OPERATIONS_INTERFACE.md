@@ -934,7 +934,9 @@ which happens to fulfil two capability names this interface reserved back in sli
 plugs into this interface.
 
 - **`query_competitors`** (MCP)/`agent competitors` (CLI) -- every channel on the research
-  watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached.
+  watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached. Since BL-163 each
+  entry also carries `latestUploadPublishedAt` (raw, null when unknown), `inactive`, `pausedAt` and
+  `pausedReason` (as `query_market_overview`; additive, no version bump).
 - **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId <UC...>` (CLI) -- one
   watchlisted channel's own record plus its evidence history (Phase 13: another channel's API-sourced rows
   only within the last 30 days, operator-entered rows at any age); `RESEARCH_CHANNEL_NOT_AVAILABLE`

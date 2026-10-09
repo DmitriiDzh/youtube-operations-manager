@@ -19,6 +19,7 @@ function deps(overrides: Record<string, unknown> = {}): ResearchSummaryDeps {
       listCollectionRequests: async () => ({ requests: [{ status: "pending" }, { status: "running" }, { status: "done" }] }),
       ...overrides,
     },
+    proposals: { countPendingProposals: async () => (overrides.proposalsFail ? Promise.reject(new Error("store down")) : 2) },
   } as unknown as ResearchSummaryDeps;
 }
 
@@ -31,7 +32,8 @@ test("AC-R1-2/4: the summary counts channels, warnings, new discoveries, today's
     newDiscoveryCount: 2,
     searches: { usedToday: 3, dailyLimit: 100 },
     collectionBudget: { dailyBudgetUnits: 500, unitsSpentToday: 120, remainingTodayUnits: 380 },
-    pending: { researchRequests: 2, collectionRequests: 1, total: 3 },
+    // BL-163 (FO-REQ-0014 §C7): the agent proposals waiting for the owner are part of the inbox count.
+    pending: { researchRequests: 2, collectionRequests: 1, agentProposals: 2, total: 5 },
   });
 });
 
@@ -52,5 +54,8 @@ test("one failing source does not hide the others (each part is optional, AGENTS
   const body = await res.json();
   assert.equal(body.watchlistCount, null);
   assert.equal(body.warningCount, null);
-  assert.deepEqual(body.pending, { researchRequests: 2, collectionRequests: 1, total: 3 });
+  assert.deepEqual(body.pending, { researchRequests: 2, collectionRequests: 1, agentProposals: 2, total: 5 });
+  // The proposal store failing leaves only its own count null.
+  const withoutProposals = await (await createResearchSummaryHandler(deps({ proposalsFail: true }))()).json();
+  assert.deepEqual(withoutProposals.pending, { researchRequests: 2, collectionRequests: 1, agentProposals: null, total: 3 });
 });

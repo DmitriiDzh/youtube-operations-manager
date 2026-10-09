@@ -153,4 +153,9 @@ export const errors = {
   "errors.LOGICAL_PATH_ALREADY_EXISTS": "A logical path with this name already exists.",
   "errors.LOGICAL_PATH_VALUE_INVALID": "This folder cannot be used for the logical path.",
   "errors.LOGICAL_PATH_NOT_CONFIGURED_ON_DEVICE": "This logical path has no folder on this computer.",
+  "errors.AGENT_PROPOSAL_NOT_FOUND": "This proposal no longer exists.",
+  "errors.AGENT_PROPOSAL_NOT_PENDING": "This proposal has already been decided.",
+  "errors.AGENT_PROPOSAL_DUPLICATE": "The same proposal is already waiting for a decision.",
+  "errors.AGENT_PROPOSAL_NOT_APPLICABLE": "This proposal does not fit the current state of the list.",
+  "errors.AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE": "Switch to the proposal's channel first: a hypothesis is added to the active channel.",
 } as const;

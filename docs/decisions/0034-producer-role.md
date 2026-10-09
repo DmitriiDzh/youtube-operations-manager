@@ -49,8 +49,22 @@ every channel's reads without a worker per channel, and nothing else.
 ## Consequences
 
 - No DRAFT, WRITE, quota-spending research request, media session or job for the Producer; a future capability is a new entry in the
-  closed list with its own test, or a new decision.
+  closed list with its own test, or a new decision. (Amendment 1 below adds the Producer's proposal tools, its only DRAFT ones.)
 - The Producer sees every channel connected on the device, whichever Google account connected it, including a second Mac user's
   accounts (owner msg 2198: the Settings list is the boundary).
 - Same residual as the other roles (RISK-105): a process running as an OS account that can read the token file can use it.
 - This ADR records the interface; it contains no operating instructions for the role (AGENTS.md §B).
+
+## Amendment 1 — proposals (BL-163, FO-REQ-0014 §C, owner 2026-10-09, Telegram msg 2311)
+
+- **The Producer may propose; it still cannot change anything.** Producer API 1.1.0 adds three tools of its own: `producer_propose` (DRAFT),
+  `producer_list_proposals` (READ) and `producer_mark_proposals_done` (DRAFT). A proposal is a row in `agent_proposals` (schema v74,
+  `src/lib/agent-proposals`), one of our channels per proposal; it changes nothing until the owner approves it in the Web UI
+  (Research → Inbox). Then the system makes the change through the same services the UI uses. Spec §26: AI may propose, a human approves,
+  the system applies.
+- **Kinds (v1):** watchlist add / unfollow / pause / resume / delete, and hypothesis add. A hypothesis created this way (`createdVia: "mcp"`)
+  supersedes PHASE_10_SLICE_2_PLAN's "hypothesis creation is Web-only" for this approved path only; the Web route still performs the creation.
+- **Pinned by tests:** `producer_get_capabilities` reports `permissions: ["READ", "DRAFT"]` and exactly these two `draftTools`; the channel
+  tools of the closed list are still READ only; an inventory test fails if `src/mcp`, `src/cli`, `src/lib/agent-operations` or
+  `src/app/api/mcp` names the owner's approve / reject / apply side, and only the Web routes build the review core.
+- **Not changed:** no WRITE tool, no YouTube call, no quota spent by a proposal; channel agents do not get these tools.

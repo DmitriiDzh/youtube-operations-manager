@@ -60,6 +60,8 @@ import {
   type TopicAssignmentSubjectType,
   type TrendCandidateStatus,
   type TrendEvidenceType,
+  type WatchlistActivity,
+  DEFAULT_INACTIVE_AFTER_MONTHS,
 } from "./contracts";
 import {
   addToWatchlistInputSchema,
@@ -139,6 +141,8 @@ import {
   rejectMarketResearchRequestInputSchema,
   rejectMarketResearchRequestOutputSchema,
   removeFromWatchlistInputSchema,
+  setWatchlistPauseInputSchema,
+  inactivitySettingInputSchema,
   removeTopicAssignmentInputSchema,
   runCollectionIfStaleInputSchema,
   runCollectionIfStaleOutputSchema,
@@ -200,7 +204,49 @@ type StoredResearchChannelForService = {
   videosNextPageToken?: string | null;
   videosCapAtRun?: number | null;
   videosPublishedAfterAtRun?: string | null;
+  // BL-163: the stored pause (absent on rows from stores that predate it = not paused).
+  pausedAt?: Date | null;
+  pausedReason?: "inactive" | "owner" | null;
+  resumedAt?: Date | null;
 };
+
+/** BL-163: the system's deletion proposal filed with an inactivity pause (the `agent_proposals` row, as `db.ts` takes it). */
+export type InactivityProposalRow = {
+  id: string;
+  source: "system";
+  kind: "watchlist.delete";
+  channelId: null;
+  targetId: string;
+  payloadJson: string;
+  text: string;
+  dedupeKey: string;
+  createdVia: "system";
+  agentApiVersion: null;
+  createdAt: Date;
+};
+
+/** BL-163: `months` calendar months before `now` (UTC). */
+export function monthsBefore(now: Date, months: number): Date {
+  // Calendar months, the day clamped to the target month's last day (Aug 31 minus 6 months is Feb 28, not Mar 3).
+  const target = now.getUTCFullYear() * 12 + now.getUTCMonth() - months;
+  const year = Math.floor(target / 12);
+  const month = target - year * 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(now.getUTCDate(), lastDay), now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds(), now.getUTCMilliseconds()));
+}
+
+/**
+ * BL-163 (AC-WH-01): an entry's activity -- inactive only when its newest upload is KNOWN and older than `months`; an unknown date is
+ * never inactive. Exported for its test.
+ */
+export function watchlistActivityOf(row: Pick<StoredResearchChannelForService, "pausedAt" | "pausedReason">, latestUpload: Date | undefined, months: number, now: Date): WatchlistActivity {
+  return {
+    latestUploadPublishedAt: latestUpload ? latestUpload.toISOString() : null,
+    inactive: latestUpload !== undefined && latestUpload.getTime() < monthsBefore(now, months).getTime(),
+    pausedAt: row.pausedAt ? row.pausedAt.toISOString() : null,
+    pausedReason: row.pausedAt ? (row.pausedReason ?? "owner") : null,
+  };
+}
 
 type StoredResearchEvidenceForService = {
   id: string;
@@ -273,12 +319,13 @@ function buildCollectionProgress(
   };
 }
 
-function toResearchChannel(row: StoredResearchChannelForService): ResearchChannel {
+function toResearchChannel(row: StoredResearchChannelForService, activity: WatchlistActivity): ResearchChannel {
   return {
     channelId: row.id,
     handleOrUrl: row.handleOrUrl,
     reason: row.reason,
     addedAt: row.addedAt.toISOString(),
+    ...activity,
   };
 }
 
@@ -648,6 +695,12 @@ type ServiceDependencies = {
   /** Injectable so staleness/budget-window tests never depend on the real wall clock (advisor
    * review, before implementation -- mirrors `analytics/services.ts`'s own identical pattern). */
   clock: { now(): Date };
+  // BL-163 (FO-REQ-0014 §A). Optional: a store without them reports no upload dates, the default months, and cannot pause.
+  listLatestUploadDates?(): Promise<Map<string, Date>>;
+  getMarketIntelligenceInactiveAfterMonths?(): Promise<number>;
+  setMarketIntelligenceInactiveAfterMonths?(months: number): Promise<void>;
+  setResearchChannelPause?(id: string, pause: { at: Date; reason: "inactive" | "owner" } | null, at?: Date): Promise<boolean>;
+  pauseInactiveResearchChannel?(args: { researchChannelId: string; at: Date; proposal: InactivityProposalRow }): Promise<boolean>;
   getMarketIntelligenceDailyQuotaBudgetUnits(): Promise<number | null>;
   setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null): Promise<void>;
   // Operator request 2026-10-04 -- collection depth (global default, per-channel override, resume state).
@@ -999,26 +1052,95 @@ export const COLLECTION_WARNING_FLAGS: ReadonlySet<DataQualityFlag> = new Set<Da
   "feed_fallback_used",
 ]);
 
-export type CollectionStatus = "current" | "attention" | "failed" | "never_collected";
+export type CollectionStatus = "current" | "attention" | "failed" | "never_collected" | "paused";
 
 /**
  * BL-140: one rule for "does this channel need attention", shared by getMarketOverview's collection warnings (the
  * summary line's count) and getWatchlistTable's status (the Channels filter that count links to), so the two can never
- * disagree. Anything but "current" is a warning.
+ * disagree. Anything but "current" and "paused" is a warning (`isCollectionWarning`). BL-163: a paused entry is "paused"
+ * whatever its data says -- it is not collected on purpose, so its ageing data is not a problem to attend to.
  */
 export function classifyCollectionStatus(input: {
   neverObserved: boolean;
   latestRunStatus: "success" | "skipped_quota_limited" | "failed" | null;
   dataQualityFlags: readonly DataQualityFlag[];
+  paused?: boolean;
 }): CollectionStatus {
+  if (input.paused) return "paused";
   if (input.neverObserved) return "never_collected";
   if (input.latestRunStatus === "failed") return "failed";
   return input.dataQualityFlags.some((flag) => COLLECTION_WARNING_FLAGS.has(flag)) ? "attention" : "current";
 }
 
+/** The statuses the summary line counts as "needs attention" (and the Channels filter it links to shows). */
+export function isCollectionWarning(status: CollectionStatus): boolean {
+  return status === "attention" || status === "failed" || status === "never_collected";
+}
+
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
   // Per services instance (one per process in production); current-only, never persisted (13.9).
   const musicChartCache = new Map<string, { fetchedAt: Date; entries: MusicChartEntry[] }>();
+
+  // BL-163 (FO-REQ-0014 §A): every entry's newest known upload, the configured months and "now" -- read once per call.
+  async function activityContext(): Promise<{ latest: Map<string, Date>; months: number; now: Date }> {
+    return {
+      latest: deps.listLatestUploadDates ? await deps.listLatestUploadDates() : new Map(),
+      months: deps.getMarketIntelligenceInactiveAfterMonths ? await deps.getMarketIntelligenceInactiveAfterMonths() : DEFAULT_INACTIVE_AFTER_MONTHS,
+      now: deps.clock.now(),
+    };
+  }
+  const activityIn = (ctx: { latest: Map<string, Date>; months: number; now: Date }, row: StoredResearchChannelForService) =>
+    watchlistActivityOf(row, ctx.latest.get(row.id), ctx.months, ctx.now);
+
+  /**
+   * BL-163 (AC-WH-02): the inactivity detector. Every entry that is not paused and whose newest known upload is older than the
+   * configured months is paused (reason `inactive`) and gets the system's "delete completely" proposal, in one transaction; its text
+   * keeps the date seen now (the evidence is gone after the 30-day retention). Only ever SETS a pause (AC-WH-07); an unknown date is
+   * never inactive. The proposal's dedupe key makes a second pending one impossible, also from the other computer.
+   */
+  async function evaluateInactivity(): Promise<{ paused: string[] }> {
+    if (!deps.pauseInactiveResearchChannel) return { paused: [] };
+    const ctx = await activityContext();
+    const paused: string[] = [];
+    for (const row of await deps.listResearchChannels()) {
+      if (row.pausedAt) continue;
+      const activity = activityIn(ctx, row);
+      if (!activity.inactive || !activity.latestUploadPublishedAt) continue;
+      // The owner resumed it while it was already inactive: their call, not paused again for the same silence (AC-WH-04). A
+      // resume from an unrelated pause, before the silence reached N months, does not count.
+      if (row.resumedAt && monthsBefore(row.resumedAt, ctx.months).getTime() >= Date.parse(activity.latestUploadPublishedAt)) continue;
+      const done = await deps.pauseInactiveResearchChannel({
+        researchChannelId: row.id,
+        at: ctx.now,
+        proposal: {
+          id: deps.idGenerator(),
+          source: "system",
+          kind: "watchlist.delete",
+          channelId: null,
+          targetId: row.id,
+          // No upload date is stored here: it is another channel's API data, kept 30 days at most (III.E.4.d), and a proposal may
+          // wait longer. The owner's card shows the entry's current date from the watchlist itself.
+          payloadJson: JSON.stringify({ researchChannelId: row.id, inactiveAfterMonths: ctx.months }),
+          // ui-text-ignore: a stored record for the agents; the interface words it from the payload
+          text: `No upload for more than ${ctx.months} months: collection is paused; proposed to delete ${row.handleOrUrl ?? row.id} from the watchlist.`,
+          dedupeKey: `watchlist.delete|${row.id}`,
+          createdVia: "system",
+          agentApiVersion: null,
+          createdAt: ctx.now,
+        },
+      });
+      if (done) paused.push(row.id);
+    }
+    return { paused };
+  }
+
+  async function evaluateInactivitySafely(): Promise<void> {
+    try {
+      await evaluateInactivity();
+    } catch (error) {
+      console.error("[market-intelligence] inactivity detector failed; collection goes on", error);
+    }
+  }
 
   /**
    * The one collection pass: `runCollectionIfStale` (every stale channel, the automatic refresh) and `runApprovedCollectionRequest` (only
@@ -1666,12 +1788,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // read uses.
       const row = (await deps.getResearchChannelById(parsedInput.channelId))!;
 
-      return parseWithSchema(addToWatchlistOutputSchema, toResearchChannel(row), "add to watchlist output");
+      return parseWithSchema(addToWatchlistOutputSchema, toResearchChannel(row, activityIn(await activityContext(), row)), "add to watchlist output");
     },
 
     async listWatchlist(): Promise<{ channels: ResearchChannel[] }> {
       const rows = await deps.listResearchChannels();
-      const output = { channels: rows.map(toResearchChannel) };
+      const ctx = await activityContext();
+      const output = { channels: rows.map((row) => toResearchChannel(row, activityIn(ctx, row))) };
       return parseWithSchema(listWatchlistOutputSchema, output, "list watchlist output");
     },
 
@@ -1687,7 +1810,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
-      return parseWithSchema(getWatchlistEntryOutputSchema, toResearchChannel(row), "get watchlist entry output");
+      return parseWithSchema(getWatchlistEntryOutputSchema, toResearchChannel(row, activityIn(await activityContext(), row)), "get watchlist entry output");
     },
 
     /**
@@ -1702,6 +1825,33 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     async removeFromWatchlist(input: unknown): Promise<void> {
       const parsedInput = parseWithSchema(removeFromWatchlistInputSchema, input, "remove from watchlist input");
       await deps.deleteResearchChannel(parsedInput.channelId);
+    },
+
+    /** BL-163 (FO-REQ-0014 §A): the owner pauses (reason `owner`) or resumes one entry; resuming clears any pause. */
+    async setWatchlistPause(input: unknown): Promise<ResearchChannel> {
+      const parsed = parseWithSchema(setWatchlistPauseInputSchema, input, "set watchlist pause input");
+      if (!deps.setResearchChannelPause) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "Pausing is not available in this process", details: {} });
+      const changed = await deps.setResearchChannelPause(parsed.channelId, parsed.paused ? { at: deps.clock.now(), reason: "owner" } : null, deps.clock.now());
+      const row = changed ? await deps.getResearchChannelById(parsed.channelId) : null;
+      if (!row) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel", details: { channelId: parsed.channelId } });
+      return toResearchChannel(row, activityIn(await activityContext(), row));
+    },
+
+    /** BL-163: "inactive after N months without uploads" (default 6). */
+    async getInactivitySetting(): Promise<{ inactiveAfterMonths: number }> {
+      return { inactiveAfterMonths: deps.getMarketIntelligenceInactiveAfterMonths ? await deps.getMarketIntelligenceInactiveAfterMonths() : DEFAULT_INACTIVE_AFTER_MONTHS };
+    },
+
+    async setInactivitySetting(input: unknown): Promise<{ inactiveAfterMonths: number }> {
+      const parsed = parseWithSchema(inactivitySettingInputSchema, input, "inactivity setting input");
+      if (!deps.setMarketIntelligenceInactiveAfterMonths) throw new DomainError({ code: "validation_failed", message: "Settings are not available in this process", details: {} });
+      await deps.setMarketIntelligenceInactiveAfterMonths(parsed.inactiveAfterMonths);
+      return { inactiveAfterMonths: parsed.inactiveAfterMonths };
+    },
+
+    /** BL-163 (AC-WH-02): run the inactivity detector now (also run around every collection pass). */
+    async evaluateWatchlistInactivity(): Promise<{ paused: string[] }> {
+      return evaluateInactivity();
     },
 
     /**
@@ -1887,7 +2037,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       return parseWithSchema(
         getWatchlistEntryContextOutputSchema,
         {
-          channel: toResearchChannel(channelRow),
+          channel: toResearchChannel(channelRow, activityIn(await activityContext(), channelRow)),
           evidence: evidenceRows.map(toResearchEvidence),
           channelSnapshots: channelSnapshotRows.map(toMarketChannelSnapshot),
           videoSnapshots: videoSnapshotRows.map(toMarketVideoSnapshot),
@@ -2053,8 +2203,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           neverObserved: state.neverObserved,
           latestRunStatus: state.latestRun?.status ?? null,
           dataQualityFlags: state.dataQualityFlags,
+          paused: channel.pausedAt !== null,
         });
-        if (status !== "current") warningCount += 1;
+        if (isCollectionWarning(status)) warningCount += 1;
       }
       const { candidates } = await services.listDiscoveryCandidates();
       return { watchlistCount: channels.length, warningCount, newDiscoveryCount: candidates.filter((c) => c.status === "new").length };
@@ -2067,17 +2218,19 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * quality flags getMarketOverview's collection warnings use. A local read, no YouTube call.
      */
     async getWatchlistTable(): Promise<{
-      channels: {
-        channelId: string;
-        handleOrUrl: string | null;
-        reason: string;
-        addedAt: string;
-        latestObservation: { observedAt: string; subscriberCount: number | null; hiddenSubscriberCount: boolean; viewCount: number | null; videoCount: number | null } | null;
-        videosObserved: number;
-        latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
-        dataQualityFlags: DataQualityFlag[];
-        status: "current" | "attention" | "failed" | "never_collected";
-      }[];
+      channels: Array<
+        {
+          channelId: string;
+          handleOrUrl: string | null;
+          reason: string;
+          addedAt: string;
+          latestObservation: { observedAt: string; subscriberCount: number | null; hiddenSubscriberCount: boolean; viewCount: number | null; videoCount: number | null } | null;
+          videosObserved: number;
+          latestRun: { status: "success" | "skipped_quota_limited" | "failed"; ranAt: string | null } | null;
+          dataQualityFlags: DataQualityFlag[];
+          status: CollectionStatus;
+        } & WatchlistActivity
+      >;
     }> {
       const { channels } = await services.listWatchlist();
       const rows = [];
@@ -2094,6 +2247,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           handleOrUrl: channel.handleOrUrl,
           reason: channel.reason,
           addedAt: channel.addedAt,
+          latestUploadPublishedAt: channel.latestUploadPublishedAt,
+          inactive: channel.inactive,
+          pausedAt: channel.pausedAt,
+          pausedReason: channel.pausedReason,
           latestObservation: latest
             ? {
                 observedAt: latest.observedAt,
@@ -2110,6 +2267,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             neverObserved: state.neverObserved,
             latestRunStatus: run?.status ?? null,
             dataQualityFlags: state.dataQualityFlags,
+            paused: channel.pausedAt !== null,
           }),
         });
       }
@@ -2181,8 +2339,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         // to independently recompute `channelSnapshots.length === 0` itself.
         // The same rule getWatchlistTable's status uses (BL-140), so the summary's count matches the Channels filter.
         if (
-          classifyCollectionStatus({ neverObserved: summary.neverObserved, latestRunStatus: latestRun?.status ?? null, dataQualityFlags: narrowedFlags }) !==
-          "current"
+          isCollectionWarning(
+            classifyCollectionStatus({ neverObserved: summary.neverObserved, latestRunStatus: latestRun?.status ?? null, dataQualityFlags: narrowedFlags, paused: channel.pausedAt !== null })
+          )
         ) {
           collectionWarnings.push({
             channelId: channel.channelId,
@@ -2724,7 +2883,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       unitsSpent: number;
     }> {
       const parsedInput = parseWithSchema(runCollectionIfStaleInputSchema, input, "run collection if stale input");
+      // BL-163 (AC-WH-02/03): pause the inactive entries first (they are not collected), and again after the run (fresh dates).
+      // A detector failure never stops the collection (AGENTS.md §M): it tries again on the next pass.
+      await evaluateInactivitySafely();
       const { attempted, succeeded, failed, quotaLimited, unitsSpent } = await collectStaleChannels(parsedInput);
+      await evaluateInactivitySafely();
       return parseWithSchema(
         runCollectionIfStaleOutputSchema,
         { attempted, succeeded, failed, quotaLimited, unitsSpent },
@@ -3045,7 +3208,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const candidateRow = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
       return parseWithSchema(
         promoteDiscoveryCandidateOutputSchema,
-        { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow, deps.clock.now()) },
+        { channel: toResearchChannel(channelRow, activityIn(await activityContext(), channelRow)), candidate: toMarketDiscoveryCandidate(candidateRow, deps.clock.now()) },
         "promote discovery candidate output"
       );
     },

@@ -1569,6 +1569,14 @@ export const researchChannels = sqliteTable("research_channels", {
   videosNextPageToken: text("videos_next_page_token"),
   videosCapAtRun: integer("videos_cap_at_run"),
   videosPublishedAfterAtRun: text("videos_published_after_at_run"),
+  // SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014): a paused entry is never collected. Set by the owner, or by the inactivity
+  // detector (`inactive`: no upload for the configured months); cleared only by the owner ("Resume"). Stored state -- the
+  // detector only ever sets it, so a pause outlives the 30-day retention that erases the date it was based on.
+  pausedAt: integer("paused_at", { mode: "timestamp" }),
+  pausedReason: text("paused_reason", { enum: ["inactive", "owner"] }),
+  // When the owner last resumed it: the detector does not pause it again for the same silence (an upload newer than this resume
+  // that then goes quiet again does count).
+  resumedAt: integer("resumed_at", { mode: "timestamp" }),
 });
 
 /**
@@ -2020,6 +2028,39 @@ export const marketResearchRequests = sqliteTable(
     executionError: text("execution_error"),
   },
   (table) => [index("market_research_requests_status_idx").on(table.status)]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 74 (BL-163, FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §2.C): a change an agent
+ * (the Producer) or the system proposes to the watchlist or the hypotheses, for one of our channels. Nothing changes until the owner
+ * approves it in the Web UI; the system then applies it. `dedupe_key` is set only while pending (a unique index; SQLite lets many rows hold NULL), so the
+ * same pending proposal is never created twice -- also when two computers evaluate inactivity. No FK (like
+ * `channel_record_assignments`): `target_id` names a watchlist entry, `channel_id` one of our channels.
+ */
+export const agentProposals = sqliteTable(
+  "agent_proposals",
+  {
+    id: text("id").primaryKey(),
+    source: text("source", { enum: ["producer", "system"] }).notNull(),
+    kind: text("kind").notNull(),
+    channelId: text("channel_id"),
+    targetId: text("target_id"),
+    payloadJson: text("payload_json").notNull(),
+    text: text("text").notNull(),
+    status: text("status", { enum: ["pending", "applied", "rejected", "failed"] }).notNull().default("pending"),
+    dedupeKey: text("dedupe_key"),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    decidedAt: integer("decided_at", { mode: "timestamp" }),
+    decidedBy: text("decided_by"),
+    rejectComment: text("reject_comment"),
+    applyError: text("apply_error"),
+    doneAt: integer("done_at", { mode: "timestamp" }),
+  },
+  (table) => [index("agent_proposals_status_idx").on(table.status), uniqueIndex("agent_proposals_pending_dedupe_idx").on(table.dedupeKey)]
 );
 
 /**
@@ -3844,6 +3885,46 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         at TEXT NOT NULL
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_group_notes_at_idx ON generation_plan_peer_group_notes (at)");
+    },
+  },
+  {
+    version: 74,
+    description:
+      "research_channels.paused_at/paused_reason/resumed_at + agent_proposals -- BL-163 (FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md): a paused watchlist entry is never collected; agent/system proposals to the watchlist and hypotheses wait for the owner's approval. Additive; existing rows are not paused",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE research_channels ADD COLUMN paused_at INTEGER",
+        "ALTER TABLE research_channels ADD COLUMN paused_reason TEXT",
+        "ALTER TABLE research_channels ADD COLUMN resumed_at INTEGER",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+      await client.execute(`CREATE TABLE IF NOT EXISTS agent_proposals (
+        id TEXT PRIMARY KEY NOT NULL,
+        source TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        channel_id TEXT,
+        target_id TEXT,
+        payload_json TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        dedupe_key TEXT,
+        created_via TEXT NOT NULL,
+        agent_api_version TEXT,
+        created_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_by TEXT,
+        reject_comment TEXT,
+        apply_error TEXT,
+        done_at INTEGER
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS agent_proposals_status_idx ON agent_proposals (status)");
+      // NULL keys never collide in SQLite, so only pending rows (which carry the key) are unique.
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS agent_proposals_pending_dedupe_idx ON agent_proposals (dedupe_key)");
     },
   },
 ];
@@ -9042,6 +9123,10 @@ export type StoredResearchChannel = {
   videosNextPageToken: string | null;
   videosCapAtRun: number | null;
   videosPublishedAfterAtRun: string | null;
+  // BL-163 (FO-REQ-0014 §A).
+  pausedAt: Date | null;
+  pausedReason: "inactive" | "owner" | null;
+  resumedAt: Date | null;
 };
 
 export async function insertResearchChannel(
@@ -9157,8 +9242,192 @@ export async function deleteResearchChannel(id: string, database: AppDb = db): P
     await tx
       .delete(marketDiscoveryCandidates)
       .where(and(eq(marketDiscoveryCandidates.id, id), eq(marketDiscoveryCandidates.status, "promoted")));
+    // BL-163 (FO-REQ-0014 §B, AC-WH-05): "delete completely" -- the entry's links to our channels go too (they were left behind),
+    // and so does any pending proposal about it (it could only fail now). Decided proposals stay, as the record of the decision.
+    await tx.delete(channelRecordAssignments).where(and(eq(channelRecordAssignments.recordKind, "research_channel"), eq(channelRecordAssignments.recordId, id)));
+    await tx.delete(agentProposals).where(and(eq(agentProposals.targetId, id), eq(agentProposals.status, "pending")));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
+}
+
+// ---------------------------------------------------------------------------
+// BL-163 (FO-REQ-0014, docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md): watchlist pause, newest uploads, agent proposals.
+// ---------------------------------------------------------------------------
+
+/**
+ * Each watchlist entry's newest known upload: `MAX(published_at)` of its retained video snapshots (API rows only within the
+ * retention window, like every other read). An entry with none is absent -- never guessed.
+ */
+export async function listLatestUploadDates(database: AppDb = db): Promise<Map<string, Date>> {
+  const rows = await database
+    .select({ researchChannelId: marketVideoSnapshots.researchChannelId, latest: sql<number | null>`MAX(${marketVideoSnapshots.publishedAt})` })
+    .from(marketVideoSnapshots)
+    .where(or(gte(marketVideoSnapshots.observedAt, apiRetentionCutoff()), notInArray(marketVideoSnapshots.source, API_SNAPSHOT_SOURCES)))
+    .groupBy(marketVideoSnapshots.researchChannelId);
+  const out = new Map<string, Date>();
+  for (const row of rows) {
+    const seconds = row.latest === null ? NaN : Number(row.latest);
+    if (Number.isFinite(seconds)) out.set(row.researchChannelId, new Date(seconds * 1000));
+  }
+  return out;
+}
+
+/** The owner's pause, or resume (`pause: null`, stamped `resumedAt = at`). A resume clears any reason. */
+export async function setResearchChannelPause(id: string, pause: { at: Date; reason: "inactive" | "owner" } | null, at: Date = new Date(), database: AppDb = db): Promise<boolean> {
+  // Only a state change is written: pausing a paused entry keeps its original date and reason, and resuming an active entry
+  // stamps no `resumedAt` (which would otherwise shield its current silence from the detector, AC-WH-04).
+  const rows = await database
+    .update(researchChannels)
+    .set(pause ? { pausedAt: pause.at, pausedReason: pause.reason } : { pausedAt: null, pausedReason: null, resumedAt: at })
+    .where(and(eq(researchChannels.id, id), pause ? isNull(researchChannels.pausedAt) : isNotNull(researchChannels.pausedAt)))
+    .returning({ id: researchChannels.id });
+  if (rows.length > 0) return true;
+  return (await database.select({ id: researchChannels.id }).from(researchChannels).where(eq(researchChannels.id, id)).limit(1)).length > 0;
+}
+
+export type NewAgentProposal = Omit<typeof agentProposals.$inferInsert, "status" | "decidedAt" | "decidedBy" | "rejectComment" | "applyError" | "doneAt">;
+export type StoredAgentProposal = typeof agentProposals.$inferSelect;
+
+/**
+ * Inserts a pending proposal unless one with the same `dedupeKey` is already pending (the unique index on a key only pending rows hold): then nothing is
+ * written and that pending one is returned with `created: false`.
+ */
+export async function insertAgentProposal(row: NewAgentProposal, database: AppDb = db): Promise<{ proposal: StoredAgentProposal; created: boolean }> {
+  // A second attempt covers the duplicate being decided (its key released) between the conflict and the read.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const inserted = await database.insert(agentProposals).values({ ...row, status: "pending" }).onConflictDoNothing().returning();
+    if (inserted.length > 0) return { proposal: inserted[0], created: true };
+    const existing = row.dedupeKey ? (await database.select().from(agentProposals).where(eq(agentProposals.dedupeKey, row.dedupeKey)).limit(1))[0] : undefined;
+    if (existing) return { proposal: existing, created: false };
+  }
+  throw new Error(`Proposal ${row.id} was not stored and no pending duplicate was found`);
+}
+
+/**
+ * AC-WH-02: the inactivity detector's one step for an entry -- pause it (only if not paused yet) and file the system's deletion
+ * proposal, in one transaction. Returns whether it paused it.
+ */
+export async function pauseInactiveResearchChannel(args: { researchChannelId: string; at: Date; proposal: NewAgentProposal }, database: AppDb = db): Promise<boolean> {
+  return database.transaction(async (tx) => {
+    const paused = await tx
+      .update(researchChannels)
+      .set({ pausedAt: args.at, pausedReason: "inactive" })
+      .where(and(eq(researchChannels.id, args.researchChannelId), isNull(researchChannels.pausedAt)))
+      .returning({ id: researchChannels.id });
+    if (paused.length === 0) return false;
+    await tx.insert(agentProposals).values({ ...args.proposal, status: "pending" }).onConflictDoNothing();
+    return true;
+  });
+}
+
+export async function getAgentProposal(id: string, database: AppDb = db): Promise<StoredAgentProposal | null> {
+  return (await database.select().from(agentProposals).where(eq(agentProposals.id, id)).limit(1))[0] ?? null;
+}
+
+/**
+ * Newest first. `source`/`channelId`/`status` narrow it (`decided`: every status but pending); `includeDone: false` leaves out the
+ * ones the proposer marked done; `decidedSince` leaves out decided ones decided before it (kept until the next purge, never shown).
+ */
+export async function listAgentProposals(
+  filter: {
+    source?: "producer" | "system";
+    channelId?: string;
+    status?: StoredAgentProposal["status"] | "decided";
+    includeDone?: boolean;
+    decidedSince?: Date;
+    limit?: number;
+  } = {},
+  database: AppDb = db
+): Promise<StoredAgentProposal[]> {
+  const conditions = [];
+  if (filter.source) conditions.push(eq(agentProposals.source, filter.source));
+  if (filter.channelId) conditions.push(eq(agentProposals.channelId, filter.channelId));
+  if (filter.status === "decided") conditions.push(ne(agentProposals.status, "pending"));
+  else if (filter.status) conditions.push(eq(agentProposals.status, filter.status));
+  if (filter.includeDone === false) conditions.push(isNull(agentProposals.doneAt));
+  if (filter.decidedSince) conditions.push(or(eq(agentProposals.status, "pending"), gte(agentProposals.decidedAt, filter.decidedSince))!);
+  return database
+    .select()
+    .from(agentProposals)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(agentProposals.createdAt))
+    .limit(filter.limit ?? 500);
+}
+
+/**
+ * The owner's decision, atomic: only a pending proposal moves (`pending -> applied | rejected`), its dedupe key is released. `null`
+ * = it was not pending any more (decided elsewhere, or deleted with its entry).
+ */
+export async function decideAgentProposal(
+  id: string,
+  decision: { status: "applied" | "rejected"; at: Date; by: string; rejectComment?: string | null },
+  database: AppDb = db
+): Promise<StoredAgentProposal | null> {
+  const rows = await database
+    .update(agentProposals)
+    .set({ status: decision.status, decidedAt: decision.at, decidedBy: decision.by, rejectComment: decision.rejectComment ?? null, dedupeKey: null })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** How many proposals wait for the owner (the inbox badge), counted in SQL, not from a capped list. */
+export async function countPendingAgentProposals(database: AppDb = db): Promise<number> {
+  const [row] = await database.select({ n: sql<number>`count(*)` }).from(agentProposals).where(eq(agentProposals.status, "pending"));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * A claimed proposal whose change turned out not to be makeable for a reason that is not the proposal's fault (the owner switched
+ * channel in between): back to pending, as if never decided. Only from `applied`.
+ */
+export async function reopenAgentProposal(id: string, database: AppDb = db): Promise<void> {
+  await database
+    .update(agentProposals)
+    .set({ status: "pending", decidedAt: null, decidedBy: null })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "applied")));
+}
+
+/** An approved proposal whose change could not be made: `failed` with the error (never retried silently). */
+export async function failAgentProposal(id: string, error: string, database: AppDb = db): Promise<void> {
+  await database
+    .update(agentProposals)
+    .set({ status: "failed", applyError: error.slice(0, 2000) })
+    .where(and(eq(agentProposals.id, id), eq(agentProposals.status, "applied")));
+}
+
+/** The proposer read these decided proposals: marked done (a pending one is never touched). Returns the ids marked. */
+export async function markAgentProposalsDone(ids: string[], at: Date, filter: { source: "producer" | "system" }, database: AppDb = db): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await database
+    .update(agentProposals)
+    .set({ doneAt: at })
+    .where(and(inArray(agentProposals.id, ids), ne(agentProposals.status, "pending"), eq(agentProposals.source, filter.source), isNull(agentProposals.doneAt)))
+    .returning({ id: agentProposals.id });
+  return rows.map((r) => r.id);
+}
+
+/** AC-PR-06: decided proposals leave the store once marked done or `keepMs` after the decision; pending ones never. */
+export async function purgeAgentProposals(now: Date, keepMs: number, database: AppDb = db): Promise<number> {
+  const rows = await database
+    .delete(agentProposals)
+    .where(and(ne(agentProposals.status, "pending"), or(isNotNull(agentProposals.doneAt), lt(agentProposals.decidedAt, new Date(now.getTime() - keepMs)))))
+    .returning({ id: agentProposals.id });
+  return rows.length;
+}
+
+const MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY = "market_intelligence_inactive_after_months";
+export const DEFAULT_INACTIVE_AFTER_MONTHS = 6;
+
+/** BL-163: "inactive after N months without uploads" (default 6; a corrupted value reads as the default). */
+export async function getMarketIntelligenceInactiveAfterMonths(database: AppDb = db): Promise<number> {
+  const raw = await getAppSetting(MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY, database);
+  const parsed = raw === null || raw === "" ? NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : DEFAULT_INACTIVE_AFTER_MONTHS;
+}
+
+export async function setMarketIntelligenceInactiveAfterMonths(months: number, database: AppDb = db): Promise<void> {
+  await setAppSetting(MARKET_INTELLIGENCE_INACTIVE_AFTER_MONTHS_SETTING_KEY, String(months), database);
 }
 
 // ---------------------------------------------------------------------------
@@ -9356,6 +9625,8 @@ export async function claimStaleResearchChannelsForCollection(
   const conditions = [
     or(isNull(researchChannels.lastAutoCollectedAt), lt(researchChannels.lastAutoCollectedAt, args.staleCutoff)),
     or(isNull(researchChannels.collectionClaimedAt), lt(researchChannels.collectionClaimedAt, args.claimExpiryCutoff)),
+    // BL-163 (AC-WH-03): a paused entry is never collected -- not by the automatic run, not by an approved collection request.
+    isNull(researchChannels.pausedAt),
   ];
   if (args.excludeResearchChannelIds.length > 0) {
     conditions.push(notInArray(researchChannels.id, args.excludeResearchChannelIds));
