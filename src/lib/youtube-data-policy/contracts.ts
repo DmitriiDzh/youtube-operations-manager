@@ -107,6 +107,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   channels: authorized("our connected channels' metadata, refreshed by channel sync"),
   videos: authorized("our videos' metadata and statistics, refreshed by channel sync"),
   video_metrics_daily: authorized("YouTube Analytics API data for our channels"),
+  video_milestones: authorized("YouTube Analytics API data for our channels (BL-166: day-7/day-28 retention and window totals)"),
   channel_reach_daily: authorized("YouTube Reporting API Reach data for our channels (III.E.4.b: Reporting API data)"),
   reporting_report_files: authorized("Reporting API file ledger for our channels: ids and timestamps, no content"),
   channel_metrics_daily: authorized("YouTube Analytics API channel-level totals for our channels (III.E.4.b)"),

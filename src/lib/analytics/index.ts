@@ -1,6 +1,7 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { createAnalyticsStoreAdapter } from "./adapters/store";
+import { createAnalyticsStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
+import { createVideoMilestoneServices } from "./milestones";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
@@ -61,8 +62,24 @@ export function createAnalyticsCore() {
       return services.runAutoCollectionIfStale(input);
     }, context),
   };
+  // BL-166 (docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md): day-7 / day-28 milestones, a background read like the catch-up -- same
+  // reads switch (inside the client), same quota reserve, same quota-history label.
+  const milestoneStore = createVideoMilestoneStoreAdapter();
+  const milestones = createVideoMilestoneServices({
+    clock: { now: () => new Date() },
+    authResolver: defaultAuthResolver(),
+    channelAccess: createChannelAccessCore(),
+    videoStore: milestoneStore.videoStore,
+    youtubeApi: createAnalyticsYoutubeApiAdapter(),
+    store: milestoneStore.store,
+  });
   return {
     ...core,
+    collectDueMilestones: quotaScoped(async (input: unknown) => {
+      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { attempted: 0, collected: 0, failed: 0 };
+      return milestones.collectDueMilestones(input);
+    }, context),
+    listVideoMilestones: milestones.listVideoMilestones,
     // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the
     // quota-guarded functions above, never the raw services, so background channels keep the same reserve and quota
     // attribution.

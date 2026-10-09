@@ -5,7 +5,7 @@ import { createAutoCollectAllHandler, type AutoCollectAllDeps } from "./route";
 
 // BL-142: the route gates on a session, collects the active channel before answering and everything else after it,
 // shows only the active channel (ADR 0004), and lets one all-channels run go at a time.
-function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error } = {}) {
+function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string } = {}) {
   const calls: unknown[] = [];
   const deferred: Array<() => Promise<void>> = [];
   let running = false;
@@ -17,11 +17,19 @@ function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; fai
         ? {
             channels: [{ channelId: "UC_A", collection: "collected" }],
             catchUps: opts.activeCatchUp ? [{ channelId: "UC_A", credentialRef: { userId: "uS" } }] : [],
+            milestones: [{ channelId: "UC_A", credentialRef: { userId: "uS" } }],
           }
         : {
             channels: [{ channelId: "UC_B", collection: "failed", error: "token revoked" }],
             catchUps: opts.backgroundCatchUp ? [{ channelId: "UC_C", credentialRef: { userId: "uC" } }] : [],
+            milestones: [{ channelId: "UC_C", credentialRef: { userId: "uC" } }],
           };
+    },
+    collectDueMilestones: async (input: unknown) => {
+      const i = input as { channelId: string; credentialRef: { userId: string } };
+      calls.push(["milestones", i.channelId, i.credentialRef.userId]);
+      if (opts.failMilestonesFor === i.channelId) throw new Error("quota reserve (test)");
+      return { attempted: 0, collected: 0, failed: 0 };
     },
     runHistoryCatchUp: async (input: unknown) => {
       const i = input as { channelId: string; credentialRef: { userId: string } };
@@ -57,10 +65,24 @@ test("BL-142: the active channel is collected before the answer, which shows onl
   assert.deepEqual(calls, [["active", "uS", "UC_A"]], "nothing else before the response");
   assert.equal(isRunning(), true, "the run is held until the background part finishes");
   await deferred[0]();
+  // BL-166: then each collected channel's due milestones (the background run lists only the channels it collected).
   assert.deepEqual(calls.slice(1), [
     ["background", "uS", "UC_A"],
     ["catchUp", "UC_A", "uS"],
     ["catchUp", "UC_C", "uC"],
+    ["milestones", "UC_A", "uS"],
+    ["milestones", "UC_C", "uC"],
+  ]);
+  assert.equal(isRunning(), false);
+});
+
+test("BL-166: one channel's milestones failing never stops the next channel's, and the run is released", async () => {
+  const { calls, deferred, deps, isRunning } = setup({ failMilestonesFor: "UC_A" });
+  await createAutoCollectAllHandler(deps)();
+  await deferred[0]();
+  assert.deepEqual(calls.filter((c) => (c as string[])[0] === "milestones"), [
+    ["milestones", "UC_A", "uS"],
+    ["milestones", "UC_C", "uC"],
   ]);
   assert.equal(isRunning(), false);
 });
@@ -97,7 +119,8 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
   assert.equal(((await res.json()) as { importedFromPeers: number }).importedFromPeers, 2);
   assert.deepEqual(calls, [["importPeers"], ["active", "uS", "UC_A"]]);
   await deferred[0]();
-  assert.deepEqual(calls.slice(2), [["background", "uS", "UC_A"], ["publishLocal"]]);
+  // BL-166 added the milestones to the background part; this device's rows are still published last.
+  assert.deepEqual(calls.slice(2), [["background", "uS", "UC_A"], ["milestones", "UC_A", "uS"], ["milestones", "UC_C", "uC"], ["publishLocal"]]);
 });
 
 // BL-151 review H3: while the other computer's rows are still being imported, this load does not collect (it would race the

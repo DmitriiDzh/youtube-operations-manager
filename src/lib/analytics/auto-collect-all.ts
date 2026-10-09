@@ -44,6 +44,8 @@ export type AutoCollectAllResult = {
   channels: AutoCollectChannelOutcome[];
   /** Channels whose history still has gaps, with the credentials to close them (run after the response). */
   catchUps: Array<{ channelId: string; credentialRef: { userId: string } }>;
+  /** BL-166: channels collected (or current) this run, with their credentials -- their due milestones run after the response. */
+  milestones: Array<{ channelId: string; credentialRef: { userId: string } }>;
 };
 
 /** Process-wide (on `globalThis`, like the operation registry): every module copy Next loads must share the flag. */
@@ -80,6 +82,7 @@ export async function runAutoCollectionForChannels(
 
   const channels: AutoCollectChannelOutcome[] = [];
   const catchUps: AutoCollectAllResult["catchUps"] = [];
+  const milestones: AutoCollectAllResult["milestones"] = [];
 
   for (const connection of targets) {
     const { channelId } = connection;
@@ -118,8 +121,9 @@ export async function runAutoCollectionForChannels(
       // Local and best-effort: the due-week check retries on the next dashboard load.
     }
 
-    // A channel whose collection just failed would fail the catch-up the same way: plan it on a later load.
+    // A channel whose collection just failed would fail the catch-up (and its milestones) the same way: plan it on a later load.
     if (collectionFailed) continue;
+    milestones.push({ channelId, credentialRef });
     try {
       const plan = await deps.getHistoryCatchUpPlan({ credentialRef, channelId });
       if (plan.videoRanges.length > 0 || plan.channelRange) catchUps.push({ channelId, credentialRef });
@@ -128,5 +132,5 @@ export async function runAutoCollectionForChannels(
     }
   }
 
-  return { channels, catchUps };
+  return { channels, catchUps, milestones };
 }

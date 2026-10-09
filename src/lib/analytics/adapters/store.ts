@@ -15,6 +15,9 @@ import {
   saveChannelDailyMetric,
   upsertVideoMetric,
   upsertWeeklyReport,
+  listVideoMilestones,
+  recordVideoMilestoneFailure,
+  saveCollectedVideoMilestone,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -25,6 +28,26 @@ import {
 // videos/channels" acceptance criterion; see ../write-path-inventory.test.ts for the automated
 // check). `markAnalyticsAutoCollected` is the one legitimate exception -- it writes a single
 // `channels` column dedicated to this module's own concern, never any other field on that row.
+/** BL-166: the milestone service's store (`milestones.ts`): video lengths and publish dates, and the milestone rows. */
+export function createVideoMilestoneStoreAdapter() {
+  return {
+    videoStore: {
+      async listVideos(channelId: string) {
+        return (await listStoredVideosByChannel(channelId)).map((record) => ({
+          videoId: record.videoId,
+          publishedAt: record.publishedAt ?? null,
+          durationSeconds: record.durationSeconds ?? null,
+        }));
+      },
+    },
+    store: {
+      list: (channelId: string, filter?: { videoIds?: string[]; milestoneDays?: number }) => listVideoMilestones(channelId, filter),
+      saveCollected: (row: Parameters<typeof saveCollectedVideoMilestone>[0]) => saveCollectedVideoMilestone(row),
+      recordFailure: (row: Parameters<typeof recordVideoMilestoneFailure>[0]) => recordVideoMilestoneFailure(row),
+    },
+  };
+}
+
 export function createAnalyticsStoreAdapter() {
   return {
     videoStore: {
