@@ -378,3 +378,21 @@ test("AC-PR-09 (review round 4): a notification before the same call in a batch 
   assert.deepEqual(calls.map((entry) => [entry.tool, entry.outcome]), [["producer_list_channels", "ok"]]);
   assert.deepEqual(refused, [{ tool: "producer_list_channels", channelId: null, errorCode: "REQUEST_REJECTED" }]);
 });
+
+test("review round 5: a batch that repeats a request id or cancels a request is refused whole and every call in it is logged", async () => {
+  const { endpoint, tokens, calls, refused, state } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const repeated = [{ ...call("producer_list_channels"), id: 5 }, { ...call("producer_get_capabilities"), id: 5 }];
+  const first = await endpoint.handle(rpc(repeated, bearer(token)));
+  assert.equal(first.status, 400);
+  assert.equal((await first.json()).error.code, -32600);
+  const cancelling = [{ ...call("channel_video_list", { channelId: "UC_PR_X" }), id: 6 }, { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 6 } }];
+  assert.equal((await endpoint.handle(rpc(cancelling, bearer(token)))).status, 400);
+  assert.equal(calls.length, 0);
+  assert.equal(state.createdServers, 0);
+  assert.deepEqual(refused, [
+    { tool: "producer_list_channels", channelId: null, errorCode: "REQUEST_REJECTED" },
+    { tool: "producer_get_capabilities", channelId: null, errorCode: "REQUEST_REJECTED" },
+    { tool: "channel_video_list", channelId: "UC_PR_X", errorCode: "REQUEST_REJECTED" },
+  ]);
+});

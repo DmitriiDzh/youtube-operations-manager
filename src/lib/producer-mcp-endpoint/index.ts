@@ -62,6 +62,27 @@ export type ProducerMcpErrorCode =
   | "AGENT_TOKEN_INVALID"
   | "AGENT_ENDPOINT_UNAVAILABLE";
 
+/**
+ * A batch this stateless endpoint refuses before the transport sees it (review round 5): a repeated request id (MCP forbids it; the
+ * transport would answer before the second call finished, and the log would record it twice) and a cancellation notification
+ * (the transport would never answer the cancelled call, so the request would hang -- RISK-118). Null when the body is acceptable.
+ */
+function refusedBatchReason(body: unknown): string | null {
+  if (!Array.isArray(body)) return null;
+  const ids = new Set<string>();
+  for (const message of body) {
+    if (!message || typeof message !== "object") continue;
+    const { method, id } = message as { method?: unknown; id?: unknown };
+    if (method === "notifications/cancelled") return "A batch must not cancel a request: this endpoint is stateless.";
+    if (typeof method === "string" && id !== undefined) {
+      const key = JSON.stringify(id);
+      if (ids.has(key)) return "A batch must not repeat a request id.";
+      ids.add(key);
+    }
+  }
+  return null;
+}
+
 function errorResponse(status: number, code: ProducerMcpErrorCode, message: string, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify({ error: { code, message } }), {
     status,
@@ -118,7 +139,18 @@ export function createProducerMcpEndpoint(deps: ProducerMcpEndpointDeps) {
       },
     };
 
-    const calls = toolCallsOf(await request.clone().json().catch(() => null));
+    const body = await request.clone().json().catch(() => null);
+    const calls = toolCallsOf(body);
+    const refusedBatch = refusedBatchReason(body);
+    if (refusedBatch) {
+      for (const call of calls) {
+        await deps.recordRefusedCall({ tool: call.tool, channelId: call.channelId, errorCode: "REQUEST_REJECTED" }).catch(() => undefined);
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: refusedBatch } }), {
+        status: 400,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
     // No `runInAgentSession` here, on purpose: the server enters the scope of the channel each call names, per call.
     const server = deps.createServer({ session });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

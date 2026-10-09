@@ -1890,5 +1890,5 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 
 - **What:** found by the BL-161 review (round 2), pre-existing on all three agent endpoints (`/api/mcp`, `/api/mcp/factory`, `/api/mcp/producer`). A JSON-RPC batch `[tools/call id:N, notifications/cancelled {requestId:N}]` makes the SDK's stateless transport never answer the call, so `handleRequest` never resolves and that request's server and transport stay open.
 - **Bounded by:** a valid agent token and a loopback caller; it ties up only that request (the agent's own client waits); nothing is read or written by it.
-- **Possible fix:** a timeout around `handleRequest` in the three endpoints, or refusing `notifications/cancelled` in stateless mode.
+- **Possible fix:** a timeout around `handleRequest` in the three endpoints, or refusing `notifications/cancelled` in stateless mode. The Producer endpoint already refuses such a batch (and one that repeats a request id) before the transport sees it (BL-161 review round 5); `/api/mcp` and `/api/mcp/factory` still have the gap.
 - **Gate(s):** none. **Status:** open.
