@@ -177,6 +177,8 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   logical_path_values: "per-device local filesystem path values of the registry (Factory Operator access, plan F1)",
   agent_channel_tokens: "per-machine agent credentials (Phase 12)",
   factory_agent_tokens: "per-machine Factory Operator agent credential hash (Factory Operator access, plan F2)",
+  producer_agent_tokens: "per-machine Producer agent credential hash (BL-161)",
+  producer_call_log: "per-device log of the Producer agent's calls (BL-161)",
   agent_connections: "retired (ADR 0011), table kept inert",
   agent_capability_zones: "retired (ADR 0011), table kept inert",
   app_settings: "per-device settings and toggles (Live writes, MCP, reads, ...)",

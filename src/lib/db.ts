@@ -1159,6 +1159,34 @@ export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
 });
 
 /**
+ * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3), SCHEMA_MIGRATIONS version 72. The Producer role's own
+ * agent token (`ytom_pr_...`): the same shape and rules as `factoryAgentTokens` (hash only, one active row, no channel, no Google
+ * identity), a separate table so no other token can be looked up as a producer token or the reverse.
+ */
+export const producerAgentTokens = sqliteTable("producer_agent_tokens", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
+ * BL-161, SCHEMA_MIGRATIONS version 72: one row per Producer MCP tool call, allowed or refused (FO-REQ-0012 §2.4: the owner sees
+ * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert.
+ */
+export const producerCallLog = sqliteTable("producer_call_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  at: integer("at", { mode: "timestamp" }).notNull(),
+  tool: text("tool").notNull(),
+  channelId: text("channel_id"),
+  outcome: text("outcome").notNull(),
+  errorCode: text("error_code"),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -3756,6 +3784,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 72,
+    description:
+      "producer_agent_tokens + producer_call_log -- BL-161 (FO-REQ-0012, docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3): the read-only Producer role's own agent token (SHA-256 hash only, one active, no channel) and its per-call log. Device-local; additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS producer_agent_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS producer_agent_tokens_one_active_idx ON producer_agent_tokens((1)) WHERE revoked_at IS NULL"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS producer_call_log (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "at INTEGER NOT NULL, " +
+          "tool TEXT NOT NULL, " +
+          "channel_id TEXT, " +
+          "outcome TEXT NOT NULL, " +
+          "error_code TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS producer_call_log_at_idx ON producer_call_log (at)");
+    },
+  },
 ];
 
 /**
@@ -5815,6 +5871,96 @@ export async function findFactoryAgentTokenByHash(
 
 export async function listActiveFactoryAgentTokens(database: AppDb = db): Promise<StoredFactoryAgentToken[]> {
   return database.select(factoryAgentTokenColumns).from(factoryAgentTokens).where(isNull(factoryAgentTokens.revokedAt));
+}
+
+// BL-161: the Producer role's token -- the same four operations as the factory token's, on its own table.
+
+export type StoredProducerAgentToken = StoredFactoryAgentToken;
+
+const producerAgentTokenColumns = {
+  id: producerAgentTokens.id,
+  label: producerAgentTokens.label,
+  createdAt: producerAgentTokens.createdAt,
+  revokedAt: producerAgentTokens.revokedAt,
+};
+
+/** Revokes any active producer token and inserts the new one in ONE transaction (at most one active, also by index). */
+export async function replaceProducerAgentToken(
+  input: { id: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx.update(producerAgentTokens).set({ revokedAt: now }).where(isNull(producerAgentTokens.revokedAt));
+    await tx.insert(producerAgentTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when there was no active token). */
+export async function revokeProducerAgentTokens(database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(producerAgentTokens)
+    .set({ revokedAt: new Date() })
+    .where(isNull(producerAgentTokens.revokedAt))
+    .returning({ id: producerAgentTokens.id });
+  return revoked.length;
+}
+
+export async function findActiveProducerAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredProducerAgentToken | null> {
+  const rows = await database
+    .select(producerAgentTokenColumns)
+    .from(producerAgentTokens)
+    .where(and(eq(producerAgentTokens.tokenHash, tokenHash), isNull(producerAgentTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function findProducerAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredProducerAgentToken | null> {
+  const rows = await database
+    .select(producerAgentTokenColumns)
+    .from(producerAgentTokens)
+    .where(eq(producerAgentTokens.tokenHash, tokenHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveProducerAgentTokens(database: AppDb = db): Promise<StoredProducerAgentToken[]> {
+  return database.select(producerAgentTokenColumns).from(producerAgentTokens).where(isNull(producerAgentTokens.revokedAt));
+}
+
+export type ProducerCallLogEntry = {
+  id: number;
+  at: Date;
+  tool: string;
+  channelId: string | null;
+  outcome: "ok" | "error";
+  errorCode: string | null;
+};
+
+/** How long a Producer call stays in the log (BL-161). */
+export const PRODUCER_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
+
+/** BL-161: records one Producer tool call and drops rows older than the retention, in one transaction. */
+export async function insertProducerCallLogEntry(
+  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.insert(producerCallLog).values(entry);
+    await tx.delete(producerCallLog).where(lt(producerCallLog.at, new Date(entry.at.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)));
+  });
+}
+
+/** BL-161: the newest Producer calls first. */
+export async function listProducerCallLogEntries(limit: number, database: AppDb = db): Promise<ProducerCallLogEntry[]> {
+  const rows = await database.select().from(producerCallLog).orderBy(desc(producerCallLog.at), desc(producerCallLog.id)).limit(limit);
+  return rows.map((row) => ({ ...row, outcome: row.outcome === "ok" ? "ok" : "error" }));
 }
 
 export type GatewayTrafficCategory =
