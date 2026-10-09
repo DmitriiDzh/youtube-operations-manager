@@ -9,7 +9,7 @@ import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import type { BatchItem } from "drizzle-orm/batch";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -675,8 +675,9 @@ export const channelRecordAssignments = sqliteTable(
  * (which an explicit-id `channel_sync` can overwrite). At most one non-revoked row per channel
  * (one agent = one channel, owner decision): issuing a new token revokes the previous one.
  *
- * Device-local: NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway` -- an agent is
- * configured per machine, the same reasoning as `agent_connections`.
+ * NOT in `SNAPSHOT_TRANSFERRED_TABLES`. Since BL-160 (ADR 0033) the `agent-tokens` sync-gateway family
+ * shares the hashes (never the tokens) with the owner's other devices and `src/lib/agent-token-sync`
+ * fills this table from theirs; a snapshot never does, so it cannot roll a revocation back.
  */
 export const agentChannelTokens = sqliteTable("agent_channel_tokens", {
   id: text("id").primaryKey(),
@@ -1146,7 +1147,7 @@ export const logicalPathValues = sqliteTable(
  * version 60 (51 on dev; renumbered at the Phase 14 merge). The Factory Operator role's own agent token (`ytom_fo_...`): SHA-256 hash only, one active
  * row at a time, NO channel and NO Google identity (unlike `agentChannelTokens`). Deliberately a
  * separate table, so a channel token can never be looked up as a factory token or the reverse.
- * Device-local, NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway`.
+ * NOT in `SNAPSHOT_TRANSFERRED_TABLES`; shared between devices by the `agent-tokens` family since BL-160 (as `agentChannelTokens`).
  */
 export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
   id: text("id").primaryKey(),
@@ -1156,6 +1157,34 @@ export const factoryAgentTokens = sqliteTable("factory_agent_tokens", {
     .notNull()
     .$defaultFn(() => new Date()),
   revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
+ * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3), SCHEMA_MIGRATIONS version 72. The Producer role's own
+ * agent token (`ytom_pr_...`): the same shape and rules as `factoryAgentTokens` (hash only, one active row, no channel, no Google
+ * identity), a separate table so no other token can be looked up as a producer token or the reverse.
+ */
+export const producerAgentTokens = sqliteTable("producer_agent_tokens", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
+ * BL-161, SCHEMA_MIGRATIONS version 72: one row per Producer MCP tool call, allowed or refused (FO-REQ-0012 §2.4: the owner sees
+ * what the Producer looked at). Device-local; rows older than 90 days are pruned on insert.
+ */
+export const producerCallLog = sqliteTable("producer_call_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  at: integer("at", { mode: "timestamp" }).notNull(),
+  tool: text("tool").notNull(),
+  channelId: text("channel_id"),
+  outcome: text("outcome").notNull(),
+  errorCode: text("error_code"),
 });
 
 /**
@@ -3756,6 +3785,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 72,
+    description:
+      "producer_agent_tokens + producer_call_log -- BL-161 (FO-REQ-0012, docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3): the read-only Producer role's own agent token (SHA-256 hash only, one active, no channel; shared between devices by the agent-tokens family, BL-160) and its device-local per-call log. Additive, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS producer_agent_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS producer_agent_tokens_one_active_idx ON producer_agent_tokens((1)) WHERE revoked_at IS NULL"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS producer_call_log (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "at INTEGER NOT NULL, " +
+          "tool TEXT NOT NULL, " +
+          "channel_id TEXT, " +
+          "outcome TEXT NOT NULL, " +
+          "error_code TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS producer_call_log_at_idx ON producer_call_log (at)");
+    },
+  },
 ];
 
 /**
@@ -5817,6 +5874,197 @@ export async function listActiveFactoryAgentTokens(database: AppDb = db): Promis
   return database.select(factoryAgentTokenColumns).from(factoryAgentTokens).where(isNull(factoryAgentTokens.revokedAt));
 }
 
+// BL-161: the Producer role's token -- the same four operations as the factory token's, on its own table.
+
+export type StoredProducerAgentToken = StoredFactoryAgentToken;
+
+const producerAgentTokenColumns = {
+  id: producerAgentTokens.id,
+  label: producerAgentTokens.label,
+  createdAt: producerAgentTokens.createdAt,
+  revokedAt: producerAgentTokens.revokedAt,
+};
+
+/** Revokes any active producer token and inserts the new one in ONE transaction (at most one active, also by index). */
+export async function replaceProducerAgentToken(
+  input: { id: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx.update(producerAgentTokens).set({ revokedAt: now }).where(isNull(producerAgentTokens.revokedAt));
+    await tx.insert(producerAgentTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when there was no active token). */
+export async function revokeProducerAgentTokens(database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(producerAgentTokens)
+    .set({ revokedAt: new Date() })
+    .where(isNull(producerAgentTokens.revokedAt))
+    .returning({ id: producerAgentTokens.id });
+  return revoked.length;
+}
+
+export async function findActiveProducerAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredProducerAgentToken | null> {
+  const rows = await database
+    .select(producerAgentTokenColumns)
+    .from(producerAgentTokens)
+    .where(and(eq(producerAgentTokens.tokenHash, tokenHash), isNull(producerAgentTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function findProducerAgentTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredProducerAgentToken | null> {
+  const rows = await database
+    .select(producerAgentTokenColumns)
+    .from(producerAgentTokens)
+    .where(eq(producerAgentTokens.tokenHash, tokenHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveProducerAgentTokens(database: AppDb = db): Promise<StoredProducerAgentToken[]> {
+  return database.select(producerAgentTokenColumns).from(producerAgentTokens).where(isNull(producerAgentTokens.revokedAt));
+}
+
+// BL-160 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §2): the three agent token tables as one list of records, and one transaction
+// that applies what `src/lib/agent-token-sync` decided from the other devices' reports. The hashes leave this layer; the tokens
+// themselves are never stored anywhere.
+
+export type AgentTokenSyncRole = "channel" | "factory" | "producer";
+
+export type AgentTokenSyncRow = {
+  role: AgentTokenSyncRole;
+  tokenHash: string;
+  channelId: string | null;
+  userId: string | null;
+  label: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+};
+
+export async function listAgentTokenRowsForSync(database: AppDb = db): Promise<AgentTokenSyncRow[]> {
+  const [channel, factory, producer] = await Promise.all([
+    database
+      .select({ tokenHash: agentChannelTokens.tokenHash, channelId: agentChannelTokens.channelId, userId: agentChannelTokens.userId, label: agentChannelTokens.label, createdAt: agentChannelTokens.createdAt, revokedAt: agentChannelTokens.revokedAt })
+      .from(agentChannelTokens),
+    database
+      .select({ tokenHash: factoryAgentTokens.tokenHash, label: factoryAgentTokens.label, createdAt: factoryAgentTokens.createdAt, revokedAt: factoryAgentTokens.revokedAt })
+      .from(factoryAgentTokens),
+    database
+      .select({ tokenHash: producerAgentTokens.tokenHash, label: producerAgentTokens.label, createdAt: producerAgentTokens.createdAt, revokedAt: producerAgentTokens.revokedAt })
+      .from(producerAgentTokens),
+  ]);
+  return [
+    ...channel.map((row) => ({ role: "channel" as const, ...row })),
+    ...factory.map((row) => ({ role: "factory" as const, channelId: null, userId: null, ...row })),
+    ...producer.map((row) => ({ role: "producer" as const, channelId: null, userId: null, ...row })),
+  ];
+}
+
+/**
+ * Applies a sync decision in ONE transaction: revocations first (only rows still active -- a revoked row is never touched
+ * again), then the learned tokens. Ordered so the one-active indexes of the role tables never see two active rows. A learned hash
+ * that meanwhile exists here (issued or imported concurrently) is left as it is.
+ */
+export async function applyAgentTokenSyncPlan(
+  plan: {
+    revoke: Array<{ role: AgentTokenSyncRole; tokenHash: string; revokedAt: Date }>;
+    insert: Array<AgentTokenSyncRow & { id: string }>;
+    /** Local rows another device knows as created earlier: only ever moved earlier, never later. */
+    redate?: Array<{ role: AgentTokenSyncRole; tokenHash: string; createdAt: Date }>;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const redate = plan.redate ?? [];
+  if (plan.revoke.length === 0 && plan.insert.length === 0 && redate.length === 0) return;
+  await database.transaction(async (tx) => {
+    for (const item of redate) {
+      const table = item.role === "channel" ? agentChannelTokens : item.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      await tx.update(table).set({ createdAt: item.createdAt }).where(and(eq(table.tokenHash, item.tokenHash), gt(table.createdAt, item.createdAt)));
+    }
+    for (const item of plan.revoke) {
+      const table = item.role === "channel" ? agentChannelTokens : item.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      await tx.update(table).set({ revokedAt: item.revokedAt }).where(and(eq(table.tokenHash, item.tokenHash), isNull(table.revokedAt)));
+    }
+    for (const row of plan.insert) {
+      const table = row.role === "channel" ? agentChannelTokens : row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+      // A learned hash that meanwhile exists here (issued or imported concurrently) is left exactly as it is -- in particular it must
+      // never be measured against itself below and revoke itself (review round 3).
+      const [known] = await tx.select({ tokenHash: table.tokenHash }).from(table).where(eq(table.tokenHash, row.tokenHash)).limit(1);
+      if (known) continue;
+      let revokedAt = row.revokedAt;
+      // The plan was computed before this transaction: a token issued, imported or rotated here meanwhile may now be active in the
+      // same slot. Rule 3 again, inside the transaction (review round 2): the newer one stays active, the other is revoked as of its
+      // `createdAt` -- so the one-active indexes never trip and a channel never has two active tokens.
+      if (revokedAt === null) {
+        const slot = row.role === "channel" ? and(isNull(table.revokedAt), eq(agentChannelTokens.channelId, row.channelId ?? "")) : isNull(table.revokedAt);
+        const [current] = await tx.select({ tokenHash: table.tokenHash, createdAt: table.createdAt }).from(table).where(slot).limit(1);
+        if (current) {
+          const currentWins =
+            current.createdAt.getTime() > row.createdAt.getTime() ||
+            (current.createdAt.getTime() === row.createdAt.getTime() && current.tokenHash > row.tokenHash);
+          if (currentWins) {
+            revokedAt = current.createdAt;
+          } else {
+            await tx.update(table).set({ revokedAt: row.createdAt }).where(and(eq(table.tokenHash, current.tokenHash), isNull(table.revokedAt)));
+          }
+        }
+      }
+      const base = { id: row.id, tokenHash: row.tokenHash, label: row.label, createdAt: row.createdAt, revokedAt };
+      if (row.role === "channel") {
+        if (row.channelId === null || row.userId === null) throw new Error("a channel token needs its channel and Google account");
+        await tx.insert(agentChannelTokens).values({ ...base, channelId: row.channelId, userId: row.userId }).onConflictDoNothing({ target: agentChannelTokens.tokenHash });
+      } else {
+        const roleTable = row.role === "factory" ? factoryAgentTokens : producerAgentTokens;
+        await tx.insert(roleTable).values(base).onConflictDoNothing({ target: roleTable.tokenHash });
+      }
+    }
+  });
+}
+
+export type ProducerCallLogEntry = {
+  id: number;
+  at: Date;
+  tool: string;
+  channelId: string | null;
+  outcome: "ok" | "error";
+  errorCode: string | null;
+};
+
+/** How long a Producer call stays in the log (BL-161). */
+export const PRODUCER_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60_000;
+
+/** BL-161: records one Producer tool call and drops rows older than the retention, in one transaction. */
+export async function insertProducerCallLogEntry(
+  entry: { at: Date; tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.insert(producerCallLog).values(entry);
+    await tx.delete(producerCallLog).where(lt(producerCallLog.at, new Date(entry.at.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)));
+  });
+}
+
+/** BL-161: the newest Producer calls first, within the retention (a row past it is gone even if no call has pruned it yet). */
+export async function listProducerCallLogEntries(limit: number, database: AppDb = db, now: Date = new Date()): Promise<ProducerCallLogEntry[]> {
+  const rows = await database
+    .select()
+    .from(producerCallLog)
+    .where(gte(producerCallLog.at, new Date(now.getTime() - PRODUCER_CALL_LOG_RETENTION_MS)))
+    .orderBy(desc(producerCallLog.at), desc(producerCallLog.id))
+    .limit(limit);
+  return rows.map((row) => ({ ...row, outcome: row.outcome === "ok" ? "ok" : "error" }));
+}
+
 export type GatewayTrafficCategory =
   | "data_api_reads"
   | "analytics_reads"
@@ -5920,9 +6168,9 @@ export async function getGatewayTrafficLast24h(
   }));
 }
 
-export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings";
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections" | "media_sessions" | "generation_plans" | "media_settings" | "agent_tokens";
 
-const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings"];
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections", "media_sessions", "generation_plans", "media_settings", "agent_tokens"];
 
 export type SyncFamilyStatusRow = {
   family: SyncFamily;

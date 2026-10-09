@@ -74,8 +74,9 @@ import { createGenerationPlansCore, type GenerationPlan, type GenerationPlanServ
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
-import { assertAgentSession } from "@/lib/agent-session";
+import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
 import {
   createChannelWorkspacesCore,
   getChannelWorkspaceInputSchema,
@@ -449,6 +450,62 @@ function toolSuccessResult(payload: Record<string, unknown>): ToolResponse {
     content: [{ type: "text", text: JSON.stringify(payload) }],
     structuredContent: payload,
   };
+}
+
+/** BL-161: what the Producer endpoint gives the server (`src/app/api/mcp/producer/route.ts` wires the real ones). */
+export type ProducerSession = {
+  tokenId: string;
+  reverify(): Promise<void>;
+  /** The Google account the channel is connected under on THIS device, or null when it is not connected here. */
+  resolveChannelUser(channelId: string): Promise<string | null>;
+  recordCall(entry: { tool: string; channelId: string | null; outcome: "ok" | "error"; errorCode: string | null }): Promise<void>;
+  listChannels(): Promise<Array<{ channelId: string; title: string; workspace: string | null }>>;
+  portfolioOverview(input: { startDate: string; endDate: string }): Promise<Record<string, unknown>>;
+};
+
+/** A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). */
+const ISO_DATE = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD")
+  .refine((value) => {
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+  }, "not a calendar date");
+
+export const producerPortfolioOverviewInputSchema = z
+  .object({ startDate: ISO_DATE, endDate: ISO_DATE })
+  .strict()
+  .refine((input) => input.startDate <= input.endDate, { message: "startDate must not be after endDate" })
+  .refine((input) => Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= 365 * 24 * 60 * 60_000, {
+    message: "at most 366 days",
+  });
+
+/** The error code of a tool error answer, or null. */
+function toolErrorCode(result: ToolResponse): string | null {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? "") as { error?: { code?: unknown } };
+    return typeof parsed.error?.code === "string" ? parsed.error.code : null;
+  } catch {
+    return null;
+  }
+}
+
+/** BL-161 (AC-PR-06): every Producer answer names the channel it is for, as `forChannelId` (a tool's own `channelId` may mean
+ * another channel, e.g. a watchlist entry's). */
+function withForChannel(result: ToolResponse, channelId: string): ToolResponse {
+  if (result.structuredContent) {
+    const payload = { ...result.structuredContent, forChannelId: channelId };
+    return { ...result, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
+  }
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? "") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...result, content: [{ type: "text", text: JSON.stringify({ ...(parsed as Record<string, unknown>), forChannelId: channelId }) }] };
+    }
+  } catch {
+    // not JSON: left as it is
+  }
+  return result;
 }
 
 function mapValidationErrorResult(error: z.ZodError): ToolResponse {
@@ -2440,10 +2497,19 @@ export function createMcpServer(
     // process -- and `reverify` re-checks the token so a revocation lands even mid-request
     // (AC-P12-02). The scope itself is entered by the endpoint, not here, so tests can inject this.
     agentSession?: { tokenId: string; channelId: string; reverify(): Promise<void> } | null;
+    // BL-161: the read-only Producer of THIS request (`src/lib/producer-mcp-endpoint`, a producer token it just verified). The
+    // server then registers only the Producer's closed list (`./producer-tools.ts`): each channel tool needs a `channelId` and
+    // runs inside THAT channel's agent scope, entered here per call (never per request), so it sees exactly what the channel's
+    // own agent sees through the same checks. Never together with `agentSession`.
+    producerSession?: ProducerSession | null;
   } = {}
 ) {
   const connectionEnabled = options.connectionEnabled ?? false;
   const agentSession = options.agentSession ?? null;
+  const producerSession = options.producerSession ?? null;
+  if (agentSession && producerSession) {
+    throw new Error("an MCP server serves either a channel agent or the Producer, never both");
+  }
 
   const server = new McpServer({
     name: "youtube-video-metadata",
@@ -2463,7 +2529,7 @@ export function createMcpServer(
     config: { description: string; inputSchema: z.ZodTypeAny },
     handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
   ) {
-    if (!connectionEnabled || !agentSession) {
+    if (!connectionEnabled || (!agentSession && !producerSession)) {
       return;
     }
     const toolClass = MCP_TOOL_CLASSIFICATION[name];
@@ -2471,9 +2537,21 @@ export function createMcpServer(
       // AC-P12-08: a tool nobody classified must never be exposed silently.
       throw new Error(`MCP tool "${name}" is not classified in src/mcp/tool-classification.ts`);
     }
-    if (toolClass !== "bound") {
+    const registration = producerSession
+      ? producerRegistration(producerSession, name, toolClass, config, handler)
+      : agentSession && toolClass === "bound"
+        ? { config, handler: channelAgentHandler(agentSession, handler) }
+        : null;
+    if (!registration) {
       return;
     }
+    server.registerTool(name, registration.config as never, registration.handler as never);
+  }
+
+  function channelAgentHandler(
+    session: { tokenId: string; reverify(): Promise<void> },
+    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
+  ) {
     // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
     // 2026-09-22). When MCP connection is off, this wrapper never even runs (registerTool
     // returns above), so there is no failed call to count there, only an absent tool -- but a
@@ -2481,10 +2559,10 @@ export function createMcpServer(
     // gateway category, exactly like the other gateways record their own rejections. (BL-091's
     // per-capability zones were retired in Phase 12, owner decision D4 -- one agent owns all of
     // its channel's work; see docs/decisions/0011-retire-agent-capability-zones.md.)
-    const countedHandler = (async (args: never) => {
+    return (async (args: never) => {
       try {
-        assertAgentSession(agentSession.tokenId);
-        await agentSession.reverify();
+        assertAgentSession(session.tokenId);
+        await session.reverify();
       } catch (error) {
         await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
         return toolErrorResult(error);
@@ -2492,8 +2570,151 @@ export function createMcpServer(
       await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
       return handler(args);
     }) as typeof handler;
-    server.registerTool(name, config as never, countedHandler as never);
   }
+
+  // BL-161 (docs/roadmap/plans/PRODUCER_ROLE_PLAN.md §3): the Producer's registration. Its own tools run as they are; a channel
+  // tool from the closed list gets a required `channelId`, is refused for a channel not connected on this device, and runs
+  // inside that channel's agent scope -- the same confinement as the channel's own agent, entered for this one call. Every call,
+  // allowed or refused, goes to the Producer's call log, and every answer names the channel it is for (`forChannelId`).
+  function producerRegistration(
+    session: ProducerSession,
+    name: string,
+    toolClass: string,
+    config: { description: string; inputSchema: z.ZodTypeAny },
+    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
+  ): { config: { description: string; inputSchema: z.ZodTypeAny }; handler: (args: never) => Promise<ToolResponse> } | null {
+    const record = async (entry: { channelId: string | null; result: ToolResponse }) => {
+      await session
+        .recordCall({ tool: name, channelId: entry.channelId, outcome: entry.result.isError ? "error" : "ok", errorCode: entry.result.isError ? toolErrorCode(entry.result) : null })
+        .catch(() => undefined);
+    };
+    if (toolClass === "producer-only") {
+      const wrapped = async (args: never) => {
+        let result: ToolResponse;
+        try {
+          await session.reverify();
+        } catch (error) {
+          await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+          result = toolErrorResult(error);
+          await record({ channelId: null, result });
+          return result;
+        }
+        await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+        try {
+          result = await handler(args);
+        } catch (error) {
+          result = toolErrorResult(error);
+        }
+        await record({ channelId: null, result });
+        return result;
+      };
+      return { config, handler: wrapped };
+    }
+    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS)) return null;
+    if (!(config.inputSchema instanceof z.ZodObject)) {
+      throw new Error(`Producer tool "${name}" needs an object input schema`);
+    }
+    // Rebuilt from the shape as a strict object (review round 2: `.omit` throws on a refined schema, which would take every Producer
+    // request down). A credentialRef is always refused inside an agent scope (AGENT_SESSION_CREDENTIAL_OVERRIDE): the Producer's schema
+    // leaves it out, so it is refused at input instead of advertised as optional. The tool's own handler still validates its input.
+    const { credentialRef: _credentialRef, ...shape } = (config.inputSchema as z.ZodObject<z.ZodRawShape>).shape;
+    void _credentialRef;
+    const renamed = PRODUCER_RENAMED_CHANNEL_FIELD[name];
+    const ownsChannelId = "channelId" in shape && !renamed;
+    const inputSchema = z
+      .object({
+        ...shape,
+        ...(renamed ? { [renamed]: shape.channelId } : {}),
+        channelId: z.string().min(1).max(64).describe("The channel this call reads (one of producer_list_channels)."),
+      })
+      .strict();
+    const description =
+      `Producer: runs for the channel named by \`channelId\` (one of producer_list_channels), exactly as that channel's own agent would call it` +
+      (renamed ? `; the watchlist channel this tool's own text calls \`channelId\` is \`${renamed}\` here` : "") +
+      `. ${config.description} -- On the Producer endpoint \`credentialRef\` is not accepted, whatever the text above says: the channel's own connected account is always used.`;
+    const wrapped = async (args: Record<string, unknown>) => {
+      const channelId = String(args.channelId);
+      const refuse = async (error: unknown) => {
+        await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+        const result = toolErrorResult(error);
+        await record({ channelId, result });
+        return withForChannel(result, channelId);
+      };
+      let userId: string | null;
+      try {
+        await session.reverify();
+        userId = await session.resolveChannelUser(channelId);
+      } catch (error) {
+        return refuse(error);
+      }
+      if (!userId) {
+        return refuse(
+          new DomainError({
+            code: "CHANNEL_NOT_ACTIVE",
+            message: "This channel is not connected on this computer -- producer_list_channels lists the channels you can read.",
+            details: { channelId },
+          })
+        );
+      }
+      await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+      const forwarded: Record<string, unknown> = { ...args };
+      if (renamed) {
+        forwarded.channelId = args[renamed];
+        delete forwarded[renamed];
+      } else if (!ownsChannelId) {
+        delete forwarded.channelId;
+      }
+      let result: ToolResponse;
+      try {
+        result = (await runInAgentSession({ tokenId: session.tokenId, channelId, userId }, async () => {
+          assertAgentSession(session.tokenId);
+          return handler(forwarded as never);
+        })) as ToolResponse;
+      } catch (error) {
+        result = toolErrorResult(error);
+      }
+      await record({ channelId, result });
+      return withForChannel(result, channelId);
+    };
+    return { config: { description, inputSchema }, handler: wrapped as (args: never) => Promise<ToolResponse> };
+  }
+
+  registerTool(
+    "producer_get_capabilities",
+    {
+      description:
+        "The Producer role's own report: its API version, that every permission is READ, and the tools it can call. Every channel tool needs `channelId` -- one of producer_list_channels -- and answers with `forChannelId`. No tool here drafts, writes, spends, or starts anything.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () =>
+      toolSuccessResult({
+        role: "producer",
+        producerApiVersion: PRODUCER_API_VERSION,
+        permissions: ["READ"],
+        channelRequired: true,
+        tools: [...PRODUCER_TOOL_NAMES],
+      })
+  );
+
+  registerTool(
+    "producer_list_channels",
+    {
+      description:
+        "Every channel connected on this computer (Settings → Channels), with its title and the production-workspace folder set for it on this computer (null when none is set). These are the channels the other Producer tools accept as `channelId`. A local read, no YouTube call.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () => toolSuccessResult({ channels: await producerSession!.listChannels() })
+  );
+
+  registerTool(
+    "producer_portfolio_overview",
+    {
+      description:
+        "One row per connected channel for the same date range, side by side: views, watch minutes, subscribers gained and lost (stored channel-level analytics, YouTube's own reporting days), impressions and impressions CTR (imported Reach reports), uploads published in the range (synced videos, by UTC date), and when each source was last refreshed. Local data only, never a live YouTube call: a figure with nothing stored behind it for the range is null, never zero (analytics with no stored day, Reach with no imported day in the range, uploads of a channel whose videos were never synced). Dates are YYYY-MM-DD, inclusive, at most 366 days.",
+      inputSchema: producerPortfolioOverviewInputSchema,
+    },
+    async (args: z.infer<typeof producerPortfolioOverviewInputSchema>) => toolSuccessResult(await producerSession!.portfolioOverview(args))
+  );
 
   registerTool(
     "write_context",

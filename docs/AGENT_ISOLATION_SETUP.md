@@ -26,17 +26,18 @@ repository.
 3. **Rotate** issues a new token and invalidates the old one at once. **Revoke** invalidates it
    without issuing a new one. A running agent's next call then fails with `AGENT_TOKEN_INVALID`.
 
-**Same token on another device (BL-130, ADR 0024).** On the other device, connect the same channel
-first, then Settings → Channels → the channel's row → **Use an existing token** and paste the token.
-The agent configuration stays identical on both devices. A token carries its channel
-(`ytom_ch_<channelId>.…`) and can only be imported into that channel; tokens issued before this
-format must be reissued first. **Revoke and Rotate act only on the device where you press them** —
-revoke a leaked token on every device where it was entered (`docs/TECHNICAL_DEBT.md` RISK-108). The
-MCP connection switch is also per device.
+**Same token on every device (BL-160, ADR 0033).** A token issued, rotated or revoked on one device
+reaches the owner's other devices by itself through the shared "YT Manager Data" folder, within about
+two minutes when both run this version (only its hash travels). The agent configuration stays identical
+on every device. The channel must be connected on each device under the same Google account. **Revoke
+and Rotate stop the old token on every device** once they sync; a device that is off accepts it until it
+syncs. **Use an existing token** (BL-130) still registers a token by hand, e.g. on a device on an older
+build. A token carries its channel (`ytom_ch_<channelId>.…`). The MCP connection switch is per device.
 
-The token is tied to the channel's Google identity as it is at issue time. **Disconnecting the
-channel, or reconnecting it with a different Google account, invalidates the token immediately**
-(disconnecting also revokes it). Issue a new one afterwards.
+The token is tied to the channel's Google identity as it is at issue time. **Reconnecting the channel
+with a different Google account invalidates it.** **Disconnecting the channel does not revoke it** (since
+BL-160): it stops working on that device while the channel is disconnected and works again when the
+channel is reconnected under the same account. To stop a token everywhere, Revoke it.
 
 ## 3. MCP client configuration
 
@@ -103,4 +104,12 @@ sessions and run jobs in them, approved by itself ONLY within the owner's factor
 the owner. It sees and stops only the sessions it started, and it has no channel binding. The same advice as in §5 applies to it: keep its launch
 configuration (which holds its token) outside every channel agent's folder, and never put a channel token and the factory token in one configuration. The two tokens are not
 interchangeable: each endpoint rejects the other's token. The same factory token can be entered on another device with **Use an existing token** in its
-card; as with channel tokens, revoking applies only to the device where you revoke it.
+card; as with channel tokens, the token and its revocation reach the other devices by themselves (ADR 0033).
+
+## 7. The Producer token (ADR 0034)
+
+The Producer is a read-only role with its own token (`ytom_pr_...`, Settings -> AI Agent) and endpoint (`/api/mcp/producer`). It reads every channel listed
+in Settings -> Channels on that device, one channel per call: each call names `channelId` and sees exactly what that channel's own agent sees. It cannot draft,
+change, approve, spend or start anything. Its calls are listed on its card. It is shared between devices like the other tokens. The same advice as in §5
+applies, more so because it reads every channel: keep its configuration outside every channel folder. On a Mac where several accounts can read the drive that holds
+the token files, any of those accounts can use them (`docs/TECHNICAL_DEBT.md` RISK-105, RISK-117).

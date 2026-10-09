@@ -113,19 +113,55 @@ async function startServerSession() {
   const { rawSqlClient } = await import("@/lib/db");
   const { runAllSyncFamiliesOnce } = await import("@/lib/sync-gateway");
   const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
-  setInterval(() => {
+  const { createAgentTokenSyncCoreForProduction } = await import("@/lib/agent-token-sync");
+  const { recordSyncFamilyResult } = await import("@/lib/db");
+  const applyAgentTokensQuietly = async () => {
+    try {
+      await createAgentTokenSyncCoreForProduction().tick();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      createDefaultLogger().error({ event: "agent_tokens.sync_failed", context: { message } });
+      await recordSyncFamilyResult("agent_tokens", { ok: false, error: `applying or publishing tokens: ${message}` }).catch(() => undefined);
+    }
+  };
+  const { createAgentTokensSyncRunnerForProduction } = await import("@/lib/sync-gateway");
+  /** Whether the database may be written now (not in recovery mode, no export/import holding the operation lock). */
+  const databaseWritable = () =>
+    assertDeviceAvailableForMutation(rawSqlClient).then(
+      () => true,
+      () => false
+    );
+  /** BL-160, review round 2: while the database waits (recovery mode, an operation lock) the agent-tokens report FILE still
+   * travels -- a revoke made in recovery mode (revoke is a stop switch) must reach the other devices. File work only, no database. */
+  const exchangeAgentTokenFilesOnly = () => createAgentTokensSyncRunnerForProduction().runSyncCycle().catch(() => undefined);
+  const syncFamiliesThenTokens = async () => {
+    // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
+    // governs snapshot handoff only; draft sync already ran from every open tab regardless.
+    // Same gate the "Sync now" route gets from src/proxy.ts.
+    if (!(await databaseWritable())) {
+      await exchangeAgentTokenFilesOnly();
+      return;
+    }
+    try {
+      await runAllSyncFamiliesOnce();
+    } catch {
+      // Failed -- each family records its own outcome; retry next time.
+      return;
+    }
+    // BL-160: apply the agent tokens the other devices just reported, then publish this device's (when it changed, or daily). A
+    // failure here is recorded on the family's status and logged -- the file exchange alone may have succeeded (review round 1).
+    await applyAgentTokensQuietly();
+  };
+  // BL-160: one agent-tokens pass shortly after start (only that family, the others keep their first run at a minute), so tokens
+  // issued or revoked elsewhere while this device was off apply within seconds of it starting.
+  setTimeout(() => {
     void (async () => {
-      try {
-        // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
-        // governs snapshot handoff only; draft sync already ran from every open tab regardless.
-        // Same gate the "Sync now" route gets from src/proxy.ts.
-        await assertDeviceAvailableForMutation(rawSqlClient);
-        await runAllSyncFamiliesOnce();
-      } catch {
-        // Paused (lock/recovery) or failed -- each family records its own outcome; retry next time.
-      }
+      const writable = await databaseWritable();
+      await exchangeAgentTokenFilesOnly();
+      if (writable) await applyAgentTokensQuietly();
     })();
-  }, DRAFT_SYNC_INTERVAL_MS).unref();
+  }, DEVICE_SYNC_BOOT_DELAY_MS).unref();
+  setInterval(() => void syncFamiliesThenTokens(), DRAFT_SYNC_INTERVAL_MS).unref();
 
   // Phase 13 slice 13.2 (docs/roadmap/plans/PHASE_13_PLAN.md, owner decision D1 = a): other people's
   // channel data fetched from the YouTube API is kept at most 30 days (Developer Policies III.E.4.d).

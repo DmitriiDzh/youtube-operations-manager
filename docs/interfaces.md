@@ -960,6 +960,37 @@ A second agent role, separate from the channel agents. Technical contract only (
 - **Not available to this role:** every channel tool, approving/rejecting anyone else's session, `write_*`/`auth_*`, YouTube reads. It cannot create, set or delete a path or a workspace, or issue a token.
 - **Tool errors** use the same `{ ok: false, error: { code, message, details } }` shape as the channel server.
 
+## Producer MCP endpoint (`POST /api/mcp/producer`, BL-161, ADR 0034)
+
+A read-only agent role that reads every channel connected on the device, one channel per call (FO-REQ-0012). Technical contract only.
+
+- **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
+  401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
+- **Producer API version:** `1.0.0`, independent of `AGENT_API_VERSION` and the Factory API.
+- **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
+  `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
+  `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
+  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_query_video_analytics`, `analytics_data_quality`,
+  `analytics_comparable_age`, `analytics_weekly_reports_list`, `analytics_weekly_report_get`, `agent_list_asset_performance`,
+  `agent_find_comparable_videos`, `query_competitors`, `query_market_intelligence` (its watchlist channel is `watchlistChannelId` here),
+  `query_market_overview`, `agent_list_market_records`, `agent_get_collection_request`, `agent_get_collection_limits`, `agent_get_content_proposal`,
+  `agent_list_content_proposals`, `agent_list_hypotheses`, `agent_get_hypothesis_trail`, `agent_list_generation_plans`, `agent_get_generation_plan`,
+  `agent_get_channel_workspace`. A call runs in that channel's agent scope: it sees exactly what the channel's own agent sees (market records assigned
+  to that channel, its hypotheses, ...). A channel not connected on this device: `CHANNEL_NOT_ACTIVE`, nothing read.
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ"], channelRequired: true, tools }`;
+  `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
+  device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
+  channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
+  ctr, daysWithData }, uploads, freshness: { lastVideoSyncAt, lastAnalyticsCollectedAt, reachCoveredThrough } }] }` -- stored data only, `null`
+  where nothing is stored (never zero): analytics with no stored day, Reach with no imported day in the range, `uploads` of a channel whose videos
+  were never synced here. Analytics days are YouTube's reporting days; uploads count by UTC date. Dates must be real calendar dates.
+- **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
+  itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
+  refusal of the MCP layer as `TOOL_NOT_FOUND` / `INVALID_PARAMS`, a request the transport rejected as a whole (e.g. a wrong `Accept`
+  header) as `REQUEST_REJECTED`. The channel tools take no `credentialRef` here (the channel's own connected
+  account is used); passing one is refused at input.
+- No DRAFT, WRITE, research or collection request, media session or job.
+
 ## API Route Handlers (selected)
 
 All routes are App Router handlers and require authenticated session user.
@@ -1011,6 +1042,12 @@ Both are operator-only and require a NextAuth session. The mutating methods are 
   `AGENT_TOKEN_CHANNEL_MISMATCH` (409), `AGENT_TOKEN_IMPORT_REVOKED` (409), plus the two issue errors. Normal mutation gate (not a stop switch).
 - `POST /api/factory-agent-token/import` with `{ token, label? }` (BL-130) → `201 { token: { tokenId, label, createdAt } }`, same rules;
   errors `AGENT_TOKEN_IMPORT_MALFORMED` (400), `AGENT_TOKEN_IMPORT_REVOKED` (409).
+- The Producer token (BL-161): `GET/POST/DELETE /api/producer-agent-token` and `POST /api/producer-agent-token/import`, the same contract as the
+  factory token's (`DELETE` is a stop switch too). `GET /api/producer-agent-token/calls` → `{ calls: [{ at, tool, channelId | null, channelTitle | null,
+  outcome: "ok" | "error", errorCode | null }] }`, the 30 newest of this device (kept 90 days).
+- **Shared between devices (BL-160, ADR 0033):** every token issued, imported, rotated or revoked here reaches the owner's other devices through the
+  `agent-tokens` sync family (hashes only); a revocation is final everywhere; one active token per channel / role, the newest wins. Disconnecting a
+  channel (`POST /api/channel-connections/disconnect`) no longer revokes its token. Import is still accepted.
 - `GET /api/market-assignments?recordKind=<research_channel|topic|trend_candidate|discovery_candidate|research_request>`
   → `{ assignments: [{ recordKind, recordId, channelIds }] }`.
 - `PUT /api/market-assignments` with `{ recordKind, recordId, channelIds }` replaces that record's

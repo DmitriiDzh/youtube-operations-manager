@@ -19,6 +19,7 @@ export const settings: Record<keyof typeof en, string> = {
   "settingsCard.operationsWorkspace": "Рабочая папка оператора",
   "settingsCard.logicalPaths": "Логические пути",
   "settingsCard.factoryToken": "Токен Factory Operator",
+  "settingsCard.producerToken": "Токен Producer",
   "settingsCard.aiProviders": "ИИ-провайдеры",
   "settingsCard.sync": "Синхронизация",
   "settingsCard.autoDeviceSync": "Автосинхронизация компьютеров",
