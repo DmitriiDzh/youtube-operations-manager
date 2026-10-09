@@ -275,8 +275,9 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
       await deps.assertDeviceAvailable();
       const ids = [...new Set(parsed.proposalIds)];
       const marked = await deps.store.markDone(ids, deps.clock.now(), { source: "producer" });
-      // Behind the device gate, like every write: the marked ones, and any past the keep window, leave the store.
-      await deps.store.purge(deps.clock.now(), KEEP_MS);
+      // Behind the device gate, like every write: the marked ones, and any past the keep window, leave the store. A failed purge
+      // does not fail the call (the marks are made; a marked row is never listed, and the next gated write purges it).
+      await deps.store.purge(deps.clock.now(), KEEP_MS).catch(() => 0);
       return { marked, notMarked: ids.filter((id) => !marked.includes(id)) };
     },
 

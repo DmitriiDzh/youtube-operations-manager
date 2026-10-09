@@ -222,6 +222,8 @@ test("monthsBefore: calendar months, the day clamped to the target month's end",
   assert.equal(at("2028-08-31T00:00:00.000Z", 6), "2028-02-29T00:00:00.000Z", "leap year");
   assert.equal(at("2026-03-31T00:00:00.000Z", 1), "2026-02-28T00:00:00.000Z");
   assert.equal(at("2026-02-15T00:00:00.000Z", 14), "2024-12-15T00:00:00.000Z", "across years");
+  assert.equal(at("2026-01-15T00:00:00.000Z", 1), "2025-12-15T00:00:00.000Z", "January back into December");
+  assert.equal(at("2026-01-31T00:00:00.000Z", 2), "2025-11-30T00:00:00.000Z");
 });
 
 test("AC-WH-01 boundary: an upload exactly N months old is not yet inactive; one millisecond older is", () => {
