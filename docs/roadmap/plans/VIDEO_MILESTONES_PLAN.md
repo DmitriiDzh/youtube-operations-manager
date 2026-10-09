@@ -69,3 +69,4 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
 
 - Sharing milestones between computers through the analytics data sync (BL-151): each computer collects its own for now.
 - Per-video traffic sources and devices (step 3), search terms (step 4), experiment arms (step 5), comments (step 6).
+- Retrying a `failed` milestone: after 3 failed attempts it is never queried again, and there is no reset yet (owner decision if needed).
