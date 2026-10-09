@@ -3583,7 +3583,7 @@ function makeMarketIntelligenceCliCoreStub(): Pick<
 test("CLI agent competitors returns the watchlist with no channelId/auth resolution required", async () => {
   const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
   marketIntelligenceCore.listWatchlist = async () => ({
-    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor", addedAt: "2026-09-26T00:00:00.000Z" }],
+    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor", addedAt: "2026-09-26T00:00:00.000Z", latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null }],
   });
 
   const stdout: string[] = [];
@@ -3609,7 +3609,7 @@ test("CLI agent market-intelligence requires --channelId and returns the channel
     capturedInput = input;
     const { channelId } = input as { channelId: string };
     return {
-      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z", latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null },
       evidence: [],
       channelSnapshots: [],
       videoSnapshots: [],
@@ -3801,7 +3801,7 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
   try {
     const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
     marketIntelligenceCore.getWatchlistEntryContext = async () => ({
-      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" , latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null },
       evidence: [],
       channelSnapshots: [],
       videoSnapshots: [],

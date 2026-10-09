@@ -1,4 +1,9 @@
 import {
+  listLatestUploadDates,
+  getMarketIntelligenceInactiveAfterMonths,
+  setMarketIntelligenceInactiveAfterMonths,
+  setResearchChannelPause,
+  pauseInactiveResearchChannel,
   approveMarketCollectionRequestIfPending,
   approveMarketResearchRequestIfPending,
   failInterruptedMarketCollectionRequests,
@@ -96,6 +101,12 @@ export function createMarketIntelligenceStoreAdapter() {
     setResearchChannelCollectionDepth,
     saveResearchChannelCollectionProgress,
     claimStaleResearchChannelsForCollection,
+    // BL-163 (FO-REQ-0014 §A): the newest uploads, the inactivity setting and the pause.
+    listLatestUploadDates,
+    getMarketIntelligenceInactiveAfterMonths,
+    setMarketIntelligenceInactiveAfterMonths,
+    setResearchChannelPause,
+    pauseInactiveResearchChannel,
     releaseResearchChannelCollectionClaim,
     renewResearchChannelCollectionClaims,
     listRecentlyFailedResearchChannelIds,

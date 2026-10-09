@@ -110,7 +110,8 @@ before the code.
 - **AC-WH-07** A paused entry stays paused when its date later disappears, and rejecting its deletion proposal does not
   resume it.
 - **AC-WH-03** A paused entry is never claimed for collection, whether automatically or by an approved collection request.
-- **AC-WH-04** Resume clears the pause. The setting change (N) takes effect at the next evaluation.
+- **AC-WH-04** Resume clears the pause and stamps `resumedAt`. The detector does not pause the entry again for the same
+  silence; a newer upload that then goes quiet again does count. A change of N takes effect at the next evaluation.
 - **AC-WH-05** Delete completely also removes the entry's channel links and its pending proposals.
 - **AC-WH-06** The read tools and Research → Channels show `latestUploadPublishedAt`, `inactive` and the pause.
 - **AC-PR-01** A Producer proposal is stored `pending` with its text. Nothing in the watchlist or hypotheses changes until

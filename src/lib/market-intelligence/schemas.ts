@@ -24,20 +24,13 @@ export const addToWatchlistInputSchema = z
   })
   .strict();
 
-export const listWatchlistOutputSchema = z
-  .object({
-    channels: z.array(
-      z
-        .object({
-          channelId: z.string().min(1),
-          handleOrUrl: z.string().nullable(),
-          reason: z.string(),
-          addedAt: z.string(),
-        })
-        .strict()
-    ),
-  })
-  .strict();
+/** BL-163 (FO-REQ-0014 §A): a watchlist entry's activity, on every place an entry is returned. */
+const watchlistActivityFields = {
+  latestUploadPublishedAt: z.string().nullable(),
+  inactive: z.boolean(),
+  pausedAt: z.string().nullable(),
+  pausedReason: z.enum(["inactive", "owner"]).nullable(),
+};
 
 export const researchChannelSchema = z
   .object({
@@ -45,8 +38,17 @@ export const researchChannelSchema = z
     handleOrUrl: z.string().nullable(),
     reason: z.string(),
     addedAt: z.string(),
+    ...watchlistActivityFields,
   })
   .strict();
+
+export const listWatchlistOutputSchema = z.object({ channels: z.array(researchChannelSchema) }).strict();
+
+/** BL-163: the owner's pause or resume of one watchlist entry. */
+export const setWatchlistPauseInputSchema = z.object({ channelId: z.string().min(1), paused: z.boolean() }).strict();
+
+/** BL-163: "inactive after N months without uploads". */
+export const inactivitySettingInputSchema = z.object({ inactiveAfterMonths: z.number().int().min(1).max(60) }).strict();
 
 export const addToWatchlistOutputSchema = researchChannelSchema;
 

@@ -4925,7 +4925,7 @@ test("MCP query_competitors returns an empty roster for an empty watchlist", asy
 test("MCP query_competitors returns exactly one entry for a single-channel watchlist", async () => {
   const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
   marketIntelligenceCore.listWatchlist = async () => ({
-    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor in the same niche", addedAt: "2026-09-26T00:00:00.000Z" }],
+    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor in the same niche", addedAt: "2026-09-26T00:00:00.000Z" , latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null }],
   });
 
   const handlers = createMcpToolHandlers(
@@ -4951,8 +4951,8 @@ test("MCP query_competitors returns the watchlist unchanged for 2+ entries (AC-C
   const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
   marketIntelligenceCore.listWatchlist = async () => ({
     channels: [
-      { channelId: "UC_1", handleOrUrl: null, reason: "competitor in the same niche", addedAt: "2026-09-26T00:00:00.000Z" },
-      { channelId: "UC_2", handleOrUrl: "@example", reason: "fast-growing format", addedAt: "2026-09-25T00:00:00.000Z" },
+      { channelId: "UC_1", handleOrUrl: null, reason: "competitor in the same niche", addedAt: "2026-09-26T00:00:00.000Z" , latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null },
+      { channelId: "UC_2", handleOrUrl: "@example", reason: "fast-growing format", addedAt: "2026-09-25T00:00:00.000Z" , latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null },
     ],
   });
 
@@ -5048,7 +5048,7 @@ test("MCP query_market_intelligence returns the channel's own record with an emp
   marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
     const { channelId } = input as { channelId: string };
     return {
-      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" , latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null },
       evidence: [],
       channelSnapshots: [],
       videoSnapshots: [],
@@ -5086,7 +5086,7 @@ test("MCP query_market_intelligence returns the channel's own record plus its fu
   marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
     capturedInput = input;
     return {
-      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" , latestUploadPublishedAt: null, inactive: false, pausedAt: null, pausedReason: null },
       evidence: [
         {
           evidenceId: "ev1",
