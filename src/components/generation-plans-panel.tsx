@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlanEvent, PlanNotice, PlanStageCounts, PlanStageKind, PlanView } from "@/lib/generation-plans/contracts";
+import type { SharedPlan } from "@/lib/sync-gateway";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
+import { ownPlanModel, peerPlanModel, waveRows, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
 import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
@@ -20,15 +22,8 @@ const secondaryButton = "rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1
 
 type PlanDetail = PlanView & { events: PlanEvent[]; cursor: string };
 
-/** BL-143 phase 2: another device's plans as its report shows them (read-only here). */
-type PeerDevicePlans = {
-  deviceId: string;
-  hostname: string | null;
-  updatedAt: string;
-  stale: boolean;
-  plans: Array<{ planId: string; title: string; status: string; channelId: string; progress: { stages?: Array<{ stageId: string; title: string; kind: PlanStageKind; counts: PlanStageCounts }>; spend?: { usd: number }; items?: Array<{ waitingReview: number }> }; review: Array<{ itemKey: string; attemptRef: string; verdict: unknown }>; groups: Array<{ groupId: string; title: string; note: string | null; ownerNote?: string | null }> }>;
-};
-type OutgoingVerdict = { ownerDeviceId: string; planId: string; itemKey: string; attemptRef: string };
+/** BL-143 phase 2: another device's plans as its report shows them (the route gives the active channel's only). */
+type PeerDevicePlans = { deviceId: string; hostname: string | null; updatedAt: string; stale: boolean; plans: SharedPlan[] };
 
 /** "2 min ago" / "1 h ago" for a report's age. Exported for its test. */
 export function describeAge(t: Translate, updatedAt: string, now: number): string {
@@ -181,13 +176,26 @@ function waitingCount(view: PlanView): number {
   return view.progress.items.reduce((sum, i) => sum + i.waitingReview, 0);
 }
 
+/** A plan's key in the list: this device's by its id, another device's by device and id. */
+const keyOf = (device: PlanCardDevice, planId: string) => (device ? `${device.deviceId}\u0000${planId}` : planId);
+
+/** One row of the Plans list, whichever device the plan lives on (BL-162 AC-UX-14). */
+type ListRow = { key: string; planId: string; title: string; status: string; spendUsd: number; budgetUsd: number | null; waiting: number; generated: { value: number; total: number; percent: number } | null; device: PlanCardDevice };
+
+function generatedOf(t: Translate, stages: PlanView["progress"]["stages"]): ListRow["generated"] {
+  const generate = stages.find((s) => s.kind === "in_app");
+  if (!generate) return null;
+  const d = describeStage(t, generate.kind, generate.counts);
+  return { value: d.value, total: d.total, percent: d.percent };
+}
+
 export function PlansPanel({
   active,
   onReview,
 }: {
   active: boolean;
-  /** BL-149: open the review screen at its own address (`/production/plans/<id>/review`); absent = in place, as before. */
-  onReview?: (planId: string, source?: PeerReviewSource) => void;
+  /** BL-149: open the review screen at its own address; BL-162: `source` = another device's plan, `wave` = open on that wave. Absent = in place. */
+  onReview?: (planId: string, source?: PeerReviewSource, wave?: string) => void;
 }) {
   const t = useT();
   const [filter, setFilter] = useState<"active" | "history">("active");
@@ -196,9 +204,9 @@ export function PlansPanel({
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedRef = useRef<string | null>(null);
-  const [reviewing, setReviewing] = useState<{ planId: string; source?: PeerReviewSource } | null>(null);
+  const [reviewing, setReviewing] = useState<{ planId: string; source?: PeerReviewSource; wave?: string } | null>(null);
   const [peers, setPeers] = useState<PeerDevicePlans[]>([]);
-  const [outgoing, setOutgoing] = useState<OutgoingVerdict[]>([]);
+  const [outgoing, setOutgoing] = useState<OutgoingVerdictRef[]>([]);
 
   const load = useCallback(() => {
     void requestJson<{ plans: PlanView[] }>(t, "/api/generation-plans").then(
@@ -208,8 +216,9 @@ export function PlansPanel({
       },
       (err: unknown) => setError(err instanceof Error ? err.message : t("plans.loadFailed"))
     );
-    // BL-143 phase 2: the other devices' plans; a failure here never hides this device's own plans.
-    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdict[] }>(t, "/api/generation-plans/peers").then(
+    // BL-143 phase 2: the other devices' plans (the route gives the active channel's only); a failure here never hides this
+    // device's own plans.
+    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdictRef[] }>(t, "/api/generation-plans/peers").then(
       (data) => {
         setPeers(data.devices);
         setOutgoing(data.outgoing);
@@ -217,7 +226,8 @@ export function PlansPanel({
       () => setPeers([])
     );
     const planId = selectedRef.current;
-    if (planId) {
+    // Only this device's plan is read again here; another device's comes with the peers' answer above.
+    if (planId && !planId.includes("\u0000")) {
       void requestJson<PlanDetail>(t, `/api/generation-plans/${encodeURIComponent(planId)}`).then(
         (data) => {
           if (selectedRef.current === planId) setDetail(data);
@@ -235,16 +245,42 @@ export function PlansPanel({
     return () => clearInterval(timer);
   }, [active, load, reviewing]);
 
-  const open = (planId: string | null) => {
-    selectedRef.current = planId;
-    setSelected(planId);
+  const open = (key: string | null) => {
+    selectedRef.current = key;
+    setSelected(key);
     setDetail(null);
-    if (planId) load();
+    if (key) load();
   };
 
-  const shown = (plans ?? []).filter((p) => (filter === "active" ? p.plan.status === "active" : p.plan.status !== "active"));
+  const review = (planId: string, device: PlanCardDevice, wave?: string) => {
+    const source = device ? { deviceId: device.deviceId, hostname: device.hostname } : undefined;
+    if (onReview) onReview(planId, source, wave);
+    else setReviewing({ planId, source, wave });
+  };
 
-  if (reviewing) return <PlanReviewScreen planId={reviewing.planId} source={reviewing.source} onClose={() => setReviewing(null)} onChanged={load} />;
+  // BL-162 (AC-UX-14, FO-REQ-0013 §2.1/§2.6): one list -- this device's plans and the other devices' plans of this channel.
+  const inFilter = (status: string) => (filter === "active" ? status === "active" : status !== "active");
+  const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale }, outgoing)));
+  const rows: ListRow[] = [
+    ...(plans ?? [])
+      .filter((p) => inFilter(p.plan.status))
+      .map((p) => ({ key: keyOf(null, p.plan.planId), planId: p.plan.planId, title: p.plan.title, status: p.plan.status, spendUsd: p.progress.spend.usd, budgetUsd: p.plan.budget.usd, waiting: waitingCount(p), generated: generatedOf(t, p.progress.stages), device: null })),
+    ...peerModels
+      .filter((m) => inFilter(m.status))
+      .map((m) => ({ key: keyOf(m.device, m.planId), planId: m.planId, title: m.title, status: m.status, spendUsd: m.progress.spend.usd, budgetUsd: m.progress.budget.usd, waiting: m.waiting, generated: generatedOf(t, m.progress.stages), device: m.device })),
+  ];
+  const anyPeer = rows.some((r) => r.device !== null);
+  const selectedModel: PlanCardModel | null = !selected
+    ? null
+    : selected.includes("\u0000")
+      ? (peerModels.find((m) => keyOf(m.device, m.planId) === selected) ?? null)
+      : detail && detail.plan.planId === selected
+        ? ownPlanModel(detail)
+        : null;
+  // eslint-disable-next-line react-hooks/purity -- the report's age is meant to move with the clock (re-rendered by the poll)
+  const now = Date.now();
+
+  if (reviewing) return <PlanReviewScreen planId={reviewing.planId} source={reviewing.source} initialWave={reviewing.wave ?? null} onClose={() => setReviewing(null)} onChanged={load} />;
 
   return (
     <div className="space-y-4">
@@ -263,61 +299,112 @@ export function PlansPanel({
           </div>
         </div>
         {plans === null && !error && <p className="text-xs text-zinc-500">{t("common.loading")}</p>}
-        {plans !== null && shown.length === 0 && <p className="text-xs text-zinc-500">{filter === "active" ? t("plans.emptyActive") : t("plans.emptyHistory")}</p>}
+        {plans !== null && rows.length === 0 && <p className="text-xs text-zinc-500">{filter === "active" ? t("plans.emptyActive") : t("plans.emptyHistory")}</p>}
         <ul className="space-y-2">
-          {shown.map((p) => {
-            const generate = p.progress.stages.find((s) => s.kind === "in_app");
-            const bar = generate ? describeStage(t, generate.kind, generate.counts) : null;
-            const waiting = waitingCount(p);
-            return (
-              <li key={p.plan.planId}>
-                <button type="button" onClick={() => open(selected === p.plan.planId ? null : p.plan.planId)} className={`w-full space-y-1 rounded-lg border px-3 py-2 text-left ${selected === p.plan.planId ? "border-indigo-500 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"}`}>
-                  <div className="flex flex-wrap items-baseline gap-2 text-sm">
-                    <span className="font-medium text-zinc-100">{p.plan.title}</span>
-                    <span className="font-mono text-xs text-zinc-500">{p.plan.planId}</span>
-                    {p.plan.status !== "active" && <span className="text-xs text-zinc-400">{planStatusLabel(t, p.plan.status)}</span>}
-                    <span className="ml-auto text-xs text-zinc-400">
-                      {p.plan.budget.usd !== null
-                        ? t("plans.spendOf", { spent: p.progress.spend.usd.toFixed(2), budget: p.plan.budget.usd.toFixed(2) })
-                        : t("unit.usd", { value: p.progress.spend.usd.toFixed(2) })}
-                      {waiting > 0 ? <span className="ml-2 text-amber-300">{t("plans.waitingForYou", { count: waiting })}</span> : null}
-                    </span>
-                  </div>
-                  {bar && (
-                    <div className="flex items-center gap-2 text-xs text-zinc-400">
+          {rows.map((r) => (
+            <li key={r.key}>
+              <button type="button" onClick={() => open(selected === r.key ? null : r.key)} className={`w-full space-y-1 rounded-lg border px-3 py-2 text-left ${selected === r.key ? "border-indigo-500 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"}`}>
+                <div className="flex flex-wrap items-baseline gap-2 text-sm">
+                  <span className="font-medium text-zinc-100">{r.title}</span>
+                  <span className="font-mono text-xs text-zinc-500">{r.planId}</span>
+                  {r.status !== "active" && <span className="text-xs text-zinc-400">{planStatusLabel(t, r.status)}</span>}
+                  <span className="ml-auto text-xs text-zinc-400">
+                    {r.budgetUsd !== null ? t("plans.spendOf", { spent: r.spendUsd.toFixed(2), budget: r.budgetUsd.toFixed(2) }) : t("unit.usd", { value: r.spendUsd.toFixed(2) })}
+                    {r.waiting > 0 ? <span className="ml-2 text-amber-300">{t("plans.waitingForYou", { count: r.waiting })}</span> : null}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                  {r.generated && (
+                    <>
                       <div className="w-40 shrink-0">
-                        <Bar percent={bar.percent} />
+                        <Bar percent={r.generated.percent} />
                       </div>
-                      {t("plans.generatedOf", { value: bar.value, total: bar.total })}
-                    </div>
+                      {t("plans.generatedOf", { value: r.generated.value, total: r.generated.total })}
+                    </>
                   )}
-                </button>
-              </li>
-            );
-          })}
+                  {/* FO-REQ-0013 §2.1: where the plan was created stays visible, as information only. */}
+                  {anyPeer && (
+                    <span className={`ml-auto rounded-full border px-2 py-0.5 ${r.device?.stale ? "border-amber-800 text-amber-300" : "border-zinc-700 text-zinc-400"}`}>
+                      {r.device ? t("plans.peers.reported", { device: r.device.hostname ?? r.device.deviceId, age: describeAge(t, r.device.updatedAt, now) }) : t("plans.device.here")}
+                      {r.device?.stale ? ` ${t("plans.peers.stale")}` : ""}
+                    </span>
+                  )}
+                </div>
+              </button>
+            </li>
+          ))}
         </ul>
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
-      {selected && detail && <PlanDetailCard detail={detail} onChanged={load} onReview={(planId) => (onReview ? onReview(planId) : setReviewing({ planId }))} />}
-      {peers.some((d) => d.plans.length > 0) && <PeerPlansCard devices={peers} outgoing={outgoing} onReview={(planId, source) => (onReview ? onReview(planId, source) : setReviewing({ planId, source }))} />}
-      {selected && !detail && <p className="text-xs text-zinc-500">{t("plans.loadingPlan")}</p>}
+      {selectedModel && <PlanDetailCard model={selectedModel} onChanged={load} onReview={(wave) => review(selectedModel.planId, selectedModel.device, wave)} />}
+      {selected && !selectedModel && <p className="text-xs text-zinc-500">{t("plans.loadingPlan")}</p>}
     </div>
   );
 }
 
-function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; onChanged: () => void; onReview?: (planId: string) => void }) {
+/** A small "⋯" menu for the actions that are not the card's main one (BL-162 AC-UX-08). */
+function ActionsMenu({ label, items }: { label: string; items: Array<{ key: string; text: string; onSelect: () => void; danger?: boolean; disabled?: boolean }> }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label} onClick={() => setOpen((v) => !v)} className={secondaryButton}>
+        ⋯
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 z-20 mt-1 min-w-60 rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
+          {items.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                setOpen(false);
+                item.onSelect();
+              }}
+              className={`block w-full rounded px-3 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${item.danger ? "text-red-300 hover:bg-red-500/10" : "text-zinc-200 hover:bg-zinc-800"}`}
+            >
+              {item.text}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; onChanged: () => void; onReview: (wave?: string) => void }) {
   const t = useT();
   // BL-157 (AC-MV-07): a moved plan's event names both channels.
   const { nameOf } = useChannelNames();
-  const { plan, progress, events } = detail;
+  const { progress, events } = model;
   const [closing, setClosing] = useState<"completed" | "cancelled" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showItems, setShowItems] = useState(false);
+  const [showAllWaves, setShowAllWaves] = useState(false);
   const [savingReviewRejected, setSavingReviewRejected] = useState(false);
-  const waiting = waitingCount(detail);
-  const base = `/api/generation-plans/${encodeURIComponent(plan.planId)}`;
+  const base = `/api/generation-plans/${encodeURIComponent(model.planId)}`;
   const openSession = progress.spend.sessions.find((s) => !s.final);
   const budgetTone = progress.budget.warnings.includes("100") ? "bg-red-500" : progress.budget.warnings.includes("80") ? "bg-amber-500" : "bg-emerald-500";
+  // AC-UX-13: another device's plan is changed only there -- its actions are shown, disabled, with that device's name.
+  const elsewhere = model.device ? (model.device.hostname ?? model.device.deviceId) : null;
+  const waves = waveRows(model, showAllWaves);
 
   const close = async (status: "completed" | "cancelled") => {
     try {
@@ -345,14 +432,15 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <div className="flex flex-wrap items-start gap-2">
-        <div>
-          <h3 className="text-base font-semibold text-zinc-100">{plan.title}</h3>
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-base font-semibold text-zinc-100">{model.title}</h3>
           <p className="text-xs text-zinc-500">
             {/* ui-text-ignore: "Factory Operator" is a product name */}
-            <span className="font-mono">{plan.planId}</span> · {plan.owner === "factory" ? "Factory Operator" : t("plans.ownerYou")} · {t("plans.created", { date: formatDisplayDateTime(plan.createdAt) })} · {planStatusLabel(t, plan.status)}
+            <span className="font-mono">{model.planId}</span> · {model.owner === "factory" ? "Factory Operator" : t("plans.ownerYou")} · {t("plans.created", { date: formatDisplayDateTime(model.createdAt) })} · {planStatusLabel(t, model.status)}
+            {elsewhere ? ` · ${t("plans.peers.reported", { device: elsewhere, age: describeAge(t, model.device?.updatedAt ?? model.createdAt, Date.now()) })}` : ""}
           </p>
-          {plan.note && <p className="mt-1 text-xs text-zinc-400">{plan.note}</p>}
+          {model.note && <p className="mt-1 text-xs text-zinc-400">{model.note}</p>}
           {progress.notices.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {progress.notices.map((n, i) => {
@@ -366,25 +454,31 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
             </div>
           )}
         </div>
-        <div className="ml-auto flex flex-wrap gap-2">
-          {waiting > 0 && onReview && (
-            <button type="button" onClick={() => onReview(plan.planId)} className={primaryButton}>
-              {t("plans.reviewWaiting", { count: waiting })}
+        {/* AC-UX-08: one primary action; the switch with its caption; the rest in the menu. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          {model.status === "active" &&
+            (elsewhere ? (
+              <span className="text-xs text-zinc-500">{t("plans.reviewRejectedOn", { device: elsewhere })}</span>
+            ) : (
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300">
+                <ToggleSwitch label={t("plans.reviewRejected")} checked={model.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
+                <span>{t("plans.reviewRejected")}</span>
+                <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
+              </label>
+            ))}
+          {model.waiting > 0 && (
+            <button type="button" onClick={() => onReview()} className={primaryButton}>
+              {t("plans.reviewWaiting", { count: model.waiting })}
             </button>
           )}
-          {plan.status === "active" && (
-            <>
-              <span className="flex items-center gap-1">
-                <ToggleSwitch label={t("plans.reviewRejected")} checked={plan.reviewRejected === true} disabled={savingReviewRejected} onChange={(on) => void setReviewRejected(on)} />
-                <InfoTooltip>{t("plans.reviewRejectedInfo")}</InfoTooltip>
-              </span>
-              <button type="button" onClick={() => setClosing("completed")} className={secondaryButton}>
-                {t("plans.markCompleted")}
-              </button>
-              <button type="button" onClick={() => setClosing("cancelled")} className={secondaryButton}>
-                {t("plans.cancelPlan")}
-              </button>
-            </>
+          {model.status === "active" && (
+            <ActionsMenu
+              label={t("plans.actions.more")}
+              items={[
+                { key: "complete", text: elsewhere ? t("plans.markCompletedOn", { device: elsewhere }) : t("plans.markCompleted"), disabled: elsewhere !== null, onSelect: () => setClosing("completed") },
+                { key: "cancel", text: elsewhere ? t("plans.cancelPlanOn", { device: elsewhere }) : t("plans.cancelPlan"), disabled: elsewhere !== null, danger: true, onSelect: () => setClosing("cancelled") },
+              ]}
+            />
           )}
         </div>
       </div>
@@ -425,19 +519,27 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
                   {d.value} / {d.total}
                 </span>
               </div>
-              <span className="col-span-2 text-zinc-500 sm:col-span-1">{d.words}</span>
+              <span className="col-span-2 text-zinc-500 sm:col-span-1">
+                {d.words}
+                {/* Finding 13: the review's remainder is said where its bar is. */}
+                {stage.kind === "owner_review" && model.waiting > 0 ? <span className="text-amber-300"> · {t("plans.waitingForYou", { count: model.waiting })}</span> : null}
+              </span>
             </div>
           );
         })}
       </div>
 
-      {progress.groups.length > 0 && (
+      {model.groups.length > 0 && (
         <div className="space-y-2">
           <h4 className="text-sm font-medium text-zinc-200">{t("plans.waves")}</h4>
-          {plan.groups.map((g) => {
-            const counts = progress.groups.find((x) => x.groupId === g.groupId)?.counts;
-            return <GroupRow key={g.groupId} planId={plan.planId} group={g} counts={counts} editable={plan.status === "active"} onSaved={onChanged} />;
-          })}
+          {waves.shown.map((row) => (
+            <GroupRow key={row.groupId} planId={model.planId} row={row} editable={model.status === "active" && elsewhere === null} onSaved={onChanged} onReview={model.status === "active" ? () => onReview(row.groupId) : undefined} />
+          ))}
+          {(waves.folded > 0 || showAllWaves) && (
+            <button type="button" onClick={() => setShowAllWaves((v) => !v)} className="text-xs text-indigo-300 hover:underline">
+              {showAllWaves ? t("plans.waves.fewer") : t("plans.waves.more", { count: waves.folded })}
+            </button>
+          )}
         </div>
       )}
 
@@ -509,27 +611,16 @@ function PlanDetailCard({ detail, onChanged, onReview }: { detail: PlanDetail; o
   );
 }
 
-function GroupRow({
-  planId,
-  group,
-  counts,
-  editable,
-  onSaved,
-}: {
-  planId: string;
-  group: { groupId: string; title: string; dependsOn: string | null; note: string | null; ownerNote?: string | null };
-  counts: { items: number; generated: number; accepted: number; rejected: number; waitingReview: number; missing: number } | undefined;
-  editable: boolean;
-  onSaved: () => void;
-}) {
+function GroupRow({ planId, row, editable, onSaved, onReview }: { planId: string; row: WaveRow; editable: boolean; onSaved: () => void; onReview?: () => void }) {
   const t = useT();
   const [editing, setEditing] = useState(false);
   // BL-157 (AC-WV-04): the owner edits their own note; the factory's context (`note`) is shown apart, read-only.
-  const [note, setNote] = useState(group.ownerNote ?? "");
+  const [note, setNote] = useState(row.ownerNote ?? "");
   const [error, setError] = useState<string | null>(null);
+  const counts = row.counts;
   const save = async () => {
     try {
-      await postJson(t, `/api/generation-plans/${encodeURIComponent(planId)}/group-note`, { groupId: group.groupId, note: note.trim() ? note : null });
+      await postJson(t, `/api/generation-plans/${encodeURIComponent(planId)}/group-note`, { groupId: row.groupId, note: note.trim() ? note : null });
       setEditing(false);
       setError(null);
       onSaved();
@@ -539,21 +630,50 @@ function GroupRow({
   };
   return (
     <div className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <span className="font-medium text-zinc-200">{group.title}</span>
-        {group.title !== group.groupId && <span className="font-mono text-zinc-500">{group.groupId}</span>}
-        {group.dependsOn && <span className="text-zinc-500">{t("plans.after", { group: group.dependsOn })}</span>}
-        {counts && (
-          <span className="ml-auto text-zinc-400">
-            {t("plans.group.items", { count: counts.items })} · {t("plans.group.generated", { count: counts.generated })} · <span className="text-emerald-400">{t("plans.group.accepted", { count: counts.accepted })}</span> ·{" "}
-            <span className="text-red-400">{t("plans.group.rejected", { count: counts.rejected })}</span>
-            {counts.waitingReview > 0 ? <span className="text-amber-300"> · {t("plans.group.waiting", { count: counts.waitingReview })}</span> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-sm text-zinc-100">{row.groupId}</span>
+        {row.title !== row.groupId && (
+          <span className="min-w-0 flex-1 truncate text-zinc-300" title={row.title}>
+            {row.title}
           </span>
         )}
+        {row.dependsOn && <span className="text-zinc-500">{t("plans.after", { group: row.dependsOn })}</span>}
+        {/* AC-UX-10: neutral counts; colour only for a count above zero. */}
+        {counts && (
+          <span className="ml-auto text-zinc-500">
+            {t("plans.group.items", { count: counts.items })} · {t("plans.group.generated", { count: counts.generated })}
+            {counts.accepted > 0 ? <span className="text-emerald-400"> · {t("plans.group.accepted", { count: counts.accepted })}</span> : null}
+            {counts.rejected > 0 ? <span className="text-red-400"> · {t("plans.group.rejected", { count: counts.rejected })}</span> : null}
+          </span>
+        )}
+        {editable && !editing && (
+          <button
+            type="button"
+            onClick={() => {
+              setNote(row.ownerNote ?? "");
+              setEditing(true);
+            }}
+            aria-label={row.ownerNote ? t("plans.editNote") : t("plans.addNote")}
+            title={row.ownerNote ? t("plans.editNote") : t("plans.addNote")}
+            className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+          >
+            ✎
+          </button>
+        )}
+        {/* AC-UX-09: this wave's own review. */}
+        {counts && counts.waitingReview > 0 && onReview && (
+          <button type="button" onClick={onReview} className="rounded-md bg-indigo-600 px-2.5 py-0.5 text-xs font-medium text-white hover:bg-indigo-500">
+            {t("plans.reviewWaiting", { count: counts.waitingReview })}
+          </button>
+        )}
       </div>
-      {group.note && <p className="whitespace-pre-wrap text-zinc-400">{group.note}</p>}
-      {!editing && group.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: group.ownerNote })}</p>}
-      {editing ? (
+      {row.note && (
+        <p className="line-clamp-2 whitespace-pre-wrap text-zinc-400" title={row.note}>
+          {row.note}
+        </p>
+      )}
+      {!editing && row.ownerNote && <p className="whitespace-pre-wrap text-amber-200">{t("plans.ownerNote", { note: row.ownerNote })}</p>}
+      {editing && (
         <div className="space-y-1">
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100" placeholder={t("plans.notePlaceholder")} />
           <div className="flex gap-2">
@@ -564,7 +684,7 @@ function GroupRow({
               type="button"
               onClick={() => {
                 setEditing(false);
-                setNote(group.ownerNote ?? "");
+                setNote(row.ownerNote ?? "");
               }}
               className={secondaryButton}
             >
@@ -572,92 +692,8 @@ function GroupRow({
             </button>
           </div>
         </div>
-      ) : (
-        editable && (
-          <button
-            type="button"
-            onClick={() => {
-              setNote(group.ownerNote ?? "");
-              setEditing(true);
-            }}
-            className="text-indigo-300 hover:underline"
-          >
-            {group.ownerNote ? t("plans.editNote") : t("plans.addNote")}
-          </button>
-        )
       )}
       {error && <p className="text-red-400">{error}</p>}
-    </div>
-  );
-}
-
-/** BL-143 phase 2 (AC-GP2-06): the other devices' plans, read-only -- progress as that device reported it, and listening. */
-function PeerPlansCard({ devices, outgoing, onReview }: { devices: PeerDevicePlans[]; outgoing: OutgoingVerdict[]; onReview: (planId: string, source: PeerReviewSource) => void }) {
-  // Re-rendered by the panel's poll every 10 s, so the age is measured from now each time.
-  // eslint-disable-next-line react-hooks/purity -- the age is meant to move with the clock
-  const now = Date.now();
-  const t = useT();
-  return (
-    <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-        {t("plans.peers.title")}
-        <InfoTooltip>{t("plans.peers.info")}</InfoTooltip>
-      </h3>
-      {devices
-        .filter((d) => d.plans.length > 0)
-        .map((d) => (
-          <div key={d.deviceId} className="space-y-2">
-            <p className="text-xs text-zinc-400">
-              {t("plans.peers.reported", { device: d.hostname ?? d.deviceId, age: describeAge(t, d.updatedAt, now) })}
-              {d.stale ? <span className="ml-1 text-amber-300">{t("plans.peers.stale")}</span> : null}
-            </p>
-            <ul className="space-y-2">
-              {d.plans.map((p) => {
-                const generate = p.progress.stages?.find((s) => s.kind === "in_app");
-                const bar = generate ? describeStage(t, generate.kind, generate.counts) : null;
-                // Verdicts already sent from here count as given (they wait for that device to apply them).
-                const sent = new Set(outgoing.filter((v) => v.ownerDeviceId === d.deviceId && v.planId === p.planId).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
-                const waiting = p.review.filter((e) => e.verdict === null && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`)).length;
-                return (
-                  <li key={p.planId} className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
-                    <div className="flex flex-wrap items-baseline gap-2 text-sm">
-                      <span className="font-medium text-zinc-100">{p.title}</span>
-                      <span className="font-mono text-xs text-zinc-500">{p.planId}</span>
-                      {p.status !== "active" && <span className="text-xs text-zinc-400">{planStatusLabel(t, p.status)}</span>}
-                      <span className="ml-auto text-xs text-zinc-400">{t("unit.usd", { value: (p.progress.spend?.usd ?? 0).toFixed(2) })}</span>
-                      {p.status === "active" && waiting > 0 && (
-                        <button type="button" onClick={() => onReview(p.planId, { deviceId: d.deviceId, hostname: d.hostname })} className={primaryButton}>
-                          {t("plans.reviewWaiting", { count: waiting })}
-                        </button>
-                      )}
-                    </div>
-                    {bar && (
-                      <div className="flex items-center gap-2 text-xs text-zinc-400">
-                        <div className="w-40 shrink-0">
-                          <Bar percent={bar.percent} />
-                        </div>
-                        {t("plans.generatedOf", { value: bar.value, total: bar.total })}
-                      </div>
-                    )}
-                    {(p.progress.stages ?? []).filter((s) => s.kind !== "in_app").map((s) => {
-                      const st = describeStage(t, s.kind, s.counts);
-                      return (
-                        <div key={s.stageId} className="text-xs text-zinc-500">
-                          {s.title}: {st.words}
-                        </div>
-                      );
-                    })}
-                    {p.groups.filter((g) => g.note || g.ownerNote).map((g) => (
-                      <div key={g.groupId} className="text-xs text-zinc-400">
-                        {g.title}: {[g.note, g.ownerNote ? t("plans.ownerNote", { note: g.ownerNote }) : null].filter(Boolean).join(" · ")}
-                      </div>
-                    ))}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ))}
     </div>
   );
 }

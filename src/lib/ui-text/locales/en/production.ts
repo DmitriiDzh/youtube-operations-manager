@@ -216,8 +216,6 @@ export const production = {
   "plans.saveNote": "Save note",
   "plans.editNote": "Edit note",
   "plans.addNote": "Add a note on this wave",
-  "plans.peers.title": "Plans on other devices",
-  "plans.peers.info": "Plans the Factory Operator runs on another computer, as that computer last reported them (read-only here). You can listen and give verdicts; they are sent to that computer, which applies them. The audio plays from this computer’s copy of the channel folder.",
   "plans.peers.reported": "{device} · reported {age}",
   "plans.peers.stale": "(stale: that computer has not reported for a while)",
 
@@ -322,4 +320,11 @@ export const production = {
   "review.reasons.hint": "mark them when rejecting",
   "review.rerunOnDevice": "Re-runs are asked for on {device}",
   "review.history.title": "Verdict history ({count})",
+  "plans.device.here": "this computer",
+  "plans.reviewRejectedOn": "“Listen to rejected tracks too” is set on {device}",
+  "plans.actions.more": "More actions",
+  "plans.markCompletedOn": "Mark completed (on {device})",
+  "plans.cancelPlanOn": "Cancel the plan (on {device})",
+  "plans.waves.more": "{count, plural, one {# more wave} other {# more waves}}",
+  "plans.waves.fewer": "Show fewer waves",
 } as const;

@@ -217,8 +217,6 @@ export const production: Record<keyof typeof en, string> = {
   "plans.saveNote": "Сохранить заметку",
   "plans.editNote": "Изменить заметку",
   "plans.addNote": "Добавить заметку к этой волне",
-  "plans.peers.title": "Планы на других компьютерах",
-  "plans.peers.info": "Планы, которые Factory Operator выполняет на другом компьютере, в том виде, в каком тот компьютер сообщил о них последний раз (здесь только просмотр). Вы можете слушать и выносить вердикты: они отправляются на тот компьютер, и он их применяет. Аудио воспроизводится из копии папки канала на этом компьютере.",
   "plans.peers.reported": "{device} · отчёт {age}",
   "plans.peers.stale": "(устарело: тот компьютер давно не присылал отчёт)",
 
@@ -323,4 +321,11 @@ export const production: Record<keyof typeof en, string> = {
   "review.reasons.hint": "отметьте при отклонении",
   "review.rerunOnDevice": "Перезапуск запрашивается на {device}",
   "review.history.title": "История вердиктов ({count})",
+  "plans.device.here": "этот компьютер",
+  "plans.reviewRejectedOn": "«Слушать и отбракованные» настраивается на {device}",
+  "plans.actions.more": "Другие действия",
+  "plans.markCompletedOn": "Отметить завершённым (на {device})",
+  "plans.cancelPlanOn": "Отменить план (на {device})",
+  "plans.waves.more": "{count, plural, one {ещё # волна} few {ещё # волны} many {ещё # волн} other {ещё # волны}}",
+  "plans.waves.fewer": "Свернуть старые волны",
 };

@@ -29,6 +29,7 @@ import {
   type PlanReviewEntry,
   type PlanTodo,
   type PlanView,
+  sharedNotices,
 } from "./contracts";
 import { createHash } from "node:crypto";
 import type { GenerationPlansReport, SharedClaim, SharedPlan, SharedVerdict } from "@/lib/sync-gateway";
@@ -302,22 +303,8 @@ export function validateDefinition(definition: PlanDefinition): void {
   if (problems.length > 0) throw planInvalid(`The plan is not valid: ${problems.slice(0, 10).join("; ")}`, { problems });
 }
 
-/**
- * BL-157 (AC-BL-01): the notices in another device's report (`progress` is that device's derived progress, a loose record):
- * only well-formed ones of the known kinds are taken, anything else is left out.
- */
-export function sharedNotices(progress: Record<string, unknown>): PlanNotice[] {
-  const raw = Array.isArray(progress.notices) ? (progress.notices as unknown[]) : [];
-  const out: PlanNotice[] = [];
-  for (const n of raw) {
-    if (!n || typeof n !== "object") continue;
-    const x = n as Record<string, unknown>;
-    if (x.kind === "stage_complete" && typeof x.stageId === "string" && typeof x.title === "string") out.push({ kind: "stage_complete", stageId: x.stageId.slice(0, 40), title: x.title.slice(0, 200) });
-    else if (x.kind === "budget_80" || x.kind === "budget_100" || x.kind === "plan_complete") out.push({ kind: x.kind });
-    else if (x.kind === "attempts_exhausted" && typeof x.count === "number" && Number.isFinite(x.count)) out.push({ kind: "attempts_exhausted", count: x.count });
-  }
-  return out;
-}
+// BL-162: `sharedNotices` lives in ./contracts (the Plans card reads it in the browser too); re-exported for this module's callers.
+export { sharedNotices };
 
 export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   const now = () => deps.clock.now();
