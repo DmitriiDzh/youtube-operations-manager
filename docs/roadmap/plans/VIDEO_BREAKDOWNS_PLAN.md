@@ -46,7 +46,8 @@ the order of DEV-RESP-0018.
   Same "reads enabled" switch (inside the client), quota reserve (`isBackgroundReadAllowed("analytics")`) and quota-history label.
 - **At most 100 subjects per channel per run (200 queries).** The channel goes first, then the due videos least recently read first (never
   read first, the newest publish date first among equals). A video left out is read first on the next run, so none is starved. A larger
-  backlog finishes over the next runs.
+  backlog finishes over the next runs. Subjects whose last attempt failed (`retry`, the channel too) come after all the others, so one that
+  keeps getting no answer, which ends its run, never stops the others from being read (second review; the milestones' rule).
   - *Review of BL-168:* the first version had 50 subjects and a newest-first order. Every video inside its window is due every day, so a
     channel has about 70 due subjects at 0.8 uploads a day; Tropico Jazz already has 51 videos in their window. The oldest videos of the
     window were then left out every day and never got their last weeks or their final pass. The earlier estimate of "about 46 subjects a

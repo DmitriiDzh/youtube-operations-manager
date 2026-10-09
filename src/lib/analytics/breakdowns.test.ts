@@ -39,6 +39,8 @@ import type { MilestoneVideo } from "./milestones";
 // - New days are read from 6 days before the first new one, so after a gap the last stored days, which were still provisional, are
 //   read again (the earlier rule started at the gap). AC-VB-05 and the planning test's retry now start at 09-26.
 // - The channel is never given up after 3 failed attempts (it has no end and no other way back): it is retried a day later, every time.
+// - Second review: subjects whose last attempt failed (`retry`) come after every other due subject. Otherwise a video that keeps getting
+//   no answer (5xx, timeout), never getting a new collection time, headed the queue and stopped every run before the others were read.
 
 const published = (videoId: string, publishedAt: string | null): MilestoneVideo => ({ videoId, publishedAt, privacyStatus: "public", liveBroadcastContent: "none" });
 
@@ -138,6 +140,19 @@ test("planning: a stored range for another window start counts as never collecte
       ["ready", "2026-09-26", "2026-10-09", false],
     ]
   );
+});
+
+test("second review of BL-168: subjects whose last attempt failed come after every other due subject, the channel included", () => {
+  const now = at("2026-10-11T18:00:00Z");
+  const collected = (subject: string, rangeStart: string): BreakdownState => ({ subject, rangeStart, collectedThrough: "2026-10-09", collectedOn: "2026-10-10", collectedAt: NOW, status: "collected", nextAttemptAt: null });
+  const videos = [published("x", "2026-09-01T12:00:00Z"), published("v2", "2026-09-02T12:00:00Z"), published("v3", "2026-09-03T12:00:00Z"), published("v4", "2026-09-04T12:00:00Z")];
+  // x was last collected a day earlier than the others and then got no answer: deferred until now.
+  const x: BreakdownState = { subject: "x", rangeStart: "2026-09-01", collectedThrough: "2026-10-08", collectedOn: "2026-10-09", collectedAt: at("2026-10-09T18:00:00Z"), status: "retry", nextAttemptAt: now };
+  const states = [collected(CHANNEL_SUBJECT, "2026-07-12"), collected("v2", "2026-09-02"), collected("v3", "2026-09-03"), collected("v4", "2026-09-04"), x];
+  assert.deepEqual(planDueBreakdowns(videos, states, now).map((p) => p.subject), [CHANNEL_SUBJECT, "v4", "v3", "v2", "x"]);
+  // The channel in retry goes after the videos that are not, and before the video retries.
+  const channelRetry: BreakdownState = { ...collected(CHANNEL_SUBJECT, "2026-07-12"), status: "retry", nextAttemptAt: now };
+  assert.deepEqual(planDueBreakdowns(videos, [channelRetry, ...states.slice(1)], now).map((p) => p.subject), ["v4", "v3", "v2", CHANNEL_SUBJECT, "x"]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -417,6 +432,33 @@ test("AC-VB-11: a 503, a 429 or no answer stops the run and puts the subject bac
     assert.equal(v1?.nextAttemptAt?.toISOString(), "2026-10-11T18:00:00.000Z", error.message);
     assert.equal(states.find((s) => s.subject === CHANNEL_SUBJECT)?.status, "collected", "the channel before it was saved");
   }
+});
+
+test("second review of BL-168: a video that keeps getting a 503 does not stop the others from being read on later days", async () => {
+  const db = await freshDb();
+  const videos = [published("x", "2026-09-01T12:00:00Z"), published("v2", "2026-09-02T12:00:00Z"), published("v3", "2026-09-03T12:00:00Z")];
+  const { services, queries, clock } = setup(db, { videos, fail: (subject) => (subject === "x" ? googleError(503, "backendError") : null) });
+  for (let day = 0; day < 3; day++) {
+    clock.now = new Date(NOW.getTime() + day * 25 * 3_600_000);
+    queries.length = 0;
+    await assert.rejects(() => services.collectDueBreakdowns(RUN));
+    // Every day: the channel, v3 and v2 are read (2 queries each), then x, which ends the run.
+    assert.deepEqual(
+      queries.map((q) => q.filters ?? "channel").filter((_, i) => i % 2 === 0),
+      ["channel", "video==v3", "video==v2", "video==x"],
+      `day ${day}`
+    );
+  }
+  const states = await listAnalyticsBreakdownStates("UC_ours", db);
+  assert.deepEqual(
+    states.map((s) => [s.subject, s.status, s.attempts]).sort(),
+    [
+      [CHANNEL_SUBJECT, "collected", 0],
+      ["v2", "collected", 0],
+      ["v3", "collected", 0],
+      ["x", "retry", 0],
+    ]
+  );
 });
 
 test("AC-VB-11: reads off, quota, sign-in, 401 and a 403 quotaExceeded stop the run with nothing written", async () => {

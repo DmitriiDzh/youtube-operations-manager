@@ -3316,7 +3316,8 @@ Plan: `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md` (AC-VB-01..17). Schema v77.
   again. `failed` subjects are skipped, `retry` ones wait for `next_attempt_at`. At most `MAX_BREAKDOWN_SUBJECTS_PER_RUN` (100): the
   channel first, then due videos by `collected_at` ascending (never collected first; newest publish date, then id, among equals), so a
   video left out by the cap heads the next run's queue (review of BL-168: a newest-first order with a cap of 50 starved the oldest videos
-  of the window every day).
+  of the window every day). Subjects in `retry` (the channel included) go after all the others, in the same order: a deferred subject ends
+  its run, so heading the queue it would stop every run before the others were read (second review).
 - **Collection** (`collectDueBreakdowns`). Two `queryChannelBreakdownReport` calls per subject (`day,insightTrafficSourceType` and
   `day,deviceType`, `views` + `estimatedMinutesWatched`, `video==<id>` for a video), saved only when both answered.
   `saveCollectedAnalyticsBreakdown` deletes the subject's rows in from..to (all of them when `fresh`), inserts the answer (only days inside

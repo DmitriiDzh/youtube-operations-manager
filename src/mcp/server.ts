@@ -5,7 +5,7 @@ import { loadEnvConfig } from "@next/env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
-import { DomainError, isDomainError } from "@/lib/shared-domain";
+import { calendarDateSchema, DomainError, isDomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { recordGatewayCallOutcome } from "@/lib/db";
@@ -476,14 +476,8 @@ export type ProducerSession = {
   };
 };
 
-/** A real calendar date as YYYY-MM-DD (2026-02-31 and 2026-13-01 are refused, not rolled over). */
-const ISO_DATE = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD")
-  .refine((value) => {
-    const time = Date.parse(`${value}T00:00:00Z`);
-    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
-  }, "not a calendar date");
+/** A real calendar date as YYYY-MM-DD (`calendarDateSchema`, shared with the analytics module's tool inputs). */
+const ISO_DATE = calendarDateSchema;
 
 // BL-163 (FO-REQ-0014 §C): the proposal tools' inputs are the proposal service's own schemas (one definition, no drift); `payload`
 // is checked per kind by the service.

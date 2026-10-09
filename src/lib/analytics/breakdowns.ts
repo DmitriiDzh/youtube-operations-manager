@@ -1,5 +1,6 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import { z } from "zod";
+import { calendarDateSchema } from "@/lib/shared-domain";
 import { DomainError, type ResolvedCredentials } from "./contracts";
 import { parseWithSchema } from "./schemas";
 import { toPacificCalendarDate } from "./comparable-age";
@@ -77,7 +78,9 @@ export type PlannedBreakdown = {
 /**
  * The subjects to collect now, at most `max`: the channel first, then due videos least recently collected first (never collected first),
  * newest publish date first among equals -- so a video left out by the cap goes first on the next run and none is starved (review of
- * BL-168: a newest-first order left the oldest videos of the window out every day once more than `max` were due). A subject is due when
+ * BL-168: a newest-first order left the oldest videos of the window out every day once more than `max` were due). Subjects whose last
+ * attempt failed (`retry`, the channel included) come after all the others, in the same order: a subject that keeps getting no answer
+ * stops its run (`defer`), so it must not head the queue (second review of BL-168, the milestones' rule). A subject is due when
  * its range has a day later than what is stored, or -- for a video whose window has ended -- once for the final reread on or after window
  * end + 7. A stored range for another window start (the publish date moved) counts as never collected. `failed` subjects are never
  * planned; a `retry` waits for its time.
@@ -92,8 +95,13 @@ export function planDueBreakdowns(
   const latest = shiftIsoDate(today, -1);
   const stateOf = new Map(states.map((state) => [state.subject, state]));
 
-  /** The subject's plan if it is due, with when it was last collected (for the queue order). */
-  const consider = (subject: string, videoId: string | null, rangeStart: string, windowEnd: string | null): { planned: PlannedBreakdown; lastAt: number } | null => {
+  /** The subject's plan if it is due, with when it was last collected and whether its last attempt failed (for the queue order). */
+  const consider = (
+    subject: string,
+    videoId: string | null,
+    rangeStart: string,
+    windowEnd: string | null
+  ): { planned: PlannedBreakdown; lastAt: number; retry: boolean } | null => {
     const through = windowEnd !== null && windowEnd < latest ? windowEnd : latest;
     if (through < rangeStart) return null;
     const stored = stateOf.get(subject);
@@ -102,7 +110,8 @@ export function planDueBreakdowns(
     if (state?.status === "retry" && state.nextAttemptAt && state.nextAttemptAt.getTime() > now.getTime()) return null;
     const collectedThrough = state?.collectedThrough ?? null;
     const lastAt = state?.collectedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
-    if (collectedThrough === null) return { planned: { subject, videoId, rangeStart, from: rangeStart, to: through, fresh: true }, lastAt };
+    const retry = state?.status === "retry";
+    if (collectedThrough === null) return { planned: { subject, videoId, rangeStart, from: rangeStart, to: through, fresh: true }, lastAt, retry };
     const newDay = through > collectedThrough;
     const settledOn = windowEnd === null ? null : shiftIsoDate(windowEnd, BREAKDOWN_REREAD_DAYS);
     const finalPass =
@@ -111,13 +120,13 @@ export function planDueBreakdowns(
     // New days: from 6 days before the first new one, so the stored days that were still provisional are read again -- also after a gap
     // (review of BL-168). The final pass: the window's last 7 days.
     const reread = newDay ? shiftIsoDate(collectedThrough, 1 - (BREAKDOWN_REREAD_DAYS - 1)) : shiftIsoDate(through, -(BREAKDOWN_REREAD_DAYS - 1));
-    return { planned: { subject, videoId, rangeStart, from: reread > rangeStart ? reread : rangeStart, to: through, fresh: false }, lastAt };
+    return { planned: { subject, videoId, rangeStart, from: reread > rangeStart ? reread : rangeStart, to: through, fresh: false }, lastAt, retry };
   };
 
   const channelState = stateOf.get(CHANNEL_SUBJECT);
   const channel = consider(CHANNEL_SUBJECT, null, channelState?.rangeStart ?? shiftIsoDate(latest, -(CHANNEL_BREAKDOWN_FIRST_DAYS - 1)), null);
 
-  const due: Array<{ planned: PlannedBreakdown; lastAt: number; publishedAt: number }> = [];
+  const due: Array<{ planned: PlannedBreakdown; lastAt: number; retry: boolean; publishedAt: number }> = [];
   for (const video of videos.filter(hasFinalPublishDate)) {
     const window = videoBreakdownWindow(video.publishedAt as string);
     const item = consider(video.videoId, video.videoId, window.windowStart, window.windowEnd);
@@ -125,7 +134,13 @@ export function planDueBreakdowns(
   }
   // Never collected (-Infinity) first; `-Infinity - -Infinity` is NaN, which falls through to the next key.
   due.sort((a, b) => a.lastAt - b.lastAt || b.publishedAt - a.publishedAt || a.planned.subject.localeCompare(b.planned.subject));
-  return [...(channel ? [channel.planned] : []), ...due.map((item) => item.planned)].slice(0, max);
+  const ordered = [
+    ...(channel && !channel.retry ? [channel] : []),
+    ...due.filter((item) => !item.retry),
+    ...(channel && channel.retry ? [channel] : []),
+    ...due.filter((item) => item.retry),
+  ];
+  return ordered.map((item) => item.planned).slice(0, max);
 }
 
 export type BreakdownRowValue = { day: string; value: string; views: number | null; estimatedMinutesWatched: number | null };
@@ -199,14 +214,8 @@ export type BreakdownDependencies = {
 };
 
 const credentialRefSchema = z.object({ userId: z.string().min(1) }).strict();
-/** A real calendar date (2026-02-30 is refused), like `producer_upload_milestones`' dates. */
-const isoDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be an ISO date, YYYY-MM-DD")
-  .refine((value) => {
-    const time = Date.parse(`${value}T00:00:00Z`);
-    return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
-  }, "not a calendar date");
+/** A real calendar date (2026-02-30 is refused), the same definition as `producer_upload_milestones`' dates. */
+const isoDate = calendarDateSchema;
 export const MAX_BREAKDOWN_READ_DAYS = 92;
 export const collectDueBreakdownsInputSchema = z.object({ credentialRef: credentialRefSchema, channelId: z.string().min(1) }).strict();
 export const listStoredBreakdownsInputSchema = z
