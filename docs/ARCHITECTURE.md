@@ -3276,17 +3276,23 @@ Plan: `docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md` (AC-VM-01..08). Schema v75.
 - **Windows.** `milestoneWindow(publishedAt, M)` = the Pacific publish date .. +M-1 (inclusive); `isMilestoneDue` once today (Pacific) is at
   least `MILESTONE_LAG_DAYS` (reporting lag + 1 = 3) after the window end.
 - **Collection** (`createVideoMilestoneServices.collectDueMilestones`, analytics core). `planDueMilestones` takes never-attempted milestones by
-  window end, then retries whose `next_attempt_at` has passed, at most 25 per channel per run. Each costs two `queryChannelBreakdownReport`
+  window end, then retries whose `next_attempt_at` has passed, at most 25 per channel per run. Only videos with a final publish date
+  (`hasFinalPublishDate`: public, not an upcoming premiere or stream) are planned -- while a video is private or scheduled, YouTube gives its
+  owner the upload time as `publishedAt`. A stored row whose window differs from the one computed now counts as never attempted, and its
+  attempts start again at 1 (both writes count attempts per window). Planning reads only key, window, status and retry time
+  (`listVideoMilestoneStates`). Each costs two `queryChannelBreakdownReport`
   calls (gateway, `dimensions` optional): `elapsedVideoTimeRatio` with the five retention metrics, and the four totals with no dimension, both
-  `video==<id>` over the window. A per-video error records an attempt (`recordVideoMilestoneFailure`: retry after 24 h, `failed` at 3); reads
-  off, quota, sign-in or channel errors stop the run with nothing counted. The core wraps it in the analytics quota context and
-  `isBackgroundReadAllowed("analytics")`. `/api/analytics/auto-collect-all` runs it after the daily rows for each channel whose collection
+  `video==<id>` over the window. Only an error about the query counts an attempt (HTTP 400, 404, or a 403 whose reason is not about
+  permissions, the project or the rate; `recordVideoMilestoneFailure`: retry after 24 h, `failed` at 3). Reads off, quota, sign-in, channel
+  access, no HTTP answer at all, 401, 429, 5xx and those system 403s stop the run with nothing counted. The core wraps it in the analytics
+  quota context and `gateMilestoneCollection` (`isBackgroundReadAllowed("analytics")`). `/api/analytics/auto-collect-all` runs it after the daily rows for each channel whose collection
   did not fail, each in its own try/catch.
 - **Storage.** `video_milestones` (primary key `video_id, milestone_days`): status, attempts, last error, next attempt, collected time, the
   four totals and `retention_json` (as returned, `[]` when none). Classified `authorized`; device-local (not in the snapshot, not synced).
 - **Reads.** `listVideoMilestones` (channel scope, joins each row with the video's stored `durationSeconds`, drops rows whose video the
-  channel does not have) backs `agent_get_video_milestones`. `producer_upload_milestones` is built by `createUploadMilestonesServices`
-  (`src/lib/portfolio-overview/upload-milestones.ts`): uploads by UTC date in the range, windows from the analytics helpers (passed in, so
-  the module does not import analytics), stored rows, and `getVideoWindowsReach` (`reach-reports`: one `listDaily` over the span of all
+  channel does not have or whose window the video no longer has) backs `agent_get_video_milestones`. `producer_upload_milestones` is built by `createUploadMilestonesServices`
+  (`src/lib/portfolio-overview/upload-milestones.ts`): published uploads by UTC date in the range, windows and the publish rule from the
+  analytics helpers (passed in, so the module does not import analytics), stored totals of those videos (`listVideoMilestoneTotals`, only
+  rows of the current window), and `getVideoWindowsReach` (`reach-reports`: one `listDaily` over the span of all
   windows, per-window `daysWithData`, summed impressions, `weightedCtr`), read in each channel's agent scope. A Reach figure is null unless
-  Reach is `ready` and the window has a stored day.
+  Reach is `ready` and the window has a stored day; a failed Reach read gives `reachError` (its error code).

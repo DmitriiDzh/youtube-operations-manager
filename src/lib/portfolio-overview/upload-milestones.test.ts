@@ -6,6 +6,8 @@ import { createUploadMilestonesServices } from "./upload-milestones";
 // Expected values from docs/roadmap/plans/VIDEO_MILESTONES_PLAN.md §2 and AC-VM-07: for each connected channel, its uploads published in
 // the range, each with its day-7 and day-28 totals (null where not collected yet) and the Reach of the same window (null without a
 // stored Reach day); stored data only. Uploads are picked by UTC date, like producer_portfolio_overview. Every value below is by hand.
+// The review of BL-166 added: only published videos are uploads (a private or scheduled video's date is its upload time), and a stored
+// row of another window (the video went public later) is not used; a failed Reach read says why.
 
 const RANGE = { startDate: "2026-09-01", endDate: "2026-09-30" };
 
@@ -16,11 +18,26 @@ function windowOf(publishedAt: string, days: number) {
   return { windowStart, windowEnd };
 }
 
-const video = (videoId: string, publishedAt: string | null, durationSeconds: number | null = 7200) => ({ videoId, title: `Title ${videoId}`, publishedAt, durationSeconds });
+const video = (videoId: string, publishedAt: string | null, durationSeconds: number | null = 7200, privacyStatus = "public") => ({
+  videoId,
+  title: `Title ${videoId}`,
+  publishedAt,
+  privacyStatus,
+  liveBroadcastContent: "none",
+  durationSeconds,
+});
 
-const stored = (videoId: string, milestoneDays: number, status: StoredUploadMilestone["status"], values: Partial<StoredUploadMilestone> = {}): StoredUploadMilestone => ({
+const stored = (
+  videoId: string,
+  milestoneDays: number,
+  window: [string, string],
+  status: StoredUploadMilestone["status"],
+  values: Partial<StoredUploadMilestone> = {}
+): StoredUploadMilestone => ({
   videoId,
   milestoneDays,
+  windowStart: window[0],
+  windowEnd: window[1],
   status,
   collectedAt: null,
   views: null,
@@ -32,12 +49,13 @@ const stored = (videoId: string, milestoneDays: number, status: StoredUploadMile
 
 function fixture() {
   const reachCalls: Array<{ channelId: string; windows: Array<{ videoId: string; startDate: string; endDate: string }> }> = [];
-  const storedCalls: string[] = [];
+  const storedCalls: Array<[string, string[]]> = [];
   const deps: UploadMilestonesDeps = {
     milestoneDays: [7, 28],
     windowOf,
     // "Today" minus the reporting lag is 2026-10-05 in this test.
     isDue: (windowEnd) => windowEnd <= "2026-10-05",
+    isPublished: (candidate) => candidate.privacyStatus === "public" && candidate.liveBroadcastContent !== "upcoming",
     listChannels: async () => [
       { channelId: "UC_T", title: "Tropico Jazz" },
       { channelId: "UC_J", title: "Rural Japan Music" },
@@ -53,35 +71,42 @@ function fixture() {
           video("v4", "2026-09-05T08:00:00Z", null),
           video("v5", null),
           video("v6", "not a date"),
+          // Scheduled: still private, its date is the upload time.
+          video("v7", "2026-09-15T08:00:00Z", 7200, "private"),
+          { ...video("v8", "2026-09-16T08:00:00Z"), liveBroadcastContent: "upcoming" },
         ];
       }
       if (channelId === "UC_W") return [video("w1", "2026-08-15T00:00:00Z")];
       if (channelId === "UC_E") return [video("e1", "2026-09-10T12:00:00Z")];
       return null;
     },
-    async listStoredMilestones(channelId) {
-      storedCalls.push(channelId);
+    async listStoredMilestones(channelId, videoIds) {
+      storedCalls.push([channelId, videoIds]);
       if (channelId === "UC_T") {
         return [
-          stored("v1", 7, "collected", {
+          stored("v1", 7, ["2026-09-01", "2026-09-07"], "collected", {
             collectedAt: new Date("2026-09-11T06:00:00Z"),
             views: 120,
             estimatedMinutesWatched: 300.5,
             averageViewDuration: 150,
             averageViewPercentage: 42.5,
           }),
-          stored("v4", 7, "retry"),
-          stored("v4", 28, "failed"),
+          stored("v4", 7, ["2026-09-05", "2026-09-11"], "retry"),
+          stored("v4", 28, ["2026-09-05", "2026-10-02"], "failed"),
+          // Collected for a window v3 no longer has: not used.
+          stored("v3", 7, ["2026-09-28", "2026-10-04"], "collected", { views: 5555 }),
           // Outside the range: never listed.
-          stored("v2", 7, "collected", { views: 9999 }),
+          stored("v2", 7, ["2026-08-31", "2026-09-06"], "collected", { views: 9999 }),
         ];
       }
-      if (channelId === "UC_E") return [stored("e1", 7, "collected", { collectedAt: new Date("2026-09-20T06:00:00Z"), views: 0, estimatedMinutesWatched: 0 })];
+      if (channelId === "UC_E") {
+        return [stored("e1", 7, ["2026-09-10", "2026-09-16"], "collected", { collectedAt: new Date("2026-09-20T06:00:00Z"), views: 0, estimatedMinutesWatched: 0 })];
+      }
       return [];
     },
     async readReach(channelId, windows) {
       reachCalls.push({ channelId, windows });
-      if (channelId === "UC_E") throw new Error("reach store unavailable");
+      if (channelId === "UC_E") throw Object.assign(new Error("not active (test)"), { code: "CHANNEL_NOT_ACTIVE" });
       if (channelId === "UC_W") return { state: "waiting_for_first_report", windows: [] };
       return {
         state: "ready",
@@ -111,7 +136,9 @@ test("AC-VM-07: each channel's uploads in the range with their day-7 and day-28 
 
   const tropico = result.channels[0];
   assert.equal(tropico.reachState, "ready");
-  // v2 (08-31 UTC), v5 (no date) and v6 (unreadable) are out; the rest oldest first: v1 09-01, v4 09-05, v3 09-30 23:59 UTC.
+  assert.equal(tropico.reachError, null);
+  // v2 (08-31 UTC), v5 (no date), v6 (unreadable), v7 (scheduled) and v8 (upcoming premiere) are out; the rest oldest first: v1 09-01,
+  // v4 09-05, v3 09-30 23:59 UTC.
   assert.deepEqual(tropico.uploads, [
     {
       videoId: "v1",
@@ -148,7 +175,7 @@ test("AC-VM-07: each channel's uploads in the range with their day-7 and day-28 
       publishedAt: "2026-09-30T23:59:00Z",
       durationSeconds: 7200,
       milestones: [
-        // 10-06 and 10-27 are after 10-05: not due. A Reach window with 0 days is null, never 0 impressions.
+        // 10-06 and 10-27 are after 10-05: not due (the row of another window is ignored). A Reach window with 0 days is null, never 0.
         { milestoneDays: 7, windowStart: "2026-09-30", windowEnd: "2026-10-06", status: "not_due", collectedAt: null, totals: null, reach: NO_REACH },
         { milestoneDays: 28, windowStart: "2026-09-30", windowEnd: "2026-10-27", status: "not_due", collectedAt: null, totals: null, reach: NO_REACH },
       ],
@@ -156,14 +183,15 @@ test("AC-VM-07: each channel's uploads in the range with their day-7 and day-28 
   ]);
 
   // Never synced here: no uploads to list, and no read at all.
-  assert.deepEqual(result.channels[1], { channelId: "UC_J", title: "Rural Japan Music", reachState: "unavailable", uploads: null });
+  assert.deepEqual(result.channels[1], { channelId: "UC_J", title: "Rural Japan Music", reachState: "unavailable", reachError: null, uploads: null });
   // Synced, nothing published in the range: an empty list, and Reach's own state still reported.
-  assert.deepEqual(result.channels[2], { channelId: "UC_W", title: "Waiting Channel", reachState: "waiting_for_first_report", uploads: [] });
-  // Reach could not be read: the stored totals are still there, every Reach figure null.
+  assert.deepEqual(result.channels[2], { channelId: "UC_W", title: "Waiting Channel", reachState: "waiting_for_first_report", reachError: null, uploads: [] });
+  // Reach could not be read: the stored totals are still there, every Reach figure null, and the reason is given.
   assert.deepEqual(result.channels[3], {
     channelId: "UC_E",
     title: "Reach Error Channel",
     reachState: "unavailable",
+    reachError: "CHANNEL_NOT_ACTIVE",
     uploads: [
       {
         videoId: "e1",
@@ -209,8 +237,14 @@ test("AC-VM-07: each channel's uploads in the range with their day-7 and day-28 
       ],
     },
   ]);
-  // Stored milestones are read only for a channel with an upload in the range.
-  assert.deepEqual(storedCalls.sort(), ["UC_E", "UC_T"]);
+  // Stored milestones are read only for a channel with an upload in the range, and only for those uploads.
+  assert.deepEqual(
+    storedCalls.sort((a, b) => a[0].localeCompare(b[0])),
+    [
+      ["UC_E", ["e1"]],
+      ["UC_T", ["v1", "v4", "v3"]],
+    ]
+  );
 });
 
 test("Reach rows of a window are only used when Reach is ready", async () => {
@@ -218,6 +252,7 @@ test("Reach rows of a window are only used when Reach is ready", async () => {
     milestoneDays: [7],
     windowOf,
     isDue: () => true,
+    isPublished: () => true,
     listChannels: async () => [{ channelId: "UC_T", title: "T" }],
     listVideos: async () => [video("v1", "2026-09-01T10:00:00Z")],
     listStoredMilestones: async () => [],

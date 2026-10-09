@@ -16,6 +16,7 @@ import {
   upsertVideoMetric,
   upsertWeeklyReport,
   listVideoMilestones,
+  listVideoMilestoneStates,
   recordVideoMilestoneFailure,
   saveCollectedVideoMilestone,
 } from "@/lib/db";
@@ -36,12 +37,15 @@ export function createVideoMilestoneStoreAdapter() {
         return (await listStoredVideosByChannel(channelId)).map((record) => ({
           videoId: record.videoId,
           publishedAt: record.publishedAt ?? null,
+          privacyStatus: record.privacyStatus ?? null,
+          liveBroadcastContent: record.liveBroadcastContent ?? null,
           durationSeconds: record.durationSeconds ?? null,
         }));
       },
     },
     store: {
       list: (channelId: string, filter?: { videoIds?: string[]; milestoneDays?: number }) => listVideoMilestones(channelId, filter),
+      listStates: (channelId: string) => listVideoMilestoneStates(channelId),
       saveCollected: (row: Parameters<typeof saveCollectedVideoMilestone>[0]) => saveCollectedVideoMilestone(row),
       recordFailure: (row: Parameters<typeof recordVideoMilestoneFailure>[0]) => recordVideoMilestoneFailure(row),
     },

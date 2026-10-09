@@ -47,6 +47,8 @@ test("AC-VM-07 (real wiring): stored milestones, their windows and the Reach of 
       video("sd-in", SYNCED, "2026-01-10T18:00:00Z"),
       // 2025-12-31 (UTC): before the range.
       video("sd-out", SYNCED, "2025-12-31T23:00:00Z"),
+      // Scheduled (private): its publishedAt is the upload time, so it is not an upload yet.
+      { ...video("sd-scheduled", SYNCED, "2026-01-15T10:00:00Z"), privacyStatus: "private" },
     ],
     new Date("2026-02-20T00:00:00Z")
   );
@@ -91,7 +93,7 @@ test("AC-VM-07 (real wiring): stored milestones, their windows and the Reach of 
   const synced = result.channels.find((channel) => channel.channelId === SYNCED);
   const never = result.channels.find((channel) => channel.channelId === NEVER_SYNCED);
   assert.ok(synced && never, "both connected channels are listed");
-  assert.deepEqual(never, { channelId: NEVER_SYNCED, title: `Channel ${NEVER_SYNCED}`, reachState: "unavailable", uploads: null });
+  assert.deepEqual(never, { channelId: NEVER_SYNCED, title: `Channel ${NEVER_SYNCED}`, reachState: "unavailable", reachError: null, uploads: null });
   assert.equal(synced.reachState, "ready");
   assert.equal(synced.uploads?.length, 1);
   const [upload] = synced.uploads!;

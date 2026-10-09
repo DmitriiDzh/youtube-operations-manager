@@ -1,6 +1,6 @@
 import type { ProducerSession } from "@/mcp/server";
 import { runInAgentSession } from "@/lib/agent-session";
-import { MILESTONE_DAYS, isMilestoneDue, milestoneWindow } from "@/lib/analytics";
+import { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, milestoneWindow } from "@/lib/analytics";
 import { createAgentProposalSubmitCore } from "@/lib/agent-proposals";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
@@ -10,7 +10,7 @@ import {
   insertProducerCallLogEntry,
   listChannelMetricsInRange,
   listStoredVideosByChannel,
-  listVideoMilestones,
+  listVideoMilestoneTotals,
 } from "@/lib/db";
 import { createPortfolioOverviewServices, createUploadMilestonesServices } from "@/lib/portfolio-overview";
 import { createReachReportsCore } from "@/lib/reach-reports";
@@ -69,6 +69,7 @@ export function createProducerSessionDeps(session: ProducerMcpSession): Producer
     milestoneDays: MILESTONE_DAYS,
     windowOf: milestoneWindow,
     isDue: (windowEnd) => isMilestoneDue(windowEnd, new Date()),
+    isPublished: (video) => hasFinalPublishDate({ videoId: "", ...video }),
     listChannels,
     async listVideos(channelId) {
       const stored = await getStoredChannel(channelId);
@@ -77,10 +78,12 @@ export function createProducerSessionDeps(session: ProducerMcpSession): Producer
         videoId: video.videoId,
         title: video.title,
         publishedAt: video.publishedAt ?? null,
+        privacyStatus: video.privacyStatus ?? null,
+        liveBroadcastContent: video.liveBroadcastContent ?? null,
         durationSeconds: video.durationSeconds ?? null,
       }));
     },
-    listStoredMilestones: (channelId) => listVideoMilestones(channelId),
+    listStoredMilestones: (channelId, videoIds) => listVideoMilestoneTotals(channelId, videoIds),
     async readReach(channelId, windows) {
       const userId = await resolveChannelUser(channelId);
       if (!userId) return null;

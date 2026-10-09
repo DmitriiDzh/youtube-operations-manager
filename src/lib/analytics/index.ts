@@ -1,7 +1,7 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
-import { createVideoMilestoneServices } from "./milestones";
+import { createVideoMilestoneServices, gateMilestoneCollection } from "./milestones";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
@@ -75,10 +75,7 @@ export function createAnalyticsCore() {
   });
   return {
     ...core,
-    collectDueMilestones: quotaScoped(async (input: unknown) => {
-      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { attempted: 0, collected: 0, failed: 0 };
-      return milestones.collectDueMilestones(input);
-    }, context),
+    collectDueMilestones: quotaScoped(gateMilestoneCollection(guard, milestones.collectDueMilestones), context),
     listVideoMilestones: milestones.listVideoMilestones,
     // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the
     // quota-guarded functions above, never the raw services, so background channels keep the same reserve and quota
@@ -104,7 +101,7 @@ export { beginAllChannelsRun, endAllChannelsRun } from "./auto-collect-all";
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";
 export { buildChannelOverviewView } from "./overview-view";
-export { MILESTONE_DAYS, isMilestoneDue, listVideoMilestonesInputSchema, milestoneWindow } from "./milestones";
+export { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, listVideoMilestonesInputSchema, milestoneWindow } from "./milestones";
 export type { VideoMilestone } from "./milestones";
 export type { ChannelOverviewView } from "./overview-view";
 export type { Granularity } from "./granularity";

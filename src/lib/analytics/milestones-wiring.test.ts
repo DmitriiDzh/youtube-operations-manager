@@ -29,7 +29,10 @@ test("milestone wiring: the adapter reads each video's publish time and length, 
     new Date("2026-10-09T10:00:00Z")
   );
   const adapter = createVideoMilestoneStoreAdapter();
-  assert.deepEqual(await adapter.videoStore.listVideos("UC_MW"), [{ videoId: "mw1", publishedAt: "2026-09-01T17:00:00Z", durationSeconds: 7200 }]);
+  // Review of BL-166: the planner needs the privacy status and live state too (a scheduled video's publishedAt is its upload time).
+  assert.deepEqual(await adapter.videoStore.listVideos("UC_MW"), [
+    { videoId: "mw1", publishedAt: "2026-09-01T17:00:00Z", privacyStatus: "public", liveBroadcastContent: null, durationSeconds: 7200 },
+  ]);
   await adapter.store.saveCollected({
     videoId: "mw1",
     milestoneDays: 7,
@@ -45,6 +48,9 @@ test("milestone wiring: the adapter reads each video's publish time and length, 
   });
   const [row] = await adapter.store.list("UC_MW");
   assert.deepEqual([row.videoId, row.milestoneDays, row.status, row.attempts, row.views], ["mw1", 7, "collected", 1, 10]);
+  assert.deepEqual(await adapter.store.listStates("UC_MW"), [
+    { videoId: "mw1", milestoneDays: 7, windowStart: "2026-09-01", windowEnd: "2026-09-07", status: "collected", nextAttemptAt: null },
+  ]);
 });
 
 test("milestone wiring: the analytics core exposes the guarded collection and the read", () => {

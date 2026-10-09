@@ -57,6 +57,9 @@ export type UploadMilestoneStatus = "collected" | "retry" | "failed" | "due" | "
 export type StoredUploadMilestone = {
   videoId: string;
   milestoneDays: number;
+  /** The window it was collected for; a row whose window no longer matches the video's publish date is not used. */
+  windowStart: string;
+  windowEnd: string;
   status: "collected" | "retry" | "failed";
   collectedAt: Date | null;
   views: number | null;
@@ -72,10 +75,20 @@ export type UploadMilestonesDeps = {
   windowOf(publishedAt: string, days: number): { windowStart: string; windowEnd: string };
   /** Whether the collection may query that window yet (its reporting lag has passed). */
   isDue(windowEnd: string): boolean;
+  /** Whether the video's `publishedAt` is its real publish date (public, not an upcoming premiere or stream); only those are listed. */
+  isPublished(video: { publishedAt: string | null; privacyStatus: string | null; liveBroadcastContent: string | null }): boolean;
   listChannels(): Promise<Array<{ channelId: string; title: string }>>;
   /** The channel's synced videos; null when they were never synced on this device. */
-  listVideos(channelId: string): Promise<Array<{ videoId: string; title: string; publishedAt: string | null; durationSeconds: number | null }> | null>;
-  listStoredMilestones(channelId: string): Promise<StoredUploadMilestone[]>;
+  listVideos(channelId: string): Promise<Array<{
+    videoId: string;
+    title: string;
+    publishedAt: string | null;
+    privacyStatus: string | null;
+    liveBroadcastContent: string | null;
+    durationSeconds: number | null;
+  }> | null>;
+  /** The stored milestones of these videos (never called with none). */
+  listStoredMilestones(channelId: string, videoIds: string[]): Promise<StoredUploadMilestone[]>;
   /** Reach of each video over its own window, or null when it could not be read. */
   readReach(
     channelId: string,
@@ -114,7 +127,9 @@ export type UploadMilestonesChannel = {
   channelId: string;
   title: string;
   reachState: "no_job" | "waiting_for_first_report" | "ready" | "unavailable";
-  /** Uploads published in the range (UTC dates, like the portfolio overview), oldest first; null when never synced here. */
+  /** Why Reach is `unavailable` when its read failed (the error code, e.g. `CHANNEL_NOT_ACTIVE`); null otherwise. */
+  reachError: string | null;
+  /** Public uploads published in the range (UTC dates, like the portfolio overview), oldest first; null when never synced here. */
   uploads: UploadMilestonesUpload[] | null;
 };
 

@@ -9500,6 +9500,61 @@ export async function listVideoMilestones(
   return database.select().from(videoMilestones).where(and(...conditions)).orderBy(asc(videoMilestones.videoId), asc(videoMilestones.milestoneDays));
 }
 
+/** BL-166 (review): what the collection plans from -- key, window, status and retry time, without the stored curve. */
+export async function listVideoMilestoneStates(
+  channelId: string,
+  database: AppDb = db
+): Promise<Array<{ videoId: string; milestoneDays: number; windowStart: string; windowEnd: string; status: StoredVideoMilestone["status"]; nextAttemptAt: Date | null }>> {
+  return database
+    .select({
+      videoId: videoMilestones.videoId,
+      milestoneDays: videoMilestones.milestoneDays,
+      windowStart: videoMilestones.windowStart,
+      windowEnd: videoMilestones.windowEnd,
+      status: videoMilestones.status,
+      nextAttemptAt: videoMilestones.nextAttemptAt,
+    })
+    .from(videoMilestones)
+    .where(eq(videoMilestones.channelId, channelId));
+}
+
+/** BL-166 (review): the Producer's upload milestones -- the stored totals of these videos, without the stored curve. */
+export async function listVideoMilestoneTotals(
+  channelId: string,
+  videoIds: string[],
+  database: AppDb = db
+): Promise<
+  Array<{
+    videoId: string;
+    milestoneDays: number;
+    windowStart: string;
+    windowEnd: string;
+    status: StoredVideoMilestone["status"];
+    collectedAt: Date | null;
+    views: number | null;
+    estimatedMinutesWatched: number | null;
+    averageViewDuration: number | null;
+    averageViewPercentage: number | null;
+  }>
+> {
+  if (videoIds.length === 0) return [];
+  return database
+    .select({
+      videoId: videoMilestones.videoId,
+      milestoneDays: videoMilestones.milestoneDays,
+      windowStart: videoMilestones.windowStart,
+      windowEnd: videoMilestones.windowEnd,
+      status: videoMilestones.status,
+      collectedAt: videoMilestones.collectedAt,
+      views: videoMilestones.views,
+      estimatedMinutesWatched: videoMilestones.estimatedMinutesWatched,
+      averageViewDuration: videoMilestones.averageViewDuration,
+      averageViewPercentage: videoMilestones.averageViewPercentage,
+    })
+    .from(videoMilestones)
+    .where(and(eq(videoMilestones.channelId, channelId), inArray(videoMilestones.videoId, videoIds)));
+}
+
 /** BL-166: a milestone's answer, as returned -- `collected`, never queried again. */
 export async function saveCollectedVideoMilestone(
   row: {
@@ -9535,7 +9590,14 @@ export async function saveCollectedVideoMilestone(
   await database
     .insert(videoMilestones)
     .values({ videoId: row.videoId, milestoneDays: row.milestoneDays, attempts: 1, ...values })
-    .onConflictDoUpdate({ target: [videoMilestones.videoId, videoMilestones.milestoneDays], set: { ...values, attempts: sql`${videoMilestones.attempts} + 1` } });
+    .onConflictDoUpdate({
+      target: [videoMilestones.videoId, videoMilestones.milestoneDays],
+      // Attempts count per window: a video whose publish date moved (a scheduled video going public) starts again at 1.
+      set: {
+        ...values,
+        attempts: sql`CASE WHEN ${videoMilestones.windowStart} = ${row.windowStart} AND ${videoMilestones.windowEnd} = ${row.windowEnd} THEN ${videoMilestones.attempts} + 1 ELSE 1 END`,
+      },
+    });
 }
 
 /**
@@ -9548,12 +9610,14 @@ export async function recordVideoMilestoneFailure(
 ): Promise<"retry" | "failed"> {
   const previous = (
     await database
-      .select({ attempts: videoMilestones.attempts })
+      .select({ attempts: videoMilestones.attempts, windowStart: videoMilestones.windowStart, windowEnd: videoMilestones.windowEnd })
       .from(videoMilestones)
       .where(and(eq(videoMilestones.videoId, row.videoId), eq(videoMilestones.milestoneDays, row.milestoneDays)))
       .limit(1)
   )[0];
-  const attempts = (previous?.attempts ?? 0) + 1;
+  // Attempts count per window (a moved publish date starts again at 1).
+  const sameWindow = previous !== undefined && previous.windowStart === row.windowStart && previous.windowEnd === row.windowEnd;
+  const attempts = (sameWindow ? previous.attempts : 0) + 1;
   const status = attempts >= row.maxAttempts ? ("failed" as const) : ("retry" as const);
   const values = {
     channelId: row.channelId,

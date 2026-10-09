@@ -21,9 +21,11 @@ function statusOf(stored: StoredUploadMilestone | undefined, due: boolean): Uplo
 /** One channel's uploads in the range with their milestones (BL-166). */
 async function loadChannel(deps: UploadMilestonesDeps, channel: { channelId: string; title: string }, range: PortfolioRange): Promise<UploadMilestonesChannel> {
   const videos = await deps.listVideos(channel.channelId);
-  if (videos === null) return { channelId: channel.channelId, title: channel.title, reachState: "unavailable", uploads: null };
+  if (videos === null) return { channelId: channel.channelId, title: channel.title, reachState: "unavailable", reachError: null, uploads: null };
   const inRange = videos
     .flatMap((video) => {
+      // A private or scheduled video's `publishedAt` is its upload time, not a publish date: not an upload yet.
+      if (!deps.isPublished(video)) return [];
       const day = video.publishedAt === null ? null : utcDate(video.publishedAt);
       return day !== null && day >= range.startDate && day <= range.endDate ? [{ ...video, publishedAt: video.publishedAt as string }] : [];
     })
@@ -32,29 +34,36 @@ async function loadChannel(deps: UploadMilestonesDeps, channel: { channelId: str
     video,
     windows: deps.milestoneDays.map((days) => ({ days, ...deps.windowOf(video.publishedAt, days) })),
   }));
+  let reachError: string | null = null;
   const [stored, reach] = await Promise.all([
-    inRange.length > 0 ? deps.listStoredMilestones(channel.channelId) : Promise.resolve([]),
+    inRange.length > 0 ? deps.listStoredMilestones(channel.channelId, inRange.map((video) => video.videoId)) : Promise.resolve([]),
     // Also with no upload in the range, so `reachState` still says whether Reach is set up.
     deps
       .readReach(
         channel.channelId,
         planned.flatMap(({ video, windows }) => windows.map((window) => ({ videoId: video.videoId, startDate: window.windowStart, endDate: window.windowEnd })))
       )
-      .catch(() => null),
+      .catch((error: unknown) => {
+        const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+        reachError = typeof code === "string" && code.length > 0 ? code : "internal_error";
+        return null;
+      }),
   ]);
-  const storedByKey = new Map(stored.map((row) => [`${row.videoId}\u0000${row.milestoneDays}`, row]));
+  // A row collected for another window (the video went public after it) is not this upload's milestone.
+  const storedByKey = new Map(stored.map((row) => [`${row.videoId}\u0000${row.milestoneDays}\u0000${row.windowStart}\u0000${row.windowEnd}`, row]));
   const reachByKey = new Map((reach?.windows ?? []).map((window) => [`${window.videoId}\u0000${window.startDate}\u0000${window.endDate}`, window]));
   return {
     channelId: channel.channelId,
     title: channel.title,
     reachState: reach ? reach.state : "unavailable",
+    reachError,
     uploads: planned.map(({ video, windows }) => ({
       videoId: video.videoId,
       title: video.title,
       publishedAt: video.publishedAt,
       durationSeconds: video.durationSeconds,
       milestones: windows.map((window) => {
-        const row = storedByKey.get(`${video.videoId}\u0000${window.days}`);
+        const row = storedByKey.get(`${video.videoId}\u0000${window.days}\u0000${window.windowStart}\u0000${window.windowEnd}`);
         const windowReach = reachByKey.get(`${video.videoId}\u0000${window.windowStart}\u0000${window.windowEnd}`);
         const reachDays = reach?.state === "ready" && windowReach ? windowReach.daysWithData : 0;
         const collected = row?.status === "collected";

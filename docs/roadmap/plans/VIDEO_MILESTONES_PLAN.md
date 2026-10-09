@@ -27,6 +27,11 @@ after the quick fixes. Branch `feature/fo-req-0015-milestones`.
   - At most 25 milestones per channel per run (50 queries), oldest due first. A larger backlog finishes over the next runs.
   - It is subject to the same "reads enabled" switch and quota reserve as the Analytics auto-collection.
   - A failed query leaves that milestone uncollected, to be retried on a later run. One failure never stops the others.
+  - **Added by the independent review (2026-10-10):** only public videos that are not upcoming premieres or streams are collected
+    (while a video is private or scheduled, YouTube gives its owner the upload time as `publishedAt`). A stored milestone whose window no
+    longer matches the publish date is collected again, attempts from 1, and is not returned until then. Only an error about the query
+    itself (400, 404, a 403 not about permissions, project or rate) counts an attempt; no answer, 401, 429, 5xx and system 403s stop
+    the run with nothing counted.
 - **Storage.** New table `video_milestones` (schema v75), primary key (video_id, milestone_days), with:
   - `channel_id`, `window_start`, `window_end`, `collected_at`;
   - `views`, `estimated_minutes_watched`, `average_view_duration`, `average_view_percentage`, each null when YouTube returned none;

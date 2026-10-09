@@ -470,7 +470,8 @@ Key MCP tools:
     startedWatching, stoppedWatching, totalSegmentImpressions }] }] }`. The stored day-7 / day-28 milestones of the channel's own videos: window
     = Pacific publish date .. +6 / +27; collected with the Analytics collection once 3 days have passed after the window, at most 25 per channel
     per run, failed after 3 attempts. Values as YouTube returned them (null / `[]` when it returned none); nothing is computed from the curve.
-    Milestones not yet due or not yet attempted are not listed; a video of another channel is not listed. Local read only.
+    Only public videos have milestones (a private or scheduled video's `publishedAt` is its upload time). Milestones not yet due or not yet
+    attempted, or collected for a window the video no longer has, are not listed; a video of another channel is not listed. Local read only.
   - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
     `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`
     (BL-114, ADR 0014). Thumbnail impressions and click-through rate from the YouTube Reporting API
@@ -998,10 +999,10 @@ milestones.
   where nothing is stored (never zero): analytics with no stored day, Reach with no imported day in the range, `uploads` of a channel whose videos
   were never synced here. Analytics days are YouTube's reporting days; uploads count by UTC date. Dates must be real calendar dates.
   `producer_upload_milestones` `{ startDate, endDate }` (YYYY-MM-DD, at most 92 days; BL-166) → `{ startDate, endDate, source: "local", channels:
-  [{ channelId, title, reachState (no_job | waiting_for_first_report | ready | unavailable), uploads: [{ videoId, title, publishedAt,
+  [{ channelId, title, reachState (no_job | waiting_for_first_report | ready | unavailable), reachError (why unavailable, else null), uploads: [{ videoId, title, publishedAt,
   durationSeconds, milestones: [{ milestoneDays, windowStart, windowEnd, status (collected | retry | failed | due | not_due), collectedAt, totals:
   { views, estimatedMinutesWatched, averageViewDuration, averageViewPercentage } | null, reach: { daysWithData, impressions, ctr } }] }] | null }] }`
-  -- uploads published in the range by UTC date, oldest first; `totals` only when collected; Reach over the same window (impressions summed,
+  -- public uploads published in the range by UTC date, oldest first (private, scheduled and upcoming videos are left out); `totals` only when collected; Reach over the same window (impressions summed,
   CTR impressions-weighted), `null` figures when no Reach day is stored in it; `uploads` null for a channel never synced here. No curves.
 - **Every channel-tool answer** (success or error) carries `forChannelId`; the role's own tools do not, nor does a refusal of the MCP layer
   itself (unknown tool, input the schema rejects). **Every call**, refused or not, is logged (`GET /api/producer-agent-token/calls`, below): a
