@@ -2151,7 +2151,8 @@ binding without modification. The few reads that never called `assertActiveChann
 - It is a SHA-256 hash with the `ytom_ch_` prefix, stored device-locally. Since BL-130 (ADR 0024) the plaintext is
   `ytom_ch_<channelId>.<secret>`; verification also requires the embedded id to equal the row's channel (legacy tokens
   without it still verify). The operator can register an already-issued token on another device (`importToken`, same
-  identity check as issuing, only into the embedded channel); each device keeps its own row, so revocation is per device (RISK-108).
+  identity check as issuing, only into the embedded channel). Since BL-160 (ADR 0033, §34) tokens and revocations also reach every
+  device through the `agent-tokens` sync family, so a revocation is no longer per device (RISK-108 resolved).
 - It records the Google identity that owned the channel live at issue time; credentials come
   from there, never from `channels.connected_user_id`.
 - The token is verified once at process entry, which enters the scope, and re-verified on every
@@ -2473,7 +2474,7 @@ The plan and acceptance criteria (AC-FO-01..14) are in `docs/roadmap/plans/FACTO
   `SNAPSHOT_TRANSFERRED_TABLES` and not in sync-gateway, by owner decision (each machine configures only its own values). Reads filter on the bootstrap
   `deviceId`; a read never creates it, never touches the filesystem and returns the stored string exactly as stored. Only the operator routes
   (`/api/logical-paths`, session required) create, set (validated once with `src/lib/local-path-validation`, like Phase 11) or delete.
-- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity. It can also be registered by operator import of an already-issued token (BL-130, ADR 0024); revocation is per device.
+- `src/lib/factory-agent-tokens/` holds the Factory Operator's token: `ytom_fo_` prefix, SHA-256 hash only, one active row, no channel, no Google identity. It can also be registered by operator import of an already-issued token (BL-130, ADR 0024); since BL-160 (§34) it and its revocation reach every device by themselves.
   It lives in its own table so that a channel token can never be looked up as a factory token or the reverse; the prefix check rejects a foreign
   token before any lookup.
 
@@ -3153,3 +3154,42 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
 - **Limits** (RISK-114):
   - claims are advisory and arrive within the sync delay;
   - both computers must run version 2.
+
+## 34. Agent tokens shared between devices, and the Producer role (BL-160, BL-161, ADR 0033, ADR 0034)
+
+Plan: `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md`. Status: on `feature/producer-role-synced-tokens`, not merged.
+
+**Tokens across devices (BL-160).**
+- `src/lib/sync-gateway/agent-tokens` is a per-device report family (the `media-sessions` shape): each device writes only its own report of
+  the agent tokens it knows -- `{hash, role, channelId, userId, label, createdAt, revokedAt}`, never the token -- and keeps the peers' latest
+  reports. It merges nothing and imports nothing from the token modules; `run-all-families.ts` runs it with the others.
+- `src/lib/agent-token-sync` owns the rules (`reconcileAgentTokens`, a pure function) and applies them through `db.ts`
+  (`listAgentTokenRowsForSync`, `applyAgentTokenSyncPlan`: one transaction, revocations before inserts so the role tables' one-active
+  indexes hold). Rules: joined by hash; revoked anywhere = revoked (earliest time), never undone; a peer record conflicting with a local row's
+  role/channel/account is ignored; one active token per slot, newest `createdAt` wins (tie: larger hash), losers revoked at the winner's
+  `createdAt`. Every device computes the same result from the same records.
+- Timing: `src/instrumentation.ts` runs a step after each 60 s family cycle and once 5 s after start (agent-tokens family only). The three
+  token stores call `shareAgentTokenChangeSoon()` after an issue/import/rotate/revoke: a publish-only step (no peer apply, so it also works in
+  recovery mode) that pushes the family at once.
+- Verification is untouched: each token module reads its own table; a learned channel token still needs the channel connected here under the
+  recorded Google account (`users.id` = Google `sub`). The token tables stay out of the snapshot. `POST /api/channel-connections/disconnect`
+  no longer revokes the channel's token.
+- Trust: the shared folder's reports are unsigned (RISK-117).
+
+**The Producer role (BL-161).**
+- Token: `src/lib/role-agent-tokens` is the role-token logic extracted from `factory-agent-tokens` (now a thin wrapper);
+  `src/lib/producer-agent-tokens` adds `ytom_pr_` on `producer_agent_tokens` (v72, partial unique index, one active).
+- Endpoint: `src/lib/producer-mcp-endpoint` (the factory endpoint's checks; no request-level scope) and `src/app/api/mcp/producer/route.ts`,
+  which wires a `ProducerSession` (re-verify, `resolveChannelUser` = the channel's `connected_user_id` if Settings → Channels lists it,
+  `recordCall`, `listChannels`, `portfolioOverview`) into `createMcpServer`'s producer mode.
+- `createMcpServer` producer mode: `registerTool` routes every tool through `producerRegistration`. A `bound` tool in the closed list
+  (`src/mcp/producer-tools.ts`, each entry naming its READ capability) gets `.extend({ channelId })` (required; `query_market_intelligence`'s
+  own `channelId` moves to `watchlistChannelId`); its wrapper re-verifies, resolves the channel's account (none: `CHANNEL_NOT_ACTIVE`), runs the
+  unchanged handler inside `runInAgentSession({tokenId, channelId, userId})` for that one call, logs it, and adds `forChannelId`. The three
+  `producer-only` tools (classification class) run without a scope. A channel session never registers a producer tool; the SDK registration
+  is still one call.
+- `src/lib/portfolio-overview` adds up stored data per channel (`channel_metrics_daily`, Reach totals read in the channel's scope, synced
+  videos' `publishedAt`, freshness); a source with nothing stored is `null`, not zero.
+- `producer_call_log` (v72) records every call with tool, channel, outcome and error code; pruned to 90 days on insert; shown on the Producer
+  card (`GET /api/producer-agent-token/calls`).
+

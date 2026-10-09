@@ -104,7 +104,7 @@ One branch `feature/producer-role-synced-tokens`, two backlog items: BL-160 (tok
   has none; `query_market_intelligence`'s watchlist id becomes `watchlistChannelId`). Plus three of its own:
   `producer_get_capabilities`, `producer_list_channels`, `producer_portfolio_overview`. No DRAFT, WRITE or YouTube-write tool.
 - **Analytics reads**: the three analytics tools that may read YouTube Analytics live do so exactly as for a channel agent
-  (the analytics reads switch applies; no Data API quota) — owner confirmation asked (msg 2205).
+  (the analytics reads switch applies; no Data API quota) — proposed in msg 2205; no objection, proceeded as proposed (msg 2208).
 - **`producer_list_channels`**: every channel in Settings → Channels on this device (connected, any Google account) with its
   title and this device's workspace folder (or null).
 - **`producer_portfolio_overview {startDate, endDate}`**: per channel, from local data only: views, watch minutes, subscribers

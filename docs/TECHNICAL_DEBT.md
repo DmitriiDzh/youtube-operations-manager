@@ -1784,6 +1784,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** read-only. The factory tools expose logical path strings (including `factory_only` ones) and channel ids, titles and workspace paths; no credentials, account identities, videos or analytics, and no write.
 - **Possible fix:** OS-level isolation per agent (rejected by the owner for channel agents, Phase 12 D0(b)); or a short-lived token handed over per session. Re-evaluate if the factory tools ever gain a write or a broader read.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
+- **2026-10-09 extension (BL-158, BL-161):** the owner keeps every token in plaintext in a file in its agent's folder on the T9 drive, whose ownership is disabled, and since BL-158 the service answers loopback calls from every account on the Mac. So any local account (the second Mac user included) can read any token file and call any agent endpoint with it -- now including the Producer's, which reads every channel. Possible fix: keep token files outside the shared drive or enable ownership on it. Owner informed (msg 2205).
 
 ## RISK-106 — Media generation: per-device key file has no rotation/backup; RunPod REST v2 list shapes unverified live — OPEN, 2026-10-05
 
@@ -1800,7 +1801,9 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Gate(s):** the live spike before any real use. **Status:** open.
 - **Slice 6 addition (2026-10-05):** (5) the Production balance reads RunPod's *legacy* GraphQL API (REST v2 has no balance endpoint); if RunPod retires it, the panel degrades to the v2 billing spend (no balance figure) -- re-check when RunPod announces a v2 balance endpoint. (6) With concurrent sessions the daily-cap check at approve is not atomic between two simultaneous approves (only the concurrency count is); the watcher stops every session once the day's total reaches the cap, so the overshoot is bounded by one watch interval of the sessions that slipped through.
 
-## RISK-108 — Agent tokens: one token may be valid on several devices, revocation is per device — OPEN, 2026-10-05
+## RISK-108 — Agent tokens: one token may be valid on several devices, revocation is per device — RESOLVED, 2026-10-09 (BL-160, ADR 0033)
+
+- **Resolved:** the owner chose synced tokens (msg 2200). A revocation now reaches every device through the `agent-tokens` family; the trust this places in the shared folder is RISK-117.
 
 - **What:** Since BL-130 (ADR 0024) the operator can register the same channel or Factory Operator token on several devices by pasting it. Each device keeps its own hash row (still device-local, nothing synced), so revoking or rotating on one device leaves the token valid on every other device where it was entered.
 - **Effect:** a leaked token must be revoked on each such device; until then it works there. Exposure boundary unchanged: loopback-only endpoints, same-OS-user readers (RISK-105, `docs/AGENT_ISOLATION_SETUP.md` §5).
@@ -1874,3 +1877,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **What to do:** update both computers before the operator writes `minCudaVersion` into a template file (stated in the release note).
 - **Re-evaluate:** if template files gain more optional fields often enough that a tolerant reader is worth it.
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-117 — Agent tokens are accepted from the shared folder's unsigned reports — OPEN, 2026-10-09
+
+- **What:** BL-160 (ADR 0033). Each device publishes its agent token hashes in the `agent-tokens` family and applies the others' reports; nothing in "YT Manager Data" is signed. Whoever can write that folder (any account on the Mac, the drive has ownership disabled; any Syncthing peer) can publish a report that registers a token of their own for any role or channel, or revokes one (a hash already revoked never comes back; a record that conflicts with a local row is ignored).
+- **Bounded by:** loopback-only endpoints; a registered channel token still needs the channel connected on the device under its recorded Google account; no agent role can write to YouTube without the Web approvals. In practice the same people can already read the plaintext token files kept on that drive (RISK-105 extension).
+- **Also:** "newest wins" trusts device clocks (a report more than 5 min ahead is refused); a device that is off accepts a revoked token until it syncs; a device on an older build neither sends nor receives tokens.
+- **Possible fix:** sign reports with a key that never enters the shared folder (needs a per-device key exchange), or keep the token files and the data folder on storage only the owner's account can write.
+- **Gate(s):** none. **Status:** open, accepted tradeoff (owner msgs 2205/2207).

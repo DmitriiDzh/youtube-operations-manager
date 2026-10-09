@@ -1,6 +1,6 @@
 # 0024. Agent token import: one token usable on several devices, channel id embedded in channel tokens
 
-Status: Accepted
+Status: Accepted; §3 superseded by [ADR 0033](0033-agent-tokens-shared-between-devices.md) (tokens and revocations are shared between devices since BL-160, 2026-10-09)
 
 **Date:** 2026-10-05.
 

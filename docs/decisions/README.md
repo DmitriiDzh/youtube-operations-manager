@@ -75,7 +75,7 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0021](0021-agent-collection-requests.md) | Agent-created competitor collection requests, approved by a human (blocking run of the regular collection; no force) | Accepted |
 | [0022](0022-factory-operator-access.md) | Factory Operator access: a logical path registry and a second, read-only agent role with its own token, endpoint and tools | Accepted |
 | [0023](0023-remote-media-generation-sessions.md) | Remote media generation (Phase 14): human-approved RunPod pod sessions, S3-only transport into `99 Data Exchange/From YTM`, per-device key file, single media gateway | Accepted |
-| [0024](0024-agent-token-import.md) | Agent token import: the same channel / Factory Operator token registered on several devices by operator paste; channel tokens embed their channel id | Accepted |
+| [0024](0024-agent-token-import.md) | Agent token import: the same channel / Factory Operator token registered on several devices by operator paste; channel tokens embed their channel id | Accepted; §3 superseded by 0033 |
 | [0026](0026-factory-gpu-sessions.md) | Factory GPU sessions within owner limits (self-approved only inside them), per-session GPU fallback, a no-cost capacity wait and a capacity log | Accepted |
 | [0025](0025-factory-media-control.md) | Factory media control: hash-verified model pulls, a deletion guard, a template registry synced on every device, job input media; the factory role writes through a closed list | Accepted |
 | [0028](0028-media-sessions-across-devices.md) | RunPod sessions visible across devices (sync-gateway `media-sessions` family, per-device JSON reports checked against live pods), Stop from any device, shared limits per RunPod account id | Accepted |
@@ -84,3 +84,5 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0030](0030-media-settings-sync.md) | Production → Setup settings shared between devices; every conflict decided at startup | Accepted |
 | [0031](0031-servers-media-and-cross-channel-work.md) | Servers and Media, other channels' work, plan move, reviewing from two computers | Accepted |
 | [0032](0032-macos-system-service.md) | macOS: the server as a launchd system service (as the owner's account, node as the job's executable for Full Disk Access) started at power-on; idleness ends the session (Live writes reset) instead of the process | Accepted |
+| [0033](0033-agent-tokens-shared-between-devices.md) | Agent tokens shared between devices: hashes and revocations travel in the `agent-tokens` sync family; one active token per slot, the newest wins; disconnecting no longer revokes | Accepted |
+| [0034](0034-producer-role.md) | The Producer role: its own read-only token and endpoint, every channel connected on the device, one channel per call inside that channel's agent scope; portfolio overview and call log | Accepted |

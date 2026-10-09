@@ -111,9 +111,9 @@ A access to B on that device. That is a wrong-channel binding, which `AGENTS.md`
 | AC-TI-05 | An import revokes the previously active token on that device (per channel / the factory token). The old token's next call returns `AGENT_TOKEN_INVALID`. |
 | AC-TI-06 | Re-importing the active token is idempotent: no new row, no revocation. Importing a token revoked on this device is refused with `AGENT_TOKEN_IMPORT_REVOKED` and stays revoked. |
 | AC-TI-07 | The submitted plaintext appears in no response body, no error body, and no captured log line. Only its SHA-256 hash is stored. |
-| AC-TI-08 | Revoking on one device leaves the same token valid on another device. This is the documented limitation. |
+| AC-TI-08 | Revoking on one device leaves the same token valid on another device. This is the documented limitation. **Superseded 2026-10-09 (BL-160, ADR 0033): the requirement changed -- the owner chose synced tokens (msg 2200); a revocation now reaches every device (AC-ST-02).** |
 | AC-TI-09 | A new-format channel token verifies only if its embedded channel id equals the stored row's channel. Tokens issued in the legacy format before this change still verify. |
-| AC-TI-10 | Both token tables remain excluded from the snapshot and from sync. The existing classification tests are unchanged. |
+| AC-TI-10 | Both token tables remain excluded from the snapshot and from sync. The existing classification tests are unchanged. **Amended 2026-10-09 (BL-160, ADR 0033, owner msg 2200): still excluded from the snapshot; the `agent-tokens` sync family now fills them (hashes only).** |
 | AC-TI-11 | An imported factory token works on `/api/mcp/factory` and is rejected on `/api/mcp`. An imported channel token is the reverse. |
 | AC-TI-12 | Without a Web session, import returns 401. Import goes through the mutation gate: it is blocked in recovery mode, while revoke stays exempt. |
 
