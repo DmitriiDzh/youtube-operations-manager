@@ -54,3 +54,14 @@ test("BL-162 §5.4: no folder yet reads as no peers", async () => {
   const { presence } = await setup("win-1");
   assert.deepEqual(await presence.readPeers(), []);
 });
+
+test("BL-162 review: a configured sync folder that is missing is never created by the presence writer", async () => {
+  const { createReviewPresence: make } = await import("./presence");
+  const base = await mkdtemp(path.join(tmpdir(), "presence-root-"));
+  const missingRoot = path.join(base, "unmounted-drive");
+  // The production location() refuses a missing root; here the same guard is exercised through a location that throws.
+  const presence = make({ location: async () => { throw new Error(`Sync folder is not available: ${missingRoot}`); } });
+  await assert.rejects(presence.publish({ hostname: "PC", claims: [] }), /not available/);
+  await assert.rejects(readFile(path.join(missingRoot, "generation-plans", "global", "win-1.presence.json")), { code: "ENOENT" });
+});
+

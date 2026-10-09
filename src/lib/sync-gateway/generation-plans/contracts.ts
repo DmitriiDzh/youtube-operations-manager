@@ -140,7 +140,7 @@ export const sharedPlanSchema = z
              * BL-162 (v3, FO-REQ-0013 §2.3): when the current owner note was written (on whichever computer), so a computer that
              * sent a note can tell whether it was applied (same time) or a newer one won; null = no owner note yet.
              */
-            ownerNoteAt: isoSchema.nullable().optional(),
+            ownerNoteAt: z.string().datetime({ offset: true }).nullable().optional(),
           })
           .strict()
       )

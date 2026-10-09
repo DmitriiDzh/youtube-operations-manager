@@ -153,7 +153,7 @@ export type PlanServiceDependencies = {
    * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.4): the small "what is open here" files -- this device's claims written the moment
    * they change, the other devices' read straight from disk (absent = claims travel only in the plans report).
    */
-  presence?: { publish(claims: SharedClaim[]): Promise<void>; readPeers(): Promise<Array<{ deviceId: string; hostname: string | null; claims: SharedClaim[] }>> };
+  presence?: { publish(claims: SharedClaim[]): Promise<void>; readPeers(): Promise<Array<{ deviceId: string; hostname: string | null; updatedAt: string; claims: SharedClaim[] }>> };
 };
 
 /** BL-143 phase 2: a peer report older than this is shown as stale (the same 5 minutes as the sessions of other devices). */
@@ -179,8 +179,10 @@ const CAS_RETRIES = 5;
  * every 30 s, so a closed screen frees its track within a minute and a half even when its release never arrived.
  */
 export const REVIEW_CLAIM_TTL_MS = 90_000;
-/** A peer's claim reaching further than this ahead is not believed (a clock far ahead, or a bad report). */
-const PEER_CLAIM_MAX_AHEAD_MS = 15 * 60_000;
+/** A peer's claim reaching further than this ahead is not believed (a clock far ahead, or a bad report). BL-162: sized to the 90 s claim. */
+const PEER_CLAIM_MAX_AHEAD_MS = REVIEW_CLAIM_TTL_MS + 5 * 60_000;
+/** BL-162: the device-wide queue key of the presence file's writes (no plan id contains this character). */
+const PRESENCE_LOCK_KEY = "\u0000review-presence";
 /** BL-157 (AC-TC-05): how many of an attempt's verdicts the history shows and the report carries. */
 const HISTORY_SHOWN = 10;
 /** BL-157 (AC-MV-02): a job in one of these may still write its output; a plan does not move while it has one. */
@@ -946,7 +948,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     /** AC-GP-13: the owner's verdict from the Web UI, at the plan's owner-review stage, for an attempt the plan has. */
     async recordOwnerVerdict(input: unknown): Promise<PlanResultRow> {
       const parsed = parseWithSchema(ownerVerdictInputSchema, input, "owner verdict");
-      return serializedPerPlan(parsed.planId, async () => {
+      const saved = await serializedPerPlan(parsed.planId, async () => {
       const row = await requireActive(parsed.planId);
       const stage = row.definition.stages.find((s) => s.kind === "owner_review");
       if (!stage) throw planMismatch(`Plan ${row.id} has no owner review stage`, { planId: row.id });
@@ -997,6 +999,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
       return result;
       });
+      // BL-162 (review): the verdict ended this device's claim on the track -- the presence file says so at once too.
+      await publishPresence();
+      return saved;
     },
 
     /**
@@ -1006,11 +1011,17 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     async setGroupNote(input: unknown, actor: PlanActor = "owner"): Promise<PlanView> {
       const parsed = parseWithSchema(groupNoteInputSchema, input, "group note");
       const field = actor === "owner" ? "ownerNote" : "note";
-      const updated = await mutate(parsed.planId, (row) => {
-        if (!row.definition.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${row.id} has no group ${parsed.groupId}`, { planId: row.id, groupId: parsed.groupId });
-        return { definition: { ...row.definition, groups: row.definition.groups.map((g) => (g.groupId === parsed.groupId ? { ...g, [field]: parsed.note } : g)) } };
+      // BL-162 (review): under the plan's lock, like `applyPeerGroupNotes`, so a note from another computer is never weighed
+      // against a stale "last change" and written over this one; `writtenAt` keeps the milliseconds the event time drops.
+      const updated = await serializedPerPlan(parsed.planId, async () => {
+        const writtenAt = now().toISOString();
+        const row = await mutate(parsed.planId, (r) => {
+          if (!r.definition.groups.some((g) => g.groupId === parsed.groupId)) throw planMismatch(`Plan ${r.id} has no group ${parsed.groupId}`, { planId: r.id, groupId: parsed.groupId });
+          return { definition: { ...r.definition, groups: r.definition.groups.map((g) => (g.groupId === parsed.groupId ? { ...g, [field]: parsed.note } : g)) } };
+        });
+        await record(row.id, "group_note", actor, { groupId: parsed.groupId, note: parsed.note, writtenAt });
+        return row;
       });
-      await record(updated.id, "group_note", actor, { groupId: parsed.groupId, note: parsed.note });
       return view(updated);
     },
 
@@ -1109,12 +1120,18 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   // The rest of the public surface (added to the object returned above).
   /** BL-162 (§5.4): this device's claims, written to its presence file at once; advisory, so a failure is ignored. */
   async function publishPresence(): Promise<void> {
-    if (!deps.presence) return;
-    try {
-      await deps.presence.publish(await deps.store.listClaims(now()));
-    } catch {
-      // The plans report still carries the claims a minute later.
-    }
+    const presence = deps.presence;
+    if (!presence) return;
+    // One device-wide queue (review): the file covers every plan, so two plans' claims written at once must not land in the
+    // wrong order -- each write reads the claims afresh, the last one written is the newest. Called after a plan's lock is
+    // released, so a slow sync folder never holds up a verdict.
+    await serializedPerPlan(PRESENCE_LOCK_KEY, async () => {
+      try {
+        await presence.publish(await deps.store.listClaims(now()));
+      } catch {
+        // The plans report still carries the claims a minute later.
+      }
+    });
   }
 
   const more = {
@@ -1216,14 +1233,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const claimId = claimIdOf(parsed.scope, ownerDeviceId, parsed.planId, parsed.groupId);
       // One plan's claims, one call at a time: a release and the next track's claim sent together never drop the new one
       // (review round 2).
-      return serializedPerPlan(parsed.planId, async () => {
+      const answer = await serializedPerPlan(parsed.planId, async () => {
         if (parsed.release) {
           // Giving up removes only this device's own claim -- found by its id, and for a track only that track's (a track
           // claim moves with the track; review round 1). No plan or channel check: a claim is released even after the plan
           // closed or the active channel changed (review round 2).
           const stored = (await deps.store.listClaims(now())).find((c) => c.claimId === claimId);
           if (stored && (parsed.scope === "group" || (stored.itemKey === (parsed.itemKey ?? null) && stored.attemptRef === (parsed.attemptRef ?? null)))) await deps.store.deleteClaim(claimId);
-          await publishPresence();
           return { claimId, until: null };
         }
         // The plan must be one this device can review: its own active plan, or an active plan in that device's report.
@@ -1261,9 +1277,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           since: same && existing ? existing.since : at.toISOString(),
           until,
         });
-        await publishPresence();
         return { claimId, until };
       });
+      await publishPresence();
+      return answer;
     },
 
     /** BL-157 (AC-TC-01): this device's live claims, for its report. */
@@ -1299,12 +1316,20 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       // BL-162 (§5.4): a device's presence file is fresher than its report -- when it has one, it alone says what is open there
       // (a claim given up a moment ago is gone from it, while the report may still carry it). A presence file that cannot be
       // read leaves the reports to speak.
+      // Of a device's presence file and its report, the newer one speaks (review: an old presence file left by a failed write,
+      // or by a downgrade, must not hide that device's newer report). Both times come from that device's own clock.
       const presence = deps.presence ? await deps.presence.readPeers().catch(() => []) : [];
-      const withPresence = new Set(presence.map((p) => p.deviceId));
-      for (const report of deps.peers ? await deps.peers.listPeerReports() : []) {
-        if (!withPresence.has(report.deviceId)) add(report.claims ?? [], report.hostname ?? report.deviceId);
+      const reports = deps.peers ? await deps.peers.listPeerReports() : [];
+      const usePresence = new Set(
+        presence.filter((p) => {
+          const report = reports.find((r) => r.deviceId === p.deviceId);
+          return !report || Date.parse(p.updatedAt) >= Date.parse(report.updatedAt);
+        }).map((p) => p.deviceId)
+      );
+      for (const report of reports) {
+        if (!usePresence.has(report.deviceId)) add(report.claims ?? [], report.hostname ?? report.deviceId);
       }
-      for (const p of presence) add(p.claims, p.hostname ?? p.deviceId);
+      for (const p of presence) if (usePresence.has(p.deviceId)) add(p.claims, p.hostname ?? p.deviceId);
       return out;
     },
 
@@ -1359,6 +1384,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       };
       await deps.store.insertPeerVerdict(verdict);
       await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef));
+      await publishPresence();
       return verdict;
     },
 

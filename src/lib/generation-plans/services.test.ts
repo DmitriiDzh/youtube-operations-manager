@@ -691,15 +691,15 @@ test("AC-GP2-01: the shared view of this device's plans has no absolute path and
 function twoDevices(opts: { presence?: boolean } = {}) {
   const reports: Record<string, GenerationPlansReport> = {};
   // BL-162 (§5.4): the presence files, one per device, when the devices have them.
-  const presenceFiles: Record<string, { hostname: string; claims: SharedClaim[] }> = {};
+  const presenceFiles: Record<string, { hostname: string; updatedAt: string; claims: SharedClaim[] }> = {};
   let ids = 0;
   const device = (deviceId: string, base: ReturnType<typeof withMedia> | ReturnType<typeof setup>) =>
     createGenerationPlanServices({
       ...(opts.presence
         ? {
             presence: {
-              publish: async (claims: SharedClaim[]) => void (presenceFiles[deviceId] = { hostname: deviceId === "mac" ? "Mac" : "Windows PC", claims: structuredClone(claims) }),
-              readPeers: async () => Object.entries(presenceFiles).filter(([id]) => id !== deviceId).map(([id, f]) => ({ deviceId: id, hostname: f.hostname, claims: f.claims })),
+              publish: async (claims: SharedClaim[]) => void (presenceFiles[deviceId] = { hostname: deviceId === "mac" ? "Mac" : "Windows PC", updatedAt: new Date((clockMs += 1000)).toISOString(), claims: structuredClone(claims) }),
+              readPeers: async () => Object.entries(presenceFiles).filter(([id]) => id !== deviceId).map(([id, f]) => ({ deviceId: id, hostname: f.hostname, updatedAt: f.updatedAt, claims: f.claims })),
             },
           }
         : {}),
@@ -1306,7 +1306,12 @@ test("AC-WV-04: the owner's note is ownerNote, the factory's is note; a factory 
   // An upsert keeps what it does not name (the existing upsert rule): the factory's note stays, and so does the owner's.
   assert.deepEqual(updated.plan.groups[0], { groupId: "C1", title: "Wave 1 (koto)", dependsOn: null, note: "LM planner off", ownerNote: "all too thin" });
   const events = (await s.services.getPlan({ planId: "R-0001-S1-music" })).events.filter((e) => e.kind === "group_note");
-  assert.deepEqual(events.map((e) => [e.actor, e.details]), [["owner", { groupId: "C1", note: "all too thin" }], ["factory", { groupId: "C1", note: "LM planner off" }]]);
+  // BL-162 (review): a note written here also records `writtenAt` (to the millisecond; the event time keeps whole seconds), so a
+  // note from another computer is weighed against it at the same precision.
+  assert.deepEqual(
+    events.map((e) => [e.actor, { ...e.details, writtenAt: typeof e.details.writtenAt }]),
+    [["owner", { groupId: "C1", note: "all too thin", writtenAt: "string" }], ["factory", { groupId: "C1", note: "LM planner off", writtenAt: "string" }]]
+  );
 });
 
 test("AC-WV-05: the verdict that takes a wave's waiting count to zero records group_reviewed once, with the owner's counts and validator overrides", async () => {
@@ -1856,3 +1861,28 @@ test("BL-162 §5.2: a note that cannot be written this tick (the plan keeps chan
   assert.deepEqual(await d.mac.applyPeerGroupNotes(), { applied: 1, skipped: 0 });
   assert.equal((await macPlan()).groups[0].ownerNote, "Windows: too thin");
 });
+
+test("BL-162 review: of a device's presence file and its report, the newer speaks -- an old presence file never hides a newer report", async () => {
+  const d = twoDevices({ presence: true });
+  await d.mac.createPlan(basePlan());
+  await d.mac.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted" }] });
+  await d.publish("mac", d.mac);
+  // Windows' presence file says nothing is open (written first); its later report carries a claim.
+  d.presenceFiles.win = { hostname: "Windows PC", updatedAt: new Date(clockMs - 60_000).toISOString(), claims: [] };
+  await d.win.claimReview({ deviceId: "mac", planId: "R-0001-S1-music", scope: "attempt", itemKey: "C1/F1", attemptRef: "job:j1" });
+  d.presenceFiles.win.updatedAt = new Date(clockMs - 60_000).toISOString();
+  d.presenceFiles.win.claims = [];
+  await d.publish("win", d.win);
+  assert.deepEqual((await d.mac.liveClaims({ planId: "R-0001-S1-music" })).map((c) => c.attemptRef), ["job:j1"], "the newer report is heard");
+});
+
+test("BL-162 review: the owner's own note saved while another computer's older note is being weighed is never written over", async () => {
+  const { d, macPlan } = await notesSetup();
+  await d.win.recordPeerGroupNote({ deviceId: "mac", planId: "R-0001-S1-music", groupId: "C1", note: "Windows (older)" });
+  await d.publish("win", d.win);
+  // Both at once: the owner's save and the tick. The plan lock orders them; whichever runs first, the owner's later note stays.
+  await Promise.all([d.mac.setGroupNote({ planId: "R-0001-S1-music", groupId: "C1", note: "Mac (newer)" }), d.mac.applyPeerGroupNotes()]);
+  await d.mac.applyPeerGroupNotes();
+  assert.equal((await macPlan()).groups[0].ownerNote, "Mac (newer)");
+});
+

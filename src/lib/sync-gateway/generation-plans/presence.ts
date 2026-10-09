@@ -86,6 +86,11 @@ export function createReviewPresenceForProduction(): ReviewPresenceCore {
   return createReviewPresence({
     async location() {
       const config = await bootstrap.ensureExists();
+      // Review: a configured sync folder that is missing (an unmounted drive, a deleted share) is never created here -- the
+      // same guard every other sync writer applies (`checkRootAvailable`); the caller treats the throw as "no presence now".
+      if (config.syncthingRootPath && !(await stat(config.syncthingRootPath).then((s) => s.isDirectory(), () => false))) {
+        throw new Error(`Sync folder is not available: ${config.syncthingRootPath}`);
+      }
       const root = config.syncthingRootPath ? path.join(config.syncthingRootPath, "generation-plans") : paths.generationPlansSyncFallbackDir;
       return { dir: path.join(root, "global"), deviceId: config.deviceId };
     },
