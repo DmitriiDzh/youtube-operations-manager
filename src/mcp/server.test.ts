@@ -2180,10 +2180,12 @@ function makeAnalyticsCoreStub(): Pick<
   | "getWeeklyReport"
   | "listVideoMilestones"
   | "listStoredBreakdowns"
+  | "listStoredSearchTerms"
 > {
   return {
     listVideoMilestones: async () => ({ channelId: "UC_1", milestones: [] }),
     listStoredBreakdowns: async () => ({ channelId: "UC_1", startDate: "2026-10-01", endDate: "2026-10-02", groupBy: "total", channel: undefined }),
+    listStoredSearchTerms: async () => ({ channelId: "UC_1", videos: [] }),
     listMetrics: async () => ({
       channelId: "UC_1",
       rows: [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 }],
