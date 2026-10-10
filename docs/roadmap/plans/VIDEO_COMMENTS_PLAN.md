@@ -28,24 +28,33 @@ order of DEV-RESP-0018.
 
 ### What is read, and when
 
-- **Which videos:** an own video is read only when its synced `comment_count` is above 0, or when it had comments stored.
-- **When it is due:**
-  - it was never read;
-  - its synced `comment_count` differs from the one at its last read (a comment came or went);
-  - or its last read is 7 or more days old.
+- **Fresh counts first, once per Pacific day per channel.** The stored `comment_count` is only as fresh as the channel's last sync, and a
+  background channel is synced only when it is the active one (Tropico Jazz was last synced 2026-10-08). So the first run of a Pacific day
+  reads the counts itself: one `videos.list` with `part=statistics` per 50 of the channel's synced videos that are not private (new read
+  gateway function `getVideoCommentCounts`). The counts are only used for the decision; the `videos` table stays the sync's.
+- **Which videos:** an own video that is not private, read only when its fresh count is above 0, or when it had comments stored. Private
+  videos are left out: none was probed, and they cannot be commented on.
+- **When it is due, by its last status:**
+  - **never read:** due if its count is above 0;
+  - **`collected` or `retry`:** due if its count differs from the one at its last read (a comment came or went), or its last read is 7 or
+    more days old;
+  - **`disabled` or `failed`:** due only when its count differs from the one at its last read.
 
-  The weekly reread keeps every stored text younger than 30 days, and a video whose count dropped to 0 is read once more, which clears it.
+  The weekly reread keeps every stored text younger than 30 days. A video whose count dropped to 0 is read once more, and that read
+  clears it. A `retry` also waits for its time.
 - **The read:** one `commentThreads.list` per video, the 100 newest top-level threads, top-level comments only (`totalReplyCount` is kept).
   Each read replaces that video's stored comments.
 - **Limits and order:** at most 50 videos per channel per run, least recently read first (never read first).
-- **When it runs:** in the background with the dashboard's collection, after the analytics steps, for each channel collected
-  (`/api/analytics/auto-collect-all`).
+- **When it runs:** in the background with the dashboard's collection, after the analytics steps, once per Pacific day per channel. It covers
+  the same channels as those steps (`/api/analytics/auto-collect-all`): the channels whose Analytics collection ran. So while Analytics
+  reads are switched off or a channel's sign-in is broken, its comments are not read either. A run in which the counts could not be read
+  is tried again on the next dashboard open.
 - **Gates:** the Data API reads switch (inside the client), the Data API quota reserve (`isBackgroundReadAllowed("data")`) and the
   quota-history label "Comment collection".
 - **Failures:** the shared read-failure rules. `stop` ends the run with nothing written; `defer` puts the video back 24 h and ends the run;
   `attempt` counts one try, retry after 24 h, `failed` after 3.
-  - A 403 `commentsDisabled` is not a failure: the video is stored as `disabled` with no comments, and read again only when its count
-    changes.
+  - A 403 `commentsDisabled` is recognised before the shared rules see it. It is not a failure: the video is stored as `disabled` with no
+    comments, and read again only when its count changes. A thread with `isPublic` false is skipped.
   - The rules move from `analytics/query-failure.ts` to the read gateway (`youtube-read-gateway`), shared by analytics and comments, and
     `data_api_reads_disabled` stops a run like `analytics_reads_disabled`.
 
@@ -86,8 +95,11 @@ order of DEV-RESP-0018.
 
 The clock is 2026-10-10T18:00:00Z unless said otherwise.
 
-- **AC-VC-01 (who is read).** Videos with synced `comment_count`: `a` 2, `b` 0, `c` null, `d` 1 (private). Only `a` and `d` are read; `b`
-  and `c` are not. *The plan reads by count, whatever the visibility: a private video's comments still exist.*
+- **AC-VC-01 (who is read).**
+  - Synced videos `a` (public), `b` (public), `c` (unlisted) and `d` (private) are checked: one `videos.list` `part=statistics` for `a`,
+    `b` and `c`, never `d`.
+  - The fresh counts are `a` 2, `b` 0 and `c` absent (null). Only `a` is read.
+  - A second run the same Pacific day makes no call at all.
 - **AC-VC-02 (the query).** The read of `a` is one `commentThreads.list` with `part=["snippet"]`, `videoId=a`, `maxResults=100`,
   `order=time` and `textFormat=plainText`.
 - **AC-VC-03 (stored shape).** A thread with this top-level comment:
@@ -100,9 +112,9 @@ The clock is 2026-10-10T18:00:00Z unless said otherwise.
   Another author gives byChannelOwner false. No author name is stored.
 - **AC-VC-04 (when due).**
   - `a` read on 10-10 with count 2 is not due on 10-11 .. 10-16 while its count stays 2.
-  - It is due on 10-11 when its count becomes 3.
-  - It is due on 10-17 (7 days) with count 2.
+  - It is due on 10-11 when its count becomes 3, and on 10-17 (7 days) with count 2.
   - A video read with comments whose count becomes 0 is due, and its read clears its comments.
+  - A `disabled` video is not due after 7 days with the same count, and is due when its count changes.
 - **AC-VC-05 (replace).** A reread replaces the video's comments: one the new answer lacks is gone, and other videos' comments stay.
 - **AC-VC-06 (cap and order).**
   - With 60 due videos never read, a run reads 50, and the next run reads the other 10.
