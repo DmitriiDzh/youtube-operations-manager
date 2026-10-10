@@ -97,6 +97,7 @@ import {
   getWatchlistEntryInputSchema,
 } from "@/lib/market-intelligence/schemas";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
+import { createExperimentResultsCore, getExperimentResultsInputSchema, type ExperimentResultsCore } from "@/lib/experiment-results";
 import {
   agentGetHypothesisTrailInputSchema,
   createExperimentProposalInputSchema,
@@ -350,6 +351,7 @@ type McpToolHandlers = {
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
+  agentGetExperimentResults: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
@@ -720,7 +722,10 @@ export function createMcpToolHandlers(
   logicalPathsCore: Pick<LogicalPathsCore, "readPath" | "listReadable"> = createLogicalPathsCore(),
   // BL-143 phase 3 (ADR 0029) -- generation plans, registered directly here (AGENTS.md §M). Read-only subset: plans are created
   // and run by the Factory Operator; a channel agent only reads its own channel's.
-  generationPlansCore: Pick<GenerationPlanServices, "listPlans" | "getPlan"> = createGenerationPlansCore()
+  generationPlansCore: Pick<GenerationPlanServices, "listPlans" | "getPlan"> = createGenerationPlansCore(),
+  // BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md) -- an experiment's videos by arm with their stored values; its own module composing
+  // the decision engine with analytics and Reach (AGENTS.md §M). Read-only.
+  experimentResultsCore: Pick<ExperimentResultsCore, "getExperimentResults"> = createExperimentResultsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1741,6 +1746,25 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md) -- an experiment's videos by arm with their stored day-7 / day-28 values. A LOCAL
+     * read, no Google call; every core it goes through checks the active channel itself.
+     */
+    async agentGetExperimentResults(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getExperimentResultsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await experimentResultsCore.getExperimentResults({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-169 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md) -- the stored YouTube search terms of the channel's videos. A LOCAL read, no
      * Google call; `listStoredSearchTerms` checks the active channel itself, and a video of another channel is not listed.
      */
@@ -2476,6 +2500,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetStoredBreakdowns: handlers.agentGetStoredBreakdowns,
     // BL-169 -- a pure local read, ungated.
     agentGetStoredSearchTerms: handlers.agentGetStoredSearchTerms,
+    // BL-170 -- a pure local read, ungated.
+    agentGetExperimentResults: handlers.agentGetExperimentResults,
     // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
     agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
@@ -3400,7 +3426,7 @@ export function createMcpServer(
     "agent_list_asset_performance",
     {
       description:
-        "Owner spec §16: joins the existing asset catalog (linkedVideoId -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube, no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus lifetimeCountersAsOf -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (performanceMetric + a REQUIRED, caller-supplied performanceDayOffset -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as agent_find_comparable_videos) is additionally computed only when both are given, and is honestly null (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage. sort: 'lifetimeViewCount' ranks by a NON-age-fair total that structurally favors older videos -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count) is excluded, counted in excludedForMissingLink. Does NOT include thumbnail impressions/CTR -- read them with agent_query_channel_reach (per video and day with groupBy video_day; never approximated here via card/annotation click-through metrics) -- and does NOT support metadata/version linkage (no temporal precision on linkedVideoId) or experiment/outcome linkage (experiments in the Decisions list are not linked to videos yet). Never reads Content Proposal reference associations -- a structurally different, draft/unactioned relationship. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when performanceMetric is requested. limit is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
+        "Owner spec §16: joins the existing asset catalog (linkedVideoId -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube, no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus lifetimeCountersAsOf -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (performanceMetric + a REQUIRED, caller-supplied performanceDayOffset -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as agent_find_comparable_videos) is additionally computed only when both are given, and is honestly null (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage. sort: 'lifetimeViewCount' ranks by a NON-age-fair total that structurally favors older videos -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count) is excluded, counted in excludedForMissingLink. Does NOT include thumbnail impressions/CTR -- read them with agent_query_channel_reach (per video and day with groupBy video_day; never approximated here via card/annotation click-through metrics) -- and does NOT support metadata/version linkage (no temporal precision on linkedVideoId) or experiment/outcome linkage (an experiment's videos by arm and their values: agent_get_experiment_results). Never reads Content Proposal reference associations -- a structurally different, draft/unactioned relationship. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when performanceMetric is requested. limit is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
       // Same SDK-facing relaxed-schema pattern as agent_find_comparable_videos above.
       inputSchema: listAssetPerformanceSdkInputSchema,
     },
@@ -3547,10 +3573,20 @@ export function createMcpServer(
   );
 
   registerTool(
+    "agent_get_experiment_results",
+    {
+      description:
+        "One experiment of the channel with its videos by arm and each video's own stored values (BL-170): `experiment` (status, treatment, controlBaseline, successCriteria, stoppingCriteria, plannedDuration) and `arms: [{ arm, videos }]` (`control` first). Each video: videoId, title, publishedAt, durationSeconds, linkedAt, linkedVia (web_ui = the owner, producer_proposal = an approved Producer proposal), `published` (false while private, unlisted or scheduled, or no longer synced: no milestones yet), `breakdownCoverage` (which days of traffic sources and devices are stored) and `milestones` for day 7 and day 28: windowStart/windowEnd (Pacific publish date .. +6 / +27), status (collected | retry | failed | due -- not collected yet though it could be | not_due -- its window and YouTube's 3-day lag are not over), `totals` (views, estimatedMinutesWatched, averageViewDuration, averageViewPercentage as YouTube returned them; null unless collected), `reach` over the same window (impressions, impressions-weighted ctr, daysWithData; null values with 0 days) and `trafficSources` / `devices` summed over the window from the stored daily rows (only the stored days count -- see breakdownCoverage). Each video's own values only: YT Manager computes no per-arm average, sum or comparison. The retention curve is in agent_get_video_milestones and the search terms in agent_get_stored_search_terms (with the arm's videoIds). Links are made by the owner in Decisions or by an approved producer_propose experiment.link_video; agent_get_hypothesis_trail lists the experiments. An experiment of another channel is EXPERIMENT_NOT_FOUND. A LOCAL read, never a live YouTube call; milestones and breakdowns are collected per computer. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getExperimentResultsInputSchema,
+    },
+    (args) => handlers.agentGetExperimentResults(args)
+  );
+
+  registerTool(
     "agent_get_hypothesis_trail",
     {
       description:
-        "One hypothesis plus every one of its experiments, each with its own recorded outcomes -- the full evidence -> hypothesis -> experiment -> outcome trail FUTURE_PHASES.md §6's own completion criterion describes, in one call. Fails with HYPOTHESIS_NOT_FOUND if the id is unknown, or the same channel-context error as any other channel-scoped read if the hypothesis belongs to a channel the caller isn't authorized for. Local read only, never a live YouTube call. Never includes a transition/approval action -- status changes and outcome recording remain Web-UI-only.",
+        "One hypothesis plus every one of its experiments, each with its own recorded outcomes and its videos by arm (`arms: [{ arm, videos: [{ videoId, linkedAt, linkedBy, linkedVia }] }]`, `control` first; BL-170 -- agent_get_experiment_results gives their stored values) -- the full evidence -> hypothesis -> experiment -> outcome trail FUTURE_PHASES.md §6's own completion criterion describes, in one call. Fails with HYPOTHESIS_NOT_FOUND if the id is unknown, or the same channel-context error as any other channel-scoped read if the hypothesis belongs to a channel the caller isn't authorized for. Local read only, never a live YouTube call. Never includes a transition/approval action -- status changes and outcome recording remain Web-UI-only.",
       inputSchema: agentGetHypothesisTrailInputSchema,
     },
     (args) => handlers.agentGetHypothesisTrail(args)

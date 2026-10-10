@@ -146,7 +146,10 @@ texts get keys in English and Russian.
 
     `v2` returns no error.
 - **AC-EA-07 (scope).**
-  - `agent_get_experiment_results` for an experiment of another channel is `EXPERIMENT_NOT_FOUND`.
+  - `agent_get_experiment_results` for an experiment of another channel is refused. *(Changed while building: in an agent's scope the
+    decision engine's own guard answers `CHANNEL_NOT_ACTIVE`, as for every read of another channel's experiment or hypothesis
+    (`agent_get_hypothesis_trail` too); `EXPERIMENT_NOT_FOUND` remains for an unknown id and for an experiment whose hypothesis is not the
+    requested channel's.)*
   - Through the Producer, it runs in the named channel's scope.
   - Neither the channel agent nor the Producer can link or remove directly: no MCP or CLI tool does it, checked by the agent-approval
     inventory test.

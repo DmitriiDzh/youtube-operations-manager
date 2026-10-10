@@ -27,8 +27,8 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError };
  *   approximated via `cardClickRate`/`annotationClickThroughRate` (an entirely different signal).
  * - `metadata/version` linkage -- `linkedVideoId` has no time range and is never independently
  *   verified (a thumbnail may have been swapped since the association was recorded).
- * - `experiment/outcome` linkage -- the decision engine (Phase 10) has experiments, but they are not
- *   linked to videos (FO-REQ-0015 item 3 proposes it).
+ * - `experiment/outcome` linkage -- an experiment's videos by arm live in the decision engine (BL-170,
+ *   `experiment_arm_videos`), read with `agent_get_experiment_results`; this catalog does not repeat them.
  * - Content Proposal reference associations (`content_proposal_artifacts`, a proposal's own
  *   `referenceAssetIds`/`referenceVideoIds`) -- a structurally DIFFERENT relationship (draft,
  *   unactioned reference/inspiration material a proposal cites, never "this asset was actually

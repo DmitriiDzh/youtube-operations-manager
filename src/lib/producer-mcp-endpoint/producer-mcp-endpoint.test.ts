@@ -5,6 +5,9 @@ import { createProducerTokenServices } from "@/lib/producer-agent-tokens/service
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
 import {
   addChannelRecordAssignment,
+  insertExperiment,
+  insertExperimentArmVideoIfEligible,
+  insertHypothesis,
   insertResearchChannel,
   saveCollectedAnalyticsBreakdown,
   saveCollectedChannelSearchTermsWeek,
@@ -436,6 +439,60 @@ test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads o
   }
 });
 
+// BL-170 AC-EA-06/07/09 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md): the Producer reads an experiment's videos by arm with their stored
+// values, and the trail's arms, in the named channel's scope only. Real handlers on the real (isolated) database.
+test("BL-170 AC-EA-07: agent_get_experiment_results and the trail's arms via the Producer, in the named channel's scope only", async () => {
+  await seedTwoChannels();
+  await insertHypothesis({ id: "bl170-hx", channelId: "UC_PR_X", statement: "Rain intro keeps viewers", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" });
+  await insertExperiment({ id: "bl170-ex", hypothesisId: "bl170-hx", treatment: "Rain intro + loop", controlBaseline: "c", successCriteria: "s", stoppingCriteria: "x", responsible: "owner", createdVia: "web_ui" });
+  const linkedAt = new Date("2026-10-02T09:00:00Z");
+  assert.equal(
+    await insertExperimentArmVideoIfEligible({ experimentId: "bl170-ex", videoId: "vid-x-1", arm: "control", linkedBy: "owner", linkedVia: "web_ui", at: linkedAt }, ["proposed", "approved", "running"], 50),
+    true
+  );
+  await saveCollectedVideoMilestone({
+    videoId: "vid-x-1",
+    milestoneDays: 7,
+    channelId: "UC_PR_X",
+    windowStart: "2026-10-01",
+    windowEnd: "2026-10-07",
+    views: 12,
+    estimatedMinutesWatched: 30,
+    averageViewDuration: 95,
+    averageViewPercentage: 1.3,
+    retentionJson: "[]",
+    at: new Date("2026-10-11T06:00:00Z"),
+  });
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const results = await toolResult(await endpoint.handle(rpc(call("agent_get_experiment_results", { channelId: "UC_PR_X", experimentId: "bl170-ex" }), bearer(token))));
+  assert.equal(results.isError, false, results.text);
+  const payload = payloadOf(results.text) as {
+    forChannelId: string;
+    experiment: { treatment: string; status: string };
+    arms: Array<{ arm: string; videos: Array<{ videoId: string; title: string; linkedVia: string; published: boolean; milestones: Array<{ milestoneDays: number; windowStart: string; windowEnd: string; status: string; totals: { views: number } | null }> }> }>;
+  };
+  assert.equal(payload.forChannelId, "UC_PR_X");
+  assert.deepEqual([payload.experiment.treatment, payload.experiment.status], ["Rain intro + loop", "proposed"]);
+  assert.deepEqual(payload.arms.map((arm) => [arm.arm, arm.videos.map((video) => [video.videoId, video.title, video.linkedVia, video.published])]), [["control", [["vid-x-1", "Title vid-x-1", "web_ui", true]]]]);
+  const [day7, day28] = payload.arms[0].videos[0].milestones;
+  assert.deepEqual([day7.milestoneDays, day7.windowStart, day7.windowEnd, day7.status, day7.totals?.views], [7, "2026-10-01", "2026-10-07", "collected", 12]);
+  assert.deepEqual([day28.milestoneDays, day28.windowStart, day28.windowEnd], [28, "2026-10-01", "2026-10-28"]);
+  assert.ok(["due", "not_due"].includes(day28.status), day28.status);
+
+  // Another channel's scope cannot read it: the decision engine's channel check, as for every read of another channel's experiment.
+  const other = await toolResult(await endpoint.handle(rpc(call("agent_get_experiment_results", { channelId: "UC_PR_Y", experimentId: "bl170-ex" }), bearer(token))));
+  assert.equal(other.isError, true);
+  assert.equal((payloadOf(other.text).error as { code: string }).code, "CHANNEL_NOT_ACTIVE");
+
+  const trail = await toolResult(await endpoint.handle(rpc(call("agent_get_hypothesis_trail", { channelId: "UC_PR_X", hypothesisId: "bl170-hx" }), bearer(token))));
+  assert.equal(trail.isError, false, trail.text);
+  const experiments = (payloadOf(trail.text) as { experiments: Array<{ experimentId: string; arms: unknown }> }).experiments;
+  assert.deepEqual(experiments.map((experiment) => [experiment.experimentId, experiment.arms]), [
+    ["bl170-ex", [{ arm: "control", videos: [{ videoId: "vid-x-1", linkedAt: linkedAt.toISOString(), linkedBy: "owner", linkedVia: "web_ui" }] }]],
+  ]);
+});
+
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
   const { endpoint, tokens } = setup();
   const token = (await tokens.issueToken({})).token;
@@ -479,7 +536,10 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // producer_upload_milestones; the DRAFT list is unchanged.
   // BL-168 (VIDEO_BREAKDOWNS_PLAN.md §2 "Reads", AC-VB-16): 1.3.0 adds the READ channel tool agent_get_stored_breakdowns.
   // BL-169 (VIDEO_SEARCH_TERMS_PLAN.md §2, AC-ST-15): 1.4.0 adds the READ channel tool agent_get_stored_search_terms.
-  assert.equal(PRODUCER_API_VERSION, "1.4.0");
+  // BL-170 (EXPERIMENT_ARMS_PLAN.md AC-EA-09): 1.5.0 adds the READ channel tool agent_get_experiment_results and the proposal kind
+  // experiment.link_video; the DRAFT tools are unchanged.
+  assert.equal(PRODUCER_API_VERSION, "1.5.0");
+  assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_experiment_results"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));
   assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
