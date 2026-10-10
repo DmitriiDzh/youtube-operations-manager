@@ -106,4 +106,3 @@ test("real wiring: an experiment.link_video proposal links the video only on app
     [["bl170v1", "A", "producer", "producer_proposal"]]
   );
 });
-

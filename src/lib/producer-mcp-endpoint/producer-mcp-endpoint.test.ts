@@ -19,7 +19,7 @@ import {
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
+import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_TOOL_NAMES } from "@/mcp/producer-tools";
 import { MCP_TOOL_CLASSIFICATION } from "@/mcp/tool-classification";
 import { createProducerMcpEndpoint, type ProducerRefusedCall } from "./index";
 
@@ -184,6 +184,14 @@ test("AC-PR-03: tools/list is exactly the closed list, and every channel tool in
     assert.equal(descriptor.permission, "READ", `${tool} must be a READ capability`);
     if (descriptor.mcpTools) assert.ok(descriptor.mcpTools.includes(tool), `${capability} names ${tool}`);
     else assert.equal(PINNED_WITHOUT_MCP_TOOLS[tool], capability, `${tool} maps to a capability that names no tool`);
+    assert.equal(MCP_TOOL_CLASSIFICATION[tool], "bound");
+  }
+  // BL-170 (owner msg 2485, ADR 0034 Amendment 5): exactly one DRAFT channel tool, by name, and its capability really is DRAFT (never WRITE).
+  assert.deepEqual(Object.keys(PRODUCER_DRAFT_CHANNEL_TOOLS), ["create_experiment_proposal"]);
+  for (const [tool, { capability }] of Object.entries(PRODUCER_DRAFT_CHANNEL_TOOLS)) {
+    const descriptor = capabilities.get(capability);
+    assert.ok(descriptor, `${tool}: capability ${capability} exists`);
+    assert.equal(descriptor.permission, "DRAFT", `${tool} must be a DRAFT capability`);
     assert.equal(MCP_TOOL_CLASSIFICATION[tool], "bound");
   }
 });
@@ -493,6 +501,36 @@ test("BL-170 AC-EA-07: agent_get_experiment_results and the trail's arms via the
   ]);
 });
 
+// BL-170 (owner msg 2485): the Producer proposes an experiment for a hypothesis of the named channel; it is created `proposed`, in that
+// channel's scope only. Real handlers on the real (isolated) database.
+test("BL-170: create_experiment_proposal via the Producer creates a proposed experiment for the named channel's hypothesis only", async () => {
+  await seedTwoChannels();
+  await insertHypothesis({ id: "bl170-hp", channelId: "UC_PR_X", statement: "Narrative opening keeps viewers", evidenceNotes: "e", createdBy: "producer", createdVia: "mcp" });
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const proposal = {
+    hypothesisId: "bl170-hp",
+    treatment: "30 s narrative opening, then the loop",
+    controlBaseline: "the usual opening",
+    successCriteria: "day-7 average view percentage +5 points",
+    stoppingCriteria: "4 uploads per arm",
+    responsible: "Producer",
+  };
+  const created = await toolResult(await endpoint.handle(rpc(call("create_experiment_proposal", { channelId: "UC_PR_X", ...proposal }), bearer(token))));
+  assert.equal(created.isError, false, created.text);
+  const experiment = payloadOf(created.text) as { forChannelId: string; experimentId: string; hypothesisId: string; status: string; treatment: string; approvedBy: string | null };
+  assert.deepEqual(
+    [experiment.forChannelId, experiment.hypothesisId, experiment.status, experiment.treatment, experiment.approvedBy],
+    ["UC_PR_X", "bl170-hp", "proposed", proposal.treatment, null]
+  );
+  // The same hypothesis named under another channel: refused by the decision engine's channel check; nothing is created.
+  const other = await toolResult(await endpoint.handle(rpc(call("create_experiment_proposal", { channelId: "UC_PR_Y", ...proposal }), bearer(token))));
+  assert.equal(other.isError, true);
+  assert.equal((payloadOf(other.text).error as { code: string }).code, "CHANNEL_NOT_ACTIVE");
+  const trail = await toolResult(await endpoint.handle(rpc(call("agent_get_hypothesis_trail", { channelId: "UC_PR_X", hypothesisId: "bl170-hp" }), bearer(token))));
+  assert.deepEqual((payloadOf(trail.text) as { experiments: Array<{ experimentId: string }> }).experiments.map((e) => e.experimentId), [experiment.experimentId]);
+});
+
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
   const { endpoint, tokens } = setup();
   const token = (await tokens.issueToken({})).token;
@@ -537,14 +575,15 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-168 (VIDEO_BREAKDOWNS_PLAN.md §2 "Reads", AC-VB-16): 1.3.0 adds the READ channel tool agent_get_stored_breakdowns.
   // BL-169 (VIDEO_SEARCH_TERMS_PLAN.md §2, AC-ST-15): 1.4.0 adds the READ channel tool agent_get_stored_search_terms.
   // BL-170 (EXPERIMENT_ARMS_PLAN.md AC-EA-09): 1.5.0 adds the READ channel tool agent_get_experiment_results and the proposal kind
-  // experiment.link_video; the DRAFT tools are unchanged.
+  // experiment.link_video, and -- owner's choice, msg 2485, ADR 0034 Amendment 5 -- the channel agent's DRAFT tool create_experiment_proposal
+  // (an experiment that stays `proposed` until the owner approves it), so the DRAFT list has three tools now.
   assert.equal(PRODUCER_API_VERSION, "1.5.0");
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_experiment_results"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));
   assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
-  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done"]);
-  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done"]);
+  assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"]);
+  assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"]);
   assert.deepEqual([...(capabilities.tools as string[])].sort(), [...PRODUCER_TOOL_NAMES].sort());
   assert.deepEqual(calls.map((entry) => [entry.tool, entry.channelId]), [
     ["producer_list_channels", null],

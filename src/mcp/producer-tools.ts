@@ -2,8 +2,9 @@
  * BL-161 (FO-REQ-0012, `docs/roadmap/plans/PRODUCER_ROLE_PLAN.md` §3, ADR 0034) -- what the Producer role may call on its own
  * endpoint (`/api/mcp/producer`). A closed list: a channel tool reaches the Producer only by being named here, and every entry
  * names the capability (`src/lib/agent-operations` registry) whose permission class must be READ -- the inventory test fails the
- * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident. Its only DRAFT tools are its own proposal tools
- * (BL-163, `PRODUCER_DRAFT_TOOLS`): a proposal changes nothing until the owner approves it in the Web UI.
+ * suite otherwise, so no DRAFT or WRITE channel tool can be added by accident. Its DRAFT tools are its own proposal tools (BL-163) and
+ * one channel tool the owner allowed by name (BL-170, `PRODUCER_DRAFT_CHANNEL_TOOLS`), all listed in `PRODUCER_DRAFT_TOOLS`: each only
+ * proposes, and nothing changes until the owner approves it in the Web UI.
  */
 
 /** The Producer API's own version, independent of `AGENT_API_VERSION` and `FACTORY_API_VERSION`. */
@@ -44,6 +45,16 @@ export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: strin
 });
 
 /**
+ * BL-170 (owner, Telegram 2026-10-10 msg 2485, ADR 0034 Amendment 5): the channel agent's DRAFT tools the Producer also gets, by name --
+ * exactly this one, pinned by the test. `create_experiment_proposal` creates an experiment that is always `proposed`; only the owner
+ * approves, runs or abandons it (Web UI), so it is a proposal like the Producer's own. Called like every channel tool: per call, in the
+ * named channel's agent scope (the hypothesis must be that channel's).
+ */
+export const PRODUCER_DRAFT_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
+  create_experiment_proposal: { capability: "decision_engine.create_experiment_proposal" },
+});
+
+/**
  * A channel tool whose own `channelId` means something else gets it under another name on the Producer endpoint, so `channelId`
  * always names the Producer's channel: `query_market_intelligence`'s is a watchlist (competitor) channel.
  */
@@ -67,7 +78,11 @@ export const PRODUCER_ONLY_TOOLS = [
  * a proposal, or mark a decided one read; neither changes the watchlist or the hypotheses. Approving, rejecting and applying are
  * Web-UI-only (`agent-proposal-approval-inventory.test.ts`).
  */
-export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done"] as const;
+export const PRODUCER_DRAFT_TOOLS = ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] as const;
 
 /** Every tool the Producer endpoint lists, in order. */
-export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([...PRODUCER_ONLY_TOOLS, ...Object.keys(PRODUCER_CHANNEL_TOOLS)]);
+export const PRODUCER_TOOL_NAMES: readonly string[] = Object.freeze([
+  ...PRODUCER_ONLY_TOOLS,
+  ...Object.keys(PRODUCER_CHANNEL_TOOLS),
+  ...Object.keys(PRODUCER_DRAFT_CHANNEL_TOOLS),
+]);

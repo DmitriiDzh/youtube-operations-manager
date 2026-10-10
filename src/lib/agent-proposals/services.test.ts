@@ -416,4 +416,3 @@ test("AC-EA-05: approving links the video as the owner; with another channel act
   await rejectsWith(switched.services.approveAgentProposal({ proposalId: s.proposalId }, { userId: OWNER }), "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE");
   assert.equal((await switched.services.listProducerProposals({})).proposals[0].status, "pending");
 });
-

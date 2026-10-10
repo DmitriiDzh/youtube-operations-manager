@@ -76,7 +76,14 @@ import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession, runInAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
-import { PRODUCER_API_VERSION, PRODUCER_CHANNEL_TOOLS, PRODUCER_DRAFT_TOOLS, PRODUCER_RENAMED_CHANNEL_FIELD, PRODUCER_TOOL_NAMES } from "./producer-tools";
+import {
+  PRODUCER_API_VERSION,
+  PRODUCER_CHANNEL_TOOLS,
+  PRODUCER_DRAFT_CHANNEL_TOOLS,
+  PRODUCER_DRAFT_TOOLS,
+  PRODUCER_RENAMED_CHANNEL_FIELD,
+  PRODUCER_TOOL_NAMES,
+} from "./producer-tools";
 import { listProducerProposalsInputSchema, markProposalsDoneInputSchema, submitProducerProposalInputSchema } from "@/lib/agent-proposals/schemas";
 import {
   createChannelWorkspacesCore,
@@ -2728,7 +2735,7 @@ export function createMcpServer(
       };
       return { config, handler: wrapped };
     }
-    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS)) return null;
+    if (toolClass !== "bound" || !(name in PRODUCER_CHANNEL_TOOLS || name in PRODUCER_DRAFT_CHANNEL_TOOLS)) return null;
     if (!(config.inputSchema instanceof z.ZodObject)) {
       throw new Error(`Producer tool "${name}" needs an object input schema`);
     }
@@ -2743,7 +2750,7 @@ export function createMcpServer(
       .object({
         ...shape,
         ...(renamed ? { [renamed]: shape.channelId } : {}),
-        channelId: z.string().min(1).max(64).describe("The channel this call reads (one of producer_list_channels)."),
+        channelId: z.string().min(1).max(64).describe("The channel this call is for (one of producer_list_channels)."),
       })
       .strict();
     const description =
@@ -3699,7 +3706,7 @@ export function createMcpServer(
     "create_experiment_proposal",
     {
       description:
-        "Creates an experiment (treatment, control/baseline, success/stopping criteria, responsible party) against an ALREADY-EXISTING hypothesis, identified by hypothesisId. Always starts status:\"proposed\" -- there is no field or MCP tool that lets an agent set any other status; a human must separately move it to \"approved\" through the Web UI before it is considered authorized (FUTURE_PHASES.md §6: \"no consequential action executes merely because an AI agent proposed it\"). Creating a new hypothesis, recording an outcome, and any status transition are all deliberately NOT reachable through MCP/CLI -- Web-UI-only (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md).",
+        "Creates an experiment (treatment, control/baseline, success/stopping criteria, responsible party) against an ALREADY-EXISTING hypothesis, identified by hypothesisId. Always starts status:\"proposed\" -- there is no field or MCP tool that lets an agent set any other status; a human must separately move it to \"approved\" through the Web UI before it is considered authorized (FUTURE_PHASES.md §6: \"no consequential action executes merely because an AI agent proposed it\"). Creating a new hypothesis, recording an outcome, and any status transition are all deliberately NOT reachable through MCP/CLI -- Web-UI-only (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md). The Producer has this tool too (BL-170): the hypothesis must be the named channel's (a Producer proposes a new hypothesis with producer_propose hypothesis.add); the new experiment's videos are proposed for its arms with producer_propose experiment.link_video, and agent_get_experiment_results reads them.",
       inputSchema: createExperimentProposalInputSchema,
     },
     (args) => handlers.createExperimentProposal(args)
