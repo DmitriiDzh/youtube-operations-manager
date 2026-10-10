@@ -1445,6 +1445,49 @@ export const channelSearchTermsWeekly = sqliteTable(
 );
 
 /**
+ * SCHEMA_MIGRATIONS version 80 (BL-171, FO-REQ-0015 item 7, docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md): the newest top-level comments of
+ * our own videos, as YouTube returned them -- text, times, likes, reply count and whether the channel itself wrote it; no author name,
+ * photo or id. Our own Authorized Data that is not analytics (III.E.4.c): kept at most 30 days by `fetched_at` (the retention job), each
+ * read replacing the video's rows. Device-local.
+ */
+export const videoComments = sqliteTable(
+  "video_comments",
+  {
+    commentId: text("comment_id").primaryKey(),
+    videoId: text("video_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    publishedAt: text("published_at"),
+    updatedAt: text("updated_at"),
+    text: text("text").notNull(),
+    likeCount: integer("like_count"),
+    replyCount: integer("reply_count"),
+    byChannelOwner: integer("by_channel_owner", { mode: "boolean" }).notNull(),
+    fetchedAt: integer("fetched_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [index("video_comments_channel_video_idx").on(table.channelId, table.videoId)]
+);
+
+/** v80 (BL-171): what was read for each video -- when, the comment count it had then, and the attempt bookkeeping of the milestones. */
+export const videoCommentState = sqliteTable("video_comment_state", {
+  videoId: text("video_id").primaryKey(),
+  channelId: text("channel_id").notNull(),
+  readAt: integer("read_at", { mode: "timestamp" }),
+  readCommentCount: integer("read_comment_count"),
+  status: text("status", { enum: ["collected", "disabled", "retry", "failed"] }).notNull(),
+  attempts: integer("attempts").notNull(),
+  lastError: text("last_error"),
+  nextAttemptAt: integer("next_attempt_at", { mode: "timestamp" }),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/** v80 (BL-171): the Pacific date a channel's comments were last checked (once a day). */
+export const videoCommentChannelState = sqliteTable("video_comment_channel_state", {
+  channelId: text("channel_id").primaryKey(),
+  checkedOn: text("checked_on").notNull(),
+  checkedAt: integer("checked_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- per-VIDEO history coverage: this video's daily metrics are collected contiguously from its
  * publish date through `history_through` (a date). Run windows alone cannot say this: a video first synced long after it was published
  * is covered by every channel-level run window yet has no early days. Maintained by collection; drives the automatic history catch-up.
@@ -4186,6 +4229,42 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         linked_via TEXT NOT NULL,
         linked_at INTEGER NOT NULL,
         PRIMARY KEY (experiment_id, video_id)
+      )`);
+    },
+  },
+  {
+    version: 80,
+    description:
+      "video_comments, video_comment_state, video_comment_channel_state -- BL-171 (FO-REQ-0015 item 7, docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md): the newest top-level comments of our own videos (no author data, kept at most 30 days), what was read per video, and the day each channel was checked. Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_comments (
+        comment_id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        published_at TEXT,
+        updated_at TEXT,
+        text TEXT NOT NULL,
+        like_count INTEGER,
+        reply_count INTEGER,
+        by_channel_owner INTEGER NOT NULL,
+        fetched_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_comments_channel_video_idx ON video_comments (channel_id, video_id)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_comment_state (
+        video_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        read_at INTEGER,
+        read_comment_count INTEGER,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_error TEXT,
+        next_attempt_at INTEGER,
+        updated_at INTEGER NOT NULL
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_comment_channel_state (
+        channel_id TEXT PRIMARY KEY,
+        checked_on TEXT NOT NULL,
+        checked_at INTEGER NOT NULL
       )`);
     },
   },
@@ -10008,6 +10087,98 @@ export async function listChannelSearchTermsWeekly(
       )
     );
   return rows.map((r) => ({ weekStart: r.weekStart, term: r.term, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+}
+
+export type StoredVideoCommentState = typeof videoCommentState.$inferSelect;
+export type StoredVideoComment = typeof videoComments.$inferSelect;
+
+/** BL-171: every video's comment state of one channel. */
+export async function listVideoCommentStates(channelId: string, database: AppDb = db): Promise<StoredVideoCommentState[]> {
+  return database.select().from(videoCommentState).where(eq(videoCommentState.channelId, channelId));
+}
+
+/** BL-171: the Pacific date the channel's comments were last checked, or null. */
+export async function getVideoCommentCheckedOn(channelId: string, database: AppDb = db): Promise<string | null> {
+  const [row] = await database.select().from(videoCommentChannelState).where(eq(videoCommentChannelState.channelId, channelId));
+  return row?.checkedOn ?? null;
+}
+
+/** BL-171: records that the channel's comments were checked on this Pacific date. */
+export async function markVideoCommentsChecked(channelId: string, checkedOn: string, at: Date, database: AppDb = db): Promise<void> {
+  await database
+    .insert(videoCommentChannelState)
+    .values({ channelId, checkedOn, checkedAt: at })
+    .onConflictDoUpdate({ target: videoCommentChannelState.channelId, set: { checkedOn, checkedAt: at } });
+}
+
+/**
+ * BL-171: one video's read, in one atomic batch -- every stored comment of the video is replaced by the answer (none when comments are
+ * disabled) and its state records the read (status, the count it had, attempts back to 0).
+ */
+export async function saveVideoCommentsRead(
+  row: {
+    channelId: string;
+    videoId: string;
+    status: "collected" | "disabled";
+    readCommentCount: number | null;
+    comments: Array<{ commentId: string; text: string; likeCount: number | null; publishedAt: string | null; updatedAt: string | null; replyCount: number | null; byChannelOwner: boolean }>;
+    at: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [database.delete(videoComments).where(eq(videoComments.videoId, row.videoId))];
+  const values = row.comments.map((c) => ({ ...c, videoId: row.videoId, channelId: row.channelId, fetchedAt: row.at }));
+  for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+    writes.push(database.insert(videoComments).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+  }
+  const state = {
+    channelId: row.channelId,
+    readAt: row.at,
+    readCommentCount: row.readCommentCount,
+    status: row.status,
+    attempts: 0,
+    lastError: null,
+    nextAttemptAt: null,
+    updatedAt: row.at,
+  };
+  writes.push(database.insert(videoCommentState).values({ videoId: row.videoId, ...state }).onConflictDoUpdate({ target: videoCommentState.videoId, set: state }));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/**
+ * BL-171: a read that got no usable answer (`defer`: put back until `retryAt`, no attempt) or an error about the query (`attempt`: one
+ * more attempt, `failed` at `maxAttempts`). What was stored before -- the comments and the last read -- is kept. The count kept is the last
+ * read's, or this attempt's `count` when there was no read; once `failed`, it is this attempt's, so a failed video is tried again only when
+ * its count changes (it never retries daily on an unchanged count).
+ */
+export async function recordVideoCommentsFailure(
+  row: { channelId: string; videoId: string; count: number | null; error: string; at: Date; retryAt: Date; countsAsAttempt: boolean; maxAttempts: number },
+  database: AppDb = db
+): Promise<"retry" | "failed"> {
+  const [previous] = await database.select().from(videoCommentState).where(eq(videoCommentState.videoId, row.videoId));
+  const attempts = (previous?.attempts ?? 0) + (row.countsAsAttempt ? 1 : 0);
+  const status = row.countsAsAttempt && attempts >= row.maxAttempts ? ("failed" as const) : ("retry" as const);
+  const values = {
+    channelId: row.channelId,
+    readAt: previous?.readAt ?? null,
+    readCommentCount: status === "failed" || !previous?.readAt ? row.count : previous.readCommentCount,
+    status,
+    attempts,
+    lastError: row.error.slice(0, 2000),
+    nextAttemptAt: status === "retry" ? row.retryAt : null,
+    updatedAt: row.at,
+  };
+  await database.insert(videoCommentState).values({ videoId: row.videoId, ...values }).onConflictDoUpdate({ target: videoCommentState.videoId, set: values });
+  return status;
+}
+
+/** BL-171: the stored comments of the given videos, always within this channel. */
+export async function listStoredVideoComments(channelId: string, videoIds: string[], database: AppDb = db): Promise<StoredVideoComment[]> {
+  if (videoIds.length === 0) return [];
+  return database
+    .select()
+    .from(videoComments)
+    .where(and(eq(videoComments.channelId, channelId), inArray(videoComments.videoId, videoIds)));
 }
 
 /** BL-169: the stored search terms of the given videos, always within this channel. */
