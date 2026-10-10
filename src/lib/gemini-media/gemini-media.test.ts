@@ -6,9 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { createKeyFile, type KeyFileAccess } from "@/lib/device-key-file";
 import type { StoredGeminiCredentials, StoredGeminiMediaJob } from "@/lib/db";
-import type { GeminiImageRequest, GeminiImageResult, GeminiVideoOperation, GeminiVideoRequest } from "@/lib/media-gateway";
+import { GEMINI_IMAGE_TIMEOUT_MS, GEMINI_VIDEO_START_TIMEOUT_MS, type GeminiImageRequest, type GeminiImageResult, type GeminiVideoOperation, type GeminiVideoRequest } from "@/lib/media-gateway";
+import { ceil4 } from "@/lib/shared-money";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { createGeminiFiles } from "./adapters/files";
+import { GEMINI_LIMITS } from "./contracts";
 import { createSerialLock } from "./index";
 import { estimateImageUsd, estimateVideoUsd, imageCostFromUsage } from "./pricing";
 import { createGeminiMediaServices, type GeminiMediaDeps, type GeminiStore } from "./services";
@@ -875,4 +877,61 @@ test("review 1: checking the key never overwrites a key saved meanwhile", async 
   } finally {
     await h.cleanup();
   }
+});
+
+// ------------------------------------------------------------------------------------------------- review round 2 additions
+
+test("review 2: no image with a non-terminal status counts the estimate whatever its counts; a completed answer with counts costs the counts", async () => {
+  for (const [answer, code, cost, basis] of [
+    [{ images: [], usage: { inputTokens: 1000, outputTokens: 0, thoughtTokens: 0, outputByModality: {} }, status: "in_progress", blockReason: null }, "gemini_unavailable", 0.0656, "unknown_outcome"],
+    [{ images: [], usage: null, status: "queued", blockReason: null }, "gemini_unavailable", 0.0656, "unknown_outcome"],
+    // 1000×1.5e-6 = 0.0015
+    [{ images: [], usage: { inputTokens: 1000, outputTokens: 0, thoughtTokens: 0, outputByModality: {} }, status: "completed", blockReason: null }, "gemini_blocked", 0.0015, "usage"],
+    [{ images: [], usage: null, status: "failed", blockReason: null }, "gemini_blocked", 0, "not_charged"],
+  ] as const) {
+    const h = await harness();
+    try {
+      h.behaviour.generateImage = async () => ({ ...answer, images: [], usage: answer.usage ? { ...answer.usage, outputByModality: {} } : null });
+      const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+      await h.runTick();
+      const row = h.store.jobs.get(job.jobId)!;
+      assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", code, cost, basis], String(answer.status));
+      assert.ok(Object.is(row.costUsd, cost), "never -0");
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test("review 2: a video whose operation Google no longer has (404) fails at its estimate instead of polling for 47 h", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.getVideoOperation = async () => {
+      throw gatewayError("gemini_request_rejected", { status: 404, blocked: false });
+    };
+    const { job } = (await h.services.createJob(videoJob(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    h.clock.at = new Date(h.clock.at.getTime() + 11_000);
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_expired", 0.96, "unknown_outcome"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 2: a key with an invisible character is refused before Google is called", async () => {
+  const h = await harness({ withKey: false });
+  try {
+    await expectCode(h.services.setKey({ apiKey: "AIzaSyTestKey0123​456789abcd" }), "validation_failed");
+    assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 2: an abandoned `submitting` job is only swept well after the longest call could still be running", () => {
+  // The sweep must never fail a job whose image or video-start call can still be in flight in another bundle.
+  assert.ok(GEMINI_LIMITS.staleSubmittingMs >= Math.max(GEMINI_IMAGE_TIMEOUT_MS, GEMINI_VIDEO_START_TIMEOUT_MS) + 5 * 60_000);
+  assert.ok(Object.is(ceil4(0), 0));
 });

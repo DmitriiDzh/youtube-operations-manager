@@ -11,5 +11,5 @@ export function round2(value: number): number {
  * exactly on a step in decimal (0.06555 -> 0.0656, 0.96 -> 0.96) from being pushed one step higher by floating-point noise.
  */
 export function ceil4(value: number): number {
-  return Math.ceil(value * 10_000 - 1e-9) / 10_000;
+  return Math.ceil(value * 10_000 - 1e-9) / 10_000 + 0; // `+ 0`: 0 stays 0, never -0
 }

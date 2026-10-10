@@ -61,7 +61,7 @@ export const GEMINI_LIMITS = Object.freeze({
   thinkingAllowanceTokens: 2000,
   maxAttempts: 3,
   /** Backoff before attempt 2 and 3 (ms). */
-  retryBackoffMs: [30_000, 120_000, 480_000],
+  retryBackoffMs: [30_000, 120_000],
   videoPollMs: 10_000,
   videoRetryMs: 30_000,
   /** Google keeps a generated video 2 days; past this the job gives up. */

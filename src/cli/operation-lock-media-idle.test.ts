@@ -64,3 +64,10 @@ test("media-idle (BL-174): a Gemini request being sent blocks stopping and is na
   assert.equal(await runOperationLockCli(["media-idle"], busy, (line) => lines.push(line)), 1);
   assert.match(lines.join("\n"), /gm_sending \(image, channel UC_ours\)/);
 });
+
+test("media-idle (BL-174): a database from before schema v83 (sessions, no Gemini table) counts as no Gemini request", async () => {
+  const c = await client(true);
+  await c.execute("DROP TABLE gemini_media_jobs");
+  await session(c, "s-done", "done");
+  assert.equal(await runOperationLockCli(["media-idle"], c, () => undefined), 0);
+});

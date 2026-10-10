@@ -98,6 +98,14 @@ export function GeminiMediaSettings() {
 
   return (
     <div className="space-y-6">
+      {loadError && (
+        <div className="flex items-center gap-3 rounded-xl border border-red-900 bg-zinc-900 p-3">
+          <p className="text-sm text-red-400">{loadError}</p>
+          <button onClick={() => void load()} className={buttonClass}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
       <KeyCard view={overview.key} onChanged={load} />
       <GenerationCard overview={overview} onChanged={load} />
       <JobsCard jobs={overview.jobs} onRefresh={load} />
@@ -225,9 +233,11 @@ function GenerationCard({ overview, onChanged }: { overview: Overview; onChanged
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Reset the fields only when the SAVED values change (a reload builds a new object each time and would wipe unsaved edits).
+  const savedKey = LIMIT_FIELDS.map((f) => settings[f]).join("|");
   useEffect(() => {
-    setDrafts(Object.fromEntries(LIMIT_FIELDS.map((f) => [f, String(settings[f])])) as Record<LimitField, string>);
-  }, [settings]);
+    setDrafts(Object.fromEntries(savedKey.split("|").map((value, i) => [LIMIT_FIELDS[i], value])) as Record<LimitField, string>);
+  }, [savedKey]);
 
   const parsed = Object.fromEntries(LIMIT_FIELDS.map((f) => [f, parseLimit(f, drafts[f])])) as Record<LimitField, number | null>;
   const valid = LIMIT_FIELDS.every((f) => parsed[f] !== null);

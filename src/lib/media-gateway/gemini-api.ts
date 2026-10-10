@@ -23,9 +23,9 @@ import { asNumber, asRecord, asString } from "./json";
 
 export const GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com";
 const KEY_CHECK_TIMEOUT_MS = 30_000;
-const IMAGE_TIMEOUT_MS = 5 * 60_000;
+export const GEMINI_IMAGE_TIMEOUT_MS = 5 * 60_000;
 /** The start call uploads the frames (up to ~16 MB in base64): the same 5 minutes as an image, never a phantom timeout on a slow uplink. */
-const VIDEO_START_TIMEOUT_MS = 5 * 60_000;
+export const GEMINI_VIDEO_START_TIMEOUT_MS = 5 * 60_000;
 const VIDEO_POLL_TIMEOUT_MS = 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
@@ -50,12 +50,34 @@ export const GEMINI_BLOCKED_CODES: ReadonlySet<string> = new Set([
 
 /**
  * Connection failures that prove the request never reached Google (so nothing can have been charged): no address, refused,
- * unreachable, a connect timeout (undici's own, before any byte is sent), and every TLS handshake failure (review round 1).
+ * unreachable, a connect timeout (undici's own, before any byte is sent), and the TLS handshake / certificate failures by name
+ * (review round 1). An exact list, never a prefix: a TLS record error on an established connection (`ERR_SSL_DECRYPTION_…`) can
+ * come after the request was sent, and a resend would make a second paid image (review round 2).
  */
-const NOT_SENT_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ERR_INVALID_URL", "UND_ERR_CONNECT_TIMEOUT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN"]);
+const NOT_SENT_CAUSES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "ERR_INVALID_URL",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_REVOKED",
+  "CERT_UNTRUSTED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ERR_TLS_HANDSHAKE_TIMEOUT",
+  "ERR_SSL_WRONG_VERSION_NUMBER",
+]);
 
 function provesNotSent(code: string): boolean {
-  return NOT_SENT_CAUSES.has(code) || code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || code.startsWith("ERR_SSL_");
+  return NOT_SENT_CAUSES.has(code);
 }
 
 export type GeminiOutcome = "answered" | "not_sent" | "unknown";
@@ -223,21 +245,30 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     return response.body;
   }
 
+  /** A token count: a non-negative integer, or its decimal string (int64 counters may travel as strings). */
+  function tokenCount(value: unknown): number | null {
+    if (typeof value === "string" && /^\d{1,15}$/.test(value)) return Number(value);
+    const n = asNumber(value);
+    return n !== null && Number.isInteger(n) && n >= 0 ? n : null;
+  }
+
+  /**
+   * Google's token counts, or `null` when none of the documented ones could be read -- an object that merely exists (a renamed
+   * field, an unreadable value) is not "Google's counts" and must never price a call at 0 (review round 2).
+   */
   function usageOf(value: unknown): GeminiUsage | null {
     const usage = asRecord(value);
-    if (Object.keys(usage).length === 0) return null;
     const outputByModality: Record<string, number> = {};
     for (const entry of Array.isArray(usage.output_tokens_by_modality) ? usage.output_tokens_by_modality.map(asRecord) : []) {
       const modality = asString(entry.modality);
-      const tokens = asNumber(entry.tokens);
+      const tokens = tokenCount(entry.tokens);
       if (modality && tokens !== null) outputByModality[modality.toLowerCase()] = (outputByModality[modality.toLowerCase()] ?? 0) + tokens;
     }
-    return {
-      inputTokens: asNumber(usage.total_input_tokens) ?? 0,
-      outputTokens: asNumber(usage.total_output_tokens) ?? 0,
-      thoughtTokens: asNumber(usage.total_thought_tokens) ?? 0,
-      outputByModality,
-    };
+    const input = tokenCount(usage.total_input_tokens);
+    const output = tokenCount(usage.total_output_tokens);
+    const thought = tokenCount(usage.total_thought_tokens);
+    if (input === null && output === null && thought === null && Object.keys(outputByModality).length === 0) return null;
+    return { inputTokens: input ?? 0, outputTokens: output ?? 0, thoughtTokens: thought ?? 0, outputByModality };
   }
 
   /** The final image blocks of an Interactions answer: `steps[]` (since the May 2026 revision), falling back to the legacy `outputs[]`. */
@@ -279,7 +310,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       const context = { call: "interactions.create", model: request.model };
       const body = asRecord(
         await call(apiKey, "POST", "/v1beta/interactions", context, {
-          timeoutMs: IMAGE_TIMEOUT_MS,
+          timeoutMs: GEMINI_IMAGE_TIMEOUT_MS,
           body: {
             model: request.model,
             input: [
@@ -314,7 +345,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       if (request.personGeneration) parameters.personGeneration = request.personGeneration;
       const body = asRecord(
         await call(apiKey, "POST", `/v1beta/models/${encodeURIComponent(request.model)}:predictLongRunning`, context, {
-          timeoutMs: VIDEO_START_TIMEOUT_MS,
+          timeoutMs: GEMINI_VIDEO_START_TIMEOUT_MS,
           body: { instances: [instance], parameters },
         })
       );

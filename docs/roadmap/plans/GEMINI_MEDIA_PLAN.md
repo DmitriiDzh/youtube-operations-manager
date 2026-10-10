@@ -114,7 +114,7 @@ Veo parameter rules:
   - Methods:
     - `listModels(apiKey)`: the key check;
     - `generateImage(apiKey, request)`;
-    - `startVideo(apiKey, model, request)`: returns the operation name;
+    - `startVideo(apiKey, request)` (the request names the model): returns the operation name;
     - `getVideoOperation(apiKey, name)`;
     - `downloadVideo(apiKey, uri, destPath)`: streams to `.part`, then renames; returns bytes and sha256.
   - It maps HTTP status to `gemini_*` codes (§2.6). The key travels only to `generativelanguage.googleapis.com`. A redirect to another
@@ -239,7 +239,7 @@ The input bytes are not stored. The worker re-reads them, with the same proofs, 
   3. When done: download to `video-1.mp4`, register a `generated_video` asset (new `ASSET_TYPES` value), write the manifest, mark the
      job `done`.
 - **Retry:** an HTTP 429, 408 or 5xx answer, or a connection that never reached Google (DNS, refused, TLS), goes back to `queued`
-  with backoff of 30 s, 2 min and 8 min. After 3 attempts the job is `failed`. A video poll failure is retried until 47 h after the
+  with backoff of 30 s, then 2 min. After 3 attempts the job is `failed`. A video poll failure is retried until 47 h after the
   start.
 - **A timeout is not a retry.** A request that was sent and then timed out (`TimeoutError`; 5 min for an image) may have completed
   and been charged at Google. It becomes `failed gemini_timeout`, cost = estimate, basis `unknown_outcome`, with no automatic retry:
@@ -312,7 +312,7 @@ Every field is copied explicitly. No key, ever.
 
 | Tool | Kind | Input → output |
 |---|---|---|
-| `factory_gemini_get_status` | READ | → `{ enabled, keyConfigured, keyHint, keyStatus, gatewayEnabled, limits, spend: { todayUsd, monthUsd, activeUsd }, pricesAsOf, models: [{ model, kind, label, sizes \| resolutions, aspectRatios, durations, inputs, prices }] }` |
+| `factory_gemini_get_status` | READ | → `{ enabled, keyConfigured, keyHint, keyStatus, gatewayEnabled, limits, spend: { todayUsd, monthUsd, activeUsd, activeJobs }, pricesAsOf, models: [image: { model, kind, label, sizes, usdPerImage, usdPerMillionTokens } \| video: { model, kind, label, resolutions, usdPerSecond, referenceImages }] }` |
 | `factory_gemini_create_job` | WRITE; a dry-run is a read | `{ channelId, kind, model, prompt, requestId?, dryRun?, image?: { size, aspectRatio, inputs?: { images[] } }, video?: { resolution, aspectRatio, durationSeconds, personGeneration?, inputs?: { firstFrame?, lastFrame?, referenceImages?[] } } }` → `{ job }` \| `{ estimateUsd, allowed, refusal? }` |
 | `factory_gemini_get_job` | READ | `{ jobId }` → `{ job }`; `{ channelId?, status?, limit? }` → `{ jobs }` (newest first, ≤ 50) |
 
@@ -436,3 +436,21 @@ Expected values are computed by hand from §1.1 and §2.
   several. The recorded cost is right; only the per-job check before the call assumes one. Documented in the tool and RISK-123.
 - **Tests:** the concurrency test uses the module's own lock; the real workspace rules are tested on a temporary folder
   (`workspace.test.ts`); new negative tests for every money path above.
+
+### Review round 2 (2026-10-10): what changed and why
+
+- **Token counts must be readable to count.** A `usage` object that merely exists (renamed fields, values that are not counts) is
+  not Google's counts; counts may be decimal strings. An answer with no image is priced by its counts only when it is a terminal
+  refusal (a block code; failed / cancelled / incomplete) or `completed` with readable counts; a non-terminal status (in_progress,
+  queued, …) with no image counts its estimate whatever its counts say. `ceil4` never returns `-0`.
+- **`not_sent` is an exact list** of handshake / certificate / connect failures (no prefix rules): a TLS record error on an open
+  connection may come after the request was sent, and resending would make a second paid image.
+- **A video whose operation Google no longer has (404)** fails `gemini_expired` at its estimate at once, instead of polling for 47 h.
+- **The key** must be printable ASCII without spaces (an invisible character pasted with it is refused before any call).
+- **Settings → Gemini** keeps unsaved limit edits across reloads, and shows a failed reload.
+- **Known and accepted:** if the final `done` write fails after `manifest.json` was written, the stale sweep later fails the job at its
+  estimate while the folder's manifest says `done` (the files are there; the cost is counted). A dry-run may create the channel's
+  `99 Data Exchange/From YTM` and `Sent to YTM` folders (the same check as a real create). Thinking beyond the 2 000-token allowance
+  can make one job cost more than its per-job estimate (the day and month totals count the real cost).
+- **Tests:** the timeout relation the stale sweep relies on is pinned (15 min ≥ the 5-minute image / video-start timeouts + 5 min);
+  `media-idle` on a database from before v83.

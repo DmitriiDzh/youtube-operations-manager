@@ -294,3 +294,26 @@ test("review 1: a download hop to http:// on the Gemini host is refused (no key 
   const details = await expectError(createGeminiApiClient({ fetchImpl: storage.fetchImpl, authorize: async () => undefined }).downloadVideo(KEY, "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", "/tmp/never"), "gemini_unavailable");
   assert.equal(details.status, 403);
 });
+
+// ------------------------------------------------------------------------------------------------- review round 2 additions
+
+test("review 2: only named handshake/certificate failures are 'not_sent'; a TLS record error on an open connection is 'unknown'", async () => {
+  const wrap = (code: string) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) });
+  for (const code of ["ERR_TLS_HANDSHAKE_TIMEOUT", "ERR_SSL_WRONG_VERSION_NUMBER", "CERT_NOT_YET_VALID"]) assert.equal(transportOutcome("request", wrap(code)), "not_sent", code);
+  for (const code of ["ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC", "ERR_TLS_INVALID_STATE", "ECONNRESET", "EPIPE"]) assert.equal(transportOutcome("request", wrap(code)), "unknown", code);
+});
+
+test("review 2: token counts may be decimal strings; a usage object with no readable documented count is no counts at all", async () => {
+  const answers = [
+    { status: "completed", steps: [], usage: { total_input_tokens: "1000", total_output_tokens: "0", total_thought_tokens: "300" } },
+    { status: "completed", steps: [], usage: { input_tokens: 1000, something: "x" } },
+    { status: "completed", steps: [], usage: { total_input_tokens: -5, total_output_tokens: 1.5 } },
+  ];
+  let i = 0;
+  const { fetchImpl } = fakeFetch(() => ({ status: 200, body: answers[i++] }));
+  const client = createGeminiApiClient({ fetchImpl, authorize: async () => undefined });
+  const request = { model: "m", prompt: "p", images: [], aspectRatio: "1:1", imageSize: "1K" };
+  assert.deepEqual((await client.generateImage(KEY, request)).usage, { inputTokens: 1000, outputTokens: 0, thoughtTokens: 300, outputByModality: {} });
+  assert.equal((await client.generateImage(KEY, request)).usage, null, "renamed fields are not counts");
+  assert.equal((await client.generateImage(KEY, request)).usage, null, "negative or fractional values are not counts");
+});

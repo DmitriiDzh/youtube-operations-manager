@@ -8,6 +8,7 @@ import {
   GEMINI_MANIFEST_FILE,
   GEMINI_OUTPUT_SUBDIR,
   isDomainError,
+  ownEntry,
   type GeminiCostBasis,
   type GeminiImageParams,
   type GeminiJobErrorCode,
@@ -28,7 +29,7 @@ import { createGeminiMediaServices, jobView, type GeminiMediaDeps } from "./serv
 // request that was sent and then lost (timeout, restart mid-call, video never collected) counts its estimate
 // ("unknown_outcome") so the spend is never under-counted.
 
-const EXTENSIONS: Readonly<Record<string, string>> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" };
+const EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" });
 
 type Failure = { errorCode: GeminiJobErrorCode; error: string; costUsd: number; costBasis: GeminiCostBasis };
 
@@ -229,11 +230,13 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     }
     const charged = result.usage ? imageCostFromUsage(job.model, result.usage, result.images.length) : null;
     if (result.images.length === 0) {
-      // No image. Only a terminal refusal (a block code, a failed / cancelled / incomplete status) or Google's own counts may
-      // decide what it cost: the image itself is not charged, the counted input and thinking are. A 2xx with none of them
-      // (an unreadable body, a non-terminal status) may still have been charged: its estimate (review round 1).
-      const terminal = result.blockReason !== null || (result.status !== null && ["failed", "cancelled", "incomplete"].includes(result.status));
-      if (!terminal && charged === null) {
+      // No image. Only a terminal refusal (a block code; a failed / cancelled / incomplete status) or a completed answer with
+      // Google's own counts may decide what it cost: the image itself is not charged, the counted input and thinking are.
+      // Anything else -- an unreadable body, a non-terminal status (in_progress, queued, …) whatever its counts -- may still be
+      // generating and charged: its estimate (review rounds 1 and 2).
+      const refused = result.blockReason !== null || (result.status !== null && ["failed", "cancelled", "incomplete"].includes(result.status));
+      const completedWithCounts = result.status === "completed" && charged !== null;
+      if (!refused && !completedWithCounts) {
         await fail(job, "submitting", maybeCharged(job, "gemini_unavailable", `Google answered without an image, a final status or token counts (status ${result.status ?? "none"}); it may have been charged.`));
         return;
       }
@@ -248,7 +251,7 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     const outputs: GeminiJobOutput[] = [];
     try {
       for (const [index, image] of result.images.entries()) {
-        const file = `image-${index + 1}.${EXTENSIONS[image.mimeType] ?? "bin"}`;
+        const file = `image-${index + 1}.${ownEntry(EXTENSIONS, image.mimeType) ?? "bin"}`;
         const localPath = path.join(claimed.dir, file);
         const written = await deps.files.writeOutput(localPath, image.data);
         const base = { path: relativeOutput(job, file), localPath, kind: "image" as const, mimeType: image.mimeType, bytes: written.bytes, sha256: written.sha256 };
@@ -326,7 +329,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
     try {
       operation = await deps.api.getVideoOperation(apiKey, job.remoteName);
     } catch (error) {
-      // Already paid for (or about to be): keep trying until Google drops it (47 h), whatever the reason.
+      // Google no longer knows the operation: nothing left to collect; it may have been charged (review round 2).
+      if (isDomainError(error) && (error.details as { status?: number } | undefined)?.status === 404) {
+        await fail(job, "running", maybeCharged(job, "gemini_expired", `Google no longer has the video's operation: ${error.message}`));
+        return;
+      }
+      // Otherwise already paid for (or about to be): keep trying until Google drops it (47 h).
       await later(GEMINI_LIMITS.videoRetryMs, error instanceof Error ? error.message : String(error));
       return;
     }

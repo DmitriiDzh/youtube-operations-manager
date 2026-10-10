@@ -86,7 +86,7 @@ export const updateSettingsInputSchema = z
   .strict();
 
 export const setKeyInputSchema = z
-  .object({ apiKey: z.string().trim().min(20, "the key looks too short").max(200).regex(/^\S+$/, "a key has no spaces") })
+  .object({ apiKey: z.string().trim().min(20, "the key looks too short").max(200).regex(/^[\x21-\x7E]+$/, "a key is printable ASCII without spaces") })
   .strict();
 
 /** The per-model rules (§2.5), checked before anything is read, stored or sent. */
