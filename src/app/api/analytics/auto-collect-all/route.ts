@@ -10,7 +10,7 @@ import { getAnalyticsDataSync, importPeersFirst } from "@/lib/analytics-data-syn
 
 export type AutoCollectAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones" | "collectDueBreakdowns">;
+  core: Pick<ReturnType<typeof createAnalyticsCore>, "runAutoCollectionForChannels" | "runHistoryCatchUp" | "collectDueMilestones" | "collectDueBreakdowns" | "collectDueSearchTerms">;
   getActiveChannelId: (userId: string) => Promise<string | null>;
   /** Runs work after the response is sent (Next's `after`); injectable for tests. */
   runAfter: (work: () => Promise<void>) => void;
@@ -93,6 +93,14 @@ export function createAutoCollectAllHandler(
           for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
             try {
               await deps.core.collectDueBreakdowns({ credentialRef, channelId });
+            } catch {
+              // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
+            }
+          }
+          // BL-169: then each such channel's stored search terms (the same rules; one channel failing never stops the next one).
+          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+            try {
+              await deps.core.collectDueSearchTerms({ credentialRef, channelId });
             } catch {
               // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
             }
