@@ -16,20 +16,24 @@ export async function jsonRequest(args: {
   headers: Record<string, string>;
   body?: string;
   timeoutMs: number;
-  /** The error for a transport failure: the request itself (no response) or reading its body. */
-  unavailable: (stage: "request" | "read", detail: string, status?: number) => DomainError;
+  /**
+   * The error for a transport failure: the request itself (no response) or reading its body. BL-174: `cause` is the caught
+   * error, so a child can tell "never reached the server" from "sent, then timed out" (the Gemini child counts the second
+   * as a possibly-charged call).
+   */
+  unavailable: (stage: "request" | "read", detail: string, status?: number, cause?: unknown) => DomainError;
 }): Promise<JsonResponse> {
   let response: Response;
   try {
     response = await args.fetchImpl(args.url, { method: args.method, headers: args.headers, body: args.body, signal: AbortSignal.timeout(args.timeoutMs) });
   } catch (error) {
-    throw args.unavailable("request", error instanceof Error ? error.message : String(error));
+    throw args.unavailable("request", error instanceof Error ? error.message : String(error), undefined, error);
   }
   let text: string;
   try {
     text = await response.text();
   } catch (error) {
-    throw args.unavailable("read", error instanceof Error ? error.message : String(error), response.status);
+    throw args.unavailable("read", error instanceof Error ? error.message : String(error), response.status, error);
   }
   let body: unknown = null;
   if (text) {

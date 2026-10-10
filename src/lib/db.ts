@@ -6652,7 +6652,9 @@ export type GatewayTrafficCategory =
   | "runpod_s3"
   | "comfyui_api"
   // BL-132 -- the Hugging Face Hub metadata reads (`src/lib/media-gateway/huggingface.ts`).
-  | "huggingface_api";
+  | "huggingface_api"
+  // BL-174 -- Google's Gemini API (Nano Banana images, Veo video), the media gateway's `gemini-api.ts` child.
+  | "gemini_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -6675,6 +6677,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "runpod_s3",
   "comfyui_api",
   "huggingface_api",
+  "gemini_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
