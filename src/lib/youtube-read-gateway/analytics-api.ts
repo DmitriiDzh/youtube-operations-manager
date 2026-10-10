@@ -183,6 +183,10 @@ export async function queryChannelBreakdownReport(
     dimensions?: string;
     metricNames: readonly string[];
     filters?: string;
+    /** Required by some reports, e.g. `insightTrafficSourceDetail` (top 25 at most; checked live 2026-10-10, BL-169). */
+    maxResults?: number;
+    /** e.g. `-views`; required together with `maxResults` by the same reports. */
+    sort?: string;
   }
 ): Promise<ChannelBreakdownRow[]> {
   const res = await youtubeAnalytics.reports.query({
@@ -192,6 +196,8 @@ export async function queryChannelBreakdownReport(
     metrics: args.metricNames.join(","),
     ...(args.dimensions ? { dimensions: args.dimensions } : {}),
     ...(args.filters ? { filters: args.filters } : {}),
+    ...(args.maxResults !== undefined ? { maxResults: args.maxResults } : {}),
+    ...(args.sort ? { sort: args.sort } : {}),
   });
 
   const columnHeaders = res.data.columnHeaders ?? [];

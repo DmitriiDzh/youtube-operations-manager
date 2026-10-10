@@ -61,6 +61,8 @@ export function createAnalyticsYoutubeApiAdapter() {
       dimensions?: string;
       metricNames: readonly string[];
       filters?: string;
+      maxResults?: number;
+      sort?: string;
     }) {
       const youtubeAnalytics = await createAuthorizedClient(args.credentials);
       return queryChannelBreakdownReport(youtubeAnalytics, {
@@ -70,6 +72,8 @@ export function createAnalyticsYoutubeApiAdapter() {
         dimensions: args.dimensions,
         metricNames: args.metricNames,
         filters: args.filters,
+        maxResults: args.maxResults,
+        sort: args.sort,
       });
     },
   };
