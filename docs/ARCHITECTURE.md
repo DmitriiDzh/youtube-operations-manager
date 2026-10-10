@@ -3337,3 +3337,26 @@ Plan: `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md` (AC-VB-01..17). Schema v77.
   videos the channel has with a final publish date; rows only for a state of the current range start, inside `range_start ..
   collected_through` and the requested dates; `total` sums views and minutes per value (null only when every row had none), `day` lists
   rows; labels from `breakdown-labels.ts` (English).
+
+## 38. Stored search terms per video (BL-169, FO-REQ-0015 item 5)
+
+Plan: `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md` (AC-ST-01..16). Schema v78.
+
+- **The report.** `insightTrafficSourceDetail` filtered to `video==<id>;insightTrafficSourceType==YT_SEARCH`, `views` +
+  `estimatedMinutesWatched`, `maxResults=25`, `sort=-views` (YouTube refuses the report without either and gives a 500 above 25; no `day`
+  split). It goes through the existing gateway function `queryChannelBreakdownReport`, which gained the two optional parameters.
+- **Planning** (`planDueSearchTerms` in `src/lib/analytics/search-terms.ts`, pure). The breakdowns' videos and window
+  (`hasFinalPublishDate`, `videoBreakdownWindow`). While the window runs, a video is due once yesterday ≥ window start + 6, then whenever
+  today ≥ `collected_on` + 7; once the window has ended (window end ≤ yesterday), once today ≥ window end + 7 and its last read was before
+  that. Each read covers window start .. min(yesterday, window end). `failed` skipped, `retry` waits; a state for another window start counts
+  as never read. At most `MAX_SEARCH_TERM_QUERIES_PER_RUN` (100), least recently read first (never read first, newest publish date among
+  equals), retries last inside the batch: the BL-168 queue.
+- **Collection** (`collectDueSearchTerms`). One query per video; `saveCollectedVideoSearchTerms` replaces all of the video's rows and marks
+  the state collected in one `database.batch`. State rows are `analytics_breakdown_state` rows with subject `search:<video id>` (a video id
+  never has a colon), so `deferAnalyticsBreakdown` / `recordAnalyticsBreakdownFailure` and their rules are reused unchanged; the breakdown
+  planner ignores these subjects. `failureKind` as for the breakdowns; failed at 3 attempts. Wrapped like the breakdowns
+  (`gateSearchTermCollection`, analytics quota context); `/api/analytics/auto-collect-all` runs it after every channel's breakdowns.
+- **Storage.** `video_search_terms` (key `video_id, term`; `channel_id`, `views`, `estimated_minutes_watched`; index on `channel_id,
+  video_id`). Classified `authorized`; device-local, not in the `analytics-data` exchange (same reason as §37).
+- **Reads.** `listStoredSearchTerms` (channel scope) backs `agent_get_stored_search_terms`: the requested videos the channel has with a
+  final publish date; terms only for a state of the current window start; most views first, then by term.

@@ -1141,3 +1141,10 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   90 days), summed over a date range or listed by day, with the stored coverage of each.
 - Collected in the background with the Analytics collection, once a day (2 Analytics API queries per subject, at most 100 subjects per
   channel per run); a local read, never a live call. Each computer collects the channels connected on it. Contract: `docs/interfaces.md`.
+
+**Stored search terms (BL-169, Agent API 3.11.0, `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md`):**
+- `agent_get_stored_search_terms` (capability `analytics.query_stored_search_terms`, READ) returns, for up to 20 of the channel's videos,
+  the top 25 YouTube search terms over each video's first 90 days so far, with views and watch minutes as YouTube returned them.
+- YouTube names a term for only part of the search views and gives no day split. Read weekly in the background with the Analytics
+  collection (1 Analytics API query per video, at most 100 per channel per run); a local read, never a live call. Contract:
+  `docs/interfaces.md`.
