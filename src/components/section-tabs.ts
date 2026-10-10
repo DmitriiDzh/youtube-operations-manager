@@ -45,6 +45,8 @@ export const SETTINGS_SUB_TABS = [
   // Phase 14 (docs/roadmap/plans/PHASE_14_PLAN.md §2.6, D5): the RunPod connection only since slice 6 (owner, msg 1549);
   // everything else is the Production section.
   { value: "runpod", labelKey: "tabs.settings.runpod" },
+  // BL-174 (GEMINI_MEDIA_PLAN.md §2.8): Google's Gemini API key, the operator's switch and limits, the spend, recent jobs.
+  { value: "gemini", labelKey: "tabs.settings.gemini" },
   { value: "about", labelKey: "tabs.settings.about" },
 ] as const;
 

@@ -21,6 +21,7 @@ import { CloudConnectionSettings } from "@/components/cloud-connection-settings"
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { RunpodConnectionSettings } from "@/components/media-generation-settings";
+import { GeminiMediaSettings } from "@/components/gemini-media-settings";
 import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -153,6 +154,12 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
       <div className={settingsSubTab === "runpod" ? "space-y-6" : "hidden"}>
         <FeatureErrorBoundary label={section("settingsCard.runpod")}>
           <RunpodConnectionSettings />
+        </FeatureErrorBoundary>
+      </div>
+
+      <div className={settingsSubTab === "gemini" ? "space-y-6" : "hidden"}>
+        <FeatureErrorBoundary label={section("settingsCard.gemini")}>
+          <GeminiMediaSettings />
         </FeatureErrorBoundary>
       </div>
 

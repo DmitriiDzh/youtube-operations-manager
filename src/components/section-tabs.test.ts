@@ -20,7 +20,7 @@ test("AC-RT-01: the sub-tab addresses of the plan's table are pages; anything el
   assert.equal(isSectionSubTab("production", "sessions"), false, "Production is no longer a section (its addresses redirect)");
   for (const sub of ["overview", "content", "audience"]) assert.ok(isSectionSubTab("analytics", sub), sub);
   for (const sub of ["inbox", "channels", "videos", "discover", "topics"]) assert.ok(isSectionSubTab("research", sub), sub);
-  for (const sub of ["general", "api", "channels", "ai-agent", "sync", "runpod", "about"]) assert.ok(isSectionSubTab("settings", sub), sub);
+  for (const sub of ["general", "api", "channels", "ai-agent", "sync", "runpod", "gemini", "about"]) assert.ok(isSectionSubTab("settings", sub), sub);
   assert.equal(isSectionSubTab("media", "nope"), false);
   assert.equal(isSectionSubTab("settings", "media"), false);
   assert.equal(isSectionSubTab("home", "sessions"), false);

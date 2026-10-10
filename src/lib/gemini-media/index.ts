@@ -24,7 +24,7 @@ import { createGeminiWorker } from "./worker";
 
 export * from "./contracts";
 export { estimateImageUsd, estimateVideoUsd, imageCostFromTable, imageCostFromUsage, modelCatalog } from "./pricing";
-export { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps } from "./services";
+export { createGeminiMediaServices, settingsFromJson, type GeminiMediaDeps, type GeminiStore } from "./services";
 export { createGeminiWorker } from "./worker";
 
 const CORE_KEY = Symbol.for("youtube-operations-manager.gemini-media-core");
