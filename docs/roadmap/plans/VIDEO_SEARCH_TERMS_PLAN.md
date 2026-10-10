@@ -147,7 +147,9 @@ The examples use Pacific dates. 2026-10-10 is a Saturday. Video V1 is published 
 - **AC-ST-10 (failures).**
   - A 400 counts attempt 1 and retries after 24 h. After 3 attempts the subject is `failed` and never queried again. This holds for a video
     and for a channel week.
-  - A 503, a 429 or no answer stops the run and puts that subject back 24 h with 0 attempts.
+  - A 503, a 429 or no answer puts that subject back 24 h with 0 attempts. For a video it stops the run; for a channel week it stops only
+    the weeks of the run and the videos are still read. *(Changed by the review of BL-169: with "stops the run" for weeks too, the 13
+    never-read weeks at the head of the batch, each getting no answer in turn, stopped 13 runs in a row with no video read.)*
   - Quota exhausted, reads switched off, sign-in errors, a 401 or a 403 `quotaExceeded` stop the run with nothing written.
 - **AC-ST-11 (answer shape).**
   - An empty answer records the read with no terms.

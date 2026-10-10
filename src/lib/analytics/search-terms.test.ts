@@ -384,7 +384,8 @@ test("AC-ST-10: a channel week answered with a 400 is retried a day later and gi
   assert.equal(weekQueries().filter((q) => q.startDate === "2026-09-28").length, asked, "failed: never queried again");
 });
 
-test("AC-ST-10: a 503, a 429 or no answer stops the run and puts the subject back by 24 h with no attempt", async () => {
+// AC-ST-10 as changed by the review of BL-169: a video's defer stops the run (this test); a week's stops only the weeks (the review tests).
+test("AC-ST-10: a 503, a 429 or no answer for a video stops the run and puts it back by 24 h with no attempt", async () => {
   for (const error of [googleError(503, "backendError"), googleError(429, "rateLimitExceeded"), new Error("socket hang up (test)")]) {
     const db = await freshDb();
     const videos = [published("v1", "2026-09-02T12:00:00Z"), published("v2", "2026-09-01T12:00:00Z")]; // order: weeks, v1, v2
