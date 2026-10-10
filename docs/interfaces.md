@@ -483,16 +483,22 @@ Key MCP tools:
     yesterday; each read starts 6 days before its first new day; at most 100 subjects per channel per run, the channel first, then the
     least recently read videos; a video is failed after 3 attempts, the channel is never given up). A video of another channel, or one
     that is private, scheduled or never synced, is not listed. Local read only (the live read is `agent_query_channel_breakdown`).
-  - `agent_get_stored_search_terms` (BL-169, Agent API 3.11.0, `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md`) — `{ channelId, videoIds
-    (1-20), credentialRef? }` → `{ channelId, videos: [{ videoId, publishedAt, window: { start, end }, coverage: { from, through,
-    collectedAt } | null, status (collected | retry | failed | not_collected), lastError, terms: [{ term, views, estimatedMinutesWatched }]
-    }] }`. The YouTube search terms of each video (`insightTrafficSourceDetail` of `YT_SEARCH`, top 25 by views, most views first), as
-    YouTube returned them for the video's first 90 days so far (`coverage.from` = Pacific publish date .. `coverage.through`). YouTube gives
-    only a total over a range, never per day, and names a term for only part of the search views (the search total is the `YT_SEARCH` row
-    of `agent_get_stored_breakdowns`). Read with the Analytics collection once the video has 7 days, then every 7 days while its 90 days
-    run, and once more on or after window end + 7; each read replaces the video's terms; at most 100 videos per channel per run, least
-    recently read first; failed after 3 attempts. A video of another channel, or one that is private, scheduled or never synced, is not
-    listed. Local read only.
+  - `agent_get_stored_search_terms` (BL-169, Agent API 3.11.0, `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md`) — two forms that do not
+    mix:
+    - **Videos:** `{ channelId, videoIds (1-20), credentialRef? }` → `{ channelId, videos: [{ videoId, publishedAt, window: { start, end },
+      coverage: { from, through, collectedAt } | null, status (collected | retry | failed | not_collected), lastError, terms: Term[] }] }`.
+      Each video's terms over its first 90 days so far (`coverage.from` = Pacific publish date .. `coverage.through`). Read once the video
+      has 7 days, then every 7 days while its 90 days run, and once more on or after window end + 7; each read replaces the video's terms.
+    - **Channel weeks:** `{ channelId, startDate, endDate (YYYY-MM-DD, at most 92 days), groupBy? ("total" default | "week"), credentialRef?
+      }` → `{ channelId, startDate, endDate, groupBy, weeks: [{ weekStart, weekEnd, status, collectedAt, lastError, terms? (groupBy week)
+      }], terms? (groupBy total) }`. The complete Monday-Sunday weeks (Pacific dates) lying fully inside the range, oldest first; `total`
+      sums each term over the weeks that were read (a sum of weekly top-25 lists). The last 13 complete weeks are read, each once complete
+      and once more on or after its Sunday + 7; an older week never read stays `not_collected`.
+    - `Term = { term, views, estimatedMinutesWatched }`, `insightTrafficSourceDetail` of `YT_SEARCH`, top 25 by views, as YouTube returned
+      them, most views first. YouTube gives only a total over a range, never per day, and names a term for only part of the search views
+      (the search total is the `YT_SEARCH` row of `agent_get_stored_breakdowns`). Collected with the Analytics collection, at most 100
+      queries per channel per run (the weeks first, then the least recently read videos); failed after 3 attempts. A video of another
+      channel, or one that is private, scheduled or never synced, is not listed. Local read only.
   - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
     `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`
     (BL-114, ADR 0014). Thumbnail impressions and click-through rate from the YouTube Reporting API

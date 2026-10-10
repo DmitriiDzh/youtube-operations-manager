@@ -44,7 +44,7 @@ of DEV-RESP-0018.
     after that day. Then never again.
 - One query per read, so about one query per video per week.
 
-### Per channel, per week (added: the per-video data is nearly empty, see §1)
+### Per channel, per week (added: the per-video data is nearly empty, see §1; approved by the owner, Telegram msg 2477, «1 ок, добавь недели»)
 
 - **Weeks:** Monday–Sunday, Pacific dates, like the Analytics tab's weekly buckets. The last 13 complete weeks are considered; a week older
   than that which was never read is not read any more.
