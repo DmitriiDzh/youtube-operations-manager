@@ -43,8 +43,9 @@ function shiftIsoDate(date: string, days: number): string {
 /**
  * The videos to read now, at most `max`: never read first, then least recently read; within that batch those whose last attempt failed
  * last (the BL-168 queue). Private videos are never read. Due, by the last status: never read -- a count above 0; `collected` / `retry`
- * -- the count changed since the read, or the read is `COMMENT_REREAD_DAYS` or more days old (Pacific dates; keeps every stored text
- * younger than 30 days); `disabled` / `failed` -- only when the count changed. A `retry` waits for its time.
+ * -- the count changed since the read, or the read is `COMMENT_REREAD_DAYS` or more days old while it still has comments (Pacific dates;
+ * keeps every stored text younger than 30 days); `disabled` / `failed` -- only when the count changed. A `retry` waits for the Pacific day
+ * of its time.
  */
 export function planDueCommentReads(
   videos: OwnVideo[],
@@ -65,14 +66,18 @@ export function planDueCommentReads(
     if (!state) {
       isDue = count !== null && count > 0;
     } else {
-      if (state.status === "retry" && state.nextAttemptAt && state.nextAttemptAt.getTime() > now.getTime()) continue;
+      // A retry is due from the Pacific day of its time on: a run happens once a day, so comparing the hour would push it a day further
+      // (review of BL-171).
+      if (state.status === "retry" && state.nextAttemptAt && toPacificDate(state.nextAttemptAt) > today) continue;
       const changed = count !== state.readCommentCount;
       if (state.status === "disabled" || state.status === "failed") {
         isDue = changed;
       } else {
         const stale = state.readAt === null || today >= shiftIsoDate(toPacificDate(state.readAt), COMMENT_REREAD_DAYS);
-        // Never read yet (a first try failed) and nothing to read: nothing due.
-        isDue = state.readAt === null ? (count !== null && count > 0) || changed : changed || stale;
+        // Never read yet (a first try failed) and nothing to read: nothing due. The weekly reread only refreshes stored text, so a video
+        // with no comments left is not reread every week (review of BL-171).
+        const hasComments = count !== null && count > 0;
+        isDue = state.readAt === null ? hasComments || changed : changed || (stale && hasComments);
       }
     }
     if (isDue) due.push({ videoId: video.videoId, count, lastAt: state?.readAt?.getTime() ?? Number.NEGATIVE_INFINITY, retry: state?.status === "retry" });
@@ -91,7 +96,8 @@ export type VideoCommentDependencies = {
   /** Reads through the read gateway, as the channel's signed-in user. */
   youtube: {
     commentCounts(credentialRef: { userId: string }, videoIds: string[]): Promise<Array<{ videoId: string; commentCount: number | null }>>;
-    comments(credentialRef: { userId: string }, videoId: string): Promise<ReadComment[]>;
+    /** `channelId` is the video's channel: a comment it wrote is marked `byChannelOwner`. */
+    comments(credentialRef: { userId: string }, videoId: string, channelId: string): Promise<ReadComment[]>;
   };
   failureKind(error: unknown): "stop" | "defer" | "attempt";
   store: {
@@ -163,7 +169,7 @@ export function createVideoCommentServices(deps: VideoCommentDependencies) {
       let failed = 0;
       for (const item of plan) {
         try {
-          const comments = await deps.youtube.comments(parsed.credentialRef, item.videoId);
+          const comments = await deps.youtube.comments(parsed.credentialRef, item.videoId, parsed.channelId);
           await deps.store.saveRead({ channelId: parsed.channelId, videoId: item.videoId, status: "collected", readCommentCount: item.count, comments, at: deps.clock.now() });
           read += 1;
         } catch (error) {

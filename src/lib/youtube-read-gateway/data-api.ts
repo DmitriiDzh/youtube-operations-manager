@@ -694,9 +694,10 @@ export type OwnVideoComment = {
 /**
  * BL-171: the newest top-level comments of one of our videos -- `commentThreads.list` with `part=snippet`, at most 100, newest first,
  * as plain text (1 unit; checked live 2026-10-10). Threads YouTube marks not public are skipped. A 403 `commentsDisabled` is the
- * caller's to recognise (the error is rethrown unchanged).
+ * caller's to recognise (the error is rethrown unchanged). `channelId` is the video's own channel (the caller's), so a comment it wrote is
+ * marked `byChannelOwner` even if YouTube leaves the thread's own `channelId` out (review of BL-171).
  */
-export async function listOwnVideoComments(youtube: youtube_v3.Youtube, videoId: string): Promise<OwnVideoComment[]> {
+export async function listOwnVideoComments(youtube: youtube_v3.Youtube, videoId: string, channelId: string): Promise<OwnVideoComment[]> {
   const res = await youtube.commentThreads.list({ part: ["snippet"], videoId, maxResults: 100, order: "time", textFormat: "plainText" });
   const comments: OwnVideoComment[] = [];
   for (const thread of res.data.items ?? []) {
@@ -711,7 +712,7 @@ export async function listOwnVideoComments(youtube: youtube_v3.Youtube, videoId:
       publishedAt: top.snippet.publishedAt ?? null,
       updatedAt: top.snippet.updatedAt ?? null,
       replyCount: typeof snippet.totalReplyCount === "number" ? snippet.totalReplyCount : null,
-      byChannelOwner: !!snippet.channelId && top.snippet.authorChannelId?.value === snippet.channelId,
+      byChannelOwner: top.snippet.authorChannelId?.value === channelId,
     });
   }
   return comments;

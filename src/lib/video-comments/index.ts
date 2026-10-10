@@ -19,7 +19,7 @@ export function createVideoCommentsCore() {
     listVideos: adapter.listVideos,
     youtube: {
       commentCounts: async (credentialRef, videoIds) => getVideoCommentCounts(await getAuthenticatedYoutube(credentialRef.userId), videoIds),
-      comments: async (credentialRef, videoId) => listOwnVideoComments(await getAuthenticatedYoutube(credentialRef.userId), videoId),
+      comments: async (credentialRef, videoId, channelId) => listOwnVideoComments(await getAuthenticatedYoutube(credentialRef.userId), videoId, channelId),
     },
     failureKind,
     store: adapter.store,

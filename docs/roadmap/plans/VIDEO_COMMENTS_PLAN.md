@@ -37,7 +37,8 @@ order of DEV-RESP-0018.
 - **When it is due, by its last status:**
   - **never read:** due if its count is above 0;
   - **`collected` or `retry`:** due if its count differs from the one at its last read (a comment came or went), or its last read is 7 or
-    more days old;
+    more days old while it still has comments *(review of BL-171: without that condition a video left with no comments was reread every
+    week)*;
   - **`disabled` or `failed`:** due only when its count differs from the one at its last read.
 
   The weekly reread keeps every stored text younger than 30 days. A video whose count dropped to 0 is read once more, and that read
@@ -52,7 +53,8 @@ order of DEV-RESP-0018.
 - **Gates:** the Data API reads switch (inside the client), the Data API quota reserve (`isBackgroundReadAllowed("data")`) and the
   quota-history label "Comment collection".
 - **Failures:** the shared read-failure rules. `stop` ends the run with nothing written; `defer` puts the video back 24 h and ends the run;
-  `attempt` counts one try, retry after 24 h, `failed` after 3.
+  `attempt` counts one try, `failed` after 3. A retry is due from the next Pacific day on *(review of BL-171: "after 24 h" meant 24–48 h
+  with one run a day)*.
   - A 403 `commentsDisabled` is recognised before the shared rules see it. It is not a failure: the video is stored as `disabled` with no
     comments, and read again only when its count changes. A thread with `isPublic` false is skipped.
   - The rules move from `analytics/query-failure.ts` to the read gateway (`youtube-read-gateway`), shared by analytics and comments, and
@@ -73,7 +75,7 @@ order of DEV-RESP-0018.
 ### Read tool `agent_get_video_comments`
 
 - **Input:** `{ channelId, videoIds (1–20), limit? (1–100, default 20) }`.
-- **Output per video:** `{ videoId, title, commentCount (synced), status (collected | disabled | retry | failed | not_collected), readAt,
+- **Output per video:** `{ videoId, title, commentCountAtRead (the count at the last read), status (collected | disabled | retry | failed | not_collected), readAt,
   lastError, comments }`.
   - `comments`: `[{ commentId, publishedAt, updatedAt, text, likeCount, replyCount, byChannelOwner }]`, newest first, at most `limit`.
 - A video of another channel is not listed.

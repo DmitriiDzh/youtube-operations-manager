@@ -1002,7 +1002,7 @@ test("listOwnVideoComments asks for the 100 newest threads as plain text and kee
       },
     },
   } as unknown as youtube_v3.Youtube;
-  const comments = await listOwnVideoComments(youtube, "a");
+  const comments = await listOwnVideoComments(youtube, "a", "UC_A");
   assert.deepEqual(asked, { part: ["snippet"], videoId: "a", maxResults: 100, order: "time", textFormat: "plainText" });
   assert.deepEqual(comments, [
     { commentId: "c1", text: "Beautiful music!", likeCount: 3, publishedAt: "2026-09-27T19:16:28Z", updatedAt: "2026-09-28T08:00:00Z", replyCount: 2, byChannelOwner: true },

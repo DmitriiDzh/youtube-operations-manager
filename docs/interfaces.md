@@ -1030,7 +1030,7 @@ arms: the results tool and the `experiment.link_video` proposal, 1.6.0 (BL-171) 
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.5.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.6.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
   in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170), plus
   `agent_get_video_comments` in 1.6.0 (BL-171)), independent of `AGENT_API_VERSION` and the Factory API.

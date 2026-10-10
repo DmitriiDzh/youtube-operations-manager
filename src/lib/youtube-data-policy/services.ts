@@ -70,7 +70,7 @@ async function applyPurge(client: SqlExecutor, cutoffSeconds: number): Promise<P
 }
 
 /**
- * Phase 13 slice 13.2 (D1 = a, owner msg 1129): every API-sourced row of a Non-Authorized table whose
+ * Phase 13 slice 13.2 (D1 = a, owner msg 1129): every API-sourced row of a Non-Authorized (or, since BL-171, authorized-expiring) table whose
  * clock column is older than `API_DATA_RETENTION_DAYS` (III.E.4.d) is deleted -- or, for a row that
  * records the operator's own decision, has its API-sourced columns blanked -- plus the market
  * assignments pointing at deleted records. Rows the operator entered are untouched (`apiRowsWhere`);

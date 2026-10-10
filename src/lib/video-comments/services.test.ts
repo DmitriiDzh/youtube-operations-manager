@@ -17,7 +17,7 @@ import {
 } from "@/lib/db";
 import { SNAPSHOT_DEVICE_LOCAL_TABLES } from "@/lib/snapshot/contracts";
 import { DomainError } from "@/lib/shared-domain";
-import { failureKind } from "@/lib/youtube-read-gateway/read-failure";
+import { failureKind } from "@/lib/youtube-read-gateway";
 import { YOUTUBE_DATA_CLASSIFICATION } from "@/lib/youtube-data-policy/contracts";
 import { createVideoCommentServices, gateCommentCollection, type OwnVideo } from "./services";
 
@@ -163,6 +163,36 @@ test("AC-VC-04: due when the count changes or a week has passed; a disabled vide
   world.threads.set("a", []);
   assert.deepEqual(await day("2026-10-20T18:00:00Z"), ["comments a"], "dropped to 0");
   assert.deepEqual(await listStoredVideoComments("UC_A", ["a"], db), []);
+  // Review of BL-171: with no comments left, the weekly reread (it only refreshes stored text) does not happen.
+  assert.deepEqual(await day("2026-10-27T18:00:00Z"), [], "7 days after the clearing read, still 0 comments");
+});
+
+test("review of BL-171: a retry is due on the next Pacific day, whatever the hour of the failure", async () => {
+  const db = await freshDb();
+  let failing = true;
+  const world: World = { counts: new Map([["a", 1]]), threads: new Map(), fail: () => (failing ? googleError(404, "videoNotFound") : null) };
+  const { services, calls, clock } = setup(db, [video("a")], world);
+  clock.now = at("2026-10-10T16:05:00Z"); // 09:05 PDT
+  await services.collectDueComments(RUN);
+  failing = false;
+  clock.now = at("2026-10-11T16:00:00Z"); // 09:00 PDT the next day: before the failure's hour, still the next day
+  assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 1, disabled: 0, failed: 0 });
+  assert.deepEqual(calls.filter((c) => c.startsWith("comments")), ["comments a", "comments a"]);
+});
+
+test("AC-VC-07 (disabled): a collected video whose comments are turned off is read as disabled and its stored comments are cleared", async () => {
+  const db = await freshDb();
+  let disabled = false;
+  const world: World = { counts: new Map([["a", 1]]), threads: new Map([["a", [comment("c1", "2026-09-27T19:16:28Z")]]]), fail: () => (disabled ? googleError(403, "commentsDisabled") : null) };
+  const { services, clock } = setup(db, [video("a")], world);
+  await services.collectDueComments(RUN);
+  assert.equal((await listStoredVideoComments("UC_A", ["a"], db)).length, 1);
+  disabled = true;
+  world.counts.set("a", null); // YouTube omits the count once comments are off
+  clock.now = at("2026-10-11T18:00:00Z");
+  assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 0, disabled: 1, failed: 0 });
+  assert.deepEqual(await listStoredVideoComments("UC_A", ["a"], db), []);
+  assert.equal((await listVideoCommentStates("UC_A", db))[0].status, "disabled");
 });
 
 test("AC-VC-06: at most 50 reads per run, never read first then least recently read; the next day reads the other 10", async () => {
@@ -176,6 +206,22 @@ test("AC-VC-06: at most 50 reads per run, never read first then least recently r
   clock.now = at("2026-10-11T18:00:00Z");
   assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 10, disabled: 0, failed: 0 });
   assert.deepEqual(calls.filter((c) => c.startsWith("comments")), ids.slice(50).map((id) => `comments ${id}`));
+});
+
+test("AC-VC-06: in a mixed queue the never-read videos come first, then the least recently read", async () => {
+  const db = await freshDb();
+  const world: World = { counts: new Map([["old", 1], ["older", 0], ["new", 0]]), threads: new Map() };
+  const { services, calls, clock } = setup(db, [video("older"), video("old"), video("new")], world);
+  clock.now = at("2026-10-01T18:00:00Z");
+  await services.collectDueComments(RUN); // only `old` has comments: read on 10-01
+  world.counts.set("older", 1);
+  clock.now = at("2026-10-02T18:00:00Z");
+  await services.collectDueComments(RUN); // `older` gets one: read on 10-02
+  world.counts.set("new", 1);
+  calls.length = 0;
+  clock.now = at("2026-10-09T18:00:00Z"); // both reads are 7+ days old; `new` was never read
+  await services.collectDueComments(RUN);
+  assert.deepEqual(calls.filter((c) => c.startsWith("comments")), ["comments new", "comments old", "comments older"]);
 });
 
 test("AC-VC-07: a 404 counts attempts (retry after 24 h, failed after 3, then only on a new count); 5xx/429/no answer defer and end the run", async () => {
