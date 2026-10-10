@@ -26,6 +26,7 @@ const EXPECTED_TOOLS = [
   "factory_media_get_pull",
   "factory_media_get_session",
   "factory_media_get_settings",
+  "factory_media_list_gpu_availability_log",
   "factory_media_list_models",
   "factory_media_list_templates",
   "factory_media_pull_model",

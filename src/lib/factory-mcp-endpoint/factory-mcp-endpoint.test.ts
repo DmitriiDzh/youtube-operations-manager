@@ -84,6 +84,7 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       cancelJob: async (input) => (mediaCalls.push(`cancelJob:${input.jobId}`), { job: { jobId: input.jobId } }),
       capacityLog: async () => (mediaCalls.push("capacityLog"), { attempts: [] }),
       gpuAvailability: async () => (mediaCalls.push("gpuAvailability"), { availability: {} }),
+      gpuAvailabilityLog: async () => (mediaCalls.push("gpuAvailabilityLog"), { log: {} }),
       deleteTemplate: async (input) => (mediaCalls.push(`deleteTemplate:${input.templateId}`), { deleted: true }),
       adoptTemplate: async (input) => (mediaCalls.push(`adoptTemplate:${input.templateId}>${input.newTemplateId}`), { status: "pending" }),
       getSettings: async () => (mediaCalls.push("getSettings"), { settings: {} }),
@@ -263,6 +264,7 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_media_get_pull",
     "factory_media_get_session",
     "factory_media_get_settings",
+    "factory_media_list_gpu_availability_log",
     "factory_media_list_models",
     "factory_media_list_templates",
     "factory_media_pull_model",
@@ -337,6 +339,7 @@ test("factory_get_capabilities reports the factory API version 1.10.0 (BL-172), 
       "factory_media_cancel_job",
       "factory_media_capacity_log",
       "factory_media_get_gpu_availability",
+      "factory_media_list_gpu_availability_log",
       "factory_plan_create",
       "factory_plan_import",
       "factory_plan_update",
@@ -587,6 +590,7 @@ test("BL-133 (AC-FG-08): the session and job writes pass the device mutation gat
     ["factory_media_get_job", { jobId: "j1" }, "getJob:j1"],
     ["factory_media_capacity_log", {}, "capacityLog"],
     ["factory_media_get_gpu_availability", {}, "gpuAvailability"],
+    ["factory_media_list_gpu_availability_log", { summary: true }, "gpuAvailabilityLog"],
   ] as const) {
     toolDeps.mediaCalls.length = 0;
     assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);

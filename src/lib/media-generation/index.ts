@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { appDataPaths, getMediaSessionJobSummary, insertMediaCapacityAttempt, listMediaCapacityAttempts, setMediaCapacityAttemptHostCuda, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
+import { appDataPaths, getLatestMediaGpuAvailabilityAt, getMediaSessionJobSummary, insertMediaCapacityAttempt, insertMediaGpuAvailabilitySnapshot, listMediaCapacityAttempts, listMediaGpuAvailabilityLog, setMediaCapacityAttemptHostCuda, summarizeMediaGpuAvailabilityLog, getMediaTemplateAdoptionsJson, getMediaTemplateSyncLastJson, listMediaControlEvents, setMediaTemplateAdoptionsJson, setMediaTemplateSyncLastJson } from "@/lib/db";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { comfyUiProxyBaseUrl, createComfyUiClient, createHuggingFaceClient, createRunpodApiClient, createRunpodS3Client } from "@/lib/media-gateway";
@@ -20,6 +20,7 @@ import { createJobProgressRegistry } from "./job-progress";
 import { createMediaJobServices } from "./jobs";
 import { createMediaModelServices } from "./models";
 import { findLivePodByName } from "./pod-lifecycle";
+import { createGpuAvailabilityLogServices } from "./gpu-availability-log";
 import { createMediaGenerationServices } from "./services";
 import { createMediaSessionServices } from "./sessions";
 import { createVolumeLock } from "./volume-lock";
@@ -122,6 +123,18 @@ function buildCore(jobScheduling: JobScheduling) {
   });
   modelsRef = models;
   const migration = createVolumeMigrationServices({ base, clock: { now }, sleep, log: (line) => console.warn(line) });
+  // BL-172 (FO-REQ-0016 B): the 3-hourly GPU availability log (the timer in src/instrumentation.ts, the factory read tool).
+  const gpuAvailabilityLog = createGpuAvailabilityLogServices({
+    store: {
+      latestAt: () => getLatestMediaGpuAvailabilityAt(),
+      insertSnapshot: (at, rows) => insertMediaGpuAvailabilitySnapshot(at, rows),
+      list: (filter) => listMediaGpuAvailabilityLog(filter),
+      summarize: (filter) => summarizeMediaGpuAvailabilityLog(filter),
+    },
+    base,
+    clock: { now },
+    log: (line) => console.warn(line),
+  });
   const sessions = createMediaSessionServices({
     store: createMediaSessionStore(),
     jobSummary: (sessionId) => getMediaSessionJobSummary(sessionId),
@@ -383,6 +396,7 @@ function buildCore(jobScheduling: JobScheduling) {
     ...jobs,
     ...models,
     ...migration,
+    ...gpuAvailabilityLog,
     updateSettings,
     listControlEvents,
     listCapacityAttempts,

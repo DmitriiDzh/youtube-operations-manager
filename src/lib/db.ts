@@ -7,7 +7,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
-import { MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
+import { GPU_AVAILABILITY_LOG_RETENTION_DAYS, MEDIA_SESSION_ACTIVE_STATUSES, MEDIA_SESSION_STATUSES, MEDIA_SESSION_TERMINAL_STATUSES, type MediaSessionStatus } from "@/lib/media-generation/contracts";
 import type { BatchItem } from "drizzle-orm/batch";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
@@ -940,6 +940,26 @@ export const mediaCapacityAttempts = sqliteTable(
     hostCudaVersion: text("host_cuda_version"),
   },
   (table) => [index("media_capacity_attempts_at_idx").on(table.at)]
+);
+
+/**
+ * Schema v81 (BL-172, FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock read every 3 hours -- per
+ * snapshot, one overall row per GPU (`data_center_id` `*`) and one row per datacenter with network volumes (NONE where the catalog
+ * did not list that datacenter for the GPU). Kept 90 days, device-local; our own record of RunPod readings, not YouTube data.
+ */
+export const mediaGpuAvailabilityLog = sqliteTable(
+  "media_gpu_availability_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    at: integer("at", { mode: "timestamp" }).notNull(),
+    gpuTypeId: text("gpu_type_id").notNull(),
+    dataCenterId: text("data_center_id").notNull(),
+    /** NONE | LOW | MEDIUM | HIGH as RunPod gave it; null when RunPod listed the datacenter without a level. */
+    stock: text("stock"),
+    pricePerHr: real("price_per_hr"),
+    minCudaVersion: text("min_cuda_version"),
+  },
+  (table) => [index("media_gpu_availability_log_at_idx").on(table.at), index("media_gpu_availability_log_gpu_dc_at_idx").on(table.gpuTypeId, table.dataCenterId, table.at)]
 );
 
 /**
@@ -4266,6 +4286,24 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         checked_on TEXT NOT NULL,
         checked_at INTEGER NOT NULL
       )`);
+    },
+  },
+  {
+    version: 81,
+    description:
+      "media_gpu_availability_log -- BL-172 (FO-REQ-0016 B, docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md): RunPod's GPU stock per datacenter, read every 3 hours and kept 90 days. Device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES); additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS media_gpu_availability_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at INTEGER NOT NULL,
+        gpu_type_id TEXT NOT NULL,
+        data_center_id TEXT NOT NULL,
+        stock TEXT,
+        price_per_hr REAL,
+        min_cuda_version TEXT
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS media_gpu_availability_log_at_idx ON media_gpu_availability_log (at)");
+      await client.execute("CREATE INDEX IF NOT EXISTS media_gpu_availability_log_gpu_dc_at_idx ON media_gpu_availability_log (gpu_type_id, data_center_id, at)");
     },
   },
 ];
@@ -8837,6 +8875,84 @@ export async function listMediaCapacityAttempts(
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(mediaCapacityAttempts.at), desc(mediaCapacityAttempts.id))
     .limit(filter.limit);
+}
+
+export type MediaGpuAvailabilityLogRow = { gpuTypeId: string; dataCenterId: string; stock: string | null; pricePerHr: number | null; minCudaVersion: string | null };
+
+/** BL-172: one snapshot (every row gets the same `at`), in one transaction; rows older than 90 days are pruned on the way. */
+export async function insertMediaGpuAvailabilitySnapshot(at: Date, rows: MediaGpuAvailabilityLogRow[], database: AppDb = db): Promise<void> {
+  if (rows.length === 0) return;
+  await database.transaction(async (tx) => {
+    for (let i = 0; i < rows.length; i += 200) {
+      await tx.insert(mediaGpuAvailabilityLog).values(rows.slice(i, i + 200).map((row) => ({ ...row, at })));
+    }
+  });
+  // Housekeeping, like the capacity log: a failed prune never loses the snapshot just stored.
+  await database
+    .delete(mediaGpuAvailabilityLog)
+    .where(lt(mediaGpuAvailabilityLog.at, new Date(at.getTime() - GPU_AVAILABILITY_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000)))
+    .catch(() => undefined);
+}
+
+/** BL-172: when the newest snapshot was taken (null = none yet). */
+export async function getLatestMediaGpuAvailabilityAt(database: AppDb = db): Promise<Date | null> {
+  const [row] = await database.select({ at: mediaGpuAvailabilityLog.at }).from(mediaGpuAvailabilityLog).orderBy(desc(mediaGpuAvailabilityLog.at)).limit(1);
+  return row?.at ?? null;
+}
+
+export type MediaGpuAvailabilityLogFilter = { since?: Date; until?: Date; gpuTypeId?: string; dataCenterId?: string };
+
+function gpuAvailabilityConditions(filter: MediaGpuAvailabilityLogFilter) {
+  return [
+    filter.since ? gte(mediaGpuAvailabilityLog.at, filter.since) : undefined,
+    filter.until ? lte(mediaGpuAvailabilityLog.at, filter.until) : undefined,
+    filter.gpuTypeId ? eq(mediaGpuAvailabilityLog.gpuTypeId, filter.gpuTypeId) : undefined,
+    filter.dataCenterId ? eq(mediaGpuAvailabilityLog.dataCenterId, filter.dataCenterId) : undefined,
+  ].filter((c) => c !== undefined);
+}
+
+/** BL-172: newest snapshot first; within one snapshot by GPU, then datacenter (the overall `*` row first). */
+export async function listMediaGpuAvailabilityLog(
+  filter: MediaGpuAvailabilityLogFilter & { limit: number },
+  database: AppDb = db
+): Promise<Array<typeof mediaGpuAvailabilityLog.$inferSelect>> {
+  const conditions = gpuAvailabilityConditions(filter);
+  return database
+    .select()
+    .from(mediaGpuAvailabilityLog)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(mediaGpuAvailabilityLog.at), asc(mediaGpuAvailabilityLog.gpuTypeId), asc(mediaGpuAvailabilityLog.dataCenterId))
+    .limit(filter.limit);
+}
+
+/**
+ * BL-172: for each GPU and datacenter in the range, the number of snapshots per stock level -- counted in SQL over every matching
+ * row, never over a page of them. Also the number of distinct snapshots in the range.
+ */
+export async function summarizeMediaGpuAvailabilityLog(
+  filter: MediaGpuAvailabilityLogFilter,
+  database: AppDb = db
+): Promise<{ snapshots: number; firstAt: Date | null; lastAt: Date | null; groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }> }> {
+  const conditions = gpuAvailabilityConditions(filter);
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const [totals] = await database
+    .select({ snapshots: sql<number>`count(distinct ${mediaGpuAvailabilityLog.at})`, firstAt: sql<number | null>`min(${mediaGpuAvailabilityLog.at})`, lastAt: sql<number | null>`max(${mediaGpuAvailabilityLog.at})` })
+    .from(mediaGpuAvailabilityLog)
+    .where(where);
+  const groups = await database
+    .select({ gpuTypeId: mediaGpuAvailabilityLog.gpuTypeId, dataCenterId: mediaGpuAvailabilityLog.dataCenterId, stock: mediaGpuAvailabilityLog.stock, count: sql<number>`count(*)` })
+    .from(mediaGpuAvailabilityLog)
+    .where(where)
+    .groupBy(mediaGpuAvailabilityLog.gpuTypeId, mediaGpuAvailabilityLog.dataCenterId, mediaGpuAvailabilityLog.stock)
+    .orderBy(asc(mediaGpuAvailabilityLog.gpuTypeId), asc(mediaGpuAvailabilityLog.dataCenterId), asc(mediaGpuAvailabilityLog.stock));
+  // `at` is stored in Unix seconds (drizzle's timestamp mode); min/max come back raw.
+  const toDate = (value: number | null | undefined) => (value === null || value === undefined ? null : new Date(Number(value) * 1000));
+  return {
+    snapshots: Number(totals?.snapshots ?? 0),
+    firstAt: toDate(totals?.firstAt),
+    lastAt: toDate(totals?.lastAt),
+    groups: groups.map((g) => ({ ...g, count: Number(g.count) })),
+  };
 }
 
 export async function insertMediaControlEvent(

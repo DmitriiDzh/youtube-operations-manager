@@ -66,8 +66,9 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_get_job",
   "factory_media_cancel_job",
   "factory_media_capacity_log",
-  // BL-172 (FO-REQ-0016): GPU stock per datacenter.
+  // BL-172 (FO-REQ-0016): GPU stock per datacenter, now and as stored every 3 hours.
   "factory_media_get_gpu_availability",
+  "factory_media_list_gpu_availability_log",
   // BL-143 (ADR 0029): generation plans.
   "factory_plan_create",
   "factory_plan_import",
@@ -153,6 +154,7 @@ export type FactoryToolDeps = {
     capacityLog(input: { since?: string; gpuTypeId?: string; limit?: number }): Promise<Record<string, unknown>>;
     // BL-172 (FO-REQ-0016 A).
     gpuAvailability(input: { gpuTypeIds?: string[]; dataCenterIds?: string[]; minVramGb?: number; minCudaVersion?: string }): Promise<Record<string, unknown>>;
+    gpuAvailabilityLog(input: { since?: string; until?: string; gpuTypeId?: string; dataCenterId?: string; limit?: number; summary?: boolean }): Promise<Record<string, unknown>>;
   };
   /** BL-143 (ADR 0029): the generation plans core; it validates every input strictly itself. */
   plans: {
@@ -284,6 +286,16 @@ const gpuAvailabilityInput = z
     dataCenterIds: z.array(z.string().min(1).max(32)).min(1).max(50).optional(),
     minVramGb: z.number().int().min(0).max(1024).optional(),
     minCudaVersion: z.string().regex(/^\d{1,2}\.\d$/, "a CUDA version such as 12.8").optional(),
+  })
+  .strict();
+const gpuAvailabilityLogInput = z
+  .object({
+    since: z.string().datetime({ offset: true }).optional(),
+    until: z.string().datetime({ offset: true }).optional(),
+    gpuTypeId: z.string().min(1).max(128).optional(),
+    dataCenterId: z.string().min(1).max(32).optional(),
+    limit: z.number().int().min(1).max(5000).optional(),
+    summary: z.boolean().optional(),
   })
   .strict();
 
@@ -617,6 +629,16 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: gpuAvailabilityInput,
     },
     async (args) => successResult(await deps.media.gpuAvailability(parseInput(gpuAvailabilityInput, args)))
+  );
+
+  registerTool(
+    "factory_media_list_gpu_availability_log",
+    {
+      description:
+        "RunPod's GPU stock as THIS computer stored it every 3 hours, kept 90 days (BL-172). Each snapshot: for every GPU of 24 GB or more (Secure Cloud, with the Settings' CUDA minimum), one overall row (dataCenterId \"*\") and one row per datacenter that offers network volumes -- NONE where RunPod did not list that datacenter for the GPU, so counts include the real zeros. { log: { intervalHours, retentionDays, lastSnapshotAt, rows: [{ at, gpuTypeId, dataCenterId, stock (NONE|LOW|MEDIUM|HIGH; null = RunPod gave no level), pricePerHr (the GPU type's Secure on-demand USD/h), minCudaVersion }] } }, newest first -- or, with summary: true, { log: { …, summary: { snapshots (distinct snapshots in the range), firstAt, lastAt, entries: [{ gpuTypeId, dataCenterId, snapshots, stock: { HIGH?: n, MEDIUM?: n, LOW?: n, NONE?: n, UNKNOWN?: n } }] } } } counted over every matching row. -- { since?, until? (ISO date-times), gpuTypeId?, dataCenterId?, limit? (1–5000, default 1000; rows only), summary? }. Snapshots are taken only while the media gateway is on and RunPod is configured; each computer keeps its own log. Read-only, local, no RunPod call.",
+      inputSchema: gpuAvailabilityLogInput,
+    },
+    async (args) => successResult(await deps.media.gpuAvailabilityLog(parseInput(gpuAvailabilityLogInput, args)))
   );
 
   // -- BL-143 (ADR 0029): generation plans. The plans core validates every field strictly (bounds, patterns); the schemas

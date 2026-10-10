@@ -116,3 +116,61 @@ export function buildGpuAvailability(args: {
     dataCenters: [...dcInfo.values()].filter((dc) => !wantedDcs || wantedDcs.has(dc.dataCenterId)).sort((a, b) => a.dataCenterId.localeCompare(b.dataCenterId)),
   };
 }
+
+// -- BL-172 B: the stored log ------------------------------------------------------------------------------------------------------
+
+/** A snapshot is due when the newest stored one is this old (FO-REQ-0016: every 3 hours). */
+export const GPU_AVAILABILITY_SNAPSHOT_INTERVAL_MS = 3 * 60 * 60 * 1000;
+/** The `dataCenterId` of a GPU's overall row (RunPod's stock across all datacenters). */
+export const GPU_AVAILABILITY_OVERALL = "*";
+
+export type GpuAvailabilityLogRow = { gpuTypeId: string; dataCenterId: string; stock: string | null; pricePerHr: number | null; minCudaVersion: string | null };
+
+/**
+ * One snapshot's rows from a reading built with `minVramGb` 24 (fixed, so the log does not shrink when the Settings minimum is
+ * raised): per GPU an overall row, plus one row per datacenter that offers network volumes -- NONE where RunPod did not list that
+ * datacenter for the GPU, so a count of "at least LOW" has its real zeros. Datacenters without network volumes are not stored.
+ */
+export function buildGpuAvailabilitySnapshotRows(availability: GpuAvailability): GpuAvailabilityLogRow[] {
+  const volumeDcs = availability.dataCenters.filter((dc) => dc.networkVolumeTypes.length > 0).map((dc) => dc.dataCenterId);
+  return availability.gpus.flatMap((gpu) => {
+    const common = { gpuTypeId: gpu.gpuTypeId, pricePerHr: gpu.pricePerHr, minCudaVersion: availability.minCudaVersion };
+    return [
+      { ...common, dataCenterId: GPU_AVAILABILITY_OVERALL, stock: gpu.stock },
+      ...volumeDcs.map((dataCenterId) => {
+        const listed = gpu.dataCenters.find((dc) => dc.dataCenterId === dataCenterId);
+        return { ...common, dataCenterId, stock: listed ? listed.stock : "NONE" };
+      }),
+    ];
+  });
+}
+
+export const gpuAvailabilityLogInputSchema = z
+  .object({
+    since: z.string().datetime({ offset: true }).optional(),
+    until: z.string().datetime({ offset: true }).optional(),
+    gpuTypeId: z.string().min(1).max(128).optional(),
+    dataCenterId: z.string().min(1).max(32).optional(),
+    limit: z.number().int().min(1).max(5000).optional(),
+    summary: z.boolean().optional(),
+  })
+  .strict();
+export type GpuAvailabilityLogInput = z.infer<typeof gpuAvailabilityLogInputSchema>;
+
+/** Per GPU and datacenter: snapshots in the range and how many of them were at each stock level (`UNKNOWN` = no level given). */
+export type GpuAvailabilitySummaryEntry = { gpuTypeId: string; dataCenterId: string; snapshots: number; stock: Record<string, number> };
+
+export function summarizeGpuAvailabilityGroups(groups: Array<{ gpuTypeId: string; dataCenterId: string; stock: string | null; count: number }>): GpuAvailabilitySummaryEntry[] {
+  const entries = new Map<string, GpuAvailabilitySummaryEntry>();
+  for (const group of groups) {
+    const key = `${group.gpuTypeId}\u0000${group.dataCenterId}`;
+    const entry = entries.get(key) ?? { gpuTypeId: group.gpuTypeId, dataCenterId: group.dataCenterId, snapshots: 0, stock: {} };
+    const level = group.stock ?? "UNKNOWN";
+    entry.stock[level] = (entry.stock[level] ?? 0) + group.count;
+    entry.snapshots += group.count;
+    entries.set(key, entry);
+  }
+  // Code-unit order, the same as the database's: the overall `*` row before any datacenter.
+  const byCode = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  return [...entries.values()].sort((a, b) => byCode(a.gpuTypeId, b.gpuTypeId) || byCode(a.dataCenterId, b.dataCenterId));
+}

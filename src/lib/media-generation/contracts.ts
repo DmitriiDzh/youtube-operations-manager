@@ -36,6 +36,9 @@ export type MediaCredentialsStatus =
 
 export type MediaCloudType = "SECURE" | "COMMUNITY";
 
+/** BL-172: how long the 3-hourly GPU availability log keeps a snapshot (pruned on insert). */
+export const GPU_AVAILABILITY_LOG_RETENTION_DAYS = 90;
+
 export type MediaSettings = {
   datacenterId: string | null;
   gpuTypeId: string | null;

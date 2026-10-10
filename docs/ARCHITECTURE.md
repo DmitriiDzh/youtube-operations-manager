@@ -3423,3 +3423,30 @@ Plan: `docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md` (AC-VC-01..12). Schema v80.
   `video_comment_channel_state` are bookkeeping. All three are device-local.
 - **Reads.** `listStoredComments` (channel scope) backs `agent_get_video_comments`: the requested videos of the channel, newest comments
   first (`limit`), with the state.
+
+## 41. GPU availability per datacenter, now and every 3 hours (BL-172, FO-REQ-0016)
+
+Plan: `docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md` (AC-GA-01..09). Schema v81. Part of the media core (`src/lib/media-generation/`);
+RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its switch and traffic log apply.
+
+- **Gateway.** `listGpuTypes({ cloud, minCudaVersion? })` passes RunPod's v2 `minCudaVersion` filter (stock counted only on hosts with
+  at least that CUDA) and maps `cudaVersions: [{ version, available }]` (per GPU type, not per datacenter). `RUNPOD_S3_DATACENTERS`
+  (`runpod-s3.ts`) is RunPod's documented S3-endpoint list; the v2 catalog has no S3 field.
+- **Live read** (`getGpuAvailability`, `services.ts`): input checked by `gpuAvailabilityInputSchema`, then the two catalog reads in
+  parallel with the Settings' cloud and CUDA minimum (an input version replaces it), then the pure `buildGpuAvailability`
+  (`gpu-availability.ts`): GPUs at or above the memory minimum (input, else Settings, else 24 GB), each with its datacenters' stock,
+  `networkVolume` (the datacenter lists a volume tier) and `s3Api`; `cudaAvailable` = some listed version ≥ the minimum is available.
+- **Log** (`gpu-availability-log.ts`). `snapshotGpuAvailabilityIfDue` returns `taken` / `skipped` (`fresh`: newest snapshot under 3 h;
+  `backoff`: under an hour since a failure, kept in memory; `gateway_off` / `not_configured`: checked before any client is resolved, so a
+  switched-off gateway records no blocked traffic) / `failed` (logged, never thrown). It always reads Secure Cloud (network volumes
+  exist only there) and stores GPUs of 24 GB or more (fixed, so raising the Settings minimum does not shrink the log), through
+  `buildGpuAvailabilitySnapshotRows`: per GPU an overall `*` row plus one row per datacenter with a volume tier (`NONE` where the GPU
+  does not list it). An empty catalog is a failure, not an empty snapshot. The timer in `src/instrumentation.ts` ticks every 15 minutes
+  (first after 5) behind `assertDeviceAvailableForMutation`.
+- **Storage.** `media_gpu_availability_log` (`at`, `gpu_type_id`, `data_center_id`, `stock`, `price_per_hr`, `min_cuda_version`;
+  indexes on `at` and on `(gpu_type_id, data_center_id, at)`). `insertMediaGpuAvailabilitySnapshot` writes a snapshot in one transaction
+  (200 rows per insert) and then prunes rows older than `GPU_AVAILABILITY_LOG_RETENTION_DAYS` (90; a failed prune is ignored, like the
+  capacity log). Classified `not_api_data`, device-local in snapshots.
+- **Reads.** `listGpuAvailabilityLog` backs `factory_media_list_gpu_availability_log`: rows newest first (`listMediaGpuAvailabilityLog`,
+  default 1,000, at most 5,000), or with `summary` the SQL `GROUP BY gpu_type_id, data_center_id, stock` over every matching row
+  (`summarizeMediaGpuAvailabilityLog`), folded per GPU and datacenter by `summarizeGpuAvailabilityGroups`.

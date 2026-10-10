@@ -165,3 +165,26 @@ Reply to the Operator: DEV-RESP-0019.
     with L40S/US-IL-1 = LOW, NONE, LOW give `{ LOW: 2, NONE: 1 }`.
 - **AC-GA-08 (contract).** Factory API 1.10.0 with the two tools on its list, names matching the factory read-tool rule. The table is
   device-local and classified as YT Manager's own data, not YouTube API data.
+
+## 4. Changed while building (2026-10-10)
+
+- **Live probe (build order step 1, schema still 80, read-only, Mac).**
+  - The field names hold: `minCudaVersion=` is accepted, and each GPU carries `cudaVersions: [{ version, available }]`.
+  - The filter does change the stock. Two reads with the same parameter differed on 1 GPU (noise); none vs `13.0` differed on 7 (A100 SXM
+    HIGH → MEDIUM, AMD GPUs → NONE), and the `cudaVersions` list is cut to versions ≥ the minimum.
+  - With `12.8` nothing changed against `11.8` or no filter: every listed host had 12.8 or newer that day.
+  - So the tool may say "stock counted on hosts with at least that CUDA". `cudaAvailable` is computed by us from `cudaVersions`, per GPU
+    type.
+- **A's output** adds `cloud` and `minVramGb` at the top, and `s3Api` on each GPU's datacenters (next to `networkVolume`). A GPU that a
+  `dataCenterIds` filter leaves without datacenters stays in the list with an empty one (its price and overall stock still answer).
+- **AC-GA-01's stub** also lists EU-SE-1 on the L40S, so a datacenter without network volumes appears in a GPU's list (`networkVolume`
+  false, `s3Api` false). EUR-IS-1, on the 4090's list but not in the datacenter catalog, shows `networkVolume` false and `s3Api` true.
+- **B's snapshot always reads Secure Cloud,** whatever the Settings' cloud: network volumes exist only there, and the log has no cloud
+  column. It keeps 24 GB fixed for the same reason (the log must not shrink when the Settings minimum is raised).
+- **B's schedule:** the timer ticks every 15 minutes (first after 5) and the core decides. After a failed reading the next attempt waits an
+  hour (in memory), so an outage costs 2 reads an hour, not 8. A catalog with no GPU of 24 GB or more is a failure, not an empty
+  snapshot. The gateway switch and the credentials are checked before a client is resolved, so a switched-off gateway records no
+  blocked traffic events. The tick passes the device mutation gate first (no write during an import or in recovery mode).
+- **B's summary** gives counts per stock level (as AC-GA-07 says), with `snapshots` per pair, so a share is one division; the §2 "share"
+  wording is superseded. A datacenter RunPod lists without a level is stored as null and counted as `UNKNOWN`. Rows default to 1,000
+  per call.

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunpodDataCenter, RunpodGpuType } from "@/lib/media-gateway";
-import { buildGpuAvailability, gpuAvailabilityInputSchema } from "./gpu-availability";
+import { buildGpuAvailability, buildGpuAvailabilitySnapshotRows, gpuAvailabilityInputSchema, gpuAvailabilityLogInputSchema, summarizeGpuAvailabilityGroups } from "./gpu-availability";
 
-// Expected values come from docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md §4 (AC-GA-01, -02, -09), written before this module, and
+// Expected values come from docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md §4 (AC-GA-01, -02, -04, -07, -09), written before this module, and
 // RunPod's documented S3 endpoint list (docs.runpod.io, storage/s3-api, read 2026-10-10). Nothing here is read back from the code.
 
 function gpu(over: Partial<RunpodGpuType> & Pick<RunpodGpuType, "id" | "displayName" | "memoryInGb">): RunpodGpuType {
@@ -169,4 +169,60 @@ test("the input is strict and bounded: unknown keys, an unlisted CUDA version, e
     assert.equal(gpuAvailabilityInputSchema.safeParse(bad).success, false, JSON.stringify(bad).slice(0, 60));
   }
   assert.equal(gpuAvailabilityInputSchema.safeParse({ gpuTypeIds: ["NVIDIA L40S"], dataCenterIds: ["US-IL-1"], minVramGb: 48, minCudaVersion: "13.0" }).success, true);
+});
+
+// -- B: the stored log --------------------------------------------------------------------------------------------------------------
+
+test("AC-GA-04: a snapshot stores per GPU of 24 GB+ an overall row and one row per datacenter with network volumes, NONE where RunPod did not list it", () => {
+  const availability = buildGpuAvailability({ gpus: GPUS, dataCenters: DATA_CENTERS, input: { minVramGb: 24 }, settings: { ...SETTINGS, gpuMinVramGb: 48 }, now: NOW });
+  // EU-SE-1 offers no network volume and EUR-IS-1 is not in the datacenter catalog: neither is stored. The 16 GB card is left out.
+  assert.deepEqual(buildGpuAvailabilitySnapshotRows(availability), [
+    { gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.89, minCudaVersion: "12.8", dataCenterId: "*", stock: "HIGH" },
+    { gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.89, minCudaVersion: "12.8", dataCenterId: "EU-RO-1", stock: "MEDIUM" },
+    { gpuTypeId: "NVIDIA GeForce RTX 4090", pricePerHr: 0.89, minCudaVersion: "12.8", dataCenterId: "US-IL-1", stock: "NONE" },
+    { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "*", stock: "HIGH" },
+    { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "EU-RO-1", stock: "NONE" },
+    { gpuTypeId: "NVIDIA L40S", pricePerHr: 1.09, minCudaVersion: "12.8", dataCenterId: "US-IL-1", stock: "LOW" },
+  ]);
+});
+
+test("AC-GA-04: a datacenter RunPod lists for a GPU without a level is stored as null (unknown), not as NONE", () => {
+  const availability = buildGpuAvailability({
+    gpus: [gpu({ id: "G", displayName: "G", memoryInGb: 24, dataCenters: [{ id: "US-IL-1", countryCode: null, estimatedAvailability: null }] })],
+    dataCenters: DATA_CENTERS,
+    input: { minVramGb: 24 },
+    settings: SETTINGS,
+    now: NOW,
+  });
+  assert.deepEqual(
+    buildGpuAvailabilitySnapshotRows(availability).map((row) => [row.dataCenterId, row.stock]),
+    [
+      ["*", null],
+      ["EU-RO-1", "NONE"],
+      ["US-IL-1", null],
+    ]
+  );
+});
+
+test("AC-GA-07: the summary adds up the counts per GPU and datacenter -- LOW, NONE, LOW gives { LOW: 2, NONE: 1 } of 3; an unknown level is UNKNOWN", () => {
+  assert.deepEqual(
+    summarizeGpuAvailabilityGroups([
+      { gpuTypeId: "NVIDIA L40S", dataCenterId: "US-IL-1", stock: "NONE", count: 1 },
+      { gpuTypeId: "NVIDIA L40S", dataCenterId: "US-IL-1", stock: "LOW", count: 2 },
+      { gpuTypeId: "NVIDIA L40S", dataCenterId: "*", stock: "HIGH", count: 3 },
+      { gpuTypeId: "NVIDIA A40", dataCenterId: "EU-RO-1", stock: null, count: 1 },
+    ]),
+    [
+      { gpuTypeId: "NVIDIA A40", dataCenterId: "EU-RO-1", snapshots: 1, stock: { UNKNOWN: 1 } },
+      { gpuTypeId: "NVIDIA L40S", dataCenterId: "*", snapshots: 3, stock: { HIGH: 3 } },
+      { gpuTypeId: "NVIDIA L40S", dataCenterId: "US-IL-1", snapshots: 3, stock: { NONE: 1, LOW: 2 } },
+    ]
+  );
+});
+
+test("AC-GA-07: the log input is strict -- limit 1..5000, ISO date-times, no unknown keys", () => {
+  for (const bad of [{ limit: 5001 }, { limit: 0 }, { since: "yesterday" }, { until: "2026-10-10" }, { gpu: "L40S" }, { summary: "yes" }]) {
+    assert.equal(gpuAvailabilityLogInputSchema.safeParse(bad).success, false, JSON.stringify(bad));
+  }
+  assert.equal(gpuAvailabilityLogInputSchema.safeParse({ since: "2026-10-10T06:00:00+03:00", until: "2026-10-10T20:00:00Z", gpuTypeId: "NVIDIA L40S", dataCenterId: "US-IL-1", limit: 5000, summary: true }).success, true);
 });
