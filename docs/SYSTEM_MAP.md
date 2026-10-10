@@ -715,6 +715,17 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Хранение (v80):** `video_comments` (без данных авторов; новый вид политики `authorized_expiring`, III.E.4.c — очистка удаляет строки старше 30 дней по `fetched_at`, в базе, при импорте и в копиях), `video_comment_state`, `video_comment_channel_state`. Только на этом устройстве.
 - **Чтение:** `agent_get_video_comments` (Agent API 3.13.0, `video_context.query_video_comments`; у Producer — API 1.6.0).
 
+### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED на `feature/gemini-media`, ждёт решения о мердже**
+
+- **Модуль `src/lib/gemini-media/`** (отдельный, §M; не зависит от `media-generation` и `generation-plans`, проверяется тестом): ключ, настройки владельца, задания, фоновый обработчик, файлы. Выключен по умолчанию; без ключа или выключенный — никаких сетевых вызовов.
+- **Шлюз:** `src/lib/media-gateway/gemini-api.ts` — единственный путь к `generativelanguage.googleapis.com` (тумблер «Media gateway», счётчик `gemini_api`): проверка ключа (`models.list`), картинка (Interactions API, `store:false`), Veo 3.1 (`predictLongRunning` + операция), скачивание видео (ключ только хосту Gemini). Ошибки несут `outcome`: answered / not_sent / unknown.
+- **Ключ:** Settings → Gemini; проверяется в Google до сохранения; AES-256-GCM под своим файлом `gemini-media.key` (общий модуль `src/lib/device-key-file/`, вынесен из media-generation); наружу только последние 4 символа.
+- **Деньги:** лимиты на задание / день / месяц и число активных заданий (на этом компьютере); расход = стоимость завершённых + оценка активных; цены — константы по официальному прайсу (2026-10-09), для картинок — по токенам из ответа Google; отправленный и потерянный запрос — по оценке.
+- **Схема v83:** `gemini_credentials`, `gemini_media_jobs` (CAS по статусу, уникальный `request_id` на создателя); настройки — `app_settings.gemini_media_settings`.
+- **Оператор (Factory API 1.12.0):** `factory_gemini_get_status`, `factory_gemini_create_job` (dry-run — чтение), `factory_gemini_get_job`.
+- **Обработчик:** свой цикл в `src/instrumentation.ts` раз в 5 с (за шлюзом мутаций): при старте прерванные запросы — `gemini_interrupted` по оценке; очередь, повторы 429/неотправленных (3 попытки), сбор видео до 47 ч. Файлы — `99 Data Exchange/From YTM/gemini/<jobId>/` + `manifest.json`, ассеты `generated_image` / `generated_video`. `stop.sh` (`media-idle`) не останавливает, пока запрос отправляется; простой ждёт активные задания.
+- **Web:** Settings → Gemini (`/settings/gemini`): ключ, переключатель, лимиты, расход, 20 последних заданий; `/api/gemini-media`, `/settings`, `/key`, `/key/test`.
+
 ### 2.9aj Повторные проверки оценённых треков (BL-173, FO-REQ-0017, `docs/roadmap/plans/PLAN_RECHECKS_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`77a915d`)**
 
 - **Запись:** `generation_plan_rechecks` (v82, на компьютере плана) — исправленная версия (свой файл, проверки, метрики) или вопрос о месте; отдельно от `generation_plan_results`, строки и оценки оригинала не меняются. `recheck_id`/`kept` в `generation_plan_verdict_history` и `generation_plan_peer_verdicts`.

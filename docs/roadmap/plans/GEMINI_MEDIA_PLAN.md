@@ -1,6 +1,6 @@
 # Images and video through Google's Gemini API, driven by the Factory Operator (BL-174)
 
-**Status: IN PROGRESS on `feature/gemini-media`.** Owner, Telegram 2026-10-10:
+**Status: BUILT on `feature/gemini-media`; validation passed; review rounds next, then the owner's merge decision.** Owner, Telegram 2026-10-10:
 - msg 2523: asked to research Nano Banana: image generation by API without renting servers, video, prices. Answered in msg 2524.
 - msg 2525, verbatim: «Проведи исследования как можно интегрировать в нашу систему и выдать контроль оператору через mcp. Составь
   план и приступай к реализации. Как всегда по нашим правилам сделай эту интеграцию отдельным модулем.»
@@ -396,3 +396,18 @@ Expected values are computed by hand from §1.1 and §2.
 1. Create a key in AI Studio, link billing, top up at least $5, and set the monthly spend cap.
 2. Paste the key in Settings → Gemini, set the limits and turn the switch on.
 3. One live test, only with the owner's yes: one Nano Banana 2.1 1K image, about $0.04.
+
+## 8. Changed while building
+
+- **Key routes** are `/api/gemini-media/key` and `/api/gemini-media/key/test` (not `/credentials`): the repository's `.gitignore`
+  hides every `credentials/` folder. The overview is `GET /api/gemini-media`.
+- **Output files** go through the shared crash-safe write (`atomic-json-file.writeFileAtomic`: a temp file, fsync, rename with the
+  Windows retry) instead of a separate `.part` writer; the video download keeps its own `.part` stream in the gateway.
+- **A job's channel** must be connected on this computer (the channels `factory_list_channels` shows); otherwise
+  `gemini_workspace_unavailable`, like a channel without a workspace.
+- **The worker loop** runs behind the device mutation gate (not during a snapshot import or in recovery mode), and its startup sweep
+  runs on its first allowed tick.
+- **`media_gateway_disabled`** is also a job `errorCode` (the owner's gateway toggle was off when the job was sent; cost 0).
+- **Interactions API revision:** Google's May 2026 migration made `steps[]` the only response shape (the legacy `outputs[]` was removed
+  on 2026-06-08), so no `Api-Revision` header is sent; the reader still accepts `outputs[]`.
+- **The traffic-category test** (`db.test.ts`) pinned the category list; it now includes `gemini_api` (the new counter of §2.1).
