@@ -20,6 +20,7 @@ import {
   reopenAgentProposal,
   type AppDb,
 } from "@/lib/db";
+import { DomainError } from "@/lib/shared-domain";
 import { createAgentProposalServices, type AgentProposalStore, type StoredProposal, type WatchlistPort } from "./services";
 
 // BL-163 (docs/roadmap/plans/WATCHLIST_HYGIENE_PROPOSALS_PLAN.md §3, AC-PR-01..07). The proposal store is the real one on a
@@ -58,7 +59,15 @@ function storeOn(db: AppDb): AgentProposalStore {
 type Entry = { followers: string[]; pausedAt: string | null; handleOrUrl: string | null };
 
 async function setup(
-  options: { activeChannel?: string | null; onRemove?: (id: string) => Promise<void>; hypothesisError?: () => Error | null; connected?: string[] } = {}
+  options: {
+    activeChannel?: string | null;
+    onRemove?: (id: string) => Promise<void>;
+    hypothesisError?: () => Error | null;
+    connected?: string[];
+    /** BL-170: what the decision engine says when a link is checked on submit, and when it is made on approval. */
+    armCheckError?: (input: { channelId: string; experimentId: string; videoId: string; arm: string }) => Error | null;
+    armLinkError?: () => Error | null;
+  } = {}
 ) {
   const db = await freshDb();
   const entries = new Map<string, Entry>([
@@ -104,6 +113,18 @@ async function setup(
         calls.push(`hypothesis ${input.channelId} "${input.statement}" / "${input.evidenceNotes}" by ${ctx.userId}`);
       },
       activeChannelOf: async () => (options.activeChannel === undefined ? OURS_1 : options.activeChannel),
+    },
+    experimentArms: {
+      check: async (input) => {
+        const failure = options.armCheckError?.(input);
+        if (failure) throw failure;
+      },
+      link: async (input, ctx) => {
+        const failure = options.armLinkError?.();
+        if (failure) throw failure;
+        calls.push(`link ${input.videoId} to ${input.experimentId} arm ${input.arm} by ${ctx.userId}`);
+      },
+      describe: async (ids) => new Map(ids.filter((id) => id === "E1").map((id) => [id, "Rain intro + loop"])),
     },
     listConnectedChannels: async () =>
       [
@@ -334,3 +355,65 @@ test("Reads delete nothing: a decided proposal past 90 days is not listed but st
   assert.equal(await getAgentProposal("old", db), null, "the gated write purged it");
   assert.equal(await services.countPendingProposals(), 0);
 });
+
+// BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md §3, AC-EA-04/05): a Producer proposal to put a video into an experiment's arm.
+// The decision engine's own rules are tested in decision-engine/experiment-arms.test.ts; here the port says what it would.
+
+test("AC-EA-04: an experiment.link_video proposal is checked on submit, stored pending for its experiment, and one per video and experiment", async () => {
+  const checked: unknown[] = [];
+  const { services, calls } = await setup({ armCheckError: (input) => (checked.push(input), null) });
+  const link = { experimentId: "E1", videoId: "v2", arm: "control" };
+  const proposal = await services.submitProducerProposal(propose("experiment.link_video", link, OURS_1, "v2 is the control upload"), { agentApiVersion: "1.5.0" });
+  assert.deepEqual([proposal.kind, proposal.channelId, proposal.targetId, proposal.status, proposal.payload], ["experiment.link_video", OURS_1, "E1", "pending", link]);
+  assert.deepEqual(checked, [{ channelId: OURS_1, ...link }], "checked against the proposal's own channel");
+  await rejectsWith(services.submitProducerProposal(propose("experiment.link_video", { ...link, arm: "A" }), { agentApiVersion: "1.5.0" }), "AGENT_PROPOSAL_DUPLICATE");
+  assert.deepEqual(calls, [], "nothing is linked before the owner approves");
+});
+
+test("AC-EA-04: what the decision engine refuses on submit is refused, and nothing is stored", async () => {
+  for (const code of ["EXPERIMENT_NOT_FOUND", "EXPERIMENT_ARM_VIDEO_NOT_FOUND", "EXPERIMENT_ARMS_FROZEN", "EXPERIMENT_ARM_VIDEO_ALREADY_LINKED", "validation_failed"] as const) {
+    const { services } = await setup({ armCheckError: () => new DomainError({ code, message: code }) });
+    await rejectsWith(services.submitProducerProposal(propose("experiment.link_video", { experimentId: "E1", videoId: "v2", arm: "A" }), { agentApiVersion: "1.5.0" }), code);
+    assert.deepEqual((await services.listProducerProposals({})).proposals, [], code);
+  }
+  const { services } = await setup();
+  for (const payload of [{ experimentId: "E1", videoId: "v2" }, { experimentId: "E1", videoId: "v2", arm: "x".repeat(33) }, { experimentId: "E1", videoId: "v2", arm: "A", extra: 1 }]) {
+    await rejectsWith(services.submitProducerProposal(propose("experiment.link_video", payload), { agentApiVersion: "1.5.0" }), "validation_failed");
+  }
+});
+
+test("AC-EA-05: approving links the video as the owner; with another channel active it keeps waiting; a link refused meanwhile fails the proposal", async () => {
+  const link = { experimentId: "E1", videoId: "v2", arm: "control" };
+  // Another channel active: refused before the claim, still pending.
+  const waiting = await setup({ activeChannel: OURS_2 });
+  const pending = await waiting.services.submitProducerProposal(propose("experiment.link_video", link), { agentApiVersion: "1.5.0" });
+  await rejectsWith(waiting.services.approveAgentProposal({ proposalId: pending.proposalId }, { userId: OWNER }), "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE");
+  assert.equal((await waiting.services.listProducerProposals({})).proposals[0].status, "pending");
+  assert.deepEqual(waiting.calls, []);
+
+  // The proposal's channel active: linked, as the owner's session, and applied. The owner's card names the experiment.
+  const ok = await setup();
+  const proposal = await ok.services.submitProducerProposal(propose("experiment.link_video", link), { agentApiVersion: "1.5.0" });
+  assert.equal((await ok.services.listOwnerProposals({ view: "pending" })).proposals[0].targetLabel, "Rain intro + loop");
+  const applied = await ok.services.approveAgentProposal({ proposalId: proposal.proposalId }, { userId: OWNER });
+  assert.equal(applied.status, "applied");
+  assert.deepEqual(ok.calls, [`link v2 to E1 arm control by ${OWNER}`]);
+
+  // Concluded, or the same video linked by the owner, meanwhile: failed with the reason, never retried.
+  for (const code of ["EXPERIMENT_ARMS_FROZEN", "EXPERIMENT_ARM_VIDEO_ALREADY_LINKED"] as const) {
+    let refuse = false;
+    const late = await setup({ armLinkError: () => (refuse ? new DomainError({ code, message: code }) : null) });
+    const p = await late.services.submitProducerProposal(propose("experiment.link_video", link), { agentApiVersion: "1.5.0" });
+    refuse = true;
+    const failed = await late.services.approveAgentProposal({ proposalId: p.proposalId }, { userId: OWNER });
+    assert.equal(failed.status, "failed", code);
+    assert.match(failed.applyError ?? "", new RegExp(code));
+  }
+
+  // The owner switched channel between the check and the link: it waits again.
+  const switched = await setup({ armLinkError: () => new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "switched" }) });
+  const s = await switched.services.submitProducerProposal(propose("experiment.link_video", link), { agentApiVersion: "1.5.0" });
+  await rejectsWith(switched.services.approveAgentProposal({ proposalId: s.proposalId }, { userId: OWNER }), "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE");
+  assert.equal((await switched.services.listProducerProposals({})).proposals[0].status, "pending");
+});
+

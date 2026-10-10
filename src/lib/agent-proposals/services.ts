@@ -83,12 +83,23 @@ export type HypothesesPort = {
   activeChannelOf(userId: string): Promise<string | null>;
 };
 
+/** BL-170: experiment arms, through the decision engine's own core. */
+export type ExperimentArmsPort = {
+  /** Throws (as the decision engine does) when the video cannot be linked for this proposal's channel; writes nothing. */
+  check(input: { channelId: string; experimentId: string; videoId: string; arm: string }): Promise<void>;
+  /** Links on the owner's approval, as the owner's own session (the active channel must be the experiment's). */
+  link(input: { experimentId: string; videoId: string; arm: string }, ctx: { userId: string }): Promise<void>;
+  /** Each experiment's treatment, for the owner's cards. */
+  describe(experimentIds: string[]): Promise<Map<string, string>>;
+};
+
 export type AgentProposalDependencies = {
   idGenerator(): string;
   clock: { now(): Date };
   store: AgentProposalStore;
   watchlist: WatchlistPort;
   hypotheses: HypothesesPort;
+  experimentArms: ExperimentArmsPort;
   listConnectedChannels(): Promise<Array<{ channelId: string; title: string }>>;
   /** The app-wide pre-mutation gate (device handoff / recovery); throws when writing is not allowed. */
   assertDeviceAvailable(): Promise<void>;
@@ -148,6 +159,12 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
     const schema = proposalPayloadSchemas[kind] as unknown as ZodType<Record<string, unknown>>;
     const payload = parseWithSchema(schema, rawPayload, `${kind} payload`);
     if (kind === "hypothesis.add") return { payload, targetId: null, dedupeKey: null };
+    if (kind === "experiment.link_video") {
+      const link = { experimentId: payload.experimentId as string, videoId: payload.videoId as string, arm: payload.arm as string };
+      await deps.experimentArms.check({ channelId, ...link });
+      // One pending proposal per video and experiment, whatever the arm.
+      return { payload, targetId: link.experimentId, dedupeKey: `${kind}|${link.experimentId}|${link.videoId}` };
+    }
     if (kind === "watchlist.add") {
       const target = payload.competitorChannelId as string;
       if ((await deps.watchlist.getEntry(target)) && (await deps.watchlist.followers(target)).includes(channelId)) {
@@ -205,6 +222,9 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
           { channelId: row.channelId!, statement: String(payload.statement ?? ""), evidenceNotes: String(payload.evidenceNotes ?? "") },
           ctx
         );
+        return;
+      case "experiment.link_video":
+        await deps.experimentArms.link({ experimentId: target, videoId: String(payload.videoId ?? ""), arm: String(payload.arm ?? "") }, ctx);
         return;
       default:
         throw new DomainError({ code: "validation_failed", message: `Unknown proposal kind: ${row.kind}`, details: { kind: row.kind } });
@@ -291,11 +311,16 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
         parsed.view === "pending"
           ? await deps.store.list({ status: "pending" })
           : await deps.store.list({ status: "decided", includeDone: false, decidedSince: new Date(deps.clock.now().getTime() - KEEP_MS), limit: OWNER_DECIDED_LIMIT });
-      const [entries, channels, pendingCount] = await Promise.all([
+      const experimentIds = rows.filter((row) => row.kind === "experiment.link_video" && row.targetId).map((row) => row.targetId as string);
+      const [watchlistEntries, channels, pendingCount, experiments] = await Promise.all([
         deps.watchlist.describe().catch(() => new Map<string, { label: string; latestUploadPublishedAt: string | null }>()),
         deps.listConnectedChannels().catch(() => []),
         deps.store.countPending(),
+        experimentIds.length > 0 ? deps.experimentArms.describe(experimentIds).catch(() => new Map<string, string>()) : Promise.resolve(new Map<string, string>()),
       ]);
+      // BL-170: an experiment proposal's label is the experiment's treatment.
+      const entries = new Map(watchlistEntries);
+      for (const [experimentId, treatment] of experiments) entries.set(experimentId, { label: treatment, latestUploadPublishedAt: null });
       const titles = new Map(channels.map((channel) => [channel.channelId, channel.title]));
       return {
         pendingCount,
@@ -331,27 +356,27 @@ export function createAgentProposalServices(deps: AgentProposalDependencies) {
         // Checked before the claim: adding the entry and then failing to link it would leave an unfollowed entry being collected.
         throw notApplicable("The proposal's channel is no longer connected on this computer", { proposalId: row.id, channelId: row.channelId });
       }
-      if (row.kind === "hypothesis.add" && (await deps.hypotheses.activeChannelOf(ctx.userId)) !== row.channelId) {
-        // Checked before the claim, so the proposal keeps waiting rather than failing.
-        throw new DomainError({
+      // A hypothesis is created in, and an experiment's video linked from, the owner's active channel (BL-170 follows hypothesis.add).
+      const needsActiveChannel = row.kind === "hypothesis.add" || row.kind === "experiment.link_video";
+      const channelNotActive = (proposal: StoredProposal) =>
+        new DomainError({
           code: "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE",
-          message: "A hypothesis is added to the active channel: switch to the proposal's channel first",
-          details: { proposalId: row.id, channelId: row.channelId },
+          message: "This change is made in the active channel: switch to the proposal's channel first",
+          details: { proposalId: proposal.id, channelId: proposal.channelId },
         });
+      if (needsActiveChannel && (await deps.hypotheses.activeChannelOf(ctx.userId)) !== row.channelId) {
+        // Checked before the claim, so the proposal keeps waiting rather than failing.
+        throw channelNotActive(row);
       }
       const claimed = await deps.store.decide(row.id, { status: "applied", at: deps.clock.now(), by: ctx.userId });
       if (!claimed) return notFoundOrNotPending(row.id);
       try {
         await applyAgentProposal(claimed, ctx);
       } catch (error) {
-        if (claimed.kind === "hypothesis.add" && isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE") {
-          // The owner switched channel between the check and the creation: it waits again, as if not yet approved.
+        if (needsActiveChannel && isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE") {
+          // The owner switched channel between the check and the change: it waits again, as if not yet approved.
           await deps.store.reopen(claimed.id);
-          throw new DomainError({
-            code: "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE",
-            message: "A hypothesis is added to the active channel: switch to the proposal's channel first",
-            details: { proposalId: claimed.id, channelId: claimed.channelId },
-          });
+          throw channelNotActive(claimed);
         }
         await deps.store.fail(claimed.id, errorMessage(error));
       }

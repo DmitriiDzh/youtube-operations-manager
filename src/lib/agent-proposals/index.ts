@@ -59,6 +59,14 @@ function createAgentProposalsCore() {
       },
       activeChannelOf: (userId) => channelAccess.getActiveChannelId(userId),
     },
+    experimentArms: {
+      check: (input) => decisions.checkExperimentArmVideoProposal(input),
+      async link(input, ctx) {
+        // On the owner's approval, as the owner's own session; the Producer is named as the one who linked it.
+        await decisions.linkExperimentArmVideo(input.experimentId, { videoId: input.videoId, arm: input.arm }, { userId: ctx.userId, linkedBy: "producer", linkedVia: "producer_proposal" });
+      },
+      describe: (experimentIds) => decisions.describeExperiments(experimentIds),
+    },
   });
 }
 

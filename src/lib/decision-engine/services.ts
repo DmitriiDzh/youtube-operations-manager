@@ -819,6 +819,19 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     },
 
     /**
+     * BL-170: each experiment's treatment, for the owner's proposal cards in Research → Inbox (the owner's own view across channels, so
+     * no active-channel check; it reads one field). Unknown ids are left out.
+     */
+    async describeExperiments(experimentIds: string[]): Promise<Map<string, string>> {
+      const out = new Map<string, string>();
+      for (const id of new Set(experimentIds)) {
+        const experiment = await deps.getExperimentById(id);
+        if (experiment) out.set(id, experiment.treatment);
+      }
+      return out;
+    },
+
+    /**
      * BL-170: the submit-time check of a Producer `experiment.link_video` proposal for `channelId`. The Producer is not in that channel's
      * scope when it proposes (BL-163), so the channel is compared with the hypothesis's own instead of the owner's active channel; an
      * experiment of another channel is reported as not found. Writes nothing; approving goes through `linkExperimentArmVideo`.

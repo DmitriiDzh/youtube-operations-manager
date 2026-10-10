@@ -39,6 +39,14 @@ export const proposalPayloadSchemas = {
       evidenceNotes: z.string().trim().min(1, "evidenceNotes is required").max(4000),
     })
     .strict(),
+  // BL-170: the arm label's own format is the decision engine's (checked on submit through the port).
+  "experiment.link_video": z
+    .object({
+      experimentId: z.string().trim().min(1, "experimentId is required").max(100),
+      videoId: z.string().trim().min(1, "videoId is required").max(64),
+      arm: z.string().trim().min(1, "arm is required").max(32),
+    })
+    .strict(),
 } as const;
 
 export const listProducerProposalsInputSchema = z
