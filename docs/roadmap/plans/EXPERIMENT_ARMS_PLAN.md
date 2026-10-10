@@ -99,8 +99,9 @@ texts get keys in English and Russian.
 
 - The Decisions tab does not show the outcomes per arm. The tool gives them.
 - Experiments across channels: a hypothesis has one channel.
-- **Pending the owner's answer:** whether the Producer may also propose an experiment. Today only the owner, or a channel agent through
-  `create_experiment_proposal`, can create one.
+- *(Was pending; decided by the owner, Telegram msg 2485, option 1.)* The Producer may propose an experiment: the channel agent's DRAFT
+  tool `create_experiment_proposal` is added to its endpoint by name (`PRODUCER_DRAFT_CHANNEL_TOOLS`). The experiment is always
+  `proposed`; the owner approves it in Decisions.
 
 ## 3. Acceptance criteria (fixed before the code)
 

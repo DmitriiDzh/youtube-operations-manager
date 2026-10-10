@@ -97,5 +97,9 @@ every channel's reads without a worker per channel, and nothing else.
 - The kind follows `hypothesis.add`: it is checked against the proposal's own channel when submitted (the Producer is not in that channel's
   scope then), approved only while that channel is the owner's active one, and applied through the decision engine's own link function,
   recorded as `producer_proposal`.
-- **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope. Whether the Producer may also
-  propose experiments is a separate question to the owner.
+- **The Producer may propose experiments** (owner, Telegram 2026-10-10 msg 2485, option 1 of three: this tool, a new Inbox proposal kind, or
+  none): the channel agent's DRAFT tool `create_experiment_proposal` is on the Producer's endpoint by name (`PRODUCER_DRAFT_CHANNEL_TOOLS`,
+  exactly one, its capability pinned to DRAFT by the test). Like every channel tool it runs per call in the named channel's agent scope,
+  so the hypothesis must be that channel's. The experiment it creates is always `proposed`; approving, running and abandoning stay the
+  owner's (Web UI). This amends "the Producer's only DRAFT tools are its proposal tools": `draftTools` lists three.
+- **Not changed:** the Producer-only tools, the permissions (`READ`, `DRAFT`), the per-call channel scope.

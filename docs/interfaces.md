@@ -1036,7 +1036,10 @@ arms: the results tool and the `experiment.link_video` proposal.
   `agent_list_content_proposals`, `agent_list_hypotheses`, `agent_get_hypothesis_trail`, `agent_list_generation_plans`, `agent_get_generation_plan`,
   `agent_get_channel_workspace`. A call runs in that channel's agent scope: it sees exactly what the channel's own agent sees (market records assigned
   to that channel, its hypotheses, ...). A channel not connected on this device: `CHANNEL_NOT_ACTIVE`, nothing read.
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done"] }`;
+- **DRAFT channel tool (BL-170, owner msg 2485, ADR 0034 Amendment 5):** `create_experiment_proposal`, the channel agent's own input plus the
+  REQUIRED `channelId`, in that channel's agent scope: an experiment for a hypothesis of that channel, always `proposed` -- only the owner
+  approves, runs or abandons it in the Web UI. The only DRAFT channel tool (pinned by the test).
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] }`;
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
