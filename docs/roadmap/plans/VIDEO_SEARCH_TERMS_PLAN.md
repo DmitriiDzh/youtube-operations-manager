@@ -74,8 +74,10 @@ of DEV-RESP-0018.
 
 - `video_search_terms`: key (video_id, term), plus `channel_id`, `views`, `estimated_minutes_watched`. Replaced as a whole on each read.
 - `channel_search_terms_weekly`: key (channel_id, week_start, term), plus the same two metrics. Replaced per week on each read of that week.
-- `analytics_search_terms_state`: key (channel_id, subject), where subject is a video id or `week:<Monday>`. Holds `range_start`,
-  `collected_through`, `collected_on`, `collected_at`, `status` (collected | retry | failed), `attempts`, `last_error`, `next_attempt_at`.
+- **No state table of its own** (changed while building, to share one owner of the attempt rules): the state rows live in BL-168's
+  `analytics_breakdown_state` under the subject `search:<video id>` (a channel week: `search-week:<Monday>`). A video id never contains a
+  colon, so they never collide with the breakdowns' subjects (`channel`, a video id), and `deferAnalyticsBreakdown` /
+  `recordAnalyticsBreakdownFailure` are reused unchanged.
 - Not shared between computers, like the milestones and breakdowns.
 
 ### Read tool `agent_get_stored_search_terms`
@@ -166,4 +168,4 @@ The examples use Pacific dates. 2026-10-10 is a Saturday. Video V1 is published 
   the same channel's breakdowns ran before it.
 - **AC-ST-15 (contract).** Agent API 3.11.0 with capability `analytics.query_stored_search_terms`. Producer API 1.4.0 with the tool on its
   closed list.
-- **AC-ST-16 (policy).** The three tables are classified `authorized` and are device-local (not in the device snapshot).
+- **AC-ST-16 (policy).** The new tables are classified `authorized` and are device-local (not in the device snapshot).
