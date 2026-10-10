@@ -52,6 +52,12 @@ of DEV-RESP-0018.
   first read on or after that day. Then never again. So 13 queries at the first collection, then about 2 a week.
 - Each week keeps its own top 25 (history is kept; summing weeks later gives a picture of any longer span).
 
+### The request path
+
+- Through the read gateway's existing `queryChannelBreakdownReport` (`youtube-read-gateway/analytics-api.ts`), which gains two optional
+  parameters, `maxResults` and `sort` (required by YouTube for this report, §1), passed on by `analytics/adapters/youtube-api.ts`. No new
+  `reports.query` call site.
+
 ### Runs
 
 - After the breakdowns, for each channel whose Analytics collection did not fail (`/api/analytics/auto-collect-all`). Same reads switch,
@@ -132,8 +138,8 @@ The examples use Pacific dates. 2026-10-10 is a Saturday. Video V1 is published 
   - On 2026-10-13 nothing more is read for the channel.
   - On 2026-10-18 week 10-05 is read again, once.
 - **AC-ST-09 (cap).** 120 never-read due videos and 13 weeks give two runs:
-  - the first run makes 100 queries: the 13 weeks, then the 87 newest videos;
-  - the next run reads the remaining 33.
+  - the first run, at 2026-10-10T18:00:00Z, makes 100 queries: the 13 weeks, then the 87 newest videos;
+  - the next run, at 2026-10-10T20:00:00Z (the same Pacific day), reads the remaining 33.
 - **AC-ST-10 (failures).**
   - A 400 counts attempt 1 and retries after 24 h. After 3 attempts the subject is `failed` and never queried again. This holds for a video
     and for a channel week.
@@ -151,7 +157,8 @@ The examples use Pacific dates. 2026-10-10 is a Saturday. Video V1 is published 
     - `total` gives `bossa nova` 2/8, `latin jazz cafe` 2/0, `cuban jazz` 1/8;
     - `week` gives each week with its own terms;
     - read for 2026-09-22..2026-10-04, only week 09-28 is returned;
-    - a week inside the range that was never read is listed with status `not_collected` and no terms.
+    - a week inside the range that was never read is listed with status `not_collected` and no terms. A week older than the 13
+      weeks that are collected stays `not_collected` for good, by design. The tool description says so.
   - Exactly 92 days is accepted. These are refused: 93 days, 2026-02-30, `videoIds` together with dates, the channel form without dates,
     and an inactive `channelId`. A video of another channel is not listed. All of this also holds through the Producer.
 - **AC-ST-13 (reserve).** While the background reserve is not allowed, a run makes zero queries.
