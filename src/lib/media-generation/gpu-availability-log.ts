@@ -74,8 +74,10 @@ export function createGpuAvailabilityLogServices(deps: {
           settings: { ...settings, cloudType: "SECURE" },
           now,
         });
+        // Either catalog coming back empty is a failure, not a snapshot: it would be stored as fresh and hide the gap for 3 hours.
+        if (availability.gpus.length === 0) throw new Error("RunPod's catalog listed no GPU of 24 GB or more");
+        if (!availability.dataCenters.some((dc) => dc.networkVolumeTypes.length > 0)) throw new Error("RunPod's catalog listed no datacenter with network volumes");
         const rows = buildGpuAvailabilitySnapshotRows(availability);
-        if (rows.length === 0) throw new Error("RunPod's catalog listed no GPU of 24 GB or more");
         await deps.store.insertSnapshot(now, rows);
         lastFailureAt = null;
         return { status: "taken", at: now.toISOString(), rows: rows.length };

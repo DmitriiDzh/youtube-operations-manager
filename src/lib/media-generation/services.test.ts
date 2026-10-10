@@ -689,17 +689,19 @@ function catalogRunpod(options: { gatewayOff?: boolean; status?: number } = {}) 
   };
 }
 
-test("AC-GA-01: the availability read makes two catalog reads with the Settings' cloud and CUDA minimum, and names the volume's datacenter", async () => {
+// Review round 1: plan §2 A -- Secure Cloud whatever the Settings' cloud (network volumes exist only there).
+test("AC-GA-01: the availability read makes two catalog reads on Secure Cloud with the Settings' CUDA minimum, and names the volume's datacenter", async () => {
   const runpod = catalogRunpod();
   const { services, mem } = fixture({ runpod });
   await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
-  await mem.store.setSettingsJson(JSON.stringify({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1" }));
+  await mem.store.setSettingsJson(JSON.stringify({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1", cloudType: "COMMUNITY" }));
   const answer = await services.getGpuAvailability({});
   assert.equal(runpod.urls.length, 2);
   const gpusUrl = new URL(runpod.urls.find((u) => u.includes("/catalog/gpus")) ?? "");
   assert.equal(gpusUrl.searchParams.get("cloud"), "SECURE");
   assert.equal(gpusUrl.searchParams.get("minCudaVersion"), "12.8");
   assert.ok(runpod.urls.some((u) => new URL(u).pathname === "/v2/catalog/datacenters"));
+  assert.equal(answer.cloud, "SECURE");
   assert.equal(answer.volumeDataCenterId, "EU-RO-1");
   assert.equal(answer.minCudaVersion, "12.8");
   assert.equal(answer.minVramGb, 24);

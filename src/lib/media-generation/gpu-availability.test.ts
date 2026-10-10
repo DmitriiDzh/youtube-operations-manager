@@ -105,7 +105,9 @@ test("AC-GA-01: the Settings' GPU memory minimum replaces the 24 GB default, and
   assert.deepEqual(build({ minVramGb: 0 }, { gpuMinVramGb: 48 }).gpus.map((g) => g.gpuTypeId), ["NVIDIA RTX 2000 Ada Generation", "NVIDIA GeForce RTX 4090", "NVIDIA L40S"]);
 });
 
-test("AC-GA-01: CUDA -- an input version replaces the Settings' one; a newer available version counts; no list from RunPod is null; no filter at all counts any available version", () => {
+// Review round 1: with a minimum RunPod lists only the versions at or above it (live read, plan §4), so an empty list under a
+// minimum means no such host (false); only with no minimum does an empty list mean RunPod did not say (null).
+test("AC-GA-01: CUDA -- an input version replaces the Settings' one; a newer available version counts; an empty list is false under a minimum and null without one; no minimum counts any available version", () => {
   assert.equal(build({ minCudaVersion: "12.4" }).gpus.find((g) => g.gpuTypeId === "NVIDIA L40S")?.cudaAvailable, true);
   assert.equal(build({ minCudaVersion: "12.4" }).minCudaVersion, "12.4");
   const newer = buildGpuAvailability({
@@ -119,9 +121,11 @@ test("AC-GA-01: CUDA -- an input version replaces the Settings' one; a newer ava
     newer.gpus.map((g) => [g.gpuTypeId, g.cudaAvailable]),
     [
       ["B", true],
-      ["C", null],
+      ["C", false],
     ]
   );
+  const noMinimum = buildGpuAvailability({ gpus: [gpu({ id: "C", displayName: "C", memoryInGb: 32 })], dataCenters: [], input: {}, settings: { ...SETTINGS, minCudaVersion: null }, now: NOW });
+  assert.equal(noMinimum.gpus[0].cudaAvailable, null);
   const unfiltered = build({}, { minCudaVersion: null });
   assert.equal(unfiltered.minCudaVersion, null);
   assert.equal(unfiltered.gpus.find((g) => g.gpuTypeId === "NVIDIA L40S")?.cudaAvailable, true);

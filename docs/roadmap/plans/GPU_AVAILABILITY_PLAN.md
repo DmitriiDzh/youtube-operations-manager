@@ -188,3 +188,11 @@ Reply to the Operator: DEV-RESP-0019.
 - **B's summary** gives counts per stock level (as AC-GA-07 says), with `snapshots` per pair, so a share is one division; the §2 "share"
   wording is superseded. A datacenter RunPod lists without a level is stored as null and counted as `UNKNOWN`. Rows default to 1,000
   per call.
+- **Independent review, round 1 (3 should-fix, 3 nits; all fixed):**
+  - A now reads Secure Cloud whatever the Settings' cloud, as §2 A says (it had used the Settings' cloud).
+  - `cudaAvailable` under a minimum is `false` when RunPod lists no version (it cuts the list to versions at or above the minimum); `null`
+    only without a minimum. This changes the earlier test expectation (`null` for an empty list), which predated the live probe.
+  - A snapshot whose datacenter catalog has no volume tier anywhere is a failure, not a snapshot of `*` rows only.
+  - Docs say a GPU's own datacenter list keeps RunPod's order.
+  - The MCP-layer schemas of both tools have a strictness test.
+  - The unused `minCudaVersion` option on the core's `listGpuTypes` is removed.

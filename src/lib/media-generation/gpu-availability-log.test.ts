@@ -149,6 +149,35 @@ test("AC-GA-05: a database failure on insert is logged as a failed snapshot, not
   assert.match(h.lines[0] ?? "", /SQLITE_BUSY/);
 });
 
+// Review round 1: an empty datacenter catalog (or a renamed wrapper key) would store only the `*` rows and count as fresh.
+test("AC-GA-05: a datacenter catalog with no network-volume tier anywhere stores nothing and counts as a failure, not as a snapshot", async () => {
+  const h = harness();
+  const services = createGpuAvailabilityLogServices({
+    store: h.log.store,
+    base: {
+      getGatewayEnabled: async () => true,
+      getCredentialsStatus: async () => ({ configured: true, runpodKeyPrefix: "rpa_ABCD…", s3AccessKeyId: null, verifiedAt: null, updatedAt: T0.toISOString() }),
+      getSettings: async () => DEFAULT_MEDIA_SETTINGS,
+      resolveRunpodClient: async () =>
+        createRunpodApiClient({
+          apiKey: "k",
+          authorize: async () => {},
+          fetchImpl: (async (input: string | URL | Request) =>
+            new Response(
+              JSON.stringify(String(input).includes("datacenters") ? { dataCenters: [{ id: "EU-SE-1", networkVolumeTypes: [] }] } : { gpus: [{ id: "NVIDIA L40S", name: "L40S", memory: 48, availability: "LOW" }] }),
+              { status: 200 }
+            )) as typeof fetch,
+        }),
+    },
+    clock: { now: () => T0 },
+    log: () => {},
+  });
+  const outcome = await services.snapshotGpuAvailabilityIfDue();
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.status === "failed" ? outcome.message : "", /no datacenter with network volumes/);
+  assert.equal(h.log.snapshots.length, 0);
+});
+
 test("AC-GA-05: a catalog with no GPU of 24 GB or more stores nothing and counts as a failure (retried an hour later), not as a snapshot", async () => {
   const h = harness();
   const services = createGpuAvailabilityLogServices({

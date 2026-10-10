@@ -565,6 +565,27 @@ test("with no valid session or with the connection disabled the server registers
   }
 });
 
+// BL-172 (review round 1): the MCP-layer schemas are strict too, so a bad call never reaches the media core.
+test("BL-172: the GPU availability tools reject unknown keys and out-of-range values at the MCP boundary, before the media core", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  for (const [name, args] of [
+    ["factory_media_get_gpu_availability", { cloud: "COMMUNITY" }],
+    ["factory_media_get_gpu_availability", { minCudaVersion: "twelve" }],
+    ["factory_media_get_gpu_availability", { minVramGb: -1 }],
+    ["factory_media_get_gpu_availability", { gpuTypeIds: [] }],
+    ["factory_media_list_gpu_availability_log", { limit: 5001 }],
+    ["factory_media_list_gpu_availability_log", { since: "yesterday" }],
+    ["factory_media_list_gpu_availability_log", { region: "EU" }],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
+    assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
+    assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
+    assert.deepEqual(toolDeps.mediaCalls, [], name);
+  }
+});
+
 test("BL-133 (AC-FG-08): the session and job writes pass the device mutation gate first and reach nothing when it is closed; the reads do not need it", async () => {
   const { endpoint, tokenServices, toolDeps } = setupWithDeps();
   const { token } = await tokenServices.issueToken({});

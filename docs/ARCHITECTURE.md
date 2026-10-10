@@ -3433,15 +3433,18 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   at least that CUDA) and maps `cudaVersions: [{ version, available }]` (per GPU type, not per datacenter). `RUNPOD_S3_DATACENTERS`
   (`runpod-s3.ts`) is RunPod's documented S3-endpoint list; the v2 catalog has no S3 field.
 - **Live read** (`getGpuAvailability`, `services.ts`): input checked by `gpuAvailabilityInputSchema`, then the two catalog reads in
-  parallel with the Settings' cloud and CUDA minimum (an input version replaces it), then the pure `buildGpuAvailability`
+  parallel, always Secure Cloud (network volumes exist only there), with the Settings' CUDA minimum (an input version replaces it), then
+  the pure `buildGpuAvailability`
   (`gpu-availability.ts`): GPUs at or above the memory minimum (input, else Settings, else 24 GB), each with its datacenters' stock,
-  `networkVolume` (the datacenter lists a volume tier) and `s3Api`; `cudaAvailable` = some listed version ≥ the minimum is available.
+  `networkVolume` (the datacenter lists a volume tier) and `s3Api`; `cudaAvailable` = some listed version ≥ the minimum is available
+  (RunPod lists only those under a minimum, so an empty list is `false`; null only with no minimum and no list).
 - **Log** (`gpu-availability-log.ts`). `snapshotGpuAvailabilityIfDue` returns `taken` / `skipped` (`fresh`: newest snapshot under 3 h;
   `backoff`: under an hour since a failure, kept in memory; `gateway_off` / `not_configured`: checked before any client is resolved, so a
   switched-off gateway records no blocked traffic) / `failed` (logged, never thrown). It always reads Secure Cloud (network volumes
   exist only there) and stores GPUs of 24 GB or more (fixed, so raising the Settings minimum does not shrink the log), through
   `buildGpuAvailabilitySnapshotRows`: per GPU an overall `*` row plus one row per datacenter with a volume tier (`NONE` where the GPU
-  does not list it). An empty catalog is a failure, not an empty snapshot. The timer in `src/instrumentation.ts` ticks every 15 minutes
+  does not list it). A GPU catalog with nothing of 24 GB or more, or a datacenter catalog with no volume tier anywhere, is a failure, not
+  a snapshot (it would otherwise count as fresh and hide the gap). The timer in `src/instrumentation.ts` ticks every 15 minutes
   (first after 5) behind `assertDeviceAvailableForMutation`.
 - **Storage.** `media_gpu_availability_log` (`at`, `gpu_type_id`, `data_center_id`, `stock`, `price_per_hr`, `min_cuda_version`;
   indexes on `at` and on `(gpu_type_id, data_center_id, at)`). `insertMediaGpuAvailabilitySnapshot` writes a snapshot in one transaction

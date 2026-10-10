@@ -468,15 +468,15 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
     // -- RunPod reads (each needs credentials; nothing cached, nothing persisted) --------------
 
-    async listGpuTypes(options: { minCudaVersion?: string } = {}): Promise<RunpodGpuType[]> {
+    async listGpuTypes(): Promise<RunpodGpuType[]> {
       const settings = await readSettings();
-      return (await runpodClient()).listGpuTypes({ cloud: settings.cloudType, ...(options.minCudaVersion ? { minCudaVersion: options.minCudaVersion } : {}) });
+      return (await runpodClient()).listGpuTypes({ cloud: settings.cloudType });
     },
 
     /**
      * BL-172 (FO-REQ-0016 A): RunPod's GPU stock and price per datacenter now, with the volume's datacenter and the network-volume and S3
-     * facts of each datacenter -- two live catalog reads (no pod, no cost), with the Settings' cloud and CUDA filter unless the input
-     * names another CUDA version.
+     * facts of each datacenter -- two live catalog reads (no pod, no cost). Always Secure Cloud, whatever the Settings' cloud: network
+     * volumes exist only there (plan §2 A; review round 1). The Settings' CUDA minimum applies unless the input names another version.
      */
     async getGpuAvailability(input: unknown = {}): Promise<GpuAvailability> {
       const parsed = parseWithSchema(gpuAvailabilityInputSchema, input ?? {}, "GPU availability input");
@@ -484,10 +484,10 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
       const minCudaVersion = parsed.minCudaVersion ?? settings.minCudaVersion ?? undefined;
       const client = await runpodClient();
       const [gpus, dataCenters] = await Promise.all([
-        client.listGpuTypes({ cloud: settings.cloudType, ...(minCudaVersion ? { minCudaVersion } : {}) }),
+        client.listGpuTypes({ cloud: "SECURE", ...(minCudaVersion ? { minCudaVersion } : {}) }),
         client.listDataCenters(),
       ]);
-      return buildGpuAvailability({ gpus, dataCenters, input: parsed, settings, now: deps.clock.now() });
+      return buildGpuAvailability({ gpus, dataCenters, input: parsed, settings: { ...settings, cloudType: "SECURE" }, now: deps.clock.now() });
     },
 
     /** Slice 6 (AC-P14-25): the account balance (legacy GraphQL), or the v2 billing spend when that read fails. */

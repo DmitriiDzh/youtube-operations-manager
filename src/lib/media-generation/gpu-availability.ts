@@ -47,7 +47,10 @@ export type GpuAvailability = {
     pricePerHr: number | null;
     /** RunPod's overall stock: NONE | LOW | MEDIUM | HIGH (null when it gives none). */
     stock: string | null;
-    /** Whether hosts with CUDA ≥ `minCudaVersion` have capacity now -- for the GPU type as a whole; null when the catalog does not say. */
+    /**
+     * Whether a CUDA version ≥ `minCudaVersion` has capacity now -- for the GPU type as a whole. With a minimum, RunPod lists only the
+     * versions at or above it, so an empty list is `false` (no such host); without one an empty list is null (RunPod did not say).
+     */
     cudaAvailable: boolean | null;
     dataCenters: Array<{ dataCenterId: string; stock: string | null; networkVolume: boolean; s3Api: boolean }>;
   }>;
@@ -95,7 +98,7 @@ export function buildGpuAvailability(args: {
       pricePerHr: gpu.onDemandPricePerHr,
       stock: gpu.estimatedAvailability,
       cudaAvailable:
-        gpu.cudaVersions.length === 0 ? null : gpu.cudaVersions.some((entry) => entry.available && (!minCudaVersion || cudaAtLeast(entry.version, minCudaVersion))),
+        !minCudaVersion && gpu.cudaVersions.length === 0 ? null : gpu.cudaVersions.some((entry) => entry.available && (!minCudaVersion || cudaAtLeast(entry.version, minCudaVersion))),
       dataCenters: gpu.dataCenters
         .filter((dc) => !wantedDcs || wantedDcs.has(dc.id))
         .map((dc) => ({
