@@ -213,4 +213,3 @@ test("AC-VC-09: an own-video comment fetched 31 days ago is purged, one fetched 
     assert.equal((await client.execute("SELECT count(*) AS n FROM video_comment_state")).rows[0].n, 1);
     client.close();
   }));
-

@@ -53,7 +53,8 @@ const comment = (commentId: string, publishedAt: string, extra: Partial<{ text: 
 
 type World = {
   counts: Map<string, number | null>;
-  comments: Map<string, ReturnType<typeof comment>[]>;
+  /** What YouTube would answer per video. Not named after comments: the write-gateway inventory reads that name with set() as a write. */
+  threads: Map<string, ReturnType<typeof comment>[]>;
   fail?: (videoId: string) => Error | null;
   failCounts?: () => Error | null;
 };
@@ -82,7 +83,7 @@ function setup(db: AppDb, videos: OwnVideo[], world: World) {
         calls.push(`comments ${videoId}`);
         const failure = world.fail?.(videoId);
         if (failure) throw failure;
-        return world.comments.get(videoId) ?? [];
+        return world.threads.get(videoId) ?? [];
       },
     },
     failureKind,
@@ -103,7 +104,7 @@ const video = (videoId: string, privacyStatus = "public"): OwnVideo => ({ videoI
 
 test("AC-VC-01: the counts of the non-private videos are read; only a video with comments is read; a second run the same day makes no call", async () => {
   const db = await freshDb();
-  const world: World = { counts: new Map([["a", 2], ["b", 0]]), comments: new Map([["a", [comment("c1", "2026-09-27T19:16:28Z")]]]) };
+  const world: World = { counts: new Map([["a", 2], ["b", 0]]), threads: new Map([["a", [comment("c1", "2026-09-27T19:16:28Z")]]]) };
   const { services, calls, clock } = setup(db, [video("a"), video("b"), video("c", "unlisted"), video("d", "private")], world);
   assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 1, disabled: 0, failed: 0 });
   assert.deepEqual(calls, ["counts a,b,c", "comments a"]);
@@ -116,7 +117,7 @@ test("AC-VC-03/05: a read stores each comment as returned with the read time, an
   const db = await freshDb();
   const world: World = {
     counts: new Map([["a", 2], ["b", 1]]),
-    comments: new Map([
+    threads: new Map([
       ["a", [comment("c1", "2026-09-27T19:16:28Z", { text: "Beautiful music!", likeCount: 3, replyCount: 2, byChannelOwner: true }), comment("c2", "2026-09-20T10:00:00Z")]],
       ["b", [comment("b1", "2026-09-01T10:00:00Z")]],
     ]),
@@ -130,7 +131,7 @@ test("AC-VC-03/05: a read stores each comment as returned with the read time, an
   );
   // A comment of `a` was removed: its count went to 1; the next day `a` is read again and only `a`'s rows change.
   world.counts.set("a", 1);
-  world.comments.set("a", [comment("c1", "2026-09-27T19:16:28Z")]);
+  world.threads.set("a", [comment("c1", "2026-09-27T19:16:28Z")]);
   clock.now = at("2026-10-11T18:00:00Z");
   await services.collectDueComments(RUN);
   assert.deepEqual((await listStoredVideoComments("UC_A", ["a", "b"], db)).map((row) => row.commentId).sort(), ["b1", "c1"]);
@@ -140,7 +141,7 @@ test("AC-VC-04: due when the count changes or a week has passed; a disabled vide
   const db = await freshDb();
   const world: World = {
     counts: new Map([["a", 2], ["z", 1]]),
-    comments: new Map([["a", [comment("c1", "2026-09-27T19:16:28Z"), comment("c2", "2026-09-28T19:16:28Z")]]]),
+    threads: new Map([["a", [comment("c1", "2026-09-27T19:16:28Z"), comment("c2", "2026-09-28T19:16:28Z")]]]),
     fail: (videoId) => (videoId === "z" ? googleError(403, "commentsDisabled") : null),
   };
   const { services, calls, clock } = setup(db, [video("a"), video("z")], world);
@@ -159,7 +160,7 @@ test("AC-VC-04: due when the count changes or a week has passed; a disabled vide
   world.counts.set("z", 2);
   assert.deepEqual(await day("2026-10-19T18:00:00Z"), ["comments z"], "the disabled one, its count changed");
   world.counts.set("a", 0);
-  world.comments.set("a", []);
+  world.threads.set("a", []);
   assert.deepEqual(await day("2026-10-20T18:00:00Z"), ["comments a"], "dropped to 0");
   assert.deepEqual(await listStoredVideoComments("UC_A", ["a"], db), []);
 });
@@ -167,7 +168,7 @@ test("AC-VC-04: due when the count changes or a week has passed; a disabled vide
 test("AC-VC-06: at most 50 reads per run, never read first then least recently read; the next day reads the other 10", async () => {
   const db = await freshDb();
   const ids = Array.from({ length: 60 }, (_, i) => `v${String(i).padStart(2, "0")}`);
-  const world: World = { counts: new Map(ids.map((id) => [id, 1])), comments: new Map() };
+  const world: World = { counts: new Map(ids.map((id) => [id, 1])), threads: new Map() };
   const { services, calls, clock } = setup(db, ids.map((id) => video(id)), world);
   assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 50, disabled: 0, failed: 0 });
   assert.deepEqual(calls.filter((c) => c.startsWith("comments")).slice(0, 2), ["comments v00", "comments v01"]);
@@ -179,7 +180,7 @@ test("AC-VC-06: at most 50 reads per run, never read first then least recently r
 
 test("AC-VC-07: a 404 counts attempts (retry after 24 h, failed after 3, then only on a new count); 5xx/429/no answer defer and end the run", async () => {
   const db = await freshDb();
-  const world: World = { counts: new Map([["a", 1], ["b", 1]]), comments: new Map(), fail: (videoId) => (videoId === "a" ? googleError(404, "videoNotFound") : null) };
+  const world: World = { counts: new Map([["a", 1], ["b", 1]]), threads: new Map(), fail: (videoId) => (videoId === "a" ? googleError(404, "videoNotFound") : null) };
   const { services, calls, clock } = setup(db, [video("a"), video("b")], world);
   assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 1, disabled: 0, failed: 1 });
   let a = (await listVideoCommentStates("UC_A", db)).find((s) => s.videoId === "a");
@@ -198,7 +199,7 @@ test("AC-VC-07: a 404 counts attempts (retry after 24 h, failed after 3, then on
 
   for (const error of [googleError(503, "backendError"), googleError(429, "rateLimitExceeded"), new Error("socket hang up (test)")]) {
     const db2 = await freshDb();
-    const w: World = { counts: new Map([["a", 1], ["b", 1]]), comments: new Map(), fail: (videoId) => (videoId === "a" ? error : null) };
+    const w: World = { counts: new Map([["a", 1], ["b", 1]]), threads: new Map(), fail: (videoId) => (videoId === "a" ? error : null) };
     const run = setup(db2, [video("a"), video("b")], w);
     await assert.rejects(() => run.services.collectDueComments(RUN), (thrown: unknown) => thrown === error);
     assert.deepEqual(run.calls, ["counts a,b", "comments a"], `${error.message}: the run stopped`);
@@ -218,7 +219,7 @@ test("AC-VC-07: quota, Data API reads off, a 401 and a 403 quotaExceeded stop th
   for (const error of stops) {
     for (const where of ["comments", "counts"] as const) {
       const db = await freshDb();
-      const world: World = { counts: new Map([["a", 1]]), comments: new Map(), fail: () => (where === "comments" ? error : null), failCounts: () => (where === "counts" ? error : null) };
+      const world: World = { counts: new Map([["a", 1]]), threads: new Map(), fail: () => (where === "comments" ? error : null), failCounts: () => (where === "counts" ? error : null) };
       const { services } = setup(db, [video("a")], world);
       await assert.rejects(() => services.collectDueComments(RUN));
       assert.deepEqual(await listVideoCommentStates("UC_A", db), [], `${error.message} ${where}`);
@@ -241,7 +242,7 @@ test("AC-VC-10: reads return the session channel's videos, newest comments first
   const db = await freshDb();
   const world: World = {
     counts: new Map([["a", 3]]),
-    comments: new Map([["a", [comment("c1", "2026-09-01T10:00:00Z"), comment("c3", "2026-09-03T10:00:00Z", { byChannelOwner: true }), comment("c2", "2026-09-02T10:00:00Z")]]]),
+    threads: new Map([["a", [comment("c1", "2026-09-01T10:00:00Z"), comment("c3", "2026-09-03T10:00:00Z", { byChannelOwner: true }), comment("c2", "2026-09-02T10:00:00Z")]]]),
   };
   const { services } = setup(db, [video("a"), video("b")], world);
   await services.collectDueComments(RUN);
