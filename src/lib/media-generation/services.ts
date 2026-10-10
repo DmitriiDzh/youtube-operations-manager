@@ -12,6 +12,7 @@ import {
   type MediaSettings,
 } from "./contracts";
 import type { KeyFile } from "./key-file";
+import { buildGpuAvailability, gpuAvailabilityInputSchema, type GpuAvailability } from "./gpu-availability";
 import { findLivePodByName, terminateAndConfirm } from "./pod-lifecycle";
 import type { VolumeLock } from "./volume-lock";
 import { sleep } from "@/lib/shared-async";
@@ -467,9 +468,26 @@ export function createMediaGenerationServices(deps: ServiceDependencies) {
 
     // -- RunPod reads (each needs credentials; nothing cached, nothing persisted) --------------
 
-    async listGpuTypes(): Promise<RunpodGpuType[]> {
+    async listGpuTypes(options: { minCudaVersion?: string } = {}): Promise<RunpodGpuType[]> {
       const settings = await readSettings();
-      return (await runpodClient()).listGpuTypes({ cloud: settings.cloudType });
+      return (await runpodClient()).listGpuTypes({ cloud: settings.cloudType, ...(options.minCudaVersion ? { minCudaVersion: options.minCudaVersion } : {}) });
+    },
+
+    /**
+     * BL-172 (FO-REQ-0016 A): RunPod's GPU stock and price per datacenter now, with the volume's datacenter and the network-volume and S3
+     * facts of each datacenter -- two live catalog reads (no pod, no cost), with the Settings' cloud and CUDA filter unless the input
+     * names another CUDA version.
+     */
+    async getGpuAvailability(input: unknown = {}): Promise<GpuAvailability> {
+      const parsed = parseWithSchema(gpuAvailabilityInputSchema, input ?? {}, "GPU availability input");
+      const settings = await readSettings();
+      const minCudaVersion = parsed.minCudaVersion ?? settings.minCudaVersion ?? undefined;
+      const client = await runpodClient();
+      const [gpus, dataCenters] = await Promise.all([
+        client.listGpuTypes({ cloud: settings.cloudType, ...(minCudaVersion ? { minCudaVersion } : {}) }),
+        client.listDataCenters(),
+      ]);
+      return buildGpuAvailability({ gpus, dataCenters, input: parsed, settings, now: deps.clock.now() });
     },
 
     /** Slice 6 (AC-P14-25): the account balance (legacy GraphQL), or the v2 billing spend when that read fails. */

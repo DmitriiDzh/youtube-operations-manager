@@ -37,6 +37,29 @@ export type RunpodS3Client = ReturnType<typeof createRunpodS3Client>;
 /** RunPod datacenter ids: `EU-RO-1`, `EUR-IS-1`, `US-TX-3`, `CA-MTL-3` -- the ONE pattern every validation in this app uses. */
 export const RUNPOD_DATACENTER_ID_PATTERN = /^[A-Z]{2,4}-[A-Z]{2,4}-\d{1,2}$/;
 
+/**
+ * BL-172: the datacenters RunPod documents an S3 API endpoint for (https://docs.runpod.io/storage/s3-api, read 2026-10-10). YT Manager
+ * reaches a network volume only over S3, so a volume elsewhere cannot be used. The catalog has no such field: this list is the
+ * documentation's, and storage status confirms it once a volume exists there.
+ */
+export const RUNPOD_S3_DATACENTERS: readonly string[] = Object.freeze([
+  "EU-CZ-1",
+  "EU-RO-1",
+  "EUR-IS-1",
+  "EUR-NO-1",
+  "US-CA-2",
+  "US-GA-2",
+  "US-IL-1",
+  "US-KS-2",
+  "US-MD-1",
+  "US-MO-1",
+  "US-MO-2",
+  "US-NC-1",
+  "US-NC-2",
+  "US-NE-1",
+  "US-WA-1",
+]);
+
 export function runpodS3Endpoint(datacenterId: string): URL {
   if (!RUNPOD_DATACENTER_ID_PATTERN.test(datacenterId)) {
     throw new DomainError({ code: "media_settings_invalid", message: `Not a RunPod datacenter id: ${datacenterId}` });

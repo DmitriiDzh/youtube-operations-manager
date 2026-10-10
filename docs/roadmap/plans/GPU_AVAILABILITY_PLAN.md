@@ -1,6 +1,7 @@
 # GPU availability by datacenter, its log, and moving the media volume (BL-172, FO-REQ-0016)
 
-**Status: PROPOSED, waiting for the owner's go to build.** Owner, Telegram 2026-10-10 (msg 2501, «да, бери FO-REQ-0016»): plan first.
+**Status: IN PROGRESS.** Owner, Telegram 2026-10-10 (msg 2501, «да, бери FO-REQ-0016»): plan first; msg 2504 («Начинай с А, как сделаешь
+приступай к B»): build A, then B, on one branch.
 Reply to the Operator: DEV-RESP-0019.
 
 ## 1. Facts (code read and RunPod docs checked 2026-10-10; one live read-only catalog read)

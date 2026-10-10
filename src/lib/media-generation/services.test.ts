@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RunpodApiClient, RunpodS3Client, RunpodS3Config } from "@/lib/media-gateway";
+import { createRunpodApiClient, type RunpodApiClient, type RunpodS3Client, type RunpodS3Config } from "@/lib/media-gateway";
 import { DEFAULT_MEDIA_SETTINGS, isDomainError } from "./contracts";
 import { createKeyFile, type KeyFileAccess } from "./key-file";
+import { DomainError } from "@/lib/shared-domain";
 import { createMediaGenerationServices, type MediaGenerationStore, type StoredCredentialsRow } from "./services";
 
 // Expected behaviour is stated in docs/roadmap/plans/PHASE_14_PLAN.md §4 (AC-P14-01, -02, -19,
@@ -658,4 +659,79 @@ test("slice 0: an S3 secret that is really the access key id (user_..., or equal
   await assert.rejects(services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_3IY51Cj8eiVEk36oJCo6OWthnSC", s3SecretAccessKey: "user_3IY51Cj8eiVEk36oJCo6OWthnSC" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed" && /looks like the access key id/.test(JSON.stringify(e.details)));
   await assert.rejects(services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_a", s3SecretAccessKey: "user_b" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
   assert.equal((await services.setCredentials({ runpodApiKey: RUNPOD_KEY, s3AccessKeyId: "user_a", s3SecretAccessKey: "rps_secret_value" })).configured, true);
+});
+
+// -- BL-172 (GPU_AVAILABILITY_PLAN.md §4): the live availability read through the real gateway client, with a stubbed network --------
+
+function catalogRunpod(options: { gatewayOff?: boolean; status?: number } = {}) {
+  const urls: string[] = [];
+  const keysSeen: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    urls.push(url);
+    const body = url.includes("/catalog/datacenters")
+      ? { dataCenters: [{ id: "EU-RO-1", name: "EU-RO-1", region: "EUROPE", networkVolumeTypes: ["STANDARD"] }] }
+      : { gpus: [{ id: "NVIDIA GeForce RTX 4090", name: "RTX 4090", memory: 24, secure: true, availability: "HIGH", price: { secure: 0.89 }, dataCenters: [{ id: "EU-RO-1", availability: "MEDIUM" }], cudaVersions: [{ version: "12.8", available: true }] }] };
+    return new Response(JSON.stringify(options.status ? { detail: "denied" } : body), { status: options.status ?? 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const authorize = async () => {
+    if (options.gatewayOff) throw new DomainError({ code: "media_gateway_disabled", message: "The media gateway is disabled." });
+  };
+  return {
+    urls,
+    keysSeen,
+    calls: [] as string[],
+    client: undefined as unknown as RunpodApiClient,
+    factory: (apiKey: string) => {
+      keysSeen.push(apiKey);
+      return createRunpodApiClient({ apiKey, fetchImpl, authorize });
+    },
+  };
+}
+
+test("AC-GA-01: the availability read makes two catalog reads with the Settings' cloud and CUDA minimum, and names the volume's datacenter", async () => {
+  const runpod = catalogRunpod();
+  const { services, mem } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await mem.store.setSettingsJson(JSON.stringify({ ...DEFAULT_MEDIA_SETTINGS, datacenterId: "EU-RO-1" }));
+  const answer = await services.getGpuAvailability({});
+  assert.equal(runpod.urls.length, 2);
+  const gpusUrl = new URL(runpod.urls.find((u) => u.includes("/catalog/gpus")) ?? "");
+  assert.equal(gpusUrl.searchParams.get("cloud"), "SECURE");
+  assert.equal(gpusUrl.searchParams.get("minCudaVersion"), "12.8");
+  assert.ok(runpod.urls.some((u) => new URL(u).pathname === "/v2/catalog/datacenters"));
+  assert.equal(answer.volumeDataCenterId, "EU-RO-1");
+  assert.equal(answer.minCudaVersion, "12.8");
+  assert.equal(answer.minVramGb, 24);
+  assert.deepEqual(answer.gpus[0].dataCenters, [{ dataCenterId: "EU-RO-1", stock: "MEDIUM", networkVolume: true, s3Api: true }]);
+  assert.ok(!JSON.stringify(answer).includes(RUNPOD_KEY), "the key never appears in the answer");
+  await services.getGpuAvailability({ minCudaVersion: "12.4" });
+  assert.equal(new URL(runpod.urls.filter((u) => u.includes("/catalog/gpus"))[1]).searchParams.get("minCudaVersion"), "12.4", "an input version replaces the Settings' one");
+});
+
+test("AC-GA-03: no credentials is media_generation_not_configured and the gateway is never reached; the gateway switched off is media_gateway_disabled with no network call", async () => {
+  const unconfigured = catalogRunpod();
+  await assert.rejects(fixture({ runpod: unconfigured }).services.getGpuAvailability({}), (e: unknown) => isDomainError(e) && e.code === "media_generation_not_configured");
+  assert.deepEqual(unconfigured.keysSeen, []);
+  assert.deepEqual(unconfigured.urls, []);
+
+  const off = catalogRunpod({ gatewayOff: true });
+  const blocked = fixture({ runpod: off });
+  await blocked.services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await assert.rejects(blocked.services.getGpuAvailability({}), (e: unknown) => isDomainError(e) && e.code === "media_gateway_disabled" && !JSON.stringify({ m: (e as Error).message, d: e.details }).includes(RUNPOD_KEY));
+  assert.deepEqual(off.urls, []);
+
+  const refused = catalogRunpod({ status: 401 });
+  const rejected = fixture({ runpod: refused });
+  await rejected.services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await assert.rejects(rejected.services.getGpuAvailability({}), (e: unknown) => isDomainError(e) && e.code === "media_credentials_invalid" && !JSON.stringify({ m: (e as Error).message, d: e.details }).includes(RUNPOD_KEY));
+});
+
+test("AC-GA-02: a bad availability input is validation_failed before any RunPod call", async () => {
+  const runpod = catalogRunpod();
+  const { services } = fixture({ runpod });
+  await services.setCredentials({ runpodApiKey: RUNPOD_KEY });
+  await assert.rejects(services.getGpuAvailability({ minCudaVersion: "99.9" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(services.getGpuAvailability({ region: "EU" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  assert.deepEqual(runpod.urls, []);
 });

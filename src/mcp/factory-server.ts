@@ -35,7 +35,9 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  * template needs a newer host CUDA than the session's known host is refused with `media_gpu_host_incompatible`; a start's
  * `templateId` is looked up even when `gpu` is given (an unknown one is `media_template_not_found`); templates list `minCudaVersion`.
  */
-export const FACTORY_API_VERSION = "1.9.0";
+// BL-172 (FO-REQ-0016, GPU_AVAILABILITY_PLAN.md): 1.10.0 -- the READ tools factory_media_get_gpu_availability (RunPod's GPU stock and
+// price per datacenter now) and factory_media_list_gpu_availability_log (the stored 3-hourly snapshots); nothing else changes.
+export const FACTORY_API_VERSION = "1.10.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -64,6 +66,8 @@ export const FACTORY_TOOL_NAMES = [
   "factory_media_get_job",
   "factory_media_cancel_job",
   "factory_media_capacity_log",
+  // BL-172 (FO-REQ-0016): GPU stock per datacenter.
+  "factory_media_get_gpu_availability",
   // BL-143 (ADR 0029): generation plans.
   "factory_plan_create",
   "factory_plan_import",
@@ -147,6 +151,8 @@ export type FactoryToolDeps = {
     getJob(input: { jobId?: string; sessionId?: string }): Promise<Record<string, unknown>>;
     cancelJob(input: { jobId: string }): Promise<Record<string, unknown>>;
     capacityLog(input: { since?: string; gpuTypeId?: string; limit?: number }): Promise<Record<string, unknown>>;
+    // BL-172 (FO-REQ-0016 A).
+    gpuAvailability(input: { gpuTypeIds?: string[]; dataCenterIds?: string[]; minVramGb?: number; minCudaVersion?: string }): Promise<Record<string, unknown>>;
   };
   /** BL-143 (ADR 0029): the generation plans core; it validates every input strictly itself. */
   plans: {
@@ -270,6 +276,15 @@ const getJobInput = z.object({ jobId: z.string().min(1).max(64).optional(), sess
 const jobIdInput = z.object({ jobId: z.string().min(1).max(64) }).strict();
 const capacityLogInput = z
   .object({ since: z.string().datetime().optional(), gpuTypeId: z.string().min(1).max(128).optional(), limit: z.number().int().min(1).max(500).optional() })
+  .strict();
+// BL-172: the shape only; the media core checks the CUDA version against its own list.
+const gpuAvailabilityInput = z
+  .object({
+    gpuTypeIds: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
+    dataCenterIds: z.array(z.string().min(1).max(32)).min(1).max(50).optional(),
+    minVramGb: z.number().int().min(0).max(1024).optional(),
+    minCudaVersion: z.string().regex(/^\d{1,2}\.\d$/, "a CUDA version such as 12.8").optional(),
+  })
   .strict();
 
 function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
@@ -592,6 +607,16 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
       inputSchema: capacityLogInput,
     },
     async (args) => successResult(await deps.media.capacityLog(parseInput(capacityLogInput, args)))
+  );
+
+  registerTool(
+    "factory_media_get_gpu_availability",
+    {
+      description:
+        "RunPod's GPU stock and price per datacenter NOW (BL-172): two live catalog reads, no pod, no cost. { availability: { checkedAt, cloud, volumeDataCenterId (the configured volume's), minVramGb, minCudaVersion, gpus: [{ gpuTypeId, displayName, vramGb, pricePerHr (the cloud's on-demand USD/h for one GPU, per GPU type -- RunPod gives no per-datacenter price), stock (overall: NONE|LOW|MEDIUM|HIGH), cudaAvailable (hosts with CUDA >= minCudaVersion have capacity now -- for the GPU type as a whole, not per datacenter; null when RunPod does not say), dataCenters: [{ dataCenterId, stock, networkVolume (RunPod offers network volumes there), s3Api }] }], dataCenters: [{ dataCenterId, region, countryCode, networkVolumeTypes (STANDARD / HIGH_PERFORMANCE; empty = none), s3Api }] } } -- { gpuTypeIds?, dataCenterIds?, minVramGb? (default: the Settings minimum, 24 when unset), minCudaVersion? (default: the Settings' minimum; the stock is counted on hosts with at least that CUDA) }. A datacenter missing from a GPU's list had no stock for it. `s3Api` is RunPod's documented S3 endpoint list (YT Manager reaches a volume only over S3; storage status confirms it once a volume exists there). Stock can change between this read and a pod start; the capacity log of real attempts stays the ground truth. Needs the media gateway on and RunPod configured. Read-only.",
+      inputSchema: gpuAvailabilityInput,
+    },
+    async (args) => successResult(await deps.media.gpuAvailability(parseInput(gpuAvailabilityInput, args)))
   );
 
   // -- BL-143 (ADR 0029): generation plans. The plans core validates every field strictly (bounds, patterns); the schemas
