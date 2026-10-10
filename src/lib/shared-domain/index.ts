@@ -167,6 +167,20 @@ export type DomainErrorCode =
   // BL-173 (PLAN_RECHECKS_PLAN.md §2.2/§2.3): a re-check id already used for other content; a re-check that is no longer open.
   | "plan_recheck_exists"
   | "plan_recheck_closed"
+  // BL-174 (GEMINI_MEDIA_PLAN.md §2.6): Google's Gemini API through the `gemini-media` module.
+  | "gemini_disabled"
+  | "gemini_key_missing"
+  | "gemini_key_invalid"
+  | "gemini_payment_required"
+  | "gemini_limit_exceeded"
+  | "gemini_request_exists"
+  | "gemini_job_not_found"
+  | "gemini_input_unavailable"
+  | "gemini_workspace_unavailable"
+  | "gemini_invalid_params"
+  | "gemini_unavailable"
+  | "gemini_rate_limited"
+  | "gemini_request_rejected"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

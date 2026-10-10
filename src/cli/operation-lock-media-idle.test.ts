@@ -44,3 +44,30 @@ test("media-idle: a session being created, starting, running or stopping blocks 
 test("media-idle: a database from before media sessions existed counts as none", async () => {
   assert.equal(await runOperationLockCli(["media-idle"], await client(false), () => undefined), 0);
 });
+
+// BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-15): a Gemini request being sent blocks stopping (cut mid-call, Google may already have
+// charged it with no file kept); a queued job or a running video does not (both are picked up again after a restart).
+async function geminiJob(c: Awaited<ReturnType<typeof client>>, id: string, status: string) {
+  await c.execute({
+    sql: "INSERT INTO gemini_media_jobs (job_id, channel_id, request_hash, kind, model, prompt, params_json, inputs_json, status, estimate_usd, attempts, created_by, created_at, updated_at) VALUES (?, 'UC_ours', 'h', 'image', 'gemini-nano-banana-2.1', 'p', '{}', '[]', ?, 0.05, 1, 'factory', ?, ?)",
+    args: [id, status, Date.now(), Date.now()],
+  });
+}
+
+test("media-idle (BL-174): a Gemini request being sent blocks stopping and is named; queued, running, done and failed jobs do not", async () => {
+  const idle = await client(true);
+  for (const [id, status] of [["gm_q", "queued"], ["gm_r", "running"], ["gm_d", "done"], ["gm_f", "failed"]]) await geminiJob(idle, id, status);
+  assert.equal(await runOperationLockCli(["media-idle"], idle, () => undefined), 0);
+  const busy = await client(true);
+  await geminiJob(busy, "gm_sending", "submitting");
+  const lines: string[] = [];
+  assert.equal(await runOperationLockCli(["media-idle"], busy, (line) => lines.push(line)), 1);
+  assert.match(lines.join("\n"), /gm_sending \(image, channel UC_ours\)/);
+});
+
+test("media-idle (BL-174): a database from before schema v83 (sessions, no Gemini table) counts as no Gemini request", async () => {
+  const c = await client(true);
+  await c.execute("DROP TABLE gemini_media_jobs");
+  await session(c, "s-done", "done");
+  assert.equal(await runOperationLockCli(["media-idle"], c, () => undefined), 0);
+});

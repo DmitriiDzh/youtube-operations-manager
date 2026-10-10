@@ -106,6 +106,12 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       requestRecheck: async (input) => (mediaCalls.push(`plan.requestRecheck:${(input as { recheckId: string }).recheckId}`), { recheck: {} }),
       withdrawRecheck: async (input) => (mediaCalls.push(`plan.withdrawRecheck:${(input as { recheckId: string }).recheckId}`), { recheck: {} }),
     },
+    // BL-174: the Gemini module is a fake that records what reached it.
+    gemini: {
+      getStatus: async () => (mediaCalls.push("gemini.status"), { enabled: false }),
+      createJob: async (input) => (mediaCalls.push(`gemini.create:${(input as { channelId: string; dryRun?: boolean }).channelId}${(input as { dryRun?: boolean }).dryRun ? ":dry" : ""}`), { job: { jobId: "gm_1" } }),
+      getJobs: async (input) => (mediaCalls.push(`gemini.get:${(input as { jobId?: string }).jobId ?? ""}`), { jobs: [] }),
+    },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
       if (gateClosed.value) throw new DomainError({ code: "OPERATION_LOCKED" as never, message: "an import is running" });
@@ -250,6 +256,9 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
   const body = await (await endpoint.handle(rpc(LIST_TOOLS, withToken(token)))).json();
   const names = (body.result.tools as Array<{ name: string }>).map((tool) => tool.name).sort();
   assert.deepEqual(names, [
+    "factory_gemini_create_job",
+    "factory_gemini_get_job",
+    "factory_gemini_get_status",
     "factory_get_capabilities",
     "factory_get_logical_path",
     "factory_list_channels",
@@ -312,14 +321,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-159 (PER_SESSION_CUDA_PLAN.md "Contract"): 1.9.0, no new tool.
 // BL-172 (GPU_AVAILABILITY_PLAN.md AC-GA-08): 1.10.0 and the READ tools after the capacity log (declaration order).
 // BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): 1.11.0 and the two re-check WRITE tools, last in both lists (declaration order).
-test("factory_get_capabilities reports the factory API version 1.11.0 (BL-173), READ and WRITE, the tool list and the write tools", async () => {
+// BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): 1.12.0 and the three Gemini tools, last (declaration order); one of them a write.
+test("factory_get_capabilities reports the factory API version 1.12.0 (BL-174), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.11.0",
+    factoryApiVersion: "1.12.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -359,6 +369,9 @@ test("factory_get_capabilities reports the factory API version 1.11.0 (BL-173), 
       "factory_plan_move",
       "factory_plan_request_recheck",
       "factory_plan_withdraw_recheck",
+      "factory_gemini_get_status",
+      "factory_gemini_create_job",
+      "factory_gemini_get_job",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -383,6 +396,7 @@ test("factory_get_capabilities reports the factory API version 1.11.0 (BL-173), 
       "factory_plan_move",
       "factory_plan_request_recheck",
       "factory_plan_withdraw_recheck",
+      "factory_gemini_create_job",
     ],
   });
 });
@@ -797,5 +811,45 @@ test("BL-173: the re-check tools reject unknown keys and an unknown kind at the 
     assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
     assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
     assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the core");
+  }
+});
+
+// BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): a paid Gemini job passes the device mutation gate first and reaches nothing behind a
+// closed one; a dry-run and the two reads need no gate; the MCP schemas are strict, so a bad call never reaches the module.
+test("BL-174: factory_gemini_create_job passes the gate first (a dry-run does not); the reads need no gate; strict schemas", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const job = { channelId: "UC_A", kind: "image", model: "gemini-nano-banana-2.1", prompt: "a cat", image: { size: "1K", aspectRatio: "1:1" } };
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", job), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate", "gemini.create:UC_A"]);
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", { ...job, dryRun: true }), withToken(token))))).isError, false);
+  assert.deepEqual(toolDeps.mediaCalls, ["gemini.create:UC_A:dry"], "a dry-run is a read");
+  for (const [name, args, reached] of [
+    ["factory_gemini_get_status", {}, "gemini.status"],
+    ["factory_gemini_get_job", { jobId: "gm_1" }, "gemini.get:gm_1"],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+    assert.deepEqual(toolDeps.mediaCalls, [reached], name);
+  }
+  toolDeps.gateClosed.value = true;
+  toolDeps.mediaCalls.length = 0;
+  assert.equal((await toolResult(await endpoint.handle(rpc(call("factory_gemini_create_job", job), withToken(token))))).isError, true);
+  assert.deepEqual(toolDeps.mediaCalls, ["gate"], "nothing reached the module behind a closed gate");
+  toolDeps.gateClosed.value = false;
+  for (const [name, args] of [
+    ["factory_gemini_create_job", { ...job, extra: 1 }],
+    ["factory_gemini_create_job", { ...job, kind: "audio" }],
+    ["factory_gemini_create_job", { ...job, image: { size: "1K", aspectRatio: "1:1", mask: "m.png" } }],
+    ["factory_gemini_get_job", { jobId: "gm_1", verbose: true }],
+    ["factory_gemini_get_status", { all: true }],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
+    assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
+    assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
+    assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the module");
   }
 });

@@ -1152,6 +1152,62 @@ export const generationPlanRechecks = sqliteTable(
   (table) => [primaryKey({ columns: [table.planId, table.recheckId] }), index("generation_plan_rechecks_attempt_idx").on(table.planId, table.itemKey, table.attemptRef)]
 );
 
+/**
+ * Schema v83 (BL-174, docs/roadmap/plans/GEMINI_MEDIA_PLAN.md §2.2): the Gemini API key, AES-256-GCM under this device's
+ * `gemini-media.key` (shared `device-key-file`), one row. Only the last 4 characters are kept readable (`key_hint`).
+ * Device-local, never in a snapshot or sync family (the key file is per device).
+ */
+export const geminiCredentials = sqliteTable("gemini_credentials", {
+  id: text("id").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  keyHint: text("key_hint").notNull(),
+  status: text("status", { enum: ["ok", "payment_required"] }).notNull(),
+  verifiedAt: integer("verified_at", { mode: "timestamp_ms" }),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * Schema v83 (BL-174, GEMINI_MEDIA_PLAN.md §2.2/§2.4): one image or video generated through Google's Gemini API for a
+ * channel. JSON columns are written by the `gemini-media` module only; money in USD (4 decimals). Times in ms.
+ * Device-local: the job runs, and its files land, on this computer.
+ */
+export const geminiMediaJobs = sqliteTable(
+  "gemini_media_jobs",
+  {
+    jobId: text("job_id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    requestId: text("request_id"),
+    requestHash: text("request_hash").notNull(),
+    kind: text("kind", { enum: ["image", "video"] }).notNull(),
+    model: text("model").notNull(),
+    prompt: text("prompt").notNull(),
+    paramsJson: text("params_json").notNull(),
+    inputsJson: text("inputs_json").notNull(),
+    status: text("status", { enum: ["queued", "submitting", "running", "done", "failed"] }).notNull(),
+    remoteName: text("remote_name"),
+    estimateUsd: real("estimate_usd").notNull(),
+    costUsd: real("cost_usd"),
+    costBasis: text("cost_basis"),
+    outputsJson: text("outputs_json"),
+    error: text("error"),
+    errorCode: text("error_code"),
+    attempts: integer("attempts").notNull(),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }),
+    createdBy: text("created_by").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    submittedAt: integer("submitted_at", { mode: "timestamp_ms" }),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("gemini_media_jobs_request_idx").on(table.createdBy, table.requestId),
+    index("gemini_media_jobs_status_idx").on(table.status, table.nextAttemptAt),
+    index("gemini_media_jobs_created_idx").on(table.createdAt),
+  ]
+);
+
 export const mediaExchangeInputs = sqliteTable(
   "media_exchange_inputs",
   {
@@ -4386,6 +4442,52 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 83,
+    description:
+      "gemini_credentials + gemini_media_jobs -- BL-174 (docs/roadmap/plans/GEMINI_MEDIA_PLAN.md): images and video through Google's Gemini API, driven by the Factory Operator within the owner's limits. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS gemini_credentials (
+        id TEXT PRIMARY KEY NOT NULL,
+        ciphertext TEXT NOT NULL,
+        iv TEXT NOT NULL,
+        auth_tag TEXT NOT NULL,
+        key_hint TEXT NOT NULL,
+        status TEXT NOT NULL,
+        verified_at INTEGER,
+        updated_at INTEGER NOT NULL
+      )`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS gemini_media_jobs (
+        job_id TEXT PRIMARY KEY NOT NULL,
+        channel_id TEXT NOT NULL,
+        request_id TEXT,
+        request_hash TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        params_json TEXT NOT NULL,
+        inputs_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        remote_name TEXT,
+        estimate_usd REAL NOT NULL,
+        cost_usd REAL,
+        cost_basis TEXT,
+        outputs_json TEXT,
+        error TEXT,
+        error_code TEXT,
+        attempts INTEGER NOT NULL,
+        next_attempt_at INTEGER,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        submitted_at INTEGER,
+        finished_at INTEGER,
+        updated_at INTEGER NOT NULL
+      )`);
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS gemini_media_jobs_request_idx ON gemini_media_jobs (created_by, request_id)");
+      await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_status_idx ON gemini_media_jobs (status, next_attempt_at)");
+      await client.execute("CREATE INDEX IF NOT EXISTS gemini_media_jobs_created_idx ON gemini_media_jobs (created_at)");
+    },
+  },
 ];
 
 /**
@@ -6652,7 +6754,9 @@ export type GatewayTrafficCategory =
   | "runpod_s3"
   | "comfyui_api"
   // BL-132 -- the Hugging Face Hub metadata reads (`src/lib/media-gateway/huggingface.ts`).
-  | "huggingface_api";
+  | "huggingface_api"
+  // BL-174 -- Google's Gemini API (Nano Banana images, Veo video), the media gateway's `gemini-api.ts` child.
+  | "gemini_api";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -6675,6 +6779,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "runpod_s3",
   "comfyui_api",
   "huggingface_api",
+  "gemini_api",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -9567,6 +9672,111 @@ export async function replaceGenerationPlanRecheckAnswer(planId: string, recheck
     .set({ answerJson })
     .where(and(eq(generationPlanRechecks.planId, planId), eq(generationPlanRechecks.recheckId, recheckId), eq(generationPlanRechecks.status, "answered")))
     .returning({ recheckId: generationPlanRechecks.recheckId });
+  return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// BL-174 (GEMINI_MEDIA_PLAN.md §2.2) -- the Gemini API key (one encrypted row), the module's settings (one app_settings
+// JSON value) and its jobs. Written by `src/lib/gemini-media/` only.
+// ---------------------------------------------------------------------------
+
+const GEMINI_CREDENTIALS_SINGLETON_ID = "default";
+const GEMINI_MEDIA_SETTINGS_KEY = "gemini_media_settings";
+
+export type StoredGeminiCredentials = typeof geminiCredentials.$inferSelect;
+
+export async function getStoredGeminiCredentials(database: AppDb = db): Promise<StoredGeminiCredentials | null> {
+  const [row] = await database.select().from(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
+  return row ?? null;
+}
+
+export async function upsertStoredGeminiCredentials(
+  input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">,
+  database: AppDb = db
+): Promise<void> {
+  const updatedAt = new Date();
+  await database
+    .insert(geminiCredentials)
+    .values({ id: GEMINI_CREDENTIALS_SINGLETON_ID, ...input, updatedAt })
+    .onConflictDoUpdate({ target: geminiCredentials.id, set: { ...input, updatedAt } });
+}
+
+/** A key check's result, written only while the stored key is still the one that was checked (review round 1); false otherwise. */
+export async function setStoredGeminiCredentialsStatus(
+  checkedCiphertext: string,
+  input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(geminiCredentials)
+    .set({ ...input, updatedAt: new Date() })
+    .where(and(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID), eq(geminiCredentials.ciphertext, checkedCiphertext)))
+    .returning({ id: geminiCredentials.id });
+  return rows.length > 0;
+}
+
+export async function clearStoredGeminiCredentials(database: AppDb = db): Promise<void> {
+  await database.delete(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
+}
+
+/** The module's settings as stored (JSON), `null` before the first save. */
+export async function getGeminiMediaSettingsJson(database: AppDb = db): Promise<string | null> {
+  return getAppSetting(GEMINI_MEDIA_SETTINGS_KEY, database);
+}
+
+export async function setGeminiMediaSettingsJson(json: string, database: AppDb = db): Promise<void> {
+  await setAppSetting(GEMINI_MEDIA_SETTINGS_KEY, json, database);
+}
+
+export type StoredGeminiMediaJob = typeof geminiMediaJobs.$inferSelect;
+export type GeminiMediaJobStatusValue = StoredGeminiMediaJob["status"];
+
+/** Inserts a new job; false when its (created_by, request_id) is already taken (nothing written). */
+export async function insertGeminiMediaJob(row: typeof geminiMediaJobs.$inferInsert, database: AppDb = db): Promise<boolean> {
+  const rows = await database.insert(geminiMediaJobs).values(row).onConflictDoNothing().returning({ jobId: geminiMediaJobs.jobId });
+  return rows.length > 0;
+}
+
+export async function getGeminiMediaJob(jobId: string, database: AppDb = db): Promise<StoredGeminiMediaJob | null> {
+  const [row] = await database.select().from(geminiMediaJobs).where(eq(geminiMediaJobs.jobId, jobId));
+  return row ?? null;
+}
+
+export async function getGeminiMediaJobByRequest(createdBy: string, requestId: string, database: AppDb = db): Promise<StoredGeminiMediaJob | null> {
+  const [row] = await database.select().from(geminiMediaJobs).where(and(eq(geminiMediaJobs.createdBy, createdBy), eq(geminiMediaJobs.requestId, requestId)));
+  return row ?? null;
+}
+
+/** Newest first; optional channel and status filters. */
+export async function listGeminiMediaJobs(
+  filter: { channelId?: string; statuses?: readonly GeminiMediaJobStatusValue[]; createdSince?: Date; limit: number },
+  database: AppDb = db
+): Promise<StoredGeminiMediaJob[]> {
+  const conditions = [
+    filter.channelId === undefined ? undefined : eq(geminiMediaJobs.channelId, filter.channelId),
+    filter.statuses === undefined ? undefined : inArray(geminiMediaJobs.status, [...filter.statuses]),
+    filter.createdSince === undefined ? undefined : gte(geminiMediaJobs.createdAt, filter.createdSince),
+  ].filter((c) => c !== undefined);
+  return database
+    .select()
+    .from(geminiMediaJobs)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(geminiMediaJobs.createdAt), desc(geminiMediaJobs.jobId))
+    .limit(filter.limit);
+}
+
+/** Updates a job only while it is in `fromStatus` (compare-and-set); false when it was not (nothing written). */
+export async function updateGeminiMediaJob(
+  jobId: string,
+  fromStatus: GeminiMediaJobStatusValue,
+  set: Partial<Omit<typeof geminiMediaJobs.$inferInsert, "jobId" | "channelId" | "createdBy" | "createdAt">>,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(geminiMediaJobs)
+    .set({ ...set, updatedAt: set.updatedAt ?? new Date() })
+    .where(and(eq(geminiMediaJobs.jobId, jobId), eq(geminiMediaJobs.status, fromStatus)))
+    .returning({ jobId: geminiMediaJobs.jobId });
   return rows.length > 0;
 }
 

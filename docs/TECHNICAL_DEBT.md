@@ -1819,6 +1819,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Possible fix:** a daily pull cap (owner answer O4: none for now); an approval queue like GPU sessions (owner chose direct actions); run the delete inside the registry sync's serialization.
 - **BL-133 extension (2026-10-06, ADR 0026):** the factory token can now also start GPU sessions without a click -- only within the owner's factory limits (per session USD and minutes, per day, per month; master switch on by default, owner msg 1683) and the device's own daily cap and concurrency; above them its start waits for the owner. A running factory session counts with its full USD cap. It can stop only its own sessions.
 - **BL-143 extension (2026-10-07, ADR 0029):** `factory_plan_run_stage` creates several jobs in one call (one per item attempt still missing), only inside a running session the factory itself started for the plan's channel, after checking every job first; the spend bound is unchanged (the session's own caps and the factory limits). Plan writes are audited in `generation_plan_events` with the actor.
+- **BL-174 extension (2026-10-10, ADR 0035):** the factory token can also pay for Gemini images and video (`factory_gemini_create_job`) without a click -- only while the owner's Gemini switch is on (off by default) and within its per-job, per-day, per-month and active-job limits on this computer; see RISK-123.
 - **Re-evaluate:** if the factory limits are raised substantially, or the endpoint ever becomes reachable off-loopback.
 - **Gate(s):** none. **Status:** open, accepted tradeoff (owner decisions D1/O4, 2026-10-06).
 
@@ -1934,3 +1935,12 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
   and is deleted with the proposal.
 - **Re-evaluate:** if the policy review asks for enforcement (then blank `text` 30 days after creation, keeping the decision).
 - **Gate(s):** none. **Status:** open, accepted tradeoff.
+
+## RISK-123 — Gemini spending: limits per computer, costs are estimates, a lost answer may still be charged — OPEN, 2026-10-10
+
+- **What:** BL-174 / ADR 0035. The Factory Operator can spend on Google's Gemini API within the owner's limits. Those limits and the spend they are checked against are per computer (`gemini_media_jobs` and the settings are device-local): two computers each allow their own day and month. Costs are worked out from a price table in code (dated 2026-10-09) and Google's own token counts, not read from Google's bill; a request that was sent and whose answer was lost (timeout, restart mid-call, a video not collected within 47 h) is counted at its estimate, though Google may or may not have charged it.
+- **Also:** thinking beyond the estimate's 2 000-token allowance can make one image cost more than its per-job estimate (the day and month totals count the real cost). The per-job check assumes one image per job; a prompt that asks for several may return (and be charged for) several -- the recorded cost is right, the check before the call is not (the tool description says one image per job).
+- **Bounds:** the switch is off by default; every limit is checked before a job is stored; `stop.sh` refuses while a request is being sent; a retry with the same `requestId` never creates a second job; the key is checked before it is stored and only the last 4 characters leave the module.
+- **Mitigation outside the app:** a monthly spend cap on the Google project (AI Studio → Spend, experimental, overshoots by about 10 minutes) and prepaid credit (at 0 every key gets 402).
+- **Re-evaluate:** when the operator works on both computers in the same month, when Google changes a price, or when the Veo models leave preview.
+- **Gate(s):** none. **Status:** open, accepted with the owner's switch and limits.

@@ -4,6 +4,7 @@ import { getMcpConnectionEnabled, rawSqlClient, recordGatewayCallOutcome } from 
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createFactoryMcpEndpoint } from "@/lib/factory-mcp-endpoint";
 import { createFactoryTokenCore } from "@/lib/factory-agent-tokens";
+import { createGeminiMediaCore } from "@/lib/gemini-media";
 import { createLogicalPathsCore } from "@/lib/logical-paths";
 import { createGenerationPlansCore, withPlanLock } from "@/lib/generation-plans";
 import { createMediaGenerationCore, DomainError, withJobErrorCode } from "@/lib/media-generation";
@@ -184,6 +185,13 @@ function createToolDeps(): FactoryToolDeps {
       move: async (input) => ({ ...(await createGenerationPlansCore().movePlan(input, "factory")) }),
       requestRecheck: async (input) => ({ ...(await createGenerationPlansCore().requestRecheck(input, "factory")) }),
       withdrawRecheck: async (input) => ({ ...(await createGenerationPlansCore().withdrawRecheck(input, "factory")) }),
+    },
+    // BL-174 (GEMINI_MEDIA_PLAN.md §2.7): the Gemini module of THIS server process (its job-create lock is shared with the
+    // Web routes and the worker); every job is the factory's.
+    gemini: {
+      getStatus: async () => ({ ...(await createGeminiMediaCore().getStatus()) }),
+      createJob: async (input) => ({ ...(await createGeminiMediaCore().createJob(input, "factory")) }),
+      getJobs: async (input) => ({ ...(await createGeminiMediaCore().getJobs(input)) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

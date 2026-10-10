@@ -3495,3 +3495,57 @@ generation plans module (`src/lib/generation-plans/`); extends §29 and §33.
   (`peerRecheckEntries`) from the version 4 report.
 - **Limits.** The report's review list holds 500 entries; the attempts of open re-checks are always among them. Both computers must
   run report version 4 (RISK-119).
+
+## 43. Images and video through Google's Gemini API, driven by the Factory Operator (BL-174, ADR 0035)
+
+Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Factory API 1.12.0. A separate feature module,
+`src/lib/gemini-media/`, beside (not inside) RunPod generation (§26): Google runs the models; the app sends one paid request per result.
+
+- **Boundaries (§M).** The module imports the media gateway, the workspace exchange, channel workspaces and connections, the asset
+  catalog, the shared device key file, crypto and money helpers, and `db.ts`'s own helpers; never `media-generation` or
+  `generation-plans`, and they never import it (`boundaries.test.ts`). The factory route reaches it only through its barrel.
+- **Gateway child** (`media-gateway/gemini-api.ts`, §G). Every request first passes `assertMediaGatewayAuthorized("gemini_api")`
+  (the "Media gateway" toggle, one traffic counter). The key is a per-call argument, sent only as `x-goog-api-key` and only to the
+  Gemini host; the video download follows redirects by hand and sends no key to another host (https only). Errors carry an
+  `outcome`: `answered` (an HTTP answer), `not_sent` (an exact list: DNS, refused, unreachable, named TLS handshake / certificate
+  failures, undici's connect timeout, or a failure before the request left: provably never reached Google) or `unknown` (sent, then a timeout or a broken body: Google
+  may have finished and charged). `http.ts`'s `unavailable` now receives the caught error for this, and takes a `redirect` option:
+  the Gemini child passes `"error"`, because fetch keeps custom headers (the key) across a redirect to another host.
+  Images: Interactions API (`POST /v1beta/interactions`, `response_format { type: "image", aspect_ratio, image_size }`,
+  `store: false`), the final images read from `steps[]` (`model_output` blocks; thought steps skipped), falling back to the legacy
+  `outputs[]`. Video: `models/{model}:predictLongRunning` (`instances[0]` prompt and `inlineData` frames / `referenceType: "asset"`
+  references), the operation polled by name (validated `models/…/operations/…`), the sample's URI downloaded through a `.part` file.
+- **Key.** `device-key-file` holds the key-file logic moved unchanged out of `media-generation` (which keeps its own file and error);
+  the module's file is `gemini-media.key`. A key is checked (`models.list`; 400/401/403 = invalid, 402 = valid with an empty balance)
+  before it is stored; only the last 4 characters leave the module.
+- **Create** (`createJob`). Strict schema, then the per-model rules (`checkJobRules`), all before any read or write. A `requestId`
+  already used returns that job when the request hash matches (before every other check, so a retry never creates a second paid job),
+  else `gemini_request_exists`. Then: the switch, the key, the channel connected here, its workspace, every input resolved in
+  `Sent to YTM` (contained, regular file, ≤ 7 MB, ≤ 12 MB together) and read through one descriptor whose dev/ino must match
+  (`adapters/files.ts`), the estimate, and the limits in order per job / day / month / active jobs. A dry-run answers the same verdict and
+  stores nothing. The whole create runs under one promise-chain lock kept on `globalThis` with the core (the MCP route, the Web routes
+  and `instrumentation.ts` are separate bundles), so two creates never both pass a limit.
+- **Money.** `pricing.ts`: estimates and costs from the price table (`GEMINI_PRICES_AS_OF`) through `shared-money.ceil4` (4 decimals,
+  up). An image's cost is Google's token counts (all input at the input rate, image output at the image rate, other output and thinking
+  at the text rate), else the table's per-image price; a video's cost is its table price. Spend = finished costs + active estimates,
+  local calendar day / month, from `gemini_media_jobs` (device-local).
+- **Worker** (`worker.ts`, its own 5 s loop in `instrumentation.ts`, behind the device mutation gate; ≤ 3 jobs in flight). Every status
+  change is a compare-and-set from the status read. A queued job is claimed (`submitting`), its key decrypted, its inputs re-read and
+  re-hashed (a changed file fails it unsent), its output folder resolved -- all before Google is called. Retry (back to `queued`,
+  30 s / 2 min, 3 attempts, then failed at 0): 429, 408, 5xx, a connection that never reached Google. Not retried: a refusal (400 →
+  `gemini_invalid_request`, a blocked code → `gemini_blocked`, 401/403, 402; cost 0) and an `unknown` outcome (`gemini_timeout` or
+  `gemini_unavailable` at the estimate, basis `unknown_outcome`). An image answer with no final image is `gemini_blocked` at Google's own
+  counts (0 without them) only for a terminal refusal or a `completed` answer with readable counts; anything else (an unreadable body,
+  a non-terminal status) counts its estimate. Counts are read only from the documented fields (integers or decimal strings). A finished image costs
+  Google's counts, never below the table price of the images saved. A job still `submitting` 15 minutes after its claim and not in
+  flight here (a write failed after the call) is failed at its estimate by the next tick. Files are written through the shared crash-safe write, registered as assets (a catalog failure is a note), the manifest last;
+  only then `done`. A video moves `submitting` → `running` with its operation name and is polled every 10 s; any poll or download
+  failure retries in 30 s until 47 h after the start (`gemini_expired` at the estimate); a finished operation with an error or no sample
+  costs 0. At startup a job left `submitting` fails `gemini_interrupted` at its estimate; `running` videos resume. With the switch off,
+  queued jobs fail `gemini_disabled` unsent; running videos are still collected.
+- **Restarts.** `operation-lock media-idle` refuses `stop.sh` while a job is `submitting` (an image call takes up to 5 minutes); idle
+  shutdown waits while any job is queued, submitting or running.
+- **Web.** Settings → Gemini (`gemini-media-settings.tsx`) and `/api/gemini-media` (overview), `/settings`, `/key`, `/key/test`: the
+  owner's side only; no MCP tool sets the key, the switch or the limits.
+- **Limits.** The money limits are per computer (RISK-123); prices are code constants; the Veo models are previews. Not in this slice:
+  Gemini Omni Flash, the Batch API, Veo extension, multi-turn editing, generation-plan attempts from Gemini jobs.

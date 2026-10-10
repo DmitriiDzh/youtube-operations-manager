@@ -340,6 +340,37 @@ async function startServerSession() {
   process.once("SIGINT", () => void media.stopForShutdown());
   process.once("SIGTERM", () => void media.stopForShutdown());
 
+  // BL-174 (GEMINI_MEDIA_PLAN.md §2.4): Gemini image/video jobs, in their own loop (a slow RunPod tick never delays them,
+  // AGENTS.md §M). First a job left mid-call by a dead process fails at its estimate (Google may have charged it); then every
+  // 5 s due queued jobs are sent and running videos collected. With nothing queued or running a tick makes no outbound call.
+  // Never during a snapshot import/migration or in recovery mode (it writes job rows and files), the gate the draft sync uses.
+  // A failure to load the module must never stop what follows (the idle-shutdown watcher below), AGENTS.md §M.
+  let gemini: import("@/lib/gemini-media").GeminiMediaCore | null = null;
+  try {
+    gemini = (await import("@/lib/gemini-media")).createGeminiMediaCore();
+  } catch (error) {
+    console.warn(`[gemini-media] not started: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const GEMINI_TICK_MS = 5_000;
+  let geminiSwept = false;
+  const geminiLoop = async () => {
+    if (!gemini) return;
+    try {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+      if (!geminiSwept) {
+        await gemini.worker.bootSweep();
+        geminiSwept = true;
+      }
+      await gemini.worker.tick();
+    } catch (error) {
+      // Paused by the gate (an import / migration holds the lock, or recovery mode): quietly, the next tick checks again.
+      const paused = error instanceof Error && (error.name === "OperationLockError" || error.name === "RecoveryModeError");
+      if (!paused) console.warn(`[gemini-media] ${error instanceof Error ? error.message : String(error)}`);
+    }
+    setTimeout(() => void geminiLoop(), GEMINI_TICK_MS).unref();
+  };
+  setTimeout(() => void geminiLoop(), 10_000).unref();
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
@@ -379,6 +410,8 @@ async function startServerSession() {
       // server no HTTP traffic (an idle exit would terminate the pod mid-generation; capped by MAX_IDLE_DEFERRAL_MS).
       if (await media.hasOpenPod().catch(() => false)) return true;
       if (await media.hasInFlightJobs().catch(() => false)) return true;
+      // BL-174: a Gemini job queued, being sent, or a video Google is still making.
+      if (gemini && (await gemini.worker.hasActiveJobs().catch(() => false))) return true;
       const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
       return running.rows.length > 0;
     },

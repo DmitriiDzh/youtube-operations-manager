@@ -103,9 +103,23 @@ async function mediaIdle(client: SqlExecutor, log: (line: string) => void): Prom
     if (/no such table/i.test(error instanceof Error ? error.message : String(error))) return 0;
     throw error;
   }
-  if (rows.length === 0) return 0;
-  log(`${rows.length} media session(s) are active on this computer: ${rows.map((row) => `${String(row.id)} (${String(row.status)}, channel ${String(row.channel_id)})`).join("; ")}.`);
-  log("Stopping the app now would terminate their pods and fail their queued jobs. Wait until they finish, stop them in Production, or stop with --force.");
+  // BL-174 (GEMINI_MEDIA_PLAN.md §2.4, AC-GM-15): a Gemini request being sent right now -- stopping would cut it after Google
+  // may already have charged it, with no file kept. Queued jobs and running videos survive a restart (picked up again).
+  let gemini: Array<Record<string, unknown>> = [];
+  try {
+    gemini = ((await client.execute({ sql: "SELECT job_id, kind, channel_id FROM gemini_media_jobs WHERE status = 'submitting' ORDER BY created_at", args: [] })) as { rows: Array<Record<string, unknown>> }).rows;
+  } catch (error) {
+    if (!/no such table/i.test(error instanceof Error ? error.message : String(error))) throw error;
+  }
+  if (rows.length === 0 && gemini.length === 0) return 0;
+  if (rows.length > 0) {
+    log(`${rows.length} media session(s) are active on this computer: ${rows.map((row) => `${String(row.id)} (${String(row.status)}, channel ${String(row.channel_id)})`).join("; ")}.`);
+    log("Stopping the app now would terminate their pods and fail their queued jobs. Wait until they finish, stop them in Production, or stop with --force.");
+  }
+  if (gemini.length > 0) {
+    log(`${gemini.length} Gemini request(s) are being sent right now: ${gemini.map((row) => `${String(row.job_id)} (${String(row.kind)}, channel ${String(row.channel_id)})`).join("; ")}.`);
+    log("Stopping the app now would cut them after Google may have charged them. Wait a minute (an image takes up to 5 minutes), or stop with --force.");
+  }
   return 1;
 }
 

@@ -33,6 +33,7 @@ export const shell: Record<keyof typeof en, string> = {
   "tabs.settings.aiAgent": "ИИ-агент",
   "tabs.settings.sync": "Синхронизация",
   "tabs.settings.runpod": "RunPod",
+  "tabs.settings.gemini": "Gemini",
   "tabs.settings.about": "О программе",
 
   "shell.productName": "Operations Manager",

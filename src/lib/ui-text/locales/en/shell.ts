@@ -33,6 +33,7 @@ export const shell = {
   "tabs.settings.aiAgent": "AI Agent",
   "tabs.settings.sync": "Sync",
   "tabs.settings.runpod": "RunPod",
+  "tabs.settings.gemini": "Gemini",
   "tabs.settings.about": "About",
 
   "shell.productName": "Operations Manager",
