@@ -21,11 +21,11 @@ test("13.1: every schema table is classified against the YouTube API data polici
   assert.deepEqual({ unclassified, unknown }, { unclassified: [], unknown: [] });
 });
 
-test("13.1: every Non-Authorized clock column really exists in the schema", () =>
+test("13.1: every Non-Authorized (and, BL-171, authorized-expiring) clock column really exists in the schema", () =>
   withTempDir("data-policy-", async (dir) => {
     const client = await makeClient(dir);
     for (const [table, c] of Object.entries(YOUTUBE_DATA_CLASSIFICATION)) {
-      if (c.kind !== "non_authorized") continue;
+      if (c.kind !== "non_authorized" && c.kind !== "authorized_expiring") continue;
       const cols = (await client.execute(`PRAGMA table_info("${table}")`)).rows.map((r) => String(r.name));
       assert.ok(cols.includes(c.clockColumn), `${table}.${c.clockColumn}`);
     }

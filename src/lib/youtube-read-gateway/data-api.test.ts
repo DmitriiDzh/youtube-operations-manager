@@ -20,6 +20,8 @@ import {
   listUploadsPlaylistVideoIds,
   parseIso8601DurationToSeconds,
   searchPublicChannels,
+  getVideoCommentCounts,
+  listOwnVideoComments,
 } from "./data-api";
 
 // The "Data API reads" toggle (owner instruction, 2026-09-22): default-enabled, unlike Gate B's
@@ -942,4 +944,69 @@ test("searchPublicMusicVideos asks search.list for type=video in category 10 (Mu
     { part: ["snippet"], q: "q", type: ["video"], videoCategoryId: "10", maxResults: 50, publishedAfter: "2026-07-01T00:00:00Z" },
   ]);
   assert.deepEqual(found, [{ videoId: "v1", channelId: "UC_A", channelTitle: "A", title: "Bossa 1", publishedAt: "2026-09-01T00:00:00Z" }]);
+});
+
+// BL-171 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md AC-VC-01/02/03): the comment reads, with the query and the stored shape stated by hand.
+test("getVideoCommentCounts reads only the statistics part, 50 ids per call, and keeps a missing count null", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const ids = Array.from({ length: 51 }, (_, i) => `v${i}`);
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: Record<string, unknown>) => {
+      calls.push(args);
+      const batch = args.id as string[];
+      return { data: { items: batch.map((id) => ({ id, statistics: id === "v0" ? { commentCount: "2" } : id === "v1" ? {} : { commentCount: "0" } })) } };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+  const counts = await getVideoCommentCounts(youtube, ids);
+  assert.deepEqual(calls.map((call) => [call.part, (call.id as string[]).length]), [
+    [["statistics"], 50],
+    [["statistics"], 1],
+  ]);
+  assert.deepEqual(counts.slice(0, 3), [
+    { videoId: "v0", commentCount: 2 },
+    { videoId: "v1", commentCount: null },
+    { videoId: "v2", commentCount: 0 },
+  ]);
+});
+
+test("listOwnVideoComments asks for the 100 newest threads as plain text and keeps no author data", async () => {
+  let asked: Record<string, unknown> | undefined;
+  const thread = (id: string, author: string, extra: Record<string, unknown> = {}) => ({
+    id: `t-${id}`,
+    snippet: {
+      channelId: "UC_A",
+      videoId: "a",
+      totalReplyCount: 2,
+      isPublic: true,
+      topLevelComment: {
+        id,
+        snippet: {
+          textDisplay: "Beautiful music!",
+          textOriginal: "Beautiful music!",
+          authorDisplayName: "Someone",
+          authorProfileImageUrl: "https://example.com/p.jpg",
+          authorChannelId: { value: author },
+          likeCount: 3,
+          publishedAt: "2026-09-27T19:16:28Z",
+          updatedAt: "2026-09-28T08:00:00Z",
+        },
+      },
+      ...extra,
+    },
+  });
+  const youtube = {
+    commentThreads: {
+      list: async (args: Record<string, unknown>) => {
+        asked = args;
+        return { data: { items: [thread("c1", "UC_A"), thread("c2", "UC_someone"), thread("c3", "UC_x", { isPublic: false })] } };
+      },
+    },
+  } as unknown as youtube_v3.Youtube;
+  const comments = await listOwnVideoComments(youtube, "a");
+  assert.deepEqual(asked, { part: ["snippet"], videoId: "a", maxResults: 100, order: "time", textFormat: "plainText" });
+  assert.deepEqual(comments, [
+    { commentId: "c1", text: "Beautiful music!", likeCount: 3, publishedAt: "2026-09-27T19:16:28Z", updatedAt: "2026-09-28T08:00:00Z", replyCount: 2, byChannelOwner: true },
+    { commentId: "c2", text: "Beautiful music!", likeCount: 3, publishedAt: "2026-09-27T19:16:28Z", updatedAt: "2026-09-28T08:00:00Z", replyCount: 2, byChannelOwner: false },
+  ]);
+  assert.ok(!JSON.stringify(comments).includes("Someone") && !JSON.stringify(comments).includes("UC_someone"), "no author data");
 });
