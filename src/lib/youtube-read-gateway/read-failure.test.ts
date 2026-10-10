@@ -9,7 +9,7 @@ import { failureKind } from "./read-failure";
 
 const googleError = (status: number, reason: string) => Object.assign(new Error(`HTTP ${status} ${reason}`), { response: { status, data: { error: { errors: [{ reason }] } } } });
 
-test("read-failure: every \\"reads switched off\\" code stops the run, as Analytics' did", () => {
+test("read-failure: every reads-switched-off code stops the run, as Analytics' did", () => {
   for (const code of ["analytics_reads_disabled", "data_api_reads_disabled", "reporting_reads_disabled"] as const) {
     assert.equal(failureKind(new DomainError({ code, message: "off" })), "stop", code);
   }
