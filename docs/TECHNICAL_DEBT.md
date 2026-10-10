@@ -1895,6 +1895,8 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 
 ## RISK-119 — Plans report version 3 and presence files: both computers must update; device clocks decide ties — OPEN, 2026-10-09
 
+- **Update (BL-173, 2026-10-10):** the plans report is version 4 (re-checks, `currentFile`, `recheckId`/`kept`). A version 3 build refuses it the same way, so both computers update together again; the rest of this entry applies unchanged.
+
 - **What:** BL-162 (`docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md` §5, FO-REQ-0013). The plans report is version 3. A computer on an older build refuses it ("version 3 is newer") and stops seeing the other computer's plans and verdicts until it updates, as with version 2 (RISK-114). A wave note to a computer still on version 2 is refused (`peer_update_required`). Wave notes ("written later wins") and the same-track tie-break of the review screen ("opened earlier keeps it") compare times from two computers' clocks.
 - **Bounded by:** nothing is lost: the verdict history keeps every rating; a superseded note is recorded as an event; a note or verdict dated more than 5 min ahead is not taken; claims stay advisory (a verdict still asks before replacing one). The presence file holds only claims (plan, track, times, host name).
 - **Clocks (review):** a claim lives 90 s and is renewed every 30 s, and a reader compares its `until` (writer's clock) with its own clock. A reader whose clock runs about 60 s fast sees claims flicker; about 90 s fast it misses them (the old 10-minute claim tolerated about 9 min). A claim reaching more than 90 s + 5 min ahead is not believed.

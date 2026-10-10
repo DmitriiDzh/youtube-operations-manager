@@ -3171,7 +3171,7 @@ Plan: `docs/roadmap/plans/SERVERS_MEDIA_PLAN.md` (FO-REQ-0009, FO-MSG-0011). Bra
     - The screen asks first (`ConfirmDialog`) and asks again on a 409.
 - **Limits** (RISK-114, RISK-119):
   - claims are advisory and arrive within the sync delay (seconds with the presence files and a 1 s Syncthing watch delay);
-  - both computers must run the same report version (3 since BL-162).
+  - both computers must run the same report version (3 since BL-162; 4 since BL-173, §42).
 - **Screens (BL-162, `docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md`).** The review screen is a window-high workstation:
   a toolbar (back, plan, wave picker, progress, validator filter, "About the wave", "View") and three columns -- the player
   with the verdict under it, the auto-check, the queue. The Plans list holds this device's and the other devices' plans of
@@ -3453,3 +3453,39 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
 - **Reads.** `listGpuAvailabilityLog` backs `factory_media_list_gpu_availability_log`: rows newest first (`listMediaGpuAvailabilityLog`,
   default 1,000, at most 5,000), or with `summary` the SQL `GROUP BY gpu_type_id, data_center_id, stock` over every matching row
   (`summarizeMediaGpuAvailabilityLog`), folded per GPU and datacenter by `summarizeGpuAvailabilityGroups`.
+
+## 42. Re-checks of rated tracks: a fixed version, or a question about one spot (BL-173, FO-REQ-0017)
+
+Plan: `docs/roadmap/plans/PLAN_RECHECKS_PLAN.md` (AC-RC-01..13). Schema v82, Factory API 1.11.0, plans report version 4. Part of the
+generation plans module (`src/lib/generation-plans/`); extends §29 and §33.
+
+- **Record.** A re-check is a row of `generation_plan_rechecks` (PK plan, recheck id), never a result row: a result row is keyed by
+  (plan, stage, item, attempt) and a repeat replaces every column, so a revised file reported there would overwrite the original's
+  checks (or, under a new attempt ref, count as an unlinked new attempt). It keeps the verdict it was opened on (`previousVerdict`),
+  its own file, markers, checks and metrics, a status (open | answered | withdrawn) and the answer that closed it.
+- **Opening** (`requestRecheck`, under the plan lock): the attempt must have a verdict at the review stage -- the owner's, a relayed
+  one, or one from another computer not yet applied (`pendingPeerVerdicts`); one open re-check per attempt; a revision names a file
+  that `files.sentFileExists` finds in the channel's Sent to YTM and whose type the player serves (`auditionContentType`, the list the
+  audition route uses). The same id and content again is a retry; other content is `plan_recheck_exists`.
+- **Answers** (`takeRecheckAnswer`, shared by the owner's answer and the peer path). A verdict answer seeds the history (§33), replaces
+  the review-stage row unless the stored owner verdict is newer or the re-check was withdrawn, and adds a history row with `recheckId`.
+  A kept answer (question only) adds a history row with `kept` and the note; `result` repeats the stored verdict, it never touches the
+  row. The derived events skip kept rows (`planEvents`); `historyEntryOfVerdict` never picks one. An open re-check closes with the first
+  answer (`closeRecheck` is a compare-and-set on `open`) and records `recheck_answered`; `group_reviewed` cannot fire (the attempt was
+  already reviewed, so no wave's waiting count moves).
+- **Current file.** `currentFilesOf`: per attempt, the file of its newest revision answered "accepted" (not kept). `resolveAudition`
+  plays it; `getPlan` reports it per re-check (else the latest reported file); the shared report carries it on the review entry.
+- **Counts.** `planProgress(…, rechecks)` adds `rechecksOpen` and per-wave `counts.rechecks`; the waiting rule (`reviewCandidates`),
+  the notices, the badge and the channel summary are untouched.
+- **Two computers.** The owning device shares its open re-checks (with the row the entry shows: the revision's, or the accepted
+  revision a question plays). Another computer answers through `recordPeerRecheckAnswer` (only a re-check open in that report, once
+  from here); the answer travels as a peer verdict with `recheckId` / `kept`. `applyPeerVerdicts` takes it through `takeRecheckAnswer`
+  exactly once (`peer_verdict` event with `verdictId`), also when the re-check was answered (newest verdict wins, both kept in the
+  history) or withdrawn meanwhile (history only). Until then `pendingRecheckAnswers` shows the re-check answered there, and
+  `pendingPeerVerdicts` ignores re-check answers (they are not verdicts on a waiting track).
+- **Screen.** `plan-review-screen.tsx` walks either the queue or the open re-checks (`RECHECKS_WAVE`). A revision plays the fixed file
+  (`…/recheck-audition`) with the attempt's own file as A/B "Before", loudness from the revision's metrics (else measured, never the
+  original's); a question opens at its first marker and offers "Keep the verdict" (K). Peer entries are built in the browser
+  (`peerRecheckEntries`) from the version 4 report.
+- **Limits.** A plan's review list in the report holds 500 entries; a re-check of an attempt beyond them shows without the attempt's own
+  rows. Both computers must run report version 4 (RISK-119).
