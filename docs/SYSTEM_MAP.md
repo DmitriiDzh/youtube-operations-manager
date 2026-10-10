@@ -715,7 +715,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Хранение (v80):** `video_comments` (без данных авторов; новый вид политики `authorized_expiring`, III.E.4.c — очистка удаляет строки старше 30 дней по `fetched_at`, в базе, при импорте и в копиях), `video_comment_state`, `video_comment_channel_state`. Только на этом устройстве.
 - **Чтение:** `agent_get_video_comments` (Agent API 3.13.0, `video_context.query_video_comments`; у Producer — API 1.6.0).
 
-### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED на `feature/gemini-media`, ждёт решения о мердже**
+### 2.9ak Картинки и видео через Gemini API под управлением оператора (BL-174, ADR 0035, `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`e72502e`)**
 
 - **Модуль `src/lib/gemini-media/`** (отдельный, §M; не зависит от `media-generation` и `generation-plans`, проверяется тестом): ключ, настройки владельца, задания, фоновый обработчик, файлы. Выключен по умолчанию; без ключа или выключенный — никаких сетевых вызовов.
 - **Шлюз:** `src/lib/media-gateway/gemini-api.ts` — единственный путь к `generativelanguage.googleapis.com` (тумблер «Media gateway», счётчик `gemini_api`): проверка ключа (`models.list`), картинка (Interactions API, `store:false`), Veo 3.1 (`predictLongRunning` + операция), скачивание видео (ключ только хосту Gemini). Ошибки несут `outcome`: answered / not_sent / unknown.

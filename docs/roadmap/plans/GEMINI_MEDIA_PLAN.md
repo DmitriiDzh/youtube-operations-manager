@@ -1,6 +1,6 @@
 # Images and video through Google's Gemini API, driven by the Factory Operator (BL-174)
 
-**Status: BUILT on `feature/gemini-media`; validation passed; review rounds next, then the owner's merge decision.** Owner, Telegram 2026-10-10:
+**Status: DONE, merged into `dev` (e72502e, owner msg 2533, 2026-10-11).** Validation: npm test 4242/4242, lint 0, build 0; two independent review rounds. After the merge the Settings → Gemini screen was checked live; Chrome had filled a saved password into the key field (`type="password"` ignores `autocomplete="off"`), fixed at once (9dc02ba: a masked text field). No live Google call yet (§7). Owner, Telegram 2026-10-10:
 - msg 2523: asked to research Nano Banana: image generation by API without renting servers, video, prices. Answered in msg 2524.
 - msg 2525, verbatim: «Проведи исследования как можно интегрировать в нашу систему и выдать контроль оператору через mcp. Составь
   план и приступай к реализации. Как всегда по нашим правилам сделай эту интеграцию отдельным модулем.»
