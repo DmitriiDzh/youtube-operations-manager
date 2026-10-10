@@ -7,6 +7,7 @@ import { DomainError } from "@/lib/analytics/contracts";
 import { getOperationRegistry, runTrackedOperation } from "@/lib/operation-progress";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { getAnalyticsDataSync, importPeersFirst } from "@/lib/analytics-data-sync";
+import { createVideoCommentsCore } from "@/lib/video-comments";
 
 export type AutoCollectAllDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -21,6 +22,8 @@ export type AutoCollectAllDeps = {
   importPeers?: () => Promise<{ imported: number; pending: boolean }>;
   /** BL-151: publish this device's new rows once the background collection is done. */
   publishLocal?: () => Promise<unknown>;
+  /** BL-171: the own-video comments (their own module, a Data API read), after the analytics steps. */
+  collectDueComments?: (input: { credentialRef: { userId: string }; channelId: string }) => Promise<unknown>;
 };
 
 // BL-142 (owner, Telegram 2026-10-06, msgs 1867/1868/1874): the dashboard's automatic Analytics collection, once per
@@ -42,6 +45,7 @@ export function createAutoCollectAllHandler(
     endRun: endAllChannelsRun,
     importPeers: importPeersFirst,
     publishLocal: () => getAnalyticsDataSync().publishLocal(),
+    collectDueComments: (input) => createVideoCommentsCore().collectDueComments(input),
   }
 ) {
   return async function POST() {
@@ -103,6 +107,15 @@ export function createAutoCollectAllHandler(
               await deps.core.collectDueSearchTerms({ credentialRef, channelId });
             } catch {
               // Reads off, quota, sign-in, an outage: nothing was counted; the next dashboard open tries again.
+            }
+          }
+          // BL-171: then each such channel's own-video comments, once a Pacific day (a Data API read; one channel failing never stops
+          // the next one).
+          for (const { channelId, credentialRef } of [...active.milestones, ...background.milestones]) {
+            try {
+              await deps.collectDueComments?.({ credentialRef, channelId });
+            } catch {
+              // Reads off, quota, sign-in, an outage: the day is not marked; the next dashboard open tries again.
             }
           }
         } catch {
