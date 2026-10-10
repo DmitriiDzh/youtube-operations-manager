@@ -25,6 +25,8 @@ import {
   saveCollectedAnalyticsBreakdown,
   deferAnalyticsBreakdown,
   recordAnalyticsBreakdownFailure,
+  saveCollectedVideoSearchTerms,
+  listVideoSearchTerms,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -78,6 +80,21 @@ export function createBreakdownStoreAdapter() {
       defer: (row: Parameters<typeof deferAnalyticsBreakdown>[0]) => deferAnalyticsBreakdown(row),
       recordFailure: (row: Parameters<typeof recordAnalyticsBreakdownFailure>[0]) => recordAnalyticsBreakdownFailure(row),
       listRows: (channelId: string, subjects: string[], startDate: string, endDate: string) => listAnalyticsBreakdownRows(channelId, subjects, startDate, endDate),
+    },
+  };
+}
+
+/** BL-169: the stored search terms, on the breakdowns' video list and state rows. */
+export function createSearchTermStoreAdapter() {
+  const breakdowns = createBreakdownStoreAdapter();
+  return {
+    videoStore: breakdowns.videoStore,
+    store: {
+      listStates: breakdowns.store.listStates,
+      saveVideoTerms: (row: Parameters<typeof saveCollectedVideoSearchTerms>[0]) => saveCollectedVideoSearchTerms(row),
+      defer: breakdowns.store.defer,
+      recordFailure: breakdowns.store.recordFailure,
+      listVideoTerms: (channelId: string, videoIds: string[]) => listVideoSearchTerms(channelId, videoIds),
     },
   };
 }
