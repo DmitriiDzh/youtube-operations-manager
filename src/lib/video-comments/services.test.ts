@@ -210,27 +210,30 @@ test("AC-VC-06: at most 50 reads per run, never read first then least recently r
 
 test("AC-VC-06: in a mixed queue the never-read videos come first, then the least recently read", async () => {
   const db = await freshDb();
-  const world: World = { counts: new Map([["old", 1], ["older", 0], ["new", 0]]), threads: new Map() };
-  const { services, calls, clock } = setup(db, [video("older"), video("old"), video("new")], world);
+  // Ids chosen against the alphabet (the planner's last tie-break), so only the right order passes: `z` never read, `b` read on 10-01,
+  // `a` read on 10-02.
+  const world: World = { counts: new Map([["b", 1], ["a", 0], ["z", 0]]), threads: new Map() };
+  const { services, calls, clock } = setup(db, [video("a"), video("b"), video("z")], world);
   clock.now = at("2026-10-01T18:00:00Z");
-  await services.collectDueComments(RUN); // only `old` has comments: read on 10-01
-  world.counts.set("older", 1);
-  clock.now = at("2026-10-02T18:00:00Z");
-  await services.collectDueComments(RUN); // `older` gets one: read on 10-02
-  world.counts.set("new", 1);
-  calls.length = 0;
-  clock.now = at("2026-10-09T18:00:00Z"); // both reads are 7+ days old; `new` was never read
   await services.collectDueComments(RUN);
-  assert.deepEqual(calls.filter((c) => c.startsWith("comments")), ["comments new", "comments old", "comments older"]);
+  world.counts.set("a", 1);
+  clock.now = at("2026-10-02T18:00:00Z");
+  await services.collectDueComments(RUN);
+  world.counts.set("z", 1);
+  calls.length = 0;
+  clock.now = at("2026-10-09T18:00:00Z"); // both reads are 7+ days old; `z` was never read
+  await services.collectDueComments(RUN);
+  assert.deepEqual(calls.filter((c) => c.startsWith("comments")), ["comments z", "comments b", "comments a"]);
 });
 
-test("AC-VC-07: a 404 counts attempts (retry after 24 h, failed after 3, then only on a new count); 5xx/429/no answer defer and end the run", async () => {
+// AC-VC-07 as amended by the review of BL-171: a retry waits for the start of the next Pacific day (midnight PDT = 07:00Z), not 24 h.
+test("AC-VC-07: a 404 counts attempts (retry the next Pacific day, failed after 3, then only on a new count); 5xx/429/no answer defer and end the run", async () => {
   const db = await freshDb();
   const world: World = { counts: new Map([["a", 1], ["b", 1]]), threads: new Map(), fail: (videoId) => (videoId === "a" ? googleError(404, "videoNotFound") : null) };
   const { services, calls, clock } = setup(db, [video("a"), video("b")], world);
   assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 1, disabled: 0, failed: 1 });
   let a = (await listVideoCommentStates("UC_A", db)).find((s) => s.videoId === "a");
-  assert.deepEqual([a?.status, a?.attempts, a?.nextAttemptAt?.toISOString()], ["retry", 1, "2026-10-11T18:00:00.000Z"]);
+  assert.deepEqual([a?.status, a?.attempts, a?.nextAttemptAt?.toISOString()], ["retry", 1, "2026-10-11T07:00:00.000Z"]);
   for (const iso of ["2026-10-11T19:00:00Z", "2026-10-12T19:00:00Z"]) {
     clock.now = at(iso);
     await services.collectDueComments(RUN);
@@ -250,7 +253,7 @@ test("AC-VC-07: a 404 counts attempts (retry after 24 h, failed after 3, then on
     await assert.rejects(() => run.services.collectDueComments(RUN), (thrown: unknown) => thrown === error);
     assert.deepEqual(run.calls, ["counts a,b", "comments a"], `${error.message}: the run stopped`);
     const state = (await listVideoCommentStates("UC_A", db2)).find((s) => s.videoId === "a");
-    assert.deepEqual([state?.status, state?.attempts, state?.nextAttemptAt?.toISOString()], ["retry", 0, "2026-10-11T18:00:00.000Z"], error.message);
+    assert.deepEqual([state?.status, state?.attempts, state?.nextAttemptAt?.toISOString()], ["retry", 0, "2026-10-11T07:00:00.000Z"], error.message);
     assert.equal(await getVideoCommentCheckedOn("UC_A", db2), null, "an interrupted day is tried again on the next open");
   }
 });
@@ -331,4 +334,18 @@ test("AC-VC-12: the comment tables stay on this device; comments are III.E.4.c d
     clockColumn: "fetched_at",
     reason: "comments on our own videos (BL-171): Authorized Data that is not analytics, at most 30 days (III.E.4.c); no author data",
   });
+});
+
+test("review of BL-171: a failure just before the spring-forward night is retried the very next Pacific day", async () => {
+  const db = await freshDb();
+  let failing = true;
+  const world: World = { counts: new Map([["a", 1]]), threads: new Map(), fail: () => (failing ? googleError(404, "videoNotFound") : null) };
+  const { services, clock } = setup(db, [video("a")], world);
+  clock.now = at("2027-03-14T07:30:00Z"); // 2027-03-13 23:30 PST; clocks spring forward that night
+  await services.collectDueComments(RUN);
+  const state = (await listVideoCommentStates("UC_A", db))[0];
+  assert.equal(state.nextAttemptAt?.toISOString(), "2027-03-14T08:00:00.000Z", "midnight PST, the start of 03-14");
+  failing = false;
+  clock.now = at("2027-03-14T18:00:00Z"); // 11:00 PDT on 03-14
+  assert.deepEqual(await services.collectDueComments(RUN), { checked: true, read: 1, disabled: 0, failed: 0 });
 });

@@ -3408,7 +3408,8 @@ Plan: `docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md` (AC-VC-01..12). Schema v80.
   to `youtube-read-gateway/read-failure.ts` (re-exported by the old path); every `*_reads_disabled` code now stops a run.
 - **Run** (`collectDueComments`). Skipped when `video_comment_channel_state.checked_on` is today (Pacific). Otherwise: the channel's
   synced non-private videos' fresh counts, then `planDueCommentReads` (never read with a count > 0; `collected`/`retry` when the count
-  differs from `read_comment_count` or the read is 7+ Pacific days old; `disabled`/`failed` only when it differs; a `retry` waits; never
+  differs from `read_comment_count` or the read is 7+ Pacific days old while the video still has comments; `disabled`/`failed` only when it
+  differs; a `retry` waits until the start of the next Pacific day (`nextYoutubeQuotaReset`); never
   read first, then `read_at` ascending, retries last inside the batch; at most 50). Each read: `saveVideoCommentsRead` replaces the
   video's rows and its state in one batch. A 403 `commentsDisabled` is saved as `disabled` with no rows. Otherwise `failureKind`: `stop`
   rethrows, `defer` records a retry without an attempt and rethrows, `attempt` counts one (`failed` at 3).

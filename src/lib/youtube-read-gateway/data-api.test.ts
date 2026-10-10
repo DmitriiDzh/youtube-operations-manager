@@ -998,7 +998,10 @@ test("listOwnVideoComments asks for the 100 newest threads as plain text and kee
     commentThreads: {
       list: async (args: Record<string, unknown>) => {
         asked = args;
-        return { data: { items: [thread("c1", "UC_A"), thread("c2", "UC_someone"), thread("c3", "UC_x", { isPublic: false })] } };
+        // c1's thread lacks its own channelId: the owner is still recognised from the channel the caller names (review of BL-171).
+        const ownerThread = thread("c1", "UC_A");
+        delete (ownerThread.snippet as { channelId?: string }).channelId;
+        return { data: { items: [ownerThread, thread("c2", "UC_someone"), thread("c3", "UC_x", { isPublic: false })] } };
       },
     },
   } as unknown as youtube_v3.Youtube;

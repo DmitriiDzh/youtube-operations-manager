@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DomainError, parseWithSchema } from "@/lib/shared-domain";
+import { nextYoutubeQuotaReset } from "@/lib/youtube-quota";
 
 /**
  * BL-171 (FO-REQ-0015 item 7, docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md): the newest top-level comments of our own videos, stored so an
@@ -12,7 +13,8 @@ import { DomainError, parseWithSchema } from "@/lib/shared-domain";
 export const MAX_COMMENT_READS_PER_RUN = 50;
 export const COMMENT_REREAD_DAYS = 7;
 export const MAX_COMMENT_ATTEMPTS = 3;
-export const COMMENT_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+/** A retry is due from the start of the next Pacific day (a run happens once a day; DST-safe -- review of BL-171). */
+export const commentRetryAt = (failedAt: Date): Date => nextYoutubeQuotaReset(failedAt);
 
 export type OwnVideo = { videoId: string; title: string; privacyStatus: string | null };
 export type CommentState = {
@@ -187,7 +189,7 @@ export function createVideoCommentServices(deps: VideoCommentDependencies) {
             count: item.count,
             error: error instanceof Error ? error.message : String(error),
             at,
-            retryAt: new Date(at.getTime() + COMMENT_RETRY_AFTER_MS),
+            retryAt: commentRetryAt(at),
             maxAttempts: MAX_COMMENT_ATTEMPTS,
           };
           if (kind === "defer") {

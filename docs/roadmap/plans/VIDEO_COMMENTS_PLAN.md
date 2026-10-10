@@ -52,7 +52,7 @@ order of DEV-RESP-0018.
   is tried again on the next dashboard open.
 - **Gates:** the Data API reads switch (inside the client), the Data API quota reserve (`isBackgroundReadAllowed("data")`) and the
   quota-history label "Comment collection".
-- **Failures:** the shared read-failure rules. `stop` ends the run with nothing written; `defer` puts the video back 24 h and ends the run;
+- **Failures:** the shared read-failure rules. `stop` ends the run with nothing written; `defer` puts the video back to the next Pacific day and ends the run;
   `attempt` counts one try, `failed` after 3. A retry is due from the next Pacific day on *(review of BL-171: "after 24 h" meant 24–48 h
   with one run a day)*.
   - A 403 `commentsDisabled` is recognised before the shared rules see it. It is not a failure: the video is stored as `disabled` with no
@@ -123,8 +123,10 @@ The clock is 2026-10-10T18:00:00Z unless said otherwise.
   - Never-read videos come first, then the least recently read.
 - **AC-VC-07 (failures).**
   - A 403 `commentsDisabled` stores `disabled` with no comments, counts no attempt, and is not read again while the count stays the same.
-  - A 404 counts an attempt: retry after 24 h, `failed` after 3.
-  - A 503, a 429 or no answer puts the video back 24 h and ends the run.
+  - A 404 counts an attempt: retry the next Pacific day, `failed` after 3.
+  - A 503, a 429 or no answer puts the video back to the next Pacific day and ends the run.
+  - *(Changed by the review of BL-171: "after 24 h" meant 24–48 h with one run a day; a retry now waits for the start of the next Pacific
+    day.)*
   - `youtube_quota_exceeded`, `data_api_reads_disabled`, a 401 and a 403 `quotaExceeded` stop the run with nothing written.
 - **AC-VC-08 (reserve).** While the Data API background reserve is not allowed, a run makes no call.
 - **AC-VC-09 (retention).**
