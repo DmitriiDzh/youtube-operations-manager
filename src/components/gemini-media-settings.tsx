@@ -132,17 +132,17 @@ function KeyCard({ view, onChanged }: { view: KeyView; onChanged: () => Promise<
   const save = () =>
     run(
       async () => {
-        await requestJson("/api/gemini-media/credentials", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ apiKey }) }, t("gemini.key.saveFailed"), t);
+        await requestJson("/api/gemini-media/key", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ apiKey }) }, t("gemini.key.saveFailed"), t);
         setApiKey("");
         setEditing(false);
       },
       t("gemini.key.saved"),
       t("gemini.key.saveFailed")
     );
-  const check = () => run(async () => void (await requestJson("/api/gemini-media/credentials/test", { method: "POST" }, t("gemini.key.checkFailed"), t)), t("gemini.key.checked"), t("gemini.key.checkFailed"));
+  const check = () => run(async () => void (await requestJson("/api/gemini-media/key/test", { method: "POST" }, t("gemini.key.checkFailed"), t)), t("gemini.key.checked"), t("gemini.key.checkFailed"));
   const remove = () => {
     setConfirmRemove(false);
-    void run(async () => void (await requestJson("/api/gemini-media/credentials", { method: "DELETE" }, t("gemini.key.removeFailed"), t)), t("gemini.key.removed"), t("gemini.key.removeFailed"));
+    void run(async () => void (await requestJson("/api/gemini-media/key", { method: "DELETE" }, t("gemini.key.removeFailed"), t)), t("gemini.key.removed"), t("gemini.key.removeFailed"));
   };
 
   return (
