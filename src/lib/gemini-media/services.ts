@@ -77,6 +77,8 @@ export type GeminiMediaDeps = {
     findByLocalPath(channelId: string, localPath: string): Promise<{ assetId: string } | null>;
   };
   device(): Promise<{ deviceId: string | null; hostname: string | null }>;
+  /** A job is only for a channel connected on this computer (the ones `factory_list_channels` shows). */
+  isChannelConnected(channelId: string): Promise<boolean>;
   isGatewayEnabled(): Promise<boolean>;
   clock: { now(): Date };
   generateId(): string;
@@ -361,6 +363,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
             ? { code: "gemini_key_missing", message: "No Gemini API key is stored on this computer (Settings → Gemini)." }
             : null;
         if (preconditionRefusal && !input.dryRun) throw new DomainError({ code: preconditionRefusal.code, message: preconditionRefusal.message });
+        if (!(await deps.isChannelConnected(input.channelId))) {
+          throw new DomainError({ code: "gemini_workspace_unavailable", message: `${input.channelId} is not a channel connected on this computer (factory_list_channels).`, details: { channelId: input.channelId } });
+        }
         await deps.workspace.resolveOutputRoot(input.channelId);
         const inputs = await readInputs(input.channelId, namedInputs(input));
         const estimateUsd = estimateOf(input, inputs.length);

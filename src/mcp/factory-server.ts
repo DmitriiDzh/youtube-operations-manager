@@ -41,7 +41,10 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
 // (a rated attempt sent back to the owner as a fixed version or a question), todo.rechecks, progress.rechecksOpen /
 // groups[].counts.rechecks / rechecks[] (with currentFile), the events recheck_requested / recheck_answered / recheck_withdrawn and
 // owner_verdict.recheckId; a move is refused while a re-check is open, a close withdraws them. Additive.
-export const FACTORY_API_VERSION = "1.11.0";
+// BL-174 (GEMINI_MEDIA_PLAN.md §2.7): 1.12.0 -- images (Nano Banana) and video (Veo 3.1) through Google's Gemini API, paid per
+// result, within the owner's limits: factory_gemini_get_status (READ), factory_gemini_create_job (WRITE; a dry-run is a read),
+// factory_gemini_get_job (READ). Additive.
+export const FACTORY_API_VERSION = "1.12.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -90,6 +93,10 @@ export const FACTORY_TOOL_NAMES = [
   // BL-173 (FO-REQ-0017): a rated attempt goes back to the owner (a fixed version or a question), and is taken back.
   "factory_plan_request_recheck",
   "factory_plan_withdraw_recheck",
+  // BL-174: images and video through Google's Gemini API (no server rented; paid per result, within the owner's limits).
+  "factory_gemini_get_status",
+  "factory_gemini_create_job",
+  "factory_gemini_get_job",
 ] as const;
 
 /**
@@ -122,6 +129,8 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   // BL-173 (FO-REQ-0017): re-checks of rated attempts.
   "factory_plan_request_recheck",
   "factory_plan_withdraw_recheck",
+  // BL-174: a paid Gemini job (only within the owner's limits; a dry-run passes no gate).
+  "factory_gemini_create_job",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -183,6 +192,12 @@ export type FactoryToolDeps = {
     /** BL-173: open a re-check of a rated attempt; withdraw an open one. */
     requestRecheck(input: unknown): Promise<Record<string, unknown>>;
     withdrawRecheck(input: unknown): Promise<Record<string, unknown>>;
+  };
+  /** BL-174: the Gemini media module (it validates every input strictly itself, and enforces the owner's switch and limits). */
+  gemini: {
+    getStatus(): Promise<Record<string, unknown>>;
+    createJob(input: unknown): Promise<Record<string, unknown>>;
+    getJobs(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -782,6 +797,77 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "Take an open re-check back (1.11.0): { planId, recheckId, note? (<= 1000) } -> { recheck }. It leaves the owner's queue on every computer; event recheck_withdrawn { recheckId, itemKey, attemptRef, note? }. An answered or withdrawn re-check is refused with plan_recheck_closed (details.status); an unknown one with plan_mismatch; an unknown plan with plan_not_found, a closed one with plan_closed.",
     z.object({ planId: z.string(), recheckId: z.string(), note: z.string().optional() }).strict(),
     (input) => deps.plans.withdrawRecheck(input)
+  );
+
+  // -- BL-174 (GEMINI_MEDIA_PLAN.md §2.7): Google's Gemini API. The module validates every field (per-model rules, bounds);
+  // the schemas here name the fields so the operator sees them. No tool sets the key, the switch or the limits (Web only).
+
+  const relativePath = z.string().min(1).max(500);
+  const geminiCreateInput = z
+    .object({
+      channelId: z.string().min(1).max(64),
+      kind: z.enum(["image", "video"]),
+      model: z.string().min(1).max(80),
+      prompt: z.string().min(1).max(10_000),
+      requestId: z.string().min(1).max(120).optional(),
+      dryRun: z.boolean().optional(),
+      image: z
+        .object({ size: z.string().max(10), aspectRatio: z.string().max(10), inputs: z.object({ images: z.array(relativePath).max(14).optional() }).strict().optional() })
+        .strict()
+        .optional(),
+      video: z
+        .object({
+          resolution: z.string().max(10),
+          aspectRatio: z.string().max(10),
+          durationSeconds: z.number().int(),
+          personGeneration: z.enum(["allow_all", "allow_adult"]).optional(),
+          inputs: z.object({ firstFrame: relativePath.optional(), lastFrame: relativePath.optional(), referenceImages: z.array(relativePath).max(3).optional() }).strict().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict();
+  const geminiGetJobInput = z
+    .object({
+      jobId: z.string().min(1).max(80).optional(),
+      channelId: z.string().min(1).max(64).optional(),
+      status: z.enum(["queued", "submitting", "running", "done", "failed"]).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    })
+    .strict();
+
+  registerTool(
+    "factory_gemini_get_status",
+    {
+      description:
+        "Images and video through Google's Gemini API (1.12.0; no server is rented, each result is paid): what you may do now. -> { enabled (the owner's switch, off by default), keyConfigured, keyHint (last 4 characters only), keyStatus ('ok' | 'payment_required': the Google prepaid balance is empty), gatewayEnabled (the owner's 'Media gateway' toggle), limits: { maxUsdPerJob, maxUsdPerDay, maxUsdPerMonth, maxActiveJobs }, spend: { todayUsd, monthUsd (finished jobs' costs + active jobs' estimates, this computer's local day/month), activeUsd, activeJobs }, pricesAsOf, models: [image: { model, label, sizes, usdPerImage, usdPerMillionTokens } | video: { model, label, resolutions, usdPerSecond, referenceImages }] }. Limits and spend are per computer. Read-only.",
+      inputSchema: emptyInput,
+    },
+    async () => successResult(await deps.gemini.getStatus())
+  );
+
+  registerTool(
+    "factory_gemini_create_job",
+    {
+      description:
+        "Generate ONE image (Nano Banana) or ONE video (Veo 3.1) for a channel through Google's Gemini API, paid per result (1.12.0): { channelId, kind: 'image' | 'video', model, prompt, requestId? (yours, <= 120 letters/digits/'.'/'_'/'-': the same id with the same content returns the first job -- use it to retry safely; with other content gemini_request_exists), dryRun? (true: only { dryRun, estimateUsd, allowed, refusal, spend } -- nothing stored, no gate), image?: { size: '1K' | '2K' | '4K' (uppercase K; Nano Banana 2 Lite: 1K only), aspectRatio: 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9, inputs?: { images: [up to 14 reference/edit images] } }, video?: { resolution: '720p' | '1080p' | '4k' (not on Lite), aspectRatio: '16:9' | '9:16', durationSeconds: 4 | 6 | 8 (1080p/4k: 8), personGeneration?: 'allow_all' | 'allow_adult' (omit unless needed; EU/UK/CH/MENA allow only allow_adult), inputs?: { firstFrame?, lastFrame? (needs firstFrame), referenceImages? (<= 3, Veo 3.1 and Fast, 8 s, not with firstFrame) } } } -> { job } (status 'queued'; the app sends it within seconds). Image models: gemini-nano-banana-2.1, gemini-3.1-flash-lite-image, gemini-3-pro-image; video: veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview (see factory_gemini_get_status for prices). Input images are paths relative to the channel's 99 Data Exchange/Sent to YTM/ (png, jpg, jpeg, webp; <= 7 MB each, <= 12 MB together). Outputs and manifest.json land in the channel's 99 Data Exchange/From YTM/gemini/<jobId>/. Refusals: gemini_disabled (the owner's switch is off), gemini_key_missing, gemini_limit_exceeded (details.limit: per_job | per_day | per_month | active_jobs, with limitUsd, spentUsd, estimateUsd), gemini_invalid_params (details.field), gemini_input_unavailable, gemini_workspace_unavailable, gemini_request_exists, validation_failed. Poll factory_gemini_get_job. Recorded as done by the Factory Operator.",
+      inputSchema: geminiCreateInput,
+    },
+    async (args) => {
+      const input = parseInput(geminiCreateInput, args);
+      if (!input.dryRun) await deps.assertMutationAllowed();
+      return successResult(await deps.gemini.createJob(input));
+    }
+  );
+
+  registerTool(
+    "factory_gemini_get_job",
+    {
+      description:
+        "One Gemini job by jobId -> { job }, or the newest jobs -> { jobs } (optional channelId, status, limit <= 50, default 20) (1.12.0). Job: { jobId, channelId, requestId, kind, model, prompt, params, inputs: [{ role, path, mimeType, bytes, sha256 }], status: queued | submitting | running (a video Google is still making) | done | failed, estimateUsd, costUsd, costBasis: usage (Google's token counts) | price_table | not_charged | unknown_outcome (sent, then lost: counted at its estimate), outputs: [{ path (relative to From YTM, e.g. gemini/<jobId>/image-1.png), localPath, kind, mimeType, bytes, sha256, assetId, note }], error, errorCode (gemini_blocked: change the prompt; gemini_invalid_request; gemini_rate_limited / gemini_unavailable after 3 attempts; gemini_payment_required; gemini_key_invalid; gemini_key_missing; gemini_disabled; gemini_input_changed; gemini_timeout; gemini_interrupted; gemini_expired; gemini_output_failed; media_gateway_disabled), attempts, createdBy, createdAt, submittedAt, finishedAt }. Unknown id: gemini_job_not_found. Read-only.",
+      inputSchema: geminiGetJobInput,
+    },
+    async (args) => successResult(await deps.gemini.getJobs(parseInput(geminiGetJobInput, args)))
   );
 
   return server;

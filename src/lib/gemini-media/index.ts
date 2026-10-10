@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
+import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
@@ -95,6 +96,7 @@ function buildDeps(): GeminiMediaDeps {
         }
       })(),
     }),
+    isChannelConnected: async (channelId) => (await createChannelConnectionsCore().listConnectedChannels()).some((channel) => channel.channelId === channelId),
     isGatewayEnabled: () => isMediaGatewayEnabled(),
     clock: { now: () => new Date() },
     generateId: () => randomUUID(),

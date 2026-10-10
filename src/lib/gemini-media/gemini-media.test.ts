@@ -178,6 +178,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
       },
     },
     device: async () => ({ deviceId: "dev-1", hostname: "mac" }),
+    isChannelConnected: async (channelId) => channelId !== "UC_GONE",
     isGatewayEnabled: async () => true,
     clock: { now: () => new Date(clock.at) },
     generateId: () => `id${++id}`,
@@ -427,6 +428,8 @@ test("AC-GM-05: per-model rules refuse with gemini_invalid_params naming the fie
       assert.equal(details.field, field, JSON.stringify(input));
     }
     await expectCode(h.services.createJob({ ...imageJob(), extra: 1 }, "factory"), "validation_failed");
+    await expectCode(h.services.createJob(imageJob({ channelId: "UC_GONE" }), "factory"), "gemini_workspace_unavailable");
+    await expectCode(h.services.createJob(imageJob({ channelId: "UC_NOWS" }), "factory"), "gemini_workspace_unavailable");
     assert.equal(h.store.jobs.size, 0);
     assert.deepEqual(h.calls, []);
   } finally {
