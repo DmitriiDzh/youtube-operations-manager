@@ -98,6 +98,9 @@ texts get keys in English and Russian.
 ### Not in this step
 
 - The Decisions tab does not show the outcomes per arm. The tool gives them.
+- An experiment created by the Producer through `create_experiment_proposal` is recorded like a channel agent's (`createdVia: mcp`; the
+  `experiments` table has no creator column). `producer_call_log` shows who called, for 90 days. Recording the creator would need a
+  schema change and is left for later.
 - Experiments across channels: a hypothesis has one channel.
 - *(Was pending; decided by the owner, Telegram msg 2485, option 1.)* The Producer may propose an experiment: the channel agent's DRAFT
   tool `create_experiment_proposal` is added to its endpoint by name (`PRODUCER_DRAFT_CHANNEL_TOOLS`). The experiment is always
@@ -142,10 +145,13 @@ texts get keys in English and Russian.
     |---|---|---|---|---|---|---|
     | `v1` | day 7 | 2026-09-01..09-07 | collected | as stored | 1500 impressions, CTR 0.04 (weighted: 60 / 1500), 2 days with data | `SUBSCRIBER` 10 / 20 (09-08 lies outside the window) |
     | `v1` | day 28 | 2026-09-01..09-28 | `due` (no stored row; the window and the lag are over) | null | 1500 / 0.04 | `SUBSCRIBER` 15 / 29 |
-    | `v2` | day 7 | — | `not_due` | null | null | empty |
-    | `v2` | day 28 | — | `not_due` | null | null | empty |
+    | `v2` | day 7 | 2026-10-05..10-11 | `not_due` | null | 0 days, null values | empty |
+    | `v2` | day 28 | 2026-10-05..11-01 | `not_due` | null | 0 days, null values | empty |
 
-    `v2` returns no error.
+    `v2` returns no error. *(Changed while building: a published video always has its windows, and Reach is `{ daysWithData: 0,
+    impressions: null, ctr: null }` when nothing is stored, as in `producer_upload_milestones`; the first table had "—" and "null".)*
+  - *Review of BL-170:* Reach is read per group of windows spanning at most 400 days, so an old control upload cannot blank Reach for the
+    other videos (one read of every window was refused as a whole); a failed group leaves only its own windows without Reach.
 - **AC-EA-07 (scope).**
   - `agent_get_experiment_results` for an experiment of another channel is refused. *(Changed while building: in an agent's scope the
     decision engine's own guard answers `CHANNEL_NOT_ACTIVE`, as for every read of another channel's experiment or hypothesis

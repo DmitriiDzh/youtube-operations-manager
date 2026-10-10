@@ -163,5 +163,5 @@ export const errors = {
   "errors.AGENT_PROPOSAL_NOT_PENDING": "This proposal has already been decided.",
   "errors.AGENT_PROPOSAL_DUPLICATE": "The same proposal is already waiting for a decision.",
   "errors.AGENT_PROPOSAL_NOT_APPLICABLE": "This proposal does not fit the current state of the list.",
-  "errors.AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE": "Switch to the proposal's channel first: a hypothesis is added to the active channel.",
+  "errors.AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE": "Switch to the proposal's channel first: a hypothesis, or an experiment's video, is added in the active channel.",
 } as const;

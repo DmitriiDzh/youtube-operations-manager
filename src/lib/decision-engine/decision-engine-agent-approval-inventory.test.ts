@@ -23,10 +23,13 @@ const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(THIS_DIR, "../../..");
 const SRC_ROOT = path.join(REPO_ROOT, "src");
 
+// BL-170 (review): the Producer's endpoint too -- its session wiring and the MCP route -- as the agent-proposal approval inventory does.
 const SCANNED_ROOTS = [
   path.join(SRC_ROOT, "mcp"),
   path.join(SRC_ROOT, "cli"),
   path.join(SRC_ROOT, "lib", "agent-operations"),
+  path.join(SRC_ROOT, "lib", "producer-mcp-endpoint"),
+  path.join(SRC_ROOT, "app", "api", "mcp"),
 ];
 
 async function listTsFilesRecursively(dir: string): Promise<string[]> {
@@ -57,9 +60,20 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 // alongside the actions slice 2 already covers, not as a separate new inventory test.
 // BL-170: linking and removing a video of an experiment's arm are the owner's (Web UI) or an approved Producer proposal's, never an agent
 // tool's (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md AC-EA-07).
-const FORBIDDEN_AGENT_SYMBOLS = ["createHypothesis", "transitionExperiment", "createExperimentOutcome", "addHypothesisEvidence", "linkExperimentArmVideo", "unlinkExperimentArmVideo"];
+// `describeExperiments` and `checkExperimentArmVideoProposal` skip the active-channel check on purpose (the owner's Inbox, the Producer's
+// submit check through agent-proposals), so no agent surface may reach them either.
+const FORBIDDEN_AGENT_SYMBOLS = [
+  "createHypothesis",
+  "transitionExperiment",
+  "createExperimentOutcome",
+  "addHypothesisEvidence",
+  "linkExperimentArmVideo",
+  "unlinkExperimentArmVideo",
+  "describeExperiments",
+  "checkExperimentArmVideoProposal",
+];
 
-test("PHASE10-INV-02: no file under src/mcp, src/cli, or src/lib/agent-operations references createHypothesis/transitionExperiment/createExperimentOutcome/addHypothesisEvidence", async () => {
+test("PHASE10-INV-02: no agent surface (src/mcp, src/cli, agent-operations, the Producer endpoint) references a Web-UI-only decision-engine action", async () => {
   const offenders: string[] = [];
 
   for (const root of SCANNED_ROOTS) {

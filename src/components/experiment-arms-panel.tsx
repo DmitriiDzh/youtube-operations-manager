@@ -58,15 +58,16 @@ export function ExperimentArmsPanel({
     void load();
   }, [load]);
 
+  // The channel's videos give the titles and dates, also of a finished experiment (review of BL-170), and the add form's choices.
   useEffect(() => {
-    if (!editable || hypothesisChannelId === null) return;
+    if (!onActiveChannel || hypothesisChannelId === null) return;
     void (async () => {
       const res = await fetch(`/api/channels/${encodeURIComponent(hypothesisChannelId)}/videos`);
       if (!res.ok) return;
       const data = await res.json();
       setVideos(((data.videos ?? []) as ChannelVideo[]).slice().sort((a, b) => b.publishedAt.localeCompare(a.publishedAt)));
     })();
-  }, [editable, hypothesisChannelId]);
+  }, [onActiveChannel, hypothesisChannelId]);
 
   const titleOf = useMemo(() => new Map(videos.map((video) => [video.videoId, video])), [videos]);
   const linkedIds = useMemo(() => new Set((arms ?? []).flatMap((arm) => arm.videos.map((video) => video.videoId))), [arms]);

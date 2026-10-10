@@ -123,6 +123,41 @@ export function sumBreakdownWindow(rows: BreakdownDayRow[], from: string, to: st
   return [...totals.values()].sort((a, b) => (b.views ?? -1) - (a.views ?? -1) || a.value.localeCompare(b.value));
 }
 
+/** Reach reads at most this many days from the first window's start to the last window's end (reach-reports' MAX_REACH_RANGE_DAYS). */
+export const REACH_READ_SPAN_DAYS = 400;
+
+type ReachWindow = { videoId: string; startDate: string; endDate: string };
+
+/**
+ * Windows grouped so each group spans at most REACH_READ_SPAN_DAYS (review of BL-170: one read of every video's windows was refused as
+ * a whole once a control arm held an upload more than 400 days older than a new one, blanking Reach for every video). Groups follow the
+ * earliest start; each window is read whole in one of them.
+ */
+export function groupReachWindows(windows: ReachWindow[]): ReachWindow[][] {
+  const dayOf = (date: string) => Date.parse(`${date}T00:00:00Z`) / 86_400_000;
+  const sorted = [...windows].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate));
+  const groups: ReachWindow[][] = [];
+  let current: ReachWindow[] = [];
+  let first = 0;
+  let last = 0;
+  for (const window of sorted) {
+    const start = dayOf(window.startDate);
+    const end = dayOf(window.endDate);
+    if (current.length > 0 && Math.max(last, end) - first + 1 > REACH_READ_SPAN_DAYS) {
+      groups.push(current);
+      current = [];
+    }
+    if (current.length === 0) {
+      first = start;
+      last = end;
+    }
+    current.push(window);
+    last = Math.max(last, end);
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
 function errorCode(error: unknown): string {
   const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
   return typeof code === "string" && code.length > 0 ? code : "internal_error";
@@ -131,17 +166,22 @@ function errorCode(error: unknown): string {
 export function createExperimentResultsServices(deps: ExperimentResultsDependencies) {
   return {
     /**
-     * The experiment of `channelId` with each arm's videos and their stored values. An experiment of another channel (or of no channel)
-     * is EXPERIMENT_NOT_FOUND, as the decision engine reports one it cannot see. A video without stored data is listed with null values
-     * and `due` / `not_due` milestones, never an error.
+     * The experiment of `channelId` with each arm's videos and their stored values. The decision engine's own guard refuses another
+     * channel's experiment (CHANNEL_NOT_ACTIVE in an agent's scope); one whose hypothesis is not `channelId`'s, or has no channel, is
+     * EXPERIMENT_NOT_FOUND -- the latter also when the guard says HYPOTHESIS_NOT_FOUND, so a channel-less experiment reads exactly like an
+     * unknown id and its hypothesis id is not given out (review of BL-170). A video without stored data is listed with null values and
+     * `due` / `not_due` milestones, never an error.
      */
     async getExperimentResults(input: unknown): Promise<ExperimentResults> {
       const parsed = parseWithSchema(getExperimentResultsInputSchema, input, "get experiment results input");
       const ctx = { userId: parsed.credentialRef?.userId ?? null };
-      const [experiment, armsView] = await Promise.all([deps.getExperiment(parsed.experimentId, ctx), deps.listArms(parsed.experimentId, ctx)]);
-      if (armsView.channelId !== parsed.channelId) {
-        throw new DomainError({ code: "EXPERIMENT_NOT_FOUND", message: "Experiment not found", details: { experimentId: parsed.experimentId } });
-      }
+      const notFound = () => new DomainError({ code: "EXPERIMENT_NOT_FOUND", message: "Experiment not found", details: { experimentId: parsed.experimentId } });
+      const [experiment, armsView] = await Promise.all([deps.getExperiment(parsed.experimentId, ctx), deps.listArms(parsed.experimentId, ctx)]).catch(
+        (error: unknown) => {
+          throw error instanceof DomainError && error.code === "HYPOTHESIS_NOT_FOUND" ? notFound() : error;
+        }
+      );
+      if (armsView.channelId !== parsed.channelId) throw notFound();
       const channelId = parsed.channelId;
       const linked = armsView.arms.flatMap((arm) => arm.videos);
       const synced = linked.length > 0 ? await deps.listVideos(channelId, parsed.credentialRef) : [];
@@ -154,14 +194,24 @@ export function createExperimentResultsServices(deps: ExperimentResultsDependenc
       });
       const plannedOf = new Map(planned.map((entry) => [entry.videoId, entry.windows]));
       let reachError: string | null = null;
+      const reachWindows = planned.flatMap((entry) => entry.windows.map((window) => ({ videoId: entry.videoId, startDate: window.windowStart, endDate: window.windowEnd })));
+      // One Reach read per group of windows spanning at most 400 days; a failed group leaves only its own windows without Reach.
+      const readReachGroups = async () => {
+        const groups = reachWindows.length > 0 ? groupReachWindows(reachWindows) : [[]];
+        const results = await Promise.all(
+          groups.map((group) =>
+            deps.readReach(channelId, group, parsed.credentialRef).catch((error: unknown) => {
+              reachError = errorCode(error);
+              return null;
+            })
+          )
+        );
+        const read = results.filter((result): result is NonNullable<typeof result> => result !== null);
+        return read.length > 0 ? { state: read[0].state, windows: read.flatMap((result) => result.windows) } : null;
+      };
       const [milestones, reach, breakdowns] = await Promise.all([
         planned.length > 0 ? deps.listMilestones(channelId, planned.map((entry) => entry.videoId), parsed.credentialRef) : Promise.resolve([]),
-        deps
-          .readReach(channelId, planned.flatMap((entry) => entry.windows.map((window) => ({ videoId: entry.videoId, startDate: window.windowStart, endDate: window.windowEnd }))), parsed.credentialRef)
-          .catch((error: unknown) => {
-            reachError = errorCode(error);
-            return null;
-          }),
+        readReachGroups(),
         // One read per video over its longest window (it holds the shorter ones).
         Promise.all(
           planned.map(async (entry) => {

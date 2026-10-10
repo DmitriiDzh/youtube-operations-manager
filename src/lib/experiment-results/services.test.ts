@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, milestoneWindow } from "@/lib/analytics";
+import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { DomainError } from "@/lib/shared-domain";
-import { createExperimentResultsServices, sumBreakdownWindow, type ExperimentResultsDependencies } from "./services";
+import { createExperimentResultsServices, groupReachWindows, sumBreakdownWindow, type ExperimentResultsDependencies } from "./services";
 
 // BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md §3, AC-EA-06/07). The expected windows, statuses and sums are the plan's table,
 // worked out by hand: read at 2026-10-10T18:00:00Z; a milestone window is the Pacific publish date .. +6 / +27; a missing milestone is
@@ -56,12 +57,16 @@ function deps(overrides: Partial<ExperimentResultsDependencies> = {}): Experimen
             devices: [],
           }
         : { coverage: null, trafficSources: [], devices: [] },
+    // Reach as reach-reports computes it per window (its own tests cover the weighting): v1's rows are 09-01 (1000 impressions, CTR 0.05)
+    // and 09-02 (500, 0.02), plus -- only inside the 28-day window -- 09-20 (500, 0.08): day 7 = 1500 / 0.04, day 28 = 2000 / 0.05.
     readReach: async (_channelId, windows) => ({
       state: "ready",
       windows: windows.map((window) =>
-        window.videoId === "v1"
-          ? { ...window, daysWithData: 2, impressions: 1500, ctr: 0.04 }
-          : { ...window, daysWithData: 0, impressions: null, ctr: null }
+        window.videoId !== "v1"
+          ? { ...window, daysWithData: 0, impressions: null, ctr: null }
+          : window.endDate === "2026-09-07"
+            ? { ...window, daysWithData: 2, impressions: 1500, ctr: 0.04 }
+            : { ...window, daysWithData: 3, impressions: 2000, ctr: 0.05 }
       ),
     }),
     ...overrides,
@@ -109,7 +114,7 @@ test("AC-EA-06: each arm's videos with their own stored values per milestone win
                 status: "due",
                 collectedAt: null,
                 totals: null,
-                reach: { daysWithData: 2, impressions: 1500, ctr: 0.04 },
+                reach: { daysWithData: 3, impressions: 2000, ctr: 0.05 },
                 trafficSources: SUBSCRIBER(15, 29),
                 devices: [],
               },
@@ -230,4 +235,56 @@ test("sumBreakdownWindow: inside the window only, null only when every row had n
       { value: "TV", label: "TV", views: 2, estimatedMinutesWatched: 5 },
     ]
   );
+});
+
+test("review of BL-170: windows more than 400 days apart are read in separate Reach reads, and a failed read blanks only its own windows", async () => {
+  const reads: Array<Array<{ videoId: string; startDate: string; endDate: string }>> = [];
+  const result = await createExperimentResultsServices(
+    deps({
+      listArms: async () => ({ channelId: "UC_A", arms: [{ arm: "control", videos: [link("old")] }, { arm: "A", videos: [link("v1")] }] }),
+      listVideos: async () => [
+        { videoId: "old", title: "Old", publishedAt: "2025-01-10T12:00:00Z", privacyStatus: "public", liveBroadcastContent: "none", durationSeconds: null },
+        { videoId: "v1", title: "Rain one", publishedAt: "2026-09-01T12:00:00Z", privacyStatus: "public", liveBroadcastContent: "none", durationSeconds: 7200 },
+      ],
+      readReach: async (_channelId, windows) => {
+        reads.push(windows);
+        if (windows.some((window) => window.videoId === "old")) throw new DomainError({ code: "REACH_NOT_READY" as never, message: "no rows that old" });
+        return { state: "ready", windows: windows.map((window) => ({ ...window, daysWithData: 1, impressions: 10, ctr: 0.1 })) };
+      },
+    })
+  ).getExperimentResults(INPUT);
+  // 2025-01-10 .. 2026-09-28 is 627 days: two reads, each a single video's windows.
+  assert.deepEqual(reads.map((group) => [...new Set(group.map((window) => window.videoId))]), [["old"], ["v1"]]);
+  assert.deepEqual([result.reachState, result.reachError], ["ready", "REACH_NOT_READY"]);
+  const [oldVideo] = result.arms[0].videos;
+  const [newVideo] = result.arms[1].videos;
+  assert.deepEqual(oldVideo.milestones.map((m) => m.reach), [noReach, noReach]);
+  assert.deepEqual(newVideo.milestones.map((m) => m.reach), [
+    { daysWithData: 1, impressions: 10, ctr: 0.1 },
+    { daysWithData: 1, impressions: 10, ctr: 0.1 },
+  ]);
+});
+
+test("groupReachWindows: a group spans at most 400 days from its first start to its last end", () => {
+  const w = (videoId: string, startDate: string, endDate: string) => ({ videoId, startDate, endDate });
+  // 2026-01-01 .. 2027-02-04 is 400 days inclusive (2026 has 365); 2027-02-05 makes 401.
+  assert.deepEqual(groupReachWindows([w("b", "2026-12-01", "2027-02-04"), w("a", "2026-01-01", "2026-01-28")]).map((g) => g.map((x) => x.videoId)), [["a", "b"]]);
+  assert.deepEqual(groupReachWindows([w("b", "2026-12-01", "2027-02-05"), w("a", "2026-01-01", "2026-01-28")]).map((g) => g.map((x) => x.videoId)), [["a"], ["b"]]);
+  assert.deepEqual(groupReachWindows([]), []);
+});
+
+test("review of BL-170: an experiment whose hypothesis has no channel reads like an unknown id, without its hypothesis id", async () => {
+  await assert.rejects(
+    () =>
+      createExperimentResultsServices(
+        deps({ listArms: async () => Promise.reject(new DomainError({ code: "HYPOTHESIS_NOT_FOUND", message: "Hypothesis not found", details: { hypothesisId: "h0" } })) })
+      ).getExperimentResults(INPUT),
+    (error: unknown) => error instanceof DomainError && error.code === "EXPERIMENT_NOT_FOUND" && !JSON.stringify(error.details).includes("h0")
+  );
+});
+
+test("AC-EA-09: agent_list_asset_performance no longer says experiments are not linked to videos; it points to the results tool", () => {
+  const description = listAgentCapabilityDescriptors().find((capability) => capability.id === "asset_performance.list_asset_performance")?.description ?? "";
+  assert.ok(description.includes("agent_get_experiment_results"), description);
+  assert.ok(!description.includes("not linked to videos"), description);
 });

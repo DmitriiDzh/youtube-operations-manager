@@ -789,7 +789,11 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         // Something changed between the checks and the insert: say what, from the current state.
         const current = await deps.getExperimentById(experimentId);
         if (current) await assertArmLinkAllowed(current, hypothesis, parsed.videoId);
-        throw new DomainError({ code: "EXPERIMENT_INVALID_TRANSITION", message: "The experiment changed meanwhile; try again", details: { experimentId } });
+        throw new DomainError({
+          code: "EXPERIMENT_INVALID_TRANSITION",
+          message: "The experiment changed while the video was being linked, so it was not linked",
+          details: { experimentId, videoId: parsed.videoId },
+        });
       }
       return { experimentId, status: experiment.status, channelId: hypothesis.channelId, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
     },

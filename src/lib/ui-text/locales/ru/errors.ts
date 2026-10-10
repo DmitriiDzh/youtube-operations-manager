@@ -162,5 +162,5 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.AGENT_PROPOSAL_NOT_PENDING": "По этому предложению уже принято решение.",
   "errors.AGENT_PROPOSAL_DUPLICATE": "Такое же предложение уже ждёт решения.",
   "errors.AGENT_PROPOSAL_NOT_APPLICABLE": "Предложение не подходит к текущему состоянию списка.",
-  "errors.AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE": "Сначала переключитесь на канал предложения: гипотеза добавляется в активный канал.",
+  "errors.AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE": "Сначала переключитесь на канал предложения: гипотеза или ролик эксперимента добавляются в активном канале.",
 };
