@@ -11,6 +11,7 @@ import {
   GEMINI_VIDEO_MODELS,
   GEMINI_VIDEO_RESOLUTIONS,
   geminiInvalidParams,
+  ownEntry,
 } from "./contracts";
 
 export { parseWithSchema };
@@ -91,24 +92,24 @@ export const setKeyInputSchema = z
 /** The per-model rules (§2.5), checked before anything is read, stored or sent. */
 export function checkJobRules(input: CreateJobInput): void {
   if (input.kind === "image") {
-    const spec = GEMINI_IMAGE_MODELS[input.model];
+    const spec = ownEntry(GEMINI_IMAGE_MODELS, input.model);
     if (!spec) throw geminiInvalidParams("model", `${input.model} is not an image model here (${Object.keys(GEMINI_IMAGE_MODELS).join(", ")}).`);
     if (input.video) throw geminiInvalidParams("video", "An image job takes `image`, not `video`.");
     if (!input.image) throw geminiInvalidParams("image", "An image job needs `image` { size, aspectRatio }.");
-    if (spec.sizes[input.image.size] === undefined) throw geminiInvalidParams("image.size", `${input.model} offers sizes ${Object.keys(spec.sizes).join(", ")} (uppercase K).`);
+    if (ownEntry(spec.sizes, input.image.size) === undefined) throw geminiInvalidParams("image.size", `${input.model} offers sizes ${Object.keys(spec.sizes).join(", ")} (uppercase K).`);
     if (!(GEMINI_IMAGE_ASPECT_RATIOS as readonly string[]).includes(input.image.aspectRatio)) {
       throw geminiInvalidParams("image.aspectRatio", `Aspect ratio must be one of ${GEMINI_IMAGE_ASPECT_RATIOS.join(", ")}.`);
     }
     return;
   }
-  const spec = GEMINI_VIDEO_MODELS[input.model];
+  const spec = ownEntry(GEMINI_VIDEO_MODELS, input.model);
   if (!spec) throw geminiInvalidParams("model", `${input.model} is not a video model here (${Object.keys(GEMINI_VIDEO_MODELS).join(", ")}).`);
   if (input.image) throw geminiInvalidParams("image", "A video job takes `video`, not `image`.");
   if (!input.video) throw geminiInvalidParams("video", "A video job needs `video` { resolution, aspectRatio, durationSeconds }.");
   const video = input.video;
   if (input.prompt.length > GEMINI_LIMITS.videoPromptChars) throw geminiInvalidParams("prompt", `A video prompt is at most ${GEMINI_LIMITS.videoPromptChars} characters.`);
   if (!(GEMINI_VIDEO_ASPECT_RATIOS as readonly string[]).includes(video.aspectRatio)) throw geminiInvalidParams("video.aspectRatio", "Video aspect ratio is 16:9 or 9:16.");
-  if (!(GEMINI_VIDEO_RESOLUTIONS as readonly string[]).includes(video.resolution) || spec.perSecond[video.resolution] === undefined) {
+  if (!(GEMINI_VIDEO_RESOLUTIONS as readonly string[]).includes(video.resolution) || ownEntry(spec.perSecond, video.resolution) === undefined) {
     throw geminiInvalidParams("video.resolution", `${input.model} offers ${Object.keys(spec.perSecond).join(", ")}.`);
   }
   if (!(GEMINI_VIDEO_DURATIONS as readonly number[]).includes(video.durationSeconds)) throw geminiInvalidParams("video.durationSeconds", "Duration is 4, 6 or 8 seconds.");

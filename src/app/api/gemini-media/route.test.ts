@@ -33,6 +33,11 @@ function deps(opts: { session?: boolean; googleRefuses?: boolean } = {}): Gemini
     upsertCredentials: async (input) => {
       creds = { id: "default", ...input, updatedAt: new Date("2026-10-10T12:00:00Z") };
     },
+    setCredentialsStatus: async (checked, input) => {
+      if (!creds || creds.ciphertext !== checked) return false;
+      creds = { ...creds, ...input };
+      return true;
+    },
     clearCredentials: async () => {
       creds = null;
     },

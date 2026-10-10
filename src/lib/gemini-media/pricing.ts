@@ -1,5 +1,5 @@
 import { ceil4 } from "@/lib/shared-money";
-import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_VIDEO_MODELS } from "./contracts";
+import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_VIDEO_MODELS, ownEntry } from "./contracts";
 
 // BL-174 (GEMINI_MEDIA_PLAN.md §2.3): estimates before a call and costs after it, from the official price table
 // (`GEMINI_PRICES_AS_OF`). Pure. Every amount goes through `ceil4` (USD, 4 decimals, rounded up).
@@ -7,35 +7,42 @@ import { GEMINI_IMAGE_MODELS, GEMINI_LIMITS, GEMINI_VIDEO_MODELS } from "./contr
 const PER_M = 1_000_000;
 
 export function estimateImageUsd(args: { model: string; size: string; promptChars: number; inputImages: number }): number {
-  const spec = GEMINI_IMAGE_MODELS[args.model];
-  const imageTokens = spec?.sizes[args.size];
+  const spec = ownEntry(GEMINI_IMAGE_MODELS, args.model);
+  const imageTokens = spec ? ownEntry(spec.sizes, args.size) : undefined;
   if (!spec || imageTokens === undefined) throw new Error(`no price for ${args.model} ${args.size}`);
   const inputTokens = Math.ceil(args.promptChars / 3) + GEMINI_LIMITS.inputImageTokens * args.inputImages;
   return ceil4((imageTokens * spec.imageOutPerM + inputTokens * spec.inputPerM + GEMINI_LIMITS.thinkingAllowanceTokens * spec.textOutPerM) / PER_M);
 }
 
 export function estimateVideoUsd(args: { model: string; resolution: string; durationSeconds: number }): number {
-  const perSecond = GEMINI_VIDEO_MODELS[args.model]?.perSecond[args.resolution];
+  const spec = ownEntry(GEMINI_VIDEO_MODELS, args.model);
+  const perSecond = spec ? ownEntry(spec.perSecond, args.resolution) : undefined;
   if (perSecond === undefined) throw new Error(`no price for ${args.model} ${args.resolution}`);
   return ceil4(perSecond * args.durationSeconds);
 }
 
 /**
  * The cost of a finished image call from Google's own token counts: all input at the input rate, image-modality output at
- * the image rate, every other output token and every thought token at the text rate.
+ * the image rate, every other output token and every thought token at the text rate. When images came back but Google did
+ * not split the output by modality, every output token is priced at the image rate (review round 1: never under-count).
  */
-export function imageCostFromUsage(model: string, usage: { inputTokens: number; outputTokens: number; thoughtTokens: number; outputByModality: Record<string, number> }): number {
-  const spec = GEMINI_IMAGE_MODELS[model];
+export function imageCostFromUsage(
+  model: string,
+  usage: { inputTokens: number; outputTokens: number; thoughtTokens: number; outputByModality: Record<string, number> },
+  imagesSaved = 0
+): number {
+  const spec = ownEntry(GEMINI_IMAGE_MODELS, model);
   if (!spec) throw new Error(`no price for ${model}`);
-  const imageOut = usage.outputByModality.image ?? 0;
+  const split = ownEntry(usage.outputByModality, "image") ?? 0;
+  const imageOut = imagesSaved > 0 && split <= 0 ? usage.outputTokens : split;
   const otherOut = Math.max(0, usage.outputTokens - imageOut);
   return ceil4((usage.inputTokens * spec.inputPerM + imageOut * spec.imageOutPerM + (otherOut + usage.thoughtTokens) * spec.textOutPerM) / PER_M);
 }
 
 /** Without Google's counts: the table's per-image price for each image saved. */
 export function imageCostFromTable(model: string, size: string, images: number): number {
-  const spec = GEMINI_IMAGE_MODELS[model];
-  const imageTokens = spec?.sizes[size];
+  const spec = ownEntry(GEMINI_IMAGE_MODELS, model);
+  const imageTokens = spec ? ownEntry(spec.sizes, size) : undefined;
   if (!spec || imageTokens === undefined) throw new Error(`no price for ${model} ${size}`);
   return ceil4((imageTokens * spec.imageOutPerM * images) / PER_M);
 }

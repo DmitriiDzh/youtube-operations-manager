@@ -3507,8 +3507,10 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
 - **Gateway child** (`media-gateway/gemini-api.ts`, §G). Every request first passes `assertMediaGatewayAuthorized("gemini_api")`
   (the "Media gateway" toggle, one traffic counter). The key is a per-call argument, sent only as `x-goog-api-key` and only to the
   Gemini host; the video download follows redirects by hand and sends no key to another host (https only). Errors carry an
-  `outcome`: `answered` (an HTTP answer), `not_sent` (DNS/refused/unreachable: provably never reached Google) or `unknown` (sent, then a
-  timeout or a broken body: Google may have finished and charged). `http.ts`'s `unavailable` now receives the caught error for this.
+  `outcome`: `answered` (an HTTP answer), `not_sent` (DNS, refused, unreachable, a TLS handshake failure, undici's connect timeout,
+  or a failure before the request left: provably never reached Google) or `unknown` (sent, then a timeout or a broken body: Google
+  may have finished and charged). `http.ts`'s `unavailable` now receives the caught error for this, and takes a `redirect` option:
+  the Gemini child passes `"error"`, because fetch keeps custom headers (the key) across a redirect to another host.
   Images: Interactions API (`POST /v1beta/interactions`, `response_format { type: "image", aspect_ratio, image_size }`,
   `store: false`), the final images read from `steps[]` (`model_output` blocks; thought steps skipped), falling back to the legacy
   `outputs[]`. Video: `models/{model}:predictLongRunning` (`instances[0]` prompt and `inlineData` frames / `referenceType: "asset"`
@@ -3533,7 +3535,9 @@ Plan: `docs/roadmap/plans/GEMINI_MEDIA_PLAN.md` (AC-GM-01..16). Schema v83, Fact
   30 s / 2 min, 3 attempts, then failed at 0): 429, 408, 5xx, a connection that never reached Google. Not retried: a refusal (400 →
   `gemini_invalid_request`, a blocked code → `gemini_blocked`, 401/403, 402; cost 0) and an `unknown` outcome (`gemini_timeout` or
   `gemini_unavailable` at the estimate, basis `unknown_outcome`). An image answer with no final image is `gemini_blocked` at Google's own
-  counts. Files are written through the shared crash-safe write, registered as assets (a catalog failure is a note), the manifest last;
+  counts (0 without them), but a 2xx with no image, no final status and no counts counts its estimate. A finished image costs
+  Google's counts, never below the table price of the images saved. A job still `submitting` 15 minutes after its claim and not in
+  flight here (a write failed after the call) is failed at its estimate by the next tick. Files are written through the shared crash-safe write, registered as assets (a catalog failure is a note), the manifest last;
   only then `done`. A video moves `submitting` → `running` with its operation name and is polled every 10 s; any poll or download
   failure retries in 30 s until 47 h after the start (`gemini_expired` at the estimate); a finished operation with an error or no sample
   costs 0. At startup a job left `submitting` fails `gemini_interrupted` at its estimate; `running` videos resume. With the switch off,

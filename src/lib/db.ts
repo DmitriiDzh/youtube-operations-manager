@@ -9701,6 +9701,20 @@ export async function upsertStoredGeminiCredentials(
     .onConflictDoUpdate({ target: geminiCredentials.id, set: { ...input, updatedAt } });
 }
 
+/** A key check's result, written only while the stored key is still the one that was checked (review round 1); false otherwise. */
+export async function setStoredGeminiCredentialsStatus(
+  checkedCiphertext: string,
+  input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(geminiCredentials)
+    .set({ ...input, updatedAt: new Date() })
+    .where(and(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID), eq(geminiCredentials.ciphertext, checkedCiphertext)))
+    .returning({ id: geminiCredentials.id });
+  return rows.length > 0;
+}
+
 export async function clearStoredGeminiCredentials(database: AppDb = db): Promise<void> {
   await database.delete(geminiCredentials).where(eq(geminiCredentials.id, GEMINI_CREDENTIALS_SINGLETON_ID));
 }

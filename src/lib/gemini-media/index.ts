@@ -7,10 +7,9 @@ import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { appDataPaths } from "@/lib/db";
 import { createKeyFile, createKeyFileFsAccess } from "@/lib/device-key-file";
-import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
 import { createGeminiApiClient, isMediaGatewayEnabled } from "@/lib/media-gateway";
-import { createExchangeFs, resolveFromYtmDir, resolveSentToYtmFile } from "@/lib/workspace-exchange";
 import { createGeminiFiles } from "./adapters/files";
+import { createGeminiWorkspace } from "./adapters/workspace";
 import { createGeminiStore } from "./adapters/store";
 import { DomainError, GEMINI_KEY_FILE_NAME } from "./contracts";
 import { createGeminiMediaServices, type GeminiMediaDeps } from "./services";
@@ -53,27 +52,7 @@ function buildDeps(): GeminiMediaDeps {
           message: `The Gemini key file exists but is unusable (${detail}). Remove the stored key and enter it again (Settings → Gemini).`,
         })
     ),
-    workspace: {
-      async resolveOutputRoot(channelId) {
-        const workspace = await workspaces.getWorkspace({ channelId });
-        if (!workspace.configured) {
-          throw new DomainError({ code: "gemini_workspace_unavailable", message: "This channel has no workspace folder on this computer (Settings → Channels); Gemini outputs are written only there.", details: { channelId } });
-        }
-        return resolveFromYtmDir({
-          workspace: workspace.path,
-          fs: createExchangeFs(),
-          validateWorkspacePath: validateOperatorDirectoryPath,
-          isPathInsideOrEqual,
-          unavailable: (reason) => new DomainError({ code: "gemini_workspace_unavailable", message: `The channel's workspace folder cannot receive outputs: ${reason}`, details: { channelId, reason } }),
-        });
-      },
-      async resolveInput(channelId, relativePath) {
-        const workspace = await workspaces.getWorkspace({ channelId });
-        const unavailable = (reason: string) => new DomainError({ code: "gemini_input_unavailable", message: `Input ${relativePath}: ${reason}`, details: { channelId, path: relativePath, reason } });
-        if (!workspace.configured) throw unavailable("this channel has no workspace folder on this computer (Settings → Channels)");
-        return resolveSentToYtmFile({ workspace: workspace.path, relativePath, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable });
-      },
-    },
+    workspace: createGeminiWorkspace(async (channelId) => workspaces.getWorkspace({ channelId })),
     files: createGeminiFiles(),
     assets: {
       register: async (input) => ({ assetId: (await assets.registerAsset(input)).assetId }),

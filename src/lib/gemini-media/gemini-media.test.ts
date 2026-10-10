@@ -9,6 +9,7 @@ import type { StoredGeminiCredentials, StoredGeminiMediaJob } from "@/lib/db";
 import type { GeminiImageRequest, GeminiImageResult, GeminiVideoOperation, GeminiVideoRequest } from "@/lib/media-gateway";
 import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { createGeminiFiles } from "./adapters/files";
+import { createSerialLock } from "./index";
 import { estimateImageUsd, estimateVideoUsd, imageCostFromUsage } from "./pricing";
 import { createGeminiMediaServices, type GeminiMediaDeps, type GeminiStore } from "./services";
 import { createGeminiWorker } from "./worker";
@@ -27,6 +28,11 @@ function memoryStore(): GeminiStore & { jobs: Map<string, StoredGeminiMediaJob>;
     },
     async upsertCredentials(input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">) {
       state.creds = { id: "default", ...input, updatedAt: new Date() };
+    },
+    async setCredentialsStatus(checked: string, input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">) {
+      if (!state.creds || state.creds.ciphertext !== checked) return false;
+      state.creds = { ...state.creds, ...input };
+      return true;
     },
     async clearCredentials() {
       state.creds = null;
@@ -138,6 +144,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
   const clock = { at: options.now ?? new Date(2026, 9, 10, 15, 0, 0) };
   const registered: Array<Record<string, unknown>> = [];
   const order: string[] = [];
+  const failWrites = { value: false };
   let id = 0;
   const files = createGeminiFiles();
   const deps: GeminiMediaDeps = {
@@ -161,6 +168,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
       readInput: (file, max) => files.readInput(file, max),
       writeOutput: async (p, data) => {
         order.push(`write ${path.basename(p)}`);
+        if (failWrites.value) throw new Error("disk full");
         return files.writeOutput(p, data);
       },
       writeManifest: async (p, m) => {
@@ -182,14 +190,8 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     isGatewayEnabled: async () => true,
     clock: { now: () => new Date(clock.at) },
     generateId: () => `id${++id}`,
-    withCreateLock: (() => {
-      let tail: Promise<unknown> = Promise.resolve();
-      return <T>(run: () => Promise<T>) => {
-        const result = tail.then(run, run);
-        tail = result.catch(() => undefined);
-        return result;
-      };
-    })(),
+    // The module's own lock (review round 1: the concurrency test must exercise the real one).
+    withCreateLock: createSerialLock(),
   };
   const services = createGeminiMediaServices(deps);
   const worker = createGeminiWorker(deps);
@@ -213,6 +215,7 @@ async function harness(options: { now?: Date; enabled?: boolean; withKey?: boole
     worker,
     runTick,
     keyFileText: () => keyFileText,
+    failWrites,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
 }
@@ -714,6 +717,161 @@ test("getJobs: one job by id (unknown → gemini_job_not_found), or the newest w
     assert.deepEqual(((await h.services.getJobs({ channelId: "UC1" })) as { jobs: Array<{ jobId: string }> }).jobs.map((j) => j.jobId), ["gm_a"]);
     assert.deepEqual(((await h.services.getJobs({ status: "failed" })) as { jobs: Array<{ jobId: string }> }).jobs.map((j) => j.jobId), ["gm_b"]);
     await expectCode(h.services.getJobs({ limit: 51 }), "validation_failed");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ------------------------------------------------------------------------------------------------- review round 1 additions
+
+test("review 1: an image's cost is never below its table price -- Google's counts without the modality split price all output as image", async () => {
+  // Pro 4K, no split: 2000 output tokens × 120e-6 = 0.24 (not 2000 × 12e-6 = 0.024).
+  assert.equal(imageCostFromUsage("gemini-3-pro-image", { inputTokens: 0, outputTokens: 2000, thoughtTokens: 0, outputByModality: {} }, 1), 0.24);
+  // With the split the image tokens alone are priced as image.
+  assert.equal(imageCostFromUsage("gemini-3-pro-image", { inputTokens: 0, outputTokens: 2000, thoughtTokens: 0, outputByModality: { image: 2000 } }, 1), 0.24);
+  for (const [usage, expected] of [
+    // No split: 1000×1.5e-6 + 1680×30e-6 + 300×7.5e-6 = 0.05415 → 0.0542 (as with the split).
+    [{ inputTokens: 1000, outputTokens: 1680, thoughtTokens: 300, outputByModality: {} }, 0.0542],
+    // Counts below the table: 100×1.5e-6 + 1000×30e-6 = 0.03015 → the table's 0.0504 for one 2K image.
+    [{ inputTokens: 100, outputTokens: 1000, thoughtTokens: 0, outputByModality: { image: 1000 } }, 0.0504],
+  ] as const) {
+    const h = await harness();
+    try {
+      h.behaviour.generateImage = async () => ({ images: [{ mimeType: "image/png", data: Buffer.from("x") }], usage: { ...usage, outputByModality: { ...usage.outputByModality } }, status: "completed", blockReason: null });
+      const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+      await h.runTick();
+      const row = h.store.jobs.get(job.jobId)!;
+      assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", expected, "usage"]);
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test("review 1: without Google's counts an image costs the table price (2.1 2K: 0.0504)", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.generateImage = async () => ({ images: [{ mimeType: "image/jpeg", data: Buffer.from("j") }], usage: null, status: "completed", blockReason: null });
+    const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.costUsd, row.costBasis], ["done", 0.0504, "price_table"]);
+    assert.ok(JSON.parse(row.outputsJson!)[0].path.endsWith("/image-1.jpg"));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 1: a 2xx with no image, no final status and no counts may have been charged: failed at its estimate", async () => {
+  const h = await harness();
+  try {
+    h.behaviour.generateImage = async () => ({ images: [], usage: null, status: null, blockReason: null });
+    const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_unavailable", 0.0656, "unknown_outcome"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 1: other failures -- the gateway toggle off and a refused key cost 0; an unexpected error or an unknown outcome counts the estimate", async () => {
+  const cases: Array<[unknown, string, number, string]> = [
+    [new DomainError({ code: "media_gateway_disabled", message: "off" }), "media_gateway_disabled", 0, "not_charged"],
+    [new TypeError("something broke"), "gemini_unavailable", 0.0656, "unknown_outcome"],
+    [gatewayError("gemini_unavailable", { outcome: "unknown", timedOut: false }), "gemini_unavailable", 0.0656, "unknown_outcome"],
+  ];
+  for (const [error, code, cost, basis] of cases) {
+    const h = await harness();
+    try {
+      h.behaviour.generateImage = async () => {
+        throw error;
+      };
+      const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+      await h.runTick();
+      const row = h.store.jobs.get(job.jobId)!;
+      assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis, row.attempts], ["failed", code, cost, basis, 1], code);
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test("review 1: a key removed between create and run fails the job unsent at no cost", async () => {
+  const h = await harness();
+  try {
+    const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+    await h.services.clearKey();
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_key_missing", 0, "not_charged"]);
+    assert.deepEqual(h.calls, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 1: an image that cannot be written keeps its cost (it was paid)", async () => {
+  const h = await harness();
+  try {
+    h.failWrites.value = true;
+    const { job } = (await h.services.createJob(imageJob(), "factory")) as { job: { jobId: string } };
+    await h.runTick();
+    const row = h.store.jobs.get(job.jobId)!;
+    assert.deepEqual([row.status, row.errorCode, row.costUsd, row.costBasis], ["failed", "gemini_output_failed", 0.0542, "usage"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 1: a job left `submitting` by a failed write is failed at its estimate after 15 minutes; a recent one is left alone", async () => {
+  const h = await harness();
+  try {
+    seedJob(h.store, "gm_stale", { status: "submitting", estimateUsd: 0.96, costUsd: null, costBasis: null, updatedAt: new Date(h.clock.at.getTime() - 16 * 60_000) });
+    seedJob(h.store, "gm_recent", { status: "submitting", estimateUsd: 0.96, costUsd: null, costBasis: null, updatedAt: new Date(h.clock.at.getTime() - 60_000) });
+    await h.runTick();
+    const stale = h.store.jobs.get("gm_stale")!;
+    assert.deepEqual([stale.status, stale.errorCode, stale.costUsd, stale.costBasis], ["failed", "gemini_interrupted", 0.96, "unknown_outcome"]);
+    assert.equal(h.store.jobs.get("gm_recent")!.status, "submitting");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 1: inherited object keys are never a model, a size or an input type", async () => {
+  const h = await harness();
+  try {
+    for (const input of [
+      imageJob({ image: { size: "toString", aspectRatio: "1:1" } }),
+      imageJob({ image: { size: "__proto__", aspectRatio: "1:1" } }),
+      imageJob({ model: "toString" }),
+      videoJob({ model: "constructor" }),
+      videoJob({ video: { resolution: "valueOf", aspectRatio: "16:9", durationSeconds: 8 } }),
+    ]) {
+      await expectCode(h.services.createJob(input, "factory"), "gemini_invalid_params");
+      await expectCode(h.services.createJob({ ...input, dryRun: true }, "factory"), "gemini_invalid_params");
+    }
+    await writeFile(path.join(h.sent, "x.constructor"), "x");
+    await expectCode(h.services.createJob(imageJob({ image: { size: "1K", aspectRatio: "1:1", inputs: { images: ["x.constructor"] } } }), "factory"), "gemini_input_unavailable");
+    assert.equal(h.store.jobs.size, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("review 1: checking the key never overwrites a key saved meanwhile", async () => {
+  const h = await harness();
+  try {
+    const NEW_KEY = "AIzaSyNewerKey9876543210wxyz";
+    let first = true;
+    h.behaviour.checkKey = async () => {
+      if (!first) return;
+      first = false;
+      await h.services.setKey({ apiKey: NEW_KEY }); // another tab saves a new key while the check is with Google
+    };
+    await h.services.testKey();
+    assert.equal(await h.services.readApiKey(), NEW_KEY);
+    assert.equal((await h.services.getKey()).keyHint, "wxyz");
   } finally {
     await h.cleanup();
   }

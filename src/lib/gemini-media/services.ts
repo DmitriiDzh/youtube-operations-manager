@@ -13,6 +13,7 @@ import {
   GEMINI_PRICES_AS_OF,
   isDomainError,
   geminiJobNotFound,
+  ownEntry,
   type GeminiCostBasis,
   type GeminiImageParams,
   type GeminiInputRole,
@@ -37,6 +38,8 @@ import { checkJobRules, createJobInputSchema, getJobsInputSchema, parseWithSchem
 export type GeminiStore = {
   getCredentials(): Promise<StoredGeminiCredentials | null>;
   upsertCredentials(input: Pick<StoredGeminiCredentials, "ciphertext" | "iv" | "authTag" | "keyHint" | "status" | "verifiedAt">): Promise<void>;
+  /** Writes a check's result only while the stored key is still the one checked (its ciphertext); false otherwise. */
+  setCredentialsStatus(checkedCiphertext: string, input: Pick<StoredGeminiCredentials, "status" | "verifiedAt">): Promise<boolean>;
   clearCredentials(): Promise<void>;
   getSettingsJson(): Promise<string | null>;
   setSettingsJson(json: string): Promise<void>;
@@ -240,7 +243,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     const out: Array<GeminiJobInput & { data: Buffer }> = [];
     let total = 0;
     for (const { role, path: relativePath } of named) {
-      const mimeType = GEMINI_INPUT_EXTENSIONS[path.extname(relativePath).slice(1).toLowerCase()];
+      const mimeType = ownEntry(GEMINI_INPUT_EXTENSIONS, path.extname(relativePath).slice(1).toLowerCase());
       if (!mimeType) throw inputUnavailable(relativePath, "only .png, .jpg, .jpeg and .webp images are accepted");
       const resolved = await deps.workspace.resolveInput(channelId, relativePath);
       if (resolved.bytes <= 0) throw inputUnavailable(relativePath, "the file is empty");
@@ -291,9 +294,9 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
     },
 
     async testKey(): Promise<GeminiKeyView> {
-      const apiKey = await readApiKey();
-      if (!apiKey) throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer." });
       const row = await deps.store.getCredentials();
+      const apiKey = await readApiKey();
+      if (!row || !apiKey) throw new DomainError({ code: "gemini_key_missing", message: "No Gemini API key is stored on this computer." });
       let status: "ok" | "payment_required" = "ok";
       try {
         await deps.api.checkKey(apiKey);
@@ -301,7 +304,8 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         if (!(isDomainError(error) && error.code === "gemini_payment_required")) throw error;
         status = "payment_required";
       }
-      if (row) await deps.store.upsertCredentials({ ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag, keyHint: row.keyHint, status, verifiedAt: now() });
+      // Only the status of the key that was checked: a key saved meanwhile (another tab) is never overwritten (review round 1).
+      await deps.store.setCredentialsStatus(row.ciphertext, { status, verifiedAt: now() });
       return keyViewOf(await deps.store.getCredentials());
     },
 
@@ -369,6 +373,8 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
         await deps.workspace.resolveOutputRoot(input.channelId);
         const inputs = await readInputs(input.channelId, namedInputs(input));
         const estimateUsd = estimateOf(input, inputs.length);
+        // Never compare a non-number against a limit: every comparison with NaN is false, so it would pass all of them.
+        if (!Number.isFinite(estimateUsd) || estimateUsd <= 0) throw new DomainError({ code: "gemini_invalid_params", message: "No price is known for these settings.", details: { field: "model" } });
         const current = await spend();
         const refusal = preconditionRefusal ?? limitRefusal(settings, current, estimateUsd);
         if (input.dryRun) return { dryRun: true, estimateUsd, allowed: refusal === null, refusal, spend: current };

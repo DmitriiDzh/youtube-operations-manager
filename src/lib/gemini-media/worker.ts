@@ -227,14 +227,23 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       else await fail(job, "submitting", verdict.failure);
       return;
     }
-    const charged = result.usage ? imageCostFromUsage(job.model, result.usage) : null;
+    const charged = result.usage ? imageCostFromUsage(job.model, result.usage, result.images.length) : null;
     if (result.images.length === 0) {
-      // Blocked or empty: the image itself is not charged; Google's own counts (input, thinking) are, when it gave them.
+      // No image. Only a terminal refusal (a block code, a failed / cancelled / incomplete status) or Google's own counts may
+      // decide what it cost: the image itself is not charged, the counted input and thinking are. A 2xx with none of them
+      // (an unreadable body, a non-terminal status) may still have been charged: its estimate (review round 1).
+      const terminal = result.blockReason !== null || (result.status !== null && ["failed", "cancelled", "incomplete"].includes(result.status));
+      if (!terminal && charged === null) {
+        await fail(job, "submitting", maybeCharged(job, "gemini_unavailable", `Google answered without an image, a final status or token counts (status ${result.status ?? "none"}); it may have been charged.`));
+        return;
+      }
       const reason = result.blockReason ?? (result.status && result.status !== "completed" ? `status ${result.status}` : "no image in the answer");
       await fail(job, "submitting", { errorCode: "gemini_blocked", error: `Google returned no image (${reason}).`, costUsd: charged ?? 0, costBasis: charged !== null ? "usage" : "not_charged" });
       return;
     }
-    const costUsd = charged ?? imageCostFromTable(job.model, params.size, result.images.length);
+    // Google's counts, but never below the table price of the images saved (a count without its modality split, review round 1).
+    const tableCost = imageCostFromTable(job.model, params.size, result.images.length);
+    const costUsd = charged !== null ? Math.max(charged, tableCost) : tableCost;
     const costBasis: GeminiCostBasis = charged !== null ? "usage" : "price_table";
     const outputs: GeminiJobOutput[] = [];
     try {
@@ -246,7 +255,18 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
         outputs.push({ ...base, ...(await registerAsset(job, base)) });
       }
     } catch (error) {
-      await fail(job, "submitting", { errorCode: "gemini_output_failed", error: `The image was generated (and charged) but could not be written: ${error instanceof Error ? error.message : String(error)}`, costUsd, costBasis });
+      // Paid: the cost stays, and the files already written (and registered) stay listed.
+      await deps.store.updateJob(job.jobId, "submitting", {
+        status: "failed",
+        errorCode: "gemini_output_failed",
+        error: `The image was generated (and charged) but could not be written: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000),
+        outputsJson: outputs.length > 0 ? JSON.stringify(outputs) : null,
+        costUsd,
+        costBasis,
+        nextAttemptAt: null,
+        finishedAt: now(),
+        updatedAt: now(),
+      });
       return;
     }
     await finish(job, "submitting", claimed.dir, outputs, costUsd, costBasis);
@@ -358,6 +378,12 @@ export function createGeminiWorker(deps: GeminiMediaDeps) {
       const started: Promise<void>[] = [];
       const settings = await services.getSettings();
       const at = now().getTime();
+      // A job left `submitting` by a write that failed after its call (nothing here still runs it) would otherwise wait for the
+      // next restart and block `stop.sh` meanwhile: failed at its estimate once it is clearly abandoned (review round 1).
+      for (const job of await deps.store.listJobs({ statuses: ["submitting"], limit: 200 })) {
+        if (inFlight.has(job.jobId) || at - job.updatedAt.getTime() < GEMINI_LIMITS.staleSubmittingMs) continue;
+        await fail(job, "submitting", maybeCharged(job, "gemini_interrupted", "The job was left half-sent (its result could not be recorded); it may have been charged."));
+      }
       const queued = (await deps.store.listJobs({ statuses: ["queued"], limit: 200 })).reverse();
       for (const job of queued) {
         if (inFlight.has(job.jobId)) continue;

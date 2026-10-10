@@ -67,6 +67,8 @@ export const GEMINI_LIMITS = Object.freeze({
   /** Google keeps a generated video 2 days; past this the job gives up. */
   videoGiveUpMs: 47 * 3600_000,
   inFlightPerProcess: 3,
+  /** A job still `submitting` this long after its claim, and not in flight here, was left by a failed write (review round 1). */
+  staleSubmittingMs: 15 * 60_000,
   listMax: 50,
 });
 
@@ -189,6 +191,11 @@ export type GeminiJobManifest = {
   device: { deviceId: string | null; hostname: string | null };
   outputs: Array<{ path: string; kind: "image" | "video"; mimeType: string; bytes: number; sha256: string; assetId: string | null; note: string | null }>;
 };
+
+/** A table entry by its OWN key only: "toString", "constructor" or "__proto__" are never a model, size or extension (review round 1). */
+export function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
 
 export function geminiJobNotFound(jobId: string): DomainError {
   return new DomainError({ code: "gemini_job_not_found", message: `No Gemini job ${jobId} on this computer.`, details: { jobId } });

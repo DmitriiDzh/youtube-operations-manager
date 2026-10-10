@@ -24,7 +24,9 @@ import { asNumber, asRecord, asString } from "./json";
 export const GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com";
 const KEY_CHECK_TIMEOUT_MS = 30_000;
 const IMAGE_TIMEOUT_MS = 5 * 60_000;
-const VIDEO_CALL_TIMEOUT_MS = 60_000;
+/** The start call uploads the frames (up to ~16 MB in base64): the same 5 minutes as an image, never a phantom timeout on a slow uplink. */
+const VIDEO_START_TIMEOUT_MS = 5 * 60_000;
+const VIDEO_POLL_TIMEOUT_MS = 60_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_REDIRECTS = 5;
 /** A Veo clip is at most 8 s; 500 MB is far above any real one and stops an endless stream. */
@@ -46,8 +48,15 @@ export const GEMINI_BLOCKED_CODES: ReadonlySet<string> = new Set([
   "no_image",
 ]);
 
-/** Connection failures that prove the request never reached Google (so nothing can have been charged). */
-const NOT_SENT_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ERR_INVALID_URL"]);
+/**
+ * Connection failures that prove the request never reached Google (so nothing can have been charged): no address, refused,
+ * unreachable, a connect timeout (undici's own, before any byte is sent), and every TLS handshake failure (review round 1).
+ */
+const NOT_SENT_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ERR_INVALID_URL", "UND_ERR_CONNECT_TIMEOUT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN"]);
+
+function provesNotSent(code: string): boolean {
+  return NOT_SENT_CAUSES.has(code) || code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || code.startsWith("ERR_SSL_");
+}
 
 export type GeminiOutcome = "answered" | "not_sent" | "unknown";
 
@@ -114,7 +123,7 @@ function isTimeout(error: unknown): boolean {
 export function transportOutcome(stage: "request" | "read", cause: unknown): GeminiOutcome {
   if (stage === "read" || isTimeout(cause)) return "unknown";
   const code = errorCodeOf(cause);
-  return code !== null && NOT_SENT_CAUSES.has(code) ? "not_sent" : "unknown";
+  return code !== null && provesNotSent(code) ? "not_sent" : "unknown";
 }
 
 /** Google's error body: `{error:{code,message}}` (Interactions: `code` a snake_case string) or the classic `{error:{code:400,status,details:[{reason}]}}`. */
@@ -139,7 +148,18 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
   const fetchImpl = args.fetchImpl ?? fetch;
   const authorize = args.authorize ?? assertMediaGatewayAuthorized;
   const baseUrl = (args.baseUrl ?? GEMINI_API_BASE_URL).replace(/\/$/, "");
-  const geminiHost = new URL(baseUrl).host;
+  // The key goes to this exact origin only (scheme, host and port): an http:// hop to the same host never carries it.
+  const geminiOrigin = new URL(baseUrl).origin;
+
+  /** The gateway toggle first; anything else that fails before the request is sent is provably unsent (review round 1). */
+  async function authorized(context: Record<string, unknown>): Promise<void> {
+    try {
+      await authorize("gemini_api");
+    } catch (error) {
+      if (isDomainError(error)) throw error;
+      throw new DomainError({ code: "gemini_unavailable", message: `The request was not sent: ${error instanceof Error ? error.message : String(error)}`, details: { ...context, outcome: "not_sent" } });
+    }
+  }
 
   function unavailable(context: Record<string, unknown>) {
     return (stage: "request" | "read", detail: string, status?: number, cause?: unknown) => {
@@ -187,7 +207,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
     context: Record<string, unknown>,
     options: { body?: unknown; timeoutMs: number; keyCheck?: boolean }
   ): Promise<unknown> {
-    await authorize("gemini_api");
+    await authorized(context);
     const response = await jsonRequest({
       fetchImpl,
       url: `${baseUrl}${pathAndQuery}`,
@@ -195,6 +215,8 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       headers: { accept: "application/json", "x-goog-api-key": apiKey, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       timeoutMs: options.timeoutMs,
+      // The API never redirects; a redirect must not carry the key anywhere (fetch keeps custom headers across hosts).
+      redirect: "error",
       unavailable: unavailable(context),
     });
     if (!response.ok) throw failure(response, context, options.keyCheck);
@@ -292,7 +314,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       if (request.personGeneration) parameters.personGeneration = request.personGeneration;
       const body = asRecord(
         await call(apiKey, "POST", `/v1beta/models/${encodeURIComponent(request.model)}:predictLongRunning`, context, {
-          timeoutMs: VIDEO_CALL_TIMEOUT_MS,
+          timeoutMs: VIDEO_START_TIMEOUT_MS,
           body: { instances: [instance], parameters },
         })
       );
@@ -305,7 +327,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
 
     async getVideoOperation(apiKey: string, name: string): Promise<GeminiVideoOperation> {
       if (!OPERATION_NAME.test(name)) throw new DomainError({ code: "validation_failed", message: "Not a Veo operation name.", details: { name } });
-      const body = asRecord(await call(apiKey, "GET", `/v1beta/${name}`, { call: "operations.get" }, { timeoutMs: VIDEO_CALL_TIMEOUT_MS }));
+      const body = asRecord(await call(apiKey, "GET", `/v1beta/${name}`, { call: "operations.get" }, { timeoutMs: VIDEO_POLL_TIMEOUT_MS }));
       if (body.done !== true) return { done: false };
       if (body.error !== undefined && body.error !== null) {
         const error = asRecord(body.error);
@@ -328,6 +350,7 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
       const context = { call: "video.download", uri: safeUrlForError(uri) };
       let url = uri;
       let response: Response | null = null;
+      let lastHostIsGemini = true;
       for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
         let parsed: URL;
         try {
@@ -335,11 +358,14 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
         } catch {
           throw new DomainError({ code: "gemini_unavailable", message: "The video URI is not a valid URL.", details: { ...context, outcome: "answered" } });
         }
-        if (parsed.protocol !== "https:" && parsed.host !== geminiHost) {
+        // https only -- plain http only for the configured base itself (a local test server).
+        if (parsed.protocol !== "https:" && parsed.origin !== geminiOrigin) {
           throw new DomainError({ code: "gemini_unavailable", message: "The video URI is not https; it was not followed.", details: { ...context, outcome: "answered" } });
         }
-        await authorize("gemini_api");
-        const headers: Record<string, string> = parsed.host === geminiHost ? { "x-goog-api-key": apiKey } : {};
+        await authorized(context);
+        const toGemini = parsed.origin === geminiOrigin;
+        lastHostIsGemini = toGemini;
+        const headers: Record<string, string> = toGemini ? { "x-goog-api-key": apiKey } : {};
         try {
           response = await fetchImpl(parsed.toString(), { method: "GET", headers, redirect: "manual", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
         } catch (error) {
@@ -364,6 +390,10 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
         } catch {
           body = null;
         }
+        // A signed storage URL that refuses is not a statement about the API key.
+        if (!lastHostIsGemini && (response.status === 401 || response.status === 403)) {
+          throw new DomainError({ code: "gemini_unavailable", message: `The video's storage host refused the download (HTTP ${response.status}).`, details: { ...context, outcome: "answered", status: response.status } });
+        }
         throw failure({ status: response.status, ok: false, body }, context);
       }
       const declared = Number(response.headers.get("content-length") ?? "");
@@ -371,7 +401,12 @@ export function createGeminiApiClient(args: { fetchImpl?: Fetch; authorize?: Aut
         await response.body.cancel().catch(() => undefined);
         throw new DomainError({ code: "gemini_unavailable", message: `The video is ${declared} bytes, over the ${GEMINI_MAX_VIDEO_BYTES}-byte limit.`, details: { ...context, outcome: "answered" } });
       }
-      await mkdir(path.dirname(destinationPath), { recursive: true });
+      try {
+        await mkdir(path.dirname(destinationPath), { recursive: true });
+      } catch (error) {
+        await response.body.cancel().catch(() => undefined);
+        throw error;
+      }
       const tmpPath = `${destinationPath}.part`;
       let bytes = 0;
       const hash = createHash("sha256");

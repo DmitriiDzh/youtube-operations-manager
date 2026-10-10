@@ -7,6 +7,7 @@ import {
   insertGeminiMediaJob,
   listGeminiMediaJobs,
   setGeminiMediaSettingsJson,
+  setStoredGeminiCredentialsStatus,
   updateGeminiMediaJob,
   upsertStoredGeminiCredentials,
 } from "@/lib/db";
@@ -17,6 +18,7 @@ export function createGeminiStore(): GeminiStore {
   return {
     getCredentials: () => getStoredGeminiCredentials(),
     upsertCredentials: (input) => upsertStoredGeminiCredentials(input),
+    setCredentialsStatus: (checkedCiphertext, input) => setStoredGeminiCredentialsStatus(checkedCiphertext, input),
     clearCredentials: () => clearStoredGeminiCredentials(),
     getSettingsJson: () => getGeminiMediaSettingsJson(),
     setSettingsJson: (json) => setGeminiMediaSettingsJson(json),

@@ -16,6 +16,8 @@ export async function jsonRequest(args: {
   headers: Record<string, string>;
   body?: string;
   timeoutMs: number;
+  /** BL-174: `"error"` for a child whose credential header must never follow a redirect (fetch keeps custom headers across hosts). */
+  redirect?: RequestRedirect;
   /**
    * The error for a transport failure: the request itself (no response) or reading its body. BL-174: `cause` is the caught
    * error, so a child can tell "never reached the server" from "sent, then timed out" (the Gemini child counts the second
@@ -25,7 +27,13 @@ export async function jsonRequest(args: {
 }): Promise<JsonResponse> {
   let response: Response;
   try {
-    response = await args.fetchImpl(args.url, { method: args.method, headers: args.headers, body: args.body, signal: AbortSignal.timeout(args.timeoutMs) });
+    response = await args.fetchImpl(args.url, {
+      method: args.method,
+      headers: args.headers,
+      body: args.body,
+      signal: AbortSignal.timeout(args.timeoutMs),
+      ...(args.redirect ? { redirect: args.redirect } : {}),
+    });
   } catch (error) {
     throw args.unavailable("request", error instanceof Error ? error.message : String(error), undefined, error);
   }

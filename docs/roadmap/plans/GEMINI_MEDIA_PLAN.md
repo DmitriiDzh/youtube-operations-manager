@@ -411,3 +411,28 @@ Expected values are computed by hand from §1.1 and §2.
 - **Interactions API revision:** Google's May 2026 migration made `steps[]` the only response shape (the legacy `outputs[]` was removed
   on 2026-06-08), so no `Api-Revision` header is sent; the reader still accepts `outputs[]`.
 - **The traffic-category test** (`db.test.ts`) pinned the category list; it now includes `gemini_api` (the new counter of §2.1).
+
+### Review round 1 (2026-10-10): what changed and why
+
+- **A blocked image's cost (AC-GM-09 amended).** §2.3 said a blocked image costs 0. Google charges the input and thinking tokens it
+  counted even when it returns no image, so a blocked answer **with** `usage` now costs those counts (basis `usage`); without counts
+  it stays 0 (`not_charged`). The test that pins it: "AC-GM-09: an answer with no image is gemini_blocked; Google's own counts …".
+- **A 2xx with no image, no final status and no counts** (an unreadable body, a non-terminal status) is `gemini_unavailable` at the
+  estimate (`unknown_outcome`), not a free block: Google answered and may have charged.
+- **Cost floor.** An image's cost from Google's counts is never below the table price of the images saved; counts without the
+  modality split price every output token at the image rate.
+- **Not sent = retried.** TLS handshake failures, undici's connect timeout and any failure before the request leaves (e.g. the
+  traffic counter's database write) are `not_sent`: retried, cost 0 (as §2.4 already said for DNS / refused / TLS).
+- **Veo start timeout** 5 minutes (it uploads up to ~16 MB of base64 frames), like an image.
+- **Redirects.** API calls refuse to follow a redirect (`redirect: "error"`): fetch would carry `x-goog-api-key` to any host. The video
+  download sends the key only to the exact Gemini origin (an `http://` hop is refused); a signed storage host's 401/403 is
+  `gemini_unavailable`, not a key verdict.
+- **Abandoned `submitting` jobs** (a database write failed after the call) are failed at their estimate by the next tick once 15
+  minutes old, instead of waiting for a restart and blocking `stop.sh`.
+- **Key check** writes only the status of the key it checked (a key saved meanwhile in another tab is never overwritten).
+- **Lookups** in the model, size, resolution and file-type tables use own keys only (`toString`, `__proto__` are not models), and a
+  non-finite estimate is refused before any limit is compared.
+- **Several images in one answer.** The estimate assumes one image; a prompt that asks for several may return (and Google may charge)
+  several. The recorded cost is right; only the per-job check before the call assumes one. Documented in the tool and RISK-123.
+- **Tests:** the concurrency test uses the module's own lock; the real workspace rules are tested on a temporary folder
+  (`workspace.test.ts`); new negative tests for every money path above.

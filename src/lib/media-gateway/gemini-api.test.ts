@@ -258,3 +258,39 @@ test("downloadVideo refuses a plain-http URI on another host and never sends the
   await expectError(createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).downloadVideo(KEY, "http://evil.example.com/v.mp4", "/tmp/never"), "gemini_unavailable");
   assert.equal(calls.length, 0);
 });
+
+// ------------------------------------------------------------------------------------------------- review round 1 additions
+
+test("review 1: TLS and connect-timeout failures prove nothing was sent; a failure before the request is 'not_sent' too", async () => {
+  const wrap = (code: string) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) });
+  for (const code of ["UND_ERR_CONNECT_TIMEOUT", "CERT_HAS_EXPIRED", "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"]) {
+    assert.equal(transportOutcome("request", wrap(code)), "not_sent", code);
+  }
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: {} }));
+  const client = createGeminiApiClient({
+    fetchImpl,
+    authorize: async () => {
+      throw new Error("SQLITE_BUSY: database is locked");
+    },
+  });
+  const details = await expectError(client.generateImage(KEY, { model: "m", prompt: "p", images: [], aspectRatio: "1:1", imageSize: "1K" }), "gemini_unavailable");
+  assert.equal(details.outcome, "not_sent");
+  assert.equal(calls.length, 0);
+});
+
+test("review 1: API calls never follow a redirect (the key header would follow it to any host)", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({ status: 200, body: { models: [] } }));
+  await createGeminiApiClient({ fetchImpl, authorize: async () => undefined }).checkKey(KEY);
+  assert.equal(calls[0].init.redirect, "error");
+});
+
+test("review 1: a download hop to http:// on the Gemini host is refused (no key in clear); a storage host's 403 is not a key verdict", async () => {
+  const toHttp = fakeFetch(() => new Response(null, { status: 302, headers: { location: "http://generativelanguage.googleapis.com/v1beta/files/f" } }));
+  await expectError(createGeminiApiClient({ fetchImpl: toHttp.fetchImpl, authorize: async () => undefined }).downloadVideo(KEY, "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", "/tmp/never"), "gemini_unavailable");
+  assert.equal(toHttp.calls.length, 1, "the http hop is never requested");
+  const storage = fakeFetch((call) =>
+    call.url.startsWith("https://generativelanguage.googleapis.com/") ? new Response(null, { status: 302, headers: { location: "https://storage.example.com/x" } }) : new Response("denied", { status: 403 })
+  );
+  const details = await expectError(createGeminiApiClient({ fetchImpl: storage.fetchImpl, authorize: async () => undefined }).downloadVideo(KEY, "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", "/tmp/never"), "gemini_unavailable");
+  assert.equal(details.status, 403);
+});
