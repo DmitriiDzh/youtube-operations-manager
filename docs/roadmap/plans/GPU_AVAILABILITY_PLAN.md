@@ -44,6 +44,14 @@ Reply to the Operator: DEV-RESP-0019.
   - The S3 API has one endpoint per datacenter (`s3api-<dc>.runpod.io`), and server-side CopyObject is documented within a datacenter
     only.
   - No API moves or copies a volume.
+- **The S3 API is the other condition.** YT Manager reaches the volume only over S3: pulls, storage status, the model list and the
+  delete guard all go through it. RunPod documents S3 endpoints for 15 datacenters: EU-CZ-1, EU-RO-1, EUR-IS-1, EUR-NO-1, US-CA-2,
+  US-GA-2, US-IL-1, US-KS-2, US-MD-1, US-MO-1, US-MO-2, US-NC-1, US-NC-2, US-NE-1, US-WA-1.
+  - Crossed with the live list of datacenters with standard network volumes, the real candidates are **EU-RO-1, EUR-NO-1, US-IL-1,
+    US-MD-1, US-MO-1, US-NC-2 and US-NE-1**.
+  - The v2 catalog has no S3 field (GraphQL's `s3apiEnabled` retires in early 2027).
+  - EU-CZ-1 has a documented S3 endpoint, but the catalog listed no network-volume type for it at the time of the read. The log shows
+    whether that holds.
 - **Global Volumes:** still beta, with no API, no atomic rename and no locking, so they are not usable for model weights (unchanged
   from DEV-RESP-0007).
 - **In YT Manager:**
@@ -66,7 +74,9 @@ Reply to the Operator: DEV-RESP-0019.
     - `pricePerHr`: Secure on-demand, the price a session is checked against;
     - `stock`: overall;
     - `cudaAvailable`: whether hosts with that CUDA have capacity now, for the GPU as a whole.
-  - `DC = { dataCenterId, region, countryCode, networkVolumeTypes }`.
+  - `DC = { dataCenterId, region, countryCode, networkVolumeTypes, s3Api }`.
+  - `s3Api` comes from RunPod's documented S3 endpoint list, kept in the gateway next to the endpoint pattern; the catalog has no such
+    field. The description says so, and that storage status confirms it once a volume exists there.
 - Two live RunPod reads per call, through the media gateway and its switch. The key never appears.
 - The description states the catalog's own caveats: stock can change before a pod start; there is no per-datacenter price; CUDA is
   known only per GPU.
@@ -84,6 +94,8 @@ Reply to the Operator: DEV-RESP-0019.
   - Plus one overall row per GPU (`data_center_id` `*`).
   - Kept 90 days (pruned on insert, like the capacity log), device-local.
   - Estimate: 8 snapshots a day × about 35 GPUs × 18 rows ≈ 5,000 rows a day, about 450,000 rows over 90 days of a few short columns.
+- **Per computer:** each computer keeps its own log (device-local, 16 reads a day each). Until the Windows computer is updated, the
+  Mac's log is the one to read.
 - **Read:** `factory_media_list_gpu_availability_log { since?, until?, gpuTypeId?, dataCenterId?, limit? }` returns the rows, newest
   first, at most 5,000 per call.
   - Optionally `summary: true` gives per GPU and datacenter the share of snapshots at each stock level in the range. That is a count of
@@ -94,10 +106,10 @@ Reply to the Operator: DEV-RESP-0019.
 
 | Step | Who | How |
 |---|---|---|
-| 0 | Operator / owner | Choose the datacenter from B's log. It must have STANDARD network volumes, and the needed GPUs must have stock there with CUDA ≥ 12.8. |
+| 0 | Operator / owner | Choose the datacenter from B's log. It must have STANDARD network volumes **and the S3 API** (today: EU-RO-1, EUR-NO-1, US-IL-1, US-MD-1, US-MO-1, US-NC-2, US-NE-1), and the needed GPUs must have stock there with CUDA ≥ 12.8. |
 | 1 | Owner | Wait until no session, pull or operator pod runs (Production shows it; the settings change refuses otherwise). |
 | 2 | Owner | Create the new volume (e.g. 150 GB) in that datacenter: Settings → RunPod → network volumes, or `npm run media -- volume-create`. Never an agent tool. |
-| 3 | Owner | Settings → RunPod: set **datacenter and volume together** and save. The save checks that the volume is in that datacenter and the GPU is offered there. The S3 endpoint and the GPU candidates follow. Re-check the GPU fallback list for that datacenter. The other computer takes the same pair through settings sync. |
+| 3 | Owner | Settings → RunPod: set **datacenter and volume together** and save. The save checks that the volume is in that datacenter and the GPU is offered there. The S3 endpoint and the GPU candidates follow. Re-check the GPU fallback list for that datacenter. **Before any pull, open the storage status:** it must list the new volume over S3. If it does not, the datacenter cannot be used; switch back and delete the new volume. The other computer takes the same pair through settings sync. |
 | 4 | Operator | Re-pull the model files with `factory_media_pull_model` and their recorded SHA-256 (the pull checks the new volume, so nothing is "already there"). Templates are account-level (`factory_media_sync_templates` is unchanged). |
 | 5 | Operator | One test session per template that matters; `factory_media_storage_status` shows the new volume and datacenter; the capacity log records the new datacenter on each attempt. |
 | 6 | Owner | Delete the old volume: Settings → RunPod → delete unused volume, which refuses the configured one. |
@@ -108,6 +120,15 @@ Reply to the Operator: DEV-RESP-0019.
 - **Cost of the overlap:** both volumes bill while both exist ($0.07/GB-month standard): 150 GB for a day is about $0.35.
 - **Waiting sessions:** a `waiting_capacity` session is failed when the datacenter changes, and a pending one is re-checked at approval
   (existing rules).
+
+### Build order (when the go comes)
+
+1. Add the CUDA parameter to the gateway's catalog read. Probe it live through a core method while the schema is still 80 on the branch
+   and on the Mac:
+   - the field names (`minCudaVersion`, `cudaVersions[]`);
+   - whether the per-datacenter stock changes under the CUDA filter, which decides what `cudaAvailable` may claim.
+2. Only then the snapshot table (the next schema version). After that, no live probe from the branch.
+3. The tools, the timer, the docs, then the review.
 
 ## 3. Acceptance criteria (fixed before the code)
 
@@ -120,6 +141,8 @@ Reply to the Operator: DEV-RESP-0019.
 - **AC-GA-02 (filters).**
   - `gpuTypeIds` and `dataCenterIds` narrow the answer, and `minVramGb` 40 keeps only the L40S.
   - An unknown filter value gives an empty list, not an error.
+- **AC-GA-09 (S3).** Each datacenter carries `s3Api`, true exactly for the documented list (EU-RO-1 and US-IL-1 true, EU-SE-1 false in
+  the AC-GA-01 stub). The description names it the documented list, not a live check.
 - **AC-GA-03 (no key, no switch).**
   - With the media gateway off: `media_gateway_disabled`.
   - Without credentials: `media_generation_not_configured`.
