@@ -1,6 +1,6 @@
 # Stored YouTube search terms per video and per channel week (BL-169, FO-REQ-0015 item 5)
 
-**Status: IN PROGRESS** on `feature/fo-req-0015-search-terms`. Owner, Telegram 2026-10-10 (msg 2473, «Да»): FO-REQ-0015 step 4 in the order
+**Status: DONE, merged into `dev` (merge 30ce7bc, owner Telegram msg 2480).** Branch `feature/fo-req-0015-search-terms`. Owner, Telegram 2026-10-10 (msg 2473, «Да»): FO-REQ-0015 step 4 in the order
 of DEV-RESP-0018.
 
 ## 1. Facts (checked live 2026-10-10, both channels, read-only probe)
