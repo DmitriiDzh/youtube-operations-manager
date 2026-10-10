@@ -5,6 +5,7 @@ import { DomainError } from "@/lib/shared-domain";
 import { createClaimGetHandler, createClaimPostHandler } from "./[planId]/claim/route";
 import { createPeerClaimGetHandler, createPeerClaimPostHandler } from "./peers/[deviceId]/[planId]/claim/route";
 import { createPeerGroupNotePostHandler } from "./peers/[deviceId]/[planId]/group-note/route";
+import { createPeerRecheckPostHandler } from "./peers/[deviceId]/[planId]/recheck/route";
 import { createPeerVerdictPostHandler } from "./peers/[deviceId]/[planId]/verdict/route";
 import { createPeersGetHandler } from "./peers/route";
 import { planHandler, type PlanRouteDeps } from "./shared";
@@ -170,4 +171,25 @@ test("BL-162 / AC-SM-03: a wave note on another device's plan of another channel
   assert.equal(recorded.length, 0);
   assert.equal((await handler("UC_japan")(post({ groupId: "C1", note: "too thin", deviceId: "mac", planId: "X" }), at("R-japan"))).status, 200);
   assert.deepEqual(recorded, [{ groupId: "C1", note: "too thin", deviceId: "win", planId: "R-japan" }], "the address names the device and plan, never the body");
+});
+
+test("BL-173 / AC-SM-03: an answer to another device's re-check is refused (404) for a plan of another channel and never recorded", async () => {
+  const recorded: unknown[] = [];
+  const handler = (active: string | null) =>
+    createPeerRecheckPostHandler({
+      getSession: async () => ({ user: { id: "u1" } }),
+      core: {
+        async assertPeerPlanOfChannel(deviceId: string, planId: string, channelId: string | null) {
+          if (!channelId || PEER_PLAN_CHANNEL[`${deviceId}\u0000${planId}`] !== channelId) throw notFound(planId);
+        },
+        recordPeerRecheckAnswer: async (input: unknown) => (recorded.push(input), {}) as never,
+      },
+      activeChannelId: async () => active,
+    });
+  const at = (planId: string) => ({ params: Promise.resolve({ deviceId: "win", planId }) });
+  assert.equal((await handler("UC_japan")(post({ recheckId: "q1", kept: true }), at("T-tropico"))).status, 404);
+  assert.equal((await handler(null)(post({ recheckId: "q1", kept: true }), at("R-japan"))).status, 404);
+  assert.equal(recorded.length, 0);
+  assert.equal((await handler("UC_japan")(post({ recheckId: "q1", kept: true, deviceId: "other", planId: "T-tropico" }), at("R-japan"))).status, 200);
+  assert.deepEqual(recorded, [{ recheckId: "q1", kept: true, deviceId: "win", planId: "R-japan" }], "the device and plan come from the path, never the body");
 });

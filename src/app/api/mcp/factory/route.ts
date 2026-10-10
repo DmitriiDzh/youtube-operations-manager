@@ -182,6 +182,8 @@ function createToolDeps(): FactoryToolDeps {
       rerun: async (input) => ({ ...(await createGenerationPlansCore().rerun(input)) }),
       cloneGroup: async (input) => ({ ...(await createGenerationPlansCore().cloneGroup(input, "factory")) }),
       move: async (input) => ({ ...(await createGenerationPlansCore().movePlan(input, "factory")) }),
+      requestRecheck: async (input) => ({ ...(await createGenerationPlansCore().requestRecheck(input, "factory")) }),
+      withdrawRecheck: async (input) => ({ ...(await createGenerationPlansCore().withdrawRecheck(input, "factory")) }),
     },
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   };

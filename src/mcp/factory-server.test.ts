@@ -42,10 +42,12 @@ const EXPECTED_TOOLS = [
   "factory_plan_list",
   "factory_plan_move",
   "factory_plan_report",
+  "factory_plan_request_recheck",
   "factory_plan_rerun",
   "factory_plan_run_stage",
   "factory_plan_todo",
   "factory_plan_update",
+  "factory_plan_withdraw_recheck",
 ];
 
 function registeredNames(): string[] {
@@ -105,9 +107,11 @@ test("AC-FO-09 (amended by ADR 0025/0026): writes are exactly the named media/se
     "factory_plan_import",
     "factory_plan_move",
     "factory_plan_report",
+    "factory_plan_request_recheck",
     "factory_plan_rerun",
     "factory_plan_run_stage",
     "factory_plan_update",
+    "factory_plan_withdraw_recheck",
   ]);
   const writes = new Set<string>(FACTORY_WRITE_TOOL_NAMES);
   for (const name of FACTORY_TOOL_NAMES) {
@@ -164,7 +168,7 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.10.0 since BL-172), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.11.0 since BL-173), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
@@ -172,7 +176,8 @@ test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.10.0 
   // BL-159 (PER_SESSION_CUDA_PLAN.md "Contract"): minCudaVersion on a start and a template, the host CUDA fields and the
   // early media_gpu_host_incompatible refusal are additive -> 1.9.0, as the plan states.
   // BL-172 (GPU_AVAILABILITY_PLAN.md AC-GA-08): two READ tools -> 1.10.0.
-  assert.equal(FACTORY_API_VERSION, "1.10.0");
+  // BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): two WRITE tools and additive fields and events -> 1.11.0.
+  assert.equal(FACTORY_API_VERSION, "1.11.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

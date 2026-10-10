@@ -61,6 +61,11 @@ export function createReferenceGetHandler(deps: Omit<AuditionDeps, "resolveAudit
   return createPlanFileGetHandler(deps, ["id"], (planId, q) => deps.resolveReference({ planId, id: q.id }));
 }
 
+/** BL-173 (PLAN_RECHECKS_PLAN.md §2.4): a re-check's file, `?recheckId=` -- the revised file, or the attempt's current one. */
+export function createRecheckAuditionGetHandler(deps: Omit<AuditionDeps, "resolveAudition"> & { resolveRecheck(input: { planId: string; recheckId: string }): Promise<ResolvedTarget> }) {
+  return createPlanFileGetHandler(deps, ["recheckId"], (planId, q) => deps.resolveRecheck({ planId, recheckId: q.recheckId }));
+}
+
 function createPlanFileGetHandler(deps: Omit<AuditionDeps, "resolveAudition">, names: string[], resolveTarget: (planId: string, query: Record<string, string>) => Promise<ResolvedTarget>) {
   return async function GET(request: Request, context: { params: Promise<{ planId: string }> }): Promise<Response> {
     // A local file leaves this route only for a browser on this computer (ADR 0029 §5): loopback Host and Origin.

@@ -37,7 +37,11 @@ import { DomainError, isDomainError } from "@/lib/shared-domain";
  */
 // BL-172 (FO-REQ-0016, GPU_AVAILABILITY_PLAN.md): 1.10.0 -- the READ tools factory_media_get_gpu_availability (RunPod's GPU stock and
 // price per datacenter now) and factory_media_list_gpu_availability_log (the stored 3-hourly snapshots); nothing else changes.
-export const FACTORY_API_VERSION = "1.10.0";
+// BL-173 (FO-REQ-0017, PLAN_RECHECKS_PLAN.md): 1.11.0 -- the WRITE tools factory_plan_request_recheck / factory_plan_withdraw_recheck
+// (a rated attempt sent back to the owner as a fixed version or a question), todo.rechecks, progress.rechecksOpen /
+// groups[].counts.rechecks / rechecks[] (with currentFile), the events recheck_requested / recheck_answered / recheck_withdrawn and
+// owner_verdict.recheckId; a move is refused while a re-check is open, a close withdraws them. Additive.
+export const FACTORY_API_VERSION = "1.11.0";
 
 /** The complete, explicit allowlist of tools. A new name must be added here deliberately, with its test. */
 export const FACTORY_TOOL_NAMES = [
@@ -83,6 +87,9 @@ export const FACTORY_TOOL_NAMES = [
   "factory_plan_clone_group",
   // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
   "factory_plan_move",
+  // BL-173 (FO-REQ-0017): a rated attempt goes back to the owner (a fixed version or a question), and is taken back.
+  "factory_plan_request_recheck",
+  "factory_plan_withdraw_recheck",
 ] as const;
 
 /**
@@ -112,6 +119,9 @@ export const FACTORY_WRITE_TOOL_NAMES = [
   "factory_plan_clone_group",
   // BL-157 (FO-REQ-0009 §4): a plan moves to another channel.
   "factory_plan_move",
+  // BL-173 (FO-REQ-0017): re-checks of rated attempts.
+  "factory_plan_request_recheck",
+  "factory_plan_withdraw_recheck",
 ] as const;
 
 export type FactoryChannelEntry = {
@@ -170,6 +180,9 @@ export type FactoryToolDeps = {
     rerun(input: unknown): Promise<Record<string, unknown>>;
     cloneGroup(input: unknown): Promise<Record<string, unknown>>;
     move(input: unknown): Promise<Record<string, unknown>>;
+    /** BL-173: open a re-check of a rated attempt; withdraw an open one. */
+    requestRecheck(input: unknown): Promise<Record<string, unknown>>;
+    withdrawRecheck(input: unknown): Promise<Record<string, unknown>>;
   };
   /** The same local gate every mutating channel tool passes (operation lock, recovery mode); throws when not allowed. */
   assertMutationAllowed(): Promise<void>;
@@ -690,19 +703,19 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_move",
-    "Move an active plan to another channel connected on this computer (1.8.0): { planId, channelId, checkOnly?: boolean } -> { planId, from, to, checked, missing, missingCount, unfinishedJobs, moved }. Copy the plan's files into the new channel's '99 Data Exchange/Sent to YTM/' first: every auditionFile reported on the plan and every reference file is checked there (checked = how many distinct files; missing lists up to 500 of the missingCount not found). checkOnly: true only checks and changes nothing. Without it, a missing file or an unfinished job of the plan (queued or running) refuses the move with plan_invalid (details: checked, missing, missingCount / unfinishedJobs) and nothing changes. After the move, the auditionFiles and references play from the new channel; an attempt with no auditionFile plays its job's output from the channel the job ran on; runs and plan-linked sessions need the new channel. Jobs, sessions, results, verdicts, events and spend stay with the plan (same planId). Event plan_moved { from, to, checked }. Errors: plan_closed, plan_invalid (same channel, channel not connected, no workspace folder, files missing, unfinished jobs), plan_not_found.",
+    "Move an active plan to another channel connected on this computer (1.8.0): { planId, channelId, checkOnly?: boolean } -> { planId, from, to, checked, missing, missingCount, unfinishedJobs, moved }. Copy the plan's files into the new channel's '99 Data Exchange/Sent to YTM/' first: every auditionFile reported on the plan, every re-check's auditionFile (1.11.0) and every reference file is checked there (checked = how many distinct files; missing lists up to 500 of the missingCount not found). checkOnly: true only checks and changes nothing. Without it, a missing file or an unfinished job of the plan (queued or running) refuses the move with plan_invalid (details: checked, missing, missingCount / unfinishedJobs) and nothing changes. After the move, the auditionFiles and references play from the new channel; an attempt with no auditionFile plays its job's output from the channel the job ran on; runs and plan-linked sessions need the new channel. Jobs, sessions, results, verdicts, events and spend stay with the plan (same planId). Event plan_moved { from, to, checked }. A plan with an open re-check does not move (1.11.0: plan_invalid, details.reason recheck_open -- withdraw it or wait for the owner's answer). Errors: plan_closed, plan_invalid (same channel, channel not connected, no workspace folder, files missing, unfinished jobs, an open re-check), plan_not_found.",
     z.object({ planId: z.string(), channelId: z.string(), checkOnly: z.boolean().optional() }).strict(),
     (input) => deps.plans.move(input)
   );
   planWrite(
     "factory_plan_close",
-    "Close a plan: { planId, status: completed | cancelled, note? } -> { plan, progress }. Only the status changes: running jobs, sessions and files are not touched (cancel jobs with factory_media_cancel_job). A closed plan refuses every change (plan_closed).",
+    "Close a plan: { planId, status: completed | cancelled, note? } -> { plan, progress }. Only the status changes: running jobs, sessions and files are not touched (cancel jobs with factory_media_cancel_job); open re-checks are withdrawn (1.11.0: event recheck_withdrawn { recheckId, reason: plan_closed }). A closed plan refuses every change (plan_closed).",
     z.object({ planId: z.string(), status: z.string(), note: z.string().nullable().optional() }).strict(),
     (input) => deps.plans.close(input)
   );
   planRead(
     "factory_plan_get",
-    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, group_reviewed { groupId, accepted, rejected, overridesValidator } (1.8.0: the owner's verdicts took the wave's waiting count to zero -- recorded once per completion), rerun_requested, plan_moved { from, to, checked } (1.8.0), plan_*. Groups carry ownerNote (1.8.0: the owner's note on the wave; note is the factory's context, never overwritten by the owner). In-app counts are read from the jobs themselves. Read-only.",
+    "One plan with its derived progress and events: { planId, since? (ISO time: only events after it) } -> { plan, progress: { stages: [counts planned/queued/running/done/failed/interrupted/cancelled/accepted/rejected], groups, items (attempts, generated, accepted, rejected, open, waitingReview, missing), spend: { usd, gpuMinutes, sessions }, budget: { usd, usedShare, warnings: ['80'|'100'] }, eta: { seconds, gpuTypeId, samples }, notices: [stage_complete | budget_80 | budget_100 | plan_complete | attempts_exhausted { count } | review_waiting { count, passed, rejected } (1.6.0: rejected ones wait only with the plan's reviewRejected)] }, events: [{ at, kind, actor, details }], more, cursor }. Events are the oldest first at or after since; the cursor looks back a minute (some events are stamped just before they are stored) and times have one-second resolution, so events repeat across calls -- drop what you already have. more = true means call again with the cursor at once. If more than 500 events share one second, the excess of that second is skipped. Events: job_created/done/failed/interrupted/cancelled, session_started/ready/stopped (stopReason), result_reported, owner_verdict (rating, reasons, markers, note; overridesValidator: true when the owner accepted an attempt an earlier stage rejected), group_note, group_reviewed { groupId, accepted, rejected, overridesValidator } (1.8.0: the owner's verdicts took the wave's waiting count to zero -- recorded once per completion), rerun_requested, plan_moved { from, to, checked } (1.8.0), recheck_requested { recheckId, kind, itemKey, attemptRef, title } / recheck_answered { recheckId, kind, itemKey, attemptRef, kept, result, device, note? (a kept answer's note) } / recheck_withdrawn { recheckId, itemKey, attemptRef, note?, reason? } (1.11.0; owner_verdict carries recheckId when it answers a re-check, and a kept answer gives no owner_verdict), plan_*. 1.11.0: progress.rechecksOpen and groups[].counts.rechecks count the open re-checks (never part of waitingReview); progress.rechecks lists every re-check { recheckId, itemKey, attemptRef, kind, title, note, auditionFile, markers, checks, metrics, previousVerdict, status: open | answered | withdrawn, openedAt, closedAt, answer: { result, kept, rating, reasons, markers, note, device, at } | null, withdrawNote, closeReason, currentFile } -- currentFile = the file the attempt plays now: the auditionFile of its newest revision the owner accepted, else its latest reported auditionFile (null = only its job output); deliver that file. Groups carry ownerNote (1.8.0: the owner's note on the wave; note is the factory's context, never overwritten by the owner). In-app counts are read from the jobs themselves. Read-only.",
     z.object({ planId: z.string(), since: z.string().optional() }).strict(),
     (input) => deps.plans.get(input)
   );
@@ -714,7 +727,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planRead(
     "factory_plan_todo",
-    "What is left in a plan: { planId } -> { short: [{ itemKey, groupId, missing, mode }] (attempts still needed), waitingReview: [{ itemKey, attemptRef, validator: passed | rejected }] (passed the stage before owner review -- or, with the plan's reviewRejected, was rejected there and can be played -- and has no verdict yet), rerun: [{ itemKey, attemptRef, state: failed | interrupted }] (only while the item is short) }. Read-only.",
+    "What is left in a plan: { planId } -> { short: [{ itemKey, groupId, missing, mode }] (attempts still needed), waitingReview: [{ itemKey, attemptRef, validator: passed | rejected }] (passed the stage before owner review -- or, with the plan's reviewRejected, was rejected there and can be played -- and has no verdict yet), rerun: [{ itemKey, attemptRef, state: failed | interrupted }] (only while the item is short), rechecks: [{ recheckId, kind, itemKey, attemptRef, openedAt }] (1.11.0: the open re-checks, oldest first -- waiting for the owner apart from waitingReview) }. Read-only.",
     z.object({ planId: z.string() }).strict(),
     (input) => deps.plans.todo(input)
   );
@@ -741,6 +754,34 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
     "Build the next wave from a group: { planId, groupId, newGroupId, title?, paramsPatch? (merged into every copied item's params), seeds? (replace the copied seeds) } -> { plan, progress }. Items are copied as '<newGroupId>/<rest of the key>' with no attempts or results; the new group dependsOn the source.",
     z.object({ planId: z.string(), groupId: z.string(), newGroupId: z.string(), title: z.string().optional(), paramsPatch: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(), seeds: z.array(z.number().int()).optional() }).strict(),
     (input) => deps.plans.cloneGroup(input)
+  );
+  // BL-173 (FO-REQ-0017, PLAN_RECHECKS_PLAN.md §2.2): re-checks. The top-level fields are named and strict here; the plans core
+  // checks every bound.
+  planWrite(
+    "factory_plan_request_recheck",
+    "Send an attempt the owner already rated back to the owner (1.11.0): { planId, itemKey, attemptRef, recheckId (yours: letters, digits, '.', '_', '-', <= 120, unique in the plan), kind: revision | question, title (<= 60: the short reason the owner sees, e.g. 'резкость' or 'голос на 0:25'), note (<= 1000: what was wrong and what changed, or the question), auditionFile? (revision only and required: the fixed file, relative to the channel's '99 Data Exchange/Sent to YTM/'; a question plays the attempt's current file), markers?: [{ start, end?, note? }] (<= 50, the spots to check), checks? / metrics? (the validator's results for the fixed file, as in factory_plan_report rows) } -> { recheck }. Stored apart from the result rows: the attempt's rows and verdicts do not change. The owner sees it in Review under 'Re-checks', apart from the waves (not in waitingReview, no group_reviewed), and answers with a verdict -- which becomes the attempt's verdict; an accepted revision becomes its currentFile -- or, for a question, keeps the verdict with a note. Every answer goes into the verdict history with the recheckId (factory_plan_get events: recheck_answered, owner_verdict { recheckId }). The same recheckId with the same content again returns the stored re-check (a safe retry); with other content plan_recheck_exists. Refused: plan_closed; plan_mismatch (unknown item or attempt; no verdict yet -- details.reason not_rated, it is in the queue already; an open re-check on the attempt -- recheck_open, withdraw it first; a revision without auditionFile; a question with one); plan_invalid (the file is not in Sent to YTM -- file_missing; not a type the player plays -- unsupported_type; no workspace folder). Do not report the fixed file as a factory_plan_report row: at the same key it would replace the original's row.",
+    z
+      .object({
+        planId: z.string(),
+        itemKey: z.string(),
+        attemptRef: z.string(),
+        recheckId: z.string(),
+        kind: z.enum(["revision", "question"]),
+        title: z.string(),
+        note: z.string(),
+        auditionFile: z.string().optional(),
+        markers: loose.optional(),
+        checks: loose.optional(),
+        metrics: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])).optional(),
+      })
+      .strict(),
+    (input) => deps.plans.requestRecheck(input)
+  );
+  planWrite(
+    "factory_plan_withdraw_recheck",
+    "Take an open re-check back (1.11.0): { planId, recheckId, note? (<= 1000) } -> { recheck }. It leaves the owner's queue on every computer; event recheck_withdrawn { recheckId, itemKey, attemptRef, note? }. An answered or withdrawn re-check is refused with plan_recheck_closed (details.status); an unknown one with plan_mismatch.",
+    z.object({ planId: z.string(), recheckId: z.string(), note: z.string().optional() }).strict(),
+    (input) => deps.plans.withdrawRecheck(input)
   );
 
   return server;

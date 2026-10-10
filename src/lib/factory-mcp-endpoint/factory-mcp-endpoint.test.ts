@@ -103,6 +103,8 @@ function fakeToolDeps(overrides: Partial<FactoryToolDeps> = {}) {
       rerun: async (input) => (mediaCalls.push(`plan.rerun:${(input as { planId: string }).planId}`), { created: [] }),
       cloneGroup: async (input) => (mediaCalls.push(`plan.cloneGroup:${(input as { planId: string }).planId}`), { plan: {} }),
       move: async (input) => (mediaCalls.push(`plan.move:${(input as { planId: string }).planId}`), { moved: false }),
+      requestRecheck: async (input) => (mediaCalls.push(`plan.requestRecheck:${(input as { recheckId: string }).recheckId}`), { recheck: {} }),
+      withdrawRecheck: async (input) => (mediaCalls.push(`plan.withdrawRecheck:${(input as { recheckId: string }).recheckId}`), { recheck: {} }),
     },
     async assertMutationAllowed() {
       mediaCalls.push("gate");
@@ -280,10 +282,12 @@ test("AC-FO-07 / AC-FM-13 / AC-FG-08: tools/list over the real endpoint is exact
     "factory_plan_list",
     "factory_plan_move",
     "factory_plan_report",
+    "factory_plan_request_recheck",
     "factory_plan_rerun",
     "factory_plan_run_stage",
     "factory_plan_todo",
     "factory_plan_update",
+    "factory_plan_withdraw_recheck",
   ]);
   assert.equal(names.some((n) => /approve|reject/.test(n)), false, "no tool approves or rejects a session for anyone");
   assert.deepEqual([...FACTORY_TOOL_NAMES].sort(), names);
@@ -307,14 +311,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-157 (SERVERS_MEDIA_PLAN.md §G): 1.8.0 and the write tool factory_plan_move, last in both lists (declaration order).
 // BL-159 (PER_SESSION_CUDA_PLAN.md "Contract"): 1.9.0, no new tool.
 // BL-172 (GPU_AVAILABILITY_PLAN.md AC-GA-08): 1.10.0 and the READ tools after the capacity log (declaration order).
-test("factory_get_capabilities reports the factory API version 1.10.0 (BL-172), READ and WRITE, the tool list and the write tools", async () => {
+// BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): 1.11.0 and the two re-check WRITE tools, last in both lists (declaration order).
+test("factory_get_capabilities reports the factory API version 1.11.0 (BL-173), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.10.0",
+    factoryApiVersion: "1.11.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -352,6 +357,8 @@ test("factory_get_capabilities reports the factory API version 1.10.0 (BL-172), 
       "factory_plan_rerun",
       "factory_plan_clone_group",
       "factory_plan_move",
+      "factory_plan_request_recheck",
+      "factory_plan_withdraw_recheck",
     ],
     permissions: ["READ", "WRITE"],
     writeTools: [
@@ -374,6 +381,8 @@ test("factory_get_capabilities reports the factory API version 1.10.0 (BL-172), 
       "factory_plan_rerun",
       "factory_plan_clone_group",
       "factory_plan_move",
+      "factory_plan_request_recheck",
+      "factory_plan_withdraw_recheck",
     ],
   });
 });
@@ -728,6 +737,8 @@ test("BL-143: factory_plan writes pass the device mutation gate first; get/list/
     ["factory_plan_rerun", { planId: "p1", sessionId: "s1", itemKey: "C1/F1" }, "plan.rerun:p1"],
     ["factory_plan_clone_group", { planId: "p1", groupId: "C1", newGroupId: "C2" }, "plan.cloneGroup:p1"],
     ["factory_plan_move", { planId: "p1", channelId: "UC_target", checkOnly: true }, "plan.move:p1"],
+    ["factory_plan_request_recheck", { planId: "p1", itemKey: "C14/V04", attemptRef: "job:1", recheckId: "C14-XL_V04__r1", kind: "revision", title: "резкость", note: "fixed", auditionFile: "R/C14/x__r1.mp3" }, "plan.requestRecheck:C14-XL_V04__r1"],
+    ["factory_plan_withdraw_recheck", { planId: "p1", recheckId: "C14-XL_V04__r1" }, "plan.withdrawRecheck:C14-XL_V04__r1"],
   ];
   for (const [name, args, reached] of writes) {
     toolDeps.mediaCalls.length = 0;
@@ -768,4 +779,23 @@ test("BL-159: factory_media_start_session passes minCudaVersion on; a value RunP
     assert.equal(Boolean(body.result?.isError ?? body.error), true, String(bad));
   }
   assert.equal(seen.length, 1, "no refused value reached the media core");
+});
+
+// BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): the re-check tools' MCP schemas are strict, so a bad call never reaches the plans core.
+test("BL-173: the re-check tools reject unknown keys and an unknown kind at the MCP boundary, before the plans core", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const base = { planId: "p1", itemKey: "C14/V03", attemptRef: "job:2", recheckId: "C14-XL_V03__q1", kind: "question", title: "голос на 0:25", note: "a voice?" };
+  for (const [name, args] of [
+    ["factory_plan_request_recheck", { ...base, extra: 1 }],
+    ["factory_plan_request_recheck", { ...base, kind: "remark" }],
+    ["factory_plan_request_recheck", { ...base, note: undefined }],
+    ["factory_plan_withdraw_recheck", { planId: "p1", recheckId: "x", reason: "because" }],
+  ] as const) {
+    toolDeps.mediaCalls.length = 0;
+    const body = await (await endpoint.handle(rpc(call(name, { ...args }), withToken(token)))).json();
+    assert.equal(body.result?.isError, true, `${name} ${JSON.stringify(args)}`);
+    assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
+    assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the core");
+  }
 });
