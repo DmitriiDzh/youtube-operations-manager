@@ -157,7 +157,7 @@ export const production: Record<keyof typeof en, string> = {
   "review.recheck.questionTitle": "Вопрос: {title}",
   "review.recheck.previous": "Прошлая оценка: {result}{rating} · {device} · {time}",
   "review.recheck.previousReasons": "Причины: {reasons}",
-  "review.recheck.previousNote": "Ваша заметка: {note}",
+  "review.recheck.previousNote": "Заметка: {note}",
   "review.recheck.goTo": "к {time}",
   "review.recheck.spot": "вопрос",
   "review.recheck.before": "Было",

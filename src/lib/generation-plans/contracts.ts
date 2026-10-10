@@ -373,8 +373,11 @@ export const PLAN_RECHECK_KINDS = ["revision", "question"] as const;
 export type PlanRecheckKind = (typeof PLAN_RECHECK_KINDS)[number];
 export const PLAN_RECHECK_STATUSES = ["open", "answered", "withdrawn"] as const;
 export type PlanRecheckStatus = (typeof PLAN_RECHECK_STATUSES)[number];
-/** The stage id of the row under which a revision's own checks show on the review screen (never a real stage). */
-export const RECHECK_STAGE_ID = "recheck";
+/**
+ * The stage id of the row under which a revision's own checks show on the review screen. Review round 2: a stage id can never
+ * contain `~` (`schemas.ts` STAGE_ID_PATTERN), so it is never a real stage of a plan.
+ */
+export const RECHECK_STAGE_ID = "~recheck";
 /** The review screen's "wave" of re-checks (`?wave=~rechecks`); no group id can contain `~`. */
 export const RECHECKS_WAVE = "~rechecks";
 
@@ -436,7 +439,9 @@ export function currentFilesOf(rechecks: readonly PlanRecheck[]): Map<string, { 
  * a revision, so the screen never takes the original's loudness for it.
  */
 export function recheckStageRow(recheck: Pick<PlanRecheck, "itemKey" | "attemptRef" | "auditionFile" | "checks" | "metrics" | "openedAt">): PlanResultRow {
-  return { stageId: RECHECK_STAGE_ID, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: "done", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: recheck.auditionFile, checks: recheck.checks, metrics: recheck.metrics, referenceIds: [], at: recheck.openedAt };
+  // Review round 2: a revision that fails a `fail` check reads as rejected, like a validator row (its failures show at the top).
+  const failed = recheck.checks.some((c) => !c.pass && c.severity === "fail");
+  return { stageId: RECHECK_STAGE_ID, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: failed ? "rejected" : "done", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: recheck.auditionFile, checks: recheck.checks, metrics: recheck.metrics, referenceIds: [], at: recheck.openedAt };
 }
 
 /**

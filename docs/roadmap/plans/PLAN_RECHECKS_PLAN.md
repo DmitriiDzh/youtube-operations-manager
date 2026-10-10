@@ -56,7 +56,8 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
 - **Verdict answer** (a revision; a question's "Change"): `result` required. Under the plan lock: the current verdict is seeded into
   the history if needed, the review-stage row is replaced (reportedBy owner), a history row with `recheckId` is added, the re-check
   becomes `answered`, event `recheck_answered { recheckId, kind, kept: false, result, device }`. No `replace` question: the re-check is
-  the request. No `group_reviewed` (the attempt was already reviewed, so no wave's waiting count changes).
+  the request. No `group_reviewed` (the attempt was already reviewed, so no wave's waiting count changes) -- except when the answer
+  wrote the attempt's first review row (§4, review round 1).
 - **Keep answer** (question only): `kept: true`, only `note` beside it. The row is untouched; a history row with `kept` and
   `recheckId` keeps the note (result = the current verdict's, rating null); it gives **no** `owner_verdict` event and moves no count;
   event `recheck_answered { recheckId, kind, kept: true, note? }`.
@@ -103,8 +104,9 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
   - open re-check -> applied as in §2.3 (a verdict answer older than the stored verdict goes to the history only);
   - already answered -> a verdict answer is applied like any peer verdict (newest wins, the same rule as BL-157 AC-TC-05; both stay
     in the history), a kept one to the history only; both keep `recheckId`. A verdict answer that wins the row becomes the
-    re-check's `answer` (`recheck_answered { …, replaced: true }`), so the current file never contradicts the verdict (review round 1;
-    the first draft kept the first answer);
+    re-check's `answer` (`recheck_answered { …, replaced: true }`), so the current file agrees with the verdict (review round 1;
+    the first draft kept the first answer). A late answer to a re-check that a later re-check of the same attempt replaced is
+    history only (review round 2);
   - withdrawn -> history only, the verdict does not change.
   Each is handled once (`peer_verdict` event with `verdictId`, now also `recheckId`).
 - Pending on the owning computer: an answer sent from another computer and not applied yet shows the re-check as "answered on
@@ -183,6 +185,9 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
   on a verdict still on its way) may record `group_reviewed`; a revision's row is always added to its entry (also without checks),
   and "Before" carries an earlier accepted revision's row, so the screen never plays a revision at the original's loudness; a peer
   answer is recorded under a lock; `?wave=~rechecks` with none open says so.
+- **Review round 2:** the revision row's stage id is `~recheck` (no real stage id can contain `~`); a revision failing a `fail`
+  check reads as rejected there; a late answer to a superseded re-check is history only; the previous verdict's note is labelled
+  "Note", as it may be a relayed one.
 
 ## 5. Build order
 

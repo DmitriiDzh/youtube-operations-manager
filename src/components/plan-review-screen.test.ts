@@ -277,7 +277,7 @@ test("BL-173: K keeps the verdict (a re-check's question); the other keys are un
 
 test("BL-173: a revision plays at its own loudness (never the original's); Before keeps the original's; a question plays at the attempt's", () => {
   const stages = [stageRow("postprocess", "done"), stageRow("validate", "accepted", { lufs: -14 })];
-  const revisionRow = { ...stageRow("recheck", "done", { lufs: -16.2 }) };
+  const revisionRow = { ...stageRow("~recheck", "done", { lufs: -16.2 }) };
   assert.equal(playedLufs({ stages: [...stages, revisionRow], recheck: { kind: "revision", metrics: { lufs: -16.2 } } }), -16.2);
   assert.equal(playedLufs({ stages, recheck: { kind: "revision", metrics: {} } }), null, "no LUFS for the fixed file: measured, not the original's -14");
   assert.equal(playedLufs({ stages, recheck: { kind: "question", metrics: {} } }), -14);
@@ -306,7 +306,7 @@ test("BL-173: another computer's open re-checks become entries with the attempt'
     metrics: { lufs: -16.2 },
     previousVerdict: { result: "rejected" as const, rating: null, reasons: [], markers: [], note: "too sharp", device: "MAC", at: "2026-10-09T20:00:00.000Z" },
     openedAt: "2026-10-10T12:00:00.000Z",
-    extraStage: stageRow("recheck", "done", { lufs: -16.2 }),
+    extraStage: stageRow("~recheck", "done", { lufs: -16.2 }),
   };
   const reviewEntry = { itemKey: "C14/V04", groupId: "C14", attemptRef: "job:8c4a", jobId: "8c4a", seed: 1811, params: {}, stages: [stageRow("postprocess", "done"), stageRow("validate", "accepted")], verdict: { ...stageRow("owner_review", "rejected"), reportedBy: "owner" as const }, playable: true };
   // As the peers route answers: the shared entries carry no `validator` (the reader derives it from the stages).
@@ -318,7 +318,7 @@ test("BL-173: another computer's open re-checks become entries with the attempt'
   const [open] = peerRecheckEntries(data, source, "R-0001-S1-music");
   assert.deepEqual(
     [open.recheck.recheckId, open.recheck.status, open.groupId, open.stages.map((s) => s.stageId), open.verdict, open.validator, open.params],
-    ["C14-XL_V04_s1811__r1", "open", "C14", ["postprocess", "validate", "recheck"], null, "passed", { prompt: "koto" }]
+    ["C14-XL_V04_s1811__r1", "open", "C14", ["postprocess", "validate", "~recheck"], null, "passed", { prompt: "koto" }]
   );
   data.outgoing.push({ planId: "R-0001-S1-music", ownerDeviceId: "mac-1", itemKey: "C14/V04", attemptRef: "job:8c4a", result: "accepted", rating: 8, at: "2026-10-10T12:10:00.000Z", recheckId: "C14-XL_V04_s1811__r1" });
   const [sent] = peerRecheckEntries(data, source, "R-0001-S1-music");
@@ -332,12 +332,12 @@ test("BL-173: another computer's open re-checks become entries with the attempt'
 
 test("BL-173 review round 1: a question on an accepted revision plays at that revision's loudness or is measured; a queue track playing one is measured; Before of a later revision is the earlier one's", () => {
   const original = [stageRow("postprocess", "done"), stageRow("validate", "accepted", { lufs: -14 })];
-  assert.equal(playedLufs({ stages: [...original, stageRow("recheck", "done", { lufs: -15.5 })], recheck: { kind: "question", metrics: {} } }), -15.5);
-  assert.equal(playedLufs({ stages: [...original, stageRow("recheck", "done")], recheck: { kind: "question", metrics: {} } }), null, "the revision has no LUFS: measured, not the original's -14");
+  assert.equal(playedLufs({ stages: [...original, stageRow("~recheck", "done", { lufs: -15.5 })], recheck: { kind: "question", metrics: {} } }), -15.5);
+  assert.equal(playedLufs({ stages: [...original, stageRow("~recheck", "done")], recheck: { kind: "question", metrics: {} } }), null, "the revision has no LUFS: measured, not the original's -14");
   assert.equal(playedLufs({ stages: original, currentFile: "R/C14/V04_s1811__r1.mp3" }), null, "a queue track that plays an accepted revision");
   assert.equal(playedLufs({ stages: original }), -14);
-  assert.equal(beforeLufs({ stages: [...original, stageRow("recheck", "done")], beforeRow: { metrics: { lufs: -15.5 } } }), -15.5);
-  assert.equal(beforeLufs({ stages: [...original, stageRow("recheck", "done")], beforeRow: { metrics: {} } }), null);
+  assert.equal(beforeLufs({ stages: [...original, stageRow("~recheck", "done")], beforeRow: { metrics: { lufs: -15.5 } } }), -15.5);
+  assert.equal(beforeLufs({ stages: [...original, stageRow("~recheck", "done")], beforeRow: { metrics: {} } }), null);
 });
 
 test("BL-173: the picker shows the re-checks while any is listed or chosen, counting the ones still open here", () => {
@@ -354,4 +354,10 @@ test("BL-173: a history line names a re-check's answer, and a kept answer reads 
   const kept = historyLineOf(t, { result: "accepted", rating: null, note: "no voice heard", device: "MAC", at, recheckId: "q1", kept: true });
   assert.match(kept.text, /^MAC · .* · verdict kept, note only · no voice heard$/);
   assert.equal(historyLineOf(t, { result: "rejected", rating: null, note: null, device: "MAC", at }).recheck, null);
+});
+
+test("BL-173 review round 2: a real stage named like the revision row is not one -- only the '~recheck' row is", () => {
+  const stages = [stageRow("postprocess", "done"), stageRow("recheck", "done", { lufs: -13 })];
+  assert.equal(playedLufs({ stages, recheck: { kind: "question", metrics: {} } }), -13, "a plan stage called 'recheck' is the validator's own row");
+  assert.equal(beforeLufs({ stages }), -13);
 });

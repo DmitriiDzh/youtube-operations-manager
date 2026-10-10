@@ -156,7 +156,7 @@ export const production = {
   "review.recheck.questionTitle": "Question: {title}",
   "review.recheck.previous": "Previous verdict: {result}{rating} · {device} · {time}",
   "review.recheck.previousReasons": "Reasons: {reasons}",
-  "review.recheck.previousNote": "Your note: {note}",
+  "review.recheck.previousNote": "Note: {note}",
   "review.recheck.goTo": "to {time}",
   "review.recheck.spot": "question",
   "review.recheck.before": "Before",

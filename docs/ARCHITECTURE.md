@@ -3472,7 +3472,9 @@ generation plans module (`src/lib/generation-plans/`); extends §29 and §33.
   A kept answer (question only) adds a history row with `kept` and the note; `result` repeats the stored verdict, it never touches the
   row. The derived events skip kept rows (`planEvents`); `historyEntryOfVerdict` never picks one. An open re-check closes with the first
   answer (`closeRecheck` is a compare-and-set on `open`) and records `recheck_answered`. A later verdict answer that wins the row on an
-  answered re-check (from the other computer) replaces its answer (`replaceRecheckAnswer`, `recheck_answered { replaced: true }`).
+  answered re-check (from the other computer) replaces its answer (`replaceRecheckAnswer`, `recheck_answered { replaced: true }`);
+  a late answer to a re-check that a later re-check of the same attempt replaced is history only (`peer_verdict { superseded: true }`).
+  The revision row's stage id is `~recheck` (never a plan stage id); a failed `fail` check makes it `rejected`.
   `group_reviewed` fires only when the answer wrote the attempt's first review row (a re-check opened on a verdict still on its way
   from another computer); otherwise the attempt was already reviewed and no wave's waiting count moves.
 - **Current file.** `currentFilesOf`: per attempt, the file of its newest revision answered "accepted" (not kept). `resolveAudition`

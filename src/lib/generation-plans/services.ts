@@ -846,14 +846,16 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     given: PlanRecheckAnswer,
     rowNote: string | null,
     history: PlanVerdictHistoryRow[],
-    stored: PlanResultRow | undefined
+    stored: PlanResultRow | undefined,
+    /** Review round 2: a later re-check of the same attempt exists (not withdrawn) -- this late answer is history only. */
+    superseded = false
   ): Promise<{ answer: PlanRecheckAnswer; rowChanged: PlanResultRow | null; closed: boolean }> {
     await seedHistory(row.id, history, stored);
     const storedResult = stored ? (stored.result === "accepted" || stored.result === "done" ? "accepted" : "rejected") : null;
     const answer: PlanRecheckAnswer = given.kept ? { ...given, result: storedResult ?? recheck.previousVerdict?.result ?? given.result, rating: null, reasons: [], markers: [] } : given;
     const older = stored !== undefined && stored.reportedBy === "owner" && Math.floor(Date.parse(answer.at) / 1000) < Math.floor(Date.parse(stored.at) / 1000);
     let rowChanged: PlanResultRow | null = null;
-    if (!answer.kept && recheck.status !== "withdrawn" && !older) {
+    if (!answer.kept && recheck.status !== "withdrawn" && !superseded && !older) {
       rowChanged = { stageId: reviewStageId, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: answer.result, reportedBy: "owner", note: rowNote, rating: answer.rating, reasons: answer.reasons, markers: answer.markers, auditionFile: null, checks: [], metrics: {}, at: answer.at };
       await deps.store.upsertResults(row.id, [rowChanged]);
     }
@@ -2047,7 +2049,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               const kept = verdict.kept === true;
               const stored = current.get(key) ?? results.find((r) => r.stageId === review.stageId && r.itemKey === verdict.itemKey && r.attemptRef === verdict.attemptRef);
               const given: PlanRecheckAnswer = { result: verdict.result, kept, rating: verdict.rating, reasons: verdict.reasons, markers: verdict.markers, note: verdict.note, device: from, at: verdict.at };
-              const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, rowNote, history, stored);
+              // Review round 2: an answer to an older re-check that a later one of the same attempt replaced (a stale report on
+              // the other computer) never takes the row back from the later re-check's answer.
+              const superseded = rechecks.some((r) => r.recheckId !== recheck.recheckId && r.itemKey === recheck.itemKey && r.attemptRef === recheck.attemptRef && r.status !== "withdrawn" && Date.parse(r.openedAt) > Date.parse(recheck.openedAt));
+              const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, rowNote, history, stored, superseded);
               if (taken.closed) recheck.status = "answered";
               if (taken.rowChanged) current.set(key, taken.rowChanged);
               await record(row.id, "peer_verdict", "owner", {

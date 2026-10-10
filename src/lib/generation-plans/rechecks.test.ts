@@ -300,7 +300,7 @@ test("AC-RC-03 / §2.8: a question on an attempt whose revision was accepted pla
   await mac.services.requestRecheck({ planId: PLAN, ...V04, recheckId: "C14-XL_V04_s1811__q1", kind: "question", title: "хвост", note: "Is the tail cut?", markers: [{ start: 150 }] });
   assert.deepEqual(await mac.services.resolveRecheckAudition({ planId: PLAN, recheckId: "C14-XL_V04_s1811__q1" }), { channelId: CH, kind: "sent", relativePath: REVISED });
   const { rechecks } = await mac.services.reviewQueue({ planId: PLAN });
-  assert.deepEqual(rechecks.map((e) => [e.recheck.recheckId, e.stages.map((s) => s.stageId), e.verdict]), [["C14-XL_V04_s1811__q1", ["postprocess", "validate", "recheck"], null]]);
+  assert.deepEqual(rechecks.map((e) => [e.recheck.recheckId, e.stages.map((s) => s.stageId), e.verdict]), [["C14-XL_V04_s1811__q1", ["postprocess", "validate", "~recheck"], null]]);
   assert.equal(rechecks[0].stages[2].auditionFile, REVISED);
 });
 
@@ -598,4 +598,44 @@ test("review round 1: a withdrawn revision's file is not needed to move the plan
   mac.files.delete(REVISED);
   const moved = await mac.services.movePlan({ planId: PLAN, channelId: CH2 });
   assert.deepEqual([moved.moved, moved.checked, moved.missingCount], [true, 2, 0]);
+});
+
+// -- Review round 2 -----------------------------------------------------------------------------------------------------------
+
+test("review round 2: a late Windows answer to a re-check that a later one replaced stays in the history; the later answer keeps the row and the current file", async () => {
+  const { mac, win } = await twoComputers();
+  // Windows read the Mac's report while r1 was open; meanwhile the Mac rejects r1, the factory opens r2 and the Mac accepts it.
+  const stale = await mac.report();
+  await mac.services.answerRecheck({ planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "rejected" });
+  const R2 = "R-0001-S1-music/C14/C14-XL_V04_s1811__r2.mp3";
+  mac.files.add(R2);
+  await mac.services.requestRecheck(revision({ recheckId: "C14-XL_V04_s1811__r2", auditionFile: R2, title: "резкость 2" }));
+  await mac.services.answerRecheck({ planId: PLAN, recheckId: "C14-XL_V04_s1811__r2", result: "accepted", rating: 8 });
+  win.setPeerReports([stale]);
+  await win.services.recordPeerRecheckAnswer({ deviceId: "mac-1", planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "rejected" });
+  mac.setPeerReports([await win.report()]);
+  await mac.services.applyPeerVerdicts();
+  const row = (await rowsOf(mac, V04)).find((r) => r.stageId === "owner_review");
+  assert.deepEqual([row?.result, row?.rating], ["accepted", 8], "r2's answer keeps the row");
+  assert.deepEqual(await mac.services.resolveAudition({ planId: PLAN, ...V04 }), { channelId: CH, kind: "sent", relativePath: R2 });
+  // (twoComputers also opened the V03 question; only V04's re-checks matter here.)
+  const views = ((await mac.services.getPlan({ planId: PLAN })).progress.rechecks ?? []).filter((r) => r.itemKey === V04.itemKey);
+  assert.deepEqual(views.map((r) => [r.recheckId, r.answer?.result, r.answer?.device, r.currentFile]), [
+    ["C14-XL_V04_s1811__r1", "rejected", "MAC", R2],
+    ["C14-XL_V04_s1811__r2", "accepted", "MAC", R2],
+  ]);
+  const late = (await mac.store.listVerdictHistory(PLAN)).at(-1);
+  assert.deepEqual([late?.recheckId, late?.device, late?.result], ["C14-XL_V04_s1811__r1", "WIN", "rejected"], "the late answer is kept");
+  const peerEvent = (await mac.services.getPlan({ planId: PLAN, latest: true })).events.find((e) => e.kind === "peer_verdict");
+  assert.equal(peerEvent?.details.superseded, true);
+});
+
+test("review round 2: a revision failing a fail check shows its row as rejected (its failures lead); its row id is never a plan's stage id", async () => {
+  const mac = await rated();
+  await mac.services.requestRecheck(revision({ checks: [{ id: "harsh_db", pass: false, severity: "fail", value: 4.2, threshold: 3 }, { id: "ring_db", pass: true, severity: "warn" }] }));
+  const [entry] = (await mac.services.reviewQueue({ planId: PLAN })).rechecks;
+  const row = entry.stages.at(-1);
+  assert.deepEqual([row?.stageId, row?.result], ["~recheck", "rejected"]);
+  assert.equal(entry.validator, "passed", "what the validator said about the attempt itself");
+  await assert.rejects(mac.services.updatePlan({ planId: PLAN, addStages: [{ stageId: "~recheck", title: "x", kind: "external" }] }), refused("validation_failed"));
 });
