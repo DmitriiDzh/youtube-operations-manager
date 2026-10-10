@@ -66,7 +66,9 @@ of DEV-RESP-0018.
   first, newest publish date first among equals). Inside the batch, subjects whose last attempt failed run last. The BL-168 rules, so a
   backlog finishes over the next runs and nothing is starved.
 - **Failures:** the shared `failureKind` rules. `stop` (reads off, quota, sign-in, 401, system 403) ends the run with nothing written;
-  `defer` (no answer, 429, 5xx) puts the subject back 24 h and ends the run; `attempt` (400, 404, other 403) counts one try, retry after
+  `defer` (no answer, 429, 5xx) puts the subject back 24 h and ends the run -- for a week, only the weeks of the run end and the videos
+  are still read (review of BL-169: otherwise the 13 never-read weeks at the head of the batch, each getting no answer in turn, stopped 13
+  runs in a row with no video read); `attempt` (400, 404, other 403) counts one try, retry after
   24 h, `failed` after 3. A channel week is finite, so it can be given up like a video.
 - Steady state: about 70 videos in their window per channel, so some 10 queries a day per channel, plus 2 a week for the channel.
 

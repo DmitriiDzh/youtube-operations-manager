@@ -322,8 +322,10 @@ export function createSearchTermServices(deps: SearchTermDependencies) {
   return {
     /**
      * Reads the channel's due weeks and videos (at most MAX_SEARCH_TERM_QUERIES_PER_RUN, one query each). Failures follow the milestone rules
-     * (`query-failure.ts`): `stop` ends the run with nothing written, `defer` puts the video back by a day and ends the run, `attempt`
-     * counts one of its 3 attempts and the run goes on.
+     * (`query-failure.ts`): `stop` ends the run with nothing written, `defer` puts the subject back by a day, `attempt` counts one of its 3
+     * attempts and the run goes on. A video's `defer` ends the run; a week's `defer` only ends the weeks of this run and the videos are
+     * still read (review of BL-169: the 13 never-read weeks head every batch, so each week getting no answer in turn ended 13 runs in a row
+     * with no video read). If the videos get no answer either, the first one ends the run.
      */
     async collectDueSearchTerms(input: unknown): Promise<{ attempted: number; collected: number; failed: number }> {
       const parsed = parseWithSchema(collectDueSearchTermsInputSchema, input, "collect due search terms input");
@@ -334,9 +336,13 @@ export function createSearchTermServices(deps: SearchTermDependencies) {
       if (plan.length === 0) return { attempted: 0, collected: 0, failed: 0 };
       const credentials = await deps.authResolver.resolve({ credentialRef: parsed.credentialRef, requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE] });
       const collectedOn = toPacificCalendarDate(now.toISOString());
+      let attempted = 0;
       let collected = 0;
       let failed = 0;
+      let weeksStopped = false;
       for (const item of plan) {
+        if (item.videoId === null && weeksStopped) continue;
+        attempted += 1;
         try {
           const answer = await deps.youtubeApi.queryChannelBreakdownReport({
             credentials,
@@ -367,18 +373,20 @@ export function createSearchTermServices(deps: SearchTermDependencies) {
           };
           if (kind === "defer") {
             await deps.store.defer(failure);
-            throw error;
+            if (item.videoId !== null) throw error;
+            weeksStopped = true;
+            continue;
           }
           failed += 1;
           await deps.store.recordFailure({ ...failure, maxAttempts: MAX_SEARCH_TERM_ATTEMPTS });
         }
       }
-      return { attempted: plan.length, collected, failed };
+      return { attempted, collected, failed };
     },
 
     /**
      * The stored search terms of the session channel's videos (`videoIds`), or of its complete weeks inside startDate..endDate. Local only.
-     * A video of another channel, without a final publish date, or never synced is not listed; terms read for another window start (the
+     * A video of another channel, without a final publish date (private, unlisted, scheduled), or never synced is not listed; terms read for another window start (the
      * publish date moved) are not returned until the video is read again. A week never read (also one older than the weeks collected) is
      * listed as `not_collected`.
      */

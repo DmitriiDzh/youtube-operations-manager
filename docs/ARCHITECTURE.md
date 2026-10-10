@@ -3358,7 +3358,9 @@ Plan: `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md` (AC-ST-01..16). Schema v78
   (`insightTrafficSourceType==YT_SEARCH`); `saveCollectedVideoSearchTerms` replaces all of the video's rows,
   `saveCollectedChannelSearchTermsWeek` the week's rows, each marking the state collected in one `database.batch`. State rows are
   `analytics_breakdown_state` rows with subject `search:<video id>` or `search-week:<Monday>` (a video id never has a colon), so `deferAnalyticsBreakdown` / `recordAnalyticsBreakdownFailure` and their rules are reused unchanged; the breakdown
-  planner ignores these subjects. `failureKind` as for the breakdowns; failed at 3 attempts. Wrapped like the breakdowns
+  planner ignores these subjects. `failureKind` as for the breakdowns; failed at 3 attempts. A video's `defer` ends the run; a week's
+  `defer` only skips the remaining weeks of the run and the videos are still read (review of BL-169: the 13 never-read weeks head every
+  batch, so a channel-level report getting no answer ended 13 runs in a row with no video read, then one every Monday). Wrapped like the breakdowns
   (`gateSearchTermCollection`, analytics quota context); `/api/analytics/auto-collect-all` runs it after every channel's breakdowns.
 - **Storage.** `video_search_terms` (key `video_id, term`; `channel_id`, `views`, `estimated_minutes_watched`; index on `channel_id,
   video_id`), `channel_search_terms_weekly` (key `channel_id, week_start, term`; the same two metrics). Classified `authorized`; device-local, not in the `analytics-data` exchange (same reason as §37).

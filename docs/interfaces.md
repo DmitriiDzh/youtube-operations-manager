@@ -497,8 +497,9 @@ Key MCP tools:
     - `Term = { term, views, estimatedMinutesWatched }`, `insightTrafficSourceDetail` of `YT_SEARCH`, top 25 by views, as YouTube returned
       them, most views first. YouTube gives only a total over a range, never per day, and names a term for only part of the search views
       (the search total is the `YT_SEARCH` row of `agent_get_stored_breakdowns`). Collected with the Analytics collection, at most 100
-      queries per channel per run (the weeks first, then the least recently read videos); failed after 3 attempts. A video of another
-      channel, or one that is private, scheduled or never synced, is not listed. Local read only.
+      queries per channel per run (the weeks first, then the least recently read videos; a week getting no answer ends only the weeks of
+      that run); failed after 3 attempts. A video of another channel, or one that is private, unlisted, scheduled or never synced, is not
+      listed. Local read only.
   - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
     `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`
     (BL-114, ADR 0014). Thumbnail impressions and click-through rate from the YouTube Reporting API

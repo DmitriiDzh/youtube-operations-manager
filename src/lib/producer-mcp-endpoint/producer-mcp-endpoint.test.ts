@@ -428,6 +428,12 @@ test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads o
   }
   const ok = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", { channelId: "UC_PR_X", videoIds: ids(20) }), bearer(token))));
   assert.equal(ok.isError, false, ok.text);
+  // A channel not connected on this computer is refused, in both forms.
+  for (const input of [{ channelId: "UC_PR_ELSEWHERE", videoIds: ["vid-x-1"] }, { channelId: "UC_PR_ELSEWHERE", startDate: "2026-09-28", endDate: "2026-10-04" }]) {
+    const refused = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", input), bearer(token))));
+    assert.equal(refused.isError, true, JSON.stringify(input));
+    assert.equal((payloadOf(refused.text).error as { code: string }).code, "CHANNEL_NOT_ACTIVE");
+  }
 });
 
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {

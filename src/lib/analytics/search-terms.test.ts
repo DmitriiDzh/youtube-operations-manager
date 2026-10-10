@@ -93,6 +93,16 @@ test("AC-ST-04: after the window ends, one read on or after window end + 7 for t
   }
 });
 
+test("review of BL-169: a read less than 7 days before the window ends is followed by one more read in the window, then the settled read", () => {
+  // Last read on 11-22 through 11-21; on 11-29 (yesterday 11-28, the window still runs) a week has passed.
+  const states = [readState("search:v1", "2026-09-01", "2026-11-21", "2026-11-22")];
+  assert.deepEqual(videoRanges(planDueSearchTerms([V1], states, at("2026-11-28T18:00:00Z"))), []);
+  assert.deepEqual(videoRanges(planDueSearchTerms([V1], states, at("2026-11-29T18:00:00Z"))), [["v1", "2026-09-01", "2026-11-28"]]);
+  const after = [readState("search:v1", "2026-09-01", "2026-11-28", "2026-11-29")];
+  for (const day of ["2026-11-30", "2026-12-05"]) assert.deepEqual(videoRanges(planDueSearchTerms([V1], after, at(`${day}T18:00:00Z`))), [], day);
+  assert.deepEqual(videoRanges(planDueSearchTerms([V1], after, at("2026-12-06T18:00:00Z"))), [["v1", "2026-09-01", "2026-11-29"]]);
+});
+
 test("AC-ST-05: an old video's whole window is read once, and never again", () => {
   const video = [published("old", "2026-06-01T12:00:00Z")]; // window 06-01 .. 08-29, settled from 09-05
   assert.deepEqual(videoRanges(planDueSearchTerms(video, [], NOW)), [["old", "2026-06-01", "2026-08-29"]]);
@@ -388,6 +398,50 @@ test("AC-ST-10: a 503, a 429 or no answer stops the run and puts the subject bac
   }
 });
 
+test("review of BL-169: weeks that keep getting no answer end only the weeks of each run -- the videos are still read from the first run on", async () => {
+  const db = await freshDb();
+  const videos = [V1, published("v2", "2026-09-02T12:00:00Z")];
+  const { services, videoQueries, weekQueries, clock } = setup(db, { videos, fail: (subject) => (subject === CHANNEL ? googleError(503, "backendError") : null) });
+  assert.deepEqual(await services.collectDueSearchTerms(RUN), { attempted: 3, collected: 2, failed: 0 }, "one week, then both videos");
+  assert.deepEqual(videoQueries().map((q) => q.filters), ["video==v2;insightTrafficSourceType==YT_SEARCH", "video==v1;insightTrafficSourceType==YT_SEARCH"]);
+  assert.deepEqual(weekQueries().map((q) => q.startDate), ["2026-09-28"]);
+  const week = (await listAnalyticsBreakdownStates("UC_ours", db)).find((s) => s.subject === "search-week:2026-09-28");
+  assert.deepEqual([week?.status, week?.attempts, week?.nextAttemptAt?.toISOString()], ["retry", 0, "2026-10-11T18:00:00.000Z"]);
+  // The next day the next never-read week is tried first and gets no answer either; the weeks stop there again, the run does not throw.
+  clock.now = at("2026-10-11T19:00:00Z");
+  assert.deepEqual(await services.collectDueSearchTerms(RUN), { attempted: 1, collected: 0, failed: 0 });
+  assert.deepEqual(weekQueries().map((q) => q.startDate), ["2026-09-28", "2026-09-21"]);
+});
+
+test("review of BL-169: when the videos get no answer either, the first video ends the run", async () => {
+  const db = await freshDb();
+  const videos = [V1, published("v2", "2026-09-02T12:00:00Z")];
+  const error = googleError(503, "backendError");
+  const { services, videoQueries, weekQueries } = setup(db, { videos, fail: () => error });
+  await assert.rejects(() => services.collectDueSearchTerms(RUN), (thrown: unknown) => thrown === error);
+  assert.equal(weekQueries().length, 1);
+  assert.deepEqual(videoQueries().map((q) => q.filters), ["video==v2;insightTrafficSourceType==YT_SEARCH"]);
+});
+
+test("review of BL-169: a week whose settled reread is refused is retried and keeps returning the terms of its first read", async () => {
+  const db = await freshDb();
+  let refuse = false;
+  const truth = new Map<string, Terms>([[`${CHANNEL}|2026-09-28`, [["cuban jazz", 1, 8]]]]);
+  const { services, clock } = setup(db, { videos: [], truth, fail: (subject) => (subject === CHANNEL && refuse ? googleError(400, "badRequest") : null) });
+  await services.collectDueSearchTerms(RUN);
+  refuse = true;
+  clock.now = at("2026-10-11T18:00:00Z");
+  assert.deepEqual(await services.collectDueSearchTerms(RUN), { attempted: 1, collected: 0, failed: 1 });
+  const [stored] = weeksOf(await services.listStoredSearchTerms({ channelId: "UC_ours", startDate: "2026-09-28", endDate: "2026-10-04", groupBy: "week" })).weeks;
+  assert.deepEqual([stored.status, stored.lastError, stored.terms], ["retry", "HTTP 400 badRequest (test)", [{ term: "cuban jazz", views: 1, estimatedMinutesWatched: 8 }]]);
+  refuse = false;
+  truth.set(`${CHANNEL}|2026-09-28`, [["cuban jazz", 2, 9]]);
+  clock.now = at("2026-10-12T19:00:00Z");
+  await services.collectDueSearchTerms(RUN);
+  const [reread] = weeksOf(await services.listStoredSearchTerms({ channelId: "UC_ours", startDate: "2026-09-28", endDate: "2026-10-04", groupBy: "week" })).weeks;
+  assert.deepEqual([reread.status, reread.terms], ["collected", [{ term: "cuban jazz", views: 2, estimatedMinutesWatched: 9 }]]);
+});
+
 test("AC-ST-10: reads off, quota, sign-in, 401 and a 403 quotaExceeded stop the run with nothing written", async () => {
   const stops = [
     new DomainError({ code: "analytics_reads_disabled", message: "off" }),
@@ -519,6 +573,31 @@ test("AC-ST-12 (channel weeks): total sums each term over the weeks, week lists 
     ["2026-09-14", "not_collected", 0],
     ["2026-09-21", "collected", 2],
     ["2026-09-28", "collected", 2],
+  ]);
+});
+
+test("AC-ST-12 (channel weeks): a total is null only when every week had none, otherwise the sum of the known values", async () => {
+  const db = await freshDb();
+  const saveWeek = (monday: string, terms: Array<[string, number | null, number | null]>) =>
+    saveCollectedChannelSearchTermsWeek(
+      {
+        channelId: "UC_ours",
+        subject: `search-week:${monday}`,
+        weekStart: monday,
+        to: shiftDate(monday, 6),
+        terms: terms.map(([term, views, minutes]) => ({ term, views, estimatedMinutesWatched: minutes })),
+        collectedOn: "2026-10-10",
+        at: NOW,
+      },
+      db
+    );
+  await saveWeek("2026-09-21", [["rural japan", null, 4], ["japan bgm", null, null]]);
+  await saveWeek("2026-09-28", [["rural japan", 3, null], ["japan bgm", null, null]]);
+  const { services } = setup(db);
+  const total = weeksOf(await services.listStoredSearchTerms({ channelId: "UC_ours", startDate: "2026-09-21", endDate: "2026-10-04" }));
+  assert.deepEqual(total.terms, [
+    { term: "rural japan", views: 3, estimatedMinutesWatched: 4 },
+    { term: "japan bgm", views: null, estimatedMinutesWatched: null },
   ]);
 });
 
