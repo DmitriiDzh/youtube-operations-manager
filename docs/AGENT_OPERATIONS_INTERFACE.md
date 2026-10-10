@@ -1158,3 +1158,9 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
   `decision_engine.query_experiment_results`, READ) returns one experiment's videos by arm, each with its own stored day-7 and day-28 values
   (milestone totals, Reach, traffic sources and devices over the window); no per-arm averages or comparisons. A local read. Contract:
   `docs/interfaces.md`.
+
+**Own-video comments (BL-171, Agent API 3.13.0, `docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md`):**
+- `agent_get_video_comments` (capability `video_context.query_video_comments`, READ) returns the newest top-level comments of up to 20 of
+  the channel's own videos, as stored: text, times, likes, reply count and whether the channel wrote it; no author data.
+- Read once a day per channel for videos whose comment count changed, and weekly; kept at most 30 days (YouTube API policy). A local read.
+  Contract: `docs/interfaces.md`.

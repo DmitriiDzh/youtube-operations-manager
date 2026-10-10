@@ -103,3 +103,9 @@ every channel's reads without a worker per channel, and nothing else.
   so the hypothesis must be that channel's. The experiment it creates is always `proposed`; approving, running and abandoning stay the
   owner's (Web UI). This amends "the Producer's only DRAFT tools are its proposal tools": `draftTools` lists three.
 - **Not changed:** the Producer-only tools, the permissions (`READ`, `DRAFT`), the per-call channel scope.
+
+## Amendment 6 — own-video comments (BL-171, FO-REQ-0015 item 7, owner 2026-10-10, Telegram msg 2491)
+
+- Producer API 1.6.0 adds one READ channel tool to the closed list: `agent_get_video_comments` (capability
+  `video_context.query_video_comments`), stored data only, in the named channel's scope like every other channel tool.
+- **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.

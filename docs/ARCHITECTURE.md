@@ -3396,3 +3396,29 @@ Plan: `docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md` (AC-EA-01..11). Schema v79.
   reach-reports' own range limit; review of BL-170: one read of every window was refused whole once an old control upload was linked); a
   failed group sets `reachError` and leaves its windows at 0 days, so with `reachError` set a 0-day window may not have been read. The MCP handler passes the session's
   credentials; every core checks the active channel itself.
+
+## 40. Own-video comments (BL-171, FO-REQ-0015 item 7)
+
+Plan: `docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md` (AC-VC-01..12). Schema v80.
+
+- **Module.** `src/lib/video-comments/` (services, `adapters/store.ts`, `index.ts`), a feature module of its own (AGENTS.md §M): Data API
+  reads through the read gateway's `getVideoCommentCounts` (`videos.list`, `part=statistics`, 50 ids per call) and `listOwnVideoComments`
+  (`commentThreads.list`, `part=snippet`, 100 newest, `order=time`, `textFormat=plainText`; non-public threads skipped; `byChannelOwner`
+  computed in the gateway from `authorChannelId`, which is not returned). The shared failure rules moved from `analytics/query-failure.ts`
+  to `youtube-read-gateway/read-failure.ts` (re-exported by the old path); every `*_reads_disabled` code now stops a run.
+- **Run** (`collectDueComments`). Skipped when `video_comment_channel_state.checked_on` is today (Pacific). Otherwise: the channel's
+  synced non-private videos' fresh counts, then `planDueCommentReads` (never read with a count > 0; `collected`/`retry` when the count
+  differs from `read_comment_count` or the read is 7+ Pacific days old; `disabled`/`failed` only when it differs; a `retry` waits; never
+  read first, then `read_at` ascending, retries last inside the batch; at most 50). Each read: `saveVideoCommentsRead` replaces the
+  video's rows and its state in one batch. A 403 `commentsDisabled` is saved as `disabled` with no rows. Otherwise `failureKind`: `stop`
+  rethrows, `defer` records a retry without an attempt and rethrows, `attempt` counts one (`failed` at 3).
+  `recordVideoCommentsFailure` keeps the last read's count, or this attempt's when there was no read, and this attempt's once `failed`,
+  so a failed video waits for a new count. The day is marked only when the run got through. Gated by
+  `isBackgroundReadAllowed("data")`, quota context `comment_collection`; `/api/analytics/auto-collect-all` runs it after the search terms
+  (same channels).
+- **Storage and retention.** `video_comments` (key `comment_id`; `video_id`, `channel_id`, times, `text`, `like_count`, `reply_count`,
+  `by_channel_owner`, `fetched_at`). It is classified with the new kind `authorized_expiring` (III.E.4.c). `expiringTables()` (non-authorized
+  + authorized-expiring) feeds every purge path: the live purge, the import-time purge and the backup scrub. `video_comment_state` and
+  `video_comment_channel_state` are bookkeeping. All three are device-local.
+- **Reads.** `listStoredComments` (channel scope) backs `agent_get_video_comments`: the requested videos of the channel, newest comments
+  first (`limit`), with the state.
