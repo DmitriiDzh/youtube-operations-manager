@@ -136,7 +136,8 @@ texts get keys in English and Russian.
 - **AC-EA-06 (results).** Read at 2026-10-10T18:00:00Z. `E1` has arm `control` = [`v1`] and arm `A` = [`v2`].
   - **Stored data of `v1`** (published 2026-09-01T12:00:00Z):
     - a day-7 milestone for 09-01..09-07: views 120, minutes 300, average view duration 150, average view percentage 41.5;
-    - Reach rows 09-01 (1000 impressions, CTR 0.05) and 09-02 (500, 0.02);
+    - Reach rows 09-01 (1000 impressions, CTR 0.05), 09-02 (500, 0.02) and 09-20 (500, 0.08) *(09-20 added while building -- review of
+      BL-170 -- so the two windows' Reach differ and a window mix-up shows)*;
     - traffic rows `SUBSCRIBER` 09-01 10 / 20 and 09-08 5 / 9.
   - `v2` is published 2026-10-05T12:00:00Z and has no stored data.
   - `agent_get_experiment_results` returns both arms. Expected values:
@@ -144,7 +145,7 @@ texts get keys in English and Russian.
     | Video | Milestone | Window | Status | Totals | Reach | Traffic sources |
     |---|---|---|---|---|---|---|
     | `v1` | day 7 | 2026-09-01..09-07 | collected | as stored | 1500 impressions, CTR 0.04 (weighted: 60 / 1500), 2 days with data | `SUBSCRIBER` 10 / 20 (09-08 lies outside the window) |
-    | `v1` | day 28 | 2026-09-01..09-28 | `due` (no stored row; the window and the lag are over) | null | 1500 / 0.04 | `SUBSCRIBER` 15 / 29 |
+    | `v1` | day 28 | 2026-09-01..09-28 | `due` (no stored row; the window and the lag are over) | null | 2000 impressions, CTR 0.05 (100 / 2000), 3 days | `SUBSCRIBER` 15 / 29 |
     | `v2` | day 7 | 2026-10-05..10-11 | `not_due` | null | 0 days, null values | empty |
     | `v2` | day 28 | 2026-10-05..11-01 | `not_due` | null | 0 days, null values | empty |
 

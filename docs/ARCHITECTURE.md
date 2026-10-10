@@ -3392,5 +3392,7 @@ Plan: `docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md` (AC-EA-01..11). Schema v79.
   composes the decision engine's `getExperiment` / `listExperimentArms` with the channel sync's videos, analytics' `listVideoMilestones`
   and `listStoredBreakdowns` (one read per video over its day-28 window, summed per window by `sumBreakdownWindow`) and Reach's
   `getVideoWindowsReach`, following `portfolio-overview/upload-milestones.ts` (statuses `due`/`not_due` from `isMilestoneDue`). A video not
-  published or no longer synced has no milestones. A failed Reach read becomes `reachError`. The MCP handler passes the session's
+  published or no longer synced has no milestones. Reach is read per group of windows spanning at most 400 days (`groupReachWindows`,
+  reach-reports' own range limit; review of BL-170: one read of every window was refused whole once an old control upload was linked); a
+  failed group sets `reachError` and leaves its windows at 0 days, so with `reachError` set a 0-day window may not have been read. The MCP handler passes the session's
   credentials; every core checks the active channel itself.

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, milestoneWindow } from "@/lib/analytics";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
+import { getVideoWindowsReachInputSchema } from "@/lib/reach-reports/schemas";
 import { DomainError } from "@/lib/shared-domain";
 import { createExperimentResultsServices, groupReachWindows, sumBreakdownWindow, type ExperimentResultsDependencies } from "./services";
 
@@ -287,4 +288,19 @@ test("AC-EA-09: agent_list_asset_performance no longer says experiments are not 
   const description = listAgentCapabilityDescriptors().find((capability) => capability.id === "asset_performance.list_asset_performance")?.description ?? "";
   assert.ok(description.includes("agent_get_experiment_results"), description);
   assert.ok(!description.includes("not linked to videos"), description);
+});
+
+test("review of BL-170: every group groupReachWindows makes passes reach-reports' own input check (its range limit is not copied blindly)", () => {
+  // Uploads every 9 days over about four years, both milestone windows each: far more than 400 days in all.
+  const windows = Array.from({ length: 160 }, (_, i) => {
+    const publishedAt = new Date(Date.UTC(2023, 0, 5, 12) + i * 9 * 86_400_000).toISOString();
+    return MILESTONE_DAYS.map((days) => ({ videoId: `v${i}`, startDate: milestoneWindow(publishedAt, days).windowStart, endDate: milestoneWindow(publishedAt, days).windowEnd }));
+  }).flat();
+  const groups = groupReachWindows(windows);
+  assert.ok(groups.length > 1);
+  assert.equal(groups.flat().length, windows.length, "no window lost or repeated");
+  for (const group of groups) {
+    const checked = getVideoWindowsReachInputSchema.safeParse({ credentialRef: { userId: "u" }, channelId: "UC_A", windows: group });
+    assert.ok(checked.success, JSON.stringify(checked.success ? null : checked.error.issues));
+  }
 });
