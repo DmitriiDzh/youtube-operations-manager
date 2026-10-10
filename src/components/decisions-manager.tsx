@@ -4,6 +4,7 @@ import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { ConfirmDialog } from "./confirm-dialog";
+import { ExperimentArmsPanel } from "./experiment-arms-panel";
 import { ToggleSwitch } from "./toggle-switch";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import {
@@ -612,7 +613,12 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
             onChange={(e) => setGenNotes(e.target.value)}
           />
           {channel && (
-            <ToggleSwitch checked={genScopeToChannel} onChange={setGenScopeToChannel} label={t("decisions.scopeTo", { channel: channel.title })} />
+            <div className="flex items-center gap-2">
+              <ToggleSwitch checked={genScopeToChannel} onChange={setGenScopeToChannel} label={t("decisions.scopeTo", { channel: channel.title })} />
+              <span className="text-sm text-zinc-400">
+                {genScopeToChannel ? t("decisions.scopedTo", { channel: channel.title }) : t("decisions.newChannelConceptLong")}
+              </span>
+            </div>
           )}
           <button
             className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
@@ -952,6 +958,13 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
               </div>
             )}
           </dl>
+
+          <ExperimentArmsPanel
+            experimentId={selectedExperiment.experimentId}
+            status={selectedExperiment.status}
+            hypothesisChannelId={hypotheses.find((h) => h.hypothesisId === selectedExperiment.hypothesisId)?.channelId ?? null}
+            activeChannelId={channel?.id ?? null}
+          />
 
           {OUTCOME_RECORDABLE_STATUSES.includes(selectedExperiment.status) ? (
             <div className="mb-4 space-y-2">
