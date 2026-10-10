@@ -1,6 +1,6 @@
 # Experiment arms on videos (BL-170, FO-REQ-0015 item 3)
 
-**Status: IN PROGRESS** on `feature/fo-req-0015-experiment-arms`. Owner, Telegram 2026-10-10 (msg 2482, «Ок»): FO-REQ-0015 step 5 in the
+**Status: DONE, merged into `dev` (merge 6cb7999, owner Telegram msg 2488).** Branch `feature/fo-req-0015-experiment-arms`. Owner, Telegram 2026-10-10 (msg 2482, «Ок»): FO-REQ-0015 step 5 in the
 order of DEV-RESP-0018.
 
 ## 1. What exists (code read 2026-10-10)
