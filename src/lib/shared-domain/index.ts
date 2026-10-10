@@ -164,6 +164,9 @@ export type DomainErrorCode =
   | "plan_invalid"
   // BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-04): the attempt already has a verdict and the request did not say `replace`.
   | "plan_verdict_exists"
+  // BL-173 (PLAN_RECHECKS_PLAN.md §2.2/§2.3): a re-check id already used for other content; a re-check that is no longer open.
+  | "plan_recheck_exists"
+  | "plan_recheck_closed"
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.

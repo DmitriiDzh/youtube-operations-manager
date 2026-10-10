@@ -7,7 +7,8 @@ import { useT } from "./ui-text-provider";
 // playhead (wavesurfer.js, loaded only when this component mounts), click to seek, and time ranges drawn as regions. It knows
 // nothing about plans; the review screen gives it a URL and the ranges, and drives it through the handle.
 
-export type ReviewMarker = { start: number; end: number | null; label: string | null; tone: "finding" | "mark" };
+/** BL-173: `question` = a spot a re-check asks the owner about. */
+export type ReviewMarker = { start: number; end: number | null; label: string | null; tone: "finding" | "mark" | "question" };
 
 export type ReviewPlayerHandle = {
   togglePlay(): void;
@@ -56,7 +57,7 @@ type RegionsLike = {
 const SELECTION_ID = "ytm-selection";
 const SELECTION_COLOR = "rgba(129, 140, 248, 0.22)";
 
-const MARKER_COLORS = { finding: "rgba(239, 68, 68, 0.28)", mark: "rgba(245, 158, 11, 0.35)" } as const;
+const MARKER_COLORS = { finding: "rgba(239, 68, 68, 0.28)", mark: "rgba(245, 158, 11, 0.35)", question: "rgba(56, 189, 248, 0.32)" } as const;
 
 export type MediaReviewPlayerProps = {
   src: string;

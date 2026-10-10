@@ -2,7 +2,24 @@
 
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { historyEntryOfVerdict, validatorOfEntry, type PlanCheck, type PlanExistingVerdict, type PlanMarker, type PlanReference, type PlanReviewBatch, type PlanReviewClaim, type PlanReviewEntry } from "@/lib/generation-plans/contracts";
+import {
+  historyEntryOfVerdict,
+  RECHECK_STAGE_ID,
+  RECHECKS_WAVE,
+  recheckEntry,
+  validatorOfEntry,
+  type PlanCheck,
+  type PlanExistingVerdict,
+  type PlanMarker,
+  type PlanRecheck,
+  type PlanRecheckEntry,
+  type PlanReference,
+  type PlanResultRow,
+  type PlanReviewBatch,
+  type PlanReviewClaim,
+  type PlanReviewEntry,
+} from "@/lib/generation-plans/contracts";
+import type { SharedRecheck } from "@/lib/sync-gateway";
 import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
 import { MediaReviewPlayer, formatPlayerTime, type FrequencyMark, type ReviewMarker, type ReviewPlayerHandle } from "./media-review-player";
@@ -78,9 +95,9 @@ export function resultLabel(t: Translate, result: unknown): string {
 // ui-text-ignore: a marker in the verdict data, shown through review.sentWaitingFor
 const SENT_NOTE_PREFIX = "sent, waiting for ";
 
-export type ReviewKeyAction = "play" | "back" | "forward" | "accept" | "reject" | "next" | "previous" | "mark" | "ab" | { rating: number };
+export type ReviewKeyAction = "play" | "back" | "forward" | "accept" | "reject" | "keep" | "next" | "previous" | "mark" | "ab" | { rating: number };
 
-/** The keyboard map (Space, ←/→, A, R, N, P, M, 1-9 and 0 for 10). Exported for its test. */
+/** The keyboard map (Space, ←/→, A, R, K, N, P, M, 1-9 and 0 for 10). Exported for its test. */
 export function reviewKeyAction(key: string): ReviewKeyAction | null {
   switch (key) {
     case " ":
@@ -95,6 +112,10 @@ export function reviewKeyAction(key: string): ReviewKeyAction | null {
     case "r":
     case "R":
       return "reject";
+    // BL-173: keep the verdict -- the answer to a re-check's question.
+    case "k":
+    case "K":
+      return "keep";
     case "n":
     case "N":
       return "next";
@@ -141,13 +162,60 @@ export function claimOf(entry: Pick<PlanReviewEntry, "itemKey" | "attemptRef" | 
   );
 }
 
+/** The loudness a validator's metrics give (`lufs`, `LUFS` or `integrated_lufs`), or null. */
+function metricsLufs(metrics: Record<string, unknown>): number | null {
+  const value = metrics.lufs ?? metrics.LUFS ?? metrics.integrated_lufs;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 /** AC-GP3-04: the loudness the validator measured for this attempt (the latest stage's `metrics.lufs`), or null. Exported for its test. */
 export function reportedLufs(entry: Pick<PlanReviewEntry, "stages">): number | null {
   for (const stage of [...entry.stages].reverse()) {
-    const value = stage.metrics.lufs ?? stage.metrics.LUFS ?? stage.metrics.integrated_lufs;
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    const value = metricsLufs(stage.metrics);
+    if (value !== null) return value;
   }
   return null;
+}
+
+/**
+ * BL-173 (PLAN_RECHECKS_PLAN.md §2.8): the loudness of what the entry plays -- a revision's own metrics (never the original's:
+ * null makes the screen measure the fixed file), else what the validator said about the attempt. Exported for its test.
+ */
+export function playedLufs(entry: Pick<PlanReviewEntry, "stages" | "currentFile"> & { recheck?: Pick<PlanRecheck, "kind" | "metrics"> }): number | null {
+  if (entry.recheck?.kind === "revision") return metricsLufs(entry.recheck.metrics);
+  // Review round 1: a question on an attempt that plays an accepted revision -- that revision's loudness, or measured.
+  const last = entry.stages.at(-1);
+  if (last?.stageId === RECHECK_STAGE_ID) return metricsLufs(last.metrics);
+  // A track of the queue that plays an accepted revision: measured, never the original's.
+  if (entry.currentFile) return null;
+  return reportedLufs(entry);
+}
+
+/**
+ * BL-173: the loudness of what a revision is compared with ("Before") -- an earlier accepted revision's (`beforeRow`) when the
+ * attempt plays one, else the attempt's own rows without the revision's. Exported for its test.
+ */
+export function beforeLufs(entry: Pick<PlanReviewEntry, "stages"> & { beforeRow?: Pick<PlanResultRow, "metrics"> }): number | null {
+  if (entry.beforeRow) return metricsLufs(entry.beforeRow.metrics);
+  return reportedLufs({ stages: entry.stages.filter((s) => s.stageId !== RECHECK_STAGE_ID) });
+}
+
+/** BL-173: the picker's re-checks line -- shown while any re-check is listed (or chosen), with the ones still open here. Exported for its test. */
+export function recheckPickerOption(rechecks: ReadonlyArray<{ verdict: unknown }>, wave: string | null): { shown: boolean; open: number } {
+  return { shown: rechecks.length > 0 || wave === RECHECKS_WAVE, open: rechecks.filter((e) => e.verdict === null).length };
+}
+
+/** BL-173: one line of a track's verdict history -- a kept answer reads as a note, and an answer to a re-check names it. Exported for its test. */
+export function historyLineOf(t: Translate, h: { result: string; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean }): { text: string; recheck: string | null } {
+  const text = h.kept
+    ? `${h.device} · ${formatDisplayDateTime(h.at)} · ${t("review.history.kept")}${h.note ? ` · ${h.note}` : ""}`
+    : t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" });
+  return { text, recheck: h.recheckId ? t("review.history.recheck", { id: h.recheckId }) : null };
+}
+
+/** BL-173: a re-check's spots (the factory's markers) as waveform ranges of their own tone, labelled with their note. Exported for its test. */
+export function recheckMarkers(recheck: Pick<PlanRecheck, "markers"> | undefined, fallbackLabel: string): ReviewMarker[] {
+  return (recheck?.markers ?? []).map((m) => ({ start: m.start, end: m.end, label: m.note ?? fallbackLabel, tone: "question" as const }));
 }
 
 /**
@@ -331,8 +399,22 @@ export type PeerReviewSource = { deviceId: string; hostname: string | null };
 type PeerQueueResponse = {
   /** BL-157 (AC-TC-02): the other devices' live claims, with the plan each is on. */
   claims?: Array<PlanReviewClaim & { ownerDeviceId: string; planId: string }>;
-  devices: Array<{ deviceId: string; hostname: string | null; plans: Array<{ planId: string; review: PlanReviewEntry[]; itemParams?: Record<string, PlanReviewEntry["params"]>; references?: PlanReference[]; batches?: PlanReviewBatch[] }> }>;
-  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string }>;
+  devices: Array<{
+    deviceId: string;
+    hostname: string | null;
+    plans: Array<{
+      planId: string;
+      review: PlanReviewEntry[];
+      itemParams?: Record<string, PlanReviewEntry["params"]>;
+      references?: PlanReference[];
+      batches?: PlanReviewBatch[];
+      /** BL-173 (report v4): the open re-checks and the items' waves. */
+      rechecks?: SharedRecheck[];
+      items?: Array<{ itemKey: string; groupId: string | null }>;
+    }>;
+  }>;
+  /** BL-173: an answer to a re-check carries its `recheckId`; `kept` = the verdict kept with a note. */
+  outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string; note?: string | null; recheckId?: string; kept?: boolean }>;
 };
 
 /**
@@ -347,13 +429,66 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
     // The params travel once per item (the report's itemParams), not per entry.
     const params = plan.itemParams && Object.hasOwn(plan.itemParams, raw.itemKey) ? plan.itemParams[raw.itemKey] : raw.params;
     const entry = { ...raw, params };
-    const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.itemKey === entry.itemKey && v.attemptRef === entry.attemptRef).at(-1);
+    // BL-173: a kept re-check answer is a note, not a new verdict on the track.
+    const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.itemKey === entry.itemKey && v.attemptRef === entry.attemptRef && v.kept !== true).at(-1);
     // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
     // Whole seconds: the owning device stores times to the second, so the applied copy of a verdict sent at …:12.345 reads …:12.000.
     if (!sent || (entry.verdict && Math.floor(Date.parse(entry.verdict.at) / 1000) >= Math.floor(Date.parse(sent.at) / 1000))) return entry;
     return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
   });
 }
+
+/**
+ * BL-173 (PLAN_RECHECKS_PLAN.md §2.7/§2.8): the open re-checks of ANOTHER device's plan, from its report (version 4) -- each
+ * with the attempt's own entry when the report carries it; an answer sent from here and not yet applied there counts as given
+ * ("sent, waiting for <device>"). Exported for its test.
+ */
+export function peerRecheckEntries(data: PeerQueueResponse, source: PeerReviewSource, planId: string): PlanRecheckEntry[] {
+  const plan = data.devices.find((d) => d.deviceId === source.deviceId)?.plans.find((p) => p.planId === planId);
+  if (!plan?.rechecks || plan.rechecks.length === 0) return [];
+  const device = source.hostname ?? source.deviceId;
+  const queue = peerQueue(data, source, planId);
+  return plan.rechecks.map((shared) => {
+    const recheck: PlanRecheck = {
+      recheckId: shared.recheckId,
+      itemKey: shared.itemKey,
+      attemptRef: shared.attemptRef,
+      kind: shared.kind,
+      title: shared.title,
+      note: shared.note,
+      auditionFile: shared.auditionFile,
+      markers: shared.markers,
+      checks: shared.checks as unknown as PlanCheck[],
+      metrics: shared.metrics as PlanRecheck["metrics"],
+      previousVerdict: shared.previousVerdict,
+      status: "open",
+      openedAt: shared.openedAt,
+      closedAt: null,
+      answer: null,
+      withdrawNote: null,
+      closeReason: null,
+    };
+    const base = queue.find((e) => e.itemKey === shared.itemKey && e.attemptRef === shared.attemptRef) ?? null;
+    const item = plan.items?.find((i) => i.itemKey === shared.itemKey);
+    const params = plan.itemParams && Object.hasOwn(plan.itemParams, shared.itemKey) ? plan.itemParams[shared.itemKey] : {};
+    const entry = recheckEntry(recheck, base, { groupId: item?.groupId ?? null, params }, (shared.extraStage as unknown as PlanResultRow | null) ?? null, null, (shared.beforeStage as unknown as PlanResultRow | null | undefined) ?? null);
+    const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.recheckId === shared.recheckId).at(-1);
+    if (!sent) return entry;
+    return {
+      ...entry,
+      verdict: { stageId: "owner_review", itemKey: shared.itemKey, attemptRef: shared.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at },
+      ...(sent.kept ? { pendingKept: true } : {}),
+    };
+  });
+}
+
+/** BL-173: the list the screen walks -- the open re-checks for the re-checks "wave", else the queue under the filter and wave. */
+function walkOf<E extends PlanReviewEntry>(lists: { entries: E[]; rechecks: PlanRecheckEntry[] }, filter: ReviewFilter, wave: string | null): Array<E | PlanRecheckEntry> {
+  return wave === RECHECKS_WAVE ? lists.rechecks : visibleEntries(lists.entries, filter, wave);
+}
+
+/** One entry of the screen: a track of the plan's queue, or an open re-check (`recheck`). */
+type ScreenEntry = PlanReviewEntry & { recheck?: PlanRecheck; pendingKept?: boolean };
 
 export function PlanReviewScreen({
   planId,
@@ -372,6 +507,8 @@ export function PlanReviewScreen({
   const { t, formatNumber, language } = useUiText();
   const { channel } = useAppChannel();
   const [allEntries, setEntries] = useState<PlanReviewEntry[] | null>(null);
+  // BL-173 (PLAN_RECHECKS_PLAN.md §2.8): the plan's open re-checks -- their own "wave", never mixed into the queue.
+  const [recheckEntries, setRecheckEntries] = useState<PlanRecheckEntry[]>([]);
   const [filter, setFilter] = useState<ReviewFilter>("all");
   // BL-157 (AC-WV-01/02): the chosen wave (null = all waves) and each wave's context.
   const [wave, setWave] = useState<string | null>(null);
@@ -385,7 +522,8 @@ export function PlanReviewScreen({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const freshClaims = useRef<PlanReviewClaim[]>([]);
   // The list the player, the arrows and the keys walk: the queue under the chosen filter (BL-153 AC-RR-06) and wave (BL-157).
-  const entries = useMemo(() => (allEntries ? visibleEntries(allEntries, filter, wave) : null), [allEntries, filter, wave]);
+  // BL-173: the re-checks "wave" walks the open re-checks instead.
+  const entries = useMemo<ScreenEntry[] | null>(() => (allEntries ? walkOf({ entries: allEntries, rechecks: recheckEntries }, filter, wave) : null), [allEntries, recheckEntries, filter, wave]);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [blind, setBlind] = useState(false);
@@ -418,12 +556,12 @@ export function PlanReviewScreen({
     [peerDevice, planId]
   );
 
-  /** The queue, freshest from the server; `[]` (with the message shown) when it cannot be read. */
+  /** The queue and the open re-checks, freshest from the server; empty (with the message shown) when they cannot be read. */
   const load = useCallback(
-    (): Promise<PlanReviewEntry[]> =>
+    (): Promise<{ entries: PlanReviewEntry[]; rechecks: PlanRecheckEntry[] }> =>
       fetch(peerDevice ? "/api/generation-plans/peers" : `${base}/review`)
         .then(async (res) => {
-          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; references?: PlanReference[]; batches?: PlanReviewBatch[]; message?: string } & Partial<PeerQueueResponse>;
+          const data = (await res.json().catch(() => ({}))) as { entries?: PlanReviewEntry[]; rechecks?: PlanRecheckEntry[]; references?: PlanReference[]; batches?: PlanReviewBatch[]; message?: string } & Partial<PeerQueueResponse>;
           if (!res.ok) throw new Error(errorText(t, data, t("review.loadFailedStatus", { status: String(res.status) }), { showErrorField: false }));
           const peerPlan = peerDevice ? data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId) : undefined;
           setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
@@ -432,13 +570,17 @@ export function PlanReviewScreen({
           freshClaims.current = fresh;
           setClaims(fresh);
           setNowMs(Date.now());
-          const list = peerDevice ? peerQueue({ devices: data.devices ?? [], outgoing: data.outgoing ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId) : (data.entries ?? []);
+          const peerData = { devices: data.devices ?? [], outgoing: data.outgoing ?? [] };
+          const peerSource = { deviceId: peerDevice ?? "", hostname: peerName };
+          const list = peerDevice ? peerQueue(peerData, peerSource, planId) : (data.entries ?? []);
+          const rechecks = peerDevice ? peerRecheckEntries(peerData, peerSource, planId) : (data.rechecks ?? []);
           setEntries(list);
-          return list;
+          setRecheckEntries(rechecks);
+          return { entries: list, rechecks };
         })
         .catch((error: unknown) => {
           setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.loadFailed") });
-          return [];
+          return { entries: [], rechecks: [] };
         }),
     [base, claimsFrom, peerDevice, peerName, planId, t]
   );
@@ -451,7 +593,13 @@ export function PlanReviewScreen({
   useEffect(() => {
     // First open: the first waiting track no other computer is on (its claims arrive with the same answer). BL-162 (AC-UX-09):
     // with `?wave=`, that wave is chosen first -- after the queue arrived, so the same rule picks its track.
-    void load().then((list) => {
+    void load().then(({ entries: list, rechecks }) => {
+      // BL-173: `?wave=~rechecks` opens on the first open re-check no other computer is on (or says none is open).
+      if (initialWave === RECHECKS_WAVE) {
+        setWave(RECHECKS_WAVE);
+        setIndex(Math.max(0, rechecks.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null)));
+        return;
+      }
       const start = initialWave !== null && list.some((e) => e.groupId === initialWave) ? initialWave : null;
       if (start !== null) setWave(start);
       const walk = start === null ? list : list.filter((e) => e.groupId === start);
@@ -475,7 +623,7 @@ export function PlanReviewScreen({
     return () => clearInterval(timer);
   }, [base]);
 
-  const entry = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
+  const entry: ScreenEntry | null = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
   useEffect(() => {
     currentRow.current?.scrollIntoView({ block: "nearest" });
   }, [index, entries]);
@@ -497,9 +645,48 @@ export function PlanReviewScreen({
     [entries, stopB]
   );
 
+  /**
+   * BL-173 (PLAN_RECHECKS_PLAN.md §2.3): the answer to the open re-check on screen -- a verdict, or "keep" (a question only). No
+   * "Replace?" question: the re-check is the request. Then on to the next open re-check.
+   */
+  const answerRecheck = useCallback(
+    async (answer: "accepted" | "rejected" | "kept") => {
+      const recheck = entry?.recheck;
+      if (!entry || !recheck || busy || entry.verdict !== null) return;
+      if (answer === "kept" && recheck.kind !== "question") return;
+      setBusy(true);
+      try {
+        const marks = draft.openMark !== null ? [...draft.marks, { start: draft.openMark, end: null, note: null }] : draft.marks;
+        await postJson(t, `${base}/recheck`, {
+          recheckId: recheck.recheckId,
+          ...(answer === "kept" ? { kept: true } : { result: answer, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks }),
+          ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+        });
+        setMessage({ tone: "ok", text: t("review.recheck.answered", { item: entry.itemKey }) });
+        onChanged?.();
+        const list = walkOf(await load(), filter, wave);
+        // An answered re-check leaves the list here (on another computer's plan it stays, "sent"): look on from where it was.
+        const here = list.findIndex((e) => (e as ScreenEntry).recheck?.recheckId === recheck.recheckId);
+        const next = nextWaitingIndex(list, here >= 0 ? here : index - 1, skipFresh);
+        setDraft(emptyDraft());
+        stopB();
+        setIndex(next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1)));
+      } catch (error) {
+        setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
+  );
+
   const submit = useCallback(
     async (result: "accepted" | "rejected", replace = false) => {
       if (!entry || busy) return;
+      if (entry.recheck) {
+        void answerRecheck(result);
+        return;
+      }
       // BL-157 (AC-TC-04): a track that already has a verdict asks first. A verdict sent from this computer is asked about by
       // the server (its 409 names this computer, which the screen cannot name itself -- review round 6).
       const sentHere = entry.verdict?.note?.startsWith(SENT_NOTE_PREFIX) ?? false;
@@ -528,7 +715,7 @@ export function PlanReviewScreen({
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
-        const list = visibleEntries(await load(), filter, wave);
+        const list = visibleEntries((await load()).entries, filter, wave);
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
         const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
         setDraft(emptyDraft());
@@ -548,7 +735,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
+    [answerRecheck, base, busy, draft, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -607,12 +794,15 @@ export function PlanReviewScreen({
   const chooseWave = useCallback(
     (next: string | null) => {
       stopB();
+      // BL-173: the re-checks have no validator filter of their own.
+      const nextFilter = next === RECHECKS_WAVE ? "all" : filter;
+      setFilter(nextFilter);
       setWave(next);
-      setIndex(Math.max(0, visibleEntries(allEntries ?? [], filter, next).findIndex((e) => e.verdict === null && !skipClaimed(e))));
+      setIndex(Math.max(0, walkOf({ entries: allEntries ?? [], rechecks: recheckEntries }, nextFilter, next).findIndex((e) => e.verdict === null && !skipClaimed(e))));
       setDraft(emptyDraft());
       setMessage(null);
     },
-    [allEntries, filter, skipClaimed, stopB]
+    [allEntries, filter, recheckEntries, skipClaimed, stopB]
   );
   const waves = useMemo(() => waveSummaries(allEntries ?? [], batches), [allEntries, batches]);
   const chosenWave = wave === null ? null : (waves.find((w) => w.groupId === wave) ?? null);
@@ -641,21 +831,33 @@ export function PlanReviewScreen({
     }
   };
 
-  const offered = entry ? referencesFor(entry, references) : [];
+  // BL-173 (§2.8): a revision is compared with the attempt's own file ("Before"), not with a reference track.
+  const isRevision = entry?.recheck?.kind === "revision";
+  const offered = entry && !isRevision ? referencesFor(entry, references) : [];
   const chosen = offered.find((r) => r.id === referenceId) ?? offered[0] ?? null;
+  const abSource = useMemo(
+    () =>
+      entry && isRevision
+        ? { src: `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}`, label: t("review.recheck.before"), lufs: beforeLufs(entry) }
+        : chosen
+          ? { src: `${base}/reference?id=${encodeURIComponent(chosen.id)}`, label: chosen.label, lufs: chosen.lufs }
+          : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `language` re-builds the label after a language switch
+    [base, chosen, entry, isRevision, t, language]
+  );
 
   /**
    * FO-MSG-0009 / AC-GP3-07: A/B -- switch between the track (A) and the chosen reference (B) at the same position, each at its
-   * matched loudness (the reference's own LUFS when given).
+   * matched loudness (the reference's own LUFS when given). BL-173: for a revision, B is the attempt's own file.
    */
   const toggleAB = useCallback(() => {
     const audio = referenceAudio.current;
-    if (!audio || !chosen) return;
+    if (!audio || !abSource) return;
     if (!onB) {
       const at = player.current?.currentTime() ?? 0;
       player.current?.pause();
       audio.currentTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(at, audio.duration) : at;
-      audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
+      audio.volume = matchLoudness ? matchedVolume(abSource.lufs) : 1;
       setOnB(true);
       audio.play().catch((error: unknown) => {
         // A quick B-then-A pauses before play() settled (AbortError): not a failure.
@@ -669,7 +871,7 @@ export function PlanReviewScreen({
       player.current?.playFrom(at);
       setOnB(false);
     }
-  }, [chosen, matchLoudness, onB, t]);
+  }, [abSource, matchLoudness, onB, t]);
 
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
@@ -683,7 +885,7 @@ export function PlanReviewScreen({
       if (!action) return;
       // A focused button or switch keeps Space/Enter (review B7); a held key never decides the next attempt too.
       if (action === "play" && target?.closest("button, [role=switch], a")) return;
-      if (event.repeat && (action === "accept" || action === "reject" || action === "next" || action === "previous")) return;
+      if (event.repeat && (action === "accept" || action === "reject" || action === "keep" || action === "next" || action === "previous")) return;
       event.preventDefault();
       const b = onB ? referenceAudio.current : null;
       if (typeof action === "object") setDraft((d) => ({ ...d, rating: action.rating }));
@@ -703,6 +905,8 @@ export function PlanReviewScreen({
       }
       else if (action === "accept") void submit("accepted");
       else if (action === "reject") void submit("rejected");
+      // BL-173: only a re-check's question takes "keep" (answerRecheck ignores it anywhere else).
+      else if (action === "keep") void answerRecheck("kept");
       else if (action === "next") go(stepIndex(entries ?? [], index, 1, skipClaimed));
       else if (action === "previous") go(stepIndex(entries ?? [], index, -1, skipClaimed));
       else if (action === "mark") mark();
@@ -710,20 +914,24 @@ export function PlanReviewScreen({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirmReplace, entries, go, index, mark, skipClaimed, submit, toggleAB, onB]);
+  }, [answerRecheck, confirmReplace, entries, go, index, mark, skipClaimed, submit, toggleAB, onB]);
 
   // The reference's volume follows the loudness switch while it plays.
   useEffect(() => {
     const audio = referenceAudio.current;
-    if (audio && chosen) audio.volume = matchLoudness ? matchedVolume(chosen.lufs) : 1;
-  }, [matchLoudness, chosen, onB]);
+    if (audio && abSource) audio.volume = matchLoudness ? matchedVolume(abSource.lufs) : 1;
+  }, [matchLoudness, abSource, onB]);
 
   const savedMarkers = useMemo<ReviewMarker[]>(() => {
     if (!entry) return [];
     const findings = blind && entry.verdict === null ? [] : findingMarkers(entry);
+    // BL-173: the spots a re-check asks about, and the marks of the verdict it re-checks.
+    const asked = recheckMarkers(entry.recheck, t("review.recheck.spot"));
+    const previous = (entry.recheck?.previousVerdict?.markers ?? []).map((m) => ({ start: m.start, end: m.end, label: m.note, tone: "mark" as const }));
     const own = [...(entry.verdict?.markers ?? []), ...draft.marks].map((m) => ({ start: m.start, end: m.end, label: m.note, tone: "mark" as const }));
-    return [...findings, ...own];
-  }, [blind, draft.marks, entry]);
+    return [...findings, ...asked, ...previous, ...own];
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `language` re-builds the labels after a language switch
+  }, [blind, draft.marks, entry, t, language]);
   // The open mark's label is rebuilt on a language switch (`t` itself keeps one identity, so `language` is in the deps).
   const markers = useMemo<ReviewMarker[]>(
     () => (entry && draft.openMark !== null ? [...savedMarkers, { start: draft.openMark, end: null, label: t("review.openMark"), tone: "mark" as const }] : savedMarkers),
@@ -731,14 +939,23 @@ export function PlanReviewScreen({
     [savedMarkers, draft.openMark, entry, t, language],
   );
 
-  const lufsOf = entry ? (reportedLufs(entry) ?? (measured && entry && measured.src === `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` ? measured.lufs : null)) : null;
-  const src = entry ? `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}` : null;
+  // BL-173: a re-check plays from its own route (the revised file, or the attempt's current one).
+  const src = entry
+    ? entry.recheck
+      ? `${base}/recheck-audition?recheckId=${encodeURIComponent(entry.recheck.recheckId)}`
+      : `${base}/audition?itemKey=${encodeURIComponent(entry.itemKey)}&attemptRef=${encodeURIComponent(entry.attemptRef)}`
+    : null;
+  const ownLufs = entry ? playedLufs(entry) : null;
+  const lufsOf = entry ? (ownLufs ?? (measured && measured.src === src ? measured.lufs : null)) : null;
   const hideFindings = blind && entry?.verdict === null;
 
   const segment = (selected: boolean) => `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${selected ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`;
   const toolButton = "flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700";
   const picker = pickerWaves(waves, wave, true);
   const allWaiting = (allEntries ?? []).filter((e) => e.verdict === null).length;
+  // BL-173: open re-checks still waiting for an answer here (one answered elsewhere and on its way is not).
+  const recheckOption = recheckPickerOption(recheckEntries, wave);
+  const rechecksOpen = recheckOption.open;
   const reviewedHere = (entries ?? []).filter((e) => e.verdict !== null).length;
   const takenElsewhere = (groupId: string) => claims.find((c) => c.scope === "group" && c.groupId === groupId && Date.parse(c.until) > nowMs) ?? null;
   const device = source ? (source.hostname ?? source.deviceId) : null;
@@ -773,8 +990,8 @@ export function PlanReviewScreen({
           <Popover
             trigger={
               <>
-                <span className="font-medium text-white">{wave ?? t("review.wave.all")}</span>
-                <span className="text-zinc-400">{wave === null ? allWaiting : (chosenWave ? chosenWave.waitingPassed + chosenWave.waitingRejected : 0)}</span>
+                <span className="font-medium text-white">{wave === RECHECKS_WAVE ? t("review.rechecks.wave") : (wave ?? t("review.wave.all"))}</span>
+                <span className="text-zinc-400">{wave === RECHECKS_WAVE ? rechecksOpen : wave === null ? allWaiting : (chosenWave ? chosenWave.waitingPassed + chosenWave.waitingRejected : 0)}</span>
                 <span className="text-zinc-500">▾</span>
               </>
             }
@@ -808,6 +1025,20 @@ export function PlanReviewScreen({
               const done = picker.shown.filter((w) => w.waitingPassed + w.waitingRejected === 0);
               return (
                 <>
+                  {/* BL-173 (§2.8): the re-checks, above the waves and apart from them. */}
+                  {recheckOption.shown && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        chooseWave(RECHECKS_WAVE);
+                        close();
+                      }}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${wave === RECHECKS_WAVE ? "bg-violet-500/20 text-white" : "text-sky-200 hover:bg-zinc-800"}`}
+                    >
+                      <span className="min-w-0 flex-1 truncate">↺ {t("review.rechecks.wave")}</span>
+                      {rechecksOpen > 0 ? <span className="rounded bg-sky-500/15 px-1.5 text-xs text-sky-300">{rechecksOpen}</span> : <span className="text-xs text-emerald-400">✓</span>}
+                    </button>
+                  )}
                   {option(null)}
                   {open.map(option)}
                   {done.length > 0 && <p className="px-2 pb-1 pt-2 text-[11px] uppercase tracking-wide text-zinc-500">{t("review.wave.reviewedGroup")}</p>}
@@ -825,7 +1056,7 @@ export function PlanReviewScreen({
             {t("review.progress", { reviewed: reviewedHere, total: entries.length })}
           </div>
         )}
-        {(filterCounts.anyRejected || filter !== "all") && (
+        {wave !== RECHECKS_WAVE && (filterCounts.anyRejected || filter !== "all") && (
           <div className="inline-flex gap-1 rounded-lg bg-zinc-950 p-1" role="tablist" aria-label={t("review.filter.label")}>
             {(["all", "passed", "rejected"] as const).map((f) => (
               <button key={f} type="button" role="tab" aria-selected={filter === f} onClick={() => chooseFilter(f)} className={segment(filter === f)}>
@@ -893,7 +1124,7 @@ export function PlanReviewScreen({
       {entries === null ? (
         <p className={`p-6 text-sm ${message?.tone === "error" ? "text-red-400" : "text-zinc-500"}`}>{message?.tone === "error" ? message.text : t("common.loading")}</p>
       ) : entries.length === 0 ? (
-        <p className="p-6 text-sm text-zinc-500">{t("review.empty")}</p>
+        <p className="p-6 text-sm text-zinc-500">{wave === RECHECKS_WAVE ? t("review.rechecks.none") : t("review.empty")}</p>
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_19rem_16rem] divide-x divide-zinc-800">
           {/* Left: the track, the player and the verdict right under it. */}
@@ -919,7 +1150,11 @@ export function PlanReviewScreen({
                   </button>
                   {entry.verdict && (
                     <span className={`ml-auto rounded-full px-2.5 py-0.5 text-xs ${entry.verdict.result === "accepted" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
-                      {entry.verdict.reportedBy === "owner" ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) }) : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
+                      {entry.pendingKept
+                        ? t("review.recheck.keptBadge", { result: resultLabel(t, entry.verdict.result) })
+                        : entry.verdict.reportedBy === "owner"
+                          ? t("review.verdictYour", { result: resultLabel(t, entry.verdict.result) })
+                          : t("review.verdictRelayed", { result: resultLabel(t, entry.verdict.result) })}
                       {entry.verdict.note?.startsWith(SENT_NOTE_PREFIX) ? ` · ${t("review.sentWaitingFor", { device: entry.verdict.note.slice(SENT_NOTE_PREFIX.length) })}` : ""}
                       {entry.pendingFrom ? ` · ${t("review.beingApplied", { device: entry.pendingFrom })}` : ""}
                       {entry.verdict.rating !== null ? ` ${entry.verdict.rating}/10` : ""}
@@ -950,6 +1185,38 @@ export function PlanReviewScreen({
                       .join(" · ")}
                   </p>
                 )}
+                {/* BL-173 (§2.8): what the Operator sends back, why, and the verdict it re-checks. */}
+                {entry.recheck && (
+                  <section className="space-y-1.5 rounded-xl border border-sky-800/60 bg-sky-950/25 px-3 py-2 text-sm">
+                    <p className="font-medium text-sky-100">{t(entry.recheck.kind === "revision" ? "review.recheck.revisionTitle" : "review.recheck.questionTitle", { title: entry.recheck.title })}</p>
+                    <p className="whitespace-pre-wrap text-zinc-300">{entry.recheck.note}</p>
+                    {entry.recheck.previousVerdict && (
+                      <div className="space-y-0.5 text-xs text-zinc-400">
+                        <p>
+                          {t("review.recheck.previous", {
+                            result: resultLabel(t, entry.recheck.previousVerdict.result),
+                            rating: entry.recheck.previousVerdict.rating !== null ? ` ${entry.recheck.previousVerdict.rating}/10` : "",
+                            device: entry.recheck.previousVerdict.device ?? "—",
+                            time: formatDisplayDateTime(entry.recheck.previousVerdict.at),
+                          })}
+                        </p>
+                        {entry.recheck.previousVerdict.reasons.length > 0 && (
+                          <p>{t("review.recheck.previousReasons", { reasons: entry.recheck.previousVerdict.reasons.map((r) => (r in REVIEW_REASON_KEYS ? t(REVIEW_REASON_KEYS[r as (typeof REVIEW_REASONS)[number]]) : r)).join(", ") })}</p>
+                        )}
+                        {entry.recheck.previousVerdict.note && <p className="whitespace-pre-wrap">{t("review.recheck.previousNote", { note: entry.recheck.previousVerdict.note })}</p>}
+                      </div>
+                    )}
+                    {entry.recheck.markers.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {entry.recheck.markers.map((m, i) => (
+                          <button key={i} type="button" onClick={() => player.current?.playFrom(m.start)} title={m.note ?? undefined} className="rounded-md border border-sky-700 px-2 py-0.5 text-xs text-sky-200 hover:bg-sky-900/40">
+                            ▶ {t("review.recheck.goTo", { time: formatPlayerTime(m.start) })}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
                 {entry.playable && src ? (
                   <div className="space-y-1.5">
                     <MediaReviewPlayer
@@ -967,35 +1234,44 @@ export function PlanReviewScreen({
                       frequencyMarks={hideFindings ? [] : frequencyMarksOf(t, entry)}
                       volume={matchLoudness ? matchedVolume(lufsOf) : 1}
                       onDecoded={(audio) => {
-                        // Measured only when the validator gave no LUFS (AC-GP3-04).
-                        if (reportedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
+                        // Measured only when the validator gave no LUFS (AC-GP3-04); BL-173: a revision's own, never the original's.
+                        if (playedLufs(entry) === null) setMeasured({ src, lufs: integratedLoudness(audio.channels, audio.sampleRate) });
+                        // BL-173 (§2.8): a re-check's question opens at its first spot.
+                        const first = entry.recheck?.kind === "question" ? entry.recheck.markers[0] : undefined;
+                        if (first) player.current?.seekBy(first.start - (player.current?.currentTime() ?? 0));
                       }}
                       toolbar={
-                        chosen ? (
+                        abSource ? (
                           <>
-                            <span>{t("review.compareWith")}</span>
-                            <select
-                              value={chosen.id}
-                              onChange={(e) => {
-                                stopB();
-                                setReferenceId(e.target.value);
-                              }}
-                              title={offered.some((r) => r.nearest) ? t("review.nearestHint") : undefined}
-                              className="max-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
-                            >
-                              {offered.map((r) => (
-                                <option key={r.id} value={r.id}>
-                                  {r.nearest ? "★ " : ""}
-                                  {r.label}
-                                </option>
-                              ))}
-                            </select>
+                            {isRevision || !chosen ? (
+                              <span>{t("review.recheck.compare")}</span>
+                            ) : (
+                              <>
+                                <span>{t("review.compareWith")}</span>
+                                <select
+                                  value={chosen.id}
+                                  onChange={(e) => {
+                                    stopB();
+                                    setReferenceId(e.target.value);
+                                  }}
+                                  title={offered.some((r) => r.nearest) ? t("review.nearestHint") : undefined}
+                                  className="max-w-56 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100"
+                                >
+                                  {offered.map((r) => (
+                                    <option key={r.id} value={r.id}>
+                                      {r.nearest ? "★ " : ""}
+                                      {r.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </>
+                            )}
                             <button type="button" onClick={toggleAB} className={`rounded-md border px-2.5 py-1 ${onB ? "border-amber-400 bg-amber-500/20 text-amber-200" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"}`}>
-                              {onB ? t("review.abOnB", { label: chosen.label }) : t("review.ab")}
+                              {onB ? t("review.abOnB", { label: abSource.label }) : t("review.ab")}
                             </button>
                             <audio
                               ref={referenceAudio}
-                              src={`${base}/reference?id=${encodeURIComponent(chosen.id)}`}
+                              src={abSource.src}
                               preload="metadata"
                               onEnded={() => {
                                 // The reference ran out: back to A where it would be.
@@ -1012,9 +1288,9 @@ export function PlanReviewScreen({
                     <p className="text-[11px] text-zinc-500">
                       {lufsOf === null
                         ? t("review.loudnessUnknown")
-                        : t(reportedLufs(entry) !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                        : t(ownLufs !== null ? "review.loudnessValidator" : "review.loudnessMeasured", { lufs: formatNumber(lufsOf, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
                       {matchLoudness && lufsOf !== null ? ` · ${t("review.playedAt", { percent: Math.round(matchedVolume(lufsOf) * 100), target: LOUDNESS_TARGET_LUFS })}` : ""}
-                      {matchLoudness && chosen && chosen.lufs === null ? <span className="ml-2 text-amber-300">{t("review.referenceNoLufs")}</span> : null}
+                      {matchLoudness && abSource && abSource.lufs === null ? <span className="ml-2 text-amber-300">{t("review.referenceNoLufs")}</span> : null}
                     </p>
                   </div>
                 ) : (
@@ -1023,15 +1299,27 @@ export function PlanReviewScreen({
 
                 {/* The verdict, right under the player (AC-UX-02): the two decisions first, then rating, reasons, comment. */}
                 <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+                  {/* BL-173 (§2.3): a question is answered by keeping the verdict (with a note), or by changing it below. */}
+                  {entry.recheck?.kind === "question" && (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button type="button" disabled={busy || entry.verdict !== null} onClick={() => void answerRecheck("kept")} className="flex items-center gap-2 rounded-lg border border-sky-500/50 bg-sky-500/10 px-5 py-2.5 text-base font-medium text-sky-100 transition-colors hover:border-sky-400/70 hover:bg-sky-500/20 disabled:opacity-50">
+                        <span aria-hidden="true">=</span>
+                        {t("review.recheck.keep")}
+                        {/* ui-text-ignore: a keyboard key */}
+                        <kbd className="ml-1 rounded border border-sky-500/40 px-1.5 text-xs font-normal text-sky-300/80">K</kbd>
+                      </button>
+                      <span className="text-xs text-zinc-500">{t("review.recheck.orChange")}</span>
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-3">
                     {/* Owner, msg 2269 p.4: calm tinted decisions with their key, not two loud fills. */}
-                    <button type="button" disabled={busy} onClick={() => void submit("accepted")} className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-5 py-2.5 text-base font-medium text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 disabled:opacity-50">
+                    <button type="button" disabled={busy || (entry.recheck !== undefined && entry.verdict !== null)} onClick={() => void submit("accepted")} className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-5 py-2.5 text-base font-medium text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 disabled:opacity-50">
                       <span aria-hidden="true">✓</span>
                       {t("review.accept")}
                       {/* ui-text-ignore: a keyboard key */}
                       <kbd className="ml-1 rounded border border-emerald-500/40 px-1.5 text-xs font-normal text-emerald-300/80">A</kbd>
                     </button>
-                    <button type="button" disabled={busy} onClick={() => void submit("rejected")} className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-base font-medium text-rose-200 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20 disabled:opacity-50">
+                    <button type="button" disabled={busy || (entry.recheck !== undefined && entry.verdict !== null)} onClick={() => void submit("rejected")} className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-base font-medium text-rose-200 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20 disabled:opacity-50">
                       <span aria-hidden="true">✗</span>
                       {t("review.reject")}
                       {/* ui-text-ignore: a keyboard key */}
@@ -1082,7 +1370,9 @@ export function PlanReviewScreen({
                         </button>
                       </span>
                     ))}
-                    {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does. */}
+                    {/* AC-UX-13: on another device's plan this is asked for there -- shown, not hidden. Owner, msg 2255: say what it does.
+                        BL-173: a re-check is not an item to generate again. */}
+                    {!entry.recheck && (
                     <span className="flex items-center gap-1">
                       <button type="button" disabled={device !== null} onClick={() => void askRerun()} className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50">
                         <span aria-hidden="true">↻</span>
@@ -1090,6 +1380,7 @@ export function PlanReviewScreen({
                       </button>
                       <InfoTooltip>{t("review.askRerunInfo")}</InfoTooltip>
                     </span>
+                    )}
                     <span className="ml-auto flex items-center gap-1 text-zinc-500">
                       {t("review.shortcutsTitle")}
                       <InfoTooltip>{t("review.shortcuts")}</InfoTooltip>
@@ -1105,7 +1396,9 @@ export function PlanReviewScreen({
                     <ul className="mt-1 space-y-0.5">
                       {entry.history.map((h, i) => (
                         <li key={`${h.at}-${i}`}>
-                          {t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" })}
+                          {historyLineOf(t, h).text}
+                          {/* BL-173: an answer to a re-check names it. */}
+                          {h.recheckId ? <span className="text-sky-400/80"> · {historyLineOf(t, h).recheck}</span> : null}
                         </li>
                       ))}
                     </ul>
@@ -1130,7 +1423,7 @@ export function PlanReviewScreen({
                 return (
                   <div key={stage.stageId} className="space-y-1">
                     <div className="flex items-center gap-2 text-xs">
-                      <span className="text-zinc-400">{stage.stageId}</span>
+                      <span className="text-zinc-400">{stage.stageId === RECHECK_STAGE_ID ? t("review.recheck.revisionChecks") : stage.stageId}</span>
                       <span className={`rounded-full px-2 py-0.5 ${ok ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>{resultLabel(t, stage.result)}</span>
                     </div>
                     {[...failed, ...passed].map((c) => (
@@ -1206,7 +1499,7 @@ export function PlanReviewScreen({
             )}
             <div className="min-h-0 flex-1 overflow-y-auto">
               {(() => {
-                const row = (e: PlanReviewEntry, i: number) => {
+                const row = (e: ScreenEntry, i: number) => {
                   const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
                   const current = i === index;
                   const auto = validatorOfEntry(e);
@@ -1236,7 +1529,12 @@ export function PlanReviewScreen({
                           ) : null}
                         </span>
                         <span className="mt-0.5 flex items-center gap-2 whitespace-nowrap text-xs text-zinc-500">
-                          {e.seed !== null ? <span>{t("review.queue.seed", { seed: String(e.seed) })}</span> : null}
+                          {/* BL-173: a re-check says what it is instead of its seed. */}
+                          {e.recheck ? (
+                            <span className="min-w-0 truncate text-sky-300/90">{t(e.recheck.kind === "revision" ? "review.recheck.revisionTitle" : "review.recheck.questionTitle", { title: e.recheck.title })}</span>
+                          ) : e.seed !== null ? (
+                            <span>{t("review.queue.seed", { seed: String(e.seed) })}</span>
+                          ) : null}
                           {/* Blind mode keeps the queue blind too. */}
                           {!blind && auto !== null ? <span className={`ml-auto ${auto === "rejected" ? "text-amber-400" : "text-emerald-500/80"}`}>{auto === "rejected" ? t("review.queue.autoFailed") : t("review.queue.autoPassed")}</span> : null}
                         </span>

@@ -115,6 +115,8 @@ const DOMAIN_ERROR_STATUS = {
   plan_mismatch: 422,
   plan_invalid: 422,
   plan_verdict_exists: 409,
+  plan_recheck_exists: 409,
+  plan_recheck_closed: 409,
   change_set_incomplete: 500,
   RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED: 409,
   RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE: 409,

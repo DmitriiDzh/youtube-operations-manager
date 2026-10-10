@@ -47,7 +47,9 @@ function v1Plan(over: Partial<SharedPlan> = {}): SharedPlan {
 test("BL-162 §5.1: a missing or malformed progress field reads as empty or zero, never a crash", () => {
   const p = sharedProgress({ stages: "x", groups: [null, 3, { groupId: "C1" }], spend: { usd: "1" }, budget: { warnings: ["80", "90", 100] } });
   assert.deepEqual(p.stages, []);
-  assert.deepEqual(p.groups, [{ groupId: "C1", title: "C1", counts: { items: 0, generated: 0, accepted: 0, rejected: 0, waitingReview: 0, missing: 0 } }]);
+  // BL-173: the wave's open re-checks are a new count; missing (an older report) it reads 0 like the others.
+  assert.deepEqual(p.groups, [{ groupId: "C1", title: "C1", counts: { items: 0, generated: 0, accepted: 0, rejected: 0, waitingReview: 0, missing: 0, rechecks: 0 } }]);
+  assert.equal(p.rechecksOpen, 0);
   assert.deepEqual(p.spend, { usd: 0, gpuMinutes: 0, sessions: [] });
   assert.deepEqual(p.budget, { usd: null, usedShare: null, warnings: ["80"] });
   assert.deepEqual(p.eta, { seconds: null, gpuTypeId: null, samples: 0 });
@@ -87,7 +89,8 @@ test("BL-162: the waiting count is the entries without a verdict, less the verdi
 });
 
 test("BL-162 AC-UX-10: waves newest first; shown are the waves with tracks waiting plus the newest, the rest folded", () => {
-  const counts = (waitingReview: number) => ({ items: 1, generated: 1, accepted: 0, rejected: 0, waitingReview, missing: 0 });
+  // BL-173: a wave's counts also carry its open re-checks (a new field of the type; none here).
+  const counts = (waitingReview: number) => ({ items: 1, generated: 1, accepted: 0, rejected: 0, waitingReview, missing: 0, rechecks: 0 });
   const model = {
     groups: ["C1", "C2", "C3", "C4"].map((groupId) => ({ groupId, title: groupId, dependsOn: null, note: null, ownerNote: null })),
     progress: { ...sharedProgress({}), groups: [{ groupId: "C1", title: "C1", counts: counts(0) }, { groupId: "C2", title: "C2", counts: counts(3) }, { groupId: "C4", title: "C4", counts: counts(0) }] },
@@ -149,4 +152,14 @@ test("BL-162 review: on another device's plan the waves' and items' waiting coun
   assert.equal(m.waiting, 1);
   assert.equal(m.progress.groups[0].counts.waitingReview, 1);
   assert.deepEqual(m.progress.items.map((i) => [i.itemKey, i.waitingReview]), [["C2/V1", 1], ["C2/V2", 0]]);
+});
+
+test("BL-173: another device's plan counts its open re-checks, minus the ones answered from here; its own plan reads progress.rechecksOpen", () => {
+  const rechecks = [{ recheckId: "r1" }, { recheckId: "q1" }] as unknown as SharedPlan["rechecks"];
+  assert.equal(peerPlanModel(v1Plan({ rechecks }), device, []).rechecks, 2);
+  const answered = [{ ownerDeviceId: "win-1", planId: "R-0001", itemKey: "C2/V1", attemptRef: "job:a", recheckId: "q1", kept: true }];
+  const m = peerPlanModel(v1Plan({ rechecks }), device, answered);
+  assert.equal(m.rechecks, 1);
+  assert.equal(m.waiting, 3, "a kept answer is no verdict: the track still waits");
+  assert.equal(peerPlanModel(v1Plan(), device, []).rechecks, 0, "a report before version 4 has none");
 });

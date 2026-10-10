@@ -3,31 +3,18 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { isLoopbackRequest } from "@/lib/loopback-guard";
+import { AUDITION_CONTENT_TYPES, auditionContentType } from "@/lib/generation-plans/contracts";
 import { planErrorResponse } from "../../shared";
 
 // BL-143 (ADR 0029 decision 5, AC-GP-14): the one route that sends a local media file to the browser -- the file of ONE
 // attempt of ONE plan, found by the plans core (never a path from the request), proven inside the channel workspace by
 // `workspace-exchange` (symlinks resolved), of an allowlisted type, with HTTP Range so the player can seek.
 
-/** The types the review screen plays or shows; anything else is refused (415). */
-export const AUDITION_CONTENT_TYPES: Readonly<Record<string, string>> = Object.freeze({
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".flac": "audio/flac",
-  ".ogg": "audio/ogg",
-  ".opus": "audio/ogg",
-  ".m4a": "audio/mp4",
-  ".aac": "audio/aac",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-});
+/** The types the review screen plays or shows; anything else is refused (415). BL-173: the list lives in the plans contracts. */
+export { AUDITION_CONTENT_TYPES };
 
 export function contentTypeFor(filePath: string): string | null {
-  return AUDITION_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? null;
+  return auditionContentType(filePath);
 }
 
 /**
@@ -72,6 +59,11 @@ export function createAuditionGetHandler(deps: AuditionDeps) {
 /** BL-143 phase 3 (FO-MSG-0009): a plan reference for A/B, `?id=` -- the same checks, Range and types as an audition. */
 export function createReferenceGetHandler(deps: Omit<AuditionDeps, "resolveAudition"> & { resolveReference(input: { planId: string; id: string }): Promise<ResolvedTarget> }) {
   return createPlanFileGetHandler(deps, ["id"], (planId, q) => deps.resolveReference({ planId, id: q.id }));
+}
+
+/** BL-173 (PLAN_RECHECKS_PLAN.md §2.4): a re-check's file, `?recheckId=` -- the revised file, or the attempt's current one. */
+export function createRecheckAuditionGetHandler(deps: Omit<AuditionDeps, "resolveAudition"> & { resolveRecheck(input: { planId: string; recheckId: string }): Promise<ResolvedTarget> }) {
+  return createPlanFileGetHandler(deps, ["recheckId"], (planId, q) => deps.resolveRecheck({ planId, recheckId: q.recheckId }));
 }
 
 function createPlanFileGetHandler(deps: Omit<AuditionDeps, "resolveAudition">, names: string[], resolveTarget: (planId: string, query: Record<string, string>) => Promise<ResolvedTarget>) {

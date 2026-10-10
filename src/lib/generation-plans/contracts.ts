@@ -86,6 +86,33 @@ export type PlanCheck = {
 };
 export type PlanMarker = { start: number; end: number | null; note: string | null };
 
+/**
+ * The files the review player plays or shows, by extension (BL-143 AC-GP-14). BL-173: here, not in the audition route, so a
+ * re-check's file is refused at opening by the same list the player serves.
+ */
+export const AUDITION_CONTENT_TYPES: Readonly<Record<string, string>> = Object.freeze({
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+});
+
+/** The player's content type for a file name or path, by its extension; null = not played. */
+export function auditionContentType(file: string): string | null {
+  const name = file.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? (AUDITION_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null) : null;
+}
+
 export type PlanResultRow = {
   stageId: string;
   itemKey: string;
@@ -177,6 +204,8 @@ export type PlanReviewEntry = {
    * shown as "rated on <device>, being applied" and already counted as given (`verdict` carries it).
    */
   pendingFrom?: string;
+  /** BL-173: the accepted revision's file the attempt plays now (absent = its reported file or job output). */
+  currentFile?: string;
 };
 
 export type PlanValidatorVerdict = "passed" | "rejected";
@@ -197,21 +226,24 @@ export function validatorOfEntry(entry: { validator?: PlanValidatorVerdict | nul
  * BL-157 (AC-TC-04, review round 5): the history row of the CURRENT verdict -- the last one of the same second, result and
  * rating (the newest-by-time row can be another verdict: a peer verdict of the same second wins). Else the last row.
  */
-export function historyEntryOfVerdict<T extends { result: string; rating: number | null; at: string }>(history: readonly T[] | undefined, verdict: { result: string; rating: number | null; at: string }): T | undefined {
-  if (!history || history.length === 0) return undefined;
+export function historyEntryOfVerdict<T extends { result: string; rating: number | null; at: string; kept?: boolean }>(history: readonly T[] | undefined, verdict: { result: string; rating: number | null; at: string }): T | undefined {
+  // BL-173: a kept re-check answer is a note, never the verdict itself.
+  const verdicts = (history ?? []).filter((h) => h.kept !== true);
+  if (verdicts.length === 0) return undefined;
   const second = Math.floor(Date.parse(verdict.at) / 1000);
-  for (let i = history.length - 1; i >= 0; i--) {
-    const h = history[i];
+  for (let i = verdicts.length - 1; i >= 0; i--) {
+    const h = verdicts[i];
     if (Math.floor(Date.parse(h.at) / 1000) === second && h.result === verdict.result && h.rating === verdict.rating) return h;
   }
-  return history.at(-1);
+  return verdicts.at(-1);
 }
 
 export type PlanEvent = { at: string; kind: string; actor: string; details: Record<string, unknown> };
 
 export type PlanProgress = {
   stages: Array<PlanStage & { counts: PlanStageCounts }>;
-  groups: Array<{ groupId: string; title: string; counts: { items: number; generated: number; accepted: number; rejected: number; waitingReview: number; missing: number } }>;
+  /** BL-173: `rechecks` = the wave's open re-checks (never part of `waitingReview`). */
+  groups: Array<{ groupId: string; title: string; counts: { items: number; generated: number; accepted: number; rejected: number; waitingReview: number; missing: number; rechecks: number } }>;
   items: PlanItemProgress[];
   spend: { usd: number; gpuMinutes: number; sessions: Array<{ sessionId: string; status: string; gpuTypeId: string | null; usd: number; final: boolean; stopReason: string | null }> };
   budget: { usd: number | null; usedShare: number | null; warnings: Array<"80" | "100"> };
@@ -219,6 +251,10 @@ export type PlanProgress = {
   eta: { seconds: number | null; gpuTypeId: string | null; samples: number };
   /** BL-143 phase 3 (AC-GP3-01): what the owner and the factory should notice now, derived like everything else. */
   notices: PlanNotice[];
+  /** BL-173 (PLAN_RECHECKS_PLAN.md §2.5): the plan's open re-checks (apart from `waitingReview`). */
+  rechecksOpen: number;
+  /** BL-173: every re-check of the plan with its attempt's current file -- in `factory_plan_get` only. */
+  rechecks?: PlanRecheckView[];
 };
 
 export type PlanNotice =
@@ -253,8 +289,12 @@ export type PlanReviewBatch = {
   validator: { passed: number; rejected: number };
 };
 
-/** BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-05): one owner verdict of an attempt, as its history shows it (oldest first). */
-export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string };
+/**
+ * BL-157 (SERVERS_MEDIA_PLAN.md AC-TC-05): one owner verdict of an attempt, as its history shows it (oldest first). BL-173: an
+ * answer to a re-check carries its `recheckId`; `kept` = the owner kept the verdict and only wrote a note (not a verdict: it
+ * changes nothing and gives no `owner_verdict` event; `result` repeats the verdict it kept).
+ */
+export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean };
 
 /** The full stored row (the history of a plan, every attempt). */
 export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & { itemKey: string; attemptRef: string; reasons: string[]; markers: PlanMarker[] };
@@ -319,7 +359,134 @@ export type PlanTodo = {
   short: Array<{ itemKey: string; groupId: string | null; missing: number; mode: PlanItemMode }>;
   waitingReview: Array<{ itemKey: string; attemptRef: string; validator: PlanValidatorVerdict }>;
   rerun: Array<{ itemKey: string; attemptRef: string; state: "failed" | "interrupted" }>;
+  /** BL-173: the open re-checks, oldest first. */
+  rechecks: Array<{ recheckId: string; kind: PlanRecheckKind; itemKey: string; attemptRef: string; openedAt: string }>;
 };
+
+// ---------------------------------------------------------------------------
+// BL-173 (FO-REQ-0017, docs/roadmap/plans/PLAN_RECHECKS_PLAN.md): a re-check sends an attempt the owner already rated back to
+// the owner -- a fixed version (its own file and checks) or a question about a spot. Stored apart from the result rows, so the
+// original's rows and verdicts are never overwritten; the answer goes into the verdict history with its `recheckId`.
+// ---------------------------------------------------------------------------
+
+export const PLAN_RECHECK_KINDS = ["revision", "question"] as const;
+export type PlanRecheckKind = (typeof PLAN_RECHECK_KINDS)[number];
+export const PLAN_RECHECK_STATUSES = ["open", "answered", "withdrawn"] as const;
+export type PlanRecheckStatus = (typeof PLAN_RECHECK_STATUSES)[number];
+/**
+ * The stage id of the row under which a revision's own checks show on the review screen. Review round 2: a stage id can never
+ * contain `~` (`schemas.ts` STAGE_ID_PATTERN), so it is never a real stage of a plan.
+ */
+export const RECHECK_STAGE_ID = "~recheck";
+/** The review screen's "wave" of re-checks (`?wave=~rechecks`); no group id can contain `~`. */
+export const RECHECKS_WAVE = "~rechecks";
+
+/** The verdict a re-check was opened on (who gave it: a device, or the factory for a relayed one; null = not known). */
+export type PlanRecheckVerdict = { result: "accepted" | "rejected"; rating: number | null; reasons: string[]; markers: PlanMarker[]; note: string | null; device: string | null; at: string };
+/** The owner's answer: a verdict, or (`kept`) the verdict kept with a note. */
+export type PlanRecheckAnswer = { result: "accepted" | "rejected"; kept: boolean; rating: number | null; reasons: string[]; markers: PlanMarker[]; note: string | null; device: string; at: string };
+
+export type PlanRecheck = {
+  recheckId: string;
+  itemKey: string;
+  attemptRef: string;
+  kind: PlanRecheckKind;
+  /** The short reason on the entry («резкость», «голос на 0:25»). */
+  title: string;
+  /** What was wrong and what changed (revision), or the question itself. */
+  note: string;
+  /** The revised file, relative to the channel's Sent to YTM (revision only). */
+  auditionFile: string | null;
+  markers: PlanMarker[];
+  /** The validator's results for the revised file (revision). */
+  checks: PlanCheck[];
+  metrics: Record<string, number | string | boolean | null>;
+  previousVerdict: PlanRecheckVerdict | null;
+  status: PlanRecheckStatus;
+  openedAt: string;
+  closedAt: string | null;
+  answer: PlanRecheckAnswer | null;
+  withdrawNote: string | null;
+  /** "plan_closed" = withdrawn because the plan was closed. */
+  closeReason: string | null;
+};
+
+/** `factory_plan_get`: a re-check with the current file of its attempt (null = the attempt's own audition). */
+export type PlanRecheckView = PlanRecheck & { currentFile: string | null };
+
+/**
+ * The review screen's entry for one open re-check: the attempt's entry, plus the re-check. `pendingKept`: the answer on its way
+ * (`verdict`) keeps the verdict -- a note, not a new verdict. `beforeRow`: a revision's "Before" is an earlier accepted revision
+ * (its row, for its loudness); absent = the attempt's own file.
+ */
+export type PlanRecheckEntry = PlanReviewEntry & { recheck: PlanRecheck; pendingKept?: boolean; beforeRow?: PlanResultRow };
+
+/**
+ * The current file of each attempt with an accepted revision: the `auditionFile` of its newest revision the owner accepted
+ * (not kept), by the answer's time. Pure.
+ */
+export function currentFilesOf(rechecks: readonly PlanRecheck[]): Map<string, { file: string; recheck: PlanRecheck }> {
+  const out = new Map<string, { file: string; recheck: PlanRecheck }>();
+  const accepted = rechecks
+    .filter((r) => r.kind === "revision" && r.auditionFile !== null && r.answer !== null && !r.answer.kept && r.answer.result === "accepted")
+    .sort((a, b) => Date.parse(a.answer!.at) - Date.parse(b.answer!.at));
+  for (const r of accepted) out.set(`${r.itemKey}\u0000${r.attemptRef}`, { file: r.auditionFile as string, recheck: r });
+  return out;
+}
+
+/**
+ * The row under which a revision's checks and metrics show -- also when it has none (review round 1): the row says the entry plays
+ * a revision, so the screen never takes the original's loudness for it.
+ */
+export function recheckStageRow(recheck: Pick<PlanRecheck, "itemKey" | "attemptRef" | "auditionFile" | "checks" | "metrics" | "openedAt">): PlanResultRow {
+  // Review round 2: a revision that fails a `fail` check reads as rejected, like a validator row (its failures show at the top).
+  const failed = recheck.checks.some((c) => !c.pass && c.severity === "fail");
+  return { stageId: RECHECK_STAGE_ID, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: failed ? "rejected" : "done", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: recheck.auditionFile, checks: recheck.checks, metrics: recheck.metrics, referenceIds: [], at: recheck.openedAt };
+}
+
+/**
+ * The review screen's entry for an open re-check (PLAN_RECHECKS_PLAN.md §2.8): the attempt's own entry (its rows, history,
+ * validator), then `extra` -- the revision's row for a revision, or the accepted revision's row for a question that plays it.
+ * `verdict` stays null while the re-check waits for an answer (the screen's "waiting"); an answer on its way is passed in.
+ */
+export function recheckEntry(
+  recheck: PlanRecheck,
+  base: PlanReviewEntry | null,
+  item: { groupId: string | null; params: Record<string, PlanParamValue> } | null,
+  extra: PlanResultRow | null,
+  pending: { verdict: PlanResultRow; from: string; kept?: boolean } | null = null,
+  before: PlanResultRow | null = null
+): PlanRecheckEntry {
+  const stages = [...(base?.stages ?? []), ...(extra ? [extra] : [])];
+  return {
+    itemKey: recheck.itemKey,
+    groupId: base?.groupId ?? item?.groupId ?? null,
+    attemptRef: recheck.attemptRef,
+    jobId: base?.jobId ?? null,
+    seed: base?.seed ?? null,
+    params: base && Object.keys(base.params).length > 0 ? base.params : (item?.params ?? {}),
+    stages,
+    verdict: pending ? pending.verdict : null,
+    // A revision plays its file; a question plays the attempt's (an accepted revision's, or what the attempt itself plays).
+    playable: recheck.kind === "revision" || extra !== null || (base?.playable ?? false),
+    // What the validator said about the attempt itself -- never the revision's row.
+    validator: base ? validatorOfEntry(base) : null,
+    ...(base?.history ? { history: base.history } : {}),
+    ...(pending ? { pendingFrom: pending.from } : {}),
+    ...(pending?.kept ? { pendingKept: true } : {}),
+    ...(before ? { beforeRow: before } : {}),
+    recheck,
+  };
+}
+
+/** BL-173: a re-check id already stored with other content. */
+export function planRecheckExists(message: string, details: Record<string, unknown>): DomainError {
+  return new DomainError({ code: "plan_recheck_exists", message, details });
+}
+/** BL-173: a re-check that is no longer open (answered, withdrawn), or already answered from this computer. */
+export function planRecheckClosed(message: string, details: Record<string, unknown>): DomainError {
+  return new DomainError({ code: "plan_recheck_closed", message, details });
+}
 
 export function planNotFound(planId: string): DomainError {
   return new DomainError({ code: "plan_not_found", message: `No generation plan ${planId} on this device`, details: { planId } });

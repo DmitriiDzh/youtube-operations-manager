@@ -715,6 +715,13 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Хранение (v80):** `video_comments` (без данных авторов; новый вид политики `authorized_expiring`, III.E.4.c — очистка удаляет строки старше 30 дней по `fetched_at`, в базе, при импорте и в копиях), `video_comment_state`, `video_comment_channel_state`. Только на этом устройстве.
 - **Чтение:** `agent_get_video_comments` (Agent API 3.13.0, `video_context.query_video_comments`; у Producer — API 1.6.0).
 
+### 2.9aj Повторные проверки оценённых треков (BL-173, FO-REQ-0017, `docs/roadmap/plans/PLAN_RECHECKS_PLAN.md`) — **IMPLEMENTED на `feature/fo-req-0017-rechecks`, ждёт решения владельца о слиянии**
+
+- **Запись:** `generation_plan_rechecks` (v82, на компьютере плана) — исправленная версия (свой файл, проверки, метрики) или вопрос о месте; отдельно от `generation_plan_results`, строки и оценки оригинала не меняются. `recheck_id`/`kept` в `generation_plan_verdict_history` и `generation_plan_peer_verdicts`.
+- **Ядро планов** (`src/lib/generation-plans/services.ts`): `requestRecheck` / `withdrawRecheck` (Factory API 1.11.0: `factory_plan_request_recheck` / `factory_plan_withdraw_recheck`), `answerRecheck` (Web `POST …/recheck`): оценка заменяет строку owner_review и пишется в историю с `recheckId`; «оставить оценку» (вопрос) — только заметка с `kept`, без `owner_verdict` и без счётчиков. Принятая исправленная версия — текущий файл попытки (`resolveAudition`, `progress.rechecks[].currentFile`). Счётчики `rechecksOpen`, `groups[].counts.rechecks` — не `waitingReview`. Перенос плана запрещён при открытой проверке, закрытие плана их отзывает.
+- **Два компьютера:** отчёт планов v4 (`plans[].rechecks`, `currentFile`, `recheckId`/`kept`); ответ с другого компьютера — как оценка с `recheckId`, применяется один раз на тике владельца плана; до применения — «отвечено на …».
+- **Экран:** Review → раздел «Повторные проверки» (`?wave=~rechecks`), A/B «Было / Исправлено», кнопки «к 0:25», «Оставить оценку» (K); карточка и список планов — «Повторные проверки: N».
+
 ### 2.9ai Наличие GPU по дата-центрам RunPod — сейчас и журнал раз в 3 часа (BL-172, FO-REQ-0016, `docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md`) — **IMPLEMENTED, влито в `dev` (`12e632a`)**
 
 - **Сейчас:** `factory_media_get_gpu_availability` (Factory API 1.10.0) → `getGpuAvailability` в ядре медиа: два чтения каталога v2 через медиа-шлюз (`listGpuTypes` с `minCudaVersion`, всегда Secure Cloud; `listDataCenters`), сборка — чистая `buildGpuAvailability` (`src/lib/media-generation/gpu-availability.ts`). По GPU — цена, общий запас, `cudaAvailable`, запас по дата-центрам с `networkVolume` и `s3Api`; `s3Api` — документированный список RunPod (`RUNPOD_S3_DATACENTERS`, `runpod-s3.ts`), не живая проверка.

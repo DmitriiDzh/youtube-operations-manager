@@ -228,6 +228,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   generation_plan_peer_group_notes: "wave notes written on this device for another device's plans (BL-162); they travel in this device's sync report, not in a snapshot",
   generation_plan_verdict_history: "the verdict history of this device's generation plans (BL-157); it belongs to the owning device's plan",
   generation_plan_review_claims: "this device's short-lived 'being reviewed here' claims (BL-157); they travel in this device's sync report, not in a snapshot",
+  generation_plan_rechecks: "the re-checks of this device's generation plans (BL-173); they belong to the owning device's plan and travel in its sync report",
 });
 
 /**

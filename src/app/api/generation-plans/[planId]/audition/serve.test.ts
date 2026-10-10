@@ -6,7 +6,7 @@ import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { DomainError } from "@/lib/shared-domain";
 import { createExchangeFs, resolveFromYtmJobFile, resolveSentToYtmFile } from "@/lib/workspace-exchange";
-import { createAuditionGetHandler, createReferenceGetHandler, parseRange } from "./serve";
+import { createAuditionGetHandler, createRecheckAuditionGetHandler, createReferenceGetHandler, parseRange } from "./serve";
 
 // AC-GP-14 (GENERATION_PLANS_PLAN.md §4): the audition route serves only the file of the plan's own attempt, found by the
 // plans core and proven inside the channel workspace; Range works; a missing file is a 404 with a message.
@@ -147,6 +147,41 @@ test("AC-SM-03: a plan that is not the active channel's is not found (404); the 
     const other = await get(h, "itemKey=C1/F1&attemptRef=job:job-1", {}, "P2");
     assert.equal(other.status, 404);
     assert.equal(((await other.json()) as { error: string }).error, "plan_not_found");
+  } finally {
+    await w.cleanup();
+  }
+});
+
+test("BL-173 (§2.4): a re-check's file is served by its re-check id only, with the same checks and Range", async () => {
+  const w = await workspaceWithFiles();
+  try {
+    const unavailable = (reason: string) => new Error(reason);
+    const asked: string[] = [];
+    const h = createRecheckAuditionGetHandler({
+      getSession: async () => ({ user: { id: "u1" } }),
+      assertVisible: async () => undefined,
+      async resolveRecheck({ planId, recheckId }) {
+        asked.push(`${planId}|${recheckId}`);
+        if (recheckId === "r1") return { channelId: "UC1", kind: "sent", relativePath: "R-0001/C1/final-1.mp3" };
+        if (recheckId === "escape") return { channelId: "UC1", kind: "sent", relativePath: "R-0001/C1/escape.mp3" };
+        throw new DomainError({ code: "plan_mismatch", message: "no such re-check" });
+      },
+      workspaceOf: async () => w.ws,
+      resolveSentFile: (workspace, relativePath) => resolveSentToYtmFile({ workspace, relativePath, fs: createExchangeFs(), validateWorkspacePath: async () => ({ ok: true }), isPathInsideOrEqual, unavailable }),
+      resolveJobFile: async () => {
+        throw new Error("not used");
+      },
+    });
+    const at = (query: string, headers: Record<string, string> = {}) => h(new Request(`http://127.0.0.1:3000/api/generation-plans/P1/recheck-audition?${query}`, { headers: { host: "127.0.0.1:3000", ...headers } }), { params: Promise.resolve({ planId: "P1" }) });
+    const ok = await at("recheckId=r1", { range: "bytes=0-9" });
+    assert.equal(ok.status, 206);
+    assert.equal(ok.headers.get("content-type"), "audio/mpeg");
+    assert.equal((await ok.arrayBuffer()).byteLength, 10);
+    assert.equal((await at("recheckId=r1&file=../../x.mp3")).status, 400, "nothing but the re-check id");
+    assert.equal((await at("")).status, 400);
+    assert.equal((await at("recheckId=unknown")).status, 422);
+    assert.equal((await at("recheckId=escape")).status, 404, "a symlink out of Sent to YTM is not served");
+    assert.deepEqual(asked, ["P1|r1", "P1|unknown", "P1|escape"]);
   } finally {
     await w.cleanup();
   }

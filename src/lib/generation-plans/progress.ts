@@ -253,8 +253,14 @@ function sessionUsd(s: PlanSessionRow, now: Date): { usd: number; final: boolean
   return { usd: s.costPerHr !== null ? (s.costPerHr * seconds) / 3600 : 0, final: false, seconds };
 }
 
-export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], sessions: PlanSessionRow[], now: Date): PlanProgress {
+/**
+ * `rechecks` (BL-173, PLAN_RECHECKS_PLAN.md §2.5): the plan's re-checks -- the open ones are counted per plan and per wave, apart
+ * from `waitingReview` (they never enter the review counts, the notices or the badge).
+ */
+export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[], sessions: PlanSessionRow[], now: Date, rechecks: ReadonlyArray<{ itemKey: string; status: string }> = []): PlanProgress {
   const d = derive(plan, jobs, results);
+  const open = rechecks.filter((r) => r.status === "open");
+  const groupOf = new Map(plan.items.map((i) => [i.itemKey, i.groupId]));
   const totalTarget = plan.items.reduce((sum, i) => sum + i.targetCount, 0);
   const stages = plan.stages.map((stage) => {
     const counts = emptyCounts(totalTarget);
@@ -277,6 +283,7 @@ export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: 
         rejected: own.reduce((s, i) => s + i.rejected, 0),
         waitingReview: own.reduce((s, i) => s + i.waitingReview, 0),
         missing: own.reduce((s, i) => s + i.missing, 0),
+        rechecks: open.filter((r) => groupOf.get(r.itemKey) === g.groupId).length,
       },
     };
   });
@@ -296,6 +303,7 @@ export function planProgress(plan: GenerationPlan, jobs: PlanJobRow[], results: 
     budget: { usd: plan.budget.usd, usedShare: usedShare === null ? null : Math.round(usedShare * 1000) / 1000, warnings },
     eta: estimate(plan, d, jobs, sessions),
     notices: noticesOf(plan, stages, d, warnings),
+    rechecksOpen: open.length,
   };
 }
 
@@ -338,7 +346,7 @@ function estimate(plan: GenerationPlan, d: Derived, jobs: PlanJobRow[], sessions
   return { seconds: Math.round(mean * left), gpuTypeId, samples: durations.length };
 }
 
-export function planTodo(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): PlanTodo {
+export function planTodo(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Omit<PlanTodo, "rechecks"> {
   const d = derive(plan, jobs, results);
   // A failed/interrupted attempt needs a re-run only while its item is still short of its target.
   const shortItems = new Set(d.items.filter((i) => i.missing > 0).map((i) => i.itemKey));
@@ -392,7 +400,8 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
   for (const r of results) {
     if (r.reportedBy === "import") continue;
     if (r.reportedBy === "owner" && historyKeys.has(`${r.itemKey}\u0000${r.attemptRef}`)) {
-      for (const h of history.filter((x) => x.itemKey === r.itemKey && x.attemptRef === r.attemptRef)) {
+      // BL-173: a kept re-check answer is a note, not a verdict -- no `owner_verdict` (its `recheck_answered` event says it).
+      for (const h of history.filter((x) => x.itemKey === r.itemKey && x.attemptRef === r.attemptRef && x.kept !== true)) {
         const asRow = { ...r, result: h.result };
         events.push({
           at: h.at,
@@ -409,6 +418,7 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
             ...(h.markers.length > 0 ? { markers: h.markers } : {}),
             ...(h.note ? { note: h.note } : {}),
             ...(overrides(asRow) ? { overridesValidator: true } : {}),
+            ...(h.recheckId ? { recheckId: h.recheckId } : {}),
           },
         });
       }
