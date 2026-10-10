@@ -110,6 +110,8 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
   <computer>, being applied" and it no longer counts as open. Pending re-check answers are not pending verdicts (no `replace`
   question for the track).
 - Claims: the track claim (plan, item, attempt) as for any track; `claimReview` also accepts an attempt named by an open re-check.
+- An answer sent from here is one of this computer's outgoing verdicts: a later ordinary re-rating of the same track from here asks
+  "already rated here -- replace?" (`recordPeerVerdict`), as after any verdict sent from here. Intended, not a leak.
 
 ### 2.8 Screen (Media → Review)
 
@@ -167,7 +169,16 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
 - **AC-RC-13 Screen helpers.** The pure helpers: re-check entries built from a queue and re-checks (own and peer), the picker's
   re-check option and count, the marker buttons, history labels -- tested; the screen checked in Chrome on the Mac after the merge.
 
-## 4. Build order
+## 4. Changed while building (2026-10-10)
+
+- **Error codes** are `plan_recheck_exists` and `plan_recheck_closed` (409), following `plan_verdict_exists`; DEV-RESP-0020 wrote
+  `recheck_exists`. The DEV-REL names them.
+- **`currentFile`** in `progress.rechecks[]` is never null for an attempt with a reported file: the accepted revision's file, else
+  the attempt's latest reported `auditionFile` (null only when the attempt has nothing but its job output) -- the file to deliver.
+- **`plan.review` on the screen of the other computer** may not hold an attempt beyond the report's 500 entries; its re-check entry
+  then shows without the attempt's own rows (the re-check's own data is complete).
+
+## 5. Build order
 
 1. Contracts, schemas, DB (v82), store adapter, services (open, withdraw, answer, current file, counts, move/close), events.
 2. Sync report v4 (schemas, share, peer answers, apply, pending).

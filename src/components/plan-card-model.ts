@@ -26,6 +26,8 @@ export type PlanCardModel = {
   events: PlanEvent[];
   /** The tracks waiting for the owner's verdict (another device's: minus the verdicts already sent from here). */
   waiting: number;
+  /** BL-173: the open re-checks waiting for the owner's answer (another device's: minus the answers already sent from here). */
+  rechecks: number;
   device: PlanCardDevice;
   /**
    * BL-162 (FO-REQ-0013 §2.3): whether a wave note can be written here -- this device's plan ("own"), another device's that can
@@ -36,8 +38,8 @@ export type PlanCardModel = {
   pendingNotes: Record<string, { note: string | null; at: string }>;
 };
 
-/** A verdict this computer sent to another device's plan, not yet shown applied there. */
-export type OutgoingVerdictRef = { ownerDeviceId: string; planId: string; itemKey: string; attemptRef: string };
+/** A verdict this computer sent to another device's plan, not yet shown applied there (BL-173: `recheckId` = an answer to a re-check). */
+export type OutgoingVerdictRef = { ownerDeviceId: string; planId: string; itemKey: string; attemptRef: string; recheckId?: string; kept?: boolean };
 
 /** This device's plan as the card shows it. */
 export function ownPlanModel(detail: PlanView & { events: PlanEvent[] }): PlanCardModel {
@@ -54,6 +56,7 @@ export function ownPlanModel(detail: PlanView & { events: PlanEvent[] }): PlanCa
     progress,
     events: detail.events,
     waiting: progress.items.reduce((sum, i) => sum + i.waitingReview, 0),
+    rechecks: progress.rechecksOpen,
     device: null,
     notes: "own",
     pendingNotes: {},
@@ -144,8 +147,12 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
  * verdict, less the verdicts this computer already sent there (they wait for that device to apply them).
  */
 export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevice>, outgoing: readonly OutgoingVerdictRef[], outgoingNotes: readonly OutgoingNoteRef[] = []): PlanCardModel {
-  const sent = new Set(outgoing.filter((v) => v.ownerDeviceId === device.deviceId && v.planId === plan.planId).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
+  const mine = outgoing.filter((v) => v.ownerDeviceId === device.deviceId && v.planId === plan.planId);
+  // BL-173: a kept re-check answer is no verdict on the track.
+  const sent = new Set(mine.filter((v) => v.kept !== true).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
   const open = plan.review.filter((e) => e.verdict === null && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
+  const answered = new Set(mine.flatMap((v) => (v.recheckId ? [v.recheckId] : [])));
+  const rechecks = (plan.rechecks ?? []).filter((r) => !answered.has(r.recheckId)).length;
   const waiting = open.length;
   const rejected = open.filter((e) => validatorOfEntry(e) === "rejected").length;
   const reported = sharedProgress(plan.progress);
@@ -170,6 +177,7 @@ export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevi
     progress: { ...progress, notices },
     events: plan.events.map((e) => ({ at: e.at, kind: e.kind, actor: e.actor, details: e.details })),
     waiting,
+    rechecks,
     device,
     notes: (device.version ?? 1) >= 3 ? "relay" : "update_required",
     pendingNotes: pendingNotesOf(plan.groups, outgoingNotes.filter((n) => n.ownerDeviceId === device.deviceId && n.planId === plan.planId)),

@@ -889,7 +889,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const base = entries.find((e) => e.itemKey === r.itemKey && e.attemptRef === r.attemptRef) ?? null;
       const item = row.definition.items.find((i) => i.itemKey === r.itemKey) ?? null;
       const answer = pending.get(r.recheckId);
-      return recheckEntry(r, base, item, extraStageOf(r, currentFiles), answer ? { verdict: sharedVerdictRow(answer.verdict, review.stageId), from: answer.from } : null);
+      return recheckEntry(r, base, item, extraStageOf(r, currentFiles), answer ? { verdict: sharedVerdictRow(answer.verdict, review.stageId), from: answer.from, kept: answer.verdict.kept === true } : null);
     });
   }
 

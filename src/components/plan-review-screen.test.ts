@@ -3,7 +3,7 @@ import test from "node:test";
 import { formatPlayerTime } from "./media-review-player";
 import { createTranslator } from "@/lib/ui-text";
 import type { PlanCheck } from "@/lib/generation-plans/contracts";
-import { failedChecksOf, filterEntries, findingMarkers, nextWaitingIndex, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
+import { beforeLufs, failedChecksOf, filterEntries, findingMarkers, nextWaitingIndex, peerQueue, peerRecheckEntries, playedLufs, recheckMarkers, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
 
 // BL-152: the spectrogram marks' labels are translated; the requirement checked here is the English wording.
 const t = createTranslator("en");
@@ -263,4 +263,69 @@ test("BL-162 AC-UX-07: the wave picker shows waves with a waiting track and the 
   assert.deepEqual(pickerWaves(waves, "C1", false).shown.map((w) => w.groupId), ["C1", "C3", "C4"], "the chosen wave stays, in plan order");
   assert.deepEqual(pickerWaves(waves, null, true).shown.map((w) => w.groupId), ["C1", "C2", "C3", "C4"]);
   assert.deepEqual(pickerWaves([], null, false), { shown: [], reviewed: 0 });
+});
+
+// -- BL-173 (PLAN_RECHECKS_PLAN.md §2.8, AC-RC-13): re-checks on the review screen ---------------------------------------------
+
+const stageRow = (stageId: string, result: "done" | "accepted" | "rejected", metrics: Record<string, number> = {}) => ({ stageId, itemKey: "C14/V04", attemptRef: "job:8c4a", result, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: "R/C14/V04_s1811.mp3", checks: [], metrics, referenceIds: [], at: "2026-10-09T08:00:00.000Z" });
+
+test("BL-173: K keeps the verdict (a re-check's question); the other keys are unchanged", () => {
+  assert.equal(reviewKeyAction("k"), "keep");
+  assert.equal(reviewKeyAction("K"), "keep");
+  assert.equal(reviewKeyAction("a"), "accept");
+});
+
+test("BL-173: a revision plays at its own loudness (never the original's); Before keeps the original's; a question plays at the attempt's", () => {
+  const stages = [stageRow("postprocess", "done"), stageRow("validate", "accepted", { lufs: -14 })];
+  const revisionRow = { ...stageRow("recheck", "done", { lufs: -16.2 }) };
+  assert.equal(playedLufs({ stages: [...stages, revisionRow], recheck: { kind: "revision", metrics: { lufs: -16.2 } } }), -16.2);
+  assert.equal(playedLufs({ stages, recheck: { kind: "revision", metrics: {} } }), null, "no LUFS for the fixed file: measured, not the original's -14");
+  assert.equal(playedLufs({ stages, recheck: { kind: "question", metrics: {} } }), -14);
+  assert.equal(beforeLufs({ stages: [...stages, revisionRow] }), -14, "Before is the attempt itself, without the revision's row");
+});
+
+test("BL-173: a re-check's spots become question ranges, labelled with their note or the fallback", () => {
+  assert.deepEqual(recheckMarkers({ markers: [{ start: 25, end: 35, note: null }, { start: 40, end: null, note: "voice?" }] }, "question"), [
+    { start: 25, end: 35, label: "question", tone: "question" },
+    { start: 40, end: null, label: "voice?", tone: "question" },
+  ]);
+  assert.deepEqual(recheckMarkers(undefined, "question"), []);
+});
+
+test("BL-173: another computer's open re-checks become entries with the attempt's rows, the revision's row last; an answer sent from here counts as given", () => {
+  const shared = {
+    recheckId: "C14-XL_V04_s1811__r1",
+    itemKey: "C14/V04",
+    attemptRef: "job:8c4a",
+    kind: "revision" as const,
+    title: "резкость",
+    note: "fixed 2-3 kHz",
+    auditionFile: "R/C14/V04_s1811__r1.mp3",
+    markers: [],
+    checks: [],
+    metrics: { lufs: -16.2 },
+    previousVerdict: { result: "rejected" as const, rating: null, reasons: [], markers: [], note: "too sharp", device: "MAC", at: "2026-10-09T20:00:00.000Z" },
+    openedAt: "2026-10-10T12:00:00.000Z",
+    extraStage: stageRow("recheck", "done", { lufs: -16.2 }),
+  };
+  const reviewEntry = { itemKey: "C14/V04", groupId: "C14", attemptRef: "job:8c4a", jobId: "8c4a", seed: 1811, params: {}, stages: [stageRow("postprocess", "done"), stageRow("validate", "accepted")], verdict: { ...stageRow("owner_review", "rejected"), reportedBy: "owner" as const }, playable: true };
+  // As the peers route answers: the shared entries carry no `validator` (the reader derives it from the stages).
+  const data = {
+    devices: [{ deviceId: "mac-1", hostname: "MAC", plans: [{ planId: "R-0001-S1-music", review: [reviewEntry], itemParams: { "C14/V04": { prompt: "koto" } }, items: [{ itemKey: "C14/V04", groupId: "C14" }], rechecks: [shared] }] }],
+    outgoing: [],
+  } as unknown as Parameters<typeof peerRecheckEntries>[0];
+  const source = { deviceId: "mac-1", hostname: "MAC" };
+  const [open] = peerRecheckEntries(data, source, "R-0001-S1-music");
+  assert.deepEqual(
+    [open.recheck.recheckId, open.recheck.status, open.groupId, open.stages.map((s) => s.stageId), open.verdict, open.validator, open.params],
+    ["C14-XL_V04_s1811__r1", "open", "C14", ["postprocess", "validate", "recheck"], null, "passed", { prompt: "koto" }]
+  );
+  data.outgoing.push({ planId: "R-0001-S1-music", ownerDeviceId: "mac-1", itemKey: "C14/V04", attemptRef: "job:8c4a", result: "accepted", rating: 8, at: "2026-10-10T12:10:00.000Z", recheckId: "C14-XL_V04_s1811__r1" });
+  const [sent] = peerRecheckEntries(data, source, "R-0001-S1-music");
+  assert.deepEqual([sent.verdict?.result, sent.verdict?.note, sent.pendingKept ?? false], ["accepted", "sent, waiting for MAC", false]);
+  // A kept answer sent from here is a note: the track itself keeps showing the verdict that device holds.
+  data.outgoing[0] = { ...data.outgoing[0], kept: true, result: "rejected" };
+  assert.equal(peerRecheckEntries(data, source, "R-0001-S1-music")[0].pendingKept, true);
+  assert.equal(peerQueue(data, source, "R-0001-S1-music")[0].verdict?.note, null, "no 'sent, waiting' on the track for a kept answer");
+  assert.deepEqual(peerRecheckEntries({ ...data, devices: [{ ...data.devices[0], plans: [{ ...data.devices[0].plans[0], rechecks: undefined }] }] }, source, "R-0001-S1-music"), [], "a version 3 report has none");
 });

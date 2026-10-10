@@ -409,8 +409,11 @@ export type PlanRecheck = {
 /** `factory_plan_get`: a re-check with the current file of its attempt (null = the attempt's own audition). */
 export type PlanRecheckView = PlanRecheck & { currentFile: string | null };
 
-/** The review screen's entry for one open re-check: the attempt's entry, plus the re-check. */
-export type PlanRecheckEntry = PlanReviewEntry & { recheck: PlanRecheck };
+/**
+ * The review screen's entry for one open re-check: the attempt's entry, plus the re-check. `pendingKept`: the answer on its way
+ * (`verdict`) keeps the verdict -- a note, not a new verdict.
+ */
+export type PlanRecheckEntry = PlanReviewEntry & { recheck: PlanRecheck; pendingKept?: boolean };
 
 /**
  * The current file of each attempt with an accepted revision: the `auditionFile` of its newest revision the owner accepted
@@ -441,7 +444,7 @@ export function recheckEntry(
   base: PlanReviewEntry | null,
   item: { groupId: string | null; params: Record<string, PlanParamValue> } | null,
   extra: PlanResultRow | null,
-  pending: { verdict: PlanResultRow; from: string } | null = null
+  pending: { verdict: PlanResultRow; from: string; kept?: boolean } | null = null
 ): PlanRecheckEntry {
   const stages = [...(base?.stages ?? []), ...(extra ? [extra] : [])];
   return {
@@ -458,6 +461,7 @@ export function recheckEntry(
     validator: base ? validatorOfEntry(base) : null,
     ...(base?.history ? { history: base.history } : {}),
     ...(pending ? { pendingFrom: pending.from } : {}),
+    ...(pending?.kept ? { pendingKept: true } : {}),
     recheck,
   };
 }

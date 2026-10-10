@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PlanEvent, PlanNotice, PlanStageCounts, PlanStageKind, PlanView } from "@/lib/generation-plans/contracts";
+import { RECHECKS_WAVE, type PlanEvent, type PlanNotice, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
 import type { SharedPlan } from "@/lib/sync-gateway";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
@@ -181,7 +181,7 @@ function waitingCount(view: PlanView): number {
 const keyOf = (device: PlanCardDevice, planId: string) => (device ? `${device.deviceId}\u0000${planId}` : planId);
 
 /** One row of the Plans list, whichever device the plan lives on (BL-162 AC-UX-14). */
-type ListRow = { key: string; planId: string; title: string; status: string; spendUsd: number; budgetUsd: number | null; waiting: number; generated: { value: number; total: number; percent: number } | null; device: PlanCardDevice };
+type ListRow = { key: string; planId: string; title: string; status: string; spendUsd: number; budgetUsd: number | null; waiting: number; rechecks: number; generated: { value: number; total: number; percent: number } | null; device: PlanCardDevice };
 
 function generatedOf(t: Translate, stages: PlanView["progress"]["stages"]): ListRow["generated"] {
   const generate = stages.find((s) => s.kind === "in_app");
@@ -267,10 +267,10 @@ export function PlansPanel({
   const rows: ListRow[] = [
     ...(plans ?? [])
       .filter((p) => inFilter(p.plan.status))
-      .map((p) => ({ key: keyOf(null, p.plan.planId), planId: p.plan.planId, title: p.plan.title, status: p.plan.status, spendUsd: p.progress.spend.usd, budgetUsd: p.plan.budget.usd, waiting: waitingCount(p), generated: generatedOf(t, p.progress.stages), device: null })),
+      .map((p) => ({ key: keyOf(null, p.plan.planId), planId: p.plan.planId, title: p.plan.title, status: p.plan.status, spendUsd: p.progress.spend.usd, budgetUsd: p.plan.budget.usd, waiting: waitingCount(p), rechecks: p.progress.rechecksOpen ?? 0, generated: generatedOf(t, p.progress.stages), device: null })),
     ...peerModels
       .filter((m) => inFilter(m.status))
-      .map((m) => ({ key: keyOf(m.device, m.planId), planId: m.planId, title: m.title, status: m.status, spendUsd: m.progress.spend.usd, budgetUsd: m.progress.budget.usd, waiting: m.waiting, generated: generatedOf(t, m.progress.stages), device: m.device })),
+      .map((m) => ({ key: keyOf(m.device, m.planId), planId: m.planId, title: m.title, status: m.status, spendUsd: m.progress.spend.usd, budgetUsd: m.progress.budget.usd, waiting: m.waiting, rechecks: m.rechecks, generated: generatedOf(t, m.progress.stages), device: m.device })),
   ];
   const anyPeer = rows.some((r) => r.device !== null);
   const selectedModel: PlanCardModel | null = !selected
@@ -314,6 +314,7 @@ export function PlansPanel({
                   <span className="ml-auto text-xs text-zinc-400">
                     {r.budgetUsd !== null ? t("plans.spendOf", { spent: r.spendUsd.toFixed(2), budget: r.budgetUsd.toFixed(2) }) : t("unit.usd", { value: r.spendUsd.toFixed(2) })}
                     {r.waiting > 0 ? <span className="ml-2 text-amber-300">{t("plans.waitingForYou", { count: r.waiting })}</span> : null}
+                    {r.rechecks > 0 && r.status === "active" ? <span className="ml-2 text-sky-300">{t("plans.rechecksOpen", { count: r.rechecks })}</span> : null}
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
@@ -478,6 +479,12 @@ function PlanDetailCard({ model, onChanged, onReview }: { model: PlanCardModel; 
           {model.waiting > 0 && model.status === "active" && (
             <button type="button" onClick={() => onReview()} className={primaryButton}>
               {t("plans.reviewWaiting", { count: model.waiting })}
+            </button>
+          )}
+          {/* BL-173 (PLAN_RECHECKS_PLAN.md §2.8): the open re-checks, opened on their own "wave". */}
+          {model.rechecks > 0 && model.status === "active" && (
+            <button type="button" onClick={() => onReview(RECHECKS_WAVE)} className="rounded-md border border-sky-600/60 bg-sky-500/10 px-3 py-1.5 text-sm font-medium text-sky-100 hover:bg-sky-500/20">
+              ↺ {t("plans.rechecksOpen", { count: model.rechecks })}
             </button>
           )}
           {model.status === "active" && (
