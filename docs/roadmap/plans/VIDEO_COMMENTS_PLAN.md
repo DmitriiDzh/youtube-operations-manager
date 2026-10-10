@@ -1,6 +1,6 @@
 # Own-video comments (BL-171, FO-REQ-0015 item 7)
 
-**Status: IN PROGRESS** on `feature/fo-req-0015-video-comments`. Owner, Telegram 2026-10-10 (msg 2491, «да»): FO-REQ-0015 step 6 in the
+**Status: DONE, merged into `dev` (merge 0fe5183, owner Telegram msg 2495).** Branch `feature/fo-req-0015-video-comments`. Owner, Telegram 2026-10-10 (msg 2491, «да»): FO-REQ-0015 step 6 in the
 order of DEV-RESP-0018.
 
 ## 1. Facts (checked 2026-10-10)
