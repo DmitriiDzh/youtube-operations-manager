@@ -3,6 +3,7 @@ import {
   deleteGenerationPlanReviewClaim,
   insertGenerationPlanRecheck,
   listGenerationPlanRechecks,
+  replaceGenerationPlanRecheckAnswer,
   getGenerationPlan,
   insertGenerationPlanVerdictHistory,
   listGenerationPlanReviewClaims,
@@ -265,6 +266,7 @@ export function createPlanStore(): PlanStore {
         withdrawNote: set.withdrawNote ?? null,
         closeReason: set.closeReason ?? null,
       }),
+    replaceRecheckAnswer: (planId, recheckId, answer) => replaceGenerationPlanRecheckAnswer(planId, recheckId, JSON.stringify(answer)),
     // BL-157 (AC-TC-01): this device's review claims (times in ms in the table, ISO here).
     upsertClaim: (c) =>
       upsertGenerationPlanReviewClaim({

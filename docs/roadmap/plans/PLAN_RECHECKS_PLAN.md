@@ -89,8 +89,8 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
 
 ### 2.6 Moving and closing
 
-- `movePlan` is refused (`plan_invalid`, `reason: recheck_open`) while a re-check is open; its file check includes every
-  re-check's `auditionFile`.
+- `movePlan` is refused (`plan_invalid`, `reason: recheck_open`) while a re-check is open; its file check includes the files that
+  can still play: an open re-check's and an accepted revision's (not a withdrawn or rejected one's -- review round 1).
 - Closing a plan withdraws its open re-checks: `recheck_withdrawn { recheckId, reason: "plan_closed" }`.
 
 ### 2.7 Two computers (plans report version 4)
@@ -102,8 +102,9 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
   from here (`plan_recheck_closed`). Applied on the owning computer's tick:
   - open re-check -> applied as in §2.3 (a verdict answer older than the stored verdict goes to the history only);
   - already answered -> a verdict answer is applied like any peer verdict (newest wins, the same rule as BL-157 AC-TC-05; both stay
-    in the history), a kept one to the history only; both keep `recheckId`. The re-check's stored `answer` stays the first one
-    (the row follows the newest verdict anyway);
+    in the history), a kept one to the history only; both keep `recheckId`. A verdict answer that wins the row becomes the
+    re-check's `answer` (`recheck_answered { …, replaced: true }`), so the current file never contradicts the verdict (review round 1;
+    the first draft kept the first answer);
   - withdrawn -> history only, the verdict does not change.
   Each is handled once (`peer_verdict` event with `verdictId`, now also `recheckId`).
 - Pending on the owning computer: an answer sent from another computer and not applied yet shows the re-check as "answered on
@@ -175,8 +176,13 @@ closed_at (ms), answer_json, withdraw_note, close_reason`.
   `recheck_exists`. The DEV-REL names them.
 - **`currentFile`** in `progress.rechecks[]` is never null for an attempt with a reported file: the accepted revision's file, else
   the attempt's latest reported `auditionFile` (null only when the attempt has nothing but its job output) -- the file to deliver.
-- **`plan.review` on the screen of the other computer** may not hold an attempt beyond the report's 500 entries; its re-check entry
-  then shows without the attempt's own rows (the re-check's own data is complete).
+- **The shared review list** keeps the attempts of open re-checks even beyond the report's 500 entries (rated attempts come last),
+  so the other computer can play a question and a revision's "Before" (review round 1).
+- **Review round 1** also: a kept answer sent from here is not "already rated here" for a later re-rating; the previous verdict's
+  note loses the " (from <computer>)" of a relayed verdict; an answer that writes the attempt's first review row (a re-check opened
+  on a verdict still on its way) may record `group_reviewed`; a revision's row is always added to its entry (also without checks),
+  and "Before" carries an earlier accepted revision's row, so the screen never plays a revision at the original's loudness; a peer
+  answer is recorded under a lock; `?wave=~rechecks` with none open says so.
 
 ## 5. Build order
 

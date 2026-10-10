@@ -3471,10 +3471,14 @@ generation plans module (`src/lib/generation-plans/`); extends §29 and §33.
   the review-stage row unless the stored owner verdict is newer or the re-check was withdrawn, and adds a history row with `recheckId`.
   A kept answer (question only) adds a history row with `kept` and the note; `result` repeats the stored verdict, it never touches the
   row. The derived events skip kept rows (`planEvents`); `historyEntryOfVerdict` never picks one. An open re-check closes with the first
-  answer (`closeRecheck` is a compare-and-set on `open`) and records `recheck_answered`; `group_reviewed` cannot fire (the attempt was
-  already reviewed, so no wave's waiting count moves).
+  answer (`closeRecheck` is a compare-and-set on `open`) and records `recheck_answered`. A later verdict answer that wins the row on an
+  answered re-check (from the other computer) replaces its answer (`replaceRecheckAnswer`, `recheck_answered { replaced: true }`).
+  `group_reviewed` fires only when the answer wrote the attempt's first review row (a re-check opened on a verdict still on its way
+  from another computer); otherwise the attempt was already reviewed and no wave's waiting count moves.
 - **Current file.** `currentFilesOf`: per attempt, the file of its newest revision answered "accepted" (not kept). `resolveAudition`
-  plays it; `getPlan` reports it per re-check (else the latest reported file); the shared report carries it on the review entry.
+  plays it; `getPlan` reports it per re-check (else the latest reported file); the queue entry and the shared report carry it
+  (`currentFile`), and the screen then measures the loudness instead of taking the original's. A plan move checks the files that can
+  still play (open re-checks, accepted revisions).
 - **Counts.** `planProgress(…, rechecks)` adds `rechecksOpen` and per-wave `counts.rechecks`; the waiting rule (`reviewCandidates`),
   the notices, the badge and the channel summary are untouched.
 - **Two computers.** The owning device shares its open re-checks (with the row the entry shows: the revision's, or the accepted
@@ -3487,5 +3491,5 @@ generation plans module (`src/lib/generation-plans/`); extends §29 and §33.
   (`…/recheck-audition`) with the attempt's own file as A/B "Before", loudness from the revision's metrics (else measured, never the
   original's); a question opens at its first marker and offers "Keep the verdict" (K). Peer entries are built in the browser
   (`peerRecheckEntries`) from the version 4 report.
-- **Limits.** A plan's review list in the report holds 500 entries; a re-check of an attempt beyond them shows without the attempt's own
-  rows. Both computers must run report version 4 (RISK-119).
+- **Limits.** The report's review list holds 500 entries; the attempts of open re-checks are always among them. Both computers must
+  run report version 4 (RISK-119).

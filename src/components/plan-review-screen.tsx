@@ -181,14 +181,36 @@ export function reportedLufs(entry: Pick<PlanReviewEntry, "stages">): number | n
  * BL-173 (PLAN_RECHECKS_PLAN.md §2.8): the loudness of what the entry plays -- a revision's own metrics (never the original's:
  * null makes the screen measure the fixed file), else what the validator said about the attempt. Exported for its test.
  */
-export function playedLufs(entry: Pick<PlanReviewEntry, "stages"> & { recheck?: Pick<PlanRecheck, "kind" | "metrics"> }): number | null {
+export function playedLufs(entry: Pick<PlanReviewEntry, "stages" | "currentFile"> & { recheck?: Pick<PlanRecheck, "kind" | "metrics"> }): number | null {
   if (entry.recheck?.kind === "revision") return metricsLufs(entry.recheck.metrics);
+  // Review round 1: a question on an attempt that plays an accepted revision -- that revision's loudness, or measured.
+  const last = entry.stages.at(-1);
+  if (last?.stageId === RECHECK_STAGE_ID) return metricsLufs(last.metrics);
+  // A track of the queue that plays an accepted revision: measured, never the original's.
+  if (entry.currentFile) return null;
   return reportedLufs(entry);
 }
 
-/** BL-173: the loudness of what a revision is compared with ("Before"): the attempt's own rows, without the revision's. Exported for its test. */
-export function beforeLufs(entry: Pick<PlanReviewEntry, "stages">): number | null {
+/**
+ * BL-173: the loudness of what a revision is compared with ("Before") -- an earlier accepted revision's (`beforeRow`) when the
+ * attempt plays one, else the attempt's own rows without the revision's. Exported for its test.
+ */
+export function beforeLufs(entry: Pick<PlanReviewEntry, "stages"> & { beforeRow?: Pick<PlanResultRow, "metrics"> }): number | null {
+  if (entry.beforeRow) return metricsLufs(entry.beforeRow.metrics);
   return reportedLufs({ stages: entry.stages.filter((s) => s.stageId !== RECHECK_STAGE_ID) });
+}
+
+/** BL-173: the picker's re-checks line -- shown while any re-check is listed (or chosen), with the ones still open here. Exported for its test. */
+export function recheckPickerOption(rechecks: ReadonlyArray<{ verdict: unknown }>, wave: string | null): { shown: boolean; open: number } {
+  return { shown: rechecks.length > 0 || wave === RECHECKS_WAVE, open: rechecks.filter((e) => e.verdict === null).length };
+}
+
+/** BL-173: one line of a track's verdict history -- a kept answer reads as a note, and an answer to a re-check names it. Exported for its test. */
+export function historyLineOf(t: Translate, h: { result: string; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean }): { text: string; recheck: string | null } {
+  const text = h.kept
+    ? `${h.device} · ${formatDisplayDateTime(h.at)} · ${t("review.history.kept")}${h.note ? ` · ${h.note}` : ""}`
+    : t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" });
+  return { text, recheck: h.recheckId ? t("review.history.recheck", { id: h.recheckId }) : null };
 }
 
 /** BL-173: a re-check's spots (the factory's markers) as waveform ranges of their own tone, labelled with their note. Exported for its test. */
@@ -449,7 +471,7 @@ export function peerRecheckEntries(data: PeerQueueResponse, source: PeerReviewSo
     const base = queue.find((e) => e.itemKey === shared.itemKey && e.attemptRef === shared.attemptRef) ?? null;
     const item = plan.items?.find((i) => i.itemKey === shared.itemKey);
     const params = plan.itemParams && Object.hasOwn(plan.itemParams, shared.itemKey) ? plan.itemParams[shared.itemKey] : {};
-    const entry = recheckEntry(recheck, base, { groupId: item?.groupId ?? null, params }, (shared.extraStage as unknown as PlanResultRow | null) ?? null);
+    const entry = recheckEntry(recheck, base, { groupId: item?.groupId ?? null, params }, (shared.extraStage as unknown as PlanResultRow | null) ?? null, null, (shared.beforeStage as unknown as PlanResultRow | null | undefined) ?? null);
     const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.recheckId === shared.recheckId).at(-1);
     if (!sent) return entry;
     return {
@@ -572,8 +594,8 @@ export function PlanReviewScreen({
     // First open: the first waiting track no other computer is on (its claims arrive with the same answer). BL-162 (AC-UX-09):
     // with `?wave=`, that wave is chosen first -- after the queue arrived, so the same rule picks its track.
     void load().then(({ entries: list, rechecks }) => {
-      // BL-173: `?wave=~rechecks` opens on the first open re-check no other computer is on.
-      if (initialWave === RECHECKS_WAVE && rechecks.length > 0) {
+      // BL-173: `?wave=~rechecks` opens on the first open re-check no other computer is on (or says none is open).
+      if (initialWave === RECHECKS_WAVE) {
         setWave(RECHECKS_WAVE);
         setIndex(Math.max(0, rechecks.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null)));
         return;
@@ -932,7 +954,8 @@ export function PlanReviewScreen({
   const picker = pickerWaves(waves, wave, true);
   const allWaiting = (allEntries ?? []).filter((e) => e.verdict === null).length;
   // BL-173: open re-checks still waiting for an answer here (one answered elsewhere and on its way is not).
-  const rechecksOpen = recheckEntries.filter((e) => e.verdict === null).length;
+  const recheckOption = recheckPickerOption(recheckEntries, wave);
+  const rechecksOpen = recheckOption.open;
   const reviewedHere = (entries ?? []).filter((e) => e.verdict !== null).length;
   const takenElsewhere = (groupId: string) => claims.find((c) => c.scope === "group" && c.groupId === groupId && Date.parse(c.until) > nowMs) ?? null;
   const device = source ? (source.hostname ?? source.deviceId) : null;
@@ -1003,7 +1026,7 @@ export function PlanReviewScreen({
               return (
                 <>
                   {/* BL-173 (§2.8): the re-checks, above the waves and apart from them. */}
-                  {(recheckEntries.length > 0 || wave === RECHECKS_WAVE) && (
+                  {recheckOption.shown && (
                     <button
                       type="button"
                       onClick={() => {
@@ -1373,11 +1396,9 @@ export function PlanReviewScreen({
                     <ul className="mt-1 space-y-0.5">
                       {entry.history.map((h, i) => (
                         <li key={`${h.at}-${i}`}>
-                          {h.kept
-                            ? `${h.device} · ${formatDisplayDateTime(h.at)} · ${t("review.history.kept")}${h.note ? ` · ${h.note}` : ""}`
-                            : t("review.historyLine", { device: h.device, time: formatDisplayDateTime(h.at), result: resultLabel(t, h.result), rating: h.rating !== null ? ` ${h.rating}/10` : "", note: h.note ? ` · ${h.note}` : "" })}
+                          {historyLineOf(t, h).text}
                           {/* BL-173: an answer to a re-check names it. */}
-                          {h.recheckId ? <span className="text-sky-400/80"> · {t("review.history.recheck", { id: h.recheckId })}</span> : null}
+                          {h.recheckId ? <span className="text-sky-400/80"> · {historyLineOf(t, h).recheck}</span> : null}
                         </li>
                       ))}
                     </ul>

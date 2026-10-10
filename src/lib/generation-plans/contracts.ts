@@ -204,6 +204,8 @@ export type PlanReviewEntry = {
    * shown as "rated on <device>, being applied" and already counted as given (`verdict` carries it).
    */
   pendingFrom?: string;
+  /** BL-173: the accepted revision's file the attempt plays now (absent = its reported file or job output). */
+  currentFile?: string;
 };
 
 export type PlanValidatorVerdict = "passed" | "rejected";
@@ -411,9 +413,10 @@ export type PlanRecheckView = PlanRecheck & { currentFile: string | null };
 
 /**
  * The review screen's entry for one open re-check: the attempt's entry, plus the re-check. `pendingKept`: the answer on its way
- * (`verdict`) keeps the verdict -- a note, not a new verdict.
+ * (`verdict`) keeps the verdict -- a note, not a new verdict. `beforeRow`: a revision's "Before" is an earlier accepted revision
+ * (its row, for its loudness); absent = the attempt's own file.
  */
-export type PlanRecheckEntry = PlanReviewEntry & { recheck: PlanRecheck; pendingKept?: boolean };
+export type PlanRecheckEntry = PlanReviewEntry & { recheck: PlanRecheck; pendingKept?: boolean; beforeRow?: PlanResultRow };
 
 /**
  * The current file of each attempt with an accepted revision: the `auditionFile` of its newest revision the owner accepted
@@ -428,9 +431,11 @@ export function currentFilesOf(rechecks: readonly PlanRecheck[]): Map<string, { 
   return out;
 }
 
-/** The row under which a revision's checks and metrics show (null when it has neither). */
-export function recheckStageRow(recheck: Pick<PlanRecheck, "itemKey" | "attemptRef" | "auditionFile" | "checks" | "metrics" | "openedAt">): PlanResultRow | null {
-  if (recheck.checks.length === 0 && Object.keys(recheck.metrics).length === 0) return null;
+/**
+ * The row under which a revision's checks and metrics show -- also when it has none (review round 1): the row says the entry plays
+ * a revision, so the screen never takes the original's loudness for it.
+ */
+export function recheckStageRow(recheck: Pick<PlanRecheck, "itemKey" | "attemptRef" | "auditionFile" | "checks" | "metrics" | "openedAt">): PlanResultRow {
   return { stageId: RECHECK_STAGE_ID, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, result: "done", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: recheck.auditionFile, checks: recheck.checks, metrics: recheck.metrics, referenceIds: [], at: recheck.openedAt };
 }
 
@@ -444,7 +449,8 @@ export function recheckEntry(
   base: PlanReviewEntry | null,
   item: { groupId: string | null; params: Record<string, PlanParamValue> } | null,
   extra: PlanResultRow | null,
-  pending: { verdict: PlanResultRow; from: string; kept?: boolean } | null = null
+  pending: { verdict: PlanResultRow; from: string; kept?: boolean } | null = null,
+  before: PlanResultRow | null = null
 ): PlanRecheckEntry {
   const stages = [...(base?.stages ?? []), ...(extra ? [extra] : [])];
   return {
@@ -456,12 +462,14 @@ export function recheckEntry(
     params: base && Object.keys(base.params).length > 0 ? base.params : (item?.params ?? {}),
     stages,
     verdict: pending ? pending.verdict : null,
-    playable: true,
+    // A revision plays its file; a question plays the attempt's (an accepted revision's, or what the attempt itself plays).
+    playable: recheck.kind === "revision" || extra !== null || (base?.playable ?? false),
     // What the validator said about the attempt itself -- never the revision's row.
     validator: base ? validatorOfEntry(base) : null,
     ...(base?.history ? { history: base.history } : {}),
     ...(pending ? { pendingFrom: pending.from } : {}),
     ...(pending?.kept ? { pendingKept: true } : {}),
+    ...(before ? { beforeRow: before } : {}),
     recheck,
   };
 }

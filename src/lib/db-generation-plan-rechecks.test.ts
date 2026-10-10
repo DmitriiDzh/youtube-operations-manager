@@ -14,6 +14,7 @@ import {
   listGenerationPlanPeerVerdicts,
   listGenerationPlanRechecks,
   listGenerationPlanVerdictHistory,
+  replaceGenerationPlanRecheckAnswer,
   SCHEMA_MIGRATIONS,
   type AppDb,
 } from "@/lib/db";
@@ -81,6 +82,11 @@ test("re-checks: one per (plan, id); listed oldest first; only an open one close
     assert.equal(await closeGenerationPlanRecheck("R-0001-S1-music", "r1", { status: "withdrawn", closedAt, answerJson: null, withdrawNote: "late", closeReason: null }, database), false, "not open any more");
     const r1 = (await listGenerationPlanRechecks("R-0001-S1-music", database))[0];
     assert.deepEqual([r1.status, r1.answerJson, r1.withdrawNote], ["answered", JSON.stringify({ result: "accepted" }), null]);
+    // Review round 1: a newer verdict answer replaces an ANSWERED re-check's answer; an open one is never answered this way.
+    assert.equal(await replaceGenerationPlanRecheckAnswer("R-0001-S1-music", "r1", JSON.stringify({ result: "rejected" }), database), true);
+    assert.equal((await listGenerationPlanRechecks("R-0001-S1-music", database))[0].answerJson, JSON.stringify({ result: "rejected" }));
+    assert.equal(await replaceGenerationPlanRecheckAnswer("R-0001-S1-music", "q1", JSON.stringify({ result: "rejected" }), database), false);
+    assert.equal((await listGenerationPlanRechecks("R-0001-S1-music", database))[1].answerJson, null);
     assert.deepEqual(await listGenerationPlanRechecks("other-plan", database), []);
   }));
 

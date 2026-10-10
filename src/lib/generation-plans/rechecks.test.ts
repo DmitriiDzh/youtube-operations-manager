@@ -79,6 +79,12 @@ function memoryStore(jobs: Array<PlanJobRow & { planId: string | null }>) {
       Object.assign(r, { status: set.status, closedAt: set.closedAt, answer: set.answer ?? null, withdrawNote: set.withdrawNote ?? null, closeReason: set.closeReason ?? null });
       return true;
     },
+    async replaceRecheckAnswer(planId, recheckId, answer) {
+      const r = rechecks.find((x) => x.planId === planId && x.recheckId === recheckId);
+      if (!r || r.status !== "answered") return false;
+      r.answer = structuredClone(answer);
+      return true;
+    },
   };
   return { store, results, events, history, rechecks, peerVerdicts };
 }
@@ -482,4 +488,114 @@ test("AC-RC-11: the current verdict's history entry is never a kept answer", () 
   assert.equal(historyEntryOfVerdict(history, verdict)?.device, "MAC");
   assert.equal(historyEntryOfVerdict(history, { result: "accepted", rating: 8, at: "2026-10-10T13:00:00.000Z" })?.device, "MAC", "no exact match: the last verdict, not the kept note");
   assert.equal(historyEntryOfVerdict([history[1]], verdict), undefined);
+});
+
+// -- Review round 1 -----------------------------------------------------------------------------------------------------------
+
+test("AC-RC-10e: two computers answer the same revision -- the newer verdict decides both the row and the current file, both stay in the history", async () => {
+  // Rejected on the Mac, then accepted on Windows (later): the attempt is accepted and plays the revised file.
+  {
+    const { mac, win } = await twoComputers();
+    await mac.services.answerRecheck({ planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "rejected" });
+    await win.services.recordPeerRecheckAnswer({ deviceId: "mac-1", planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "accepted", rating: 9 });
+    mac.setPeerReports([await win.report()]);
+    await mac.services.applyPeerVerdicts();
+    const row = (await rowsOf(mac, V04)).find((r) => r.stageId === "owner_review");
+    assert.deepEqual([row?.result, row?.rating], ["accepted", 9]);
+    assert.deepEqual(await mac.services.resolveAudition({ planId: PLAN, ...V04 }), { channelId: CH, kind: "sent", relativePath: REVISED });
+    const view = (await mac.services.getPlan({ planId: PLAN })).progress.rechecks?.[0];
+    assert.deepEqual([view?.answer?.result, view?.answer?.device, view?.currentFile], ["accepted", "WIN", REVISED]);
+    assert.deepEqual(
+      (await mac.store.listVerdictHistory(PLAN)).filter((h) => h.recheckId === "C14-XL_V04_s1811__r1").map((h) => [h.result, h.device]),
+      [["rejected", "MAC"], ["accepted", "WIN"]]
+    );
+    const answered = (await mac.services.getPlan({ planId: PLAN, latest: true })).events.filter((e) => e.kind === "recheck_answered");
+    assert.deepEqual(answered.map((e) => [e.details.result, e.details.replaced ?? false]), [["rejected", false], ["accepted", true]]);
+  }
+  // Accepted on the Mac, then rejected on Windows (later): the attempt is rejected and plays the original again.
+  {
+    const { mac, win } = await twoComputers();
+    await mac.services.answerRecheck({ planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "accepted" });
+    await win.services.recordPeerRecheckAnswer({ deviceId: "mac-1", planId: PLAN, recheckId: "C14-XL_V04_s1811__r1", result: "rejected" });
+    mac.setPeerReports([await win.report()]);
+    await mac.services.applyPeerVerdicts();
+    assert.equal((await rowsOf(mac, V04)).find((r) => r.stageId === "owner_review")?.result, "rejected");
+    assert.deepEqual(await mac.services.resolveAudition({ planId: PLAN, ...V04 }), { channelId: CH, kind: "sent", relativePath: ORIGINAL });
+    assert.equal((await mac.services.getPlan({ planId: PLAN })).progress.rechecks?.[0].currentFile, ORIGINAL);
+  }
+});
+
+test("review round 1: the attempt of an open re-check travels in the report even when 500 newer tracks wait, so Windows can play it", async () => {
+  const mac = await rated();
+  for (let batch = 0; batch < 3; batch++) {
+    await mac.services.report({ planId: PLAN, rows: Array.from({ length: 170 }, (_, i) => ({ stageId: "validate", itemKey: C15.itemKey, attemptRef: `imp:${batch}-${i}`, result: "accepted" })) });
+  }
+  await mac.services.requestRecheck(question());
+  const report = await mac.report();
+  const review = report.plans[0].review;
+  assert.equal(review.length, 500, "still within the report's bound");
+  assert.ok(review.some((e) => e.itemKey === V03.itemKey && e.attemptRef === V03.attemptRef), "the re-checked attempt is there");
+  const win = computer({ deviceId: "win-1", label: "WIN" });
+  win.setPeerReports([report]);
+  assert.deepEqual(await win.services.resolvePeerRecheckAudition({ deviceId: "mac-1", planId: PLAN, recheckId: "C14-XL_V03_s1803__q1" }), { channelId: CH, kind: "sent", relativePath: V03_FILE });
+});
+
+test("review round 1: a kept answer sent from Windows is no verdict there -- a later re-rating of the track asks about the Mac's verdict", async () => {
+  const { win } = await twoComputers();
+  await win.services.recordPeerRecheckAnswer({ deviceId: "mac-1", planId: PLAN, recheckId: "C14-XL_V03_s1803__q1", kept: true, note: "no voice heard" });
+  await assert.rejects(win.services.recordPeerVerdict({ deviceId: "mac-1", planId: PLAN, ...V03, result: "rejected" }), (e: unknown) => {
+    const existing = (e as { details?: { existing?: { result: string; rating: number | null; device: string | null } } }).details?.existing;
+    return isDomainError(e) && e.code === "plan_verdict_exists" && existing?.result === "accepted" && existing.rating === 8 && existing.device === "MAC";
+  });
+});
+
+test("review round 1: a re-check opened on a verdict still on its way from Windows -- the Mac's answer writes the first row and finishes the wave", async () => {
+  const mac = await rated();
+  mac.setPeerReports([
+    {
+      format: "ytm-generation-plans",
+      version: 4,
+      deviceId: "win-1",
+      hostname: "WIN",
+      updatedAt: new Date(clockMs).toISOString(),
+      plans: [],
+      verdicts: [{ verdictId: "win-verdict-1", planId: PLAN, ownerDeviceId: "mac-1", ...C15, result: "accepted", rating: 6, reasons: [], markers: [], note: null, at: new Date(clockMs).toISOString() }],
+      claims: [],
+      groupNotes: [],
+    },
+  ]);
+  await mac.services.requestRecheck(question({ ...C15, recheckId: "c15-q1" }));
+  await mac.services.answerRecheck({ planId: PLAN, recheckId: "c15-q1", result: "rejected" });
+  // (C14 was finished by the two verdicts of the setup.)
+  const reviewed = (await mac.services.getPlan({ planId: PLAN, latest: true })).events.filter((e) => e.kind === "group_reviewed" && e.details.groupId === "C15");
+  assert.deepEqual(reviewed.map((e) => [e.details.groupId, e.details.rejected]), [["C15", 1]]);
+});
+
+test("review round 1: the verdict a re-check is opened on keeps the owner's words, without the ' (from <computer>)' a peer verdict carries", async () => {
+  const mac = await rated();
+  mac.setPeerReports([
+    {
+      format: "ytm-generation-plans",
+      version: 4,
+      deviceId: "win-1",
+      hostname: "WIN",
+      updatedAt: new Date(clockMs).toISOString(),
+      plans: [],
+      verdicts: [{ verdictId: "win-verdict-2", planId: PLAN, ownerDeviceId: "mac-1", ...C15, result: "accepted", rating: 7, reasons: [], markers: [], note: "nice drone", at: new Date(clockMs).toISOString() }],
+      claims: [],
+      groupNotes: [],
+    },
+  ]);
+  await mac.services.applyPeerVerdicts();
+  const { recheck } = await mac.services.requestRecheck(question({ ...C15, recheckId: "c15-q2" }));
+  assert.deepEqual([recheck.previousVerdict?.note, recheck.previousVerdict?.device], ["nice drone", "WIN"]);
+});
+
+test("review round 1: a withdrawn revision's file is not needed to move the plan", async () => {
+  const mac = await rated();
+  await mac.services.requestRecheck(revision());
+  await mac.services.withdrawRecheck({ planId: PLAN, recheckId: "C14-XL_V04_s1811__r1" });
+  mac.files.delete(REVISED);
+  const moved = await mac.services.movePlan({ planId: PLAN, channelId: CH2 });
+  assert.deepEqual([moved.moved, moved.checked, moved.missingCount], [true, 2, 0]);
 });

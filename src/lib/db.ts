@@ -9560,6 +9560,16 @@ export async function closeGenerationPlanRecheck(
   return rows.length > 0;
 }
 
+/** BL-173 (review round 1): a newer verdict answer that won on an ANSWERED re-check becomes its answer; false when it is not answered. */
+export async function replaceGenerationPlanRecheckAnswer(planId: string, recheckId: string, answerJson: string, database: AppDb = db): Promise<boolean> {
+  const rows = await database
+    .update(generationPlanRechecks)
+    .set({ answerJson })
+    .where(and(eq(generationPlanRechecks.planId, planId), eq(generationPlanRechecks.recheckId, recheckId), eq(generationPlanRechecks.status, "answered")))
+    .returning({ recheckId: generationPlanRechecks.recheckId });
+  return rows.length > 0;
+}
+
 export type StoredGenerationPlanReviewClaim = typeof generationPlanReviewClaims.$inferSelect;
 
 /** BL-157 (AC-TC-01): sets this device's claim (one per id; the caller decides the id, so a track claim moves in place). */

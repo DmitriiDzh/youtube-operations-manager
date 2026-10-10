@@ -3,7 +3,7 @@ import test from "node:test";
 import { formatPlayerTime } from "./media-review-player";
 import { createTranslator } from "@/lib/ui-text";
 import type { PlanCheck } from "@/lib/generation-plans/contracts";
-import { beforeLufs, failedChecksOf, filterEntries, findingMarkers, nextWaitingIndex, peerQueue, peerRecheckEntries, playedLufs, recheckMarkers, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
+import { beforeLufs, failedChecksOf, filterEntries, findingMarkers, historyLineOf, nextWaitingIndex, peerQueue, peerRecheckEntries, playedLufs, recheckMarkers, recheckPickerOption, REVIEW_REASONS, reviewKeyAction } from "./plan-review-screen";
 
 // BL-152: the spectrogram marks' labels are translated; the requirement checked here is the English wording.
 const t = createTranslator("en");
@@ -328,4 +328,30 @@ test("BL-173: another computer's open re-checks become entries with the attempt'
   assert.equal(peerRecheckEntries(data, source, "R-0001-S1-music")[0].pendingKept, true);
   assert.equal(peerQueue(data, source, "R-0001-S1-music")[0].verdict?.note, null, "no 'sent, waiting' on the track for a kept answer");
   assert.deepEqual(peerRecheckEntries({ ...data, devices: [{ ...data.devices[0], plans: [{ ...data.devices[0].plans[0], rechecks: undefined }] }] }, source, "R-0001-S1-music"), [], "a version 3 report has none");
+});
+
+test("BL-173 review round 1: a question on an accepted revision plays at that revision's loudness or is measured; a queue track playing one is measured; Before of a later revision is the earlier one's", () => {
+  const original = [stageRow("postprocess", "done"), stageRow("validate", "accepted", { lufs: -14 })];
+  assert.equal(playedLufs({ stages: [...original, stageRow("recheck", "done", { lufs: -15.5 })], recheck: { kind: "question", metrics: {} } }), -15.5);
+  assert.equal(playedLufs({ stages: [...original, stageRow("recheck", "done")], recheck: { kind: "question", metrics: {} } }), null, "the revision has no LUFS: measured, not the original's -14");
+  assert.equal(playedLufs({ stages: original, currentFile: "R/C14/V04_s1811__r1.mp3" }), null, "a queue track that plays an accepted revision");
+  assert.equal(playedLufs({ stages: original }), -14);
+  assert.equal(beforeLufs({ stages: [...original, stageRow("recheck", "done")], beforeRow: { metrics: { lufs: -15.5 } } }), -15.5);
+  assert.equal(beforeLufs({ stages: [...original, stageRow("recheck", "done")], beforeRow: { metrics: {} } }), null);
+});
+
+test("BL-173: the picker shows the re-checks while any is listed or chosen, counting the ones still open here", () => {
+  assert.deepEqual(recheckPickerOption([{ verdict: null }, { verdict: { result: "accepted" } }], null), { shown: true, open: 1 });
+  assert.deepEqual(recheckPickerOption([], null), { shown: false, open: 0 });
+  assert.deepEqual(recheckPickerOption([], "~rechecks"), { shown: true, open: 0 });
+});
+
+test("BL-173: a history line names a re-check's answer, and a kept answer reads as a note", () => {
+  const at = "2026-10-10T12:30:00.000Z";
+  const verdict = historyLineOf(t, { result: "accepted", rating: 9, note: null, device: "WIN", at, recheckId: "C14-XL_V04_s1811__r1" });
+  assert.match(verdict.text, /^WIN · .* · Accepted 9\/10$/i);
+  assert.equal(verdict.recheck, "re-check C14-XL_V04_s1811__r1");
+  const kept = historyLineOf(t, { result: "accepted", rating: null, note: "no voice heard", device: "MAC", at, recheckId: "q1", kept: true });
+  assert.match(kept.text, /^MAC · .* · verdict kept, note only · no voice heard$/);
+  assert.equal(historyLineOf(t, { result: "rejected", rating: null, note: null, device: "MAC", at }).recheck, null);
 });

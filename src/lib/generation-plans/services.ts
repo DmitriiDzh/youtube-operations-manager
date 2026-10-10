@@ -132,6 +132,8 @@ export type PlanStore = {
   listRechecks(planId: string): Promise<PlanRecheck[]>;
   /** Closes an OPEN re-check; false when it was not open any more (nothing changed). */
   closeRecheck(planId: string, recheckId: string, set: { status: "answered" | "withdrawn"; closedAt: string; answer?: PlanRecheckAnswer | null; withdrawNote?: string | null; closeReason?: string | null }): Promise<boolean>;
+  /** Replaces the answer of an ANSWERED re-check (a newer verdict answer won); false when it is not answered. */
+  replaceRecheckAnswer(planId: string, recheckId: string, answer: PlanRecheckAnswer): Promise<boolean>;
   /** BL-157 (AC-TC-01): this device's review claims (`claimId` decides which one a write replaces). */
   upsertClaim(claim: SharedClaim): Promise<void>;
   deleteClaim(claimId: string): Promise<void>;
@@ -729,10 +731,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   async function ownerQueue(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Promise<PlanReviewEntry[]> {
     const review = row.definition.stages.find((s) => s.kind === "owner_review");
     if (!review) return [];
-    const [events, history] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id)]);
+    const [events, history, rechecks] = await Promise.all([deps.store.listEvents(row.id), deps.store.listVerdictHistory(row.id), deps.store.listRechecks(row.id)]);
+    // BL-173 (review round 1): an attempt that plays an accepted revision says so (the screen then measures its loudness).
+    const currentFiles = currentFilesOf(rechecks);
     const entries = reviewEntries(row, jobs, results).map((e) => {
       const h = historyOf(history, e.itemKey, e.attemptRef);
-      return h.length > 0 ? { ...e, history: h } : e;
+      const current = currentFiles.get(keyOf(e.itemKey, e.attemptRef));
+      return { ...e, ...(h.length > 0 ? { history: h } : {}), ...(current ? { currentFile: current.file } : {}) };
     });
     return withPending(entries, await pendingPeerVerdicts(row, events, results), review.stageId);
   }
@@ -770,14 +775,16 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   /** The verdict a re-check is opened on, with the computer it was given on (as the "Replace?" question names it). */
   async function previousVerdictOf(row: StoredPlan, current: PlanResultRow): Promise<PlanRecheckVerdict> {
     const own = historyOf(await deps.store.listVerdictHistory(row.id), current.itemKey, current.attemptRef);
-    const device =
-      current.reportedBy !== "owner" ? current.reportedBy : own.length > 0 ? (historyEntryOfVerdict(own, current)?.device ?? null) : ((await relayOf(row.id, current))?.[1] ?? (await ownLabel()));
+    // A verdict applied from another device ends its note with " (from <device>)" (review round 1: the owner's own words only).
+    const relay = current.reportedBy === "owner" ? await relayOf(row.id, current) : null;
+    const device = current.reportedBy !== "owner" ? current.reportedBy : own.length > 0 ? (historyEntryOfVerdict(own, current)?.device ?? null) : (relay?.[1] ?? (await ownLabel()));
+    const note = relay ? relay[0].trim() || null : current.note;
     return {
       result: current.result === "accepted" || current.result === "done" ? "accepted" : "rejected",
       rating: current.rating,
       reasons: current.reasons,
       markers: current.markers,
-      note: current.note === null ? null : current.note.slice(0, PLAN_NOTE_MAX),
+      note: note === null ? null : note.slice(0, PLAN_NOTE_MAX),
       device: device === null ? null : device.slice(0, 255),
       at: current.at,
     };
@@ -806,6 +813,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     if (recheck.kind === "revision") return recheckStageRow(recheck);
     const accepted = currentFiles.get(keyOf(recheck.itemKey, recheck.attemptRef));
     return accepted ? recheckStageRow(accepted.recheck) : null;
+  }
+
+  /** A revision's "Before" when the attempt already plays an earlier accepted revision (review round 1: its loudness, not the original's). */
+  function beforeStageOf(recheck: PlanRecheck, currentFiles: ReturnType<typeof currentFilesOf>): PlanResultRow | null {
+    if (recheck.kind !== "revision") return null;
+    const accepted = currentFiles.get(keyOf(recheck.itemKey, recheck.attemptRef));
+    return accepted && accepted.recheck.recheckId !== recheck.recheckId ? recheckStageRow(accepted.recheck) : null;
   }
 
   /** The file an attempt plays: its accepted revision's, else the latest stage's reported one (null = its job output). */
@@ -859,6 +873,14 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     await deps.store.insertVerdictHistory(row.id, kept);
     history.push(kept);
     let closed = false;
+    if (recheck.status === "answered" && rowChanged) {
+      // Review round 1: a newer verdict answer from the other computer won the row -- it is the re-check's answer now, so the
+      // current file (`currentFilesOf`) never contradicts the attempt's verdict.
+      if (await deps.store.replaceRecheckAnswer(row.id, recheck.recheckId, answer)) {
+        recheck.answer = answer;
+        await record(row.id, "recheck_answered", "owner", { recheckId: recheck.recheckId, kind: recheck.kind, itemKey: recheck.itemKey, attemptRef: recheck.attemptRef, kept: false, result: answer.result, device: answer.device, replaced: true });
+      }
+    }
     if (recheck.status === "open") {
       closed = await deps.store.closeRecheck(row.id, recheck.recheckId, { status: "answered", closedAt: now().toISOString(), answer });
       if (closed) {
@@ -889,13 +911,14 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const base = entries.find((e) => e.itemKey === r.itemKey && e.attemptRef === r.attemptRef) ?? null;
       const item = row.definition.items.find((i) => i.itemKey === r.itemKey) ?? null;
       const answer = pending.get(r.recheckId);
-      return recheckEntry(r, base, item, extraStageOf(r, currentFiles), answer ? { verdict: sharedVerdictRow(answer.verdict, review.stageId), from: answer.from, kept: answer.verdict.kept === true } : null);
+      return recheckEntry(r, base, item, extraStageOf(r, currentFiles), answer ? { verdict: sharedVerdictRow(answer.verdict, review.stageId), from: answer.from, kept: answer.verdict.kept === true } : null, beforeStageOf(r, currentFiles));
     });
   }
 
   /** What the other devices see of an open re-check (report v4), within the report's bounds. */
   function sharedRecheckOf(r: PlanRecheck, currentFiles: ReturnType<typeof currentFilesOf>): SharedRecheck {
     const extra = extraStageOf(r, currentFiles);
+    const before = beforeStageOf(r, currentFiles);
     const markers = (list: PlanMarker[]) => list.slice(0, PLAN_LIMITS.markersPerRow).map((m) => ({ start: m.start, end: m.end, note: m.note === null ? null : m.note.slice(0, 200) }));
     return {
       recheckId: r.recheckId,
@@ -913,6 +936,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         : null,
       openedAt: r.openedAt,
       extraStage: extra ? { ...extra, checks: extra.checks.slice(0, PLAN_LIMITS.checksPerRow) as unknown as Array<Record<string, unknown>>, referenceIds: [] } : null,
+      ...(before ? { beforeStage: { ...before, checks: before.checks.slice(0, PLAN_LIMITS.checksPerRow) as unknown as Array<Record<string, unknown>>, referenceIds: [] } } : {}),
     };
   }
 
@@ -1079,8 +1103,10 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         if (!deps.files || !workspace) throw planInvalid(`Channel ${to} has no workspace folder on this device (Settings → Channels); a plan's files live there`, { planId: row.id, channelId: to });
         const [jobs, results, rechecks] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listRechecks(row.id)]);
         const unfinishedJobs = jobs.filter((j) => UNFINISHED_JOB_STATUSES.has(j.status)).length;
-        // BL-173 (§2.6): a re-check's revised file plays from the channel's Sent to YTM too.
-        const files = [...new Set([...results.flatMap((r) => (r.auditionFile ? [r.auditionFile] : [])), ...rechecks.flatMap((r) => (r.auditionFile ? [r.auditionFile] : [])), ...(row.definition.references ?? []).map((r) => r.file)])].sort();
+        // BL-173 (§2.6, review round 1): the revised files that can still play -- an open re-check's and an accepted revision's --
+        // are checked too; a withdrawn or rejected revision's file is not needed any more.
+        const playing = [...rechecks.filter((r) => r.status === "open" && r.auditionFile !== null).map((r) => r.auditionFile as string), ...[...currentFilesOf(rechecks).values()].map((c) => c.file)];
+        const files = [...new Set([...results.flatMap((r) => (r.auditionFile ? [r.auditionFile] : [])), ...playing, ...(row.definition.references ?? []).map((r) => r.file)])].sort();
         const missing: string[] = [];
         for (const file of files) if (!(await deps.files.sentFileExists(workspace, file))) missing.push(file);
         const answer: PlanMoveResult = { planId: row.id, from, to, checked: files.length, missing: missing.slice(0, PLAN_MOVE_MISSING_LISTED), missingCount: missing.length, unfinishedJobs, moved: false };
@@ -1397,7 +1423,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         if (incoming) throw planRecheckClosed(`Re-check ${parsed.recheckId} was already answered on ${incoming.from}`, { planId: row.id, recheckId: parsed.recheckId, status: "answered", device: incoming.from });
         const kept = parsed.kept === true;
         if (kept && recheck.kind === "revision") throw planMismatch("A fixed version is answered with a verdict (accept or reject), not kept", { planId: row.id, recheckId: parsed.recheckId, reason: "revision_needs_verdict" });
-        const [results, history] = await Promise.all([deps.store.listResults(row.id), deps.store.listVerdictHistory(row.id)]);
+        const [jobs, results, history] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listVerdictHistory(row.id)]);
         const stored = results.find((r) => r.stageId === review.stageId && r.itemKey === recheck.itemKey && r.attemptRef === recheck.attemptRef);
         const note = parsed.note?.trim() ? parsed.note.trim() : null;
         const given: PlanRecheckAnswer = {
@@ -1411,6 +1437,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           at: now().toISOString(),
         };
         const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, note, history, stored);
+        // Review round 1: a re-check opened on a verdict still on its way from another device -- this answer wrote the attempt's
+        // first review row and may finish its wave.
+        if (!stored && taken.rowChanged) await recordGroupsReviewed(row, reviewEntries(row, jobs, results), reviewEntries(row, jobs, await deps.store.listResults(row.id)));
         await endTrackClaim(await ownDeviceId(), row.id, recheck.itemKey, recheck.attemptRef);
         return { recheck: { ...recheck, status: "answered" as const, closedAt: taken.answer.at, answer: taken.answer } };
       });
@@ -1745,7 +1774,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       // BL-157 (AC-TC-04): a verdict already there -- that device's, or one sent from here and not applied yet -- is replaced
       // only when the owner confirmed it.
       if (!parsed.replace) {
-        const sent = (await more.outgoingVerdicts()).filter((v) => v.ownerDeviceId === parsed.deviceId && v.planId === parsed.planId && v.itemKey === parsed.itemKey && v.attemptRef === parsed.attemptRef).at(-1);
+        // BL-173 (review round 1): a kept re-check answer sent from here is a note, not a verdict on the track.
+        const sent = (await more.outgoingVerdicts()).filter((v) => v.ownerDeviceId === parsed.deviceId && v.planId === parsed.planId && v.itemKey === parsed.itemKey && v.attemptRef === parsed.attemptRef && v.kept !== true).at(-1);
         const theirs = entry.verdict;
         if (sent && (!theirs || Math.floor(Date.parse(sent.at) / 1000) > Math.floor(Date.parse(theirs.at) / 1000))) {
           throw planVerdictExists(`${parsed.itemKey} ${parsed.attemptRef} was already rated here`, { result: sent.result, rating: sent.rating, device: await ownLabel(), at: sent.at });
@@ -1818,12 +1848,15 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       if (plan.status !== "active") throw planClosed(parsed.planId, plan.status);
       const recheck = (plan.rechecks ?? []).find((r) => r.recheckId === parsed.recheckId);
       if (!recheck) throw planRecheckClosed(`Re-check ${parsed.recheckId} is not open on that computer`, { planId: parsed.planId, recheckId: parsed.recheckId, status: "not_open" });
+      const generateId = deps.generateId;
+      // Review round 1: "not answered here yet" and the store are one step (two answers sent at once never both pass).
+      const verdict = await serializedPerPlan(`\u0000peer-recheck:${parsed.deviceId}:${parsed.planId}`, async () => {
       const sent = (await more.outgoingVerdicts()).some((v) => v.ownerDeviceId === parsed.deviceId && v.planId === parsed.planId && v.recheckId === parsed.recheckId);
       if (sent) throw planRecheckClosed(`Re-check ${parsed.recheckId} was already answered here`, { planId: parsed.planId, recheckId: parsed.recheckId, status: "answered", device: await ownLabel() });
       const kept = parsed.kept === true;
       if (kept && recheck.kind === "revision") throw planMismatch("A fixed version is answered with a verdict (accept or reject), not kept", { planId: parsed.planId, recheckId: parsed.recheckId, reason: "revision_needs_verdict" });
-      const verdict: SharedVerdict = {
-        verdictId: deps.generateId(),
+      const given: SharedVerdict = {
+        verdictId: generateId(),
         planId: parsed.planId,
         ownerDeviceId: parsed.deviceId,
         itemKey: recheck.itemKey,
@@ -1838,7 +1871,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         recheckId: recheck.recheckId,
         ...(kept ? { kept: true } : {}),
       };
-      await deps.store.insertPeerVerdict(verdict);
+      await deps.store.insertPeerVerdict(given);
+      return given;
+      });
       await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, recheck.itemKey, recheck.attemptRef));
       await publishPresence();
       return verdict;
@@ -2126,7 +2161,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         const events = planEvents(jobs, sessions, results, recorded, null, 100_000, history)
           .events.slice(-SHARE_MAX_EVENTS)
           .map((e) => (e.kind.startsWith("job_") && "error" in e.details ? { ...e, details: Object.fromEntries(Object.entries(e.details).filter(([k]) => k !== "error")) } : e));
-        const queue = (await more.reviewQueueOf(row, jobs, results)).slice(0, SHARE_MAX_REVIEW);
+        // BL-173 (review round 1): the attempts of open re-checks always travel (rated attempts come last and would be cut first),
+        // so the other computer can play a question and a revision's "Before".
+        const full = await more.reviewQueueOf(row, jobs, results);
+        const rechecked = new Set(rechecks.filter((r) => r.status === "open").slice(0, 200).map((r) => keyOf(r.itemKey, r.attemptRef)));
+        const kept = new Set(full.filter((e) => rechecked.has(keyOf(e.itemKey, e.attemptRef))));
+        let room = SHARE_MAX_REVIEW - kept.size;
+        const queue = full.filter((e) => kept.has(e) || (room-- > 0));
         const review: SharedPlanView["review"] = [];
         for (const entry of queue) {
           let jobOutput: string | null = null;

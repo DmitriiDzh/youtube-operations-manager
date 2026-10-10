@@ -90,6 +90,12 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
       Object.assign(r, { status: set.status, closedAt: set.closedAt, answer: set.answer ?? null, withdrawNote: set.withdrawNote ?? null, closeReason: set.closeReason ?? null });
       return true;
     },
+    async replaceRecheckAnswer(planId, recheckId, answer) {
+      const r = rechecks.find((x) => x.planId === planId && x.recheckId === recheckId);
+      if (!r || r.status !== "answered") return false;
+      r.answer = structuredClone(answer);
+      return true;
+    },
   };
   return { store, plans, results, events, jobs, peerVerdicts, history, claims, rechecks };
 }

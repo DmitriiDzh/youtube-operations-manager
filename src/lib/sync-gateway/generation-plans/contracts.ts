@@ -150,6 +150,8 @@ export const sharedRecheckSchema = z
       .nullable(),
     openedAt: isoSchema,
     extraStage: sharedResultRowSchema.nullable(),
+    /** A revision's "Before" when that is an earlier accepted revision (its row, for its loudness). */
+    beforeStage: sharedResultRowSchema.nullable().optional(),
   })
   .strict();
 
