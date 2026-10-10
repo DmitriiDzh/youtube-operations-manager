@@ -1,7 +1,8 @@
 # Re-checks of rated tracks: a fixed version, or a question about one spot (BL-173, FO-REQ-0017)
 
-**Status: IN PROGRESS** on `feature/fo-req-0017-rechecks`. Owner, Telegram 2026-10-10 msg 2516 («Ок») to "Берём в работу
-(BL-173)?" after DEV-RESP-0020 (the proposal this plan builds). One branch, two review rounds, then the owner's merge decision.
+**Status: DONE, merged into `dev` (77a915d, owner msg 2521, 2026-10-10).** Owner, Telegram 2026-10-10 msg 2516 («Ок») to
+"Берём в работу (BL-173)?" after DEV-RESP-0020 (the proposal this plan builds). One branch, two review rounds. Release note to the
+Operator: DEV-REL-0023.
 
 ## 1. Facts (code read 2026-10-10, `dev` 207acf8; the Mac's database read-only)
 
