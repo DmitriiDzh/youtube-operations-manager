@@ -3337,3 +3337,35 @@ Plan: `docs/roadmap/plans/VIDEO_BREAKDOWNS_PLAN.md` (AC-VB-01..17). Schema v77.
   videos the channel has with a final publish date; rows only for a state of the current range start, inside `range_start ..
   collected_through` and the requested dates; `total` sums views and minutes per value (null only when every row had none), `day` lists
   rows; labels from `breakdown-labels.ts` (English).
+
+## 38. Stored search terms per video and per channel week (BL-169, FO-REQ-0015 item 5)
+
+Plan: `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md` (AC-ST-01..16). Schema v78.
+
+- **The report.** `insightTrafficSourceDetail` filtered to `video==<id>;insightTrafficSourceType==YT_SEARCH`, `views` +
+  `estimatedMinutesWatched`, `maxResults=25`, `sort=-views` (YouTube refuses the report without either and gives a 500 above 25; no `day`
+  split). It goes through the existing gateway function `queryChannelBreakdownReport`, which gained the two optional parameters.
+- **Planning** (`planDueSearchTerms` in `src/lib/analytics/search-terms.ts`, pure). The breakdowns' videos and window
+  (`hasFinalPublishDate`, `videoBreakdownWindow`). While the window runs, a video is due once yesterday ≥ window start + 6, then whenever
+  today ≥ `collected_on` + 7; once the window has ended (window end ≤ yesterday), once today ≥ window end + 7 and its last read was before
+  that. Each read covers window start .. min(yesterday, window end). `failed` skipped, `retry` waits; a state for another window start counts
+  as never read. At most `MAX_SEARCH_TERM_QUERIES_PER_RUN` (100), least recently read first (never read first, newest publish date among
+  equals), retries last inside the batch: the BL-168 queue. **Channel weeks** (owner, Telegram msg 2477: the per-video terms are nearly
+  empty): `completeSearchTermWeeks(yesterday)` gives the Mondays of the last 13 Monday-Sunday weeks ending on or before yesterday; a week is
+  due when never read, or when its last read was before Sunday + 7 and today is on or after it. Due weeks go first in the batch (newest
+  first), then the videos.
+- **Collection** (`collectDueSearchTerms`). One query per video (`video==<id>;insightTrafficSourceType==YT_SEARCH`) or week
+  (`insightTrafficSourceType==YT_SEARCH`); `saveCollectedVideoSearchTerms` replaces all of the video's rows,
+  `saveCollectedChannelSearchTermsWeek` the week's rows, each marking the state collected in one `database.batch`. State rows are
+  `analytics_breakdown_state` rows with subject `search:<video id>` or `search-week:<Monday>` (a video id never has a colon), so `deferAnalyticsBreakdown` / `recordAnalyticsBreakdownFailure` and their rules are reused unchanged; the breakdown
+  planner ignores these subjects. `failureKind` as for the breakdowns; failed at 3 attempts. A video's `defer` ends the run; a week's
+  `defer` only skips the remaining weeks of the run and the videos are still read (review of BL-169: the 13 never-read weeks head every
+  batch, so a channel-level report getting no answer ended 13 runs in a row with no video read, then one every Monday). Wrapped like the breakdowns
+  (`gateSearchTermCollection`, analytics quota context); `/api/analytics/auto-collect-all` runs it after every channel's breakdowns.
+- **Storage.** `video_search_terms` (key `video_id, term`; `channel_id`, `views`, `estimated_minutes_watched`; index on `channel_id,
+  video_id`), `channel_search_terms_weekly` (key `channel_id, week_start, term`; the same two metrics). Classified `authorized`; device-local, not in the `analytics-data` exchange (same reason as §37).
+- **Reads.** `listStoredSearchTerms` (channel scope) backs `agent_get_stored_search_terms`. With `videoIds`: the requested videos the
+  channel has with a final publish date; terms only for a state of the current window start; most views first, then by term. With
+  `startDate`/`endDate`: the Mondays from the first one on or after startDate whose Sunday is on or before the earlier of endDate and
+  yesterday; each week's state (`not_collected` without one) and, for `week`, its terms; for `total`, each term summed over the weeks
+  read (null only when every row had none). The input schema refuses dates with `videoIds` and the channel form without dates.

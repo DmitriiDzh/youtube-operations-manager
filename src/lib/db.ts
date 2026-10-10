@@ -1388,7 +1388,8 @@ export const channelBreakdownDaily = sqliteTable(
 /**
  * v77 (BL-168): what is stored for each subject -- the channel (`subject = 'channel'`) or one video (its id): the range start, the last
  * collected day and the Pacific date of that collection, and the attempt bookkeeping of the milestones (`retry` from `next_attempt_at`,
- * `failed` after the maximum attempts, never queried again).
+ * `failed` after the maximum attempts, never queried again). Since v78 (BL-169) the same rows also track the stored search terms, under
+ * the subject `search:<video id>` (a video id never contains a colon), so both features share one set of attempt rules.
  */
 export const analyticsBreakdownState = sqliteTable(
   "analytics_breakdown_state",
@@ -1406,6 +1407,41 @@ export const analyticsBreakdownState = sqliteTable(
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => [primaryKey({ columns: [table.channelId, table.subject] })]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 78 (BL-169, FO-REQ-0015 item 5, docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the YouTube search terms
+ * (`insightTrafficSourceDetail` of `YT_SEARCH`, top 25 by views) of each own video over its 90-day window so far, as YouTube returned
+ * them. YouTube gives no day split for this report, so each read is a total that replaces the video's rows as a whole. What is stored is
+ * tracked in `analytics_breakdown_state` (subject `search:<video id>`). Own-channel Analytics data (Authorized, III.E.4.b), device-local.
+ */
+export const videoSearchTerms = sqliteTable(
+  "video_search_terms",
+  {
+    videoId: text("video_id").notNull(),
+    term: text("term").notNull(),
+    channelId: text("channel_id").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.videoId, table.term] }), index("video_search_terms_channel_idx").on(table.channelId, table.videoId)]
+);
+
+/**
+ * v78 (BL-169, owner Telegram msg 2477): the channel's own search terms per Monday-Sunday week (Pacific dates), top 25 by views, as YouTube
+ * returned them -- the per-video terms are nearly empty (plan §1), the channel over a few weeks is not. Replaced per week on each read of
+ * that week; state subject `search-week:<Monday>`.
+ */
+export const channelSearchTermsWeekly = sqliteTable(
+  "channel_search_terms_weekly",
+  {
+    channelId: text("channel_id").notNull(),
+    weekStart: text("week_start").notNull(),
+    term: text("term").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.weekStart, table.term] })]
 );
 
 /**
@@ -4089,6 +4125,30 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         next_attempt_at INTEGER,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (channel_id, subject)
+      )`);
+    },
+  },
+  {
+    version: 78,
+    description:
+      "video_search_terms, channel_search_terms_weekly -- BL-169 (FO-REQ-0015 item 5, docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the YouTube search terms (top 25) of each own video over its 90-day window so far and of the channel per Monday-Sunday week; state in analytics_breakdown_state (subjects search:<video id>, search-week:<Monday>). Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS video_search_terms (
+        video_id TEXT NOT NULL,
+        term TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (video_id, term)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS video_search_terms_channel_idx ON video_search_terms (channel_id, video_id)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_search_terms_weekly (
+        channel_id TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        term TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (channel_id, week_start, term)
       )`);
     },
   },
@@ -9827,6 +9887,15 @@ export async function saveCollectedAnalyticsBreakdown(
       writes.push(database.insert(channelBreakdownDaily).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
     }
   }
+  writes.push(collectedBreakdownStateWrite(row, database));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/** The state upsert of a successful collection (attempts back to 0), for the caller's atomic batch. */
+function collectedBreakdownStateWrite(
+  row: { channelId: string; subject: string; rangeStart: string; to: string; collectedOn: string; at: Date },
+  database: AppDb
+) {
   const state = {
     rangeStart: row.rangeStart,
     collectedThrough: row.to,
@@ -9838,13 +9907,84 @@ export async function saveCollectedAnalyticsBreakdown(
     nextAttemptAt: null,
     updatedAt: row.at,
   };
-  writes.push(
-    database
-      .insert(analyticsBreakdownState)
-      .values({ channelId: row.channelId, subject: row.subject, ...state })
-      .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: state })
-  );
+  return database
+    .insert(analyticsBreakdownState)
+    .values({ channelId: row.channelId, subject: row.subject, ...state })
+    .onConflictDoUpdate({ target: [analyticsBreakdownState.channelId, analyticsBreakdownState.subject], set: state });
+}
+
+type SearchTermInput = { term: string; views: number | null; estimatedMinutesWatched: number | null };
+
+/**
+ * BL-169: one video's search terms for its window so far, in one atomic batch -- every stored term of the video is replaced by the answer
+ * (the answer is a total over the whole range, not a day), and its state records the range as collected.
+ */
+export async function saveCollectedVideoSearchTerms(
+  row: { channelId: string; subject: string; videoId: string; rangeStart: string; to: string; terms: SearchTermInput[]; collectedOn: string; at: Date },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [database.delete(videoSearchTerms).where(eq(videoSearchTerms.videoId, row.videoId))];
+  const values = row.terms.map((t) => ({ videoId: row.videoId, term: t.term, channelId: row.channelId, views: t.views, estimatedMinutesWatched: t.estimatedMinutesWatched }));
+  for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+    writes.push(database.insert(videoSearchTerms).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+  }
+  writes.push(collectedBreakdownStateWrite(row, database));
   await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/**
+ * BL-169: one channel week's search terms (Monday `weekStart` .. Sunday `to`), in one atomic batch -- the week's stored terms are replaced
+ * by the answer and its state (`search-week:<Monday>`) records the week as collected. Other weeks are not touched.
+ */
+export async function saveCollectedChannelSearchTermsWeek(
+  row: { channelId: string; subject: string; weekStart: string; to: string; terms: SearchTermInput[]; collectedOn: string; at: Date },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [
+    database
+      .delete(channelSearchTermsWeekly)
+      .where(and(eq(channelSearchTermsWeekly.channelId, row.channelId), eq(channelSearchTermsWeekly.weekStart, row.weekStart))),
+  ];
+  const values = row.terms.map((t) => ({ channelId: row.channelId, weekStart: row.weekStart, term: t.term, views: t.views, estimatedMinutesWatched: t.estimatedMinutesWatched }));
+  for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+    writes.push(database.insert(channelSearchTermsWeekly).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+  }
+  writes.push(collectedBreakdownStateWrite({ ...row, rangeStart: row.weekStart }, database));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/** BL-169: the channel's stored weekly search terms for the weeks starting firstWeekStart .. lastWeekStart. */
+export async function listChannelSearchTermsWeekly(
+  channelId: string,
+  firstWeekStart: string,
+  lastWeekStart: string,
+  database: AppDb = db
+): Promise<Array<{ weekStart: string; term: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  const rows = await database
+    .select()
+    .from(channelSearchTermsWeekly)
+    .where(
+      and(
+        eq(channelSearchTermsWeekly.channelId, channelId),
+        gte(channelSearchTermsWeekly.weekStart, firstWeekStart),
+        lte(channelSearchTermsWeekly.weekStart, lastWeekStart)
+      )
+    );
+  return rows.map((r) => ({ weekStart: r.weekStart, term: r.term, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
+}
+
+/** BL-169: the stored search terms of the given videos, always within this channel. */
+export async function listVideoSearchTerms(
+  channelId: string,
+  videoIds: string[],
+  database: AppDb = db
+): Promise<Array<{ videoId: string; term: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  if (videoIds.length === 0) return [];
+  const rows = await database
+    .select()
+    .from(videoSearchTerms)
+    .where(and(eq(videoSearchTerms.channelId, channelId), inArray(videoSearchTerms.videoId, videoIds)));
+  return rows.map((r) => ({ videoId: r.videoId, term: r.term, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
 }
 
 async function previousBreakdownState(channelId: string, subject: string, database: AppDb) {

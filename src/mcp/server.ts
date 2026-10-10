@@ -30,7 +30,7 @@ import {
   listSyncedVideosInputSchema,
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
-import { createAnalyticsCore, listStoredBreakdownsInputSchema, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
+import { createAnalyticsCore, listStoredBreakdownsInputSchema, listStoredSearchTermsInputSchema, listVideoMilestonesInputSchema, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import {
   createChangeSetFromGenerationInputSchema,
@@ -156,6 +156,7 @@ type AnalyticsCoreSubset = Pick<
   | "getWeeklyReport"
   | "listVideoMilestones"
   | "listStoredBreakdowns"
+  | "listStoredSearchTerms"
 >;
 
 // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): registered directly here, not
@@ -348,6 +349,7 @@ type McpToolHandlers = {
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoMilestones: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
+  agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
@@ -1739,6 +1741,25 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-169 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md) -- the stored YouTube search terms of the channel's videos. A LOCAL read, no
+     * Google call; `listStoredSearchTerms` checks the active channel itself, and a video of another channel is not listed.
+     */
+    async agentGetStoredSearchTerms(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listStoredSearchTermsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listStoredSearchTerms({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-118 -- traffic sources / devices / audience / geography / subscribed status / content format for a date range: the same
      * `getChannelBreakdown` the Content tab uses (a LIVE YouTube Analytics API read, 1 quota unit), with each raw API value also given a
      * readable label. Same forwarding pattern as `agentQueryChannelAnalytics`; the service checks the active channel itself.
@@ -2453,6 +2474,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetVideoMilestones: handlers.agentGetVideoMilestones,
     // BL-168 -- a pure local read, ungated.
     agentGetStoredBreakdowns: handlers.agentGetStoredBreakdowns,
+    // BL-169 -- a pure local read, ungated.
+    agentGetStoredSearchTerms: handlers.agentGetStoredSearchTerms,
     // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
     agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
@@ -3234,6 +3257,16 @@ export function createMcpServer(
       inputSchema: listStoredBreakdownsInputSchema,
     },
     (args) => handlers.agentGetStoredBreakdowns(args)
+  );
+
+  registerTool(
+    "agent_get_stored_search_terms",
+    {
+      description:
+        "Stored YouTube search terms (BL-169): the terms viewers searched for before watching (YouTube Analytics `insightTrafficSourceDetail` of traffic source YT_SEARCH), top 25 by views, each with views and estimatedMinutesWatched as YouTube returned them, most views first. Two forms. (1) `videoIds` (1-20, no dates): `videos`, each with its terms over its first 90 days so far (`coverage.from` = its Pacific publish date .. `coverage.through`, see `window`); YT Manager reads a video once it has 7 days, then every 7 days while its 90 days run, and once more 7 days after they end, each read replacing its terms. (2) `startDate` + `endDate` (YYYY-MM-DD, at most 92 days, no videoIds) and optional `groupBy`: the channel's own terms per Monday-Sunday week (Pacific dates), for the complete weeks lying fully inside the range (`weeks`, oldest first, each with `status` and `collectedAt`); `groupBy: total` (default) adds `terms`, each term summed over the weeks that were read (a sum of weekly top-25 lists), `groupBy: week` gives each week its own `terms`. YT Manager reads the last 13 complete weeks: each once it is complete and once more 7 days after its Sunday; an older week never read stays `not_collected`. YouTube names a term for only a small part of the search views and the rest it does not return, so the terms' views add up to much less than the search views; the search total is the YT_SEARCH row of agent_get_stored_breakdowns. Per video there are often only a few terms; the channel weeks show more. `status` is collected | retry (a query failed, tried again later; `lastError`) | failed (given up after 3 attempts) | not_collected (`coverage` null for a video). Reads happen during the dashboard's Analytics collection, at most 100 queries per channel per run (the weeks first, then the least recently read videos). A videoId of another channel, or of a private, unlisted, scheduled or never-synced video, is not listed. A LOCAL read, never a live YouTube call; each computer collects the channels connected on it. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listStoredSearchTermsInputSchema,
+    },
+    (args) => handlers.agentGetStoredSearchTerms(args)
   );
 
   registerTool(

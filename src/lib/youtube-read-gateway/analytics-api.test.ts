@@ -252,6 +252,35 @@ test("queryChannelBreakdownReport sends ids/startDate/endDate/metrics/dimensions
   assert.equal(capturedArgs?.metrics, "views");
   assert.equal(capturedArgs?.dimensions, "insightTrafficSourceType");
   assert.equal("filters" in (capturedArgs ?? {}), false);
+  assert.equal("maxResults" in (capturedArgs ?? {}), false);
+  assert.equal("sort" in (capturedArgs ?? {}), false);
+});
+
+// BL-169 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md §1): YouTube refuses `insightTrafficSourceDetail` without `maxResults` and
+// `sort` (400, checked live 2026-10-10), so both are passed through exactly as given.
+test("queryChannelBreakdownReport passes maxResults and sort through for the search-term report", async () => {
+  let capturedArgs: Record<string, unknown> | undefined;
+
+  const youtubeAnalytics = fakeAnalyticsClient((async (args: Record<string, unknown>) => {
+    capturedArgs = args;
+    return { data: { columnHeaders: [], rows: [] } };
+  }) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  await queryChannelBreakdownReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-09-01",
+    endDate: "2026-10-09",
+    dimensions: "insightTrafficSourceDetail",
+    metricNames: ["views", "estimatedMinutesWatched"],
+    filters: "video==vid1;insightTrafficSourceType==YT_SEARCH",
+    maxResults: 25,
+    sort: "-views",
+  });
+
+  assert.equal(capturedArgs?.filters, "video==vid1;insightTrafficSourceType==YT_SEARCH");
+  assert.equal(capturedArgs?.maxResults, 25);
+  assert.equal(capturedArgs?.sort, "-views");
+  assert.equal(capturedArgs?.metrics, "views,estimatedMinutesWatched");
 });
 
 test("queryChannelBreakdownReport passes filters through exactly when given (the per-video retention-curve shape)", async () => {

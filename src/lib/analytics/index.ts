@@ -1,7 +1,8 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { createAnalyticsStoreAdapter, createBreakdownStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
+import { createAnalyticsStoreAdapter, createBreakdownStoreAdapter, createSearchTermStoreAdapter, createVideoMilestoneStoreAdapter } from "./adapters/store";
 import { createBreakdownServices, gateBreakdownCollection } from "./breakdowns";
+import { createSearchTermServices, gateSearchTermCollection } from "./search-terms";
 import { createVideoMilestoneServices, gateMilestoneCollection } from "./milestones";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
@@ -85,12 +86,24 @@ export function createAnalyticsCore() {
     youtubeApi: createAnalyticsYoutubeApiAdapter(),
     store: breakdownStore.store,
   });
+  // BL-169 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): stored search terms -- the same background read rules.
+  const searchTermStore = createSearchTermStoreAdapter();
+  const searchTerms = createSearchTermServices({
+    clock: { now: () => new Date() },
+    authResolver: defaultAuthResolver(),
+    channelAccess: createChannelAccessCore(),
+    videoStore: searchTermStore.videoStore,
+    youtubeApi: createAnalyticsYoutubeApiAdapter(),
+    store: searchTermStore.store,
+  });
   return {
     ...core,
     collectDueMilestones: quotaScoped(gateMilestoneCollection(guard, milestones.collectDueMilestones), context),
     listVideoMilestones: milestones.listVideoMilestones,
     collectDueBreakdowns: quotaScoped(gateBreakdownCollection(guard, breakdowns.collectDueBreakdowns), context),
     listStoredBreakdowns: breakdowns.listStoredBreakdowns,
+    collectDueSearchTerms: quotaScoped(gateSearchTermCollection(guard, searchTerms.collectDueSearchTerms), context),
+    listStoredSearchTerms: searchTerms.listStoredSearchTerms,
     // BL-142: the dashboard's automatic collection for every connected channel (auto-collect-all.ts). It is handed the
     // quota-guarded functions above, never the raw services, so background channels keep the same reserve and quota
     // attribution.
@@ -119,6 +132,8 @@ export { MILESTONE_DAYS, hasFinalPublishDate, isMilestoneDue, listVideoMilestone
 export type { VideoMilestone } from "./milestones";
 export { listStoredBreakdownsInputSchema } from "./breakdowns";
 export type { ListStoredBreakdownsResult } from "./breakdowns";
+export { listStoredSearchTermsInputSchema } from "./search-terms";
+export type { ListStoredSearchTermsResult } from "./search-terms";
 export type { ChannelOverviewView } from "./overview-view";
 export type { Granularity } from "./granularity";
 export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";

@@ -83,3 +83,9 @@ every channel's reads without a worker per channel, and nothing else.
 - Producer API 1.3.0 adds one READ channel tool to the closed list: `agent_get_stored_breakdowns` (capability
   `analytics.query_stored_breakdowns`), stored data only, in the named channel's scope like every other channel tool.
 - **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.
+
+## Amendment 4 — stored search terms (BL-169, FO-REQ-0015 item 5, owner 2026-10-10, Telegram msg 2473)
+
+- Producer API 1.4.0 adds one READ channel tool to the closed list: `agent_get_stored_search_terms` (capability
+  `analytics.query_stored_search_terms`), stored data only, in the named channel's scope like every other channel tool.
+- **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.

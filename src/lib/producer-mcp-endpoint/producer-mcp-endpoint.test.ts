@@ -3,7 +3,16 @@ import test from "node:test";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { createProducerTokenServices } from "@/lib/producer-agent-tokens/services";
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
-import { addChannelRecordAssignment, insertResearchChannel, saveCollectedAnalyticsBreakdown, saveCollectedVideoMilestone, upsertChannel, upsertVideos } from "@/lib/db";
+import {
+  addChannelRecordAssignment,
+  insertResearchChannel,
+  saveCollectedAnalyticsBreakdown,
+  saveCollectedChannelSearchTermsWeek,
+  saveCollectedVideoMilestone,
+  saveCollectedVideoSearchTerms,
+  upsertChannel,
+  upsertVideos,
+} from "@/lib/db";
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
@@ -345,6 +354,88 @@ test("BL-168 AC-VB-13/16: agent_get_stored_breakdowns via the Producer reads onl
   assert.equal(ok.isError, false, ok.text);
 });
 
+// BL-169 AC-ST-12/15 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the Producer reads a channel's stored search terms through the
+// channel tool, in that channel's scope only; another channel's video is not listed. Real handlers on the real (isolated) database.
+test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads only the named channel's stored terms and weeks", async () => {
+  await seedTwoChannels();
+  // seedTwoChannels publishes every video 2026-10-01T10:00:00Z (03:00 PDT): window 10-01 .. 12-29.
+  const save = (channelId: string, videoId: string, term: string, views: number) =>
+    saveCollectedVideoSearchTerms({
+      channelId,
+      subject: `search:${videoId}`,
+      videoId,
+      rangeStart: "2026-10-01",
+      to: "2026-10-08",
+      terms: [
+        { term, views, estimatedMinutesWatched: 3 },
+        { term: "rural japan", views: 1, estimatedMinutesWatched: 0 },
+      ],
+      collectedOn: "2026-10-09",
+      at: new Date("2026-10-09T17:00:00Z"),
+    });
+  await save("UC_PR_X", "vid-x-1", "village in japan", 2);
+  await save("UC_PR_Y", "vid-y-1", "other channel's term", 9);
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const result = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", { channelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-y-1"] }), bearer(token))));
+  assert.equal(result.isError, false, result.text);
+  const payload = payloadOf(result.text) as { forChannelId: string; videos: Array<Record<string, unknown>> };
+  assert.equal(payload.forChannelId, "UC_PR_X");
+  assert.deepEqual(payload.videos, [
+    {
+      videoId: "vid-x-1",
+      publishedAt: "2026-10-01T10:00:00Z",
+      window: { start: "2026-10-01", end: "2026-12-29" },
+      coverage: { from: "2026-10-01", through: "2026-10-08", collectedAt: "2026-10-09T17:00:00.000Z" },
+      status: "collected",
+      lastError: null,
+      terms: [
+        { term: "village in japan", views: 2, estimatedMinutesWatched: 3 },
+        { term: "rural japan", views: 1, estimatedMinutesWatched: 0 },
+      ],
+    },
+  ]);
+  // The channel form: each named channel's own weeks only.
+  const saveWeek = (channelId: string, term: string) =>
+    saveCollectedChannelSearchTermsWeek({
+      channelId,
+      subject: "search-week:2026-09-28",
+      weekStart: "2026-09-28",
+      to: "2026-10-04",
+      terms: [{ term, views: 4, estimatedMinutesWatched: 2 }],
+      collectedOn: "2026-10-09",
+      at: new Date("2026-10-09T17:00:00Z"),
+    });
+  await saveWeek("UC_PR_X", "japanese music");
+  await saveWeek("UC_PR_Y", "other channel's week");
+  const weekly = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", { channelId: "UC_PR_X", startDate: "2026-09-28", endDate: "2026-10-04" }), bearer(token))));
+  assert.equal(weekly.isError, false, weekly.text);
+  const weeks = payloadOf(weekly.text) as { forChannelId: string; weeks: Array<{ weekStart: string; status: string }>; terms: unknown };
+  assert.equal(weeks.forChannelId, "UC_PR_X");
+  assert.deepEqual(weeks.weeks.map((w) => [w.weekStart, w.status]), [["2026-09-28", "collected"]]);
+  assert.deepEqual(weeks.terms, [{ term: "japanese music", views: 4, estimatedMinutesWatched: 2 }]);
+  // The plan's bounds hold on the Producer's path too: the two forms do not mix, at most 92 days, 1-20 videoIds, real calendar dates.
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `v${i}`);
+  for (const bad of [
+    { channelId: "UC_PR_X" },
+    { channelId: "UC_PR_X", videoIds: [] },
+    { channelId: "UC_PR_X", videoIds: ids(21) },
+    { channelId: "UC_PR_X", videoIds: ["vid-x-1"], startDate: "2026-09-28", endDate: "2026-10-04" },
+    { channelId: "UC_PR_X", startDate: "2026-07-02", endDate: "2026-10-02" },
+    { channelId: "UC_PR_X", startDate: "2026-02-30", endDate: "2026-03-02" },
+  ]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", bad), bearer(token))))).isError, true, JSON.stringify(bad));
+  }
+  const ok = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", { channelId: "UC_PR_X", videoIds: ids(20) }), bearer(token))));
+  assert.equal(ok.isError, false, ok.text);
+  // A channel not connected on this computer is refused, in both forms.
+  for (const input of [{ channelId: "UC_PR_ELSEWHERE", videoIds: ["vid-x-1"] }, { channelId: "UC_PR_ELSEWHERE", startDate: "2026-09-28", endDate: "2026-10-04" }]) {
+    const refused = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", input), bearer(token))));
+    assert.equal(refused.isError, true, JSON.stringify(input));
+    assert.equal((payloadOf(refused.text).error as { code: string }).code, "CHANNEL_NOT_ACTIVE");
+  }
+});
+
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
   const { endpoint, tokens } = setup();
   const token = (await tokens.issueToken({})).token;
@@ -387,8 +478,10 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-166 (VIDEO_MILESTONES_PLAN.md §2 "Versions"): 1.2.0 adds two READ tools, agent_get_video_milestones and
   // producer_upload_milestones; the DRAFT list is unchanged.
   // BL-168 (VIDEO_BREAKDOWNS_PLAN.md §2 "Reads", AC-VB-16): 1.3.0 adds the READ channel tool agent_get_stored_breakdowns.
-  assert.equal(PRODUCER_API_VERSION, "1.3.0");
+  // BL-169 (VIDEO_SEARCH_TERMS_PLAN.md §2, AC-ST-15): 1.4.0 adds the READ channel tool agent_get_stored_search_terms.
+  assert.equal(PRODUCER_API_VERSION, "1.4.0");
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
+  assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));
   assert.deepEqual(capabilities.permissions, ["READ", "DRAFT"]);
   assert.deepEqual(capabilities.draftTools, ["producer_propose", "producer_mark_proposals_done"]);
   assert.deepEqual([...PRODUCER_DRAFT_TOOLS], ["producer_propose", "producer_mark_proposals_done"]);
