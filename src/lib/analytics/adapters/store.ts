@@ -27,6 +27,8 @@ import {
   recordAnalyticsBreakdownFailure,
   saveCollectedVideoSearchTerms,
   listVideoSearchTerms,
+  saveCollectedChannelSearchTermsWeek,
+  listChannelSearchTermsWeekly,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -95,6 +97,8 @@ export function createSearchTermStoreAdapter() {
       defer: breakdowns.store.defer,
       recordFailure: breakdowns.store.recordFailure,
       listVideoTerms: (channelId: string, videoIds: string[]) => listVideoSearchTerms(channelId, videoIds),
+      saveWeekTerms: (row: Parameters<typeof saveCollectedChannelSearchTermsWeek>[0]) => saveCollectedChannelSearchTermsWeek(row),
+      listWeekTerms: (channelId: string, firstWeekStart: string, lastWeekStart: string) => listChannelSearchTermsWeekly(channelId, firstWeekStart, lastWeekStart),
     },
   };
 }

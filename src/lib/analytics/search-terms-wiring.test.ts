@@ -7,7 +7,7 @@ import { createAnalyticsCore } from "./index";
 // BL-169: the real store adapter and core wiring on this test process's isolated database (BL-163's lesson: a service tested only with
 // injected fakes can still be wired to nothing in the app).
 
-test("search-term wiring: the adapter lists the videos and round-trips a video's terms and its search: state", async () => {
+test("search-term wiring: the adapter lists the videos and round-trips a video's terms, a channel week's terms and their states", async () => {
   await upsertChannel({ channelId: "UC_ST", title: "Wiring", thumbnailUrl: null, uploadsPlaylistId: "UU_ST", connectedUserId: null });
   await upsertVideos(
     [
@@ -44,10 +44,26 @@ test("search-term wiring: the adapter lists the videos and round-trips a video's
   });
   assert.deepEqual(await adapter.store.listVideoTerms("UC_ST", ["st1"]), [{ videoId: "st1", term: "village in japan", views: 2, estimatedMinutesWatched: 0 }]);
   assert.deepEqual(await adapter.store.listVideoTerms("UC_OTHER", ["st1"]), [], "always within the channel");
-  const [state] = await adapter.store.listStates("UC_ST");
+  await adapter.store.saveWeekTerms({
+    channelId: "UC_ST",
+    subject: "search-week:2026-09-28",
+    weekStart: "2026-09-28",
+    to: "2026-10-04",
+    terms: [{ term: "japanese music", views: 5, estimatedMinutesWatched: 1 }],
+    collectedOn: "2026-10-10",
+    at,
+  });
+  assert.deepEqual(await adapter.store.listWeekTerms("UC_ST", "2026-09-28", "2026-09-28"), [
+    { weekStart: "2026-09-28", term: "japanese music", views: 5, estimatedMinutesWatched: 1 },
+  ]);
+  assert.deepEqual(await adapter.store.listWeekTerms("UC_ST", "2026-09-21", "2026-09-21"), [], "only the weeks asked for");
+  const states = (await adapter.store.listStates("UC_ST")).sort((a, b) => a.subject.localeCompare(b.subject));
   assert.deepEqual(
-    [state.subject, state.rangeStart, state.collectedThrough, state.collectedOn, state.collectedAt?.toISOString(), state.status, state.attempts],
-    ["search:st1", "2026-09-01", "2026-10-09", "2026-10-10", at.toISOString(), "collected", 0]
+    states.map((state) => [state.subject, state.rangeStart, state.collectedThrough, state.collectedOn, state.collectedAt?.toISOString(), state.status, state.attempts]),
+    [
+      ["search-week:2026-09-28", "2026-09-28", "2026-10-04", "2026-10-10", at.toISOString(), "collected", 0],
+      ["search:st1", "2026-09-01", "2026-10-09", "2026-10-10", at.toISOString(), "collected", 0],
+    ]
   );
 });
 

@@ -3,7 +3,16 @@ import test from "node:test";
 import { listAgentCapabilityDescriptors } from "@/lib/agent-operations/services";
 import { createProducerTokenServices } from "@/lib/producer-agent-tokens/services";
 import type { RoleTokenStore } from "@/lib/role-agent-tokens";
-import { addChannelRecordAssignment, insertResearchChannel, saveCollectedAnalyticsBreakdown, saveCollectedVideoMilestone, saveCollectedVideoSearchTerms, upsertChannel, upsertVideos } from "@/lib/db";
+import {
+  addChannelRecordAssignment,
+  insertResearchChannel,
+  saveCollectedAnalyticsBreakdown,
+  saveCollectedChannelSearchTermsWeek,
+  saveCollectedVideoMilestone,
+  saveCollectedVideoSearchTerms,
+  upsertChannel,
+  upsertVideos,
+} from "@/lib/db";
 import { createAgentTokenServices } from "@/lib/agent-tokens/services";
 import { DomainError } from "@/lib/shared-domain";
 import { createMcpServer, type ProducerSession } from "@/mcp/server";
@@ -347,7 +356,7 @@ test("BL-168 AC-VB-13/16: agent_get_stored_breakdowns via the Producer reads onl
 
 // BL-169 AC-ST-12/15 (docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the Producer reads a channel's stored search terms through the
 // channel tool, in that channel's scope only; another channel's video is not listed. Real handlers on the real (isolated) database.
-test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads only the named channel's stored terms", async () => {
+test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads only the named channel's stored terms and weeks", async () => {
   await seedTwoChannels();
   // seedTwoChannels publishes every video 2026-10-01T10:00:00Z (03:00 PDT): window 10-01 .. 12-29.
   const save = (channelId: string, videoId: string, term: string, views: number) =>
@@ -386,8 +395,35 @@ test("BL-169 AC-ST-12/15: agent_get_stored_search_terms via the Producer reads o
       ],
     },
   ]);
+  // The channel form: each named channel's own weeks only.
+  const saveWeek = (channelId: string, term: string) =>
+    saveCollectedChannelSearchTermsWeek({
+      channelId,
+      subject: "search-week:2026-09-28",
+      weekStart: "2026-09-28",
+      to: "2026-10-04",
+      terms: [{ term, views: 4, estimatedMinutesWatched: 2 }],
+      collectedOn: "2026-10-09",
+      at: new Date("2026-10-09T17:00:00Z"),
+    });
+  await saveWeek("UC_PR_X", "japanese music");
+  await saveWeek("UC_PR_Y", "other channel's week");
+  const weekly = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", { channelId: "UC_PR_X", startDate: "2026-09-28", endDate: "2026-10-04" }), bearer(token))));
+  assert.equal(weekly.isError, false, weekly.text);
+  const weeks = payloadOf(weekly.text) as { forChannelId: string; weeks: Array<{ weekStart: string; status: string }>; terms: unknown };
+  assert.equal(weeks.forChannelId, "UC_PR_X");
+  assert.deepEqual(weeks.weeks.map((w) => [w.weekStart, w.status]), [["2026-09-28", "collected"]]);
+  assert.deepEqual(weeks.terms, [{ term: "japanese music", views: 4, estimatedMinutesWatched: 2 }]);
+  // The plan's bounds hold on the Producer's path too: the two forms do not mix, at most 92 days, 1-20 videoIds, real calendar dates.
   const ids = (n: number) => Array.from({ length: n }, (_, i) => `v${i}`);
-  for (const bad of [{ channelId: "UC_PR_X" }, { channelId: "UC_PR_X", videoIds: [] }, { channelId: "UC_PR_X", videoIds: ids(21) }]) {
+  for (const bad of [
+    { channelId: "UC_PR_X" },
+    { channelId: "UC_PR_X", videoIds: [] },
+    { channelId: "UC_PR_X", videoIds: ids(21) },
+    { channelId: "UC_PR_X", videoIds: ["vid-x-1"], startDate: "2026-09-28", endDate: "2026-10-04" },
+    { channelId: "UC_PR_X", startDate: "2026-07-02", endDate: "2026-10-02" },
+    { channelId: "UC_PR_X", startDate: "2026-02-30", endDate: "2026-03-02" },
+  ]) {
     assert.equal((await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", bad), bearer(token))))).isError, true, JSON.stringify(bad));
   }
   const ok = await toolResult(await endpoint.handle(rpc(call("agent_get_stored_search_terms", { channelId: "UC_PR_X", videoIds: ids(20) }), bearer(token))));

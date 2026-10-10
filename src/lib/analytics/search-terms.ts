@@ -1,5 +1,6 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import { z } from "zod";
+import { calendarDateSchema } from "@/lib/shared-domain";
 import { DomainError, type ResolvedCredentials } from "./contracts";
 import { parseWithSchema } from "./schemas";
 import { toPacificCalendarDate } from "./comparable-age";
@@ -12,8 +13,10 @@ import { videoBreakdownWindow, type BreakdownState } from "./breakdowns";
  * video, stored so an agent reads them locally. YouTube gives this report only as a total over a range (no day split) and names a term for
  * only part of the search views (checked live 2026-10-10, plan §1); the values are kept as returned (own-channel Analytics data, III.E.4.b).
  *
+ * Since the per-video terms are nearly empty, the channel's own terms are stored per Monday-Sunday week too (owner, Telegram msg 2477).
+ *
  * Its own service next to the breakdowns: the same videos and 90-day window, credentials, reads switch, quota reserve, failure rules
- * (`query-failure.ts`) and state rows (`analytics_breakdown_state`, subject `search:<video id>`).
+ * (`query-failure.ts`) and state rows (`analytics_breakdown_state`, subjects `search:<video id>` and `search-week:<Monday>`).
  */
 
 /** Checked live 2026-10-10: `maxResults` and `sort` are required (400 without), 25 is the most YouTube accepts (50 gives a 500). */
@@ -29,19 +32,38 @@ export const SEARCH_TERM_READ_EVERY_DAYS = 7;
 export const MAX_SEARCH_TERM_QUERIES_PER_RUN = 100;
 export const MAX_SEARCH_TERM_ATTEMPTS = 3;
 export const SEARCH_TERM_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+/** The last complete Monday-Sunday weeks of the channel that are read; an older week never read is not read any more. */
+export const CHANNEL_SEARCH_TERM_WEEKS = 13;
 /** The state rows share `analytics_breakdown_state` with the breakdowns; a video id never contains a colon. */
 export const VIDEO_SEARCH_SUBJECT_PREFIX = "search:";
+export const WEEK_SEARCH_SUBJECT_PREFIX = "search-week:";
 
 function shiftIsoDate(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
-export type PlannedSearchTerms = { subject: string; videoId: string; rangeStart: string; from: string; to: string };
+/** A video (`videoId`) or a channel week (`videoId` null, `from` its Monday, `to` its Sunday). */
+export type PlannedSearchTerms = { subject: string; videoId: string | null; rangeStart: string; from: string; to: string };
+
+/** The Monday of the week (Monday-Sunday) containing `date`. */
+function mondayOf(date: string): string {
+  const dayOfWeek = new Date(`${date}T00:00:00Z`).getUTCDay(); // 0 = Sunday
+  return shiftIsoDate(date, -((dayOfWeek + 6) % 7));
+}
+
+/** The Mondays of the last CHANNEL_SEARCH_TERM_WEEKS weeks that end on or before `latest`, newest first. */
+export function completeSearchTermWeeks(latest: string): string[] {
+  const monday = mondayOf(latest);
+  const newest = shiftIsoDate(monday, 6) === latest ? monday : shiftIsoDate(monday, -7);
+  return Array.from({ length: CHANNEL_SEARCH_TERM_WEEKS }, (_, i) => shiftIsoDate(newest, -7 * i));
+}
 
 /**
- * The videos to read now, at most `max`, least recently read first (never read first, newest publish date first among equals) and, within
- * that batch, those whose last attempt failed last -- the BL-168 queue, so none is starved and one that keeps getting no answer does not
- * head the run. While its window runs, a video is due once it has 7 days (yesterday ≥ window start + 6) and then whenever 7 days have
+ * The subjects to read now, at most `max`: the channel's due weeks first (newest first), then the videos least recently read first (never
+ * read first, newest publish date first among equals); within that batch, those whose last attempt failed last -- the BL-168 queue, so
+ * none is starved and one that keeps getting no answer does not head the run. A week is due once it is complete (its Sunday is yesterday
+ * or earlier) and once more on or after Sunday + 7 unless its first read already was; only the last CHANNEL_SEARCH_TERM_WEEKS weeks are
+ * considered. While its window runs, a video is due once it has 7 days (yesterday ≥ window start + 6) and then whenever 7 days have
  * passed since its last read; once the window has ended, once on or after window end + 7 unless the last read already was. Each read covers
  * the window so far. `failed` videos are never planned, a `retry` waits for its time, and a state for another window start (the publish
  * date moved) counts as never read.
@@ -55,15 +77,33 @@ export function planDueSearchTerms(
   const today = toPacificCalendarDate(now.toISOString());
   const latest = shiftIsoDate(today, -1);
   const stateOf = new Map(states.map((state) => [state.subject, state]));
+  /** The state of the subject for this range start, unless it is failed or waiting for its retry time (then null: skip). */
+  const usable = (subject: string, rangeStart: string): BreakdownState | undefined | null => {
+    const stored = stateOf.get(subject);
+    const state = stored && stored.rangeStart === rangeStart ? stored : undefined;
+    if (state?.status === "failed") return null;
+    if (state?.status === "retry" && state.nextAttemptAt && state.nextAttemptAt.getTime() > now.getTime()) return null;
+    return state;
+  };
+
+  const weeks: Array<{ planned: PlannedSearchTerms; retry: boolean }> = [];
+  for (const weekStart of completeSearchTermWeeks(latest)) {
+    const subject = `${WEEK_SEARCH_SUBJECT_PREFIX}${weekStart}`;
+    const state = usable(subject, weekStart);
+    if (state === null) continue;
+    const weekEnd = shiftIsoDate(weekStart, 6);
+    const settledOn = shiftIsoDate(weekEnd, SEARCH_TERM_READ_EVERY_DAYS);
+    const lastReadOn = state?.collectedOn ?? null;
+    if (lastReadOn !== null && !(lastReadOn < settledOn && today >= settledOn)) continue;
+    weeks.push({ planned: { subject, videoId: null, rangeStart: weekStart, from: weekStart, to: weekEnd }, retry: state?.status === "retry" });
+  }
 
   const due: Array<{ planned: PlannedSearchTerms; lastAt: number; retry: boolean; publishedAt: number }> = [];
   for (const video of videos.filter(hasFinalPublishDate)) {
     const { windowStart, windowEnd } = videoBreakdownWindow(video.publishedAt as string);
     const subject = `${VIDEO_SEARCH_SUBJECT_PREFIX}${video.videoId}`;
-    const stored = stateOf.get(subject);
-    const state = stored && stored.rangeStart === windowStart ? stored : undefined;
-    if (state?.status === "failed") continue;
-    if (state?.status === "retry" && state.nextAttemptAt && state.nextAttemptAt.getTime() > now.getTime()) continue;
+    const state = usable(subject, windowStart);
+    if (state === null) continue;
     const lastReadOn = state?.collectedOn ?? null;
     const ended = windowEnd <= latest;
     let isDue: boolean;
@@ -83,7 +123,7 @@ export function planDueSearchTerms(
   }
   // Never read (-Infinity) first; `-Infinity - -Infinity` is NaN, which falls through to the next key.
   due.sort((a, b) => a.lastAt - b.lastAt || b.publishedAt - a.publishedAt || a.planned.subject.localeCompare(b.planned.subject));
-  const batch = due.slice(0, max);
+  const batch = [...weeks, ...due].slice(0, max);
   return [...batch.filter((item) => !item.retry), ...batch.filter((item) => item.retry)].map((item) => item.planned);
 }
 
@@ -158,18 +198,43 @@ export type SearchTermDependencies = {
       maxAttempts: number;
     }): Promise<"retry" | "failed">;
     listVideoTerms(channelId: string, videoIds: string[]): Promise<Array<SearchTermValue & { videoId: string }>>;
+    /** Replaces one channel week's terms with the answer and records the week, atomically. */
+    saveWeekTerms(row: { channelId: string; subject: string; weekStart: string; to: string; terms: SearchTermValue[]; collectedOn: string; at: Date }): Promise<void>;
+    listWeekTerms(channelId: string, firstWeekStart: string, lastWeekStart: string): Promise<Array<SearchTermValue & { weekStart: string }>>;
   };
 };
 
 const credentialRefSchema = z.object({ userId: z.string().min(1) }).strict();
 export const collectDueSearchTermsInputSchema = z.object({ credentialRef: credentialRefSchema, channelId: z.string().min(1) }).strict();
+export const MAX_SEARCH_TERM_READ_DAYS = 92;
+/**
+ * Two forms: `videoIds` (each video's terms over its stored range), or `startDate`/`endDate` (+ `groupBy`) for the channel weeks. The
+ * dates belong to the channel form only, so they are refused together with `videoIds`, and required without it.
+ */
 export const listStoredSearchTermsInputSchema = z
   .object({
     channelId: z.string().min(1),
     credentialRef: credentialRefSchema.optional(),
-    videoIds: z.array(z.string().min(1)).min(1).max(20),
+    videoIds: z.array(z.string().min(1)).min(1).max(20).optional(),
+    startDate: calendarDateSchema.optional(),
+    endDate: calendarDateSchema.optional(),
+    groupBy: z.enum(["total", "week"]).optional(),
   })
-  .strict();
+  .strict()
+  .refine((input) => !input.videoIds || (input.startDate === undefined && input.endDate === undefined && input.groupBy === undefined), {
+    message: "videoIds reads each video's terms over its stored range: leave out startDate, endDate and groupBy (they are for the channel weeks)",
+  })
+  .refine((input) => input.videoIds !== undefined || (input.startDate !== undefined && input.endDate !== undefined), {
+    message: "without videoIds, startDate and endDate are required (the channel weeks lying inside them are read)",
+  })
+  .refine((input) => !input.startDate || !input.endDate || input.startDate <= input.endDate, { message: "startDate must not be after endDate" })
+  .refine(
+    (input) =>
+      !input.startDate ||
+      !input.endDate ||
+      Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`) <= (MAX_SEARCH_TERM_READ_DAYS - 1) * 86_400_000,
+    { message: `at most ${MAX_SEARCH_TERM_READ_DAYS} days` }
+  );
 
 export type StoredSearchTermsVideo = {
   videoId: string;
@@ -181,7 +246,33 @@ export type StoredSearchTermsVideo = {
   lastError: string | null;
   terms: SearchTermValue[];
 };
-export type ListStoredSearchTermsResult = { channelId: string; videos: StoredSearchTermsVideo[] };
+export type StoredSearchTermsWeek = {
+  weekStart: string;
+  weekEnd: string;
+  status: "collected" | "retry" | "failed" | "not_collected";
+  collectedAt: string | null;
+  lastError: string | null;
+  /** Only with `groupBy: "week"`. */
+  terms?: SearchTermValue[];
+};
+export type ListStoredSearchTermsResult =
+  | { channelId: string; videos: StoredSearchTermsVideo[] }
+  | {
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      groupBy: "total" | "week";
+      /** The complete weeks lying inside startDate..endDate, oldest first. */
+      weeks: StoredSearchTermsWeek[];
+      /** Only with `groupBy: "total"`: each term summed over the weeks that were read (a sum of weekly top-25 lists). */
+      terms?: SearchTermValue[];
+    };
+
+function addOrNull(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a + b;
+}
 
 function userIdOf(credentialRef: unknown): string | null {
   return credentialRef && typeof credentialRef === "object" && typeof (credentialRef as { userId?: unknown }).userId === "string"
@@ -191,11 +282,46 @@ function userIdOf(credentialRef: unknown): string | null {
 
 export function createSearchTermServices(deps: SearchTermDependencies) {
   const listSearchStates = async (channelId: string) =>
-    (await deps.store.listStates(channelId)).filter((state) => state.subject.startsWith(VIDEO_SEARCH_SUBJECT_PREFIX));
+    (await deps.store.listStates(channelId)).filter(
+      (state) => state.subject.startsWith(VIDEO_SEARCH_SUBJECT_PREFIX) || state.subject.startsWith(WEEK_SEARCH_SUBJECT_PREFIX)
+    );
+
+  const listWeeks = async (channelId: string, startDate: string, endDate: string, groupBy: "total" | "week"): Promise<ListStoredSearchTermsResult> => {
+    const latest = shiftIsoDate(toPacificCalendarDate(deps.clock.now().toISOString()), -1);
+    const lastDay = endDate < latest ? endDate : latest;
+    const mondays: string[] = [];
+    // From the first Monday on or after startDate (the Monday of the week holding startDate + 6), every week whose Sunday is on or before
+    // the earlier of endDate and yesterday.
+    for (let monday = mondayOf(shiftIsoDate(startDate, 6)); shiftIsoDate(monday, 6) <= lastDay; monday = shiftIsoDate(monday, 7)) mondays.push(monday);
+    const base = { channelId, startDate, endDate, groupBy };
+    if (mondays.length === 0) return { ...base, weeks: [], ...(groupBy === "total" ? { terms: [] } : {}) };
+    const [states, rows] = await Promise.all([listSearchStates(channelId), deps.store.listWeekTerms(channelId, mondays[0], mondays[mondays.length - 1])]);
+    const stateOf = new Map(states.map((state) => [state.subject, state]));
+    const totals = new Map<string, SearchTermValue>();
+    const weeks = mondays.map((weekStart): StoredSearchTermsWeek => {
+      const state = stateOf.get(`${WEEK_SEARCH_SUBJECT_PREFIX}${weekStart}`);
+      const current = state?.collectedThrough ? rows.filter((row) => row.weekStart === weekStart) : [];
+      for (const row of current) {
+        const total = totals.get(row.term) ?? { term: row.term, views: null, estimatedMinutesWatched: null };
+        total.views = addOrNull(total.views, row.views);
+        total.estimatedMinutesWatched = addOrNull(total.estimatedMinutesWatched, row.estimatedMinutesWatched);
+        totals.set(row.term, total);
+      }
+      return {
+        weekStart,
+        weekEnd: shiftIsoDate(weekStart, 6),
+        status: state ? state.status : "not_collected",
+        collectedAt: state?.collectedAt ? state.collectedAt.toISOString() : null,
+        lastError: state?.lastError ?? null,
+        ...(groupBy === "week" ? { terms: current.map(({ term, views, estimatedMinutesWatched }) => ({ term, views, estimatedMinutesWatched })).sort(byViews) } : {}),
+      };
+    });
+    return { ...base, weeks, ...(groupBy === "total" ? { terms: [...totals.values()].sort(byViews) } : {}) };
+  };
 
   return {
     /**
-     * Reads the channel's due videos (at most MAX_SEARCH_TERM_QUERIES_PER_RUN, one query each). Failures follow the milestone rules
+     * Reads the channel's due weeks and videos (at most MAX_SEARCH_TERM_QUERIES_PER_RUN, one query each). Failures follow the milestone rules
      * (`query-failure.ts`): `stop` ends the run with nothing written, `defer` puts the video back by a day and ends the run, `attempt`
      * counts one of its 3 attempts and the run goes on.
      */
@@ -218,18 +344,14 @@ export function createSearchTermServices(deps: SearchTermDependencies) {
             startDate: item.from,
             endDate: item.to,
             ...SEARCH_TERM_QUERY,
-            filters: `video==${item.videoId};insightTrafficSourceType==YT_SEARCH`,
+            filters: item.videoId ? `video==${item.videoId};insightTrafficSourceType==YT_SEARCH` : "insightTrafficSourceType==YT_SEARCH",
           });
-          await deps.store.saveVideoTerms({
-            channelId: parsed.channelId,
-            subject: item.subject,
-            videoId: item.videoId,
-            rangeStart: item.rangeStart,
-            to: item.to,
-            terms: toSearchTermRows(answer),
-            collectedOn,
-            at: deps.clock.now(),
-          });
+          const saved = { channelId: parsed.channelId, subject: item.subject, to: item.to, terms: toSearchTermRows(answer), collectedOn, at: deps.clock.now() };
+          if (item.videoId) {
+            await deps.store.saveVideoTerms({ ...saved, videoId: item.videoId, rangeStart: item.rangeStart });
+          } else {
+            await deps.store.saveWeekTerms({ ...saved, weekStart: item.from });
+          }
           collected += 1;
         } catch (error) {
           const kind = failureKind(error);
@@ -255,13 +377,17 @@ export function createSearchTermServices(deps: SearchTermDependencies) {
     },
 
     /**
-     * The stored search terms of the session channel's videos, most views first. Local only. A video of another channel, without a final
-     * publish date, or never synced is not listed; terms read for another window start (the publish date moved) are not returned until the
-     * video is read again.
+     * The stored search terms of the session channel's videos (`videoIds`), or of its complete weeks inside startDate..endDate. Local only.
+     * A video of another channel, without a final publish date, or never synced is not listed; terms read for another window start (the
+     * publish date moved) are not returned until the video is read again. A week never read (also one older than the weeks collected) is
+     * listed as `not_collected`.
      */
     async listStoredSearchTerms(input: unknown): Promise<ListStoredSearchTermsResult> {
       const parsed = parseWithSchema(listStoredSearchTermsInputSchema, input, "list stored search terms input");
       await deps.channelAccess.assertActiveChannel({ userId: userIdOf(parsed.credentialRef), channelId: parsed.channelId });
+      if (!parsed.videoIds) {
+        return listWeeks(parsed.channelId, parsed.startDate as string, parsed.endDate as string, parsed.groupBy ?? "total");
+      }
       const wanted = new Set(parsed.videoIds);
       const videos = (await deps.videoStore.listVideos(parsed.channelId)).filter((video) => wanted.has(video.videoId) && hasFinalPublishDate(video));
       const [states, terms] = await Promise.all([

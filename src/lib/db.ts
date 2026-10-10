@@ -1428,6 +1428,23 @@ export const videoSearchTerms = sqliteTable(
 );
 
 /**
+ * v78 (BL-169, owner Telegram msg 2477): the channel's own search terms per Monday-Sunday week (Pacific dates), top 25 by views, as YouTube
+ * returned them -- the per-video terms are nearly empty (plan §1), the channel over a few weeks is not. Replaced per week on each read of
+ * that week; state subject `search-week:<Monday>`.
+ */
+export const channelSearchTermsWeekly = sqliteTable(
+  "channel_search_terms_weekly",
+  {
+    channelId: text("channel_id").notNull(),
+    weekStart: text("week_start").notNull(),
+    term: text("term").notNull(),
+    views: real("views"),
+    estimatedMinutesWatched: real("estimated_minutes_watched"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.weekStart, table.term] })]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 45 (BL-118) -- per-VIDEO history coverage: this video's daily metrics are collected contiguously from its
  * publish date through `history_through` (a date). Run windows alone cannot say this: a video first synced long after it was published
  * is covered by every channel-level run window yet has no early days. Maintained by collection; drives the automatic history catch-up.
@@ -4114,7 +4131,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 78,
     description:
-      "video_search_terms -- BL-169 (FO-REQ-0015 item 5, docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the YouTube search terms (top 25) of each own video over its 90-day window so far; state in analytics_breakdown_state (subject search:<video id>). Additive",
+      "video_search_terms, channel_search_terms_weekly -- BL-169 (FO-REQ-0015 item 5, docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md): the YouTube search terms (top 25) of each own video over its 90-day window so far and of the channel per Monday-Sunday week; state in analytics_breakdown_state (subjects search:<video id>, search-week:<Monday>). Additive",
     apply: async (client) => {
       await client.execute(`CREATE TABLE IF NOT EXISTS video_search_terms (
         video_id TEXT NOT NULL,
@@ -4125,6 +4142,14 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         PRIMARY KEY (video_id, term)
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS video_search_terms_channel_idx ON video_search_terms (channel_id, video_id)");
+      await client.execute(`CREATE TABLE IF NOT EXISTS channel_search_terms_weekly (
+        channel_id TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        term TEXT NOT NULL,
+        views REAL,
+        estimated_minutes_watched REAL,
+        PRIMARY KEY (channel_id, week_start, term)
+      )`);
     },
   },
 ];
@@ -9905,6 +9930,47 @@ export async function saveCollectedVideoSearchTerms(
   }
   writes.push(collectedBreakdownStateWrite(row, database));
   await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/**
+ * BL-169: one channel week's search terms (Monday `weekStart` .. Sunday `to`), in one atomic batch -- the week's stored terms are replaced
+ * by the answer and its state (`search-week:<Monday>`) records the week as collected. Other weeks are not touched.
+ */
+export async function saveCollectedChannelSearchTermsWeek(
+  row: { channelId: string; subject: string; weekStart: string; to: string; terms: SearchTermInput[]; collectedOn: string; at: Date },
+  database: AppDb = db
+): Promise<void> {
+  const writes: Array<BatchItem<"sqlite">> = [
+    database
+      .delete(channelSearchTermsWeekly)
+      .where(and(eq(channelSearchTermsWeekly.channelId, row.channelId), eq(channelSearchTermsWeekly.weekStart, row.weekStart))),
+  ];
+  const values = row.terms.map((t) => ({ channelId: row.channelId, weekStart: row.weekStart, term: t.term, views: t.views, estimatedMinutesWatched: t.estimatedMinutesWatched }));
+  for (let i = 0; i < values.length; i += BREAKDOWN_INSERT_CHUNK) {
+    writes.push(database.insert(channelSearchTermsWeekly).values(values.slice(i, i + BREAKDOWN_INSERT_CHUNK)).onConflictDoNothing());
+  }
+  writes.push(collectedBreakdownStateWrite({ ...row, rangeStart: row.weekStart }, database));
+  await database.batch(writes as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/** BL-169: the channel's stored weekly search terms for the weeks starting firstWeekStart .. lastWeekStart. */
+export async function listChannelSearchTermsWeekly(
+  channelId: string,
+  firstWeekStart: string,
+  lastWeekStart: string,
+  database: AppDb = db
+): Promise<Array<{ weekStart: string; term: string; views: number | null; estimatedMinutesWatched: number | null }>> {
+  const rows = await database
+    .select()
+    .from(channelSearchTermsWeekly)
+    .where(
+      and(
+        eq(channelSearchTermsWeekly.channelId, channelId),
+        gte(channelSearchTermsWeekly.weekStart, firstWeekStart),
+        lte(channelSearchTermsWeekly.weekStart, lastWeekStart)
+      )
+    );
+  return rows.map((r) => ({ weekStart: r.weekStart, term: r.term, views: r.views, estimatedMinutesWatched: r.estimatedMinutesWatched }));
 }
 
 /** BL-169: the stored search terms of the given videos, always within this channel. */
