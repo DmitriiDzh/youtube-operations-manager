@@ -55,7 +55,9 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 // three -- this slice deliberately ships no MCP/CLI surface for structured evidence at all (see
 // docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §7), so proving it stays unreachable belongs here
 // alongside the actions slice 2 already covers, not as a separate new inventory test.
-const FORBIDDEN_AGENT_SYMBOLS = ["createHypothesis", "transitionExperiment", "createExperimentOutcome", "addHypothesisEvidence"];
+// BL-170: linking and removing a video of an experiment's arm are the owner's (Web UI) or an approved Producer proposal's, never an agent
+// tool's (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md AC-EA-07).
+const FORBIDDEN_AGENT_SYMBOLS = ["createHypothesis", "transitionExperiment", "createExperimentOutcome", "addHypothesisEvidence", "linkExperimentArmVideo", "unlinkExperimentArmVideo"];
 
 test("PHASE10-INV-02: no file under src/mcp, src/cli, or src/lib/agent-operations references createHypothesis/transitionExperiment/createExperimentOutcome/addHypothesisEvidence", async () => {
   const offenders: string[] = [];

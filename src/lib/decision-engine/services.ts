@@ -1,8 +1,11 @@
 import {
   DomainError,
   parseWithSchema,
+  EXPERIMENT_ARM_LINKABLE_STATUSES,
   EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS,
   EXPERIMENT_OUTCOME_RECORDABLE_STATUSES,
+  MAX_ARM_VIDEOS_PER_EXPERIMENT,
+  type ExperimentArm,
   EXPERIMENT_STATUS_TRANSITIONS,
   type EvidenceReference,
   type EvidenceReferenceResolver,
@@ -21,6 +24,7 @@ import {
   createHypothesisInputSchema,
   executeExperimentInputSchema,
   generateHypothesisDraftInputSchema,
+  linkExperimentArmVideoInputSchema,
   saveGeneratedHypothesisInputSchema,
   setExperimentChangeSetInputSchema,
   transitionExperimentInputSchema,
@@ -28,6 +32,7 @@ import {
 import type {
   HypothesisEvidenceSourceType,
   StoredExperiment,
+  StoredExperimentArmVideo,
   StoredExperimentOutcome,
   StoredHypothesis,
   StoredHypothesisEvidence,
@@ -154,7 +159,34 @@ export type DecisionEngineServiceDependencies = {
     at?: Date;
   }) => Promise<void>;
   getHypothesisGenerationProvenanceByHypothesis: (hypothesisId: string) => Promise<StoredHypothesisGenerationProvenance | null>;
+  /**
+   * BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md). Optional so the fixtures that never touch arms keep working: without
+   * `listExperimentArmVideos` the trail lists no arms; linking needs all four.
+   */
+  listExperimentArmVideos?: (experimentIds: string[]) => Promise<StoredExperimentArmVideo[]>;
+  insertExperimentArmVideoIfEligible?: (
+    row: { experimentId: string; videoId: string; arm: string; linkedBy: string; linkedVia: "web_ui" | "producer_proposal"; at: Date },
+    fromStatuses: ExperimentStatus[],
+    maxVideos: number
+  ) => Promise<boolean>;
+  deleteExperimentArmVideoIfEligible?: (experimentId: string, videoId: string, fromStatuses: ExperimentStatus[]) => Promise<boolean>;
+  /** The ids of the channel's synced videos (any visibility): a linked video must be one of them. */
+  listChannelVideoIds?: (channelId: string) => Promise<string[]>;
 };
+
+/** BL-170: arm links grouped by arm -- `control` first, then by label; videos in the order they were linked. */
+export function groupExperimentArms(rows: StoredExperimentArmVideo[]): ExperimentArm[] {
+  const byArm = new Map<string, StoredExperimentArmVideo[]>();
+  for (const row of rows) byArm.set(row.arm, [...(byArm.get(row.arm) ?? []), row]);
+  return [...byArm.entries()]
+    .sort(([a], [b]) => (a === "control" ? -1 : b === "control" ? 1 : a.localeCompare(b)))
+    .map(([arm, videos]) => ({
+      arm,
+      videos: videos
+        .sort((a, b) => a.linkedAt.getTime() - b.linkedAt.getTime() || a.videoId.localeCompare(b.videoId))
+        .map((row) => ({ videoId: row.videoId, linkedAt: row.linkedAt.toISOString(), linkedBy: row.linkedBy, linkedVia: row.linkedVia })),
+    }));
+}
 
 function toHypothesis(row: StoredHypothesis): Hypothesis {
   return {
@@ -303,6 +335,59 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     }
     const hypothesis = await assertHypothesisAccessible(experiment.hypothesisId, ctx);
     return { experiment, hypothesis };
+  }
+
+  function armDeps() {
+    const { listExperimentArmVideos, insertExperimentArmVideoIfEligible, deleteExperimentArmVideoIfEligible, listChannelVideoIds } = deps;
+    if (!listExperimentArmVideos || !insertExperimentArmVideoIfEligible || !deleteExperimentArmVideoIfEligible || !listChannelVideoIds) {
+      throw new Error("Experiment arms are not wired into the decision engine");
+    }
+    return { listExperimentArmVideos, insertExperimentArmVideoIfEligible, deleteExperimentArmVideoIfEligible, listChannelVideoIds };
+  }
+
+  /**
+   * BL-170: why a video cannot be linked to this experiment, as a DomainError -- or nothing when it can. The same checks run before the
+   * owner's link, for a Producer proposal when it is submitted, and again (atomically, in the insert) when it is written.
+   */
+  async function assertArmLinkAllowed(experiment: StoredExperiment, hypothesis: StoredHypothesis, videoId: string): Promise<void> {
+    const arms = armDeps();
+    if (!hypothesis.channelId) {
+      throw new DomainError({
+        code: "EXPERIMENT_ARM_CHANNEL_REQUIRED",
+        message: "This experiment's hypothesis has no channel -- videos can only be linked to a channel-scoped experiment",
+        details: { experimentId: experiment.id, hypothesisId: hypothesis.id },
+      });
+    }
+    if (!(EXPERIMENT_ARM_LINKABLE_STATUSES as readonly string[]).includes(experiment.status)) {
+      throw new DomainError({
+        code: "EXPERIMENT_ARMS_FROZEN",
+        message: `The experiment is ${experiment.status}: its videos are its history and can no longer be changed`,
+        details: { experimentId: experiment.id, status: experiment.status },
+      });
+    }
+    if (!(await arms.listChannelVideoIds(hypothesis.channelId)).includes(videoId)) {
+      throw new DomainError({
+        code: "EXPERIMENT_ARM_VIDEO_NOT_FOUND",
+        message: "The video is not a synced video of the experiment's channel",
+        details: { videoId, channelId: hypothesis.channelId },
+      });
+    }
+    const links = await arms.listExperimentArmVideos([experiment.id]);
+    const existing = links.find((link) => link.videoId === videoId);
+    if (existing) {
+      throw new DomainError({
+        code: "EXPERIMENT_ARM_VIDEO_ALREADY_LINKED",
+        message: `The video is already in arm "${existing.arm}" of this experiment -- remove it first`,
+        details: { videoId, arm: existing.arm },
+      });
+    }
+    if (links.length >= MAX_ARM_VIDEOS_PER_EXPERIMENT) {
+      throw new DomainError({
+        code: "EXPERIMENT_ARMS_FULL",
+        message: `An experiment has at most ${MAX_ARM_VIDEOS_PER_EXPERIMENT} videos`,
+        details: { experimentId: experiment.id, max: MAX_ARM_VIDEOS_PER_EXPERIMENT },
+      });
+    }
   }
 
   return {
@@ -660,7 +745,92 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         }))
       );
       const evidence = (await deps.listHypothesisEvidenceByHypothesis(hypothesisId)).map(toHypothesisEvidence);
-      return { hypothesis: toHypothesis(hypothesisRow), experiments, evidence };
+      // BL-170: each experiment's videos by arm (none when arms are not wired).
+      const armRows = deps.listExperimentArmVideos ? await deps.listExperimentArmVideos(experimentRows.map((row) => row.id)) : [];
+      return {
+        hypothesis: toHypothesis(hypothesisRow),
+        experiments: experiments.map((experiment) => ({
+          ...experiment,
+          arms: groupExperimentArms(armRows.filter((row) => row.experimentId === experiment.experimentId)),
+        })),
+        evidence,
+      };
+    },
+
+    /** BL-170: the experiment's videos by arm. Channel-scoped like every experiment read. */
+    async listExperimentArms(experimentId: string, ctx: { userId: string | null | undefined }): Promise<{ experimentId: string; status: ExperimentStatus; arms: ExperimentArm[] }> {
+      const { experiment } = await assertExperimentAccessible(experimentId, ctx);
+      return { experimentId, status: experiment.status, arms: groupExperimentArms(await armDeps().listExperimentArmVideos([experimentId])) };
+    },
+
+    /**
+     * BL-170: links a video of the experiment's channel to an arm. Web UI (the owner) and an approved Producer proposal only -- never an
+     * agent tool (PHASE10-INV-02). Allowed while the experiment is proposed/approved/running, for a video not linked yet, up to
+     * MAX_ARM_VIDEOS_PER_EXPERIMENT; the insert re-checks all of it atomically.
+     */
+    async linkExperimentArmVideo(
+      experimentId: string,
+      input: unknown,
+      ctx: { userId: string | null | undefined; linkedBy: string; linkedVia: "web_ui" | "producer_proposal" }
+    ): Promise<{ experimentId: string; status: ExperimentStatus; arms: ExperimentArm[] }> {
+      const { experiment, hypothesis } = await assertExperimentAccessible(experimentId, ctx);
+      const parsed = parseWithSchema(linkExperimentArmVideoInputSchema, input, "link experiment arm video input");
+      await assertArmLinkAllowed(experiment, hypothesis, parsed.videoId);
+      const arms = armDeps();
+      const inserted = await arms.insertExperimentArmVideoIfEligible(
+        { experimentId, videoId: parsed.videoId, arm: parsed.arm, linkedBy: ctx.linkedBy, linkedVia: ctx.linkedVia, at: deps.clock.now() },
+        [...EXPERIMENT_ARM_LINKABLE_STATUSES],
+        MAX_ARM_VIDEOS_PER_EXPERIMENT
+      );
+      if (!inserted) {
+        // Something changed between the checks and the insert: say what, from the current state.
+        const current = await deps.getExperimentById(experimentId);
+        if (current) await assertArmLinkAllowed(current, hypothesis, parsed.videoId);
+        throw new DomainError({ code: "EXPERIMENT_INVALID_TRANSITION", message: "The experiment changed meanwhile; try again", details: { experimentId } });
+      }
+      return { experimentId, status: experiment.status, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
+    },
+
+    /** BL-170: removes a video from the experiment's arms, while the experiment is proposed/approved/running. Web UI only. */
+    async unlinkExperimentArmVideo(
+      experimentId: string,
+      videoId: string,
+      ctx: { userId: string | null | undefined }
+    ): Promise<{ experimentId: string; status: ExperimentStatus; arms: ExperimentArm[] }> {
+      const { experiment } = await assertExperimentAccessible(experimentId, ctx);
+      const arms = armDeps();
+      const links = await arms.listExperimentArmVideos([experimentId]);
+      if (!links.some((link) => link.videoId === videoId)) {
+        throw new DomainError({ code: "EXPERIMENT_ARM_VIDEO_NOT_LINKED", message: "The video is not linked to this experiment", details: { experimentId, videoId } });
+      }
+      const frozen = (status: ExperimentStatus) =>
+        new DomainError({
+          code: "EXPERIMENT_ARMS_FROZEN",
+          message: `The experiment is ${status}: its videos are its history and can no longer be changed`,
+          details: { experimentId, status },
+        });
+      if (!(EXPERIMENT_ARM_LINKABLE_STATUSES as readonly string[]).includes(experiment.status)) throw frozen(experiment.status);
+      if (!(await arms.deleteExperimentArmVideoIfEligible(experimentId, videoId, [...EXPERIMENT_ARM_LINKABLE_STATUSES]))) {
+        const current = await deps.getExperimentById(experimentId);
+        if (current && !(EXPERIMENT_ARM_LINKABLE_STATUSES as readonly string[]).includes(current.status)) throw frozen(current.status);
+        throw new DomainError({ code: "EXPERIMENT_ARM_VIDEO_NOT_LINKED", message: "The video is not linked to this experiment", details: { experimentId, videoId } });
+      }
+      return { experimentId, status: experiment.status, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
+    },
+
+    /**
+     * BL-170: the submit-time check of a Producer `experiment.link_video` proposal for `channelId`. The Producer is not in that channel's
+     * scope when it proposes (BL-163), so the channel is compared with the hypothesis's own instead of the owner's active channel; an
+     * experiment of another channel is reported as not found. Writes nothing; approving goes through `linkExperimentArmVideo`.
+     */
+    async checkExperimentArmVideoProposal(input: { channelId: string; experimentId: string; videoId: string; arm: string }): Promise<void> {
+      const experiment = await deps.getExperimentById(input.experimentId);
+      const hypothesis = experiment ? await deps.getHypothesisById(experiment.hypothesisId) : null;
+      if (!experiment || !hypothesis || hypothesis.channelId !== input.channelId) {
+        throw new DomainError({ code: "EXPERIMENT_NOT_FOUND", message: "Experiment not found", details: { experimentId: input.experimentId } });
+      }
+      parseWithSchema(linkExperimentArmVideoInputSchema, { videoId: input.videoId, arm: input.arm }, "link experiment arm video input");
+      await assertArmLinkAllowed(experiment, hypothesis, input.videoId);
     },
 
     /**

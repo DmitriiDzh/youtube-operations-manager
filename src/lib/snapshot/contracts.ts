@@ -127,6 +127,9 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   "hypotheses",
   "experiments",
   "experiment_outcomes",
+  // BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md) -- which video is in which arm of an experiment, history of the test like the
+  // outcomes; after `experiments` (its FK).
+  "experiment_arm_videos",
   // Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §6) -- structured evidence
   // references, added from this table's own first commit for the same RISK-52-avoidance reason.
   // FK order: after hypotheses (its own parent), which is already above.

@@ -1,5 +1,9 @@
 import {
   claimExperimentForExecution,
+  deleteExperimentArmVideoIfEligible,
+  insertExperimentArmVideoIfEligible,
+  listExperimentArmVideos,
+  listStoredVideosByChannel,
   finalizeExperimentExecution,
   getExperimentById,
   getHypothesisById,
@@ -39,5 +43,10 @@ export function createDecisionEngineStoreAdapter() {
     listHypothesisEvidenceByHypothesis,
     insertHypothesisGenerationProvenance,
     getHypothesisGenerationProvenanceByHypothesis,
+    // BL-170: experiment arms.
+    listExperimentArmVideos,
+    insertExperimentArmVideoIfEligible,
+    deleteExperimentArmVideoIfEligible,
+    listChannelVideoIds: async (channelId: string) => (await listStoredVideosByChannel(channelId)).map((video) => video.videoId),
   };
 }

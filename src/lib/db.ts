@@ -2304,6 +2304,27 @@ export const experimentOutcomes = sqliteTable(
   (table) => [index("experiment_outcomes_experiment_id_idx").on(table.experimentId)]
 );
 
+/**
+ * SCHEMA_MIGRATIONS version 79 (BL-170, FO-REQ-0015 item 3, docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md): which own videos are in which arm
+ * of an experiment (`control`, `A`, ...). A video is in at most one arm of an experiment. Written only by the owner (Web UI) or by
+ * approving a Producer proposal, and only while the experiment is proposed/approved/running; frozen after (history). No FK to `videos`
+ * (the change-set link's informal-reference rule); the channel check is the decision engine's.
+ */
+export const experimentArmVideos = sqliteTable(
+  "experiment_arm_videos",
+  {
+    experimentId: text("experiment_id")
+      .notNull()
+      .references(() => experiments.id),
+    videoId: text("video_id").notNull(),
+    arm: text("arm").notNull(),
+    linkedBy: text("linked_by").notNull(),
+    linkedVia: text("linked_via", { enum: ["web_ui", "producer_proposal"] }).notNull(),
+    linkedAt: integer("linked_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.experimentId, table.videoId] })]
+);
+
 // Append-only (mirrors experimentOutcomes/market_*_snapshots) -- no update/delete function is
 // ever written. A wrong reference is superseded by adding a corrected one, never edited in place.
 // `referenceJson` is validated (the referenced Phase 8/9 row actually exists) BEFORE this insert
@@ -4149,6 +4170,22 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         views REAL,
         estimated_minutes_watched REAL,
         PRIMARY KEY (channel_id, week_start, term)
+      )`);
+    },
+  },
+  {
+    version: 79,
+    description:
+      "experiment_arm_videos -- BL-170 (FO-REQ-0015 item 3, docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md): own videos linked to an experiment's arm (control, A, ...). Additive",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS experiment_arm_videos (
+        experiment_id TEXT NOT NULL REFERENCES experiments(id),
+        video_id TEXT NOT NULL,
+        arm TEXT NOT NULL,
+        linked_by TEXT NOT NULL,
+        linked_via TEXT NOT NULL,
+        linked_at INTEGER NOT NULL,
+        PRIMARY KEY (experiment_id, video_id)
       )`);
     },
   },
@@ -11594,6 +11631,54 @@ export async function transitionExperimentStatusIfValid(
     )
     .returning();
   return rows[0] ?? null;
+}
+
+export type StoredExperimentArmVideo = typeof experimentArmVideos.$inferSelect;
+
+function statusIn(statuses: ExperimentStatus[]) {
+  return sql.join(statuses.map((status) => sql`${status}`), sql`, `);
+}
+
+/**
+ * BL-170: links a video to an arm in one statement, only while the experiment's status is one of `fromStatuses`, the video is not linked
+ * to it yet and it has fewer than `maxVideos` links -- so two owners (or an owner and an approved proposal) racing cannot exceed the cap
+ * or link a frozen experiment. `false` when any condition failed; the caller re-reads to say which.
+ */
+export async function insertExperimentArmVideoIfEligible(
+  row: { experimentId: string; videoId: string; arm: string; linkedBy: string; linkedVia: "web_ui" | "producer_proposal"; at: Date },
+  fromStatuses: ExperimentStatus[],
+  maxVideos: number,
+  database: AppDb = db
+): Promise<boolean> {
+  const inserted = await database.all<{ video_id: string }>(sql`
+    INSERT INTO experiment_arm_videos (experiment_id, video_id, arm, linked_by, linked_via, linked_at)
+    SELECT ${row.experimentId}, ${row.videoId}, ${row.arm}, ${row.linkedBy}, ${row.linkedVia}, ${Math.floor(row.at.getTime() / 1000)}
+    WHERE EXISTS (SELECT 1 FROM experiments WHERE id = ${row.experimentId} AND status IN (${statusIn(fromStatuses)}))
+      AND (SELECT count(*) FROM experiment_arm_videos WHERE experiment_id = ${row.experimentId}) < ${maxVideos}
+    ON CONFLICT DO NOTHING
+    RETURNING video_id`);
+  return inserted.length > 0;
+}
+
+/** BL-170: removes a link, only while the experiment's status is one of `fromStatuses`. `false` when nothing was removed. */
+export async function deleteExperimentArmVideoIfEligible(
+  experimentId: string,
+  videoId: string,
+  fromStatuses: ExperimentStatus[],
+  database: AppDb = db
+): Promise<boolean> {
+  const deleted = await database.all<{ video_id: string }>(sql`
+    DELETE FROM experiment_arm_videos
+    WHERE experiment_id = ${experimentId} AND video_id = ${videoId}
+      AND EXISTS (SELECT 1 FROM experiments WHERE id = ${experimentId} AND status IN (${statusIn(fromStatuses)}))
+    RETURNING video_id`);
+  return deleted.length > 0;
+}
+
+/** BL-170: the arm links of the given experiments. */
+export async function listExperimentArmVideos(experimentIds: string[], database: AppDb = db): Promise<StoredExperimentArmVideo[]> {
+  if (experimentIds.length === 0) return [];
+  return database.select().from(experimentArmVideos).where(inArray(experimentArmVideos.experimentId, experimentIds));
 }
 
 /**
