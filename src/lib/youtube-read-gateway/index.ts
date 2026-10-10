@@ -29,3 +29,5 @@ export * from "./data-api";
 export * from "./analytics-api";
 export * from "./reporting-api";
 export * from "./feed";
+// BL-171: what a failed background read means for its run (stop / defer / attempt), shared by the analytics steps and the comments.
+export * from "./read-failure";
