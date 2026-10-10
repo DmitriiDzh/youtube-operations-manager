@@ -199,6 +199,8 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   generation_plan_verdict_history: notApiData("the owner's listening verdict history of media generation plans (BL-157)"),
   generation_plan_review_claims: notApiData("'being reviewed here' claims on media generation plans (BL-157)"),
   generation_plan_rechecks: notApiData("the factory's re-checks of rated media generation attempts and the owner's answers (BL-173)"),
+  gemini_credentials: notApiData("the Gemini API key (credentials, BL-174)"),
+  gemini_media_jobs: notApiData("images and video generated through Google's Gemini API for a channel, with their prompts and costs (BL-174)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),
