@@ -109,7 +109,9 @@ test("AC-PR-09 (real database, v72): the Producer call log keeps 90 days, newest
     await insertProducerCallLogEntry({ at: new Date(now.getTime() - 91 * day), tool: "old", channelId: "UC_T", outcome: "ok", errorCode: null }, database);
     await insertProducerCallLogEntry({ at: new Date(now.getTime() - 89 * day), tool: "kept", channelId: null, outcome: "error", errorCode: "CHANNEL_NOT_ACTIVE" }, database);
     await insertProducerCallLogEntry({ at: now, tool: "agent_query_channel_reach", channelId: "UC_J", outcome: "ok", errorCode: null }, database);
-    const entries = await listProducerCallLogEntries(10, database);
+    // Read at the test's own `now`: the read drops rows past the retention by its clock (the real one by default), so with the
+    // fixed dates above the 89-day row fell out once the real date passed 2026-10-10 12:00 UTC.
+    const entries = await listProducerCallLogEntries(10, database, now);
     assert.deepEqual(
       entries.map((entry) => [entry.tool, entry.channelId, entry.outcome, entry.errorCode]),
       [
