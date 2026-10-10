@@ -111,6 +111,8 @@ export const errors = {
   "errors.plan_mismatch": "This does not match the plan.",
   "errors.plan_invalid": "The plan is not valid.",
   "errors.plan_verdict_exists": "This track already has a verdict.",
+  "errors.plan_recheck_exists": "A re-check with this id already exists with other content.",
+  "errors.plan_recheck_closed": "This re-check is no longer open.",
   "errors.change_set_incomplete": "Not every change of the change set could be read.",
   "errors.RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED": "This channel has no workspace folder on this computer (Settings → Channels).",
   "errors.RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE": "The channel's workspace folder cannot be used for an export.",

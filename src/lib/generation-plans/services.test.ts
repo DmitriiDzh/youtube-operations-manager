@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
+import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
 import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedVerdict } from "@/lib/sync-gateway";
 import { createGenerationPlanServices, sharedNotices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
@@ -25,6 +25,7 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
   const peerGroupNotes: SharedGroupNote[] = [];
   const history: Array<PlanVerdictHistoryRow & { planId: string }> = [];
   const claims = new Map<string, SharedClaim>();
+  const rechecks: Array<PlanRecheck & { planId: string }> = [];
   const store: PlanStore = {
     async insertPlan(row) {
       if (plans.has(row.id)) return null;
@@ -76,8 +77,21 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
       claims.delete(claimId);
     },
     listClaims: async (at) => [...claims.values()].filter((c) => Date.parse(c.until) > at.getTime()).map((c) => structuredClone(c)),
+    // BL-173: re-checks, one per (plan, id); closing only an open one.
+    async insertRecheck(planId, r) {
+      if (rechecks.some((x) => x.planId === planId && x.recheckId === r.recheckId)) return false;
+      rechecks.push({ ...structuredClone(r), planId });
+      return true;
+    },
+    listRechecks: async (planId) => rechecks.filter((r) => r.planId === planId).map((r) => without(structuredClone(r), "planId")),
+    async closeRecheck(planId, recheckId, set) {
+      const r = rechecks.find((x) => x.planId === planId && x.recheckId === recheckId);
+      if (!r || r.status !== "open") return false;
+      Object.assign(r, { status: set.status, closedAt: set.closedAt, answer: set.answer ?? null, withdrawNote: set.withdrawNote ?? null, closeReason: set.closeReason ?? null });
+      return true;
+    },
   };
-  return { store, plans, results, events, jobs, peerVerdicts, history, claims };
+  return { store, plans, results, events, jobs, peerVerdicts, history, claims, rechecks };
 }
 
 const CHANNEL = "UC_plan_channel";

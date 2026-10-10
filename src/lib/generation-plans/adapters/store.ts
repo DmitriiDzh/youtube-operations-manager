@@ -1,5 +1,8 @@
 import {
+  closeGenerationPlanRecheck,
   deleteGenerationPlanReviewClaim,
+  insertGenerationPlanRecheck,
+  listGenerationPlanRechecks,
   getGenerationPlan,
   insertGenerationPlanVerdictHistory,
   listGenerationPlanReviewClaims,
@@ -20,9 +23,10 @@ import {
   updateGenerationPlan,
   upsertGenerationPlanResults,
   type StoredGenerationPlan,
+  type StoredGenerationPlanRecheck,
   type StoredGenerationPlanResult,
 } from "@/lib/db";
-import type { PlanDefinition, PlanEvent, PlanResultRow } from "../contracts";
+import type { PlanDefinition, PlanEvent, PlanRecheck, PlanRecheckAnswer, PlanRecheckVerdict, PlanResultRow } from "../contracts";
 import type { PlanStore, StoredPlan } from "../services";
 
 // BL-143: the plans module's only door to the database (DEVELOPMENT_PLAYBOOK §6.2). JSON columns are written and read only here.
@@ -70,6 +74,29 @@ function resultFromDb(row: StoredGenerationPlanResult): PlanResultRow {
     metrics: parseJson(row.metricsJson, {}),
     referenceIds: parseJson<string[]>(row.referenceIdsJson, []),
     at: row.at.toISOString(),
+  };
+}
+
+/** BL-173: a stored re-check; an unknown kind or status reads as the safe one (a question; open). */
+function recheckFromDb(row: StoredGenerationPlanRecheck): PlanRecheck {
+  return {
+    recheckId: row.recheckId,
+    itemKey: row.itemKey,
+    attemptRef: row.attemptRef,
+    kind: row.kind === "revision" ? "revision" : "question",
+    title: row.title,
+    note: row.note,
+    auditionFile: row.auditionFile ?? null,
+    markers: parseJson(row.markersJson, []),
+    checks: parseJson(row.checksJson, []),
+    metrics: parseJson(row.metricsJson, {}),
+    previousVerdict: parseJson<PlanRecheckVerdict | null>(row.previousVerdictJson, null),
+    status: row.status === "answered" || row.status === "withdrawn" ? row.status : "open",
+    openedAt: row.openedAt.toISOString(),
+    closedAt: row.closedAt ? row.closedAt.toISOString() : null,
+    answer: parseJson<PlanRecheckAnswer | null>(row.answerJson, null),
+    withdrawNote: row.withdrawNote ?? null,
+    closeReason: row.closeReason ?? null,
   };
 }
 
@@ -155,6 +182,8 @@ export function createPlanStore(): PlanStore {
         markersJson: v.markers.length > 0 ? JSON.stringify(v.markers) : null,
         note: v.note,
         at: v.at,
+        recheckId: v.recheckId ?? null,
+        kept: v.kept ? 1 : null,
       }),
     listPeerVerdicts: async (sinceIso) =>
       (await listGenerationPlanPeerVerdicts(sinceIso)).map((r) => ({
@@ -169,6 +198,8 @@ export function createPlanStore(): PlanStore {
         markers: parseJson(r.markersJson, []),
         note: r.note ?? null,
         at: r.at,
+        ...(r.recheckId ? { recheckId: r.recheckId } : {}),
+        ...(r.kept ? { kept: true } : {}),
       })),
     insertPeerGroupNote: (n) => insertGenerationPlanPeerGroupNote({ noteId: n.noteId, planId: n.planId, ownerDeviceId: n.ownerDeviceId, groupId: n.groupId, note: n.note, at: n.at }),
     listPeerGroupNotes: async (sinceIso) => (await listGenerationPlanPeerGroupNotes(sinceIso)).map((r) => ({ noteId: r.noteId, planId: r.planId, ownerDeviceId: r.ownerDeviceId, groupId: r.groupId, note: r.note ?? null, at: r.at })),
@@ -186,6 +217,8 @@ export function createPlanStore(): PlanStore {
         device: h.device,
         at: h.at,
         recordedAt: new Date(),
+        recheckId: h.recheckId ?? null,
+        kept: h.kept ? 1 : null,
       }),
     listVerdictHistory: async (planId) =>
       (await listGenerationPlanVerdictHistory(planId)).map((h) => ({
@@ -198,7 +231,40 @@ export function createPlanStore(): PlanStore {
         note: h.note ?? null,
         device: h.device,
         at: h.at,
+        ...(h.recheckId ? { recheckId: h.recheckId } : {}),
+        ...(h.kept ? { kept: true } : {}),
       })),
+    // BL-173: the plan's re-checks.
+    insertRecheck: (planId, r) =>
+      insertGenerationPlanRecheck({
+        planId,
+        recheckId: r.recheckId,
+        itemKey: r.itemKey,
+        attemptRef: r.attemptRef,
+        kind: r.kind,
+        title: r.title,
+        note: r.note,
+        auditionFile: r.auditionFile,
+        markersJson: r.markers.length > 0 ? JSON.stringify(r.markers) : null,
+        checksJson: r.checks.length > 0 ? JSON.stringify(r.checks) : null,
+        metricsJson: Object.keys(r.metrics).length > 0 ? JSON.stringify(r.metrics) : null,
+        previousVerdictJson: r.previousVerdict ? JSON.stringify(r.previousVerdict) : null,
+        status: r.status,
+        openedAt: new Date(r.openedAt),
+        closedAt: r.closedAt ? new Date(r.closedAt) : null,
+        answerJson: r.answer ? JSON.stringify(r.answer) : null,
+        withdrawNote: r.withdrawNote,
+        closeReason: r.closeReason,
+      }),
+    listRechecks: async (planId) => (await listGenerationPlanRechecks(planId)).map(recheckFromDb),
+    closeRecheck: (planId, recheckId, set) =>
+      closeGenerationPlanRecheck(planId, recheckId, {
+        status: set.status,
+        closedAt: new Date(set.closedAt),
+        answerJson: set.answer ? JSON.stringify(set.answer) : null,
+        withdrawNote: set.withdrawNote ?? null,
+        closeReason: set.closeReason ?? null,
+      }),
     // BL-157 (AC-TC-01): this device's review claims (times in ms in the table, ISO here).
     upsertClaim: (c) =>
       upsertGenerationPlanReviewClaim({

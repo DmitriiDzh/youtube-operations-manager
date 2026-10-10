@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/shared-domain";
-import { PLAN_ITEM_MODES, PLAN_RESULTS, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
+import { PLAN_ITEM_MODES, PLAN_RECHECK_KINDS, PLAN_RESULTS, PLAN_STAGE_KINDS, PLAN_STATUSES } from "./contracts";
 
 export { parseWithSchema };
 
@@ -27,6 +27,9 @@ export const PLAN_LIMITS = Object.freeze({
   importResults: 20_000,
   references: 50,
   referencesPerRow: 5,
+  /** BL-173: a re-check's short reason and its note. */
+  recheckTitleChars: 60,
+  recheckNoteChars: 1000,
 });
 
 export const planIdSchema = z.string().trim().regex(PLAN_ID_PATTERN, "a plan id: 2-80 letters, digits, '.', '_' or '-'");
@@ -158,6 +161,10 @@ const verdictFieldsSchema = {
   markers: z.array(markerSchema).max(PLAN_LIMITS.markersPerRow).optional(),
 };
 
+const metricsSchema = z
+  .record(z.string().min(1).max(64), z.union([z.number().finite(), z.string().max(200), z.boolean()]).nullable())
+  .refine((m) => Object.keys(m).length <= PLAN_LIMITS.metricsPerRow, `at most ${PLAN_LIMITS.metricsPerRow} metrics`);
+
 export const reportRowSchema = z
   .object({
     stageId: stageIdSchema,
@@ -167,10 +174,7 @@ export const reportRowSchema = z
     note: noteSchema.nullable().optional(),
     auditionFile: auditionFileSchema.nullable().optional(),
     checks: z.array(checkSchema).max(PLAN_LIMITS.checksPerRow).optional(),
-    metrics: z
-      .record(z.string().min(1).max(64), z.union([z.number().finite(), z.string().max(200), z.boolean()]).nullable())
-      .refine((m) => Object.keys(m).length <= PLAN_LIMITS.metricsPerRow, `at most ${PLAN_LIMITS.metricsPerRow} metrics`)
-      .optional(),
+    metrics: metricsSchema.optional(),
     ...verdictFieldsSchema,
     /** Plan references nearest to this attempt (FO-MSG-0009: the validator's nearest library tracks). */
     referenceIds: z.array(z.string().min(1).max(64)).max(PLAN_LIMITS.referencesPerRow).optional(),
@@ -237,6 +241,56 @@ export const groupNoteInputSchema = z.object({ planId: planIdSchema, groupId: gr
 export const peerGroupNoteInputSchema = z.object({ deviceId: z.string().min(1).max(128), planId: planIdSchema, groupId: groupIdSchema, note: noteSchema.nullable() }).strict();
 
 export const rerunRequestInputSchema = z.object({ planId: planIdSchema, itemKey: itemKeySchema, attemptRef: attemptRefSchema.optional(), note: noteSchema.nullable().optional() }).strict();
+
+// -- BL-173 (FO-REQ-0017, PLAN_RECHECKS_PLAN.md §2.2/§2.3): re-checks of rated attempts ------------------------------------
+
+export const RECHECK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+const recheckIdSchema = z.string().regex(RECHECK_ID_PATTERN, "a re-check id: up to 120 letters, digits, '.', '_' or '-'");
+const recheckNoteSchema = z.string().trim().min(1).max(PLAN_LIMITS.recheckNoteChars);
+
+/** The factory opens a re-check (`factory_plan_request_recheck`); the kind's file rule is checked by the service. */
+export const requestRecheckInputSchema = z
+  .object({
+    planId: planIdSchema,
+    itemKey: itemKeySchema,
+    attemptRef: attemptRefSchema,
+    recheckId: recheckIdSchema,
+    kind: z.enum(PLAN_RECHECK_KINDS),
+    title: z.string().trim().min(1).max(PLAN_LIMITS.recheckTitleChars),
+    note: recheckNoteSchema,
+    auditionFile: auditionFileSchema.optional(),
+    markers: z.array(markerSchema).max(PLAN_LIMITS.markersPerRow).optional(),
+    checks: z.array(checkSchema).max(PLAN_LIMITS.checksPerRow).optional(),
+    metrics: metricsSchema.optional(),
+  })
+  .strict();
+export type RequestRecheckInput = z.infer<typeof requestRecheckInputSchema>;
+
+export const withdrawRecheckInputSchema = z.object({ planId: planIdSchema, recheckId: recheckIdSchema, note: recheckNoteSchema.optional() }).strict();
+
+/** The owner's answer: a verdict (`result`), or `kept: true` with an optional note and nothing else. */
+const recheckAnswerFields = {
+  recheckId: recheckIdSchema,
+  kept: z.literal(true).optional(),
+  result: z.enum(["accepted", "rejected"]).optional(),
+  note: noteSchema.nullable().optional(),
+  ...verdictFieldsSchema,
+};
+const answerShape = (v: { kept?: true; result?: string; rating?: number | null; reasons?: string[]; markers?: unknown[] }) =>
+  v.kept === true ? v.result === undefined && v.rating == null && (v.reasons ?? []).length === 0 && (v.markers ?? []).length === 0 : v.result !== undefined;
+const ANSWER_SHAPE_MESSAGE = "a verdict answer names result; a kept answer (kept: true) carries only a note";
+
+export const recheckAnswerInputSchema = z
+  .object({ planId: planIdSchema, ...recheckAnswerFields })
+  .strict()
+  .refine(answerShape, ANSWER_SHAPE_MESSAGE);
+export type RecheckAnswerInput = z.infer<typeof recheckAnswerInputSchema>;
+
+/** The same answer on ANOTHER device's plan (carried there in this device's report). */
+export const peerRecheckAnswerInputSchema = z
+  .object({ deviceId: z.string().min(1).max(128), planId: planIdSchema, ...recheckAnswerFields })
+  .strict()
+  .refine(answerShape, ANSWER_SHAPE_MESSAGE);
 
 // -- running a stage (slice 2, AC-GP-09..12) -------------------------------------------------------------------------------
 

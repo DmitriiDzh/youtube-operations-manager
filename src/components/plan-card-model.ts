@@ -102,7 +102,12 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
       .filter((g) => typeof g.groupId === "string")
       .map((g) => {
         const c = record(g.counts);
-        return { groupId: str(g.groupId), title: str(g.title, str(g.groupId)), counts: { items: num(c.items), generated: num(c.generated), accepted: num(c.accepted), rejected: num(c.rejected), waitingReview: num(c.waitingReview), missing: num(c.missing) } };
+        return {
+          groupId: str(g.groupId),
+          title: str(g.title, str(g.groupId)),
+          // BL-173: `rechecks` is absent in an older build's report (none open there).
+          counts: { items: num(c.items), generated: num(c.generated), accepted: num(c.accepted), rejected: num(c.rejected), waitingReview: num(c.waitingReview), missing: num(c.missing), rechecks: num(c.rechecks) },
+        };
       }),
     items: list(raw.items)
       .filter((i) => typeof i.itemKey === "string")
@@ -130,6 +135,7 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
     budget: { usd: numOrNull(budget.usd), usedShare: numOrNull(budget.usedShare), warnings: (Array.isArray(budget.warnings) ? budget.warnings : []).filter((w): w is "80" | "100" => w === "80" || w === "100") },
     eta: { seconds: numOrNull(eta.seconds), gpuTypeId: strOrNull(eta.gpuTypeId), samples: num(eta.samples) },
     notices: sharedNotices(raw),
+    rechecksOpen: num(raw.rechecksOpen),
   };
 }
 

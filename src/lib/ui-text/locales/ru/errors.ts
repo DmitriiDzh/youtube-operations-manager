@@ -110,6 +110,8 @@ export const errors: Record<keyof typeof en, string> = {
   "errors.plan_mismatch": "Это не соответствует плану.",
   "errors.plan_invalid": "План неверный.",
   "errors.plan_verdict_exists": "У этого трека уже есть оценка.",
+  "errors.plan_recheck_exists": "Повторная проверка с этим id уже есть, с другим содержанием.",
+  "errors.plan_recheck_closed": "Эта повторная проверка уже закрыта.",
   "errors.change_set_incomplete": "Не все изменения набора удалось прочитать.",
   "errors.RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED": "У этого канала нет рабочей папки на этом компьютере (Настройки → Каналы).",
   "errors.RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE": "Рабочую папку канала нельзя использовать для выгрузки.",

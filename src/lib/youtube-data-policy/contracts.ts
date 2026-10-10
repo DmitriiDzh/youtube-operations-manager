@@ -198,6 +198,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   generation_plan_peer_group_notes: notApiData("the owner's wave notes on another device's generation plans (BL-162)"),
   generation_plan_verdict_history: notApiData("the owner's listening verdict history of media generation plans (BL-157)"),
   generation_plan_review_claims: notApiData("'being reviewed here' claims on media generation plans (BL-157)"),
+  generation_plan_rechecks: notApiData("the factory's re-checks of rated media generation attempts and the owner's answers (BL-173)"),
   ai_connections: notApiData("AI provider configuration"),
   ai_connection_credentials: notApiData("AI provider secrets"),
   agent_channel_tokens: notApiData("agent credentials (hashes)"),

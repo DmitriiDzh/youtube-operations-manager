@@ -51,6 +51,9 @@ export const sharedVerdictHistorySchema = z
     /** The computer the verdict was given on (its host name, or its device id when it has none). */
     device: z.string().max(255),
     at: isoSchema,
+    /** BL-173 (v4): the re-check this answers; `kept` = the verdict was kept with a note (not a verdict). */
+    recheckId: z.string().max(120).optional(),
+    kept: z.boolean().optional(),
   })
   .strict();
 
@@ -110,6 +113,43 @@ export const sharedReviewEntrySchema = z
     jobChannelId: z.string().max(64).nullable().optional(),
     /** BL-157 (v2, AC-TC-05): the attempt's owner verdicts, oldest first (the last 10); absent in a version 1 report. */
     history: z.array(sharedVerdictHistorySchema).max(10).optional(),
+    /** BL-173 (v4): the file the attempt plays now when an accepted revision replaced its reported one. */
+    currentFile: relativePathSchema.nullable().optional(),
+  })
+  .strict();
+
+const sharedMarkerSchema = z.object({ start: z.number(), end: z.number().nullable(), note: z.string().max(200).nullable() }).strict();
+
+/**
+ * BL-173 (v4, PLAN_RECHECKS_PLAN.md §2.7): an OPEN re-check of the owning device's plan -- what the other computer's review
+ * screen shows -- with the extra row its entry shows (the revision's checks, or the accepted revision a question plays).
+ */
+export const sharedRecheckSchema = z
+  .object({
+    recheckId: z.string().max(120),
+    itemKey: z.string().max(120),
+    attemptRef: z.string().max(120),
+    kind: z.enum(["revision", "question"]),
+    title: z.string().max(60),
+    note: z.string().max(1000),
+    auditionFile: relativePathSchema.nullable(),
+    markers: z.array(sharedMarkerSchema).max(50),
+    checks: z.array(looseRecord).max(50),
+    metrics: looseRecord,
+    previousVerdict: z
+      .object({
+        result: z.enum(["accepted", "rejected"]),
+        rating: z.number().int().min(1).max(10).nullable(),
+        reasons: z.array(z.string().max(60)).max(20),
+        markers: z.array(sharedMarkerSchema).max(50),
+        note: z.string().max(2000).nullable(),
+        device: z.string().max(255).nullable(),
+        at: isoSchema,
+      })
+      .strict()
+      .nullable(),
+    openedAt: isoSchema,
+    extraStage: sharedResultRowSchema.nullable(),
   })
   .strict();
 
@@ -160,6 +200,8 @@ export const sharedPlanSchema = z
     review: z.array(sharedReviewEntrySchema).max(500),
     /** BL-157 (v2, AC-WV-03): the waves' context, computed on the owning device; absent in a version 1 report. */
     batches: z.array(sharedBatchSchema).max(200).optional(),
+    /** BL-173 (v4): the plan's open re-checks; absent before version 4. */
+    rechecks: z.array(sharedRecheckSchema).max(200).optional(),
   })
   .strict();
 
@@ -179,6 +221,9 @@ export const sharedVerdictSchema = z
       .max(50),
     note: z.string().max(2000).nullable(),
     at: z.string().datetime({ offset: true }),
+    /** BL-173 (v4): the re-check this verdict answers; `kept` = the verdict was kept with a note. */
+    recheckId: z.string().max(120).optional(),
+    kept: z.boolean().optional(),
   })
   .strict();
 
@@ -200,13 +245,15 @@ export const sharedGroupNoteSchema = z
  * history, waves or claims). A version 1 build refuses a version 2 report (every level is strict), so both computers update.
  * BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.2): version 3 adds the wave notes sent to other devices (`groupNotes`) and each wave's
  * `ownerNoteAt`. Read: 1-3. A version 2 build refuses a version 3 report ("update the app"), so both computers update again.
+ * BL-173 (PLAN_RECHECKS_PLAN.md §2.7): version 4 adds the open re-checks (`plans[].rechecks`), an entry's `currentFile`, and
+ * `recheckId` / `kept` on history entries and verdicts. Read: 1-4; a version 3 build refuses it, so both computers update again.
  */
-export const GENERATION_PLANS_REPORT_VERSION = 3;
+export const GENERATION_PLANS_REPORT_VERSION = 4;
 
 export const generationPlansReportSchema = z
   .object({
     format: z.literal(GENERATION_PLANS_REPORT_FORMAT),
-    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     deviceId: z.string().min(1).max(128),
     hostname: z.string().max(255).nullable(),
     updatedAt: z.string().datetime({ offset: true }),
@@ -227,3 +274,4 @@ export type GenerationPlansReport = z.infer<typeof generationPlansReportSchema>;
 export type SharedBatch = z.infer<typeof sharedBatchSchema>;
 export type SharedClaim = z.infer<typeof sharedClaimSchema>;
 export type SharedVerdictHistory = z.infer<typeof sharedVerdictHistorySchema>;
+export type SharedRecheck = z.infer<typeof sharedRecheckSchema>;

@@ -1046,6 +1046,10 @@ export const generationPlanPeerVerdicts = sqliteTable(
     markersJson: text("markers_json"),
     note: text("note"),
     at: text("at").notNull(),
+    /** Schema v82 (BL-173): the re-check this verdict answers (null = an ordinary verdict). */
+    recheckId: text("recheck_id"),
+    /** Schema v82 (BL-173): 1 = the owner kept the verdict and only wrote a note. */
+    kept: integer("kept"),
   },
   (table) => [index("generation_plan_peer_verdicts_at_idx").on(table.at)]
 );
@@ -1088,6 +1092,10 @@ export const generationPlanVerdictHistory = sqliteTable(
     /** When the owner gave it (that device's clock), ISO. */
     at: text("at").notNull(),
     recordedAt: integer("recorded_at", { mode: "timestamp_ms" }).notNull(),
+    /** Schema v82 (BL-173): the re-check this answers (null = an ordinary verdict). */
+    recheckId: text("recheck_id"),
+    /** Schema v82 (BL-173): 1 = a re-check answered "keep the verdict" with a note -- not a verdict. */
+    kept: integer("kept"),
   },
   (table) => [index("generation_plan_verdict_history_plan_idx").on(table.planId, table.itemKey, table.attemptRef)]
 );
@@ -1111,6 +1119,37 @@ export const generationPlanReviewClaims = sqliteTable(
     until: integer("until", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [index("generation_plan_review_claims_plan_idx").on(table.ownerDeviceId, table.planId)]
+);
+
+/**
+ * Schema v82 (BL-173, FO-REQ-0017, docs/roadmap/plans/PLAN_RECHECKS_PLAN.md §2.1): an attempt the owner already rated, sent back
+ * to the owner by the factory -- a fixed version (its own file, checks and metrics) or a question about a spot. Kept apart from
+ * `generation_plan_results`, so the original's rows are never overwritten. JSON columns are written by the plans module only.
+ * Times in ms. Device-local (on the device that owns the plan).
+ */
+export const generationPlanRechecks = sqliteTable(
+  "generation_plan_rechecks",
+  {
+    planId: text("plan_id").notNull(),
+    recheckId: text("recheck_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    attemptRef: text("attempt_ref").notNull(),
+    kind: text("kind", { enum: ["revision", "question"] }).notNull(),
+    title: text("title").notNull(),
+    note: text("note").notNull(),
+    auditionFile: text("audition_file"),
+    markersJson: text("markers_json"),
+    checksJson: text("checks_json"),
+    metricsJson: text("metrics_json"),
+    previousVerdictJson: text("previous_verdict_json"),
+    status: text("status", { enum: ["open", "answered", "withdrawn"] }).notNull(),
+    openedAt: integer("opened_at", { mode: "timestamp_ms" }).notNull(),
+    closedAt: integer("closed_at", { mode: "timestamp_ms" }),
+    answerJson: text("answer_json"),
+    withdrawNote: text("withdraw_note"),
+    closeReason: text("close_reason"),
+  },
+  (table) => [primaryKey({ columns: [table.planId, table.recheckId] }), index("generation_plan_rechecks_attempt_idx").on(table.planId, table.itemKey, table.attemptRef)]
 );
 
 export const mediaExchangeInputs = sqliteTable(
@@ -4304,6 +4343,47 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS media_gpu_availability_log_at_idx ON media_gpu_availability_log (at)");
       await client.execute("CREATE INDEX IF NOT EXISTS media_gpu_availability_log_gpu_dc_at_idx ON media_gpu_availability_log (gpu_type_id, data_center_id, at)");
+    },
+  },
+  {
+    version: 82,
+    description:
+      "generation_plan_rechecks + recheck_id/kept on generation_plan_verdict_history and generation_plan_peer_verdicts -- BL-173 (FO-REQ-0017, docs/roadmap/plans/PLAN_RECHECKS_PLAN.md): re-checks of rated attempts (a fixed version or a question), apart from the result rows; answers keep their re-check id. Additive, device-local",
+    apply: async (client) => {
+      await client.execute(`CREATE TABLE IF NOT EXISTS generation_plan_rechecks (
+        plan_id TEXT NOT NULL,
+        recheck_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        attempt_ref TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        note TEXT NOT NULL,
+        audition_file TEXT,
+        markers_json TEXT,
+        checks_json TEXT,
+        metrics_json TEXT,
+        previous_verdict_json TEXT,
+        status TEXT NOT NULL,
+        opened_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        answer_json TEXT,
+        withdraw_note TEXT,
+        close_reason TEXT,
+        PRIMARY KEY (plan_id, recheck_id)
+      )`);
+      await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_rechecks_attempt_idx ON generation_plan_rechecks (plan_id, item_key, attempt_ref)");
+      for (const statement of [
+        "ALTER TABLE generation_plan_verdict_history ADD COLUMN recheck_id TEXT",
+        "ALTER TABLE generation_plan_verdict_history ADD COLUMN kept INTEGER",
+        "ALTER TABLE generation_plan_peer_verdicts ADD COLUMN recheck_id TEXT",
+        "ALTER TABLE generation_plan_peer_verdicts ADD COLUMN kept INTEGER",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -9450,6 +9530,34 @@ export async function insertGenerationPlanVerdictHistory(row: typeof generationP
 /** A plan's verdict history, oldest first (by the time given, then the order recorded). */
 export async function listGenerationPlanVerdictHistory(planId: string, database: AppDb = db): Promise<StoredGenerationPlanVerdictHistory[]> {
   return database.select().from(generationPlanVerdictHistory).where(eq(generationPlanVerdictHistory.planId, planId)).orderBy(asc(generationPlanVerdictHistory.at), asc(generationPlanVerdictHistory.id)).limit(20_000);
+}
+
+export type StoredGenerationPlanRecheck = typeof generationPlanRechecks.$inferSelect;
+
+/** BL-173: stores a new re-check; false when the plan already has one with this id (nothing written). */
+export async function insertGenerationPlanRecheck(row: typeof generationPlanRechecks.$inferInsert, database: AppDb = db): Promise<boolean> {
+  const rows = await database.insert(generationPlanRechecks).values(row).onConflictDoNothing().returning({ recheckId: generationPlanRechecks.recheckId });
+  return rows.length > 0;
+}
+
+/** A plan's re-checks, oldest first. */
+export async function listGenerationPlanRechecks(planId: string, database: AppDb = db): Promise<StoredGenerationPlanRecheck[]> {
+  return database.select().from(generationPlanRechecks).where(eq(generationPlanRechecks.planId, planId)).orderBy(asc(generationPlanRechecks.openedAt), asc(generationPlanRechecks.recheckId)).limit(5000);
+}
+
+/** Closes an OPEN re-check (answered or withdrawn); false when it was not open any more (nothing written). */
+export async function closeGenerationPlanRecheck(
+  planId: string,
+  recheckId: string,
+  set: Pick<typeof generationPlanRechecks.$inferInsert, "status" | "closedAt" | "answerJson" | "withdrawNote" | "closeReason">,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(generationPlanRechecks)
+    .set(set)
+    .where(and(eq(generationPlanRechecks.planId, planId), eq(generationPlanRechecks.recheckId, recheckId), eq(generationPlanRechecks.status, "open")))
+    .returning({ recheckId: generationPlanRechecks.recheckId });
+  return rows.length > 0;
 }
 
 export type StoredGenerationPlanReviewClaim = typeof generationPlanReviewClaims.$inferSelect;

@@ -42,9 +42,9 @@ async function withDb(run: (client: Client) => Promise<void>): Promise<void> {
 }
 
 // Bumped with each new migration (v68: BL-143 phase 3 reference ids; v69/v70: BL-157 verdict history and review claims;
-// v71: BL-159 per-session minimum and host CUDA columns; v72: BL-161 producer token and call log; v73: BL-162 peer wave notes; v74: BL-163 watchlist pause and agent proposals; v75: BL-166 video milestones; v76: BL-166 fix, milestones without a curve collected again; v77: BL-168 stored traffic and device breakdowns; v78: BL-169 stored search terms; v79: BL-170 experiment arms; v80: BL-171 own-video comments; v81: BL-172 GPU availability log).
-test("merge numbering: the current schema is 81 with both branches' tables", async () => {
-  assert.equal(SCHEMA_CURRENT_VERSION, 81);
+// v71: BL-159 per-session minimum and host CUDA columns; v72: BL-161 producer token and call log; v73: BL-162 peer wave notes; v74: BL-163 watchlist pause and agent proposals; v75: BL-166 video milestones; v76: BL-166 fix, milestones without a curve collected again; v77: BL-168 stored traffic and device breakdowns; v78: BL-169 stored search terms; v79: BL-170 experiment arms; v80: BL-171 own-video comments; v81: BL-172 GPU availability log; v82: BL-173 plan re-checks).
+test("merge numbering: the current schema is 82 with both branches' tables", async () => {
+  assert.equal(SCHEMA_CURRENT_VERSION, 82);
   await withDb(async (client) => {
     await initializeDatabaseSchema(client);
     const t = await tables(client);
