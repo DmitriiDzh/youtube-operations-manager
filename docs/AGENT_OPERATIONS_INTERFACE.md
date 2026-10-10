@@ -1149,3 +1149,12 @@ idle / minutes / USD; every job submit or poll counts as activity. Contract: `do
 - YouTube names a term for only part of the search views and gives no day split. Read weekly in the background with the Analytics
   collection (1 Analytics API query per video or week, at most 100 per channel per run); a local read, never a live call. Contract:
   `docs/interfaces.md`.
+
+
+**Experiment arms (BL-170, Agent API 3.12.0, `docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md`):**
+- An own video can be linked to an arm (`control`, `A`, ...) of an experiment of the Decisions list -- by the owner in the Decisions tab, or by
+  an approved Producer proposal (`experiment.link_video`). No agent tool links or removes directly.
+- `agent_get_hypothesis_trail` lists each experiment's `arms`. `agent_get_experiment_results` (capability
+  `decision_engine.query_experiment_results`, READ) returns one experiment's videos by arm, each with its own stored day-7 and day-28 values
+  (milestone totals, Reach, traffic sources and devices over the window); no per-arm averages or comparisons. A local read. Contract:
+  `docs/interfaces.md`.

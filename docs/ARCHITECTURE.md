@@ -3369,3 +3369,28 @@ Plan: `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md` (AC-ST-01..16). Schema v78
   `startDate`/`endDate`: the Mondays from the first one on or after startDate whose Sunday is on or before the earlier of endDate and
   yesterday; each week's state (`not_collected` without one) and, for `week`, its terms; for `total`, each term summed over the weeks
   read (null only when every row had none). The input schema refuses dates with `videoIds` and the channel form without dates.
+
+## 39. Experiment arms on videos (BL-170, FO-REQ-0015 item 3)
+
+Plan: `docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md` (AC-EA-01..11). Schema v79.
+
+- **Storage.** `experiment_arm_videos` (key `experiment_id, video_id`; `arm`, `linked_by`, `linked_via` web_ui | producer_proposal,
+  `linked_at`), FK to `experiments`, none to `videos` (the change-set link's informal-reference rule). In `SNAPSHOT_TRANSFERRED_TABLES` after
+  `experiments`; classified as YT Manager's own data. Its db functions are fenced into the decision engine by PHASE10-INV-01.
+- **Writes** (`decision-engine/services.ts`). `linkExperimentArmVideo` / `unlinkExperimentArmVideo` run the experiment guard (active
+  channel), then `assertArmLinkAllowed`: the hypothesis has a channel, the status is in `EXPERIMENT_ARM_LINKABLE_STATUSES`, the video is
+  one of `listChannelVideoIds(hypothesis channel)`, not linked yet, fewer than 50. `insertExperimentArmVideoIfEligible` /
+  `deleteExperimentArmVideoIfEligible` re-check status, cap and repeat in one statement (`INSERT ... SELECT ... WHERE`, `DELETE ... WHERE
+  EXISTS`); a lost race re-runs the checks to name the reason. The labels: 1-32 letters, digits, spaces, `_`, `-`, starting with a letter or
+  digit (`experimentArmLabelSchema`). Only the Web routes and the Producer proposal's apply port call them (PHASE10-INV-02).
+- **Producer proposal** (`agent-proposals`). Kind `experiment.link_video`, through an `ExperimentArmsPort`. On submit
+  `checkExperimentArmVideoProposal` compares the proposal's channel with the hypothesis's (the Producer is in no channel scope then) and runs
+  the same checks; dedupe key `kind|experimentId|videoId`, `targetId` = experiment. On approve the same pre-claim active-channel check and
+  `reopen` path as `hypothesis.add`; a refusal at apply (concluded meanwhile, linked by the owner meanwhile) leaves it `failed`. The owner's
+  card is labelled with the experiment's treatment (`describeExperiments`).
+- **Reads.** The trail adds `arms` per experiment (`groupExperimentArms`: `control` first, then by label). `src/lib/experiment-results/`
+  composes the decision engine's `getExperiment` / `listExperimentArms` with the channel sync's videos, analytics' `listVideoMilestones`
+  and `listStoredBreakdowns` (one read per video over its day-28 window, summed per window by `sumBreakdownWindow`) and Reach's
+  `getVideoWindowsReach`, following `portfolio-overview/upload-milestones.ts` (statuses `due`/`not_due` from `isMilestoneDue`). A video not
+  published or no longer synced has no milestones. A failed Reach read becomes `reachError`. The MCP handler passes the session's
+  credentials; every core checks the active channel itself.

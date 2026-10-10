@@ -89,3 +89,13 @@ every channel's reads without a worker per channel, and nothing else.
 - Producer API 1.4.0 adds one READ channel tool to the closed list: `agent_get_stored_search_terms` (capability
   `analytics.query_stored_search_terms`), stored data only, in the named channel's scope like every other channel tool.
 - **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope.
+
+## Amendment 5 — experiment arms (BL-170, FO-REQ-0015 item 3, owner 2026-10-10, Telegram msg 2482)
+
+- Producer API 1.5.0 adds one READ channel tool to the closed list, `agent_get_experiment_results` (capability
+  `decision_engine.query_experiment_results`), and one proposal kind, `experiment.link_video` `{ experimentId, videoId, arm }`.
+- The kind follows `hypothesis.add`: it is checked against the proposal's own channel when submitted (the Producer is not in that channel's
+  scope then), approved only while that channel is the owner's active one, and applied through the decision engine's own link function,
+  recorded as `producer_proposal`.
+- **Not changed:** the Producer-only tools, the DRAFT tools, the permissions, the per-call channel scope. Whether the Producer may also
+  propose experiments is a separate question to the owner.
