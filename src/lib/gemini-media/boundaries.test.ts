@@ -30,8 +30,8 @@ test("gemini-media imports neither media-generation nor generation-plans, and re
 
 test("media-generation and generation-plans do not import gemini-media", async () => {
   const offenders: string[] = [];
-  for (const module of ["media-generation", "generation-plans"]) {
-    for (const file of await sourceFiles(path.join(lib, module))) {
+  for (const name of ["media-generation", "generation-plans"]) {
+    for (const file of await sourceFiles(path.join(lib, name))) {
       if (/from\s+["']@\/lib\/gemini-media/.test(await readFile(file, "utf8"))) offenders.push(path.relative(lib, file));
     }
   }

@@ -69,15 +69,15 @@ type ApiCall = { method: string; apiKey: string; request?: unknown };
 function fakeApi() {
   const calls: ApiCall[] = [];
   const behaviour = {
-    checkKey: async (_key: string): Promise<void> => undefined,
-    generateImage: async (_req: GeminiImageRequest): Promise<GeminiImageResult> => ({
+    checkKey: async (): Promise<void> => undefined,
+    generateImage: async (): Promise<GeminiImageResult> => ({
       images: [{ mimeType: "image/png", data: Buffer.from("PNGDATA-1") }],
       usage: { inputTokens: 1000, outputTokens: 1680, thoughtTokens: 300, outputByModality: { image: 1680 } },
       status: "completed",
       blockReason: null,
     }),
-    startVideo: async (_req: GeminiVideoRequest): Promise<string> => "models/veo-3.1-fast-generate-preview/operations/op1",
-    getVideoOperation: async (_name: string): Promise<GeminiVideoOperation> => ({ done: true, videoUri: "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", error: null, blockReason: null }),
+    startVideo: async (): Promise<string> => "models/veo-3.1-fast-generate-preview/operations/op1",
+    getVideoOperation: async (): Promise<GeminiVideoOperation> => ({ done: true, videoUri: "https://generativelanguage.googleapis.com/v1beta/files/f:download?alt=media", error: null, blockReason: null }),
     downloadVideo: async (_uri: string, dest: string) => {
       const data = Buffer.from("MP4DATA");
       await mkdir(path.dirname(dest), { recursive: true });
@@ -88,19 +88,19 @@ function fakeApi() {
   const api = {
     async checkKey(apiKey: string) {
       calls.push({ method: "checkKey", apiKey });
-      return behaviour.checkKey(apiKey);
+      return behaviour.checkKey();
     },
     async generateImage(apiKey: string, request: GeminiImageRequest) {
       calls.push({ method: "generateImage", apiKey, request });
-      return behaviour.generateImage(request);
+      return behaviour.generateImage();
     },
     async startVideo(apiKey: string, request: GeminiVideoRequest) {
       calls.push({ method: "startVideo", apiKey, request });
-      return behaviour.startVideo(request);
+      return behaviour.startVideo();
     },
     async getVideoOperation(apiKey: string, name: string) {
       calls.push({ method: "getVideoOperation", apiKey, request: name });
-      return behaviour.getVideoOperation(name);
+      return behaviour.getVideoOperation();
     },
     async downloadVideo(apiKey: string, uri: string, dest: string) {
       calls.push({ method: "downloadVideo", apiKey, request: { uri, dest } });

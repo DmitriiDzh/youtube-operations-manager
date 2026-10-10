@@ -62,14 +62,18 @@ export function GeminiMediaSettings() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setOverview(await requestJson<Overview>("/api/gemini-media", undefined, t("settings.loadFailed"), t));
-      setLoadError(null);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t("settings.loadFailed"));
-    }
-  }, [t]);
+  // State updates happen in the promise callbacks (the shape the react-hooks/set-state-in-effect rule allows).
+  const load = useCallback(
+    () =>
+      requestJson<Overview>("/api/gemini-media", undefined, t("settings.loadFailed"), t).then(
+        (data) => {
+          setOverview(data);
+          setLoadError(null);
+        },
+        (error: unknown) => setLoadError(error instanceof Error ? error.message : t("settings.loadFailed"))
+      ),
+    [t]
+  );
 
   useEffect(() => {
     void load();

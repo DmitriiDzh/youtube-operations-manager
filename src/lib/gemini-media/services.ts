@@ -392,7 +392,7 @@ export function createGeminiMediaServices(deps: GeminiMediaDeps) {
           model: input.model,
           prompt: input.prompt,
           paramsJson: JSON.stringify(params),
-          inputsJson: JSON.stringify(inputs.map(({ data: _data, ...rest }) => rest)),
+          inputsJson: JSON.stringify(inputs.map((i): GeminiJobInput => ({ role: i.role, path: i.path, mimeType: i.mimeType, bytes: i.bytes, sha256: i.sha256 }))),
           status: "queued",
           remoteName: null,
           estimateUsd,
