@@ -186,15 +186,25 @@ function KeyCard({ view, onChanged }: { view: KeyView; onChanged: () => Promise<
       {editing && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
+            {/* Not type="password": Chrome ignores autocomplete="off" there and filled a saved login password into this field (seen
+                live 2026-10-11), which "Check and save" would have sent to Google. A text field whose characters are hidden is never
+                offered saved passwords; the password-manager extensions are told to skip it too. */}
             <input
-              type="password"
+              type="text"
+              name="gemini-api-key"
               autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               disabled={busy}
               placeholder={t("gemini.key.placeholder")}
               aria-label={t("gemini.key.inputAria")}
-              className="w-80 max-w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-sm text-zinc-100 disabled:opacity-50"
+              className="w-80 max-w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-sm text-zinc-100 [-webkit-text-security:disc] disabled:opacity-50"
             />
             <button onClick={() => void save()} disabled={busy || apiKey.trim().length < 20} className={primaryClass}>
               {t("gemini.key.save")}
