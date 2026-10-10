@@ -105,6 +105,7 @@ import {
 } from "@/lib/market-intelligence/schemas";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import { createExperimentResultsCore, getExperimentResultsInputSchema, type ExperimentResultsCore } from "@/lib/experiment-results";
+import { createVideoCommentsCore, listStoredCommentsInputSchema, type VideoCommentsCore } from "@/lib/video-comments";
 import {
   agentGetHypothesisTrailInputSchema,
   createExperimentProposalInputSchema,
@@ -359,6 +360,7 @@ type McpToolHandlers = {
   agentGetStoredBreakdowns: (input: unknown) => Promise<ToolResponse>;
   agentGetStoredSearchTerms: (input: unknown) => Promise<ToolResponse>;
   agentGetExperimentResults: (input: unknown) => Promise<ToolResponse>;
+  agentGetVideoComments: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
@@ -732,7 +734,9 @@ export function createMcpToolHandlers(
   generationPlansCore: Pick<GenerationPlanServices, "listPlans" | "getPlan"> = createGenerationPlansCore(),
   // BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md) -- an experiment's videos by arm with their stored values; its own module composing
   // the decision engine with analytics and Reach (AGENTS.md §M). Read-only.
-  experimentResultsCore: Pick<ExperimentResultsCore, "getExperimentResults"> = createExperimentResultsCore()
+  experimentResultsCore: Pick<ExperimentResultsCore, "getExperimentResults"> = createExperimentResultsCore(),
+  // BL-171 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md) -- the stored comments of the channel's own videos; its own module. Read-only.
+  videoCommentsCore: Pick<VideoCommentsCore, "listStoredComments"> = createVideoCommentsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1753,6 +1757,25 @@ export function createMcpToolHandlers(
     },
 
     /**
+     * BL-171 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md) -- the stored newest comments of the channel's own videos. A LOCAL read, no Google
+     * call; `listStoredComments` checks the active channel itself, and a video of another channel is not listed.
+     */
+    async agentGetVideoComments(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listStoredCommentsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await videoCommentsCore.listStoredComments({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
      * BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md) -- an experiment's videos by arm with their stored day-7 / day-28 values. A LOCAL
      * read, no Google call; every core it goes through checks the active channel itself.
      */
@@ -2509,6 +2532,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetStoredSearchTerms: handlers.agentGetStoredSearchTerms,
     // BL-170 -- a pure local read, ungated.
     agentGetExperimentResults: handlers.agentGetExperimentResults,
+    // BL-171 -- a pure local read, ungated.
+    agentGetVideoComments: handlers.agentGetVideoComments,
     // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
     agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
@@ -3577,6 +3602,16 @@ export function createMcpServer(
       inputSchema: agentListHypothesesInputSchema,
     },
     (args) => handlers.agentListHypotheses(args)
+  );
+
+  registerTool(
+    "agent_get_video_comments",
+    {
+      description:
+        "Stored comments of the channel's own videos (BL-171): for each of `videoIds` (1-20), the newest top-level comments YT Manager read (`limit` 1-100, default 20), newest first -- each { commentId, text (plain text, as YouTube returned it), likeCount, publishedAt, updatedAt, replyCount, byChannelOwner (the channel itself wrote it) }. No author name, photo or id is kept. Per video also `title`, `commentCountAtRead` (YouTube's comment count when it was read), `status` (collected | disabled -- comments are turned off on the video | retry -- a read failed, tried again later; `lastError` | failed -- given up after 3 attempts, read again only when its count changes | not_collected) and `readAt` (when the stored text was fetched). YT Manager reads comments once a day per channel during the dashboard's collection: it checks each non-private video's comment count (1 quota unit per 50 videos) and reads a video (1 unit, the 100 newest) when it has comments and its count changed, or once a week; replies themselves are not read. YouTube's API policy keeps this text at most 30 days: rows older than that are deleted, so a video read long ago can show `collected` with no comments until its next read. A videoId of another channel is not listed. A LOCAL read, never a live YouTube call; each computer collects the channels connected on it. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listStoredCommentsInputSchema,
+    },
+    (args) => handlers.agentGetVideoComments(args)
   );
 
   registerTool(

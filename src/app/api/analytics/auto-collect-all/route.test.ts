@@ -5,7 +5,7 @@ import { createAutoCollectAllHandler, type AutoCollectAllDeps } from "./route";
 
 // BL-142: the route gates on a session, collects the active channel before answering and everything else after it,
 // shows only the active channel (ADR 0004), and lets one all-channels run go at a time.
-function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string; failBreakdownsFor?: string; failSearchTermsFor?: string } = {}) {
+function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; failActive?: Error; failMilestonesFor?: string; failBreakdownsFor?: string; failSearchTermsFor?: string; failCommentsFor?: string } = {}) {
   const calls: unknown[] = [];
   const deferred: Array<() => Promise<void>> = [];
   let running = false;
@@ -52,6 +52,11 @@ function setup(opts: { activeCatchUp?: boolean; backgroundCatchUp?: boolean; fai
   const deps: AutoCollectAllDeps = {
     getSession: async () => ({ user: { id: "uS" } }),
     core,
+    collectDueComments: async (input) => {
+      calls.push(["comments", input.channelId, input.credentialRef.userId]);
+      if (opts.failCommentsFor === input.channelId) throw new Error("youtube 503 (test)");
+      return { checked: true, read: 0, disabled: 0, failed: 0 };
+    },
     getActiveChannelId: async () => "UC_A",
     runAfter: (work) => deferred.push(work),
     beginRun: () => (running ? false : (running = true)),
@@ -80,6 +85,7 @@ test("BL-142: the active channel is collected before the answer, which shows onl
   // BL-166: then each collected channel's due milestones (the background run lists only the channels it collected).
   // BL-168 (plan §2 "Runs"): then the same channels' stored breakdowns, after every milestone.
   // BL-169 (VIDEO_SEARCH_TERMS_PLAN.md §2 "Runs"): then their stored search terms, after every breakdown.
+  // BL-171 (VIDEO_COMMENTS_PLAN.md §2 "When it runs"): then their own-video comments, after the analytics steps.
   assert.deepEqual(calls.slice(1), [
     ["background", "uS", "UC_A"],
     ["catchUp", "UC_A", "uS"],
@@ -90,6 +96,8 @@ test("BL-142: the active channel is collected before the answer, which shows onl
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["comments", "UC_A", "uS"],
+    ["comments", "UC_C", "uC"],
   ]);
   assert.equal(isRunning(), false);
 });
@@ -117,6 +125,8 @@ test("AC-VB-15: one channel's breakdowns failing never stops the next channel's;
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["comments", "UC_A", "uS"],
+    ["comments", "UC_C", "uC"],
   ]);
   assert.equal(isRunning(), false);
 });
@@ -133,6 +143,26 @@ test("AC-ST-14: one channel's search terms failing never stops the next channel'
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["comments", "UC_A", "uS"],
+    ["comments", "UC_C", "uC"],
+  ]);
+  assert.equal(isRunning(), false);
+});
+
+test("AC-VC-11: one channel's comments failing never stops the next channel's; the analytics steps ran before; the run is released", async () => {
+  const { calls, deferred, deps, isRunning } = setup({ failCommentsFor: "UC_A", failSearchTermsFor: "UC_C" });
+  await createAutoCollectAllHandler(deps)();
+  await deferred[0]();
+  assert.deepEqual(calls.slice(1), [
+    ["background", "uS", "UC_A"],
+    ["milestones", "UC_A", "uS"],
+    ["milestones", "UC_C", "uC"],
+    ["breakdowns", "UC_A", "uS"],
+    ["breakdowns", "UC_C", "uC"],
+    ["searchTerms", "UC_A", "uS"],
+    ["searchTerms", "UC_C", "uC"],
+    ["comments", "UC_A", "uS"],
+    ["comments", "UC_C", "uC"],
   ]);
   assert.equal(isRunning(), false);
 });
@@ -169,8 +199,8 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
   assert.equal(((await res.json()) as { importedFromPeers: number }).importedFromPeers, 2);
   assert.deepEqual(calls, [["importPeers"], ["active", "uS", "UC_A"]]);
   await deferred[0]();
-  // BL-166 added the milestones to the background part, BL-168 the breakdowns, BL-169 the search terms; this device's rows are still
-  // published last.
+  // BL-166 added the milestones to the background part, BL-168 the breakdowns, BL-169 the search terms, BL-171 the comments; this
+  // device's rows are still published last.
   assert.deepEqual(calls.slice(2), [
     ["background", "uS", "UC_A"],
     ["milestones", "UC_A", "uS"],
@@ -179,6 +209,8 @@ test("BL-151: peers' rows are imported before collecting; this device's rows are
     ["breakdowns", "UC_C", "uC"],
     ["searchTerms", "UC_A", "uS"],
     ["searchTerms", "UC_C", "uC"],
+    ["comments", "UC_A", "uS"],
+    ["comments", "UC_C", "uC"],
     ["publishLocal"],
   ]);
 });

@@ -21,11 +21,11 @@ test("13.1: every schema table is classified against the YouTube API data polici
   assert.deepEqual({ unclassified, unknown }, { unclassified: [], unknown: [] });
 });
 
-test("13.1: every Non-Authorized clock column really exists in the schema", () =>
+test("13.1: every Non-Authorized (and, BL-171, authorized-expiring) clock column really exists in the schema", () =>
   withTempDir("data-policy-", async (dir) => {
     const client = await makeClient(dir);
     for (const [table, c] of Object.entries(YOUTUBE_DATA_CLASSIFICATION)) {
-      if (c.kind !== "non_authorized") continue;
+      if (c.kind !== "non_authorized" && c.kind !== "authorized_expiring") continue;
       const cols = (await client.execute(`PRAGMA table_info("${table}")`)).rows.map((r) => String(r.name));
       assert.ok(cols.includes(c.clockColumn), `${table}.${c.clockColumn}`);
     }
@@ -116,6 +116,8 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
         ["market_video_snapshots", 1, 0],
         ["market_discovery_candidates", 1, 2],
         ["research_evidence", 1, 0],
+        // BL-171 (VIDEO_COMMENTS_PLAN.md AC-VC-09) added a table with a 30-day clock: our own videos' comments (none seeded here).
+        ["video_comments", 0, 0],
       ]
     );
     // A second run blanks nothing again (already blank) and deletes nothing.
@@ -187,4 +189,27 @@ test("P13: a backup that predates the market tables is left alone, not failed", 
     await old.execute("CREATE TABLE channels (id TEXT PRIMARY KEY)");
     old.close();
     assert.deepEqual(await scrubBackupFile(path.join(dir, "old.db"), NOW), { changed: false });
+  }));
+
+// BL-171 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md AC-VC-09): comments on our own videos are III.E.4.c data -- the same purge deletes a
+// row fetched more than 30 days ago and keeps a younger one; the comment state (a statistic and bookkeeping) is not touched.
+test("AC-VC-09: an own-video comment fetched 31 days ago is purged, one fetched 29 days ago stays", () =>
+  withTempDir("data-policy-comments-", async (dir) => {
+    const client = await makeClient(dir);
+    const insert = (commentId: string, fetchedAt: number) =>
+      client.execute({
+        sql: "INSERT INTO video_comments (comment_id, video_id, channel_id, text, by_channel_owner, fetched_at) VALUES (?, 'v1', 'UCmine', 't', 0, ?)",
+        args: [commentId, fetchedAt],
+      });
+    await insert("old", nowS - 31 * DAY);
+    await insert("young", nowS - 29 * DAY);
+    await client.execute({
+      sql: "INSERT INTO video_comment_state (video_id, channel_id, read_at, read_comment_count, status, attempts, updated_at) VALUES ('v1', 'UCmine', ?, 2, 'collected', 0, ?)",
+      args: [nowS - 31 * DAY, nowS - 31 * DAY],
+    });
+    const result = await purgeExpiredApiData(client, NOW);
+    assert.deepEqual(result.find((r) => r.table === "video_comments"), { table: "video_comments", deleted: 1, blanked: 0 });
+    assert.deepEqual((await client.execute("SELECT comment_id FROM video_comments")).rows.map((r) => String(r.comment_id)), ["young"]);
+    assert.equal((await client.execute("SELECT count(*) AS n FROM video_comment_state")).rows[0].n, 1);
+    client.close();
   }));

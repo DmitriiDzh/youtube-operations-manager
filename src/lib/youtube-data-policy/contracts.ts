@@ -56,6 +56,15 @@ export type YoutubeDataClassification =
       reason: string;
     }
   | {
+      /**
+       * BL-171: our own channels' Authorized Data that is neither analytics nor statistics (III.E.4.c, e.g. comments on our videos):
+       * kept at most 30 days by its clock column, then deleted -- by the same purge as Non-Authorized rows (live database, import, backups).
+       */
+      kind: "authorized_expiring";
+      clockColumn: string;
+      reason: string;
+    }
+  | {
       /** Not YouTube API Data: operator/agent-authored content, app state, bookkeeping. */
       kind: "not_api_data";
       reason: string;
@@ -73,6 +82,7 @@ const nonAuthorized = (
   } = {}
 ): YoutubeDataClassification => ({ kind: "non_authorized", clockColumn, reason, ...options });
 const authorized = (reason: string): YoutubeDataClassification => ({ kind: "authorized", reason });
+const authorizedExpiring = (clockColumn: string, reason: string): YoutubeDataClassification => ({ kind: "authorized_expiring", clockColumn, reason });
 const notApiData = (reason: string): YoutubeDataClassification => ({ kind: "not_api_data", reason });
 
 export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataClassification>> = Object.freeze({
@@ -157,6 +167,9 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   hypotheses: notApiData("operator/agent hypotheses"),
   experiments: notApiData("operator-designed experiments"),
   experiment_outcomes: notApiData("operator-recorded outcomes"),
+  video_comments: authorizedExpiring("fetched_at", "comments on our own videos (BL-171): Authorized Data that is not analytics, at most 30 days (III.E.4.c); no author data"),
+  video_comment_state: authorized("per-video read bookkeeping and the comment count it had (a statistic, BL-171)"),
+  video_comment_channel_state: notApiData("the day each channel's comments were last checked (BL-171)"),
   experiment_arm_videos: notApiData("which own video is in which arm of an experiment (BL-170): ids and labels, no API values"),
   hypothesis_evidence: notApiData("references (ids) to evidence rows, not copies of their values"),
   hypothesis_generation_provenance: notApiData("AI generation provenance for hypotheses"),
@@ -210,5 +223,20 @@ export function nonAuthorizedTables(): NonAuthorizedTable[] {
   return Object.entries(YOUTUBE_DATA_CLASSIFICATION).flatMap(([table, c]) =>
     c.kind === "non_authorized" ? [{ ...c, table }] : []
   );
+}
+
+/** Every table with a 30-day clock: the Non-Authorized ones and, since BL-171, our own III.E.4.c data (`authorized_expiring`). */
+export type ExpiringTable = { table: string; clockColumn: string } & Partial<Omit<NonAuthorizedTable, "kind" | "table" | "clockColumn" | "reason">>;
+
+export function expiringTables(): ExpiringTable[] {
+  return Object.entries(YOUTUBE_DATA_CLASSIFICATION).flatMap(([table, c]): ExpiringTable[] => {
+    if (c.kind === "non_authorized") {
+      const { kind: _kind, reason: _reason, ...rest } = c;
+      void _kind;
+      void _reason;
+      return [{ ...rest, table }];
+    }
+    return c.kind === "authorized_expiring" ? [{ table, clockColumn: c.clockColumn }] : [];
+  });
 }
 

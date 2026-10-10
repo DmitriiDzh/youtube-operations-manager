@@ -1,6 +1,6 @@
 import { createLibsqlClient } from "@/lib/libsql-client";
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
-import { API_DATA_RETENTION_DAYS, nonAuthorizedTables } from "./contracts";
+import { API_DATA_RETENTION_DAYS, expiringTables } from "./contracts";
 
 export type PurgeResult = { table: string; deleted: number; blanked: number }[];
 
@@ -23,7 +23,7 @@ async function existingTables(client: SqlExecutor): Promise<Set<string>> {
 /** Tables a given database actually has (an old backup may predate some of them). */
 async function presentTables(client: SqlExecutor) {
   const present = await existingTables(client);
-  return nonAuthorizedTables().filter((t) => present.has(t.table));
+  return expiringTables().filter((t) => present.has(t.table));
 }
 
 async function anyExpiring(client: SqlExecutor, cutoffSeconds: number): Promise<boolean> {
@@ -70,7 +70,7 @@ async function applyPurge(client: SqlExecutor, cutoffSeconds: number): Promise<P
 }
 
 /**
- * Phase 13 slice 13.2 (D1 = a, owner msg 1129): every API-sourced row of a Non-Authorized table whose
+ * Phase 13 slice 13.2 (D1 = a, owner msg 1129): every API-sourced row of a Non-Authorized (or, since BL-171, authorized-expiring) table whose
  * clock column is older than `API_DATA_RETENTION_DAYS` (III.E.4.d) is deleted -- or, for a row that
  * records the operator's own decision, has its API-sourced columns blanked -- plus the market
  * assignments pointing at deleted records. Rows the operator entered are untouched (`apiRowsWhere`);

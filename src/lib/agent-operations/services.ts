@@ -101,6 +101,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Task-oriented, section-selectable video context (metadata and/or existing localizations). Requires channelId to be the caller's currently-active channel.",
   },
+  {
+    id: "video_context.query_video_comments",
+    mcpTools: ["agent_get_video_comments"],
+    domain: "video_context",
+    permission: "READ",
+    description:
+      "The newest top-level comments of the channel's own videos as stored by YT Manager (BL-171): text, times, likes, reply count and whether the channel itself wrote it -- no author data. Read once a day for videos whose comment count changed, and weekly; kept at most 30 days (YouTube API policy). A LOCAL read, never a live YouTube call. Requires channelId to be the caller's currently-active channel.",
+  },
   // Owner spec §28 ("Map tools to actual existing capabilities. Prefer fewer coherent tools over
   // dozens of thin wrappers"): these four are NOT new functions -- they are the already-
   // implemented, already-MCP/CLI-exposed `channel_list`/`channel_video_list`/

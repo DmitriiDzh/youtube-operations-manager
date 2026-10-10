@@ -57,6 +57,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_get_stored_breakdowns: "bound",
   agent_get_stored_search_terms: "bound",
   agent_get_experiment_results: "bound",
+  agent_get_video_comments: "bound",
   agent_query_channel_breakdown: "bound",
   agent_query_video_analytics: "bound",
   agent_list_assets: "bound",

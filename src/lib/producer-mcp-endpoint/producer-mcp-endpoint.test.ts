@@ -13,6 +13,7 @@ import {
   saveCollectedChannelSearchTermsWeek,
   saveCollectedVideoMilestone,
   saveCollectedVideoSearchTerms,
+  saveVideoCommentsRead,
   upsertChannel,
   upsertVideos,
 } from "@/lib/db";
@@ -531,6 +532,44 @@ test("BL-170: create_experiment_proposal via the Producer creates a proposed exp
   assert.deepEqual((payloadOf(trail.text) as { experiments: Array<{ experimentId: string }> }).experiments.map((e) => e.experimentId), [experiment.experimentId]);
 });
 
+// BL-171 AC-VC-10 (docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md): the Producer reads the stored comments through the channel tool, in the
+// named channel's scope only. Real handlers on the real (isolated) database.
+test("BL-171 AC-VC-10: agent_get_video_comments via the Producer reads only the named channel's stored comments", async () => {
+  await seedTwoChannels();
+  const at = new Date("2026-10-10T18:00:00Z");
+  const save = (channelId: string, videoId: string, text: string) =>
+    saveVideoCommentsRead({
+      channelId,
+      videoId,
+      status: "collected",
+      readCommentCount: 1,
+      comments: [{ commentId: `c-${videoId}`, text, likeCount: 1, publishedAt: "2026-10-02T10:00:00Z", updatedAt: "2026-10-02T10:00:00Z", replyCount: 0, byChannelOwner: false }],
+      at,
+    });
+  await save("UC_PR_X", "vid-x-1", "Beautiful music!");
+  await save("UC_PR_Y", "vid-y-1", "other channel's comment");
+  const { endpoint, tokens } = setup();
+  const token = (await tokens.issueToken({})).token;
+  const result = await toolResult(await endpoint.handle(rpc(call("agent_get_video_comments", { channelId: "UC_PR_X", videoIds: ["vid-x-1", "vid-y-1"] }), bearer(token))));
+  assert.equal(result.isError, false, result.text);
+  const payload = payloadOf(result.text) as { forChannelId: string; videos: Array<Record<string, unknown>> };
+  assert.equal(payload.forChannelId, "UC_PR_X");
+  assert.deepEqual(payload.videos, [
+    {
+      videoId: "vid-x-1",
+      title: "Title vid-x-1",
+      commentCountAtRead: 1,
+      status: "collected",
+      readAt: at.toISOString(),
+      lastError: null,
+      comments: [{ commentId: "c-vid-x-1", text: "Beautiful music!", likeCount: 1, publishedAt: "2026-10-02T10:00:00Z", updatedAt: "2026-10-02T10:00:00Z", replyCount: 0, byChannelOwner: false }],
+    },
+  ]);
+  for (const bad of [{ channelId: "UC_PR_X", videoIds: [] }, { channelId: "UC_PR_X", videoIds: ["vid-x-1"], limit: 101 }]) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call("agent_get_video_comments", bad), bearer(token))))).isError, true, JSON.stringify(bad));
+  }
+});
+
 test("BL-166: producer_upload_milestones takes real calendar dates, start before end, at most 92 days", async () => {
   const { endpoint, tokens } = setup();
   const token = (await tokens.issueToken({})).token;
@@ -577,7 +616,9 @@ test("AC-PR-07 / AC-PR-10: the Producer's own tools -- its channels with their f
   // BL-170 (EXPERIMENT_ARMS_PLAN.md AC-EA-09): 1.5.0 adds the READ channel tool agent_get_experiment_results and the proposal kind
   // experiment.link_video, and -- owner's choice, msg 2485, ADR 0034 Amendment 5 -- the channel agent's DRAFT tool create_experiment_proposal
   // (an experiment that stays `proposed` until the owner approves it), so the DRAFT list has three tools now.
-  assert.equal(PRODUCER_API_VERSION, "1.5.0");
+  // BL-171 (VIDEO_COMMENTS_PLAN.md AC-VC-12): 1.6.0 adds the READ channel tool agent_get_video_comments.
+  assert.equal(PRODUCER_API_VERSION, "1.6.0");
+  assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_video_comments"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_experiment_results"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_breakdowns"));
   assert.ok(PRODUCER_TOOL_NAMES.includes("agent_get_stored_search_terms"));

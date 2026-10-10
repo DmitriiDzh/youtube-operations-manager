@@ -8,7 +8,7 @@
  */
 
 /** The Producer API's own version, independent of `AGENT_API_VERSION` and `FACTORY_API_VERSION`. */
-export const PRODUCER_API_VERSION = "1.5.0";
+export const PRODUCER_API_VERSION = "1.6.0";
 
 /** The channel agent's READ tools the Producer gets; each call names its channel and runs in that channel's agent scope. */
 export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: string }>> = Object.freeze({
@@ -22,6 +22,7 @@ export const PRODUCER_CHANNEL_TOOLS: Readonly<Record<string, { capability: strin
   agent_get_stored_breakdowns: { capability: "analytics.query_stored_breakdowns" },
   agent_get_stored_search_terms: { capability: "analytics.query_stored_search_terms" },
   agent_get_experiment_results: { capability: "decision_engine.query_experiment_results" },
+  agent_get_video_comments: { capability: "video_context.query_video_comments" },
   agent_query_video_analytics: { capability: "analytics.query_video_analytics" },
   analytics_data_quality: { capability: "analytics.query_data_quality" },
   analytics_comparable_age: { capability: "analytics.query_comparable_age_performance" },

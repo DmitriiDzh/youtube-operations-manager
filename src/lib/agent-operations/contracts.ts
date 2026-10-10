@@ -59,7 +59,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "3.12.0";
+export const AGENT_API_VERSION = "3.13.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

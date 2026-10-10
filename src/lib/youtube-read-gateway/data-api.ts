@@ -662,6 +662,62 @@ export async function getVideosMetadataContextBatch(
   return results;
 }
 
+/**
+ * BL-171 (FO-REQ-0015 item 7, docs/roadmap/plans/VIDEO_COMMENTS_PLAN.md): the comment counts of our own videos, for deciding which to read.
+ * `videos.list` with `part=statistics` only, 50 ids per call (1 unit each, whatever the parts); a count YouTube omits (hidden or disabled)
+ * is null, never 0. Ids YouTube does not return are simply absent.
+ */
+export async function getVideoCommentCounts(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<Array<{ videoId: string; commentCount: number | null }>> {
+  const results: Array<{ videoId: string; commentCount: number | null }> = [];
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    if (batch.length === 0) continue;
+    const res = await youtube.videos.list({ part: ["statistics"], id: batch, maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE });
+    for (const item of res.data.items ?? []) {
+      if (item.id) results.push({ videoId: item.id, commentCount: parseStatCount(item.statistics?.commentCount) });
+    }
+  }
+  return results;
+}
+
+/** BL-171: one top-level comment of our own video, as stored -- no author name, photo or id leaves the gateway. */
+export type OwnVideoComment = {
+  commentId: string;
+  text: string;
+  likeCount: number | null;
+  publishedAt: string | null;
+  updatedAt: string | null;
+  replyCount: number | null;
+  /** The author is the video's own channel (a reply by us). */
+  byChannelOwner: boolean;
+};
+
+/**
+ * BL-171: the newest top-level comments of one of our videos -- `commentThreads.list` with `part=snippet`, at most 100, newest first,
+ * as plain text (1 unit; checked live 2026-10-10). Threads YouTube marks not public are skipped. A 403 `commentsDisabled` is the
+ * caller's to recognise (the error is rethrown unchanged). `channelId` is the video's own channel (the caller's), so a comment it wrote is
+ * marked `byChannelOwner` even if YouTube leaves the thread's own `channelId` out (review of BL-171).
+ */
+export async function listOwnVideoComments(youtube: youtube_v3.Youtube, videoId: string, channelId: string): Promise<OwnVideoComment[]> {
+  const res = await youtube.commentThreads.list({ part: ["snippet"], videoId, maxResults: 100, order: "time", textFormat: "plainText" });
+  const comments: OwnVideoComment[] = [];
+  for (const thread of res.data.items ?? []) {
+    const snippet = thread.snippet;
+    const top = snippet?.topLevelComment;
+    if (!snippet || !top?.id || !top.snippet || snippet.isPublic === false) continue;
+    const parsedLikes = typeof top.snippet.likeCount === "number" ? top.snippet.likeCount : null;
+    comments.push({
+      commentId: top.id,
+      text: top.snippet.textDisplay ?? top.snippet.textOriginal ?? "",
+      likeCount: parsedLikes,
+      publishedAt: top.snippet.publishedAt ?? null,
+      updatedAt: top.snippet.updatedAt ?? null,
+      replyCount: typeof snippet.totalReplyCount === "number" ? snippet.totalReplyCount : null,
+      byChannelOwner: top.snippet.authorChannelId?.value === channelId,
+    });
+  }
+  return comments;
+}
+
 export async function getVideoById(
   youtube: youtube_v3.Youtube,
   videoId: string
