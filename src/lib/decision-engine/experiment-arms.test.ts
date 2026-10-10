@@ -102,8 +102,8 @@ test("AC-EA-01: the owner links v1 to running E1 as A; the trail and the arms li
   const de = services(db);
   const linked = await de.linkExperimentArmVideo("E1", { videoId: "v1", arm: "A" }, WEB);
   const expectedArms = [{ arm: "A", videos: [{ videoId: "v1", linkedAt: NOW.toISOString(), linkedBy: "u-owner", linkedVia: "web_ui" }] }];
-  assert.deepEqual(linked, { experimentId: "E1", status: "running", arms: expectedArms });
-  assert.deepEqual(await de.listExperimentArms("E1", OWNER), { experimentId: "E1", status: "running", arms: expectedArms });
+  assert.deepEqual(linked, { experimentId: "E1", status: "running", channelId: "UC_A", arms: expectedArms });
+  assert.deepEqual(await de.listExperimentArms("E1", OWNER), { experimentId: "E1", status: "running", channelId: "UC_A", arms: expectedArms });
   const trail = await de.getHypothesisTrail("hA", OWNER);
   assert.deepEqual(
     trail.experiments.map((experiment) => [experiment.experimentId, (experiment as { arms?: unknown }).arms]).sort(),
@@ -157,7 +157,7 @@ test("AC-EA-03: a link of a running experiment is removed; one of a concluded ex
   await seed(db);
   const de = services(db);
   await de.linkExperimentArmVideo("E1", { videoId: "v1", arm: "A" }, WEB);
-  assert.deepEqual(await de.unlinkExperimentArmVideo("E1", "v1", OWNER), { experimentId: "E1", status: "running", arms: [] });
+  assert.deepEqual(await de.unlinkExperimentArmVideo("E1", "v1", OWNER), { experimentId: "E1", status: "running", channelId: "UC_A", arms: [] });
   await assert.rejects(() => de.unlinkExperimentArmVideo("E1", "v1", OWNER), code("EXPERIMENT_ARM_VIDEO_NOT_LINKED"));
   await de.linkExperimentArmVideo("E1", { videoId: "v2", arm: "A" }, WEB);
   await setStatus(db, "E1", "concluded");

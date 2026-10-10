@@ -174,6 +174,9 @@ export type DecisionEngineServiceDependencies = {
   listChannelVideoIds?: (channelId: string) => Promise<string[]>;
 };
 
+/** BL-170: an experiment's arms, with the hypothesis's channel (null for a new-channel concept). */
+export type ExperimentArmsView = { experimentId: string; status: ExperimentStatus; channelId: string | null; arms: ExperimentArm[] };
+
 /** BL-170: arm links grouped by arm -- `control` first, then by label; videos in the order they were linked. */
 export function groupExperimentArms(rows: StoredExperimentArmVideo[]): ExperimentArm[] {
   const byArm = new Map<string, StoredExperimentArmVideo[]>();
@@ -758,9 +761,9 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     },
 
     /** BL-170: the experiment's videos by arm. Channel-scoped like every experiment read. */
-    async listExperimentArms(experimentId: string, ctx: { userId: string | null | undefined }): Promise<{ experimentId: string; status: ExperimentStatus; arms: ExperimentArm[] }> {
-      const { experiment } = await assertExperimentAccessible(experimentId, ctx);
-      return { experimentId, status: experiment.status, arms: groupExperimentArms(await armDeps().listExperimentArmVideos([experimentId])) };
+    async listExperimentArms(experimentId: string, ctx: { userId: string | null | undefined }): Promise<ExperimentArmsView> {
+      const { experiment, hypothesis } = await assertExperimentAccessible(experimentId, ctx);
+      return { experimentId, status: experiment.status, channelId: hypothesis.channelId, arms: groupExperimentArms(await armDeps().listExperimentArmVideos([experimentId])) };
     },
 
     /**
@@ -772,7 +775,7 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       experimentId: string,
       input: unknown,
       ctx: { userId: string | null | undefined; linkedBy: string; linkedVia: "web_ui" | "producer_proposal" }
-    ): Promise<{ experimentId: string; status: ExperimentStatus; arms: ExperimentArm[] }> {
+    ): Promise<ExperimentArmsView> {
       const { experiment, hypothesis } = await assertExperimentAccessible(experimentId, ctx);
       const parsed = parseWithSchema(linkExperimentArmVideoInputSchema, input, "link experiment arm video input");
       await assertArmLinkAllowed(experiment, hypothesis, parsed.videoId);
@@ -788,7 +791,7 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         if (current) await assertArmLinkAllowed(current, hypothesis, parsed.videoId);
         throw new DomainError({ code: "EXPERIMENT_INVALID_TRANSITION", message: "The experiment changed meanwhile; try again", details: { experimentId } });
       }
-      return { experimentId, status: experiment.status, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
+      return { experimentId, status: experiment.status, channelId: hypothesis.channelId, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
     },
 
     /** BL-170: removes a video from the experiment's arms, while the experiment is proposed/approved/running. Web UI only. */
@@ -796,8 +799,8 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       experimentId: string,
       videoId: string,
       ctx: { userId: string | null | undefined }
-    ): Promise<{ experimentId: string; status: ExperimentStatus; arms: ExperimentArm[] }> {
-      const { experiment } = await assertExperimentAccessible(experimentId, ctx);
+    ): Promise<ExperimentArmsView> {
+      const { experiment, hypothesis } = await assertExperimentAccessible(experimentId, ctx);
       const arms = armDeps();
       const links = await arms.listExperimentArmVideos([experimentId]);
       if (!links.some((link) => link.videoId === videoId)) {
@@ -815,7 +818,7 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         if (current && !(EXPERIMENT_ARM_LINKABLE_STATUSES as readonly string[]).includes(current.status)) throw frozen(current.status);
         throw new DomainError({ code: "EXPERIMENT_ARM_VIDEO_NOT_LINKED", message: "The video is not linked to this experiment", details: { experimentId, videoId } });
       }
-      return { experimentId, status: experiment.status, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
+      return { experimentId, status: experiment.status, channelId: hypothesis.channelId, arms: groupExperimentArms(await arms.listExperimentArmVideos([experimentId])) };
     },
 
     /**

@@ -61,3 +61,4 @@ export type {
   HypothesisEvidence,
 } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";
+export type { ExperimentArmsView } from "./services";
