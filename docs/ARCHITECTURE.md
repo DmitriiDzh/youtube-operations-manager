@@ -3437,7 +3437,7 @@ RunPod reads only through the media gateway (`src/lib/media-gateway/`), so its s
   the pure `buildGpuAvailability`
   (`gpu-availability.ts`): GPUs at or above the memory minimum (input, else Settings, else 24 GB), each with its datacenters' stock,
   `networkVolume` (the datacenter lists a volume tier) and `s3Api`; `cudaAvailable` = some listed version ≥ the minimum is available
-  (RunPod lists only those under a minimum, so an empty list is `false`; null only with no minimum and no list).
+  (with a minimum set, RunPod lists only versions at or above it, so an empty list is `false`; null only with no minimum and no list).
 - **Log** (`gpu-availability-log.ts`). `snapshotGpuAvailabilityIfDue` returns `taken` / `skipped` (`fresh`: newest snapshot under 3 h;
   `backoff`: under an hour since a failure, kept in memory; `gateway_off` / `not_configured`: checked before any client is resolved, so a
   switched-off gateway records no blocked traffic) / `failed` (logged, never thrown). It always reads Secure Cloud (network volumes
