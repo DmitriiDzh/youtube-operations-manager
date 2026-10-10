@@ -190,6 +190,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   media_control_events: notApiData("audit of model/template actions on this device (BL-132)"),
   media_exchange_inputs: notApiData("ledger of job input files uploaded to the volume (BL-132)"),
   media_capacity_attempts: notApiData("createPod attempts on RunPod (BL-133 capacity log)"),
+  media_gpu_availability_log: notApiData("RunPod GPU stock per datacenter, read every 3 hours (BL-172 availability log)"),
   generation_plans: notApiData("media generation plans (BL-143)"),
   generation_plan_results: notApiData("results and owner verdicts of media generation plans (BL-143)"),
   generation_plan_events: notApiData("events of media generation plans (BL-143)"),

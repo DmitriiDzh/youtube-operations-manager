@@ -164,6 +164,9 @@ function createToolDeps(): FactoryToolDeps {
       capacityLog: async ({ since, gpuTypeId, limit }) => ({
         attempts: await createMediaGenerationCore().listCapacityAttempts({ ...(since ? { since: new Date(since) } : {}), ...(gpuTypeId ? { gpuTypeId } : {}), ...(limit ? { limit } : {}) }),
       }),
+      // BL-172 (FO-REQ-0016 A): the media core validates the input again and reads the catalog through the media gateway.
+      gpuAvailability: async (input) => ({ availability: await createMediaGenerationCore().getGpuAvailability(input) }),
+      gpuAvailabilityLog: async (input) => ({ log: await createMediaGenerationCore().listGpuAvailabilityLog(input) }),
     },
     // BL-143 (ADR 0029): generation plans; every write is the factory's.
     plans: {

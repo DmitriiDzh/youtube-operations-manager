@@ -107,6 +107,8 @@ test("listGpuTypes asks the catalog for POD availability and maps price/availabi
       spotPricePerHr: 0.34,
       estimatedAvailability: "HIGH",
       dataCenters: [{ id: "EU-RO-1", countryCode: "RO", estimatedAvailability: "HIGH" }],
+      // BL-172 added `cudaVersions`; this stub has none, so the list is empty.
+      cudaVersions: [],
     },
   ]);
 });
@@ -134,11 +136,44 @@ test("slice 0: the live GPU catalog shape -- name/memory/secure/community, price
       { id: "EU-RO-1", countryCode: null, estimatedAvailability: "LOW" },
       { id: "EUR-IS-1", countryCode: null, estimatedAvailability: "LOW" },
     ],
+    // BL-172 added `cudaVersions`; the 2026-10-05 recording was abridged without it.
+    cudaVersions: [],
   });
   assert.equal(secure[1].onDemandPricePerHr, null, "price 0 = not offered on Secure Cloud");
   assert.equal(secure[1].secureCloud, false);
   const community = await client.listGpuTypes({ cloud: "COMMUNITY" });
   assert.equal(community[0].onDemandPricePerHr, 0.34);
+});
+
+// BL-172 (AC-GA-01): RunPod v2 catalog docs -- `minCudaVersion` restricts availability to hosts with at least that CUDA, and each GPU
+// carries `cudaVersions: [{ version, available }]` for the GPU type as a whole (not per datacenter).
+test("listGpuTypes passes minCudaVersion through and maps cudaVersions; entries without a version are dropped", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => ({
+    status: 200,
+    body: {
+      gpus: [
+        {
+          id: "NVIDIA L40S",
+          name: "L40S",
+          memory: 48,
+          secure: true,
+          availability: "LOW",
+          price: { secure: 1.09 },
+          cudaVersions: [{ version: "12.8", available: true }, { version: "12.4", available: false }, { available: true }, { version: "13.0" }],
+        },
+      ],
+    },
+  }));
+  const client = createRunpodApiClient({ apiKey: "k", authorize: noAuth, fetchImpl });
+  const gpus = await client.listGpuTypes({ cloud: "SECURE", minCudaVersion: "12.8" });
+  assert.equal(new URL(calls[0].url).searchParams.get("minCudaVersion"), "12.8");
+  assert.deepEqual(gpus[0].cudaVersions, [
+    { version: "12.8", available: true },
+    { version: "12.4", available: false },
+    { version: "13.0", available: false },
+  ]);
+  await client.listGpuTypes({ cloud: "SECURE" });
+  assert.equal(new URL(calls[1].url).searchParams.has("minCudaVersion"), false, "no filter unless asked");
 });
 
 test("slice 0: the datacenter catalog lives at /catalog/datacenters and carries the network-volume tiers", async () => {

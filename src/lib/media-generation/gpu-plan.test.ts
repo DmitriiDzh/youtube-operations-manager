@@ -17,6 +17,7 @@ const gpu = (id: string, memoryInGb: number, price: number | null, dcs: string[]
   spotPricePerHr: null,
   estimatedAvailability: null,
   dataCenters: dcs.map((d) => ({ id: d, countryCode: null, estimatedAvailability: null })),
+  cudaVersions: [],
 });
 
 const CATALOG = [

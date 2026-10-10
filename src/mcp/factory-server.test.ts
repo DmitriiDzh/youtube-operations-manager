@@ -21,10 +21,12 @@ const EXPECTED_TOOLS = [
   "factory_media_create_job",
   "factory_media_delete_model",
   "factory_media_delete_template",
+  "factory_media_get_gpu_availability",
   "factory_media_get_job",
   "factory_media_get_pull",
   "factory_media_get_session",
   "factory_media_get_settings",
+  "factory_media_list_gpu_availability_log",
   "factory_media_list_models",
   "factory_media_list_templates",
   "factory_media_pull_model",
@@ -162,14 +164,15 @@ test("§2.5(4): none of the factory files reads channel-scope state (agent-sessi
   }
 });
 
-test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.9.0 since BL-159), separate from the channel agents' version", async () => {
+test("AC-FO-13 / AC-FM-15: the factory API has its own version constant (1.10.0 since BL-172), separate from the channel agents' version", async () => {
   // BL-153 (FO-REQ-0008): reviewRejected, split waiting counts and overridesValidator are additive -> a minor version.
   // BL-155 (FO-REQ-0007, CUDA_HOSTS_PLAN.md "Contract"): the jobs' errorCode, the error media_gpu_host_incompatible and the
   // stopReason "all jobs failed (release when done)" are additive -> 1.7.0, as the plan states.
   // BL-157 (SERVERS_MEDIA_PLAN.md §G): the new tool factory_plan_move and the event plan_moved are additive -> 1.8.0.
   // BL-159 (PER_SESSION_CUDA_PLAN.md "Contract"): minCudaVersion on a start and a template, the host CUDA fields and the
   // early media_gpu_host_incompatible refusal are additive -> 1.9.0, as the plan states.
-  assert.equal(FACTORY_API_VERSION, "1.9.0");
+  // BL-172 (GPU_AVAILABILITY_PLAN.md AC-GA-08): two READ tools -> 1.10.0.
+  assert.equal(FACTORY_API_VERSION, "1.10.0");
   const agentOperations = await readFile("src/lib/agent-operations/contracts.ts", "utf8");
   assert.equal(agentOperations.includes("FACTORY_API_VERSION"), false);
 });

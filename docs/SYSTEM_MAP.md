@@ -715,6 +715,12 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Хранение (v80):** `video_comments` (без данных авторов; новый вид политики `authorized_expiring`, III.E.4.c — очистка удаляет строки старше 30 дней по `fetched_at`, в базе, при импорте и в копиях), `video_comment_state`, `video_comment_channel_state`. Только на этом устройстве.
 - **Чтение:** `agent_get_video_comments` (Agent API 3.13.0, `video_context.query_video_comments`; у Producer — API 1.6.0).
 
+### 2.9ai Наличие GPU по дата-центрам RunPod — сейчас и журнал раз в 3 часа (BL-172, FO-REQ-0016, `docs/roadmap/plans/GPU_AVAILABILITY_PLAN.md`) — **IMPLEMENTED, на ветке `feature/fo-req-0016-gpu-availability`**
+
+- **Сейчас:** `factory_media_get_gpu_availability` (Factory API 1.10.0) → `getGpuAvailability` в ядре медиа: два чтения каталога v2 через медиа-шлюз (`listGpuTypes` с `minCudaVersion`, всегда Secure Cloud; `listDataCenters`), сборка — чистая `buildGpuAvailability` (`src/lib/media-generation/gpu-availability.ts`). По GPU — цена, общий запас, `cudaAvailable`, запас по дата-центрам с `networkVolume` и `s3Api`; `s3Api` — документированный список RunPod (`RUNPOD_S3_DATACENTERS`, `runpod-s3.ts`), не живая проверка.
+- **Журнал (v81, `media_gpu_availability_log`):** таймер в `src/instrumentation.ts` раз в 15 минут вызывает `snapshotGpuAvailabilityIfDue` (`gpu-availability-log.ts`): снимок, если последнему 3 часа; без запроса к RunPod при выключенном шлюзе или без настроек; после сбоя — через час; не во время импорта и не в режиме восстановления. Снимок: все GPU от 24 ГБ, Secure Cloud, CUDA из настроек; на GPU строка `*` и строка на каждый дата-центр с сетевыми томами (NONE, если не указан). 90 дней, только на этом устройстве.
+- **Чтение журнала:** `factory_media_list_gpu_availability_log` — строки (до 5 000) или `summary` (подсчёт в SQL по всем строкам).
+
 ### 2.9z Impressions и CTR через YouTube Reporting API (BL-114, `docs/decisions/0014-youtube-reporting-api-gateway-child.md`) — **реализовано, слито в `dev` (`b1456c9`); статус и квота — на ветке `feature/bl-114-reach-status-and-quota`**
 
 - **Зачем:** показы миниатюр и CTR недоступны на `reports:query` Analytics API (live-проверка, `src/lib/analytics/contracts.ts`); они есть только в Reach-отчётах Reporting API v1 — ежедневные файлы по подписке (job).

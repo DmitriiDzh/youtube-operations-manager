@@ -38,6 +38,8 @@ export type RunpodGpuType = {
   spotPricePerHr: number | null;
   estimatedAvailability: string | null;
   dataCenters: Array<{ id: string; countryCode: string | null; estimatedAvailability: string | null }>;
+  /** BL-172: per CUDA version, whether hosts on it have capacity now -- for the GPU type as a whole, not per datacenter (v2 catalog). */
+  cudaVersions: Array<{ version: string; available: boolean }>;
 };
 
 export type RunpodDataCenter = {
@@ -150,6 +152,12 @@ export function toGpuType(raw: unknown, cloud: "SECURE" | "COMMUNITY" = "SECURE"
       const d = asRecord(dc);
       return { id: asString(d.id) ?? "", countryCode: asString(d.countryCode), estimatedAvailability: asString(d.availability) ?? asString(d.estimatedAvailability) };
     }),
+    cudaVersions: extractList(r.cudaVersions, [])
+      .map((entry) => {
+        const c = asRecord(entry);
+        return { version: asString(c.version) ?? "", available: c.available === true };
+      })
+      .filter((c) => c.version),
   };
 }
 
@@ -357,9 +365,11 @@ export function createRunpodApiClient(args: {
       return { ok: true };
     },
 
-    async listGpuTypes(options: { cloud?: "SECURE" | "COMMUNITY" } = {}): Promise<RunpodGpuType[]> {
+    async listGpuTypes(options: { cloud?: "SECURE" | "COMMUNITY"; minCudaVersion?: string } = {}): Promise<RunpodGpuType[]> {
       const params = new URLSearchParams({ include: "AVAILABILITY", product: "POD" });
       if (options.cloud) params.set("cloud", options.cloud);
+      // BL-172: availability counted only on hosts with at least this CUDA (v2 catalog filter, `major.minor`).
+      if (options.minCudaVersion) params.set("minCudaVersion", options.minCudaVersion);
       const { body } = await request("GET", `/catalog/gpus?${params.toString()}`);
       return extractList(body, ["gpus"]).map((g) => toGpuType(g, options.cloud ?? "SECURE")).filter((g) => g.id);
     },

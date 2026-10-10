@@ -220,6 +220,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   media_control_events: "audit of model/template actions on this device (BL-132); each device keeps its own log",
   media_exchange_inputs: "ledger of job input files this device uploaded to the network volume (BL-132); source paths are meaningless elsewhere",
   media_capacity_attempts: "this device's createPod attempts (BL-133 capacity log); about RunPod capacity, not shared state",
+  media_gpu_availability_log: "RunPod GPU stock this device read every 3 hours (BL-172); each device keeps its own log",
   generation_plans: "generation plans (BL-143, ADR 0029) are owned by the device whose factory endpoint created them; other devices get a read-only report (phase 2), never a copy",
   generation_plan_results: "results of this device's generation plans (BL-143); they belong to the owning device's plan",
   generation_plan_events: "events of this device's generation plans (BL-143)",

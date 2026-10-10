@@ -249,6 +249,22 @@ async function startServerSession() {
   const janitorQuietly = () => void media.cleanupExchange({ dryRun: false }).catch(() => undefined);
   setTimeout(janitorQuietly, 10 * 60_000).unref();
   setInterval(janitorQuietly, MEDIA_JANITOR_INTERVAL_MS).unref();
+  // BL-172 (FO-REQ-0016 B): RunPod's GPU stock per datacenter, stored every 3 hours. The core decides whether one is due (the newest
+  // stored snapshot is 3 h old, an hour after a failure), skips without a RunPod call while the gateway is off or nothing is
+  // configured, and never throws. Never during a snapshot import/migration or in recovery mode (the gate the draft sync uses).
+  const GPU_AVAILABILITY_TICK_MS = 15 * 60_000;
+  const snapshotGpuAvailabilityQuietly = () => {
+    void (async () => {
+      try {
+        await assertDeviceAvailableForMutation(rawSqlClient);
+      } catch {
+        return; // paused; the next tick tries again
+      }
+      await media.snapshotGpuAvailabilityIfDue();
+    })().catch(() => undefined);
+  };
+  setTimeout(snapshotGpuAvailabilityQuietly, 5 * 60_000).unref();
+  setInterval(snapshotGpuAvailabilityQuietly, GPU_AVAILABILITY_TICK_MS).unref();
   // BL-132 (owner answer O1): the factory template registry is checked shortly after start and every 60 s; a sync runs
   // only when its files read differently from the last sync, so a device with no factory agent stays identical.
   const syncTemplatesQuietly = () => void media.syncTemplatesFromRegistry({ trigger: "auto", onlyIfChanged: true }).catch(() => undefined);
