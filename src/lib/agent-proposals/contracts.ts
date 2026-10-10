@@ -18,6 +18,8 @@ export const AGENT_PROPOSAL_KINDS = [
   "watchlist.resume",
   "watchlist.delete",
   "hypothesis.add",
+  // BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md): a video of the channel into an arm of one of its experiments.
+  "experiment.link_video",
 ] as const;
 export type AgentProposalKind = (typeof AGENT_PROPOSAL_KINDS)[number];
 
@@ -35,7 +37,7 @@ export type AgentProposal = {
   kind: string;
   /** Our channel the proposal is for; null for a system proposal about the global watchlist. */
   channelId: string | null;
-  /** The watchlist entry (a competitor's channel id) it is about; null for a hypothesis. */
+  /** The watchlist entry (a competitor's channel id) or the experiment it is about; null for a hypothesis. */
   targetId: string | null;
   payload: Record<string, unknown>;
   text: string;

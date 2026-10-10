@@ -183,3 +183,12 @@ export type ExperimentExecutionResolver = {
     videoCount: number;
   }>;
 };
+
+/** BL-170: the videos of one arm of an experiment, in the order they were linked. */
+export type ExperimentArm = {
+  arm: string;
+  videos: Array<{ videoId: string; linkedAt: string; linkedBy: string; linkedVia: "web_ui" | "producer_proposal" }>;
+};
+/** BL-170: arms can be changed while the experiment is in one of these statuses; after, they are the test's history. */
+export const EXPERIMENT_ARM_LINKABLE_STATUSES = ["proposed", "approved", "running"] as const;
+export const MAX_ARM_VIDEOS_PER_EXPERIMENT = 50;

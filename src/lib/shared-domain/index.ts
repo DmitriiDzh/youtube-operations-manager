@@ -231,6 +231,13 @@ export type DomainErrorCode =
   | "EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH"
   | "EXPERIMENT_CHANGE_SET_TOO_LARGE"
   | "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES"
+  // BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md) -- videos linked to an experiment's arms.
+  | "EXPERIMENT_ARM_CHANNEL_REQUIRED"
+  | "EXPERIMENT_ARMS_FROZEN"
+  | "EXPERIMENT_ARM_VIDEO_NOT_FOUND"
+  | "EXPERIMENT_ARM_VIDEO_ALREADY_LINKED"
+  | "EXPERIMENT_ARMS_FULL"
+  | "EXPERIMENT_ARM_VIDEO_NOT_LINKED"
   // Factory Operator access (docs/roadmap/plans/FACTORY_OPERATOR_ACCESS_PLAN.md) -- logical path
   // registry. NOT_FOUND also covers a name an agent is not allowed to see (indistinguishable).
   // NOT_CONFIGURED_ON_DEVICE: the path exists but has no value on THIS machine.

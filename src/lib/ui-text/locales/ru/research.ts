@@ -243,6 +243,7 @@ export const research: Record<keyof typeof en, string> = {
   "agentProposals.action.resume": "Возобновить сбор (для всех каналов)",
   "agentProposals.action.delete": "Удалить из списка наблюдения полностью, вместе с собранной историей",
   "agentProposals.action.hypothesis": "Новая гипотеза для канала {channel}",
+  "agentProposals.action.experimentLinkVideo": "Добавить ролик {video} в вариант «{arm}» этого эксперимента ({channel}; Решения)",
   "agentProposals.action.unknown": "Неизвестное изменение ({kind})",
   "agentProposals.reason": "Зачем следить: {reason}",
   "agentProposals.evidence": "Обоснование: {notes}",

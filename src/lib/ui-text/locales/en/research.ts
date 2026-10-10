@@ -245,6 +245,7 @@ export const research = {
   "agentProposals.action.resume": "Resume collection (for every channel)",
   "agentProposals.action.delete": "Delete from the watchlist completely, with its stored history",
   "agentProposals.action.hypothesis": "New hypothesis for {channel}",
+  "agentProposals.action.experimentLinkVideo": "Put video {video} into arm “{arm}” of this experiment ({channel}; Decisions)",
   "agentProposals.action.unknown": "Unknown change ({kind})",
   "agentProposals.reason": "Why watch it: {reason}",
   "agentProposals.evidence": "Evidence: {notes}",

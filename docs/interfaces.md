@@ -483,6 +483,19 @@ Key MCP tools:
     yesterday; each read starts 6 days before its first new day; at most 100 subjects per channel per run, the channel first, then the
     least recently read videos; a video is failed after 3 attempts, the channel is never given up). A video of another channel, or one
     that is private, scheduled or never synced, is not listed. Local read only (the live read is `agent_query_channel_breakdown`).
+  - `agent_get_experiment_results` (BL-170, Agent API 3.12.0, `docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md`) — `{ channelId, experimentId,
+    credentialRef? }` → `{ channelId, experiment: { experimentId, hypothesisId, status, treatment, controlBaseline, successCriteria,
+    stoppingCriteria, plannedDuration }, reachState, reachError, arms: [{ arm, videos: Video[] }] }`.
+    - `Video = { videoId, linkedAt, linkedBy, linkedVia, title (null when no longer synced), publishedAt, durationSeconds, published
+      (false while private, unlisted, scheduled or no longer synced: no milestones), breakdownCoverage { from, through } | null,
+      milestones: Milestone[] }`.
+    - `Milestone = { milestoneDays (7 | 28), windowStart, windowEnd, status (collected | retry | failed | due | not_due, as in
+      producer_upload_milestones), collectedAt, totals (views, estimatedMinutesWatched, averageViewDuration, averageViewPercentage;
+      null unless collected), reach { daysWithData, impressions, ctr } (Reach over the window; nulls with 0 days), trafficSources,
+      devices }`, the last two `[{ value, label, views, estimatedMinutesWatched }]` summed over the window from the stored daily rows.
+    - Each video's own stored values grouped by arm; no per-arm average, sum or comparison. The retention curve is in
+      `agent_get_video_milestones`, the search terms in `agent_get_stored_search_terms`. In an agent's scope another channel's
+      experiment is `CHANNEL_NOT_ACTIVE` (the decision engine's check), an unknown one `EXPERIMENT_NOT_FOUND`. Local read only.
   - `agent_get_stored_search_terms` (BL-169, Agent API 3.11.0, `docs/roadmap/plans/VIDEO_SEARCH_TERMS_PLAN.md`) — two forms that do not
     mix:
     - **Videos:** `{ channelId, videoIds (1-20), credentialRef? }` → `{ channelId, videos: [{ videoId, publishedAt, window: { start, end },
@@ -758,7 +771,8 @@ Key MCP tools:
     service layer (channel-scoped rows narrowed to the caller's active channel, channel-less rows
     always included).
   - `agent_get_hypothesis_trail` — `{ hypothesisId }` → `{ hypothesis, experiments: (Experiment &
-    { outcomes: ExperimentOutcome[] })[], evidence: HypothesisEvidence[] }`. One combined "trail"
+    { outcomes: ExperimentOutcome[], arms: Arm[] })[], evidence: HypothesisEvidence[] }` (`arms` since BL-170, Agent API 3.12.0:
+    `Arm = { arm, videos: [{ videoId, linkedAt, linkedBy, linkedVia: web_ui | producer_proposal }] }`, `control` first). One combined "trail"
     read (owner spec §25's "few composable tools" rule) rather than five separate list/get tools;
     composed from `decision-engine`'s own `getHypothesisTrail` service function.
     `HYPOTHESIS_NOT_FOUND` for an unknown id. `evidence` added additively in Phase 10 slice 3
@@ -1003,24 +1017,29 @@ A second agent role, separate from the channel agents. Technical contract only (
 
 An agent role that reads every channel connected on the device, one channel per call (FO-REQ-0012), and proposes watchlist and hypothesis
 changes for the owner to approve (FO-REQ-0014, Producer API 1.1.0). Technical contract only. Producer API 1.2.0 (BL-166) adds the upload
-milestones, 1.3.0 (BL-168) the stored traffic sources and devices, 1.4.0 (BL-169) the stored search terms.
+milestones, 1.3.0 (BL-168) the stored traffic sources and devices, 1.4.0 (BL-169) the stored search terms, 1.5.0 (BL-170) experiment
+arms: the results tool and the `experiment.link_video` proposal.
 
 - **Transport:** as the factory endpoint, with `Authorization: Bearer ytom_pr_...` (the same checks and codes; a channel or factory token is
   401 `AGENT_TOKEN_INVALID` here, and a producer token on `/api/mcp` and `/api/mcp/factory`). Re-verified on every tool call.
-- **Producer API version:** `1.4.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
+- **Producer API version:** `1.5.0` (1.0.0, plus the three proposal tools in 1.1.0 (BL-163), plus `agent_get_video_milestones` and
   `producer_upload_milestones` in 1.2.0 (BL-166), plus `agent_get_stored_breakdowns` in 1.3.0 (BL-168), plus `agent_get_stored_search_terms`
-  in 1.4.0 (BL-169)), independent of `AGENT_API_VERSION` and the Factory API.
+  in 1.4.0 (BL-169), plus `agent_get_experiment_results` and the proposal kind `experiment.link_video` in 1.5.0 (BL-170)), independent of
+  `AGENT_API_VERSION` and the Factory API.
 - **Channel tools** -- the channel agent's READ tools under their own names, each with the channel agent's own input and output plus a REQUIRED
   `channelId` (any channel `producer_list_channels` lists): `agent_get_channel_context` (includes the editorial profile), `channel_video_list`,
   `agent_get_video_context`, `agent_query_channel_analytics`, `agent_query_channel_breakdown` (both may read YouTube Analytics live, as for a channel
-  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_get_video_milestones`, `agent_get_stored_breakdowns`, `agent_get_stored_search_terms`, `agent_query_video_analytics`, `analytics_data_quality`,
+  agent; the analytics reads switch applies), `agent_query_channel_reach`, `agent_get_video_milestones`, `agent_get_stored_breakdowns`, `agent_get_stored_search_terms`, `agent_get_experiment_results`, `agent_query_video_analytics`, `analytics_data_quality`,
   `analytics_comparable_age`, `analytics_weekly_reports_list`, `analytics_weekly_report_get`, `agent_list_asset_performance`,
   `agent_find_comparable_videos`, `query_competitors`, `query_market_intelligence` (its watchlist channel is `watchlistChannelId` here),
   `query_market_overview`, `agent_list_market_records`, `agent_get_collection_request`, `agent_get_collection_limits`, `agent_get_content_proposal`,
   `agent_list_content_proposals`, `agent_list_hypotheses`, `agent_get_hypothesis_trail`, `agent_list_generation_plans`, `agent_get_generation_plan`,
   `agent_get_channel_workspace`. A call runs in that channel's agent scope: it sees exactly what the channel's own agent sees (market records assigned
   to that channel, its hypotheses, ...). A channel not connected on this device: `CHANNEL_NOT_ACTIVE`, nothing read.
-- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done"] }`;
+- **DRAFT channel tool (BL-170, owner msg 2485, ADR 0034 Amendment 5):** `create_experiment_proposal`, the channel agent's own input plus the
+  REQUIRED `channelId`, in that channel's agent scope: an experiment for a hypothesis of that channel, always `proposed` -- only the owner
+  approves, runs or abandons it in the Web UI. The only DRAFT channel tool (pinned by the test).
+- **Own tools:** `producer_get_capabilities` `{}` → `{ role: "producer", producerApiVersion, permissions: ["READ", "DRAFT"], channelRequired: true, tools, draftTools: ["producer_propose", "producer_mark_proposals_done", "create_experiment_proposal"] }`;
   `producer_list_channels` `{}` → `{ channels: [{ channelId, title, workspace: string | null }] }` (Settings → Channels on this device, this
   device's folder); `producer_portfolio_overview` `{ startDate, endDate }` (YYYY-MM-DD, at most 366 days) → `{ startDate, endDate, source: "local",
   channels: [{ channelId, title, analytics: { daysWithData, views, watchMinutes, subscribersGained, subscribersLost }, reach: { state, impressions,
@@ -1043,7 +1062,11 @@ milestones, 1.3.0 (BL-168) the stored traffic sources and devices, 1.4.0 (BL-169
   - `producer_propose` `{ channelId, kind, text (1-4000), payload }` → `{ proposal, forChannelId }`. `kind` / `payload` (strict):
     `watchlist.add` `{ competitorChannelId: "UC...", reason, handleOrUrl? }` (no handle resolution, no YouTube call),
     `watchlist.unfollow` / `watchlist.pause` / `watchlist.resume` / `watchlist.delete` `{ researchChannelId }`, `hypothesis.add`
-    `{ statement, evidenceNotes }`. Refused at submit: `CHANNEL_NOT_ACTIVE` (channel not connected here), `RESEARCH_CHANNEL_NOT_AVAILABLE`
+    `{ statement, evidenceNotes }`, `experiment.link_video` `{ experimentId, videoId, arm }` (BL-170: a synced video of the channel into an
+    arm of one of its experiments; arm 1-32 letters, digits, spaces, `_` or `-`; approving links it as `producer_proposal` and needs the
+    proposal's channel active, like `hypothesis.add`; refused at submit also with `EXPERIMENT_NOT_FOUND`, `EXPERIMENT_ARM_VIDEO_NOT_FOUND`,
+    `EXPERIMENT_ARMS_FROZEN`, `EXPERIMENT_ARM_VIDEO_ALREADY_LINKED`, `EXPERIMENT_ARMS_FULL`; one pending per video and experiment).
+    Refused at submit: `CHANNEL_NOT_ACTIVE` (channel not connected here), `RESEARCH_CHANNEL_NOT_AVAILABLE`
     (an entry this channel does not follow, or none), `AGENT_PROPOSAL_NOT_APPLICABLE` (e.g. pausing a paused entry, adding one the channel
     already follows), `AGENT_PROPOSAL_DUPLICATE` (`details.proposalId`; one pending pause / resume / delete per entry whoever proposed it,
     the system's own deletion proposal included -- `details.source` says whose, and a system one is not in the Producer's list; add /
@@ -1207,6 +1230,11 @@ resource it resolves to has a non-null `channelId` — including reads, not only
 - `POST /api/decision-engine/hypotheses/generate` — AI-generated hypothesis draft, preview only, persists nothing (Phase 10 slice 4, `docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md`) — `{ channelId?, notes, evidenceReferences?: EvidenceReference[], connectionId? }` → `{ draft: { statement, rationale, providerName, connectionId, evidenceReferences } }`; `connectionId` omitted uses the mock provider; `proxy.ts`-exempt (read-only with respect to local persistence, same classification as `/ai-localization/generate`)
 - `POST /api/decision-engine/hypotheses/generate/save` — persists a (possibly human-edited) generated draft: creates the hypothesis, attaches every evidence reference (re-validated, never trusted from the `generate` call), and records one `hypothesis_generation_provenance` row — `{ channelId?, finalStatement, evidenceNotes, evidenceReferences?, generatedStatement, rationale?, providerName, connectionId?, modelId? }` → `{ hypothesis: Hypothesis }`; NOT `proxy.ts`-exempt, a real mutation like the plain `POST /hypotheses` route
 - `PUT /api/decision-engine/experiments/[experimentId]/change-set` — attach or detach the Change Set this (localization-type) experiment will execute (Phase 10 slice 5, `docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md`) — `{ changeSetId: string | null }` → `{ experiment: Experiment }`; only legal in status `proposed`/`approved`, and only while no fresh execution claim is held; attaching validates the Change Set actually exists for the hypothesis's own channel (`EXPERIMENT_CHANGE_SET_NOT_FOUND`/`EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH`)
+- `GET /api/decision-engine/experiments/[experimentId]/arms` — the experiment's videos by arm (BL-170) `{ experimentId, status, channelId, arms }`;
+  `POST` the same path `{ videoId, arm }` links a synced video of the hypothesis's channel to an arm (owner only; the experiment `proposed`,
+  `approved` or `running`, the video in no arm yet, at most 50 videos; codes `EXPERIMENT_ARM_CHANNEL_REQUIRED`, `EXPERIMENT_ARMS_FROZEN`,
+  `EXPERIMENT_ARM_VIDEO_NOT_FOUND`, `EXPERIMENT_ARM_VIDEO_ALREADY_LINKED`, `EXPERIMENT_ARMS_FULL`); `DELETE .../arms/[videoId]` removes one
+  (`EXPERIMENT_ARM_VIDEO_NOT_LINKED`, `EXPERIMENT_ARMS_FROZEN`). Never reachable from MCP or CLI (PHASE10-INV-02).
 - `POST /api/decision-engine/experiments/[experimentId]/execute` — creates a real Batch from the attached Change Set's own eligible approved changes, via the existing Change Set/Batch pipeline (Phase 10 slice 5) — `{ live?: boolean }` → `{ experiment: Experiment, batchId, videoCount, dryRun }`; requires status `"approved"` with a Change Set attached (`EXPERIMENT_NOT_EXECUTABLE` otherwise); `dryRun` mirrors `/api/channels/[channelId]/batches`' own fail-closed Live Writes gate exactly (`live: true` honored only when that toggle is already on server-side, via `getLiveWritesEnabled()` — never assumed from the request); claim-first internally (`execution_claimed_at`, 15-minute expiry, same precedent as Phase 9's collection claim) so two concurrent calls can never both create a Batch; moves `status` to `"running"` only on success — a manual `POST .../transition {targetStatus:"running"}` is refused (`EXPERIMENT_MUST_USE_EXECUTE`) once a Change Set is attached
 
 MCP/CLI contract: `agent_list_hypotheses`/`agent_get_hypothesis_trail` (read) and `create_experiment_proposal` (draft) exist since slice 2 (`docs/ARCHITECTURE.md` §19) — creating a hypothesis from scratch, AI generation, transitioning status, and recording an outcome remain Web-UI-only, mechanically verified.

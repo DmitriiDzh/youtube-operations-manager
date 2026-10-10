@@ -157,6 +157,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   hypotheses: notApiData("operator/agent hypotheses"),
   experiments: notApiData("operator-designed experiments"),
   experiment_outcomes: notApiData("operator-recorded outcomes"),
+  experiment_arm_videos: notApiData("which own video is in which arm of an experiment (BL-170): ids and labels, no API values"),
   hypothesis_evidence: notApiData("references (ids) to evidence rows, not copies of their values"),
   hypothesis_generation_provenance: notApiData("AI generation provenance for hypotheses"),
   content_proposals: notApiData("agent-authored content proposals"),

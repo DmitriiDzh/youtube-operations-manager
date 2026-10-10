@@ -41,6 +41,10 @@ export function createDecisionEngineCore() {
     assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
     insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
     getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
+    listExperimentArmVideos: store.listExperimentArmVideos,
+    insertExperimentArmVideoIfEligible: store.insertExperimentArmVideoIfEligible,
+    deleteExperimentArmVideoIfEligible: store.deleteExperimentArmVideoIfEligible,
+    listChannelVideoIds: store.listChannelVideoIds,
   });
 }
 
@@ -49,6 +53,7 @@ export type {
   EvidenceReference,
   EvidenceReferenceResolver,
   Experiment,
+  ExperimentArm,
   ExperimentExecutionResolver,
   ExperimentOutcome,
   ExperimentStatus,
@@ -56,3 +61,4 @@ export type {
   HypothesisEvidence,
 } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";
+export type { ExperimentArmsView } from "./services";

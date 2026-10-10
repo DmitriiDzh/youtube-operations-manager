@@ -42,6 +42,13 @@ export function describeProposalAction(p: OwnerProposalView): { key: UiTextKey; 
       return { key: "agentProposals.action.delete", values: {}, subject: entry };
     case "hypothesis.add":
       return { key: "agentProposals.action.hypothesis", values: { channel }, subject: typeof p.payload.statement === "string" ? p.payload.statement : null };
+    case "experiment.link_video":
+      // BL-170: the subject is the experiment (its treatment while it exists, else its id).
+      return {
+        key: "agentProposals.action.experimentLinkVideo",
+        values: { channel, video: String(p.payload.videoId ?? ""), arm: String(p.payload.arm ?? "") },
+        subject: p.targetLabel ?? p.targetId,
+      };
     default:
       return { key: "agentProposals.action.unknown", values: { kind: p.kind }, subject: entry };
   }

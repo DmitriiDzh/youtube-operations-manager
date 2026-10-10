@@ -3,12 +3,16 @@ import test from "node:test";
 import {
   addChannelRecordAssignment,
   getResearchChannelById,
+  insertExperiment,
+  insertHypothesis,
   insertResearchChannel,
+  listExperimentArmVideos,
   listHypotheses,
   listRecordAssignmentChannels,
   setSelectedChannelId,
   upsertChannel,
   upsertUserOAuthOnSignIn,
+  upsertVideos,
 } from "@/lib/db";
 import { createAgentProposalReviewCore, createAgentProposalSubmitCore } from "./index";
 
@@ -68,4 +72,37 @@ test("real wiring: pause, add, hypothesis and delete are made only on approval, 
     ["watchlist.delete", "applied"],
     ["watchlist.pause", "applied"],
   ]);
+});
+
+// BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md AC-EA-04/05): the same, for a video into an experiment's arm -- checked by the real
+// decision engine on submit, linked by it on approval, as the Producer's link.
+test("real wiring: an experiment.link_video proposal links the video only on approval, in the proposal's active channel", async () => {
+  const owner170 = "bl170-owner";
+  const ours = "UC_bl170_ours";
+  await upsertUserOAuthOnSignIn({ userId: owner170, name: "Owner", email: "owner170@example.com", image: null, accessToken: null, refreshToken: null, tokenExpiry: null, scope: null });
+  await upsertChannel({ channelId: ours, title: "Tropico", thumbnailUrl: null, uploadsPlaylistId: `UU${ours}`, connectedUserId: owner170 });
+  await upsertVideos(
+    [{ videoId: "bl170v1", channelId: ours, title: "T", description: "", publishedAt: "2026-10-01T12:00:00Z", privacyStatus: "public", defaultLanguage: null, defaultAudioLanguage: null, thumbnails: {}, existingLocalizations: {}, etag: null }] as never,
+    new Date("2026-10-09T10:00:00Z")
+  );
+  await insertHypothesis({ id: "bl170-h", channelId: ours, statement: "Rain intro keeps viewers", evidenceNotes: "e", createdBy: owner170, createdVia: "web_ui" });
+  await insertExperiment({ id: "bl170-e", hypothesisId: "bl170-h", treatment: "Rain intro + loop", controlBaseline: "c", successCriteria: "s", stoppingCriteria: "x", responsible: "owner", createdVia: "web_ui" });
+  const producer = createAgentProposalSubmitCore();
+  const owner = createAgentProposalReviewCore();
+  const submit = (payload: Record<string, unknown>) => producer.submitProducerProposal({ channelId: ours, kind: "experiment.link_video", text: "the new intro", payload }, V);
+
+  // Refused on submit by the real decision engine: a video this channel does not have.
+  await assert.rejects(submit({ experimentId: "bl170-e", videoId: "not-ours", arm: "A" }), (error: { code?: string }) => error.code === "EXPERIMENT_ARM_VIDEO_NOT_FOUND");
+  const proposal = await submit({ experimentId: "bl170-e", videoId: "bl170v1", arm: "A" });
+  assert.equal((await owner.listOwnerProposals({ view: "pending" })).proposals.find((p) => p.proposalId === proposal.proposalId)?.targetLabel, "Rain intro + loop");
+  assert.deepEqual(await listExperimentArmVideos(["bl170-e"]), [], "nothing before approval");
+
+  await assert.rejects(owner.approveAgentProposal({ proposalId: proposal.proposalId }, { userId: owner170 }), (error: { code?: string }) => error.code === "AGENT_PROPOSAL_CHANNEL_NOT_ACTIVE");
+  await setSelectedChannelId(owner170, ours);
+  const applied = await owner.approveAgentProposal({ proposalId: proposal.proposalId }, { userId: owner170 });
+  assert.equal(applied.status, "applied", applied.applyError ?? "");
+  assert.deepEqual(
+    (await listExperimentArmVideos(["bl170-e"])).map((row) => [row.videoId, row.arm, row.linkedBy, row.linkedVia]),
+    [["bl170v1", "A", "producer", "producer_proposal"]]
+  );
 });

@@ -42,6 +42,13 @@ test("each kind says what approving it changes, naming the competitor and our ch
     values: { channel: "Rural Japan" },
     subject: "Rain lifts retention",
   });
+  // BL-170: a video for an experiment's arm names the experiment by its treatment (its id once it is gone), the video and the arm.
+  assert.deepEqual(of({ kind: "experiment.link_video", targetId: "E1", targetLabel: "Rain intro + loop", payload: { experimentId: "E1", videoId: "v2", arm: "A" } }), {
+    key: "agentProposals.action.experimentLinkVideo",
+    values: { channel: "Rural Japan", video: "v2", arm: "A" },
+    subject: "Rain intro + loop",
+  });
+  assert.equal(of({ kind: "experiment.link_video", targetId: "E1", targetLabel: null, payload: { experimentId: "E1", videoId: "v2", arm: "A" } }).subject, "E1");
   // A disconnected channel is named by its id rather than left blank.
   assert.deepEqual(of({ kind: "watchlist.unfollow", channelTitle: null }).values, { channel: "UC_ours_1" });
   assert.equal(of({ kind: "watchlist.rename" }).key, "agentProposals.action.unknown");

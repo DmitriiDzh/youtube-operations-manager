@@ -157,3 +157,13 @@ export const executeExperimentInputSchema = z
     live: z.boolean().optional(),
   })
   .strict();
+
+/**
+ * BL-170 (docs/roadmap/plans/EXPERIMENT_ARMS_PLAN.md): an arm label -- `control`, `A`, `B`, ... -- 1-32 letters, digits, spaces, `_` or `-`,
+ * starting with a letter or digit (surrounding spaces are trimmed).
+ */
+export const experimentArmLabelSchema = z
+  .string()
+  .trim()
+  .regex(/^[\p{L}\p{N}][\p{L}\p{N} _-]{0,31}$/u, "arm: 1-32 letters, digits, spaces, _ or -, starting with a letter or digit");
+export const linkExperimentArmVideoInputSchema = z.object({ videoId: z.string().min(1), arm: experimentArmLabelSchema }).strict();
