@@ -220,7 +220,7 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
   - the owner's own pick action first applies the picks still on their way from the other computer (as the tick would), then is
     weighed against the stored picks -- what those moved is stored, never only shown (round 1 had lost it);
   - a "none fits" from the other computer also covers the item's attempts already settled here (its report may have cut them);
-  - a report row that fails or rejects a picked attempt before the review withdraws the pick (`left_queue`); only picks on
+  - a report row of the stage right before the review that fails or rejects a picked attempt withdraws the pick (`left_queue`); only picks on
     attempts in the queue that are counted show and decide an item; a ref only a relayed verdict names cannot be picked;
   - the same "none fits" weighed twice changes nothing;
   - focus holders stack (the "none fits" dialog and a pin's note box over the layer keep Tab); the focus goes back where it was;

@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { useDialogFocus } from "./use-dialog-focus";
 import type { PlanMarkerRegion, PlanPickMark, PlanValidatorVerdict } from "@/lib/generation-plans/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -77,7 +77,8 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
 
   // Review round 2: in compare the two clips start together -- each waits until both are loaded, then both play from the start.
   const ready = useRef(new Set<string>());
-  useEffect(() => {
+  // A layout effect: cleared before a cached clip's metadata can arrive.
+  useLayoutEffect(() => {
     ready.current.clear();
   }, [mode, current?.key, other?.key]);
   const onClipReady = (key: string) => {

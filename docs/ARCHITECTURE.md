@@ -3563,7 +3563,8 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   the other computer) are recorded. An attempt is never both picked and rejected: a rejection withdraws the pick (also one that
   arrives later from the other computer, or one the factory relays), a pick on a rejected attempt is refused. A pick stands only
   on an attempt in the owner's queue that is counted (`pickableRefs`: in-app, or reported by an external stage); a report row
-  that fails or rejects a picked attempt before the review withdraws its pick (`left_queue`).
+  of the stage right before the review that fails or rejects a picked attempt withdraws its pick (`left_queue`; a row of an
+  earlier stage does not -- only the stage right before the review decides the queue, `reviewCandidates`).
 - **Counting.** `entryWaits` is the one "waits for the owner" rule (queue, counts, badge, screen). An item is decided at its pick
   target (`pickTargetOf`); its attempts without a verdict are `notChosen` (neither accepted, pending nor rejected). Attempts that
   only external stages report now count in `attempts`, `accepted` and `missing`; the Mac's two music plans had none, so their
