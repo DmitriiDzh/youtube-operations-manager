@@ -1189,6 +1189,8 @@ export const generationPlanPeerPicks = sqliteTable(
     action: text("action", { enum: ["pick", "unpick", "none_fits", "clear_none_fits"] }).notNull(),
     note: text("note"),
     at: text("at").notNull(),
+    /** A "none fits": the attempts the owner saw here (JSON array) -- only those are covered on the owning device. */
+    coveredJson: text("covered_json"),
   },
   (table) => [index("generation_plan_peer_picks_at_idx").on(table.at)]
 );
@@ -4554,7 +4556,8 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         attempt_ref TEXT,
         action TEXT NOT NULL,
         note TEXT,
-        at TEXT NOT NULL
+        at TEXT NOT NULL,
+        covered_json TEXT
       )`);
       await client.execute("CREATE INDEX IF NOT EXISTS generation_plan_peer_picks_at_idx ON generation_plan_peer_picks (at)");
     },

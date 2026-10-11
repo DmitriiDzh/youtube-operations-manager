@@ -1,4 +1,5 @@
 import { entryWaits, sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { withSentPicks, type SentPickAction } from "@/lib/generation-plans/picks";
 import type { SharedPlan } from "@/lib/sync-gateway";
 
 // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.1, FO-REQ-0013): one Plans card for every plan, wherever it was created. This
@@ -157,11 +158,16 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
  * Another device's plan as the card shows it, from that device's report. The waiting count is its review entries without a
  * verdict, less the verdicts this computer already sent there (they wait for that device to apply them).
  */
-export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevice>, outgoing: readonly OutgoingVerdictRef[], outgoingNotes: readonly OutgoingNoteRef[] = []): PlanCardModel {
+/** BL-175: a pick action sent from here to another device's plan (the peers route's `outgoingPicks`). */
+export type OutgoingPickRef = SentPickAction & { ownerDeviceId: string; planId: string };
+
+export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevice>, outgoing: readonly OutgoingVerdictRef[], outgoingNotes: readonly OutgoingNoteRef[] = [], outgoingPicks: readonly OutgoingPickRef[] = []): PlanCardModel {
   const mine = outgoing.filter((v) => v.ownerDeviceId === device.deviceId && v.planId === plan.planId);
   // BL-173: a kept re-check answer is no verdict on the track.
   const sent = new Set(mine.filter((v) => v.kept !== true).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
-  const open = plan.review.filter((e) => entryWaits(e) && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
+  // BL-175 (review round 1): picks sent from here already settle their attempts, as on the badge and the review screen.
+  const review = withSentPicks(plan, plan.review, outgoingPicks.filter((a) => a.ownerDeviceId === device.deviceId && a.planId === plan.planId), "");
+  const open = review.filter((e) => entryWaits(e) && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
   const answered = new Set(mine.flatMap((v) => (v.recheckId ? [v.recheckId] : [])));
   const rechecks = (plan.rechecks ?? []).filter((r) => !answered.has(r.recheckId)).length;
   const waiting = open.length;

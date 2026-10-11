@@ -551,6 +551,8 @@ export function recheckEntry(
     playable: recheck.kind === "revision" || extra !== null || (base?.playable ?? false),
     // What the validator said about the attempt itself -- never the revision's row.
     validator: base ? validatorOfEntry(base) : null,
+    // BL-175 (review round 1): a question about a picture shows the picture (a revision's own file decides on the screen).
+    media: base?.media ?? mediaKindOf([...stages].reverse().find((s) => s.auditionFile !== null)?.auditionFile ?? null),
     ...(base?.history ? { history: base.history } : {}),
     ...(pending ? { pendingFrom: pending.from } : {}),
     ...(pending?.kept ? { pendingKept: true } : {}),

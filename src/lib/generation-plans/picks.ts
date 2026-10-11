@@ -166,8 +166,18 @@ export type SharedPickPlan = {
   handledPicks?: readonly string[];
 };
 
-/** A pick action this computer sent to another computer's plan (the report's `picks`). */
-export type SentPickAction = { pickId: string; itemKey: string; attemptRef: string | null; action: PlanPickAction; note: string | null; at: string };
+/** A pick action this computer sent to another computer's plan (the report's `picks`); `covered` = a "none fits"'s attempts. */
+export type SentPickAction = { pickId: string; itemKey: string; attemptRef: string | null; action: PlanPickAction; note: string | null; at: string; covered?: readonly string[] };
+
+/**
+ * Review round 1: the attempts a "none fits" sent from another computer covers -- those its owner saw there (`covered`) that the
+ * item still has here; the item's attempts now when the action names none (a newer attempt is never covered by an older action).
+ */
+export function coveredRefs(action: { action: PlanPickAction; covered?: readonly string[] }, queueRefs: readonly string[]): readonly string[] {
+  if (action.action !== "none_fits" || !action.covered) return queueRefs;
+  const seen = new Set(action.covered);
+  return queueRefs.filter((ref) => seen.has(ref));
+}
 
 /**
  * BL-175 (VISUAL_REVIEW_PLAN.md §2.6): another computer's plan as THIS computer shows it -- the pick actions sent from here that
@@ -200,7 +210,7 @@ export function withSentPicks<E extends { itemKey: string; attemptRef: string; v
       {
         records: records.filter((r) => r.itemKey === a.itemKey),
         target: pickTargetOf(item),
-        queueRefs: own.map((e) => e.attemptRef),
+        queueRefs: coveredRefs(a, own.map((e) => e.attemptRef)),
         rejected: new Set(own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef)),
         validatorRejected: new Set(),
       }

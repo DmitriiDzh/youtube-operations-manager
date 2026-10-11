@@ -291,6 +291,8 @@ export const sharedPickActionSchema = z
     action: z.enum(["pick", "unpick", "none_fits", "clear_none_fits"]),
     note: z.string().max(2000).nullable(),
     at: z.string().datetime({ offset: true }),
+    /** A "none fits": the attempts the owner saw on this computer -- only those are covered there (a newer one waits as usual). */
+    covered: z.array(z.string().max(120)).max(500).optional(),
   })
   .strict();
 

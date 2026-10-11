@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { useDialogFocus } from "./use-dialog-focus";
 import type { PlanMarkerRegion, PlanPickMark, PlanValidatorVerdict } from "@/lib/generation-plans/contracts";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { MediaImageViewer, type ImageViewerHandle, type ViewerPin } from "./media-image-viewer";
@@ -70,7 +71,11 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   const image = useRef<ImageViewerHandle | null>(null);
   const videos = useRef<Array<VideoPlayerHandle | null>>([null, null]);
   const [linked, setLinked] = useState<ViewState>(FIT);
+  // Review round 1: the layer is a dialog -- it takes the focus, keeps Tab inside and gives the focus back when it closes.
+  const root = useRef<HTMLDivElement | null>(null);
+  useDialogFocus(root, { initial: "container" });
 
+  // Compare: the first clip leads -- every key and button drives it, and the other one follows its moves (`onUserSeek`).
   useImperativeHandle(ref, () => ({
     zoom() {
       if (mode === "loupe") image.current?.toggleActual();
@@ -78,13 +83,17 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
       if (mode === "compare") setLinked((v) => (v.fit ? { fit: false, scale: 1, cx: 0.5, cy: 0.5 } : FIT));
     },
     frame(direction) {
-      for (const v of mode === "compare" ? videos.current : videos.current.slice(0, 1)) v?.stepFrame(direction);
+      videos.current[0]?.stepFrame(direction);
     },
     togglePlay() {
-      for (const v of mode === "compare" ? videos.current : videos.current.slice(0, 1)) v?.togglePlay();
+      const lead = videos.current[0];
+      if (!lead) return;
+      const playing = lead.isPlaying();
+      lead.togglePlay();
+      if (mode === "compare") videos.current[1]?.seekTo(lead.currentTime(), playing ? "pause" : "play");
     },
     seekBy(seconds) {
-      for (const v of mode === "compare" ? videos.current : videos.current.slice(0, 1)) v?.seekBy(seconds);
+      videos.current[0]?.seekBy(seconds);
     },
   }));
 
@@ -150,8 +159,9 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         className={className}
         compact={shared}
         onAddPin={slot === 0 && entry.key === currentKey && props.onAddPin ? props.onAddPin : undefined}
-        // Compare: a seek in one clip moves the other to the same moment.
-        onUserSeek={shared ? (seconds) => videos.current[slot === 0 ? 1 : 0]?.playFrom(seconds) : undefined}
+        // Compare: a seek in one clip moves the other to the same moment and the same state (playing or paused), without it
+        // seeking back (review round 1).
+        onUserSeek={shared ? (seconds, playing) => videos.current[slot === 0 ? 1 : 0]?.seekTo(seconds, playing ? "play" : "pause") : undefined}
       />
     );
 
@@ -165,7 +175,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950/[0.97]" role="dialog" aria-modal="true" aria-label={t("review.layer.label")}>
+    <div ref={root} tabIndex={-1} className="fixed inset-0 z-50 flex flex-col bg-zinc-950/[0.97] outline-none" role="dialog" aria-modal="true" aria-label={t("review.layer.label")}>
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
         <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1">
           {modeButton("grid", t("review.layer.grid"), "G")}
@@ -225,6 +235,12 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
                             if (event.key === " ") {
                               event.preventDefault();
                               props.onSelect(entry);
+                            } else if (event.key === "Enter") {
+                              // §B: Enter (or a double click) opens the attempt at full size.
+                              event.preventDefault();
+                              event.stopPropagation();
+                              props.onSelect(entry);
+                              props.onMode("loupe");
                             }
                           }}
                           className={`group relative overflow-hidden rounded-lg border bg-zinc-900 ${entry.notChosen ? "opacity-60" : ""} ${isCurrent ? "border-violet-400 ring-2 ring-violet-400/60" : isCompared ? "border-sky-400 ring-2 ring-sky-400/50" : entry.picked ? "border-amber-400/80" : "border-zinc-800 hover:border-zinc-600"}`}

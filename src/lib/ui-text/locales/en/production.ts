@@ -421,7 +421,7 @@ export const production = {
   "review.noneFits.placeholder": "What is wrong with all of them (required)",
   "review.noneFits.rerun": "Also ask to generate again",
   "review.noneFits.confirm": "Save",
-  "review.layer.label": "Attempts of the wave",
+  "review.layer.label": "Attempts",
   "review.layer.grid": "Grid",
   "review.layer.loupe": "Full size",
   "review.layer.compare": "Compare",
@@ -440,5 +440,6 @@ export const production = {
   "review.pin.cancel": "Cancel",
   "review.strip.label": "Attempts of this item",
   "review.wave.doneVisual": "Wave reviewed: {picked} picked, {accepted} accepted, {rejected} rejected.",
+  "review.pin.saveFirst": "Save the mark's note first (Enter), or drop the mark (Esc).",
   "review.strip.compareHint": "Shift+click an attempt to compare it",
 } as const;

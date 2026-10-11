@@ -31,6 +31,9 @@ export type VideoPlayerHandle = {
   playFrom(seconds: number): void;
   /** One frame back (-1) or forward (+1); pauses. */
   stepFrame(direction: 1 | -1): void;
+  /** A linked player follows: moves to `seconds` without telling anyone, then plays or pauses as asked (or keeps its state). */
+  seekTo(seconds: number, mode?: "keep" | "play" | "pause"): void;
+  isPlaying(): boolean;
 };
 
 const RATES = [0.25, 0.5, 1, 2] as const;
@@ -50,8 +53,8 @@ export const MediaVideoPlayer = forwardRef<
     /** Shift + drag on the paused frame: a pin at this time (absent = no new pins). */
     onAddPin?: (region: PlanMarkerRegion, atSeconds: number) => void;
     onPlayStart?: () => void;
-    /** Seeks made here, so a linked player (compare) can follow. */
-    onUserSeek?: (seconds: number) => void;
+    /** Seeks made here (and whether this clip plays on), so a linked player (compare) can follow. */
+    onUserSeek?: (seconds: number, playing: boolean) => void;
     onPlayingChange?: (playing: boolean) => void;
     className?: string;
     /** Starts muted (the default) -- FO-REQ-0018 §A. */
@@ -76,6 +79,8 @@ export const MediaVideoPlayer = forwardRef<
   const [failed, setFailed] = useState(false);
   const frameTimes = useRef<number[]>([]);
   const selecting = useRef<{ start: number; moved: boolean } | null>(null);
+  // Review round 1: where a hover-scrub started -- the frame comes back when the mouse leaves without a click.
+  const scrubFrom = useRef<number | null>(null);
   const pinDrag = useRef<{ x: number; y: number } | null>(null);
   const [pinDraft, setPinDraft] = useState<{ start: { x: number; y: number }; end: { x: number; y: number } } | null>(null);
   const fps = reportedFps ?? measured;
@@ -109,7 +114,8 @@ export const MediaVideoPlayer = forwardRef<
   // The frame rate when the row gives none: the presented frames' media times while it plays.
   useEffect(() => {
     const v = video.current as (HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number; cancelVideoFrameCallback?: (id: number) => void }) | null;
-    if (!v || reportedFps !== null || measured !== null || !playing || typeof v.requestVideoFrameCallback !== "function") return;
+    // Only at 1×: at 2× frames above the display rate are dropped and the median gap doubles (review round 1).
+    if (!v || reportedFps !== null || measured !== null || !playing || rate !== 1 || typeof v.requestVideoFrameCallback !== "function") return;
     let id = 0;
     const onFrame = (_now: number, meta: { mediaTime: number }) => {
       frameTimes.current.push(meta.mediaTime);
@@ -122,7 +128,7 @@ export const MediaVideoPlayer = forwardRef<
     };
     id = v.requestVideoFrameCallback(onFrame);
     return () => v.cancelVideoFrameCallback?.(id);
-  }, [measured, playing, reportedFps]);
+  }, [measured, playing, rate, reportedFps]);
 
   useEffect(() => {
     if (video.current) video.current.playbackRate = rate;
@@ -139,7 +145,7 @@ export const MediaVideoPlayer = forwardRef<
       const to = Math.max(0, Math.min(Number.isFinite(v.duration) ? v.duration : seconds, seconds));
       v.currentTime = to;
       setTime(to);
-      if (fromUser) onUserSeek?.(to);
+      if (fromUser) onUserSeek?.(to, !v.paused);
     },
     [onUserSeek]
   );
@@ -175,6 +181,14 @@ export const MediaVideoPlayer = forwardRef<
       v.pause();
       seek(stepFrame(v.currentTime, fps ?? FALLBACK_FPS, direction, v.duration), true);
     },
+    seekTo(seconds, mode = "keep") {
+      const v = video.current;
+      if (!v) return;
+      seek(seconds);
+      if (mode === "pause") v.pause();
+      else if (mode === "play" && v.paused) play();
+    },
+    isPlaying: () => Boolean(video.current && !video.current.paused),
   }));
 
   const timeAt = (clientX: number) => {
@@ -185,6 +199,8 @@ export const MediaVideoPlayer = forwardRef<
   const onTimelineDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     capture(event);
+    // A press commits: the scrub's frame is no longer given back.
+    scrubFrom.current = null;
     selecting.current = { start: timeAt(event.clientX), moved: false };
   };
   const onTimelineMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -198,8 +214,11 @@ export const MediaVideoPlayer = forwardRef<
       }
       return;
     }
-    // Hover-scrub (§A): while paused, the frame follows the mouse.
-    if (!playing) seek(at);
+    // Hover-scrub (§A): while paused, the frame follows the mouse -- and comes back when it leaves without a click.
+    if (!playing) {
+      if (scrubFrom.current === null) scrubFrom.current = video.current?.currentTime ?? time;
+      seek(at);
+    }
   };
   const onTimelineUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const s = selecting.current;
@@ -292,10 +311,13 @@ export const MediaVideoPlayer = forwardRef<
             return (
               <span
                 key={i}
-                className={`pointer-events-none absolute rounded-full border-2 ${pin.tone === "question" ? "border-sky-400" : pin.tone === "finding" ? "border-red-400" : "border-amber-400"} ${draft && i === shownPins.length ? "border-dashed" : ""}`}
+                className={`pointer-events-none absolute flex items-start justify-end rounded-full border-2 ${pin.tone === "question" ? "border-sky-400 text-sky-200" : pin.tone === "finding" ? "border-red-400 text-red-200" : "border-amber-400 text-amber-200"} ${draft && i === shownPins.length ? "border-dashed" : ""}`}
                 style={{ left: c.cx - c.radius, top: c.cy - c.radius, width: c.radius * 2, height: c.radius * 2 }}
                 title={pin.label}
-              />
+              >
+                {/* The marker's number, as on a picture (its label starts with it). */}
+                {pin.label ? <span className="-mr-2 -mt-2 rounded-full bg-black/80 px-1.5 text-[11px] font-semibold">{/^\d+/.exec(pin.label)?.[0] ?? pin.label.slice(0, 1)}</span> : null}
+              </span>
             );
           })}
       </div>
@@ -312,7 +334,11 @@ export const MediaVideoPlayer = forwardRef<
         onPointerDown={onTimelineDown}
         onPointerMove={onTimelineMove}
         onPointerUp={onTimelineUp}
-        onPointerLeave={() => setHover(null)}
+        onPointerLeave={() => {
+          setHover(null);
+          if (scrubFrom.current !== null && !selecting.current) seek(scrubFrom.current);
+          scrubFrom.current = null;
+        }}
       >
         {markers.map((m, i) => (
           // ui-text-ignore: a CSS length, not text

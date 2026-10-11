@@ -235,3 +235,31 @@ test("AC-VR-14: the loupe shows one image at full size; compare shows two clips 
   assert.match(video, /<video[^>]*muted/);
   for (const text of ["0.25×", "0.5×", "1×", "2×", "Sound off", "frame 1 · 16 fps"]) assert.ok(video.includes(text), text);
 });
+
+test("review round 1: Windows' plan card counts the picks sent from there, like its badge", async () => {
+  const { peerPlanModel } = await import("./plan-card-model");
+  const plan = peerData().devices[0].plans[0];
+  const shared = { title: "t", channelId: "UC", owner: "factory" as const, status: "active" as const, budget: { usd: null, gpuMinutes: null }, note: null, createdAt: "", updatedAt: "", closedAt: null, stages: [], groups: [], itemParams: {}, references: [], progress: {}, events: [], ...plan };
+  const device = { deviceId: "mac-id", hostname: "MAC", updatedAt: "", stale: false, version: 5 };
+  assert.equal(peerPlanModel(shared as never, device, []).waiting, 3);
+  const sent = { pickId: "p-1", ownerDeviceId: "mac-id", planId: "H", itemKey: "W1/I", attemptRef: "a2", action: "pick" as const, note: null, at: "2026-10-11T10:05:00.000Z" };
+  assert.equal(peerPlanModel(shared as never, device, [], [], [sent]).waiting, 0, "picked from here: settled");
+});
+
+test("review round 1: a mark waiting for its note goes with the verdict once it has one; without one the decision waits", async () => {
+  const { pendingMarkOf } = await import("./plan-review-screen");
+  const region = { x: 0.5, y: 0.5, r: 0.1 };
+  assert.equal(pendingMarkOf({ pending: null }), null);
+  assert.equal(pendingMarkOf({ pending: { start: 0, end: null, note: "  ", region } }), "needs_note");
+  assert.deepEqual(pendingMarkOf({ pending: { start: 0, end: null, note: " фонарь ", region } }), { start: 0, end: null, note: "фонарь", region });
+});
+
+test("review round 1: a question re-check about a picture shows the picture", async () => {
+  const { recheckEntry } = await import("@/lib/generation-plans/contracts");
+  const base = { itemKey: "W1/I", groupId: "W1", attemptRef: "a1", jobId: null, seed: null, params: {}, stages: [], verdict: null, playable: true, validator: null, media: "image" as const };
+  const recheck = { recheckId: "q1", itemKey: "W1/I", attemptRef: "a1", kind: "question" as const, title: "фонарь", note: "это фонарь?", auditionFile: null, markers: [], checks: [], metrics: {}, previousVerdict: null, status: "open" as const, openedAt: "2026-10-11T10:00:00.000Z", closedAt: null, answer: null, withdrawNote: null, closeReason: null };
+  const entry = recheckEntry(recheck, base, null, null);
+  assert.equal(screenMedia(entry), "image");
+  const noBase = recheckEntry(recheck, null, { groupId: "W1", params: {} }, { stageId: "~recheck", itemKey: "W1/I", attemptRef: "a1", result: "done", reportedBy: "factory", note: null, rating: null, reasons: [], markers: [], auditionFile: "H/a1__r1.mp4", checks: [], metrics: {}, at: "" });
+  assert.equal(screenMedia(noBase), "video");
+});

@@ -6,7 +6,7 @@ import type { SharedPlan } from "@/lib/sync-gateway";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { ConfirmDialog } from "./confirm-dialog";
-import { ownPlanModel, peerPlanModel, waveRows, type OutgoingNoteRef, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
+import { ownPlanModel, peerPlanModel, waveRows, type OutgoingNoteRef, type OutgoingPickRef, type OutgoingVerdictRef, type PlanCardDevice, type PlanCardModel, type WaveRow } from "./plan-card-model";
 import { useChannelNames } from "./use-channel-names";
 import { InfoTooltip } from "./info-tooltip";
 import { PlanReviewScreen, resultLabel, type PeerReviewSource } from "./plan-review-screen";
@@ -209,6 +209,8 @@ export function PlansPanel({
   const [peers, setPeers] = useState<PeerDevicePlans[]>([]);
   const [outgoing, setOutgoing] = useState<OutgoingVerdictRef[]>([]);
   const [outgoingNotes, setOutgoingNotes] = useState<OutgoingNoteRef[]>([]);
+  // BL-175: the pick actions sent from here (they settle attempts on the card at once).
+  const [outgoingPicks, setOutgoingPicks] = useState<OutgoingPickRef[]>([]);
 
   const load = useCallback(() => {
     void requestJson<{ plans: PlanView[] }>(t, "/api/generation-plans").then(
@@ -220,11 +222,12 @@ export function PlansPanel({
     );
     // BL-143 phase 2: the other devices' plans (the route gives the active channel's only); a failure here never hides this
     // device's own plans.
-    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdictRef[]; outgoingNotes?: OutgoingNoteRef[] }>(t, "/api/generation-plans/peers").then(
+    void requestJson<{ devices: PeerDevicePlans[]; outgoing: OutgoingVerdictRef[]; outgoingNotes?: OutgoingNoteRef[]; outgoingPicks?: OutgoingPickRef[] }>(t, "/api/generation-plans/peers").then(
       (data) => {
         setPeers(data.devices);
         setOutgoing(data.outgoing);
         setOutgoingNotes(data.outgoingNotes ?? []);
+        setOutgoingPicks(data.outgoingPicks ?? []);
       },
       () => setPeers([])
     );
@@ -263,7 +266,7 @@ export function PlansPanel({
 
   // BL-162 (AC-UX-14, FO-REQ-0013 §2.1/§2.6): one list -- this device's plans and the other devices' plans of this channel.
   const inFilter = (status: string) => (filter === "active" ? status === "active" : status !== "active");
-  const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale, version: d.version }, outgoing, outgoingNotes)));
+  const peerModels = peers.flatMap((d) => d.plans.map((p) => peerPlanModel(p, { deviceId: d.deviceId, hostname: d.hostname, updatedAt: d.updatedAt, stale: d.stale, version: d.version }, outgoing, outgoingNotes, outgoingPicks)));
   const rows: ListRow[] = [
     ...(plans ?? [])
       .filter((p) => inFilter(p.plan.status))

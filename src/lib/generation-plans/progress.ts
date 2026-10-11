@@ -217,11 +217,12 @@ type Derived = {
  * accepted; now they join the item's counts like the app's own.
  */
 export function externalAttempts(plan: Pick<GenerationPlan, "stages">, inApp: PlanAttempt[], results: PlanResultRow[]): Array<{ itemKey: string; attemptRef: string }> {
-  const inAppStage = plan.stages.find((s) => s.kind === "in_app")?.stageId ?? null;
+  // Only rows of EXTERNAL stages make an attempt: a verdict the factory relays for a ref nothing else reports is not one (review round 1).
+  const external = new Set(plan.stages.filter((s) => s.kind === "external").map((s) => s.stageId));
   const known = new Set(inApp.map((a) => `${a.itemKey}\u0000${a.attemptRef}`));
   const out = new Map<string, { itemKey: string; attemptRef: string }>();
   for (const r of results) {
-    if (r.stageId === inAppStage) continue;
+    if (!external.has(r.stageId)) continue;
     const k = `${r.itemKey}\u0000${r.attemptRef}`;
     if (!known.has(k) && !out.has(k)) out.set(k, { itemKey: r.itemKey, attemptRef: r.attemptRef });
   }

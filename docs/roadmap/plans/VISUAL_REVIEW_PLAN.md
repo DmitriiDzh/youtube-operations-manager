@@ -140,7 +140,7 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
 - **AC-VR-01 Media kind.** `.png` → image, `.mp4` → video, `.mp3` → audio, `.txt` → null; an accepted revision's file wins over
   the reported one, the reported one over the job output.
 - **AC-VR-02 Pick target.** `fixed` targetCount 8 → 1; `until_accepted` targetCount 2 → 2; `pickTarget: 3` → 3; `pickTarget`
-  above `targetCount` or below 1 is refused (`plan_invalid`).
+  above `targetCount` is refused (`plan_invalid`), below 1 by the input schema (`validation_failed`).
 - **AC-VR-03 Fixed item, external attempts.** Plan [external `render`, owner_review]; item I (`fixed`, targetCount 1), 8
   external attempts reported done with png files. Before: `attempts 8, accepted 0, waitingReview 8, missing 0`. One pick on
   `a3`: `accepted 1, notChosen 7, rejected 0, waitingReview 0, missing 0, picks [a3]`; todo `waitingReview` empty; the wave's
@@ -196,7 +196,26 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
 - **The wheel** zooms a picture on the screen itself only with Ctrl / ⌘ (a trackpad pinch), so the column still scrolls; in the
   whole-window layer it always zooms (found in the live check).
 - **A picture wave's summary** reads "looked at: picked, accepted, rejected"; music keeps its text.
-- **The grid** shows the attempts in a stable order (item, then attempt), not the queue's (which moves settled ones down).
+- **The grid** shows the attempts in a stable order (item, then attempt), not the queue's (which moves settled ones down). A
+  click selects an attempt; a double click or Enter opens it at full size; Esc goes back to the grid when the loupe or compare
+  was opened from it (from the screen, Esc closes).
+- **Media kind** is not a report field (DEV-RESP-0021 §3 Q4 listed it): the reading computer derives it from the file the entry
+  names (`sharedEntryMedia`), so the report carries nothing it could disagree with.
+- **Own reason lists** (a wave's, else the plan's) apply to any media kind the Operator sets them for; without one, music waves
+  keep the ten music chips.
+- **Review round 1** (two reviewers, server and screen; all findings fixed):
+  - a rejection the factory relays also withdraws the pick;
+  - the owner's own pick action is weighed against what the owner sees (picks on their way from the other computer included);
+  - only rows of `external` stages make an external attempt (a relayed verdict for an unknown ref does not);
+  - a "none fits" sent from the other computer carries the attempts its owner saw (`covered`) and covers only those;
+  - the other computer's plan card counts its sent picks like the badge;
+  - a question re-check on a picture shows the picture;
+  - in video compare the first clip leads and the other follows (no double steps);
+  - a mark waiting for its note is sent with it, or the decision waits;
+  - a picture's draft is kept per attempt while the owner browses the grid;
+  - the "Reject the picked attempt?" → "Replace?" questions no longer loop;
+  - the layer and the "none fits" dialog hold the focus; held keys do not repeat a pick;
+  - a hover-scrub gives the paused frame back; the frame rate is measured only at 1×.
 - **Live check (AC-VR-15)** ran on an isolated instance of the branch (`next dev` on 127.0.0.1:3100 with a scratch HOME and
   database, a test user and channel, generated PNG stills, 16 fps MP4 loops and an MP3; a session minted with the worktree's
   throwaway secret). Pictures in the owner's Chrome; clips in a separate headless Chrome (the Mac's display was off, and Chrome

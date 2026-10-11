@@ -243,7 +243,8 @@ export function createPlanStore(): PlanStore {
           coveredJson: r.covered.length > 0 ? JSON.stringify(r.covered) : null,
         }))
       ),
-    insertPeerPick: (a) => insertGenerationPlanPeerPick({ pickId: a.pickId, planId: a.planId, ownerDeviceId: a.ownerDeviceId, itemKey: a.itemKey, attemptRef: a.attemptRef, action: a.action, note: a.note, at: a.at }),
+    insertPeerPick: (a) =>
+      insertGenerationPlanPeerPick({ pickId: a.pickId, planId: a.planId, ownerDeviceId: a.ownerDeviceId, itemKey: a.itemKey, attemptRef: a.attemptRef, action: a.action, note: a.note, at: a.at, coveredJson: a.covered ? JSON.stringify(a.covered) : null }),
     listPeerPicks: async (sinceIso) =>
       (await listGenerationPlanPeerPicks(sinceIso)).map((r) => ({
         pickId: r.pickId,
@@ -254,6 +255,7 @@ export function createPlanStore(): PlanStore {
         action: r.action === "unpick" || r.action === "none_fits" || r.action === "clear_none_fits" ? r.action : ("pick" as const),
         note: r.note ?? null,
         at: r.at,
+        ...(r.coveredJson ? { covered: parseJson<string[]>(r.coveredJson, []) } : {}),
       })),
     insertPeerGroupNote: (n) => insertGenerationPlanPeerGroupNote({ noteId: n.noteId, planId: n.planId, ownerDeviceId: n.ownerDeviceId, groupId: n.groupId, note: n.note, at: n.at }),
     listPeerGroupNotes: async (sinceIso) => (await listGenerationPlanPeerGroupNotes(sinceIso)).map((r) => ({ noteId: r.noteId, planId: r.planId, ownerDeviceId: r.ownerDeviceId, groupId: r.groupId, note: r.note ?? null, at: r.at })),
