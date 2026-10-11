@@ -1,7 +1,7 @@
 # Review of generated images and video (BL-175, FO-REQ-0018 §A–§G)
 
-Status: phase 1 BUILT and reviewed (four rounds); phases 2 and 3 in progress on the same branch (`feature/visual-review`), one
-merge at the end. Owner's go: phase 1 — Telegram 2026-10-11 msg 2538; phases 2 and 3 — msg 2549 («Давай сделаем все 3 и уже
+Status: DONE -- phases 1–3 merged into `dev` (a07b778, owner's yes Telegram 2557); the phone mode of §G deferred by the owner
+(msg 2554). Owner's go: phase 1 — Telegram 2026-10-11 msg 2538; phases 2 and 3 — msg 2549 («Давай сделаем все 3 и уже
 только потом мерджить будем»). Reply to the Operator: DEV-RESP-0021. Sections 1–6: phase 1; §7: phase 2; §8: phase 3.
 
 ## 1. Facts (code read 2026-10-11, `dev` 9a7720a; the Mac's database read-only)
