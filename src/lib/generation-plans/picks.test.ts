@@ -935,3 +935,58 @@ test("review round 4: a pick never revives an attempt of the app's own whose job
   const item = (await s.services.getPlan({ planId: PLAN })).progress.items[0];
   assert.deepEqual([item.accepted, item.missing], [0, 1]);
 });
+
+// -- BL-175 phase 3: AC-V3-03..05 (VISUAL_REVIEW_PLAN.md §8.3, worked out by hand) --------------------------------------------
+
+const verdictEvents = async (s: ReturnType<typeof setup>) => (await s.services.getPlan({ planId: PLAN })).events.filter((e) => e.kind === "owner_verdict").map((e) => e.details);
+
+test("AC-V3-03: a verdict's seconds are kept with it and shown in owner_verdict; without them, no field; out of range is refused", async () => {
+  const s = await visualPlan({ targetCount: 1 });
+  tick();
+  await s.services.recordOwnerVerdict({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", result: "rejected", reviewSeconds: 42 });
+  tick();
+  await s.services.recordOwnerVerdict({ planId: PLAN, itemKey: "W1/I", attemptRef: "a2", result: "accepted" });
+  const events = await verdictEvents(s);
+  assert.deepEqual(events.map((d) => [d.attemptRef, d.reviewSeconds]), [["a1", 42], ["a2", undefined]]);
+  for (const reviewSeconds of [-1, 86_401, 1.5]) {
+    await assert.rejects(() => s.services.recordOwnerVerdict({ planId: PLAN, itemKey: "W1/I", attemptRef: "a3", result: "accepted", reviewSeconds }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  }
+});
+
+test("AC-V3-04: a verdict and a pick given on Windows bring their seconds to the Mac", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  await win.services.recordPeerVerdict({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a1", result: "rejected", reviewSeconds: 30 });
+  tick();
+  await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a2", action: "pick", reviewSeconds: 8 });
+  await sync();
+  await mac.services.applyPeerVerdicts();
+  await mac.services.applyPeerPicks();
+  assert.deepEqual((await verdictEvents(mac)).map((d) => [d.attemptRef, d.device, d.reviewSeconds]), [["a1", "WIN", 30]]);
+  assert.deepEqual(kinds(mac, "owner_pick").map(([, d]) => [(d as Record<string, unknown>).attemptRef, (d as Record<string, unknown>).device, (d as Record<string, unknown>).reviewSeconds]), [["a2", "WIN", 8]]);
+});
+
+test("AC-V3-05: a pick, a none-fits and a re-check answer carry their seconds; what a pick moved does not", async () => {
+  const s = await visualPlan({ targetCount: 1 });
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick", reviewSeconds: 12 });
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a2", action: "pick", reviewSeconds: 5 });
+  assert.deepEqual(kinds(s, "owner_pick", "owner_unpick").map(([k, d]) => [k, (d as Record<string, unknown>).attemptRef, (d as Record<string, unknown>).reviewSeconds]), [
+    ["owner_pick", "a1", 12],
+    ["owner_unpick", "a1", undefined],
+    ["owner_pick", "a2", 5],
+  ]);
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", action: "none_fits", note: "все мимо", reviewSeconds: 20 });
+  assert.equal((kinds(s, "owner_none_fits").at(-1)?.[1] as Record<string, unknown>).reviewSeconds, 20);
+  // A question re-check on a rated attempt, answered with 15 s.
+  tick();
+  await s.services.recordOwnerVerdict({ planId: PLAN, itemKey: "W1/I", attemptRef: "a4", result: "accepted" });
+  tick();
+  await s.services.requestRecheck({ planId: PLAN, itemKey: "W1/I", attemptRef: "a4", recheckId: "q1", kind: "question", title: "фонарь", note: "это фонарь?" });
+  tick();
+  await s.services.answerRecheck({ planId: PLAN, recheckId: "q1", result: "rejected", reviewSeconds: 15 });
+  assert.equal((kinds(s, "recheck_answered").at(-1)?.[1] as Record<string, unknown>).reviewSeconds, 15);
+  assert.deepEqual((await verdictEvents(s)).filter((d) => d.recheckId === "q1").map((d) => d.reviewSeconds), [15]);
+});

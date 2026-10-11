@@ -134,6 +134,13 @@ export function auditionContentType(file: string): string | null {
 }
 
 /** BL-175 (VISUAL_REVIEW_PLAN.md §2.1): what the review screen shows for a file -- a player, a picture or a clip. */
+/**
+ * BL-175 phase 3 (FO-REQ-0018 §G): the job output folders under a workspace's `99 Data Exchange/From YTM/` a plan file may name
+ * directly (`From YTM/gemini/<jobId>/image-1.png`) -- Gemini's outputs are reviewed where they are, without a copy into Sent to
+ * YTM. A contract string (the Gemini module's folder name), not an import: the plans module stays independent of it.
+ */
+export const PLAN_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini"];
+
 export type PlanMediaKind = "audio" | "image" | "video";
 
 /** The media kind of a file by its extension (the same list the player serves); null = not shown. */
@@ -377,7 +384,14 @@ export type PlanReviewBatch = {
 export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean };
 
 /** The full stored row (the history of a plan, every attempt). */
-export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & { itemKey: string; attemptRef: string; reasons: string[]; markers: PlanMarker[] };
+export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & {
+  itemKey: string;
+  attemptRef: string;
+  reasons: string[];
+  markers: PlanMarker[];
+  /** BL-175 phase 3 (§G): the owner's seconds on the attempt before this verdict (absent = not measured). */
+  reviewSeconds?: number;
+};
 
 /** BL-157 (AC-TC-04): what is already there when a verdict would replace it -- for "Already rated on … Replace?". */
 export type PlanExistingVerdict = { result: string; rating: number | null; device: string | null; at: string };

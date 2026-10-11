@@ -264,6 +264,8 @@ export const sharedVerdictSchema = z
     /** BL-173 (v4): the re-check this verdict answers; `kept` = the verdict was kept with a note. */
     recheckId: z.string().max(120).optional(),
     kept: z.boolean().optional(),
+    /** BL-175 phase 3 (v5, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict. */
+    reviewSeconds: z.number().int().min(0).max(86_400).optional(),
   })
   .strict();
 
@@ -293,6 +295,8 @@ export const sharedPickActionSchema = z
     at: z.string().datetime({ offset: true }),
     /** A "none fits": the attempts the owner saw on this computer -- only those are covered there (a newer one waits as usual). */
     covered: z.array(z.string().max(120)).max(500).optional(),
+    /** BL-175 phase 3 (FO-REQ-0018 §G): the owner's seconds on the attempt before this action. */
+    reviewSeconds: z.number().int().min(0).max(86_400).optional(),
   })
   .strict();
 

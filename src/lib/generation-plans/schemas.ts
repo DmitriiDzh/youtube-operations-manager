@@ -213,6 +213,9 @@ export type ReportRowInput = z.infer<typeof reportRowSchema>;
 
 export const reportInputSchema = z.object({ planId: planIdSchema, rows: z.array(reportRowSchema).min(1).max(PLAN_LIMITS.reportRows) }).strict();
 
+/** BL-175 phase 3 (FO-REQ-0018 §G): the owner's seconds on the attempt before a verdict or a pick, whole, up to a day. */
+export const reviewSecondsSchema = z.number().int().min(0).max(86_400).optional();
+
 /** The owner's own verdict from the Web UI (always at the plan's owner-review stage). */
 export const ownerVerdictInputSchema = z
   .object({
@@ -223,6 +226,7 @@ export const ownerVerdictInputSchema = z
     note: noteSchema.nullable().optional(),
     /** BL-157 (AC-TC-04): true = replace a verdict the attempt already has (the owner confirmed it). */
     replace: z.boolean().optional(),
+    reviewSeconds: reviewSecondsSchema,
     ...verdictFieldsSchema,
   })
   .strict();
@@ -238,6 +242,7 @@ export const peerVerdictInputSchema = z
     note: noteSchema.nullable().optional(),
     /** BL-157 (AC-TC-04): true = replace a verdict the attempt already has (the owner confirmed it). */
     replace: z.boolean().optional(),
+    reviewSeconds: reviewSecondsSchema,
     ...verdictFieldsSchema,
   })
   .strict();
@@ -278,6 +283,7 @@ const pickFields = {
   attemptRef: attemptRefSchema.optional(),
   action: z.enum(PLAN_PICK_ACTIONS),
   note: noteSchema.nullable().optional(),
+  reviewSeconds: reviewSecondsSchema,
 };
 const pickShape = (v: { action: string; attemptRef?: string; note?: string | null }) =>
   v.action === "pick" || v.action === "unpick" ? v.attemptRef !== undefined : v.attemptRef === undefined && (v.action !== "none_fits" || (v.note ?? "").trim().length > 0);
@@ -321,6 +327,7 @@ const recheckAnswerFields = {
   kept: z.literal(true).optional(),
   result: z.enum(["accepted", "rejected"]).optional(),
   note: noteSchema.nullable().optional(),
+  reviewSeconds: reviewSecondsSchema,
   ...verdictFieldsSchema,
 };
 const answerShape = (v: { kept?: true; result?: string; rating?: number | null; reasons?: string[]; markers?: unknown[] }) =>

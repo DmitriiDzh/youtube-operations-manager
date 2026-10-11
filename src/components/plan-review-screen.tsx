@@ -556,6 +556,16 @@ export function draftBack(kept: KeptDrafts, target: DraftOwner): Draft {
   return found.draft;
 }
 
+/**
+ * BL-175 phase 3 (FO-REQ-0018 §G): whether a second on screen counts as the owner's review time -- the tab is visible and the
+ * owner is there: an input within the last 5 minutes, or a clip or track playing. Exported for its test.
+ */
+export const REVIEW_IDLE_MS = 5 * 60_000;
+const secondsField = (reviewSeconds: number | undefined) => (reviewSeconds !== undefined ? { reviewSeconds } : {});
+export function countsReviewTime(state: { visible: boolean; idleMs: number; playing: boolean }): boolean {
+  return state.visible && (state.playing || state.idleMs < REVIEW_IDLE_MS);
+}
+
 /** An attempt's key on the screen: its item and attempt. */
 function entryKey(e: { itemKey: string; attemptRef: string }): string {
   return `${e.itemKey}\u0000${e.attemptRef}`;
@@ -784,6 +794,39 @@ export function PlanReviewScreen({
     setOnB(false);
   }, []);
 
+  // BL-175 phase 3 (§G): the owner's review time per attempt (a re-check apart) -- counted each second the attempt is on screen
+  // and the owner is there (`countsReviewTime`); sent with the decision, then counted again from zero.
+  const reviewMs = useRef(new Map<string, number>());
+  const lastInput = useRef(Date.now());
+  useEffect(() => {
+    const seen = () => {
+      lastInput.current = Date.now();
+    };
+    const kinds = ["keydown", "pointerdown", "pointermove", "wheel"] as const;
+    for (const kind of kinds) window.addEventListener(kind, seen, { passive: true });
+    return () => {
+      for (const kind of kinds) window.removeEventListener(kind, seen);
+    };
+  }, []);
+  const clockKey = entries && entries.length > 0 ? draftKeyOf(entries[Math.min(index, entries.length - 1)]) : null;
+  useEffect(() => {
+    if (!clockKey) return;
+    const timer = setInterval(() => {
+      const playing = [...document.querySelectorAll<HTMLMediaElement>("video, audio")].some((m) => !m.paused);
+      if (countsReviewTime({ visible: document.visibilityState === "visible", idleMs: Date.now() - lastInput.current, playing })) {
+        reviewMs.current.set(clockKey, (reviewMs.current.get(clockKey) ?? 0) + 1000);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [clockKey]);
+  /** The whole seconds counted on these attempts (absent when none was counted), at most a day. */
+  const reviewSecondsOf = useCallback((keys: readonly string[]): number | undefined => {
+    const counted = keys.map((k) => reviewMs.current.get(k)).filter((ms): ms is number => ms !== undefined);
+    return counted.length > 0 ? Math.min(86_400, Math.round(counted.reduce((a, b) => a + b, 0) / 1000)) : undefined;
+  }, []);
+  /** An item's own attempts' keys counted so far (a pick or "none fits" decides the item). */
+  const itemClockKeys = useCallback((itemKey: string) => [...reviewMs.current.keys()].filter((k) => k.startsWith(`${itemKey}\u0000`) && k.endsWith("\u0000")), []);
+
   // BL-175 (review round 1): a picture's draft (pins with notes, chips, rating) waits for the owner when another attempt is opened
   // from the grid or the strip, and comes back with its attempt. Music keeps a fresh draft per track, as before.
   // Review round 2: every move to another attempt keeps and brings back drafts the same way (the arrows, auto-advance, filters,
@@ -829,7 +872,9 @@ export function PlanReviewScreen({
           recheckId: recheck.recheckId,
           ...(answer === "kept" ? { kept: true } : { result: answer, ...(draft.rating !== null ? { rating: draft.rating } : {}), reasons: draft.reasons, markers: marks }),
           ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+          ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
         });
+        reviewMs.current.delete(draftKeyOf(entry));
         setMessage({ tone: "ok", text: t("review.recheck.answered", { item: entry.itemKey }) });
         onChanged?.();
         const list = walkOf(await load(), filter, wave);
@@ -853,7 +898,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [base, busy, draft, draftFor, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
+    [base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
   );
 
   const submit = useCallback(
@@ -901,7 +946,9 @@ export function PlanReviewScreen({
           reasons: draft.reasons,
           markers: marks,
           ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+          ...secondsField(reviewSecondsOf([draftKeyOf(entry)])),
         });
+        reviewMs.current.delete(draftKeyOf(entry));
         setMessage({ tone: "ok", text: t("review.verdictSaved", { item: entry.itemKey, result: resultLabel(t, result) }) });
         visualDrafts.current.delete(draftKeyOf(entry));
         onChanged?.();
@@ -933,7 +980,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [answerRecheck, base, busy, draft, draftFor, entry, filter, index, load, onChanged, skipFresh, stopB, t, wave]
+    [answerRecheck, base, busy, draft, draftFor, entry, filter, index, load, onChanged, reviewSecondsOf, skipFresh, stopB, t, wave]
   );
 
   // BL-157 (AC-TC-01): this computer claims the waiting track on screen (and the wave it took), renewed every minute;
@@ -1049,7 +1096,11 @@ export function PlanReviewScreen({
       if (busy) return false;
       setBusy(true);
       try {
-        await postJson(t, `${base}/pick`, { itemKey: target.itemKey, ...(target.attemptRef && (action === "pick" || action === "unpick") ? { attemptRef: target.attemptRef } : {}), action, ...(note && note.trim() ? { note: note.trim() } : {}) });
+        // A pick or "none fits" decides the item: it carries the seconds spent on the item's attempts since its last decision.
+        const decides = action === "pick" || action === "none_fits";
+        const clock = decides ? itemClockKeys(target.itemKey) : [];
+        await postJson(t, `${base}/pick`, { itemKey: target.itemKey, ...(target.attemptRef && (action === "pick" || action === "unpick") ? { attemptRef: target.attemptRef } : {}), action, ...(note && note.trim() ? { note: note.trim() } : {}), ...secondsField(reviewSecondsOf(clock)) });
+        for (const k of clock) reviewMs.current.delete(k);
         const done = action === "pick" ? "review.pick.done" : action === "unpick" ? "review.pick.withdrawn" : action === "none_fits" ? "review.noneFits.done" : "review.noneFits.cleared";
         setMessage({ tone: "ok", text: t(done, { item: target.itemKey }) });
         onChanged?.();
@@ -1067,7 +1118,7 @@ export function PlanReviewScreen({
         setBusy(false);
       }
     },
-    [base, busy, filter, load, onChanged, t, wave]
+    [base, busy, filter, itemClockKeys, load, onChanged, reviewSecondsOf, t, wave]
   );
   /** S: the entry on screen picked, or its pick withdrawn. */
   const togglePick = useCallback(

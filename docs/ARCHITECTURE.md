@@ -3596,6 +3596,14 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   re-check about a clip opens paused at its earliest marker (`questionStart`). `FeedPreview` («Как в ленте», `FEED_SIZES`) and
   `SeamFrames` live in `visual-review-tools.tsx`; the seam window (`seamJump`) and «×5» (`isWrap`, `playTimes`) are in the video
   player. No server, schema, report or Factory API change.
+- **Phase 3 (§G).** *Gemini outputs in place:* `resolveExchangeFile` (shared `workspace-exchange`) reads `From YTM/<subdir>/
+  <jobId>/<file>` for the caller's allowed folders with `resolveFromYtmJobFile`'s proofs, else a Sent to YTM path; the plans pass
+  `PLAN_JOB_OUTPUT_SUBDIRS = ["gemini"]` (a contract string -- the plans never import the Gemini module). Every plan file route,
+  the revision check and the plan move use it. *Owner review time:* the screen counts seconds per attempt while the tab is
+  visible and the owner is there (`countsReviewTime`: an input within 5 min or media playing) and sends `reviewSeconds` with a
+  verdict, an answer, a pick or "none fits" (a pick sums the item's attempts); stored in `generation_plan_verdict_history`
+  (→ `owner_verdict`), in event details, and from the other computer through `SharedVerdict` / `SharedPickAction` and the peer
+  tables (`review_seconds`, schema v84).
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression
   bombs, a 300-entry memory cache is keyed by path, size and mtime; any failure streams the original. The `…/preview` routes

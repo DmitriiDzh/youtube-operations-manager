@@ -329,3 +329,51 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
 - **AC-V2-11 Music unchanged.** The music screen, its A/B and keys behave as before (existing tests stay green).
 - **AC-V2-12 Live check** on the isolated instance: wipe and difference for two stills and two clips, a reference compare, a
   revision «Было / Исправлено», «Как в ленте», the three loop tools.
+
+## 8. Phase 3 (FO-REQ-0018 §G)
+
+### 8.1 Facts (code read 2026-10-11, branch at 021b356)
+
+- Gemini writes its outputs to the channel's `99 Data Exchange/From YTM/gemini/<jobId>/` (`GeminiJobOutput.path` is relative to
+  `From YTM`); the plans read only `Sent to YTM` (`resolveSentToYtmFile`), so today the Operator copies (DEV-REL-0024).
+  `workspace-exchange` already has `resolveFromYtmJobFile` (plain folders, the real file inside the job's folder).
+- `owner_verdict` events come from the verdict history (`generation_plan_verdict_history`, one row per verdict, with its device);
+  a verdict from the other computer travels as a `SharedVerdict` (`generation_plan_peer_verdicts`); picks travel as
+  `SharedPickAction` (`generation_plan_peer_picks`, v84, unreleased).
+- The Mac's server listens on 127.0.0.1 only and the plan file routes serve this computer only (ADR 0029 §5): a phone cannot
+  reach the review screen today. Asked the owner (Telegram 2552) before building the phone mode.
+
+### 8.2 Design
+
+- **Gemini outputs without copying (§G).** A plan file (`auditionFile` of a row or a revision, a reference `file`) may start with
+  `From YTM/gemini/<jobId>/` -- read where it is, through `resolveExchangeFile` (shared `workspace-exchange`; the plans pass their
+  allowed folder list `PLAN_JOB_OUTPUT_SUBDIRS = ["gemini"]`, a contract string, never an import of the Gemini module). Every
+  other path is relative to `Sent to YTM` as before. The audition, preview, reference and re-check routes (own and other
+  computer's), the revision check and the plan move all use it.
+- **Owner time per verdict (§G).** The screen counts, per attempt (a re-check apart), the seconds it is on screen while the tab is
+  visible and the owner is there: an input (key, pointer, wheel) in the last 5 minutes, or a clip or a track playing. A verdict, a
+  re-check answer, a pick and a "none fits" carry `reviewSeconds` (0..86400, whole seconds; the counter of that attempt starts
+  again after it is sent). Stored with the verdict (`generation_plan_verdict_history.review_seconds`), in the events
+  (`owner_verdict`, `recheck_answered`, `owner_pick`, `owner_none_fits`), and carried from the other computer
+  (`SharedVerdict.reviewSeconds`, `SharedPickAction.reviewSeconds`; peer tables `review_seconds`). Schema v84 (unreleased) gains
+  the three columns; report v5 (unreleased) the two optional fields. Absent = not measured (an older screen, a factory relay).
+- **Phone mode (§G).** Waiting for the owner's choice (layout only / layout and LAN access / later).
+
+### 8.3 Acceptance criteria (fixed before the code; numbers worked out by hand)
+
+- **AC-V3-01 Gemini file in place.** `From YTM/gemini/job_42/image-1.png` (7 bytes) resolves to that file; `a.png` resolves in
+  Sent to YTM (3 bytes); `From YTM/runpod/job_1/out.png`, `..` escapes, a missing file and a symlink out of the job folder are
+  refused.
+- **AC-V3-02 Gemini file in a plan.** A row with `auditionFile: "From YTM/gemini/<job>/image-1.png"` is an image entry and plays
+  through the audition route; a revision naming a Gemini file passes the file check; one naming a missing Gemini file is refused
+  (`file_missing`).
+- **AC-V3-03 Verdict time.** A verdict sent with `reviewSeconds: 42` gives `owner_verdict { …, reviewSeconds: 42 }`; one without
+  gives no field; `-1`, `86401` and `1.5` are refused (`validation_failed`).
+- **AC-V3-04 From the other computer.** A verdict given on Windows with 30 s arrives on the Mac as `owner_verdict { device: "WIN",
+  reviewSeconds: 30 }`; a pick given there with 8 s as `owner_pick { device: "WIN", reviewSeconds: 8 }`.
+- **AC-V3-05 Picks and answers.** A pick with 12 s gives `owner_pick { …, reviewSeconds: 12 }`; "none fits" with 20 s gives
+  `owner_none_fits { …, reviewSeconds: 20 }`; a re-check answer with 15 s gives `recheck_answered { …, reviewSeconds: 15 }` and
+  its `owner_verdict` the same.
+- **AC-V3-06 What counts as review time.** Visible and an input 10 s ago: counts; visible, no input for 6 min, nothing playing:
+  does not; the same with a clip or track playing: counts; hidden: never.
+- **AC-V3-07 Live check:** a Gemini-folder picture reviewed on the isolated instance; a verdict's seconds in `factory_plan_get`.

@@ -522,6 +522,8 @@ export function planEvents(jobs: PlanJobRow[], sessions: PlanSessionRow[], resul
             ...(h.note ? { note: h.note } : {}),
             ...(overrides(asRow) ? { overridesValidator: true } : {}),
             ...(h.recheckId ? { recheckId: h.recheckId } : {}),
+            // BL-175 phase 3 (FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict.
+            ...(h.reviewSeconds !== undefined ? { reviewSeconds: h.reviewSeconds } : {}),
           },
         });
       }

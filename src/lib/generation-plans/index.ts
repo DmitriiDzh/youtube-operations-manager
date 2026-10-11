@@ -3,12 +3,13 @@ import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
-import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
+import { createExchangeFs, resolveExchangeFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
+import { PLAN_JOB_OUTPUT_SUBDIRS } from "./contracts";
 import { createGenerationPlanServices } from "./services";
 
 // BL-143 (ADR 0029): the generation plans core. Stateless apart from the database, so a new instance per call is fine.
@@ -43,7 +44,7 @@ export function createGenerationPlansCore() {
         return workspace.configured ? workspace.path : null;
       },
       sentFileExists: (workspace, relativePath) =>
-        resolveSentToYtmFile({ workspace, relativePath, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }).then(
+        resolveExchangeFile({ workspace, relativePath, jobSubdirs: PLAN_JOB_OUTPUT_SUBDIRS, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }).then(
           () => true,
           () => false
         ),

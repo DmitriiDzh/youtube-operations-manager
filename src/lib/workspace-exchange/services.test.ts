@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { isPathInsideOrEqual } from "@/lib/local-path-validation";
 import { createExchangeFs } from "./adapters/fs";
-import { resolveFromYtmDir, resolveFromYtmJobFile, resolveSentToYtmFile } from "./services";
+import { jobOutputPathOf, resolveExchangeFile, resolveFromYtmDir, resolveFromYtmJobFile, resolveSentToYtmFile } from "./services";
 
 // Behaviour fixed by ADR 0019 (amendment 2026-10-04): the folder is exactly <workspace>/99 Data Exchange/From YTM,
 // created when missing, refused when a symlink or a file sits at any of the three paths; nothing else is touched.
@@ -153,3 +153,32 @@ test("BL-143 resolveFromYtmJobFile: only a regular file inside From YTM/<subdir>
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+// BL-175 phase 3 (FO-REQ-0018 §G, VISUAL_REVIEW_PLAN.md §8): a plan reviews a Gemini job's output where it is.
+test("BL-175 §G: a plan file under From YTM/gemini/<jobId>/ is read in place; Sent to YTM paths as before; other From YTM folders, escapes and symlinks are refused", () =>
+  withWorkspace(async (ws) => {
+    const from = path.join(ws, "99 Data Exchange", "From YTM");
+    const sent = path.join(ws, "99 Data Exchange", "Sent to YTM");
+    await mkdir(path.join(from, "gemini", "job_42"), { recursive: true });
+    await mkdir(path.join(from, "runpod", "job_1"), { recursive: true });
+    await mkdir(sent, { recursive: true });
+    await writeFile(path.join(from, "gemini", "job_42", "image-1.png"), "1234567");
+    await writeFile(path.join(from, "runpod", "job_1", "out.png"), "12");
+    await writeFile(path.join(sent, "a.png"), "123");
+    const resolve = (relativePath: string) => resolveExchangeFile({ ...args(ws), relativePath, jobSubdirs: ["gemini"] });
+    const gemini = await resolve("From YTM/gemini/job_42/image-1.png");
+    assert.equal(gemini.path, await realpath(path.join(from, "gemini", "job_42", "image-1.png")));
+    assert.equal(gemini.bytes, 7);
+    assert.equal((await resolve("a.png")).bytes, 3);
+    // Not an allowed folder: read as a Sent to YTM path, where it is not.
+    await assert.rejects(resolve("From YTM/runpod/job_1/out.png"), /unavailable/);
+    await assert.rejects(resolve("From YTM/gemini/job_42/../../runpod/job_1/out.png"), /unavailable/);
+    await assert.rejects(resolve("From YTM/gemini/../x.png"), /unavailable/);
+    await assert.rejects(resolve("From YTM/gemini/job_42/missing.png"), /unavailable/);
+    // A symlink in the job folder pointing out of it.
+    await symlink(path.join(sent, "a.png"), path.join(from, "gemini", "job_42", "link.png"));
+    await assert.rejects(resolve("From YTM/gemini/job_42/link.png"), /unavailable/);
+    assert.deepEqual(jobOutputPathOf("From YTM/gemini/job_42/sub/v.mp4", ["gemini"]), { subdir: "gemini", jobId: "job_42", rest: ["sub", "v.mp4"] });
+    assert.equal(jobOutputPathOf("From YTM/gemini/job_42", ["gemini"]), null);
+    assert.equal(jobOutputPathOf("gemini/job_42/a.png", ["gemini"]), null);
+  }));

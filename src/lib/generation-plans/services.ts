@@ -618,6 +618,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   }
 
   const keyOf = (itemKey: string, attemptRef: string) => `${itemKey}\u0000${attemptRef}`;
+  /** BL-175 phase 3 (§G): the owner's seconds on the attempt, as a field to spread (absent = not measured). */
+  const secondsOf = (reviewSeconds: number | undefined) => (reviewSeconds !== undefined ? { reviewSeconds } : {});
   async function ownDeviceId(): Promise<string> {
     return deps.peers ? deps.peers.ownDeviceId() : "this-device";
   }
@@ -863,6 +865,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
 
   // -- BL-175 (FO-REQ-0018 §B, VISUAL_REVIEW_PLAN.md §2.2): picks ----------------------------------------------------------
 
+  /** BL-175 phase 3 (§G): the owner's seconds go on the decision a pick action made (a pick, a "none fits"), not on what it moved. */
+  function withSeconds(events: PickEvent[], reviewSeconds: number | undefined): PickEvent[] {
+    if (reviewSeconds === undefined) return events;
+    return events.map((e) => (e.kind === "owner_pick" || (e.kind === "owner_none_fits" && e.details.cleared !== true) ? { ...e, details: { ...e.details, reviewSeconds } } : e));
+  }
+
   /** Stores what a pick action wrote and records its events; returns the plan's records after it. */
   async function takePicks(row: StoredPlan, records: readonly PlanPickRecord[], writes: PlanPickRecord[], events: PickEvent[], extra: Record<string, unknown> = {}): Promise<PlanPickRecord[]> {
     if (writes.length === 0) return [...records];
@@ -1045,7 +1053,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, { ...ctx, queueRefs });
       const base = { pickId: action.pickId, fromDevice: from, itemKey: action.itemKey, ...(action.attemptRef ? { attemptRef: action.attemptRef } : {}), action: action.action };
       if (outcome.outcome === "applied") {
-        records = await takePicks(row, records, outcome.writes, outcome.events);
+        records = await takePicks(row, records, outcome.writes, withSeconds(outcome.events, action.reviewSeconds));
         await record(row.id, "peer_pick", "owner", base);
         a++;
       } else {
@@ -1146,7 +1154,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     history: PlanVerdictHistoryRow[],
     stored: PlanResultRow | undefined,
     /** Review round 2: a later re-check of the same attempt exists (not withdrawn) -- this late answer is history only. */
-    superseded = false
+    superseded = false,
+    /** BL-175 phase 3 (§G): the owner's seconds on the re-check before this answer. */
+    reviewSeconds?: number
   ): Promise<{ answer: PlanRecheckAnswer; rowChanged: PlanResultRow | null; closed: boolean }> {
     await seedHistory(row.id, history, stored);
     const storedResult = stored ? (stored.result === "accepted" || stored.result === "done" ? "accepted" : "rejected") : null;
@@ -1169,6 +1179,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       at: answer.at,
       recheckId: recheck.recheckId,
       ...(answer.kept ? { kept: true } : {}),
+      ...secondsOf(reviewSeconds),
     };
     await deps.store.insertVerdictHistory(row.id, kept);
     history.push(kept);
@@ -1193,6 +1204,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           result: answer.result,
           device: answer.device,
           ...(answer.kept && answer.note ? { note: answer.note } : {}),
+          ...secondsOf(reviewSeconds),
         });
       }
     }
@@ -1609,6 +1621,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         note: result.note,
         device: label,
         at: result.at,
+        ...secondsOf(parsed.reviewSeconds),
       };
       await deps.store.insertVerdictHistory(row.id, given);
       history.push(given);
@@ -1679,7 +1692,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         }
         let after = records;
         if (outcome.outcome === "applied") {
-          after = await takePicks(row, records, outcome.writes, outcome.events);
+          after = await takePicks(row, records, outcome.writes, withSeconds(outcome.events, parsed.reviewSeconds));
           await recordGroupsReviewed(row, reviewEntries(row, jobs, results, records), reviewEntries(row, jobs, results, after), after);
           if (parsed.action === "pick" && parsed.attemptRef) await endTrackClaim(await ownDeviceId(), row.id, parsed.itemKey, parsed.attemptRef);
         }
@@ -1821,7 +1834,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           device: await ownLabel(),
           at: now().toISOString(),
         };
-        const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, note, history, stored);
+        const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, note, history, stored, false, parsed.reviewSeconds);
         // BL-175 (§2.2): a rejection never leaves the attempt picked.
         const picks = taken.rowChanged?.result === "rejected" ? await withdrawPickOf(row, picksBefore, recheck.itemKey, recheck.attemptRef, taken.answer.at, given.device) : picksBefore;
         // Review round 1: a re-check opened on a verdict still on its way from another device -- this answer wrote the attempt's
@@ -2192,6 +2205,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         markers: (parsed.markers ?? []).map(normalizeMarker),
         note: parsed.note ?? null,
         at: now().toISOString(),
+        ...secondsOf(parsed.reviewSeconds),
       };
       await deps.store.insertPeerVerdict(verdict);
       await serializedPerPlan(parsed.planId, () => endTrackClaim(parsed.deviceId, parsed.planId, parsed.itemKey, parsed.attemptRef));
@@ -2265,6 +2279,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         at: now().toISOString(),
         recheckId: recheck.recheckId,
         ...(kept ? { kept: true } : {}),
+        ...secondsOf(parsed.reviewSeconds),
       };
       await deps.store.insertPeerVerdict(given);
       return given;
@@ -2356,6 +2371,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         at: now().toISOString(),
         // A "none fits" covers what the owner saw here (review round 1): the item's attempts in that device's report.
         ...(parsed.action === "none_fits" ? { covered: plan.review.filter((e) => e.itemKey === parsed.itemKey).map((e) => e.attemptRef).slice(0, 500) } : {}),
+        ...secondsOf(parsed.reviewSeconds),
       };
       await deps.store.insertPeerPick(action);
       if (parsed.action === "pick" && parsed.attemptRef) {
@@ -2539,7 +2555,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               // Review round 2: an answer to an older re-check that a later one of the same attempt replaced (a stale report on
               // the other computer) never takes the row back from the later re-check's answer.
               const superseded = rechecks.some((r) => r.recheckId !== recheck.recheckId && r.itemKey === recheck.itemKey && r.attemptRef === recheck.attemptRef && r.status !== "withdrawn" && Date.parse(r.openedAt) > Date.parse(recheck.openedAt));
-              const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, rowNote, history, stored, superseded);
+              const taken = await takeRecheckAnswer(row, review.stageId, recheck, given, rowNote, history, stored, superseded, verdict.reviewSeconds);
               if (taken.closed) recheck.status = "answered";
               if (taken.rowChanged) current.set(key, taken.rowChanged);
               // BL-175 (§2.2): a rejection never leaves the attempt picked.
@@ -2573,6 +2589,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
                 note: verdict.note,
                 device: from,
                 at: verdict.at,
+                ...secondsOf(verdict.reviewSeconds),
               };
               await deps.store.insertVerdictHistory(row.id, keptRow);
               history.push(keptRow);
@@ -2610,6 +2627,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
               note: verdict.note,
               device: from,
               at: verdict.at,
+              ...secondsOf(verdict.reviewSeconds),
             };
             await deps.store.insertVerdictHistory(row.id, appliedRow);
             history.push(appliedRow);

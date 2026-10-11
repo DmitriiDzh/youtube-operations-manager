@@ -210,6 +210,7 @@ export function createPlanStore(): PlanStore {
         at: v.at,
         recheckId: v.recheckId ?? null,
         kept: v.kept ? 1 : null,
+        reviewSeconds: v.reviewSeconds ?? null,
       }),
     listPeerVerdicts: async (sinceIso) =>
       (await listGenerationPlanPeerVerdicts(sinceIso)).map((r) => ({
@@ -226,6 +227,7 @@ export function createPlanStore(): PlanStore {
         at: r.at,
         ...(r.recheckId ? { recheckId: r.recheckId } : {}),
         ...(r.kept ? { kept: true } : {}),
+        ...(r.reviewSeconds !== null && r.reviewSeconds !== undefined ? { reviewSeconds: r.reviewSeconds } : {}),
       })),
     // BL-175 (VISUAL_REVIEW_PLAN.md §2.2/§2.6): picks on this device's plans, and pick actions given here on other devices' plans.
     listPicks: async (planId) => (await listGenerationPlanPicks(planId)).map(pickFromDb),
@@ -244,7 +246,7 @@ export function createPlanStore(): PlanStore {
         }))
       ),
     insertPeerPick: (a) =>
-      insertGenerationPlanPeerPick({ pickId: a.pickId, planId: a.planId, ownerDeviceId: a.ownerDeviceId, itemKey: a.itemKey, attemptRef: a.attemptRef, action: a.action, note: a.note, at: a.at, coveredJson: a.covered ? JSON.stringify(a.covered) : null }),
+      insertGenerationPlanPeerPick({ pickId: a.pickId, planId: a.planId, ownerDeviceId: a.ownerDeviceId, itemKey: a.itemKey, attemptRef: a.attemptRef, action: a.action, note: a.note, at: a.at, coveredJson: a.covered ? JSON.stringify(a.covered) : null, reviewSeconds: a.reviewSeconds ?? null }),
     listPeerPicks: async (sinceIso) =>
       (await listGenerationPlanPeerPicks(sinceIso)).map((r) => ({
         pickId: r.pickId,
@@ -256,6 +258,7 @@ export function createPlanStore(): PlanStore {
         note: r.note ?? null,
         at: r.at,
         ...(r.coveredJson ? { covered: parseJson<string[]>(r.coveredJson, []) } : {}),
+        ...(r.reviewSeconds !== null && r.reviewSeconds !== undefined ? { reviewSeconds: r.reviewSeconds } : {}),
       })),
     insertPeerGroupNote: (n) => insertGenerationPlanPeerGroupNote({ noteId: n.noteId, planId: n.planId, ownerDeviceId: n.ownerDeviceId, groupId: n.groupId, note: n.note, at: n.at }),
     listPeerGroupNotes: async (sinceIso) => (await listGenerationPlanPeerGroupNotes(sinceIso)).map((r) => ({ noteId: r.noteId, planId: r.planId, ownerDeviceId: r.ownerDeviceId, groupId: r.groupId, note: r.note ?? null, at: r.at })),
@@ -275,6 +278,7 @@ export function createPlanStore(): PlanStore {
         recordedAt: new Date(),
         recheckId: h.recheckId ?? null,
         kept: h.kept ? 1 : null,
+        reviewSeconds: h.reviewSeconds ?? null,
       }),
     listVerdictHistory: async (planId) =>
       (await listGenerationPlanVerdictHistory(planId)).map((h) => ({
@@ -289,6 +293,7 @@ export function createPlanStore(): PlanStore {
         at: h.at,
         ...(h.recheckId ? { recheckId: h.recheckId } : {}),
         ...(h.kept ? { kept: true } : {}),
+        ...(h.reviewSeconds !== null && h.reviewSeconds !== undefined ? { reviewSeconds: h.reviewSeconds } : {}),
       })),
     // BL-173: the plan's re-checks.
     insertRecheck: (planId, r) =>

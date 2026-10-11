@@ -375,3 +375,11 @@ test("AC-V2: compare of two pictures as a wipe shows one viewer with the line an
   const side = renderToStaticMarkup(createElement(VisualReviewLayer, { ...layerProps("compare", [layerEntry(1, "image"), layerEntry(2, "video")]) }));
   assert.doesNotMatch(side, />Wipe</, "a picture and a clip compare side by side only");
 });
+
+test("AC-V3-06: a second counts as review time when the tab is visible and the owner is there -- an input within 5 min, or something playing", async () => {
+  const { countsReviewTime } = await import("./plan-review-screen");
+  assert.equal(countsReviewTime({ visible: true, idleMs: 10_000, playing: false }), true);
+  assert.equal(countsReviewTime({ visible: true, idleMs: 6 * 60_000, playing: false }), false);
+  assert.equal(countsReviewTime({ visible: true, idleMs: 6 * 60_000, playing: true }), true);
+  assert.equal(countsReviewTime({ visible: false, idleMs: 0, playing: true }), false);
+});

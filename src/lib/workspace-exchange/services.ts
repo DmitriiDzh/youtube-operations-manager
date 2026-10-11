@@ -109,3 +109,27 @@ export async function resolveFromYtmJobFile(
   if (!info || !info.isFile) throw args.unavailable("not a regular file");
   return { path: realFile, bytes: info.size };
 }
+
+/**
+ * BL-175 phase 3 (FO-REQ-0018 §G): a file a plan names -- relative to `99 Data Exchange/Sent to YTM/` as before
+ * (`resolveSentToYtmFile`), or, when it starts with `From YTM/<subdir>/<jobId>/` for one of `jobSubdirs` (the caller's: e.g.
+ * Gemini's `gemini`), a job's own output read where it is, with the same proofs as `resolveFromYtmJobFile` (plain folders, the
+ * real file inside the job's folder). Nothing is copied.
+ */
+export async function resolveExchangeFile(
+  args: Omit<ResolveFromYtmDirArgs, "fs"> & { fs: ExchangeReadFs; relativePath: string; jobSubdirs: readonly string[] }
+): Promise<{ path: string; bytes: number; identity?: { dev: number; ino: number } }> {
+  const job = jobOutputPathOf(args.relativePath, args.jobSubdirs);
+  if (!job) return resolveSentToYtmFile(args);
+  const filePath = path.join(args.workspace, DATA_EXCHANGE_DIR_NAME, FROM_YTM_DIR_NAME, job.subdir, job.jobId, ...job.rest);
+  return resolveFromYtmJobFile({ ...args, subdir: job.subdir, jobId: job.jobId, filePath });
+}
+
+/** `From YTM/<subdir>/<jobId>/<file…>` with an allowed subdir and a sound path (no empty, `.` or `..` segment); null otherwise. */
+export function jobOutputPathOf(relative: string, jobSubdirs: readonly string[]): { subdir: string; jobId: string; rest: string[] } | null {
+  if (relative.includes("\\")) return null;
+  const [root, subdir, jobId, ...rest] = relative.split("/");
+  if (root !== FROM_YTM_DIR_NAME || !subdir || !jobSubdirs.includes(subdir) || !jobId || rest.length === 0) return null;
+  if (rest.some((s) => s === "" || s === "." || s === "..")) return null;
+  return { subdir, jobId, rest };
+}
