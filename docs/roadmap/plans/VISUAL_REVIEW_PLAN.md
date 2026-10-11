@@ -1,7 +1,8 @@
-# Review of generated images and video, phase 1 (BL-175, FO-REQ-0018 §A–§D)
+# Review of generated images and video (BL-175, FO-REQ-0018 §A–§G)
 
-Status: BUILT, waiting for the owner's merge decision (branch `feature/visual-review`). Owner's go: Telegram 2026-10-11 msg 2538 («Ок» to "Берём фазу 1 в работу
-(BL-175)?"). Reply to the Operator: DEV-RESP-0021. Phase 2 (§E–§F) and phase 3 (§G) are not part of this plan.
+Status: phase 1 BUILT and reviewed (four rounds); phases 2 and 3 in progress on the same branch (`feature/visual-review`), one
+merge at the end. Owner's go: phase 1 — Telegram 2026-10-11 msg 2538; phases 2 and 3 — msg 2549 («Давай сделаем все 3 и уже
+только потом мерджить будем»). Reply to the Operator: DEV-RESP-0021. Sections 1–6: phase 1; §7: phase 2; §8: phase 3.
 
 ## 1. Facts (code read 2026-10-11, `dev` 9a7720a; the Mac's database read-only)
 
@@ -256,7 +257,75 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
   throwaway secret). Pictures in the owner's Chrome; clips in a separate headless Chrome (the Mac's display was off, and Chrome
   does not load media in a hidden tab). Not checked live: two computers -- that needs the Windows update.
 
-## 6. Not in this phase
+## 6. Not in phase 1
 
 Wipe slider, difference, image/video references in A/B, visual re-check compare, seam view (phase 2); Gemini outputs without
 copying, owner time per verdict, phone mode (phase 3); relaying a pick through `factory_plan_report`; N-up survey.
+
+## 7. Phase 2 (FO-REQ-0018 §E–§F)
+
+### 7.1 Facts (code read 2026-10-11, branch at 959b594)
+
+- `references[]` and row `referenceIds` already accept any file path; the reference routes (own and peer) already serve
+  png/jpg/webp/mp4/webm (`AUDITION_CONTENT_TYPES`). The screen offers every reference to the music A/B; visual entries get none.
+- A revision re-check plays its file from `…/recheck-audition`; the attempt's current file (an earlier accepted revision, else the
+  original) plays from `…/audition` — the music A/B already uses it as «Было».
+- The layer compares two attempts of the walk (`compareKey`); it is closed for re-checks (review round 2).
+- `metrics` takes any key: the Operator can send `metrics.loop: true` and `metrics.fps` today (DEV-RESP-0021 §3 Q5).
+- No server, schema, report or Factory API change is needed for phase 2: it is all on the screen.
+
+### 7.2 Design
+
+- **Compare views** (§E): in compare, «Рядом · Шторка · Разница» when both sides are the same kind (two pictures or two clips).
+  - *Шторка:* one viewer, the second side drawn in the same frame and the same view (zoom, pan; for clips the same moment), cut
+    at a vertical line the owner drags; the left part shows the first side, the right part the second, each labelled.
+  - *Разница:* the second side over the first with the `difference` blend: what is the same turns black.
+  - The second side is drawn in the first side's rectangle; when their proportions differ by more than 1 % the view says so.
+  - Clips: one set of controls (play, timeline, frames, speed, loop range); the second clip follows the first (moment, play,
+    pause, speed) and is corrected when it drifts by more than half a frame.
+- **What the second side can be:** another attempt (as in phase 1), a plan reference, or — for a revision re-check — «Было».
+  - *References* (§E): a picture or a clip of `references[]` (a cast sheet, a style plate, a base frame). For a picture or clip
+    on screen the screen offers the plan's picture and clip references (this attempt's `referenceIds` first, marked «близкий»)
+    and «Сравнить» opens compare against the chosen one. The music A/B offers only audio references (unchanged for music plans:
+    their references are audio).
+  - *«Было / Исправлено»* (§E): a revision re-check of a picture or clip gets «Было / Исправлено», which opens compare: the
+    attempt's current file («Было», as the music A/B) and the revised file («Исправлено»); Шторка first. Only compare opens on a
+    re-check (no grid, no loupe, no picks); moving to another re-check shows its own pair, or closes compare when it is no
+    revision of a picture or clip.
+  - A reference or «Было» is not an attempt: no pick button, no status; its caption names it.
+- **Question re-check** (§E): a question about a clip opens paused at its first marker, so its pin shows (a picture already
+  shows its pins).
+- **«Как в ленте»** (§E): for a picture, a toggle under the viewer shows it at feed sizes, 16:9 with rounded corners and a
+  duration badge, on YouTube's dark (#0f0f0f) and light (#ffffff) backgrounds: 360 px (home, search), 246 px (narrow grid),
+  168 px («Далее» column), 120 px (notifications, playlists).
+- **Loop clips** (§F): a clip whose rows say `metrics.loop` is true (on any stage row: `true` or `"true"`) gets a «Петля» row:
+  - *Стык ±1 с:* the player plays the last second straight into the first, on repeat (the browser's own loop makes the join;
+    the player jumps from the end of the first second back to one second before the end). At 1× and 0.5× (the speed buttons).
+    The window is min(1 s, a quarter of the clip).
+  - *Подряд ×5:* the whole clip five times without a gap, a counter «2 / 5», then it stops.
+  - *Кадры стыка:* the last and the first frame side by side, with «Разница» (the same blend). The last frame is at
+    duration − 1/fps (the row's fps, else the measured one, else 1/30 s).
+  - The Operator's seam and drift numbers stay ordinary `checks` with `atSeconds` (shown as today).
+
+### 7.3 Acceptance criteria (fixed before the code; numbers worked out by hand)
+
+- **AC-V2-01 References by kind.** References `img.png`, `clip.mp4`, `ref.mp3`; an image entry is offered `img.png` and
+  `clip.mp4` (its `referenceIds` first, marked nearest); an audio entry is offered only `ref.mp3`; a revision gets none.
+- **AC-V2-02 Wipe geometry.** A split of 0.25 cuts the second side at a quarter of the frame (`inset(0 0 0 25%)`); a drag past
+  either edge clamps to 0 and 1; a split of 0.5 at a frame 800 px wide puts the line at 400 px.
+- **AC-V2-03 Same proportions.** 1600×900 and 1920×1080: same (both 16:9); 1600×900 and 1080×1920: differ; 1000×1000 and
+  1005×1000: same (within 1 %).
+- **AC-V2-04 «Было / Исправлено».** A revision re-check of a picture: «Было» is `…/audition?itemKey=&attemptRef=`, «Исправлено»
+  is `…/recheck-audition?recheckId=`; a question re-check and a music revision get no pair.
+- **AC-V2-05 Question opens at its marker.** A question with markers at 2.5 s and 1.0 s opens the clip at 1.0 s, paused; with no
+  marker at 0 s, playing (as any clip).
+- **AC-V2-06 Feed sizes.** 360×202.5→202, 246×138, 168×94.5→94, 120×67.5→67 (16:9, rounded down), in that order.
+- **AC-V2-07 Loop flag.** `metrics.loop` `true` or `"true"` on any stage row → loop; `false`, `"yes"`, absent → not.
+- **AC-V2-08 Seam window.** A 4 s clip: window 1 s; at 0.5 s and 3.5 s nothing; at 1.2 s jump to 3.0 s. A 2 s clip: window 0.5 s,
+  at 0.7 s jump to 1.5 s. A 0 s clip: no window.
+- **AC-V2-09 Five times.** Times 0.1, 3.9, 0.1 (a wrap), 3.8, 0.2 (a wrap) count 2 passes started after the first; the fifth
+  wrap stops; a seek back by the owner (3.0 → 1.0) is no wrap (a wrap needs a fall of more than half the clip).
+- **AC-V2-10 Last frame.** 4 s at 16 fps → 3.9375 s; at no fps → 4 − 1/30 = 3.9667 s; never below 0.
+- **AC-V2-11 Music unchanged.** The music screen, its A/B and keys behave as before (existing tests stay green).
+- **AC-V2-12 Live check** on the isolated instance: wipe and difference for two stills and two clips, a reference compare, a
+  revision «Было / Исправлено», «Как в ленте», the three loop tools.

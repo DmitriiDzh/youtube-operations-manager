@@ -4,7 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { formatPlayerTime } from "./media-review-player";
 import { useUiText } from "./ui-text-provider";
-import { fitView, frameAt, measuredFps, regionFromDrag, regionToScreen, stepFrame, type ImageBox } from "./visual-review-model";
+import { fitView, frameAt, isWrap, measuredFps, regionFromDrag, regionToScreen, sameProportions, seamJump, seamWindowOf, splitAt, stepFrame, wipeClip, type ImageBox } from "./visual-review-model";
 
 // BL-175 (FO-REQ-0018 §A/§C, VISUAL_REVIEW_PLAN.md §2.9): one clip of a review -- looped and muted by default, speed 0.25-2, one
 // frame back and forward (the row's fps, else measured while it plays, else 1/30 s), a timeline that scrubs under the mouse while
@@ -34,7 +34,12 @@ export type VideoPlayerHandle = {
   /** A linked player follows: moves to `seconds` without telling anyone, then plays or pauses as asked (or keeps its state). */
   seekTo(seconds: number, mode?: "keep" | "play" | "pause"): void;
   isPlaying(): boolean;
+  /** Phase 2 (§F): the whole clip `times` times without a gap from the start, then it stops. */
+  playTimes(times: number): void;
 };
+
+/** BL-175 phase 2 (§E): a second clip drawn in this player's frame, following its moment, play and speed (wipe or difference). */
+export type VideoOverlay = { src: string; mode: "wipe" | "difference"; split: number; onSplit: (split: number) => void; labels: { first: string; second: string } };
 
 const RATES = [0.25, 0.5, 1, 2] as const;
 const TONE_COLORS = { finding: "bg-red-500/40", mark: "bg-amber-400/50", question: "bg-sky-400/45" } as const;
@@ -60,6 +65,12 @@ export const MediaVideoPlayer = forwardRef<
     onPlayingChange?: (playing: boolean) => void;
     /** Starts playing once loaded (the default, §A); off when a linked pair starts together (`onReady`). */
     autoPlay?: boolean;
+    /** Phase 2 (§E): opens paused at this moment (a question's marker) instead of playing. */
+    initialTime?: number | null;
+    /** Phase 2 (§F): plays the seam -- the last `seam` seconds straight into the first, on repeat (null = off). */
+    seam?: boolean;
+    /** Phase 2 (§E): a second clip in the same frame. */
+    overlay?: VideoOverlay;
     /** The clip's metadata is loaded (it can be sought and played). */
     onReady?: () => void;
     className?: string;
@@ -67,7 +78,7 @@ export const MediaVideoPlayer = forwardRef<
     startMuted?: boolean;
     compact?: boolean;
   }
->(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, className = "h-[48vh]", startMuted = true, compact = false }, ref) {
+>(function MediaVideoPlayer({ src, markers, fps: reportedFps, onAddPin, onPlayStart, onUserSeek, onUserPlay, onPlayingChange, autoPlay = true, onReady, initialTime = null, seam = false, overlay, className = "h-[48vh]", startMuted = true, compact = false }, ref) {
   const { t } = useUiText();
   const video = useRef<HTMLVideoElement | null>(null);
   const frameBox = useRef<HTMLDivElement | null>(null);
@@ -88,8 +99,18 @@ export const MediaVideoPlayer = forwardRef<
   // Review round 1: where a hover-scrub started -- the frame comes back when the mouse leaves without a click.
   const scrubFrom = useRef<number | null>(null);
   const pinDrag = useRef<{ x: number; y: number } | null>(null);
+  // Phase 2: the second clip (wipe / difference), "×5" (passes left and the last moment seen), the wipe line being dragged.
+  const second = useRef<HTMLVideoElement | null>(null);
+  const runs = useRef<{ left: number; total: number; last: number } | null>(null);
+  const [runShown, setRunShown] = useState<{ pass: number; total: number } | null>(null);
+  const [secondBox, setSecondBox] = useState<{ src: string; box: ImageBox } | null>(null);
+  const splitDrag = useRef(false);
   const [pinDraft, setPinDraft] = useState<{ start: { x: number; y: number }; end: { x: number; y: number } } | null>(null);
   const fps = reportedFps ?? measured;
+  const fpsRef = useRef<number | null>(fps);
+  useEffect(() => {
+    fpsRef.current = fps;
+  }, [fps]);
 
   useEffect(() => {
     const el = frameBox.current;
@@ -109,13 +130,37 @@ export const MediaVideoPlayer = forwardRef<
       const v = video.current;
       if (v) {
         if (range && (v.currentTime >= range.end || v.currentTime < range.start - 0.05)) v.currentTime = range.start;
+        // §F: the seam window -- past the first second, back to a second before the end (the browser's loop makes the join).
+        const window = seam && !runs.current ? seamWindowOf(v.duration) : null;
+        const jump = window !== null ? seamJump(v.currentTime, v.duration, window) : null;
+        if (jump !== null) v.currentTime = jump;
+        // §F: "×5" -- count the wraps; the last one stops the clip at its start.
+        const r = runs.current;
+        if (r) {
+          if (isWrap(r.last, v.currentTime, v.duration)) {
+            r.left -= 1;
+            if (r.left <= 0) {
+              runs.current = null;
+              setRunShown(null);
+              v.pause();
+              v.currentTime = 0;
+            } else setRunShown({ pass: r.total - r.left + 1, total: r.total });
+          }
+          if (runs.current) runs.current.last = v.currentTime;
+        }
+        // §E: the second clip follows -- corrected when it drifts by more than half a frame.
+        const o = second.current;
+        if (o) {
+          if (Math.abs(o.currentTime - v.currentTime) > 0.5 / (fpsRef.current ?? 30)) o.currentTime = v.currentTime;
+          if (o.paused) void o.play().catch(() => undefined);
+        }
         setTime(v.currentTime);
       }
       handle = requestAnimationFrame(tick);
     };
     handle = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(handle);
-  }, [playing, range]);
+  }, [playing, range, seam]);
 
   // The frame rate when the row gives none: the presented frames' media times while it plays.
   useEffect(() => {
@@ -138,7 +183,15 @@ export const MediaVideoPlayer = forwardRef<
 
   useEffect(() => {
     if (video.current) video.current.playbackRate = rate;
+    if (second.current) second.current.playbackRate = rate;
   }, [rate]);
+  // §E: paused, the second clip shows the same frame (a step, a seek); playing, the tick keeps it there.
+  useEffect(() => {
+    const o = second.current;
+    if (!o || playing) return;
+    o.pause();
+    o.currentTime = time;
+  }, [playing, time, overlay?.src]);
   useEffect(() => {
     if (video.current) video.current.muted = muted;
   }, [muted]);
@@ -211,6 +264,15 @@ export const MediaVideoPlayer = forwardRef<
       else if (mode === "play" && v.paused) play();
     },
     isPlaying: () => Boolean(video.current && !video.current.paused),
+    playTimes(times) {
+      const v = video.current;
+      if (!v || !(times > 0)) return;
+      runs.current = { left: times, total: times, last: 0 };
+      setRunShown({ pass: 1, total: times });
+      setRange(null);
+      seek(0);
+      play();
+    },
   }));
 
   const timeAt = (clientX: number) => {
@@ -310,16 +372,28 @@ export const MediaVideoPlayer = forwardRef<
               setDuration(event.currentTarget.duration);
               setBox({ naturalWidth: event.currentTarget.videoWidth, naturalHeight: event.currentTarget.videoHeight });
               event.currentTarget.playbackRate = rate;
+              // Phase 2 (§E): a question about a spot opens paused there, so its pin shows.
+              if (initialTime !== null && initialTime > 0) {
+                event.currentTarget.currentTime = Math.min(initialTime, event.currentTarget.duration || initialTime);
+                setTime(event.currentTarget.currentTime);
+              } else if (autoPlay) void event.currentTarget.play().catch(() => undefined);
               // §A: plays looped and muted by default.
-              if (autoPlay) void event.currentTarget.play().catch(() => undefined);
               onReady?.();
             }}
             onPlay={() => setPlaying(true)}
             onPause={(event) => {
               setPlaying(false);
               setTime(event.currentTarget.currentTime);
+              // A pause by the owner ends "×5" (its own last stop has ended it already).
+              if (runs.current) {
+                runs.current = null;
+                setRunShown(null);
+              }
             }}
-            onSeeked={(event) => setTime(event.currentTarget.currentTime)}
+            onSeeked={(event) => {
+              setTime(event.currentTarget.currentTime);
+              if (second.current) second.current.currentTime = event.currentTarget.currentTime;
+            }}
             onError={() => {
               setFailed(true);
               // A clip that cannot load never holds a linked one back (review round 3).
@@ -327,6 +401,60 @@ export const MediaVideoPlayer = forwardRef<
             }}
           />
         )}
+        {overlay && !failed ? (
+          <div className="pointer-events-none absolute inset-0 [isolation:isolate]" style={overlay.mode === "wipe" ? { clipPath: wipeClip(overlay.split) } : { mixBlendMode: "difference" }}>
+            <video
+              key={overlay.src}
+              ref={second}
+              src={overlay.src}
+              loop
+              muted
+              playsInline
+              preload="auto"
+              className="absolute inset-0 h-full w-full object-contain"
+              onLoadedMetadata={(event) => {
+                setSecondBox({ src: overlay.src, box: { naturalWidth: event.currentTarget.videoWidth, naturalHeight: event.currentTarget.videoHeight } });
+                event.currentTarget.playbackRate = rate;
+                event.currentTarget.currentTime = video.current?.currentTime ?? 0;
+                if (video.current && !video.current.paused) void event.currentTarget.play().catch(() => undefined);
+              }}
+            />
+          </div>
+        ) : null}
+        {overlay?.mode === "wipe" && !failed ? (
+          <>
+            <span className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.first}</span>
+            <span className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.second}</span>
+            <span
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={t("review.compare.wipeLine")}
+              aria-valuenow={Math.round(overlay.split * 100)}
+              className="absolute inset-y-0 z-10 w-4 -translate-x-1/2 cursor-ew-resize touch-none"
+              // ui-text-ignore: a CSS length, not text
+              style={{ left: `${overlay.split * 100}%` }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                capture(event);
+                splitDrag.current = true;
+              }}
+              onPointerMove={(event) => {
+                if (!splitDrag.current) return;
+                event.stopPropagation();
+                const rect = frameBox.current?.getBoundingClientRect();
+                if (rect) overlay.onSplit(splitAt(event.clientX - rect.left, rect.width));
+              }}
+              onPointerUp={(event) => {
+                event.stopPropagation();
+                splitDrag.current = false;
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <span className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.6)]" />
+              <span className="absolute left-1/2 top-1/2 h-8 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-black/60 bg-white" />
+            </span>
+          </>
+        ) : null}
         {box &&
           view &&
           [...shownPins.map((m, i) => ({ region: m.region as PlanMarkerRegion, label: m.label ?? String(i + 1), tone: m.tone })), ...(draft ? [{ region: draft, label: "", tone: "mark" as const }] : [])].map((pin, i) => {
@@ -404,6 +532,10 @@ export const MediaVideoPlayer = forwardRef<
         <button type="button" onClick={() => setMuted((m) => !m)} aria-pressed={!muted} className={`rounded border px-2 py-0.5 ${muted ? "border-zinc-700 text-zinc-400" : "border-emerald-600 text-emerald-200"}`}>
           {muted ? t("review.visual.soundOff") : t("review.visual.soundOn")}
         </button>
+        {runShown ? <span className="rounded bg-violet-500/20 px-2 py-0.5 text-violet-200">{t("review.loop.pass", { pass: runShown.pass, total: runShown.total })}</span> : null}
+        {overlay && box && secondBox && secondBox.src === overlay.src && !sameProportions({ width: box.naturalWidth, height: box.naturalHeight }, { width: secondBox.box.naturalWidth, height: secondBox.box.naturalHeight }) ? (
+          <span className="text-amber-300">{t("review.compare.proportionsDiffer", { first: `${box.naturalWidth}×${box.naturalHeight}`, second: `${secondBox.box.naturalWidth}×${secondBox.box.naturalHeight}` })}</span>
+        ) : null}
         {range ? (
           <button type="button" onClick={() => setRange(null)} className="rounded border border-indigo-500/60 px-2 py-0.5 text-indigo-200 hover:bg-indigo-500/10">
             {t("review.visual.loopRange", { start: formatPlayerTime(range.start), end: formatPlayerTime(range.end) })} ×

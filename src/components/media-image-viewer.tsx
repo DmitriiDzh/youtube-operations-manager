@@ -3,7 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { PlanMarkerRegion } from "@/lib/generation-plans/contracts";
 import { useUiText } from "./ui-text-provider";
-import { FIT, regionFromDrag, regionToScreen, stateOf, toggleActual, viewOf, zoomAround, type ImageBox, type ViewState } from "./visual-review-model";
+import { FIT, regionFromDrag, regionToScreen, sameProportions, splitAt, stateOf, toggleActual, viewOf, wipeClip, zoomAround, type ImageBox, type ViewState } from "./visual-review-model";
 
 // BL-175 (FO-REQ-0018 §A/§C, VISUAL_REVIEW_PLAN.md §2.9): one image of a review -- fit to the frame, 100 % on Z or a double click,
 // drag to pan, the wheel to zoom around the cursor, and the owner's pins as numbered circles; Shift + drag sets a new pin (the
@@ -23,6 +23,12 @@ function capture(event: { currentTarget: Element; pointerId: number }) {
 export type ViewerPin = { region: PlanMarkerRegion; label: string; tone: "mark" | "draft" | "question" | "previous"; title?: string | null };
 
 export type ImageViewerHandle = { toggleActual(): void };
+
+/**
+ * BL-175 phase 2 (§E, VISUAL_REVIEW_PLAN.md §7.2): a second picture drawn in this viewer's frame and view -- cut at a line the
+ * owner drags (`wipe`: the first left of it, the second right of it) or blended over the first (`difference`).
+ */
+export type ImageOverlay = { src: string; mode: "wipe" | "difference"; split: number; onSplit: (split: number) => void; labels: { first: string; second: string } };
 
 const PIN_COLORS: Record<ViewerPin["tone"], string> = {
   mark: "border-amber-400 text-amber-200",
@@ -54,14 +60,18 @@ export const MediaImageViewer = forwardRef<
      * the wheel keeps scrolling the column (the default).
      */
     wheelZoom?: "always" | "modifier";
+    /** Phase 2: a second picture in the same frame (wipe or difference). */
+    overlay?: ImageOverlay;
   }
->(function MediaImageViewer({ src, pins, onAddPin, view: shared, onViewChange, bytes = null, className = "h-[52vh]", readout = true, wheelZoom = "modifier" }, ref) {
+>(function MediaImageViewer({ src, pins, onAddPin, view: shared, onViewChange, bytes = null, className = "h-[52vh]", readout = true, wheelZoom = "modifier", overlay }, ref) {
   const { t, formatNumber } = useUiText();
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [frame, setFrame] = useState({ width: 0, height: 0 });
   const [box, setBox] = useState<ImageBox | null>(null);
   const [own, setOwn] = useState<ViewState>(FIT);
   const [failed, setFailed] = useState(false);
+  const [overlayBox, setOverlayBox] = useState<{ src: string; box: ImageBox } | null>(null);
+  const splitDrag = useRef(false);
   const state = shared ?? own;
   const setState = useCallback(
     (next: ViewState) => {
@@ -184,6 +194,57 @@ export const MediaImageViewer = forwardRef<
             style={view && box ? { width: box.naturalWidth * view.scale, height: box.naturalHeight * view.scale, transform: `translate(${view.offsetX}px, ${view.offsetY}px)` } : { opacity: 0 }}
           />
         )}
+        {overlay && view && box ? (
+          // The second side, in the first side's rectangle and view; isolated so the blend sees only the two pictures.
+          <div className="pointer-events-none absolute inset-0 [isolation:isolate]" style={overlay.mode === "wipe" ? { clipPath: wipeClip(overlay.split) } : { mixBlendMode: "difference" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element -- a local file of this computer */}
+            <img
+              key={overlay.src}
+              src={overlay.src}
+              alt=""
+              draggable={false}
+              onLoad={(event) => setOverlayBox({ src: overlay.src, box: { naturalWidth: event.currentTarget.naturalWidth, naturalHeight: event.currentTarget.naturalHeight } })}
+              className="absolute left-0 top-0 max-w-none origin-top-left"
+              // ui-text-ignore: CSS values, not text
+              style={{ width: box.naturalWidth * view.scale, height: box.naturalHeight * view.scale, transform: `translate(${view.offsetX}px, ${view.offsetY}px)` }}
+            />
+          </div>
+        ) : null}
+        {overlay?.mode === "wipe" && box ? (
+          <>
+            <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.first}</span>
+            <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-zinc-100">{overlay.labels.second}</span>
+            {/* The line: drag it (the picture under it does not pan). */}
+            <span
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={t("review.compare.wipeLine")}
+              aria-valuenow={Math.round(overlay.split * 100)}
+              className="absolute inset-y-0 z-10 w-4 -translate-x-1/2 cursor-ew-resize touch-none"
+              // ui-text-ignore: a CSS length, not text
+              style={{ left: `${overlay.split * 100}%` }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                capture(event);
+                splitDrag.current = true;
+              }}
+              onPointerMove={(event) => {
+                if (!splitDrag.current) return;
+                event.stopPropagation();
+                const rect = frameRef.current?.getBoundingClientRect();
+                if (rect) overlay.onSplit(splitAt(event.clientX - rect.left, rect.width));
+              }}
+              onPointerUp={(event) => {
+                event.stopPropagation();
+                splitDrag.current = false;
+              }}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              <span className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.6)]" />
+              <span className="absolute left-1/2 top-1/2 h-8 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-black/60 bg-white" />
+            </span>
+          </>
+        ) : null}
         {box &&
           view &&
           circles.map((pin, i) => {
@@ -206,6 +267,9 @@ export const MediaImageViewer = forwardRef<
           {box ? <span>{t("review.visual.pixels", { width: box.naturalWidth, height: box.naturalHeight })}</span> : null}
           {bytes !== null ? <span>{t("review.visual.megabytes", { size: formatNumber(bytes / 1_048_576, { maximumFractionDigits: 1, minimumFractionDigits: 1 }) })}</span> : null}
           {onAddPin ? <span className="text-zinc-600">{t("review.visual.pinHint")}</span> : null}
+          {overlay && box && overlayBox && overlayBox.src === overlay.src && !sameProportions({ width: box.naturalWidth, height: box.naturalHeight }, { width: overlayBox.box.naturalWidth, height: overlayBox.box.naturalHeight }) ? (
+            <span className="text-amber-300">{t("review.compare.proportionsDiffer", { first: `${box.naturalWidth}×${box.naturalHeight}`, second: `${overlayBox.box.naturalWidth}×${overlayBox.box.naturalHeight}` })}</span>
+          ) : null}
         </p>
       )}
     </div>

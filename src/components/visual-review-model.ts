@@ -241,3 +241,68 @@ export function totalFromContentRange(header: string | null): number | null {
   const match = header ? /\/(\d+)\s*$/.exec(header) : null;
   return match ? Number(match[1]) : null;
 }
+
+// -- BL-175 phase 2 (FO-REQ-0018 §E-§F, VISUAL_REVIEW_PLAN.md §7) ------------------------------------------------------------
+
+/** How compare shows the two sides: side by side, a wipe the owner drags, or the difference blend. */
+export type CompareView = "side" | "wipe" | "difference";
+
+/** A wipe's split, 0 (all second side) .. 1 (all first side), from a pointer `x` over a frame `width` px wide. */
+export function splitAt(x: number, width: number): number {
+  if (!(width > 0)) return 0.5;
+  return Math.min(1, Math.max(0, x / width));
+}
+
+/** The CSS clip of the second side at a split: it shows right of the line. */
+export function wipeClip(split: number): string {
+  const pct = Math.round(Math.min(1, Math.max(0, split)) * 10000) / 100;
+  // ui-text-ignore: a CSS value, not text
+  return `inset(0 0 0 ${pct}%)`;
+}
+
+/** Whether two pictures (or clips) have the same proportions, within `tolerance` (1 %) of the first's. */
+export function sameProportions(a: { width: number; height: number }, b: { width: number; height: number }, tolerance = 0.01): boolean {
+  if (!(a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0)) return true;
+  const ra = a.width / a.height;
+  const rb = b.width / b.height;
+  return Math.abs(ra - rb) / ra <= tolerance;
+}
+
+/** «Как в ленте» (§E): the feed sizes a picture is shown at, 16:9, widest first. */
+export const FEED_SIZES = [360, 246, 168, 120].map((width) => ({ width, height: Math.floor((width * 9) / 16) }));
+
+/** §F: a clip meant to loop -- any stage row says `metrics.loop` is true (`true` or `"true"`). */
+export function loopFromMetrics(stages: ReadonlyArray<{ metrics: Record<string, unknown> }>): boolean {
+  return stages.some((s) => s.metrics.loop === true || s.metrics.loop === "true");
+}
+
+/** The seam window of a loop clip: a second at each side of the join, at most a quarter of the clip; null for an empty clip. */
+export function seamWindowOf(duration: number): number | null {
+  if (!(duration > 0)) return null;
+  return Math.min(1, duration / 4);
+}
+
+/**
+ * The seam window plays the last `window` seconds straight into the first (the browser's own loop makes the join): past the
+ * first `window` seconds it jumps back to `window` before the end. Null = keep playing.
+ */
+export function seamJump(time: number, duration: number, window: number): number | null {
+  if (!(duration > 2 * window) || !(window > 0)) return null;
+  return time > window && time < duration - window ? duration - window : null;
+}
+
+/** A loop wrapped from the end to the start -- a fall of more than half the clip (a seek back by the owner is not one). */
+export function isWrap(previous: number, time: number, duration: number): boolean {
+  return duration > 0 && time < previous - duration / 2;
+}
+
+/** The time of a clip's last frame: one frame before its end (the row's or the measured fps, else 1/30 s); never below 0. */
+export function lastFrameTime(duration: number, fps: number | null): number {
+  return Math.max(0, duration - 1 / (fps && fps > 0 ? fps : 30));
+}
+
+/** §E: where a question re-check about a clip opens -- its earliest marker (paused there, so its pin shows); null = none. */
+export function questionStart(recheck: { kind: string; markers: ReadonlyArray<{ start: number }> } | null | undefined): number | null {
+  if (!recheck || recheck.kind !== "question" || recheck.markers.length === 0) return null;
+  return Math.min(...recheck.markers.map((m) => m.start));
+}

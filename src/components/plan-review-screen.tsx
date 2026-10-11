@@ -41,7 +41,8 @@ import { MediaImageViewer, type ImageViewerHandle, type ViewerPin } from "./medi
 import { MediaVideoPlayer, type VideoMarker, type VideoPlayerHandle } from "./media-video-player";
 import { VisualReviewLayer, type LayerEntry, type LayerHandle, type LayerMode } from "./visual-review-layer";
 import { useDialogFocus } from "./use-dialog-focus";
-import { attemptLabel, fpsFromMetrics, isVisual, reasonChipsFor, sharedEntryMedia, totalFromContentRange, VISUAL_REASON_KEYS, visualKeyAction } from "./visual-review-model";
+import { attemptLabel, fpsFromMetrics, isVisual, loopFromMetrics, questionStart, reasonChipsFor, sharedEntryMedia, totalFromContentRange, VISUAL_REASON_KEYS, visualKeyAction } from "./visual-review-model";
+import { FeedPreview, SeamFrames } from "./visual-review-tools";
 
 // BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A + the owner's additions, msg 1939): the owner's listening review of a plan --
 // a queue of attempts waiting for a verdict, the player with the waveform and the validator's time findings, keyboard
@@ -261,11 +262,15 @@ export function frequencyMarksOf(t: Translate, entry: Pick<PlanReviewEntry, "sta
   return marks.filter((m, i) => marks.findIndex((x) => x.hz === m.hz && x.label === m.label) === i);
 }
 
-/** The references to offer for A/B: this attempt's nearest ones first (`referenceIds` of its rows), then the plan's others. */
-export function referencesFor(entry: Pick<PlanReviewEntry, "stages">, references: PlanReference[]): Array<PlanReference & { nearest: boolean }> {
+/**
+ * The references to offer for A/B: this attempt's nearest ones first (`referenceIds` of its rows), then the plan's others.
+ * BL-175 phase 2 (§E): of the kind the attempt is -- sound for music, pictures and clips for a picture or a clip.
+ */
+export function referencesFor(entry: Pick<PlanReviewEntry, "stages">, references: PlanReference[], kind: "audio" | "visual" = "audio"): Array<PlanReference & { nearest: boolean }> {
+  const fits = references.filter((r) => isVisual(mediaKindOf(r.file)) === (kind === "visual"));
   const nearestIds = new Set(entry.stages.flatMap((s) => s.referenceIds ?? []));
-  const nearest = references.filter((r) => nearestIds.has(r.id)).map((r) => ({ ...r, nearest: true }));
-  return [...nearest, ...references.filter((r) => !nearestIds.has(r.id)).map((r) => ({ ...r, nearest: false }))];
+  const nearest = fits.filter((r) => nearestIds.has(r.id)).map((r) => ({ ...r, nearest: true }));
+  return [...nearest, ...fits.filter((r) => !nearestIds.has(r.id)).map((r) => ({ ...r, nearest: false }))];
 }
 
 /** The validator findings that have a time, as waveform ranges. Exported for its test. */
@@ -652,6 +657,13 @@ export function PlanReviewScreen({
   // Review round 1 (§B): the loupe or compare opened from the grid goes back to it on Esc; opened from the screen, Esc closes.
   const [layerBack, setLayerBack] = useState<LayerMode | null>(null);
   const [gridScope, setGridScope] = useState<"item" | "wave">("item");
+  // BL-175 phase 2 (§E/§F): compare against a plan reference or «Было» (not an attempt), the chosen picture/clip reference,
+  // «Как в ленте», and the loop tools (the seam window, the seam frames).
+  const [against, setAgainst] = useState<"reference" | "before" | null>(null);
+  const [visualRefId, setVisualRefId] = useState<string | null>(null);
+  const [feedOn, setFeedOn] = useState(false);
+  const [seamOn, setSeamOn] = useState(false);
+  const [seamFramesOn, setSeamFramesOn] = useState(false);
   const [compareKey, setCompareKey] = useState<string | null>(null);
   const [reviewReasons, setReviewReasons] = useState<{ plan: string[] | null; groups: Record<string, string[]> }>({ plan: null, groups: {} });
   const [pickItems, setPickItems] = useState<Map<string, ItemPickInfo>>(new Map());
@@ -1085,7 +1097,13 @@ export function PlanReviewScreen({
 
   // BL-173 (§2.8): a revision is compared with the attempt's own file ("Before"), not with a reference track.
   const isRevision = entry?.recheck?.kind === "revision";
-  const offered = entry && !isRevision ? referencesFor(entry, references) : [];
+  const offered = entry && !isRevision && !visualEntry ? referencesFor(entry, references) : [];
+  // Phase 2 (§E): the plan's picture and clip references for a picture or clip on screen (a revision compares with «Было»).
+  const visualOffered = entry && !isRevision && visualEntry ? referencesFor(entry, references, "visual") : [];
+  const chosenVisual = visualOffered.find((r) => r.id === visualRefId) ?? visualOffered[0] ?? null;
+  const visualRevision = isRevision && visualEntry && Boolean(entry?.playable);
+  // Phase 2 (§F): a clip its rows say is meant to loop.
+  const loopClip = currentMedia === "video" && entry !== null && loopFromMetrics(entry.stages);
   const chosen = offered.find((r) => r.id === referenceId) ?? offered[0] ?? null;
   const abSource = useMemo(
     () =>
@@ -1147,7 +1165,8 @@ export function PlanReviewScreen({
         const v = visualKeyAction(event.key);
         // Enter on a focused button, switch or link keeps its own meaning.
         const opensLayer = v === "grid" || v === "loupe" || v === "compare";
-        if (v && !(v === "loupe" && target?.closest("button, [role=switch], [role=button], a")) && !(v === "close" && layer === null) && !(opensLayer && layer === null && !layerable)) {
+        // Phase 2: «Было / Исправлено» of a re-check is compare only -- no grid, no loupe.
+        if (v && !(v === "loupe" && target?.closest("button, [role=switch], [role=button], a")) && !(v === "close" && layer === null) && !(opensLayer && ((layer === null && !layerable) || against === "before"))) {
           event.preventDefault();
           // A held key never picks and unpicks, nor flickers the grid or the zoom (review rounds 1 and 2); frames step while held.
           if (event.repeat && v !== "frameBack" && v !== "frameForward") return;
@@ -1236,7 +1255,17 @@ export function PlanReviewScreen({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [answerRecheck, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
+  }, [against, answerRecheck, comparable, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, layerBack, layerable, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
+  // Phase 2: compare against «Было» ends where the attempt on screen is no revision of a picture or clip (N/P moved on); a
+  // closed layer forgets what it compared against.
+  useEffect(() => {
+    if (layer === null) {
+      if (against !== null) setAgainst(null);
+    } else if (against === "before" && !visualRevision) {
+      setLayer(null);
+      setAgainst(null);
+    }
+  }, [against, layer, visualRevision]);
 
   // The reference's volume follows the loudness switch while it plays.
   useEffect(() => {
@@ -1359,6 +1388,7 @@ export function PlanReviewScreen({
   const currentPickTarget = entry ? (pickItems.get(entry.itemKey)?.pickTarget ?? 1) : 1;
   const chips = entry ? reasonChipsFor(currentMedia, entry.groupId, reviewReasons, REVIEW_REASONS) : null;
   const openLayer = (mode: LayerMode, fromLayer = false) => {
+    setAgainst(null);
     if (mode === "compare" && !comparable) {
       setMessage({ tone: "ok", text: t("review.layer.compareNeedsTwo") });
       setLayer("grid");
@@ -1367,6 +1397,27 @@ export function PlanReviewScreen({
     setLayerBack(fromLayer && mode !== "grid" ? (layer === "grid" ? "grid" : layerBack) : null);
     setLayer(mode);
   };
+  /** Phase 2 (§E): compare the picture or clip on screen with a plan reference, or a revision with «Было». */
+  const openAgainst = (kind: "reference" | "before") => {
+    setAgainst(kind);
+    setLayerBack(null);
+    setLayer("compare");
+  };
+  /** The second side of compare when it is not an attempt: the chosen reference, or the attempt's file before this revision. */
+  const againstEntry: LayerEntry | null = (() => {
+    if (!entry || layer !== "compare") return null;
+    const blank = { itemKey: entry.itemKey, seed: null, verdict: null, validator: null, previewSrc: null, fps: null, pins: [], markers: [], noPick: true };
+    if (against === "reference" && chosenVisual) {
+      const media = mediaKindOf(chosenVisual.file) === "video" ? "video" : "image";
+      return { ...blank, key: `~reference\u0000${chosenVisual.id}`, attemptRef: chosenVisual.id, media, fullSrc: `${base}/reference?id=${encodeURIComponent(chosenVisual.id)}`, caption: t("review.compare.reference", { label: chosenVisual.label }) };
+    }
+    if (against === "before" && visualRevision) {
+      // «Было» plays the attempt's current file (an earlier accepted revision, else the original), as the music A/B does.
+      const media = (isVisual(entry.media) ? entry.media : currentMedia) === "video" ? "video" : "image";
+      return { ...blank, key: `~before\u0000${entry.attemptRef}`, attemptRef: entry.attemptRef, media, fullSrc: auditionSrc(entry), caption: t("review.recheck.before") };
+    }
+    return null;
+  })();
   /** BL-175 (§C): the note of the mark just set -- typed when it is set (Enter keeps it, Esc drops the mark). Floating over the layer. */
   const pendingNoteBox = (floating: boolean) =>
     draft.pending ? (
@@ -1697,6 +1748,8 @@ export function PlanReviewScreen({
                         markers={videoMarkersOf(entry, true)}
                         fps={fpsFromMetrics(entry.stages)}
                         onAddPin={entry.recheck ? undefined : addPin}
+                        initialTime={questionStart(entry.recheck)}
+                        seam={seamOn && loopClip}
                       />
                     )}
                     {layer === null && draft.pending ? pendingNoteBox(false) : null}
@@ -1757,6 +1810,56 @@ export function PlanReviewScreen({
                         <span className="text-zinc-500">{t("review.strip.compareHint")}</span>
                       </div>
                     )}
+                    {/* Phase 2 (§E/§F): «Было / Исправлено», references, «Как в ленте», the loop tools. */}
+                    {visualRevision && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <button type="button" onClick={() => openAgainst("before")} className={toolButton}>
+                          {t("review.compare.beforeAfter")}
+                        </button>
+                        <span className="text-zinc-500">{t("review.compare.beforeAfterHint")}</span>
+                      </div>
+                    )}
+                    {layerable && visualOffered.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <label className="flex items-center gap-2 text-zinc-400">
+                          <span>{t("review.compare.referenceLabel")}</span>
+                          <select value={chosenVisual?.id ?? ""} onChange={(event) => setVisualRefId(event.target.value)} className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100">
+                            {visualOffered.map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {r.nearest ? t("review.compare.referenceNearest", { label: r.label }) : r.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button type="button" disabled={!chosenVisual} onClick={() => openAgainst("reference")} className={toolButton}>
+                          {t("review.compare.withReference")}
+                        </button>
+                      </div>
+                    )}
+                    {currentMedia === "image" && (
+                      <label className="flex items-center gap-2 text-xs text-zinc-300">
+                        <ToggleSwitch tone="violet" label={t("review.feed.toggle")} checked={feedOn} onChange={setFeedOn} />
+                        <span>{t("review.feed.toggle")}</span>
+                      </label>
+                    )}
+                    {feedOn && currentMedia === "image" ? <FeedPreview src={src} /> : null}
+                    {loopClip && (
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-300">
+                        <span className="font-medium text-zinc-400">{t("review.loop.title")}</span>
+                        <label className="flex items-center gap-2">
+                          <ToggleSwitch tone="violet" label={t("review.loop.seam")} checked={seamOn} onChange={setSeamOn} />
+                          <span>{t("review.loop.seam")}</span>
+                        </label>
+                        <button type="button" onClick={() => videoPlayer.current?.playTimes(5)} className={toolButton}>
+                          {t("review.loop.fiveTimes")}
+                        </button>
+                        <label className="flex items-center gap-2">
+                          <ToggleSwitch tone="violet" label={t("review.loop.frames")} checked={seamFramesOn} onChange={setSeamFramesOn} />
+                          <span>{t("review.loop.frames")}</span>
+                        </label>
+                      </div>
+                    )}
+                    {loopClip && seamFramesOn ? <SeamFrames key={`seam:${src}`} src={src} fps={fpsFromMetrics(entry.stages)} /> : null}
                   </div>
                 ) : entry.playable && src ? (
                   <div className="space-y-1.5">
@@ -2271,10 +2374,19 @@ export function PlanReviewScreen({
           mode={layer}
           scope={gridScope}
           onScope={setGridScope}
-          entries={(layer === "grid" && gridScope === "item" ? visualWalk.filter((e) => e.itemKey === entry.itemKey) : visualWalk).map(layerEntryOf)}
+          entries={
+            against === "before" && src
+              ? // Phase 2: a re-check's «Исправлено» is the revised file; nothing to pick.
+                [{ ...layerEntryOf(entry), fullSrc: src, previewSrc: null, caption: t("review.compare.after"), noPick: true }]
+              : (layer === "grid" && gridScope === "item" ? visualWalk.filter((e) => e.itemKey === entry.itemKey) : visualWalk).map(layerEntryOf)
+          }
           currentKey={entryKey(entry)}
           compareKey={compareKey}
-          canCompare={comparable}
+          canCompare={comparable || againstEntry !== null}
+          against={againstEntry}
+          defaultCompareView={against === "before" ? "wipe" : "side"}
+          compareOnly={against === "before"}
+          againstFirst={against === "before"}
           blind={blind}
           shortKey={shortKey}
           itemPicks={itemPickInfo}

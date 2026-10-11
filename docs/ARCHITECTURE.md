@@ -3588,6 +3588,14 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   (RISK-119); an attempt shown again because `reviewRejected` was switched on after the action has no time of its own and is
   covered when its row is older. The same "none fits" weighed twice
   (its `peer_pick` event fell out of the newest 5000 events) is `unchanged`.
+- **Phase 2 (§E–§F, screen only).** Compare views «Рядом · Шторка · Разница» (`CompareView`): the image viewer and the video
+  player take an `overlay` -- the second side drawn in the same frame and view (the clip follows the first one's moment, play and
+  speed, corrected past half a frame), cut by a line the owner drags (`wipeClip`) or blended with `difference`; proportions that
+  differ by more than 1 % are named. The second side may be another attempt, a picture/clip reference (`referencesFor(..,
+  "visual")`), or «Было» of a revision re-check (`against`, first on the left; the layer then opens compare only). A question
+  re-check about a clip opens paused at its earliest marker (`questionStart`). `FeedPreview` («Как в ленте», `FEED_SIZES`) and
+  `SeamFrames` live in `visual-review-tools.tsx`; the seam window (`seamJump`) and «×5» (`isWrap`, `playTimes`) are in the video
+  player. No server, schema, report or Factory API change.
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression
   bombs, a 300-entry memory cache is keyed by path, size and mtime; any failure streams the original. The `…/preview` routes

@@ -7,7 +7,7 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { MediaImageViewer, type ImageViewerHandle, type ViewerPin } from "./media-image-viewer";
 import { MediaVideoPlayer, type VideoMarker, type VideoPlayerHandle } from "./media-video-player";
 import { useUiText } from "./ui-text-provider";
-import { attemptLabel, FIT, groupByItem, type ViewState } from "./visual-review-model";
+import { attemptLabel, FIT, groupByItem, type CompareView, type ViewState } from "./visual-review-model";
 
 // BL-175 (FO-REQ-0018 §B, VISUAL_REVIEW_PLAN.md §2.9): the whole-window layer of the visual review -- the grid of attempts (the
 // item's or the wave's, grouped by item), the loupe (one attempt at full size) and compare (two side by side, linked zoom and
@@ -32,7 +32,15 @@ export type LayerEntry = {
   fps: number | null;
   pins: ViewerPin[];
   markers: VideoMarker[];
+  /** Phase 2 (§E): what this side is when it is not an attempt of the walk -- a plan reference, or «Было» of a revision. */
+  caption?: string;
+  /** A reference, «Было», or a re-check: nothing to pick. */
+  noPick?: boolean;
 };
+
+/** The frame's height at full size: a clip leaves room for its timeline and controls under it. */
+const FULL_PICTURE = "h-[calc(100vh-11rem)]";
+const FULL_CLIP = "h-[calc(100vh-15rem)]";
 
 export type LayerHandle = { zoom(): void; frame(direction: 1 | -1): void; togglePlay(): void; seekBy(seconds: number): void };
 
@@ -60,6 +68,14 @@ type Props = {
   onAddPin?: (region: PlanMarkerRegion, atSeconds: number) => void;
   /** Review round 3: whether compare can open (the screen's one rule -- the compared attempt may be outside the grid's item). */
   canCompare?: boolean;
+  /** Phase 2 (§E): the second side of compare when it is not an attempt -- a plan reference or «Было» (wins over `compareKey`). */
+  against?: LayerEntry | null;
+  /** Phase 2: how compare opens (side by side; «Было / Исправлено» opens as a wipe). */
+  defaultCompareView?: CompareView;
+  /** Phase 2: only compare (a re-check's «Было / Исправлено»): no grid, no loupe. */
+  compareOnly?: boolean;
+  /** Phase 2: `against` is the first side (left; the base of a wipe) -- «Было» before «Исправлено». */
+  againstFirst?: boolean;
   /** A line under the header (a message from the last action). */
   message?: { tone: "ok" | "error"; text: string } | null;
 };
@@ -68,8 +84,15 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   const { t } = useUiText();
   const { mode, entries, currentKey, compareKey } = props;
   const current = entries.find((e) => e.key === currentKey) ?? null;
-  const other = entries.find((e) => e.key === compareKey) ?? null;
-  const pair = current && other && current.key !== other.key ? [current, other] : null;
+  const other = props.against ?? entries.find((e) => e.key === compareKey) ?? null;
+  // Phase 2: «Было» comes first (left, and the base of a wipe), as the owner reads «Было / Исправлено».
+  const pair = current && other && current.key !== other.key ? (props.againstFirst && props.against ? [other, current] : [current, other]) : null;
+  // Phase 2 (§E): side by side, a wipe, or the difference -- the last two only for two pictures or two clips.
+  const [compareView, setCompareView] = useState<CompareView>(props.defaultCompareView ?? "side");
+  const [split, setSplit] = useState(0.5);
+  const overlayable = pair !== null && pair[0].media === pair[1].media;
+  const view: CompareView = overlayable ? compareView : "side";
+  const nameOf = (entry: LayerEntry) => entry.caption ?? `${props.shortKey(entry.itemKey)} ${attemptLabel(entry)}`;
   const image = useRef<ImageViewerHandle | null>(null);
   const videos = useRef<Array<VideoPlayerHandle | null>>([null, null]);
   const [linked, setLinked] = useState<ViewState>(FIT);
@@ -133,6 +156,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   }));
 
   const pickButton = (entry: LayerEntry, large = false) => {
+    if (entry.noPick) return null;
     const blocked = props.pickBlocked(entry);
     return (
       <button
@@ -170,8 +194,24 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
     </span>
   );
 
-  const viewer = (entry: LayerEntry, slot: 0 | 1, className: string, shared?: boolean) =>
-    entry.media === "image" ? (
+  /** One side's header in compare: an attempt's key, ref, status and pick button, or what the side is (reference, «Было»). */
+  const sideHeader = (entry: LayerEntry) =>
+    entry.noPick && entry.caption ? (
+      <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-200">{entry.caption}</span>
+    ) : (
+      <>
+        <span className="font-mono font-semibold text-white">{props.shortKey(entry.itemKey)}</span>
+        <span className="font-mono text-xs text-zinc-400">{attemptLabel(entry)}</span>
+        {entry.caption ? <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-200">{entry.caption}</span> : null}
+        {status(entry)}
+        <span className="ml-auto">{pickButton(entry)}</span>
+      </>
+    );
+
+  const viewer = (entry: LayerEntry, slot: 0 | 1, className: string, shared?: boolean, over?: LayerEntry) => {
+    // Phase 2 (§E): the second side in this viewer's frame (wipe or difference).
+    const overlay = over && view !== "side" ? { src: over.fullSrc, mode: view as "wipe" | "difference", split, onSplit: setSplit, labels: { first: nameOf(entry), second: nameOf(over) } } : undefined;
+    return entry.media === "image" ? (
       <MediaImageViewer
         key={entry.key}
         ref={slot === 0 && !shared ? image : undefined}
@@ -180,6 +220,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         onAddPin={slot === 0 && entry.key === currentKey && props.onAddPin ? (region) => props.onAddPin?.(region, 0) : undefined}
         className={className}
         wheelZoom="always"
+        overlay={overlay}
         {...(shared ? { view: linked, onViewChange: setLinked } : {})}
       />
     ) : (
@@ -201,8 +242,10 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         onUserPlay={shared ? (playing, seconds) => videos.current[slot === 0 ? 1 : 0]?.seekTo(seconds, playing ? "play" : "pause") : undefined}
         autoPlay={!shared}
         onReady={shared ? () => onClipReady(slot) : undefined}
+        overlay={overlay}
       />
     );
+  };
 
   const groups = groupByItem(entries);
   const modeButton = (m: LayerMode, label: string, key: string, disabled = false) => (
@@ -216,12 +259,23 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   return (
     <div ref={root} tabIndex={-1} className="fixed inset-0 z-50 flex flex-col bg-zinc-950/[0.97] outline-none" role="dialog" aria-modal="true" aria-label={t("review.layer.label")}>
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
-        <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1">
-          {modeButton("grid", t("review.layer.grid"), "G")}
-          {/* ui-text-ignore: a keyboard key */}
-          {modeButton("loupe", t("review.layer.loupe"), "Enter", !current)}
-          {modeButton("compare", t("review.layer.compare"), "C", !(props.canCompare ?? pair))}
-        </span>
+        {props.compareOnly ? null : (
+          <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1">
+            {modeButton("grid", t("review.layer.grid"), "G")}
+            {/* ui-text-ignore: a keyboard key */}
+            {modeButton("loupe", t("review.layer.loupe"), "Enter", !current)}
+            {modeButton("compare", t("review.layer.compare"), "C", !(props.canCompare ?? pair))}
+          </span>
+        )}
+        {mode === "compare" && overlayable && (
+          <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1" role="group" aria-label={t("review.compare.view")}>
+            {(["side", "wipe", "difference"] as const).map((v) => (
+              <button key={v} type="button" onClick={() => setCompareView(v)} aria-pressed={view === v} className={`rounded-md px-2.5 py-1 text-xs ${view === v ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
+                {v === "side" ? t("review.compare.side") : v === "wipe" ? t("review.compare.wipe") : t("review.compare.difference")}
+              </button>
+            ))}
+          </span>
+        )}
         {mode === "grid" && (
           <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1" role="group" aria-label={t("review.layer.scope")}>
             {(["item", "wave"] as const).map((s) => (
@@ -231,7 +285,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
             ))}
           </span>
         )}
-        <span className="text-xs text-zinc-500">{mode === "grid" ? t("review.layer.gridHint") : mode === "compare" ? t("review.layer.compareHint") : t("review.layer.loupeHint")}</span>
+        <span className="text-xs text-zinc-500">{mode === "grid" ? t("review.layer.gridHint") : mode === "compare" ? (view === "wipe" ? t("review.compare.wipeHint") : view === "difference" ? t("review.compare.differenceHint") : t("review.layer.compareHint")) : t("review.layer.loupeHint")}</span>
         <button type="button" onClick={props.onClose} className="ml-auto rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800">
           {t("review.layer.close")}
           {/* ui-text-ignore: a keyboard key */}
@@ -333,23 +387,29 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
             {status(current)}
             <span className="ml-auto">{pickButton(current, true)}</span>
           </div>
-          <div className="min-h-0 flex-1">{viewer(current, 0, "h-[calc(100vh-11rem)]")}</div>
+          <div className="min-h-0 flex-1">{viewer(current, 0, current.media === "video" ? FULL_CLIP : FULL_PICTURE)}</div>
         </div>
       )}
 
-      {mode === "compare" && pair && (
+      {mode === "compare" && pair && view === "side" && (
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-3 p-4">
           {pair.map((entry, slot) => (
             <div key={entry.key} className="flex min-h-0 flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="font-mono font-semibold text-white">{props.shortKey(entry.itemKey)}</span>
-                <span className="font-mono text-xs text-zinc-400">{attemptLabel(entry)}</span>
-                {status(entry)}
-                <span className="ml-auto">{pickButton(entry)}</span>
-              </div>
+              <div className="flex flex-wrap items-center gap-2 text-sm">{sideHeader(entry)}</div>
               {viewer(entry, slot as 0 | 1, "h-[calc(100vh-12rem)]", true)}
             </div>
           ))}
+        </div>
+      )}
+      {mode === "compare" && pair && view !== "side" && (
+        <div className="flex min-h-0 flex-1 flex-col gap-2 p-4">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            {sideHeader(pair[0])}
+            {/* ui-text-ignore: a separator */}
+            <span className="text-zinc-600">|</span>
+            {sideHeader(pair[1])}
+          </div>
+          <div className="min-h-0 flex-1">{viewer(pair[0], 0, pair[0].media === "video" ? FULL_CLIP : FULL_PICTURE, false, pair[1])}</div>
         </div>
       )}
     </div>

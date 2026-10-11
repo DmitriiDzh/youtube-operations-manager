@@ -298,3 +298,80 @@ test("review round 2: the grid's hint says a click selects and Enter or a double
   assert.equal(ru("review.layer.compareMark"), "для сравнения");
   assert.match(en("review.layer.compareHint"), /play, pause and seeks/);
 });
+
+// -- BL-175 phase 2: AC-V2-01..10 (VISUAL_REVIEW_PLAN.md §7.3, worked out by hand) -------------------------------------------
+
+test("AC-V2-01: a picture is offered the plan's picture and clip references (its nearest first); music only sound; a revision none", async () => {
+  const { referencesFor } = await import("./plan-review-screen");
+  const ref = (id: string, file: string) => ({ id, label: id, file, lufs: null, lra: null, truePeak: null });
+  const refs = [ref("img", "refs/img.png"), ref("clip", "refs/clip.mp4"), ref("song", "refs/ref.mp3")];
+  const row = { stageId: "render", itemKey: "W1/I", attemptRef: "a1", result: "done" as const, reportedBy: "factory" as const, note: null, rating: null, reasons: [], markers: [], auditionFile: "x/a1.png", checks: [], metrics: {}, referenceIds: ["clip"], at: "" };
+  assert.deepEqual(referencesFor({ stages: [row] }, refs, "visual").map((r) => [r.id, r.nearest]), [["clip", true], ["img", false]]);
+  assert.deepEqual(referencesFor({ stages: [row] }, refs).map((r) => r.id), ["song"]);
+});
+
+test("AC-V2-02/03: the wipe line and its clip; proportions within 1 %", async () => {
+  const { splitAt, wipeClip, sameProportions } = await import("./visual-review-model");
+  assert.equal(wipeClip(0.25), "inset(0 0 0 25%)");
+  assert.equal(splitAt(-40, 800), 0);
+  assert.equal(splitAt(900, 800), 1);
+  assert.equal(splitAt(400, 800), 0.5);
+  assert.equal(sameProportions({ width: 1600, height: 900 }, { width: 1920, height: 1080 }), true);
+  assert.equal(sameProportions({ width: 1600, height: 900 }, { width: 1080, height: 1920 }), false);
+  assert.equal(sameProportions({ width: 1000, height: 1000 }, { width: 1005, height: 1000 }), true);
+});
+
+test("AC-V2-05: a question about a clip opens at its earliest marker; without markers, or a revision, it plays as any clip", async () => {
+  const { questionStart } = await import("./visual-review-model");
+  assert.equal(questionStart({ kind: "question", markers: [{ start: 2.5 }, { start: 1.0 }] }), 1.0);
+  assert.equal(questionStart({ kind: "question", markers: [] }), null);
+  assert.equal(questionStart({ kind: "revision", markers: [{ start: 2 }] }), null);
+  assert.equal(questionStart(null), null);
+});
+
+test("AC-V2-06: the feed sizes, 16:9 rounded down, widest first", async () => {
+  const { FEED_SIZES } = await import("./visual-review-model");
+  assert.deepEqual(FEED_SIZES, [
+    { width: 360, height: 202 },
+    { width: 246, height: 138 },
+    { width: 168, height: 94 },
+    { width: 120, height: 67 },
+  ]);
+});
+
+test("AC-V2-07..10: the loop flag, the seam window, wraps and the last frame", async () => {
+  const { loopFromMetrics, seamWindowOf, seamJump, isWrap, lastFrameTime } = await import("./visual-review-model");
+  const rows = (...metrics: Array<Record<string, unknown>>) => metrics.map((m) => ({ metrics: m }));
+  assert.equal(loopFromMetrics(rows({ fps: 16 }, { loop: true })), true);
+  assert.equal(loopFromMetrics(rows({ loop: "true" })), true);
+  for (const loop of [false, "yes", undefined]) assert.equal(loopFromMetrics(rows({ loop })), false);
+  // 4 s: a 1 s window.
+  assert.equal(seamWindowOf(4), 1);
+  assert.equal(seamJump(0.5, 4, 1), null);
+  assert.equal(seamJump(3.5, 4, 1), null);
+  assert.equal(seamJump(1.2, 4, 1), 3);
+  // 2 s: a 0.5 s window.
+  assert.equal(seamWindowOf(2), 0.5);
+  assert.equal(seamJump(0.7, 2, 0.5), 1.5);
+  assert.equal(seamWindowOf(0), null);
+  // Five times: falls of more than half the clip are wraps; a seek back by the owner is not.
+  const times = [0.1, 3.9, 0.1, 3.8, 0.2];
+  let wraps = 0;
+  for (let i = 1; i < times.length; i++) if (isWrap(times[i - 1], times[i], 4)) wraps++;
+  assert.equal(wraps, 2);
+  assert.equal(isWrap(3.0, 1.0, 4), false);
+  // The last frame.
+  assert.equal(lastFrameTime(4, 16), 3.9375);
+  assert.ok(Math.abs(lastFrameTime(4, null) - (4 - 1 / 30)) < 1e-9);
+  assert.equal(lastFrameTime(0.01, 16), 0);
+});
+
+test("AC-V2: compare of two pictures as a wipe shows one viewer with the line and both names; a reference has no pick button", () => {
+  const reference = layerEntry(9, "image", { key: "~reference\u0000ref", attemptRef: "ref", caption: "Reference: cast sheet", noPick: true });
+  const html = renderToStaticMarkup(createElement(VisualReviewLayer, { ...layerProps("compare", [layerEntry(1, "image")]), against: reference, defaultCompareView: "wipe" as const }));
+  assert.match(html, /Reference: cast sheet/);
+  assert.match(html, /aria-pressed="true"[^>]*>Wipe</);
+  assert.equal((html.match(/>Pick</g) ?? []).length, 1, "only the attempt can be picked");
+  const side = renderToStaticMarkup(createElement(VisualReviewLayer, { ...layerProps("compare", [layerEntry(1, "image"), layerEntry(2, "video")]) }));
+  assert.doesNotMatch(side, />Wipe</, "a picture and a clip compare side by side only");
+});
