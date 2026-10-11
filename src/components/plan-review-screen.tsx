@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   entryWaits,
   historyEntryOfVerdict,
+  mediaKindOf,
+  pickTargetOf,
   RECHECK_STAGE_ID,
   RECHECKS_WAVE,
   recheckEntry,
@@ -12,6 +14,9 @@ import {
   type PlanCheck,
   type PlanExistingVerdict,
   type PlanMarker,
+  type PlanMarkerRegion,
+  type PlanMediaKind,
+  type PlanNoneFitsView,
   type PlanRecheck,
   type PlanRecheckEntry,
   type PlanReference,
@@ -20,6 +25,7 @@ import {
   type PlanReviewClaim,
   type PlanReviewEntry,
 } from "@/lib/generation-plans/contracts";
+import { withSentPicks, type SentPickAction } from "@/lib/generation-plans/picks";
 import type { SharedRecheck } from "@/lib/sync-gateway";
 import { useAppChannel } from "./app-channel";
 import { integratedLoudness, LOUDNESS_TARGET_LUFS, matchedVolume } from "./loudness";
@@ -31,6 +37,10 @@ import { Popover } from "./popover";
 import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import type { Translate, UiTextKey } from "@/lib/ui-text";
 import { useUiText } from "./ui-text-provider";
+import { MediaImageViewer, type ImageViewerHandle, type ViewerPin } from "./media-image-viewer";
+import { MediaVideoPlayer, type VideoMarker, type VideoPlayerHandle } from "./media-video-player";
+import { VisualReviewLayer, type LayerEntry, type LayerHandle, type LayerMode } from "./visual-review-layer";
+import { attemptLabel, fpsFromMetrics, isVisual, reasonChipsFor, sharedEntryMedia, totalFromContentRange, VISUAL_REASON_KEYS, visualKeyAction } from "./visual-review-model";
 
 // BL-143 (MEDIA_REVIEW_TOOLS.md §2 group A + the owner's additions, msg 1939): the owner's listening review of a plan --
 // a queue of attempts waiting for a verdict, the player with the waveform and the validator's time findings, keyboard
@@ -82,6 +92,13 @@ const REVIEW_REASON_ICONS: Record<(typeof REVIEW_REASONS)[number], string> = {
   "not melodic / boring": "😴",
   "unwanted beat / drums": "🥁",
 };
+
+/** BL-175: a recorded reason in the interface language -- a music or picture default by its key, any other (a plan's own chip) as written. */
+export function reasonLabel(t: Translate, reason: string): string {
+  if (Object.hasOwn(REVIEW_REASON_KEYS, reason)) return t(REVIEW_REASON_KEYS[reason as (typeof REVIEW_REASONS)[number]]);
+  if (Object.hasOwn(VISUAL_REASON_KEYS, reason)) return t(VISUAL_REASON_KEYS[reason as keyof typeof VISUAL_REASON_KEYS]);
+  return reason;
+}
 
 /** A verdict / result in words (accepted, rejected); any other value shows as it is. */
 export function resultLabel(t: Translate, result: unknown): string {
@@ -284,8 +301,9 @@ const CLAIMS_REFRESH_MS = 3_000;
 /** BL-162 (§5.4): how long after opening a track the "the other computer opened it first" move may still happen. */
 const AUTO_MOVE_WINDOW_MS = 20_000;
 
-type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null };
-const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null });
+/** BL-175 (§2.4): `pending` = a mark on a picture or clip waiting for its own note (typed when it is set). */
+type Draft = { reasons: string[]; rating: number | null; note: string; marks: PlanMarker[]; openMark: number | null; pending: PlanMarker | null };
+const emptyDraft = (): Draft => ({ reasons: [], rating: null, note: "", marks: [], openMark: null, pending: null });
 
 /** BL-153 (FO-REQ-0008): the review queue's filter by what the validator said. */
 export type ReviewFilter = "all" | "passed" | "rejected";
@@ -411,25 +429,34 @@ type PeerQueueResponse = {
       batches?: PlanReviewBatch[];
       /** BL-173 (report v4): the open re-checks and the items' waves. */
       rechecks?: SharedRecheck[];
-      items?: Array<{ itemKey: string; groupId: string | null }>;
+      /** BL-175 (report v5): `mode`, `targetCount` and `pickTarget` decide when an item's picks settle it. */
+      items?: Array<{ itemKey: string; groupId: string | null; mode?: "fixed" | "until_accepted"; targetCount?: number; pickTarget?: number }>;
+      /** BL-175 (report v5): the active picks and "none fits", the pick actions that device weighed, the reason chips. */
+      picks?: Array<{ itemKey: string; attemptRef: string; device: string; at: string; note: string | null }>;
+      noneFits?: Array<{ itemKey: string; note: string | null; device: string; at: string; attempts: number }>;
+      handledPicks?: string[];
+      reviewReasons?: string[];
+      groups?: Array<{ groupId: string; reviewReasons?: string[] }>;
     }>;
   }>;
   /** BL-173: an answer to a re-check carries its `recheckId`; `kept` = the verdict kept with a note. */
   outgoing: Array<{ planId: string; ownerDeviceId: string; itemKey: string; attemptRef: string; result: "accepted" | "rejected"; rating: number | null; at: string; note?: string | null; recheckId?: string; kept?: boolean }>;
+  /** BL-175: the pick actions sent from here (each weighed there once; until then they count here). */
+  outgoingPicks?: Array<SentPickAction & { ownerDeviceId: string; planId: string }>;
 };
 
 /**
  * A peer plan's queue: the owning device's entries, where a verdict sent from here and not yet shown applied there counts as
  * given ("sent, waiting for <device>"). Exported for its test.
  */
-export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, planId: string): PlanReviewEntry[] {
+export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, planId: string): Array<PlanReviewEntry & { pickSent?: true }> {
   const plan = data.devices.find((d) => d.deviceId === source.deviceId)?.plans.find((p) => p.planId === planId);
   if (!plan) return [];
   const device = source.hostname ?? source.deviceId;
-  return plan.review.map((raw) => {
-    // The params travel once per item (the report's itemParams), not per entry.
+  const withVerdicts = plan.review.map((raw) => {
+    // The params travel once per item (the report's itemParams), not per entry. BL-175: the shared format carries no `media`.
     const params = plan.itemParams && Object.hasOwn(plan.itemParams, raw.itemKey) ? plan.itemParams[raw.itemKey] : raw.params;
-    const entry = { ...raw, params };
+    const entry = { ...raw, params, media: sharedEntryMedia(raw as Parameters<typeof sharedEntryMedia>[0]) };
     // BL-173: a kept re-check answer is a note, not a new verdict on the track.
     const sent = data.outgoing.filter((v) => v.ownerDeviceId === source.deviceId && v.planId === planId && v.itemKey === entry.itemKey && v.attemptRef === entry.attemptRef && v.kept !== true).at(-1);
     // A verdict sent from here that is newer than what that device shows is the one that counts (it is on its way).
@@ -437,6 +464,11 @@ export function peerQueue(data: PeerQueueResponse, source: PeerReviewSource, pla
     if (!sent || (entry.verdict && Math.floor(Date.parse(entry.verdict.at) / 1000) >= Math.floor(Date.parse(sent.at) / 1000))) return entry;
     return { ...entry, verdict: { stageId: "owner_review", itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: sent.result, reportedBy: "owner" as const, note: `${SENT_NOTE_PREFIX}${device}`, rating: sent.rating, reasons: [], markers: [], auditionFile: null, checks: [], metrics: {}, at: sent.at } };
   });
+  // BL-175 (§2.6): picks sent from here and not yet weighed there already settle their attempts here.
+  const sentPicks = (data.outgoingPicks ?? []).filter((a) => a.ownerDeviceId === source.deviceId && a.planId === planId);
+  if (sentPicks.length === 0) return withVerdicts;
+  const items = (plan.items ?? []).map((i) => ({ itemKey: i.itemKey, mode: i.mode ?? "fixed", targetCount: i.targetCount ?? 1, ...(typeof i.pickTarget === "number" ? { pickTarget: i.pickTarget } : {}) }));
+  return withSentPicks({ items, picks: plan.picks, noneFits: plan.noneFits, handledPicks: plan.handledPicks }, withVerdicts, sentPicks, "");
 }
 
 /**
@@ -488,8 +520,39 @@ function walkOf<E extends PlanReviewEntry>(lists: { entries: E[]; rechecks: Plan
   return wave === RECHECKS_WAVE ? lists.rechecks : visibleEntries(lists.entries, filter, wave);
 }
 
-/** One entry of the screen: a track of the plan's queue, or an open re-check (`recheck`). */
-type ScreenEntry = PlanReviewEntry & { recheck?: PlanRecheck; pendingKept?: boolean };
+/** One entry of the screen: a track of the plan's queue, or an open re-check (`recheck`). BL-175: `pickSent` = picked from here, on its way. */
+type ScreenEntry = PlanReviewEntry & { recheck?: PlanRecheck; pendingKept?: boolean; pickSent?: true };
+
+/** BL-175 (§2.1): what the screen shows for an entry -- a re-check's revised file decides for a revision, else the entry's own kind. */
+export function screenMedia(entry: { media?: PlanMediaKind | null; recheck?: Pick<PlanRecheck, "kind" | "auditionFile"> }): PlanMediaKind | null {
+  if (entry.recheck?.kind === "revision" && entry.recheck.auditionFile) return mediaKindOf(entry.recheck.auditionFile);
+  return entry.media ?? null;
+}
+
+/** BL-175 (§2.2): an item's picks so far, how many it takes and its "none fits" -- for the screen's pick line. */
+export type ItemPickInfo = { pickTarget: number; noneFits: (PlanNoneFitsView & { sent?: true }) | null };
+
+/**
+ * BL-175 (§2.2/§2.6): each item's pick target and "none fits" on another device's plan -- from its report, with a "none fits"
+ * (or its withdrawal) sent from here and not yet weighed there taking effect at once. Exported for its test.
+ */
+export function peerPickItems(data: PeerQueueResponse, source: PeerReviewSource, planId: string): Map<string, ItemPickInfo> {
+  const plan = data.devices.find((d) => d.deviceId === source.deviceId)?.plans.find((p) => p.planId === planId);
+  const out = new Map<string, ItemPickInfo>();
+  if (!plan) return out;
+  const handled = new Set(plan.handledPicks ?? []);
+  const sent = (data.outgoingPicks ?? []).filter((a) => a.ownerDeviceId === source.deviceId && a.planId === planId && !handled.has(a.pickId)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  for (const item of plan.items ?? []) {
+    const target = pickTargetOf({ mode: item.mode ?? "fixed", targetCount: item.targetCount ?? 1, ...(typeof item.pickTarget === "number" ? { pickTarget: item.pickTarget } : {}) });
+    let noneFits: ItemPickInfo["noneFits"] = plan.noneFits?.find((n) => n.itemKey === item.itemKey) ?? null;
+    for (const a of sent.filter((x) => x.itemKey === item.itemKey)) {
+      if (a.action === "none_fits") noneFits = { note: a.note, device: "", at: a.at, attempts: 0, sent: true };
+      else if (a.action === "clear_none_fits" || a.action === "pick") noneFits = null;
+    }
+    out.set(item.itemKey, { pickTarget: target, noneFits });
+  }
+  return out;
+}
 
 export function PlanReviewScreen({
   planId,
@@ -542,6 +605,19 @@ export function PlanReviewScreen({
   // BL-162: "copied" after the attempt's id went to the clipboard.
   const [copied, setCopied] = useState(false);
   const player = useRef<ReviewPlayerHandle | null>(null);
+  // BL-175 (VISUAL_REVIEW_PLAN.md §2.9): pictures -- the image viewer, the clip player (also `player` for the shared keys), the
+  // whole-window layer (grid / loupe / compare), the second attempt chosen for compare, the reason chips and the items' picks.
+  const imageViewer = useRef<ImageViewerHandle | null>(null);
+  const videoPlayer = useRef<VideoPlayerHandle | null>(null);
+  const layerRef = useRef<LayerHandle | null>(null);
+  const [layer, setLayer] = useState<LayerMode | null>(null);
+  const [gridScope, setGridScope] = useState<"item" | "wave">("item");
+  const [compareKey, setCompareKey] = useState<string | null>(null);
+  const [reviewReasons, setReviewReasons] = useState<{ plan: string[] | null; groups: Record<string, string[]> }>({ plan: null, groups: {} });
+  const [pickItems, setPickItems] = useState<Map<string, ItemPickInfo>>(new Map());
+  const [noneFitsDraft, setNoneFitsDraft] = useState<{ itemKey: string; note: string; rerun: boolean } | null>(null);
+  const [confirmRejectPicked, setConfirmRejectPicked] = useState(false);
+  const [imageBytes, setImageBytes] = useState<{ src: string; bytes: number | null } | null>(null);
   // BL-162 (AC-UX-15): the queue keeps the open track in view.
   const currentRow = useRef<HTMLButtonElement | null>(null);
   const peerDevice = source?.deviceId;
@@ -567,11 +643,22 @@ export function PlanReviewScreen({
           const peerPlan = peerDevice ? data.devices?.find((d) => d.deviceId === peerDevice)?.plans.find((p) => p.planId === planId) : undefined;
           setReferences(peerDevice ? (peerPlan?.references ?? []) : (data.references ?? []));
           setBatches(peerDevice ? (peerPlan?.batches ?? []) : (data.batches ?? []));
+          // BL-175 (§2.5/§2.2): the reason chips of the plan and its waves, and each item's pick target and "none fits".
+          const own = data as { reviewReasons?: { plan: string[] | null; groups: Record<string, string[]> }; pickItems?: Array<{ itemKey: string } & ItemPickInfo> };
+          if (peerDevice) {
+            const groups: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
+            for (const g of peerPlan?.groups ?? []) if (g.reviewReasons && g.reviewReasons.length > 0) groups[g.groupId] = g.reviewReasons;
+            setReviewReasons({ plan: peerPlan?.reviewReasons && peerPlan.reviewReasons.length > 0 ? peerPlan.reviewReasons : null, groups });
+            setPickItems(peerPickItems({ devices: data.devices ?? [], outgoing: data.outgoing ?? [], outgoingPicks: data.outgoingPicks ?? [] }, { deviceId: peerDevice, hostname: peerName }, planId));
+          } else {
+            setReviewReasons(own.reviewReasons ?? { plan: null, groups: {} });
+            setPickItems(new Map((own.pickItems ?? []).map((i) => [i.itemKey, { pickTarget: i.pickTarget, noneFits: i.noneFits }])));
+          }
           const fresh = claimsFrom(data);
           freshClaims.current = fresh;
           setClaims(fresh);
           setNowMs(Date.now());
-          const peerData = { devices: data.devices ?? [], outgoing: data.outgoing ?? [] };
+          const peerData = { devices: data.devices ?? [], outgoing: data.outgoing ?? [], outgoingPicks: data.outgoingPicks ?? [] };
           const peerSource = { deviceId: peerDevice ?? "", hostname: peerName };
           const list = peerDevice ? peerQueue(peerData, peerSource, planId) : (data.entries ?? []);
           const rechecks = peerDevice ? peerRecheckEntries(peerData, peerSource, planId) : (data.rechecks ?? []);
@@ -625,6 +712,9 @@ export function PlanReviewScreen({
   }, [base]);
 
   const entry: ScreenEntry | null = entries && entries.length > 0 ? entries[Math.min(index, entries.length - 1)] : null;
+  // BL-175 (§2.1): what the entry on screen shows -- a player for audio (unchanged), a picture or a clip.
+  const currentMedia = entry ? screenMedia(entry) : null;
+  const visualEntry = isVisual(currentMedia);
   useEffect(() => {
     currentRow.current?.scrollIntoView({ block: "nearest" });
   }, [index, entries]);
@@ -682,10 +772,15 @@ export function PlanReviewScreen({
   );
 
   const submit = useCallback(
-    async (result: "accepted" | "rejected", replace = false) => {
+    async (result: "accepted" | "rejected", replace = false, pickedConfirmed = false) => {
       if (!entry || busy) return;
       if (entry.recheck) {
         void answerRecheck(result);
+        return;
+      }
+      // BL-175 (§2.2): rejecting the picked attempt withdraws its pick -- asked first.
+      if (result === "rejected" && entry.picked && !pickedConfirmed) {
+        setConfirmRejectPicked(true);
         return;
       }
       // BL-157 (AC-TC-04): a track that already has a verdict asks first. A verdict sent from this computer is asked about by
@@ -816,10 +911,64 @@ export function PlanReviewScreen({
     return { all: waitingIn("all"), passed: waitingIn("passed"), rejected: waitingIn("rejected"), anyRejected: list.some((e) => validatorOfEntry(e) === "rejected") };
   }, [allEntries, wave]);
 
-  const mark = useCallback(() => {
+  /** M: opens a range at the playhead, then closes it. BL-175 (§2.4): on a clip (`withNote`) the closed range waits for its own note. */
+  const mark = useCallback((withNote = false) => {
     const at = Math.round((player.current?.currentTime() ?? 0) * 10) / 10;
-    setDraft((d) => (d.openMark === null ? { ...d, openMark: at } : { ...d, openMark: null, marks: [...d.marks, { start: Math.min(d.openMark, at), end: Math.max(d.openMark, at), note: null }] }));
+    setDraft((d) => {
+      if (d.openMark === null) return { ...d, openMark: at };
+      const range = { start: Math.min(d.openMark, at), end: Math.max(d.openMark, at), note: null };
+      return withNote ? { ...d, openMark: null, pending: range } : { ...d, openMark: null, marks: [...d.marks, range] };
+    });
   }, []);
+
+  /** BL-175 (§2.4): a pin set on the picture (or the paused frame at `atSeconds`) waits for its own note. */
+  const addPin = useCallback((region: PlanMarkerRegion, atSeconds = 0) => {
+    setDraft((d) => ({ ...d, openMark: null, pending: { start: Math.round(atSeconds * 10) / 10, end: null, note: null, region } }));
+  }, []);
+  const savePending = useCallback(() => {
+    setDraft((d) => (d.pending && d.pending.note?.trim() ? { ...d, marks: [...d.marks, { ...d.pending, note: d.pending.note.trim().slice(0, 200) }], pending: null } : d));
+  }, []);
+  const cancelPending = useCallback(() => setDraft((d) => ({ ...d, pending: null })), []);
+
+  /**
+   * BL-175 (§2.2): pick an attempt, withdraw a pick, mark an item "none fits" or take that back -- then the queue again, staying on
+   * the same attempt (its place in the queue moves: a picked or not-chosen attempt no longer waits). Not a verdict.
+   */
+  const pickAction = useCallback(
+    async (target: { itemKey: string; attemptRef?: string }, action: "pick" | "unpick" | "none_fits" | "clear_none_fits", note?: string | null): Promise<boolean> => {
+      if (busy) return false;
+      setBusy(true);
+      try {
+        await postJson(t, `${base}/pick`, { itemKey: target.itemKey, ...(target.attemptRef && (action === "pick" || action === "unpick") ? { attemptRef: target.attemptRef } : {}), action, ...(note && note.trim() ? { note: note.trim() } : {}) });
+        const done = action === "pick" ? "review.pick.done" : action === "unpick" ? "review.pick.withdrawn" : action === "none_fits" ? "review.noneFits.done" : "review.noneFits.cleared";
+        setMessage({ tone: "ok", text: t(done, { item: target.itemKey }) });
+        onChanged?.();
+        const stay = entry ? { itemKey: entry.itemKey, attemptRef: entry.attemptRef } : null;
+        const list = walkOf(await load(), filter, wave);
+        const here = stay ? list.findIndex((e) => e.itemKey === stay.itemKey && e.attemptRef === stay.attemptRef) : -1;
+        if (here >= 0) setIndex(here);
+        return true;
+      } catch (error) {
+        setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.saveFailed") });
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [base, busy, entry, filter, load, onChanged, t, wave]
+  );
+  /** S: the entry on screen picked, or its pick withdrawn. */
+  const togglePick = useCallback(
+    (target: ScreenEntry | null) => {
+      if (!target || target.recheck || !isVisual(screenMedia(target))) return;
+      if (!target.picked && target.verdict?.result === "rejected") {
+        setMessage({ tone: "error", text: t("review.pick.rejectedHint") });
+        return;
+      }
+      void pickAction(target, target.picked ? "unpick" : "pick", target.picked ? null : draft.note);
+    },
+    [draft.note, pickAction, t]
+  );
 
   const askRerun = async () => {
     if (!entry) return;
@@ -877,13 +1026,50 @@ export function PlanReviewScreen({
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      // BL-157 (AC-TC-04): while "Replace?" is open, the dialog has the keyboard.
-      if (confirmReplace) return;
+      // BL-157 (AC-TC-04): while "Replace?" is open, the dialog has the keyboard. BL-175: so do the other dialogs and a pin's note box.
+      if (confirmReplace || confirmRejectPicked || noneFitsDraft || draft.pending) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // BL-175 (§2.9): the keys only pictures have, first -- for a picture or clip on screen, or while the layer is open.
+      if (layer !== null || visualEntry) {
+        const v = visualKeyAction(event.key);
+        // Enter on a focused button, switch or link keeps its own meaning.
+        if (v && !(v === "loupe" && target?.closest("button, [role=switch], [role=button], a")) && !(v === "close" && layer === null)) {
+          event.preventDefault();
+          if (v === "close") setLayer(null);
+          else if (v === "zoom") {
+            if (layer) layerRef.current?.zoom();
+            else imageViewer.current?.toggleActual();
+          } else if (v === "frameBack" || v === "frameForward") {
+            const direction = v === "frameBack" ? -1 : 1;
+            if (layer) layerRef.current?.frame(direction);
+            else videoPlayer.current?.stepFrame(direction);
+          } else if (v === "grid") setLayer((l) => (l === "grid" ? null : "grid"));
+          else if (v === "loupe") {
+            if (visualEntry) setLayer("loupe");
+          } else if (v === "compare") {
+            if (entry && compareKey && compareKey !== `${entry.itemKey}\u0000${entry.attemptRef}`) setLayer("compare");
+            else setMessage({ tone: "ok", text: t("review.layer.compareNeedsTwo") });
+          } else if (v === "pick") togglePick(entry);
+          return;
+        }
+      }
       const action = reviewKeyAction(event.key);
       if (!action) return;
+      // In the layer only playback and moving between attempts act; a verdict is given on the screen itself.
+      if (layer !== null) {
+        if (action === "play" || action === "back" || action === "forward" || action === "next" || action === "previous") event.preventDefault();
+        if (action === "play") layerRef.current?.togglePlay();
+        else if (action === "back") layerRef.current?.seekBy(-1);
+        else if (action === "forward") layerRef.current?.seekBy(1);
+        else if (action === "next") go(stepIndex(entries ?? [], index, 1, skipClaimed));
+        else if (action === "previous") go(stepIndex(entries ?? [], index, -1, skipClaimed));
+        return;
+      }
+      // A picture has no A/B and no playhead; a clip seeks a second at a time and marks with a note.
+      if (visualEntry && (action === "ab" || (currentMedia === "image" && (action === "play" || action === "back" || action === "forward" || action === "mark")))) return;
+      const step = currentMedia === "video" ? 1 : 5;
       // A focused button or switch keeps Space/Enter (review B7); a held key never decides the next attempt too.
       if (action === "play" && target?.closest("button, [role=switch], a")) return;
       if (event.repeat && (action === "accept" || action === "reject" || action === "keep" || action === "next" || action === "previous")) return;
@@ -899,10 +1085,10 @@ export function PlanReviewScreen({
         else player.current?.togglePlay();
       } else if (action === "back") {
         if (b) b.currentTime = Math.max(0, b.currentTime - 5);
-        else player.current?.seekBy(-5);
+        else player.current?.seekBy(-step);
       } else if (action === "forward") {
         if (b) b.currentTime = Math.min(b.duration || b.currentTime + 5, b.currentTime + 5);
-        else player.current?.seekBy(5);
+        else player.current?.seekBy(step);
       }
       else if (action === "accept") void submit("accepted");
       else if (action === "reject") void submit("rejected");
@@ -910,12 +1096,12 @@ export function PlanReviewScreen({
       else if (action === "keep") void answerRecheck("kept");
       else if (action === "next") go(stepIndex(entries ?? [], index, 1, skipClaimed));
       else if (action === "previous") go(stepIndex(entries ?? [], index, -1, skipClaimed));
-      else if (action === "mark") mark();
+      else if (action === "mark") mark(visualEntry);
       else if (action === "ab") toggleAB();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [answerRecheck, confirmReplace, entries, go, index, mark, skipClaimed, submit, toggleAB, onB]);
+  }, [answerRecheck, compareKey, confirmRejectPicked, confirmReplace, currentMedia, draft.pending, entries, entry, go, index, layer, mark, noneFitsDraft, skipClaimed, submit, t, toggleAB, togglePick, onB, visualEntry]);
 
   // The reference's volume follows the loudness switch while it plays.
   useEffect(() => {
@@ -949,6 +1135,20 @@ export function PlanReviewScreen({
   const ownLufs = entry ? playedLufs(entry) : null;
   const lufsOf = entry ? (ownLufs ?? (measured && measured.src === src ? measured.lufs : null)) : null;
   const hideFindings = blind && entry !== null && entryWaits(entry);
+  // BL-175 (§A): an image's size in bytes -- one byte asked for, the total read from Content-Range.
+  useEffect(() => {
+    if (!src || currentMedia !== "image") return;
+    let cancelled = false;
+    void fetch(src, { headers: { range: "bytes=0-0" } })
+      .then((res) => {
+        if (!cancelled) setImageBytes({ src, bytes: totalFromContentRange(res.headers.get("content-range")) });
+        void res.body?.cancel();
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [src, currentMedia]);
 
   const segment = (selected: boolean) => `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${selected ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`;
   const toolButton = "flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700";
@@ -972,6 +1172,120 @@ export function PlanReviewScreen({
     );
   };
   const allChecks = entry ? entry.stages.flatMap((st) => st.checks) : [];
+
+  // -- BL-175 (VISUAL_REVIEW_PLAN.md §2.9): pictures and clips ---------------------------------------------------------------
+  const entryKey = (e: { itemKey: string; attemptRef: string }) => `${e.itemKey}\u0000${e.attemptRef}`;
+  const auditionSrc = (e: { itemKey: string; attemptRef: string }) => `${base}/audition?itemKey=${encodeURIComponent(e.itemKey)}&attemptRef=${encodeURIComponent(e.attemptRef)}`;
+  /** The pins an entry shows: its verdict's (numbered), the draft's and the one waiting for its note on screen, a re-check's spots. */
+  const pinsOf = (e: ScreenEntry, current: boolean): ViewerPin[] => {
+    const own = [...(e.verdict?.markers ?? []), ...(current ? draft.marks : [])];
+    const pins: ViewerPin[] = own.flatMap((m, i) => (m.region ? [{ region: m.region, label: String(i + 1), tone: "mark" as const, title: m.note }] : []));
+    for (const m of e.recheck?.markers ?? []) if (m.region) pins.push({ region: m.region, label: "?", tone: "question", title: m.note });
+    for (const m of e.recheck?.previousVerdict?.markers ?? []) if (m.region) pins.push({ region: m.region, label: "·", tone: "previous", title: m.note });
+    if (current && draft.pending?.region) pins.push({ region: draft.pending.region, label: String(own.length + 1), tone: "draft" });
+    return pins;
+  };
+  /** A clip's markers on its timeline: the validator's findings (unless blind), the verdict's and the draft's (numbered, with pins). */
+  const videoMarkersOf = (e: ScreenEntry, current: boolean): VideoMarker[] => {
+    const findings = blind && entryWaits(e) ? [] : findingMarkers(e).map((m) => ({ start: m.start, end: m.end, label: m.label, tone: "finding" as const }));
+    const own = [...(e.verdict?.markers ?? []), ...(current ? draft.marks : [])].map((m, i) => ({ start: m.start, end: m.end, label: m.note ? `${i + 1}. ${m.note}` : String(i + 1), tone: "mark" as const, ...(m.region ? { region: m.region } : {}) }));
+    const asked = (e.recheck?.markers ?? []).map((m) => ({ start: m.start, end: m.end, label: m.note, tone: "question" as const, ...(m.region ? { region: m.region } : {}) }));
+    const open = current && draft.openMark !== null ? [{ start: draft.openMark, end: null, label: t("review.openMark"), tone: "mark" as const }] : [];
+    const pending = current && draft.pending ? [{ start: draft.pending.start, end: draft.pending.end, label: String(own.length + 1), tone: "mark" as const, ...(draft.pending.region ? { region: draft.pending.region } : {}) }] : [];
+    return [...findings, ...asked, ...own, ...open, ...pending];
+  };
+  /** The visual attempts of the walk, stable (item, then attempt): the grid never reorders under the owner's hands. */
+  const visualWalk = (entries ?? [])
+    .filter((e) => !e.recheck && e.playable && isVisual(screenMedia(e)))
+    .sort((a, b) => a.itemKey.localeCompare(b.itemKey, undefined, { numeric: true }) || attemptLabel(a).localeCompare(attemptLabel(b), undefined, { numeric: true }));
+  const layerEntryOf = (e: ScreenEntry): LayerEntry => {
+    const current = entry !== null && entryKey(e) === entryKey(entry);
+    const media = screenMedia(e) as "image" | "video";
+    return {
+      key: entryKey(e),
+      itemKey: e.itemKey,
+      attemptRef: e.attemptRef,
+      seed: e.seed,
+      media,
+      ...(e.picked ? { picked: e.picked } : {}),
+      ...(e.pickSent ? { pickSent: true } : {}),
+      ...(e.notChosen ? { notChosen: true } : {}),
+      verdict: e.verdict ? { result: e.verdict.result, rating: e.verdict.rating } : null,
+      validator: validatorOfEntry(e),
+      fullSrc: auditionSrc(e),
+      previewSrc: media === "image" ? `${base}/preview?itemKey=${encodeURIComponent(e.itemKey)}&attemptRef=${encodeURIComponent(e.attemptRef)}` : null,
+      fps: fpsFromMetrics(e.stages),
+      pins: pinsOf(e, current),
+      markers: videoMarkersOf(e, current),
+    };
+  };
+  const itemPickInfo = (itemKey: string) => ({
+    picked: (allEntries ?? []).filter((e) => e.itemKey === itemKey && e.picked).length,
+    target: pickItems.get(itemKey)?.pickTarget ?? 1,
+    noneFits: Boolean(pickItems.get(itemKey)?.noneFits),
+  });
+  const itemStrip = entry && visualEntry ? visualWalk.filter((e) => e.itemKey === entry.itemKey) : [];
+  const currentNoneFits = entry ? (pickItems.get(entry.itemKey)?.noneFits ?? null) : null;
+  const currentPickTarget = entry ? (pickItems.get(entry.itemKey)?.pickTarget ?? 1) : 1;
+  const chips = entry ? reasonChipsFor(currentMedia, entry.groupId, reviewReasons, REVIEW_REASONS) : null;
+  const openLayer = (mode: LayerMode) => {
+    if (mode === "compare" && !(entry && compareKey && compareKey !== entryKey(entry))) {
+      setMessage({ tone: "ok", text: t("review.layer.compareNeedsTwo") });
+      setLayer("grid");
+      return;
+    }
+    setLayer(mode);
+  };
+  /** BL-175 (§C): the note of the mark just set -- typed when it is set (Enter keeps it, Esc drops the mark). Floating over the layer. */
+  const pendingNoteBox = (floating: boolean) =>
+    draft.pending ? (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          savePending();
+        }}
+        className={`flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/60 bg-zinc-900 p-2 shadow-lg ${floating ? "fixed bottom-6 left-1/2 z-[55] w-[min(40rem,90vw)] -translate-x-1/2" : ""}`}
+      >
+        <span className="text-xs text-amber-200">{t("review.pin.noteLabel", { number: (entry?.verdict?.markers.length ?? 0) + draft.marks.length + 1 })}</span>
+        <input
+          autoFocus
+          value={draft.pending.note ?? ""}
+          maxLength={200}
+          placeholder={t("review.pin.notePlaceholder")}
+          onChange={(event) => {
+            const note = event.target.value;
+            setDraft((d) => (d.pending ? { ...d, pending: { ...d.pending, note } } : d));
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              cancelPending();
+            }
+          }}
+          className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
+        />
+        <button type="submit" disabled={!draft.pending.note?.trim()} className="rounded-md bg-amber-500/80 px-3 py-1 text-xs font-medium text-black hover:bg-amber-400 disabled:opacity-40">
+          {t("review.pin.save")}
+        </button>
+        <button type="button" onClick={cancelPending} className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+          {t("review.pin.cancel")}
+        </button>
+      </form>
+    ) : null;
+  /** BL-175 (§B): "none of these fits", with the owner's note -- and, on this computer's own plan, a request to generate again. */
+  const submitNoneFits = async () => {
+    const d = noneFitsDraft;
+    if (!d || !d.note.trim()) return;
+    const ok = await pickAction({ itemKey: d.itemKey }, "none_fits", d.note);
+    if (!ok) return;
+    setNoneFitsDraft(null);
+    if (d.rerun && device === null) {
+      await postJson(t, `${base}/rerun-request`, { itemKey: d.itemKey, note: d.note.trim() })
+        .then(() => setMessage({ tone: "ok", text: t("review.noneFits.doneRerun", { item: d.itemKey }) }))
+        .catch((error: unknown) => setMessage({ tone: "error", text: error instanceof Error ? error.message : t("review.rerunFailed") }));
+    }
+  };
 
   // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §2.1, owner msgs 2254/2263): a review workstation -- one toolbar, then three columns that
   // fill the screen and scroll on their own: the player with the verdict under it, the auto-check, and the wave's queue (owner,
@@ -1137,6 +1451,20 @@ export function PlanReviewScreen({
                   <span className="text-sm text-zinc-500">
                     {entry.seed !== null ? t("review.trackMeta", { seed: String(entry.seed), index: index + 1, total: entries?.length ?? 0 }) : t("review.trackMetaNoSeed", { index: index + 1, total: entries?.length ?? 0 })}
                   </span>
+                  {/* BL-175: a picture names its attempt (several attempts of one item look alike), and says whether it is picked. */}
+                  {visualEntry && entry.seed === null ? (
+                    <span className="font-mono text-xs text-zinc-400" title={entry.attemptRef}>
+                      {attemptLabel(entry)}
+                    </span>
+                  ) : null}
+                  {entry.picked ? (
+                    <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs text-amber-200" title={entry.picked.device ? t("review.pick.by", { device: entry.picked.device, time: formatDisplayDateTime(entry.picked.at) }) : undefined}>
+                      ★ {t("review.pick.picked")}
+                      {entry.pickSent && device ? ` · ${t("review.sentWaitingFor", { device })}` : ""}
+                    </span>
+                  ) : entry.notChosen ? (
+                    <span className="rounded-full bg-zinc-700/70 px-2 py-0.5 text-xs text-zinc-300">{t("review.pick.notChosen")}</span>
+                  ) : null}
                   <span className="flex items-center gap-1">
                     <button type="button" onClick={() => go(stepIndex(entries ?? [], index, -1, skipClaimed))} className="rounded px-2 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={t("review.previous")} title={t("review.previous")}>
                       ←
@@ -1218,7 +1546,80 @@ export function PlanReviewScreen({
                     )}
                   </section>
                 )}
-                {entry.playable && src ? (
+                {entry.playable && src && visualEntry ? (
+                  <div className="space-y-2">
+                    {currentMedia === "image" ? (
+                      <MediaImageViewer key={src} ref={imageViewer} src={src} pins={pinsOf(entry, true)} onAddPin={entry.recheck ? undefined : (region) => addPin(region)} bytes={imageBytes && imageBytes.src === src ? imageBytes.bytes : null} />
+                    ) : (
+                      <MediaVideoPlayer
+                        key={src}
+                        ref={(h) => {
+                          videoPlayer.current = h;
+                          player.current = h;
+                        }}
+                        src={src}
+                        markers={videoMarkersOf(entry, true)}
+                        fps={fpsFromMetrics(entry.stages)}
+                        onAddPin={entry.recheck ? undefined : addPin}
+                      />
+                    )}
+                    {layer === null && draft.pending ? pendingNoteBox(false) : null}
+                    {/* The item's attempts side by side: the quickest "one of N" (§B); the grid shows them large. */}
+                    {itemStrip.length > 1 && (
+                      <ul className="flex gap-2 overflow-x-auto pb-1" aria-label={t("review.strip.label")}>
+                        {itemStrip.map((e) => {
+                          const k = entryKey(e);
+                          const isCurrent = k === entryKey(entry);
+                          const i = (entries ?? []).findIndex((x) => entryKey(x) === k);
+                          return (
+                            <li key={k} className="shrink-0">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  if (event.shiftKey || event.metaKey || event.ctrlKey) setCompareKey((c) => (c === k ? null : k));
+                                  else if (!isCurrent && i >= 0) {
+                                    pickedByHand.current = k;
+                                    go(i);
+                                  }
+                                }}
+                                title={e.attemptRef}
+                                className={`relative block h-16 w-24 overflow-hidden rounded-md border bg-black ${isCurrent ? "border-violet-400 ring-2 ring-violet-400/60" : compareKey === k ? "border-sky-400" : e.picked ? "border-amber-400" : "border-zinc-700 hover:border-zinc-500"} ${e.notChosen ? "opacity-50" : ""}`}
+                              >
+                                {screenMedia(e) === "image" ? (
+                                  // eslint-disable-next-line @next/next/no-img-element -- a local preview of this computer's file
+                                  <img src={`${base}/preview?itemKey=${encodeURIComponent(e.itemKey)}&attemptRef=${encodeURIComponent(e.attemptRef)}`} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                                ) : (
+                                  <video src={auditionSrc(e)} preload="metadata" muted playsInline className="h-full w-full object-cover" />
+                                )}
+                                {e.picked ? <span className="absolute right-0.5 top-0.5 rounded bg-black/70 px-1 text-[11px] text-amber-300">★</span> : null}
+                                {e.verdict ? <span className={`absolute left-0.5 top-0.5 rounded bg-black/70 px-1 text-[11px] ${e.verdict.result === "accepted" ? "text-emerald-300" : "text-rose-300"}`}>{e.verdict.result === "accepted" ? "✓" : "✗"}</span> : null}
+                                <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 text-[10px] text-zinc-200">{attemptLabel(e)}</span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <button type="button" onClick={() => openLayer("grid")} className={toolButton}>
+                        {t("review.layer.grid")}
+                        {/* ui-text-ignore: a keyboard key */}
+                        <kbd className="text-[10px] text-zinc-500">G</kbd>
+                      </button>
+                      <button type="button" onClick={() => openLayer("loupe")} className={toolButton}>
+                        {t("review.layer.loupe")}
+                        {/* ui-text-ignore: a keyboard key */}
+                        <kbd className="text-[10px] text-zinc-500">Enter</kbd>
+                      </button>
+                      <button type="button" onClick={() => openLayer("compare")} className={toolButton}>
+                        {t("review.layer.compare")}
+                        {/* ui-text-ignore: a keyboard key */}
+                        <kbd className="text-[10px] text-zinc-500">C</kbd>
+                      </button>
+                      <span className="text-zinc-500">{t("review.strip.compareHint")}</span>
+                    </div>
+                  </div>
+                ) : entry.playable && src ? (
                   <div className="space-y-1.5">
                     <MediaReviewPlayer
                       key={src}
@@ -1300,6 +1701,41 @@ export function PlanReviewScreen({
 
                 {/* The verdict, right under the player (AC-UX-02): the two decisions first, then rating, reasons, comment. */}
                 <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+                  {/* BL-175 (§B): one of N -- pick this attempt, or say none of the item's attempts fits. Not a verdict. */}
+                  {visualEntry && !entry.recheck && (
+                    <div className="space-y-2 border-b border-zinc-800 pb-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          disabled={busy || (!entry.picked && entry.verdict?.result === "rejected")}
+                          title={!entry.picked && entry.verdict?.result === "rejected" ? t("review.pick.rejectedHint") : entry.picked ? t("review.pick.withdrawHint") : undefined}
+                          onClick={() => togglePick(entry)}
+                          className={`flex items-center gap-2 rounded-lg border px-5 py-2.5 text-base font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${entry.picked ? "border-amber-400 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30" : "border-amber-500/50 bg-amber-500/10 text-amber-100 hover:border-amber-400"}`}
+                        >
+                          <span aria-hidden="true">★</span>
+                          {entry.picked ? t("review.pick.unpick") : t("review.pick.pick")}
+                          {/* ui-text-ignore: a keyboard key */}
+                          <kbd className="ml-1 rounded border border-amber-500/40 px-1.5 text-xs font-normal text-amber-300/80">S</kbd>
+                        </button>
+                        <span className="text-xs text-zinc-400">{t("review.pick.count", { picked: itemPickInfo(entry.itemKey).picked, target: currentPickTarget })}</span>
+                        {currentNoneFits ? (
+                          <span className="ml-auto flex flex-wrap items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300">
+                            {t("review.noneFits.marked")}
+                            {currentNoneFits.note ? ` · ${currentNoneFits.note}` : ""}
+                            {currentNoneFits.sent && device ? ` · ${t("review.sentWaitingFor", { device })}` : currentNoneFits.device ? ` · ${currentNoneFits.device}` : ""}
+                            <button type="button" disabled={busy} onClick={() => void pickAction({ itemKey: entry.itemKey }, "clear_none_fits")} className="rounded border border-zinc-600 px-1.5 hover:bg-zinc-800 disabled:opacity-50">
+                              {t("review.noneFits.clear")}
+                            </button>
+                          </span>
+                        ) : (
+                          <button type="button" disabled={busy} onClick={() => setNoneFitsDraft({ itemKey: entry.itemKey, note: "", rerun: device === null })} className="ml-auto rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">
+                            {t("review.noneFits.button")}
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-zinc-500">{t("review.pick.info")}</p>
+                    </div>
+                  )}
                   {/* BL-173 (§2.3): a question is answered by keeping the verdict (with a note), or by changing it below. */}
                   {entry.recheck?.kind === "question" && (
                     <div className="flex flex-wrap items-center gap-3">
@@ -1340,7 +1776,24 @@ export function PlanReviewScreen({
                       {t("review.reasons.label")} <span className="text-zinc-600">· {t("review.reasons.hint")}</span>
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      {REVIEW_REASONS.map((reason) => {
+                      {/* BL-175 (§D): a plan's or wave's own chips, or the image / video defaults; music keeps its ten below. */}
+                      {chips && chips.source !== "audio"
+                        ? chips.values.map((reason) => {
+                            const on = draft.reasons.includes(reason);
+                            return (
+                              <button
+                                key={reason}
+                                type="button"
+                                aria-pressed={on}
+                                onClick={() => setDraft((d) => ({ ...d, reasons: on ? d.reasons.filter((r) => r !== reason) : [...d.reasons, reason] }))}
+                                className={`rounded-full border px-3 py-1 text-sm transition-colors ${on ? "border-red-400 bg-red-500/25 text-red-100" : "border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500"}`}
+                              >
+                                {chips.source === "custom" ? reason : reasonLabel(t, reason)}
+                              </button>
+                            );
+                          })
+                        : null}
+                      {chips && chips.source === "audio" && REVIEW_REASONS.map((reason) => {
                         const on = draft.reasons.includes(reason);
                         return (
                           <button
@@ -1359,13 +1812,20 @@ export function PlanReviewScreen({
                   </div>
                   <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} maxLength={2000} placeholder={t("review.notePlaceholder")} className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100" />
                   <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-                    <button type="button" onClick={mark} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
-                      {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
-                    </button>
+                    {currentMedia === "image" ? (
+                      <span className="text-zinc-500">{t("review.visual.pinHint")}</span>
+                    ) : (
+                      <button type="button" onClick={() => mark(visualEntry)} className="rounded-md border border-amber-500/60 px-2.5 py-1 text-amber-200 hover:bg-amber-500/10">
+                        {draft.openMark === null ? t("review.markAtPlayhead") : t("review.endMark", { time: formatPlayerTime(draft.openMark) })}
+                      </button>
+                    )}
                     {draft.marks.map((m, i) => (
                       <span key={i} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
-                        {formatPlayerTime(m.start)}
-                        {m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
+                        {/* BL-175: a picture's marks are numbered like its pins, with their own notes. */}
+                        {visualEntry ? `${(entry.verdict?.markers.length ?? 0) + i + 1}. ` : ""}
+                        {currentMedia === "image" ? "" : formatPlayerTime(m.start)}
+                        {currentMedia !== "image" && m.end !== null ? `–${formatPlayerTime(m.end)}` : ""}
+                        {visualEntry && m.note ? ` ${m.note}` : ""}
                         <button type="button" onClick={() => setDraft((d) => ({ ...d, marks: d.marks.filter((_, j) => j !== i) }))} className="ml-1 text-amber-300 hover:text-white" aria-label={t("review.removeMark")}>
                           ×
                         </button>
@@ -1384,7 +1844,7 @@ export function PlanReviewScreen({
                     )}
                     <span className="ml-auto flex items-center gap-1 text-zinc-500">
                       {t("review.shortcutsTitle")}
-                      <InfoTooltip>{t("review.shortcuts")}</InfoTooltip>
+                      <InfoTooltip>{visualEntry ? t("review.shortcutsVisual") : t("review.shortcuts")}</InfoTooltip>
                     </span>
                   </div>
                   {message && <p className={`text-xs ${message.tone === "ok" ? "text-emerald-400" : "text-red-400"}`}>{message.text}</p>}
@@ -1525,6 +1985,11 @@ export function PlanReviewScreen({
                               {e.verdict.result === "accepted" ? "✓" : "✗"}
                               {e.verdict.rating !== null ? ` ${e.verdict.rating}/10` : ""}
                             </span>
+                          ) : e.picked ? (
+                            // BL-175: picked or not chosen -- settled without a verdict (they are in the reviewed group).
+                            <span className="ml-auto shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300">★ {t("review.pick.picked")}</span>
+                          ) : e.notChosen ? (
+                            <span className="ml-auto shrink-0 rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-300">{t("review.pick.notChosen")}</span>
                           ) : claim ? (
                             <span className="ml-auto shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">{t("review.queue.claimed", { device: claim.device })}</span>
                           ) : null}
@@ -1535,6 +2000,11 @@ export function PlanReviewScreen({
                             <span className="min-w-0 truncate text-sky-300/90">{t(e.recheck.kind === "revision" ? "review.recheck.revisionTitle" : "review.recheck.questionTitle", { title: e.recheck.title })}</span>
                           ) : e.seed !== null ? (
                             <span>{t("review.queue.seed", { seed: String(e.seed) })}</span>
+                          ) : isVisual(screenMedia(e)) ? (
+                            // BL-175: an attempt made outside the app has no seed -- its ref tells the attempts of one item apart.
+                            <span className="min-w-0 truncate font-mono" title={e.attemptRef}>
+                              {attemptLabel(e)}
+                            </span>
                           ) : null}
                           {/* Blind mode keeps the queue blind too. */}
                           {!blind && auto !== null ? <span className={`ml-auto ${auto === "rejected" ? "text-amber-400" : "text-emerald-500/80"}`}>{auto === "rejected" ? t("review.queue.autoFailed") : t("review.queue.autoPassed")}</span> : null}
@@ -1588,6 +2058,102 @@ export function PlanReviewScreen({
           }}
         />
       )}
+      {/* BL-175 (§2.2): an attempt is never both picked and rejected -- rejecting the picked one withdraws its pick. */}
+      {confirmRejectPicked && entry && (
+        <ConfirmDialog
+          title={t("review.pick.rejectTitle")}
+          description={t("review.pick.rejectDescription", { item: entry.itemKey })}
+          confirmLabel={t("review.pick.rejectConfirm")}
+          confirmVariant="danger"
+          onCancel={() => setConfirmRejectPicked(false)}
+          onConfirm={() => {
+            setConfirmRejectPicked(false);
+            void submit("rejected", false, true);
+          }}
+        />
+      )}
+      {noneFitsDraft && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("review.noneFits.title")}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitNoneFits();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setNoneFitsDraft(null);
+              }
+            }}
+            className="w-full max-w-lg space-y-3 rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+          >
+            <h3 className="text-base font-semibold text-white">{t("review.noneFits.title")}</h3>
+            <p className="text-sm text-zinc-400">{t("review.noneFits.description", { item: noneFitsDraft.itemKey })}</p>
+            <textarea
+              autoFocus
+              value={noneFitsDraft.note}
+              maxLength={2000}
+              rows={3}
+              placeholder={t("review.noneFits.placeholder")}
+              onChange={(event) => {
+                const note = event.target.value;
+                setNoneFitsDraft((d) => (d ? { ...d, note } : d));
+              }}
+              className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
+            />
+            <label className={`flex items-center gap-3 text-sm ${device !== null ? "text-zinc-500" : "text-zinc-200"}`}>
+              <ToggleSwitch tone="violet" label={t("review.noneFits.rerun")} checked={noneFitsDraft.rerun && device === null} disabled={device !== null} onChange={(rerun) => setNoneFitsDraft((d) => (d ? { ...d, rerun } : d))} />
+              <span>{device !== null ? t("review.rerunOnDevice", { device }) : t("review.noneFits.rerun")}</span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setNoneFitsDraft(null)} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800">
+                {t("review.pin.cancel")}
+              </button>
+              <button type="submit" disabled={busy || !noneFitsDraft.note.trim()} className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50">
+                {t("review.noneFits.confirm")}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {/* BL-175 (§B): the grid, the loupe and compare, over the whole window. */}
+      {layer !== null && entry && (
+        <VisualReviewLayer
+          ref={layerRef}
+          mode={layer}
+          scope={gridScope}
+          onScope={setGridScope}
+          entries={(layer === "grid" && gridScope === "item" ? visualWalk.filter((e) => e.itemKey === entry.itemKey) : visualWalk).map(layerEntryOf)}
+          currentKey={entryKey(entry)}
+          compareKey={compareKey}
+          blind={blind}
+          shortKey={shortKey}
+          itemPicks={itemPickInfo}
+          pickBlocked={(e) => (e.verdict?.result === "rejected" ? t("review.pick.rejectedHint") : null)}
+          busy={busy}
+          message={message}
+          onSelect={(e) => {
+            const i = (entries ?? []).findIndex((x) => entryKey(x) === e.key);
+            if (i >= 0 && i !== index) {
+              pickedByHand.current = e.key;
+              go(i);
+            }
+          }}
+          onToggleCompare={(e) => setCompareKey((c) => (c === e.key ? null : e.key))}
+          onMode={openLayer}
+          onPick={(e) => {
+            const target = (entries ?? []).find((x) => entryKey(x) === e.key);
+            if (target) togglePick(target);
+          }}
+          onNoneFits={(itemKey) => setNoneFitsDraft({ itemKey, note: "", rerun: device === null })}
+          onClose={() => setLayer(null)}
+          onAddPin={(region, at) => addPin(region, at)}
+        />
+      )}
+      {layer !== null ? pendingNoteBox(true) : null}
     </div>
   );
 }
