@@ -141,6 +141,14 @@ export function auditionContentType(file: string): string | null {
  */
 export const PLAN_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini"];
 
+/**
+ * BL-175 (§2.2, review of round 4): a verdict at the review stage that forbids a pick -- the owner's `rejected`, or a relayed
+ * `failed` (both count in `rejected`); an attempt is never both picked and one of these. The one rule for the screen and the server.
+ */
+export function forbidsPick(result: string | null | undefined): boolean {
+  return result === "rejected" || result === "failed";
+}
+
 export type PlanMediaKind = "audio" | "image" | "video";
 
 /** The media kind of a file by its extension (the same list the player serves); null = not shown. */

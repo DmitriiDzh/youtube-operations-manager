@@ -397,3 +397,7 @@ copying, owner time per verdict, phone mode (phase 3); relaying a pick through `
   seam window rests a loop range; leaving compare forgets the reference / «Было»; N/P skip a compared attempt only when an
   attempt is the other side; a question marker at 0 s opens paused; the wipe line resets on a lost pointer; headers show the
   re-check's key; texts («Стык (конец → начало)», proportions).
+- Review of the round-4 fixes (one reviewer; no blocker; all fixed): a relayed `failed` forbids a pick like `rejected`
+  (`forbidsPick`, server and screen); a dead app attempt (failed, interrupted, cancelled job) is no pick target, so its
+  replacement reaches the owner; the owner acting before the tick weighs pending picks with the pending rejections first, as the
+  tick does; a none-fits from the other computer covers a settled attempt only from the second before (a same-second tie waits).

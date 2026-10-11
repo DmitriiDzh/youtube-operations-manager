@@ -3561,9 +3561,11 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   serve the owner's own actions, the other computer's actions on the tick, and both pending overlays. A pick writes no result row
   and no verdict history; events `owner_pick` / `owner_unpick` / `owner_none_fits` (and `peer_pick` for an action weighed from
   the other computer) are recorded. An attempt is never both picked and rejected: a rejection withdraws the pick (also one that
-  arrives later from the other computer, or a `rejected` or `failed` row the factory relays at the review stage), a pick on a
-  rejected attempt is refused. A pick stands only on an attempt in the owner's queue that is counted (`pickableRefs`: in-app, or
-  reported by an external stage); a report row or a plan change (the factory's `factory_plan_update` or the owner's Web
+  arrives later from the other computer, or a `rejected` or `failed` row the factory relays at the review stage), a pick on an
+  attempt with such a verdict is refused (`forbidsPick`: `rejected` or `failed`, on the server and the screen alike), and a pick
+  whose attempt has one on its way from the other computer takes no place when pending picks are weighed (the tick applies
+  verdicts first). A pick stands only on an attempt in the owner's queue that is counted (`pickableRefs`: an in-app attempt
+  whose job did not fail, was not interrupted or cancelled, or one reported by an external stage); a report row or a plan change (the factory's `factory_plan_update` or the owner's Web
   `review-rejected` switch, both under the plan's lock) that takes a picked attempt out of the owner's queue withdraws its pick
   (`left_queue`: a failed row of the stage right before the review, a rejected one while the plan does not show rejected
   attempts -- or one that cannot be played --, `reviewRejected` switched off, a stage removed; a row of an earlier stage does
@@ -3584,8 +3586,8 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   when it was given (`queuedAtOf`: its job finished, or the row of the stage right before the review, or its review row -- the
   earliest; a re-report replaces a row and its time, so such an attempt counts as entering again and waits), so an attempt that
   still waits and was not seen -- or entered the queue later -- stays out (the report keeps 500 entries and cuts settled ones
-  first). Known limits: the store keeps these times in whole seconds and the action's time is the other computer's clock
-  (RISK-119); an attempt shown again because `reviewRejected` was switched on after the action has no time of its own and is
+  first). Whole seconds are compared (the store keeps those): an attempt that entered the queue in the same second as the
+  action waits. Known limits: the action's time is the other computer's clock (RISK-119); an attempt shown again because `reviewRejected` was switched on after the action has no time of its own and is
   covered when its row is older. The same "none fits" weighed twice
   (its `peer_pick` event fell out of the newest 5000 events) is `unchanged`.
 - **Phase 2 (§E–§F, screen only).** Compare views «Рядом · Шторка · Разница» (`CompareView`): the image viewer and the video

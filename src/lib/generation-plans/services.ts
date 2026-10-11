@@ -4,6 +4,7 @@ import {
   entryWaits,
   mediaKindOf,
   normalizeMarker,
+  forbidsPick,
   PLAN_JOB_OUTPUT_SUBDIRS,
   pickTargetOf,
   planClosed,
@@ -390,6 +391,12 @@ export function validateDefinition(definition: PlanDefinition): void {
     if (item.pickTarget !== undefined && (item.pickTarget < 1 || item.pickTarget > item.targetCount)) problems.push(`item ${item.itemKey} picks ${item.pickTarget}, outside 1..targetCount (${item.targetCount})`);
   }
   if (problems.length > 0) throw planInvalid(`The plan is not valid: ${problems.slice(0, 10).join("; ")}`, { problems });
+}
+
+/** BL-175 phase 3: a plan file that names a job output folder (`From YTM/<allowed folder>/<jobId>/<file…>`), as the resolver reads it. */
+function isJobOutputPath(file: string | undefined): boolean {
+  const parts = (file ?? "").split("/");
+  return parts.length >= 4 && parts[0] === "From YTM" && PLAN_JOB_OUTPUT_SUBDIRS.includes(parts[1]);
 }
 
 /** BL-175: the records after `writes` (one record per plan, item, kind and attempt: a write replaces it). */
@@ -954,7 +961,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   function noneFitsQueue(row: StoredPlan, action: SharedPickAction, ctx: { queueRefs: readonly string[] }, records: readonly PlanPickRecord[], entries: PlanReviewEntry[], live: ReadonlySet<string>, queuedAt: ReadonlyMap<string, number>): readonly string[] {
     if (action.action !== "none_fits") return ctx.queueRefs;
     const given = Date.parse(action.at);
-    const settled = [...settledRefs(records, row.definition.items, entries, action.itemKey, live)].filter((ref) => (queuedAt.get(keyOf(action.itemKey, ref)) ?? Infinity) <= given);
+    // Whole seconds (the store keeps those): an attempt that entered the queue in the same second as the action may have come
+    // after it, so it waits (review of round 4) -- covered only from the second before.
+    const settled = [...settledRefs(records, row.definition.items, entries, action.itemKey, live)].filter((ref) => Math.floor((queuedAt.get(keyOf(action.itemKey, ref)) ?? Infinity) / 1000) < Math.floor(given / 1000));
     return coveredRefs(action, ctx.queueRefs, new Set(settled));
   }
 
@@ -967,12 +976,15 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   function pickContextOf(row: StoredPlan, entries: PlanReviewEntry[], records: readonly PlanPickRecord[], itemKey: string, live: ReadonlySet<string>) {
     const item = row.definition.items.find((i) => i.itemKey === itemKey);
     const own = entries.filter((e) => e.itemKey === itemKey && live.has(keyOf(e.itemKey, e.attemptRef)));
+    // Review of round 4: a pick on an attempt whose verdict -- also one on its way from the other computer, overlaid on `entries`
+    // -- forbids it is as good as withdrawn (the tick applies verdicts first): it takes no place and decides nothing here.
+    const forbidden = new Set(own.filter((e) => forbidsPick(e.verdict?.result)).map((e) => e.attemptRef));
     return {
       // An active pick a pick may no longer stand on takes no place (review round 3; it is withdrawn as `left_queue`).
-      records: records.filter((r) => r.itemKey === itemKey && (r.kind !== "pick" || !r.active || (r.attemptRef !== null && live.has(keyOf(r.itemKey, r.attemptRef))))),
+      records: records.filter((r) => r.itemKey === itemKey && (r.kind !== "pick" || !r.active || (r.attemptRef !== null && live.has(keyOf(r.itemKey, r.attemptRef)) && !forbidden.has(r.attemptRef)))),
       target: item ? pickTargetOf(item) : 1,
       queueRefs: own.map((e) => e.attemptRef),
-      rejected: new Set(own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef)),
+      rejected: new Set(own.filter((e) => forbidsPick(e.verdict?.result)).map((e) => e.attemptRef)),
       validatorRejected: new Set(own.filter((e) => e.validator === "rejected").map((e) => e.attemptRef)),
     };
   }
@@ -1014,6 +1026,12 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     const live = liveOf(row, jobs, results);
     const queuedAt = queuedAtOf(row, jobs, results);
     let records = [...stored];
+    // Review of round 4: as the tick does, a rejection on its way withdraws the pick first (never both picked and rejected).
+    for (const e of entries) {
+      if (!forbidsPick(e.verdict?.result)) continue;
+      const change = withdrawPickOnReject(records, e.itemKey, e.attemptRef, e.verdict?.at ?? now().toISOString(), e.pendingFrom ?? "");
+      if (change) records = mergePicks(records, change.writes);
+    }
     for (const { action, from } of pending) {
       const ctx = pickContextOf(row, entries, records, action.itemKey, live);
       const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, queuedAt);
@@ -1757,7 +1775,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           if (!deps.files || !workspace) throw planInvalid(`Channel ${row.channelId} has no workspace folder on this device (Settings → Channels); the file lives there`, { planId: row.id, channelId: row.channelId, reason: "no_workspace" });
           if (!(await deps.files.sentFileExists(workspace, parsed.auditionFile))) {
             throw planInvalid(
-              PLAN_JOB_OUTPUT_SUBDIRS.some((dir) => parsed.auditionFile?.startsWith(`From YTM/${dir}/`))
+              isJobOutputPath(parsed.auditionFile)
                 ? `${parsed.auditionFile} is not in that Gemini job's folder of the channel's '99 Data Exchange/From YTM/'`
                 : `${parsed.auditionFile} is not in the channel's '99 Data Exchange/Sent to YTM/'; copy it there first`,
               { planId: row.id, auditionFile: parsed.auditionFile, reason: "file_missing" }
@@ -2364,7 +2382,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           const sent = (await more.outgoingVerdicts()).filter((v) => v.ownerDeviceId === parsed.deviceId && v.planId === parsed.planId && v.itemKey === parsed.itemKey && v.attemptRef === parsed.attemptRef && v.kept !== true).at(-1);
           const theirs = entry.verdict;
           const current = sent && (!theirs || Math.floor(Date.parse(sent.at) / 1000) > Math.floor(Date.parse(theirs.at) / 1000)) ? sent.result : theirs?.result;
-          if (current === "rejected") throw planMismatch(`${parsed.itemKey} ${parsed.attemptRef} is rejected; change its verdict before picking it`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef, reason: "rejected" });
+          if (forbidsPick(current)) throw planMismatch(`${parsed.itemKey} ${parsed.attemptRef} is rejected; change its verdict before picking it`, { planId: parsed.planId, itemKey: parsed.itemKey, attemptRef: parsed.attemptRef, reason: "rejected" });
         }
       }
       const action: SharedPickAction = {

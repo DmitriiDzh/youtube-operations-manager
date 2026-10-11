@@ -7,6 +7,7 @@ import {
   historyEntryOfVerdict,
   mediaKindOf,
   pickTargetOf,
+  forbidsPick,
   RECHECK_STAGE_ID,
   RECHECKS_WAVE,
   recheckEntry,
@@ -1127,7 +1128,7 @@ export function PlanReviewScreen({
   const togglePick = useCallback(
     (target: ScreenEntry | null) => {
       if (!target || target.recheck || !isVisual(screenMedia(target))) return;
-      if (!target.picked && target.verdict?.result === "rejected") {
+      if (!target.picked && forbidsPick(target.verdict?.result)) {
         setMessage({ tone: "error", text: t("review.pick.rejectedHint") });
         return;
       }
@@ -2006,8 +2007,8 @@ export function PlanReviewScreen({
                       <div className="flex flex-wrap items-center gap-3">
                         <button
                           type="button"
-                          disabled={busy || (!entry.picked && entry.verdict?.result === "rejected")}
-                          title={!entry.picked && entry.verdict?.result === "rejected" ? t("review.pick.rejectedHint") : entry.picked ? t("review.pick.withdrawHint") : undefined}
+                          disabled={busy || (!entry.picked && forbidsPick(entry.verdict?.result))}
+                          title={!entry.picked && forbidsPick(entry.verdict?.result) ? t("review.pick.rejectedHint") : entry.picked ? t("review.pick.withdrawHint") : undefined}
                           onClick={() => togglePick(entry)}
                           className={`flex items-center gap-2 rounded-lg border px-5 py-2.5 text-base font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${entry.picked ? "border-amber-400 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30" : "border-amber-500/50 bg-amber-500/10 text-amber-100 hover:border-amber-400"}`}
                         >
@@ -2447,7 +2448,7 @@ export function PlanReviewScreen({
           blind={blind}
           shortKey={shortKey}
           itemPicks={itemPickInfo}
-          pickBlocked={(e) => (e.verdict?.result === "rejected" ? t("review.pick.rejectedHint") : null)}
+          pickBlocked={(e) => (forbidsPick(e.verdict?.result) ? t("review.pick.rejectedHint") : null)}
           busy={busy}
           message={message}
           onSelect={(e) => {

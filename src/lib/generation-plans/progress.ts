@@ -236,7 +236,10 @@ export function externalAttempts(plan: Pick<GenerationPlan, "stages">, inApp: Pl
  */
 export function pickableRefs(plan: Pick<GenerationPlan, "stages" | "items" | "reviewRejected">, attempts: PlanAttempt[], results: PlanResultRow[]): Set<string> {
   const key = (a: { itemKey: string; attemptRef: string }) => `${a.itemKey}\u0000${a.attemptRef}`;
-  const counted = new Set([...attempts, ...externalAttempts(plan, attempts, results)].map(key));
+  // Review of round 4: an app's attempt whose job failed, was interrupted or cancelled is dead -- a pick on it would decide its
+  // item while it never counts as accepted, so the replacement it asks for would never reach the owner.
+  const alive = attempts.filter((a) => a.state !== "failed" && a.state !== "interrupted" && a.state !== "cancelled");
+  const counted = new Set([...alive, ...externalAttempts(plan, attempts, results)].map(key));
   return new Set(reviewCandidates(plan, attempts, results, { keepFoundOrder: true }).map(key).filter((k) => counted.has(k)));
 }
 

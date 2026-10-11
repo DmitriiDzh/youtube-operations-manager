@@ -915,6 +915,8 @@ test("review round 4: a failed verdict relayed at the review stage withdraws the
   assert.deepEqual([item.picks.length, item.accepted, item.rejected], [0, 0, 1]);
 });
 
+// Review of round 4 (§L): the requirement became stricter -- a dead app attempt is no pick target at all (a pick on it decided the
+// item while it never counted, so its replacement never reached the owner). The pick is refused; the numbers stay as stated.
 test("review round 4: a pick never revives an attempt of the app's own whose job failed (accepted 0, one more to make)", async () => {
   const failed = { id: "j1", sessionId: "s1", channelId: CHANNEL, stageId: "generate", itemKey: "I", seed: 1, status: "failed" as const, error: "boom", createdAt: new Date(clockMs - 60_000), submittedAt: null, finishedAt: new Date(clockMs - 30_000), outputFile: null, planId: PLAN };
   const s = setup([failed]);
@@ -932,7 +934,10 @@ test("review round 4: a pick never revives an attempt of the app's own whose job
   // The validator passed it anyway (a stale row): it is in the queue and can be picked.
   await s.services.report({ planId: PLAN, rows: [{ stageId: "check", itemKey: "I", attemptRef: "job:j1", result: "accepted" }] });
   tick();
-  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "I", attemptRef: "job:j1", action: "pick" });
+  await assert.rejects(
+    () => s.services.recordOwnerPick({ planId: PLAN, itemKey: "I", attemptRef: "job:j1", action: "pick" }),
+    (e: unknown) => isDomainError(e) && (e.details as Record<string, unknown>).reason === "unknown_attempt"
+  );
   const item = (await s.services.getPlan({ planId: PLAN })).progress.items[0];
   assert.deepEqual([item.accepted, item.missing], [0, 1]);
 });
@@ -1039,4 +1044,125 @@ test("AC-V3-02: a revision may name a Gemini output in place; a missing one is r
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// -- Review of round 4 (VISUAL_REVIEW_PLAN.md §5 round 4, §2.2; expected values worked out by hand) ---------------------------
+
+test("review of round 4: an attempt a relayed failed verdict rejected cannot be picked again (never both accepted and rejected)", async () => {
+  const s = await visualPlan({ targetCount: 1 });
+  tick();
+  await s.services.report({ planId: PLAN, rows: [{ stageId: "owner_review", itemKey: "W1/I", attemptRef: "a3", result: "failed" }] });
+  tick();
+  await assert.rejects(
+    () => s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "pick" }),
+    (e: unknown) => isDomainError(e) && e.code === "plan_mismatch" && (e.details as Record<string, unknown>).reason === "rejected"
+  );
+  const item = await itemOf(s);
+  assert.deepEqual([item.picks.length, item.accepted, item.rejected], [0, 0, 1]);
+});
+
+for (const mode of ["fixed", "until_accepted"] as const) {
+  test(`review of round 4 (${mode}): an app attempt whose job failed cannot be picked -- the replacement it asks for waits for the owner`, async () => {
+    const job = (id: string, status: PlanJobRow["status"]) => ({ id, sessionId: "s1", channelId: CHANNEL, stageId: "generate", itemKey: "I", seed: Number(id.slice(1)), status, error: status === "failed" ? "boom" : null, createdAt: new Date(clockMs - 60_000), submittedAt: null, finishedAt: new Date(clockMs - 30_000), outputFile: `${id}.png`, planId: PLAN });
+    const jobs: Array<PlanJobRow & { planId: string | null }> = [job("j1", "failed")];
+    const s = setup(jobs);
+    await s.services.createPlan({
+      planId: PLAN,
+      title: "dead",
+      channelId: CHANNEL,
+      stages: [
+        { stageId: "generate", title: "Generate", kind: "in_app" },
+        { stageId: "check", title: "Check", kind: "external" },
+        { stageId: "owner_review", title: "Owner review", kind: "owner_review" },
+      ],
+      items: [{ itemKey: "I", targetCount: 1, mode }],
+    });
+    // A stale "passed" row of the check on the failed job: it is in the queue, but it is dead.
+    await s.services.report({ planId: PLAN, rows: [{ stageId: "check", itemKey: "I", attemptRef: "job:j1", result: "accepted" }] });
+    tick();
+    await assert.rejects(
+      () => s.services.recordOwnerPick({ planId: PLAN, itemKey: "I", attemptRef: "job:j1", action: "pick" }),
+      (e: unknown) => isDomainError(e) && (e.details as Record<string, unknown>).reason === "unknown_attempt"
+    );
+    let item = (await s.services.getPlan({ planId: PLAN })).progress.items[0];
+    assert.deepEqual([item.accepted, item.missing], [0, 1]);
+    // The factory makes the replacement: it waits (nothing decided the item).
+    jobs.push(job("j2", "done"));
+    await s.services.report({ planId: PLAN, rows: [{ stageId: "check", itemKey: "I", attemptRef: "job:j2", result: "accepted" }] });
+    item = (await s.services.getPlan({ planId: PLAN })).progress.items[0];
+    assert.equal(item.notChosen, 0);
+    assert.ok((await s.services.todo({ planId: PLAN })).waitingReview.some((w) => w.attemptRef === "job:j2"), "the replacement waits for the owner");
+  });
+}
+
+test("review of round 4: Windows picked a2 and rejected a1, the Mac picked a1 before that arrived -- the owner acting first stores what the tick would", async () => {
+  const pair = async () => {
+    let macReport: GenerationPlansReport | null = null;
+    let winReport: GenerationPlansReport | null = null;
+    const mac = setup([], { deviceId: "mac-id", label: "MAC", peers: () => (winReport ? [winReport] : []) });
+    const win = setup([], { deviceId: "win-id", label: "WIN", peers: () => (macReport ? [macReport] : []) });
+    await mac.services.createPlan({
+      planId: PLAN,
+      title: "x",
+      channelId: CHANNEL,
+      stages: [
+        { stageId: "render", title: "Render", kind: "external" },
+        { stageId: "owner_review", title: "Owner review", kind: "owner_review" },
+      ],
+      groups: [{ groupId: "W1", title: "Stills" }],
+      items: [
+        { itemKey: "W1/I", groupId: "W1", targetCount: 1 },
+        { itemKey: "W1/J", groupId: "W1", targetCount: 1 },
+      ],
+    });
+    await mac.services.report({ planId: PLAN, rows: [...refs(3).map((a) => ({ stageId: "render", itemKey: "W1/I", attemptRef: a, result: "done" as const, auditionFile: `x/${a}.png` })), { stageId: "render", itemKey: "W1/J", attemptRef: "j1", result: "done" as const, auditionFile: "x/j1.png" }] });
+    macReport = await reportOf(mac, "mac-id", "MAC");
+    tick();
+    await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a2", action: "pick" });
+    tick();
+    await win.services.recordPeerVerdict({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a1", result: "rejected" });
+    tick();
+    await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" });
+    tick();
+    winReport = await reportOf(win, "win-id", "WIN");
+    return mac;
+  };
+  const picksOfI = async (s: ReturnType<typeof setup>) => (await s.services.getPlan({ planId: PLAN })).progress.items.find((i) => i.itemKey === "W1/I")?.picks.map((p) => p.attemptRef);
+  // The tick: a1's rejection first (its pick withdrawn), then Windows' pick of a2.
+  const tickOnly = await pair();
+  await tickOnly.services.applyPeerVerdicts();
+  await tickOnly.services.applyPeerPicks();
+  assert.deepEqual(await picksOfI(tickOnly), ["a2"]);
+  // The owner acts on another item first: before the tick the screen shows a2 picked and a1 not; afterwards the same as the tick.
+  const ownerFirst = await pair();
+  const shown = (await ownerFirst.services.reviewQueue({ planId: PLAN })).entries.filter((e) => e.itemKey === "W1/I").map((e) => [e.attemptRef, Boolean(e.picked)]);
+  assert.deepEqual(shown.sort(), [["a1", false], ["a2", true], ["a3", false]]);
+  await ownerFirst.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/J", attemptRef: "j1", action: "pick" });
+  await ownerFirst.services.applyPeerVerdicts();
+  await ownerFirst.services.applyPeerPicks();
+  assert.deepEqual(await picksOfI(ownerFirst), ["a2"]);
+});
+
+test("review of round 4: a job that finished in the same second as a none-fits from Windows (the store keeps whole seconds) waits", async () => {
+  // Align the clock to a whole second, then 0.3 s into it.
+  clockMs = Math.ceil(clockMs / 1000) * 1000 + 300;
+  const whole = (ms: number) => new Date(Math.floor(ms / 1000) * 1000);
+  const job = (n: number, done: boolean) => ({ id: `j${n}`, sessionId: "s1", channelId: CHANNEL, stageId: "generate", itemKey: "I", seed: n, status: (done ? "done" : "generating") as PlanJobRow["status"], error: null, createdAt: whole(clockMs - 60_000), submittedAt: null, finishedAt: done ? whole(clockMs - 30_000) : null, outputFile: `j${n}.png`, planId: PLAN });
+  const jobs = [job(1, true), job(2, true), job(3, false)];
+  let macReport: GenerationPlansReport | null = null;
+  let winReport: GenerationPlansReport | null = null;
+  const mac = setup(jobs, { deviceId: "mac-id", label: "MAC", peers: () => (winReport ? [winReport] : []) });
+  const win = setup([], { deviceId: "win-id", label: "WIN", peers: () => (macReport ? [macReport] : []) });
+  await mac.services.createPlan({ planId: PLAN, title: "s", channelId: CHANNEL, stages: [{ stageId: "generate", title: "Generate", kind: "in_app" }, { stageId: "owner_review", title: "Owner review", kind: "owner_review" }], items: [{ itemKey: "I", targetCount: 1 }] });
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "I", attemptRef: "job:j1", action: "pick" });
+  macReport = await reportOf(mac, "mac-id", "MAC");
+  tick(1000); // x.300: Windows says none fits; j3 still generates
+  await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "I", action: "none_fits", note: "мимо" });
+  // j3 finishes 0.4 s later, in the same second; the store keeps the whole second.
+  Object.assign(jobs[2], { status: "done", finishedAt: whole(clockMs + 400) });
+  tick(60_000);
+  winReport = await reportOf(win, "win-id", "WIN");
+  await mac.services.applyPeerPicks();
+  const item = (await mac.services.getPlan({ planId: PLAN })).progress.items[0];
+  assert.deepEqual([item.noneFits?.attempts, item.notChosen, item.waitingReview], [2, 2, 1]);
 });

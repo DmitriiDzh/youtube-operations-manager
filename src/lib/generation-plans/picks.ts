@@ -1,4 +1,4 @@
-import { pickTargetOf, type PlanItem, type PlanNoneFitsView, type PlanPickAction, type PlanPickMark, type PlanPickRecord, type PlanPickView } from "./contracts";
+import { forbidsPick, pickTargetOf, type PlanItem, type PlanNoneFitsView, type PlanPickAction, type PlanPickMark, type PlanPickRecord, type PlanPickView } from "./contracts";
 
 // ---------------------------------------------------------------------------
 // BL-175 (FO-REQ-0018 §B, docs/roadmap/plans/VISUAL_REVIEW_PLAN.md §2.2/§2.3): the owner's picks ("this one of N") and "none
@@ -247,7 +247,7 @@ export function withSentPicks<E extends { itemKey: string; attemptRef: string; v
         records: records.filter((r) => r.itemKey === a.itemKey),
         target: pickTargetOf(item),
         queueRefs: coveredRefs(a, own.map((e) => e.attemptRef), settledRefs(records, plan.items, review, a.itemKey)),
-        rejected: new Set(own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef)),
+        rejected: new Set(own.filter((e) => forbidsPick(e.verdict?.result)).map((e) => e.attemptRef)),
         validatorRejected: new Set(),
       }
     );
