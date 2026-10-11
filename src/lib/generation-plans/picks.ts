@@ -208,7 +208,11 @@ export function withSentPicks<E extends { itemKey: string; attemptRef: string; v
     if (outcome.outcome !== "applied") continue;
     const same = (x: PlanPickRecord, w: PlanPickRecord) => x.itemKey === w.itemKey && x.kind === w.kind && (x.attemptRef ?? "") === (w.attemptRef ?? "");
     records = [...records.filter((r) => !outcome.writes.some((w) => same(r, w))), ...outcome.writes];
-    for (const w of outcome.writes) if (w.kind === "pick" && w.attemptRef !== null) (w.active ? sentPicks.add(key(w.itemKey, w.attemptRef)) : sentPicks.delete(key(w.itemKey, w.attemptRef)));
+    for (const w of outcome.writes) {
+      if (w.kind !== "pick" || w.attemptRef === null) continue;
+      if (w.active) sentPicks.add(key(w.itemKey, w.attemptRef));
+      else sentPicks.delete(key(w.itemKey, w.attemptRef));
+    }
   }
   const flags = pickFlagsOf(pickStateOf(records), plan.items);
   return review.map((e) => {

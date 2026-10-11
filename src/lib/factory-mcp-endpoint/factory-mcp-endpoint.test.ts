@@ -322,14 +322,15 @@ test("AC-FO-07: a channel tool name is not callable on the factory endpoint", as
 // BL-172 (GPU_AVAILABILITY_PLAN.md AC-GA-08): 1.10.0 and the READ tools after the capacity log (declaration order).
 // BL-173 (PLAN_RECHECKS_PLAN.md AC-RC-12): 1.11.0 and the two re-check WRITE tools, last in both lists (declaration order).
 // BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): 1.12.0 and the three Gemini tools, last (declaration order); one of them a write.
-test("factory_get_capabilities reports the factory API version 1.12.0 (BL-174), READ and WRITE, the tool list and the write tools", async () => {
+// BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): 1.13.0, no new tool.
+test("factory_get_capabilities reports the factory API version 1.13.0 (BL-175), READ and WRITE, the tool list and the write tools", async () => {
   const { endpoint, tokenServices } = setup();
   const { token } = await tokenServices.issueToken({});
   const result = await toolResult(await endpoint.handle(rpc(call("factory_get_capabilities"), withToken(token))));
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     role: "factory_operator",
-    factoryApiVersion: "1.12.0",
+    factoryApiVersion: "1.13.0",
     tools: [
       "factory_get_capabilities",
       "factory_list_logical_paths",
@@ -812,6 +813,39 @@ test("BL-173: the re-check tools reject unknown keys and an unknown kind at the 
     assert.match(String(body.result.content[0].text), /invalid|unrecognized|validation/i, name);
     assert.deepEqual(toolDeps.mediaCalls, [], "nothing reached the gate or the core");
   }
+});
+
+// BL-175 (VISUAL_REVIEW_PLAN.md AC-VR-13): the plan tools take the new fields at the MCP boundary and pass them on unchanged:
+// reviewReasons (create, update -- null removes), groups' reviewReasons and items' pickTarget, a marker's region in a report.
+test("BL-175: factory_plan_create/update/report pass reviewReasons, pickTarget and a marker region on; an unknown top-level key is still refused", async () => {
+  const { endpoint, tokenServices, toolDeps } = setupWithDeps();
+  const { token } = await tokenServices.issueToken({});
+  const seen: Array<Record<string, unknown>> = [];
+  toolDeps.deps.plans.create = async (input) => (seen.push(input as Record<string, unknown>), { plan: {} });
+  toolDeps.deps.plans.update = async (input) => (seen.push(input as Record<string, unknown>), { plan: {} });
+  toolDeps.deps.plans.report = async (input) => (seen.push(input as Record<string, unknown>), { stored: 1 });
+  const create = {
+    planId: "H-0004-C",
+    title: "Plan C",
+    channelId: "UC_A",
+    stages: [{ stageId: "render", title: "R", kind: "external" }],
+    groups: [{ groupId: "W1", reviewReasons: ["лишний предмет"] }],
+    items: [{ itemKey: "W1/I", groupId: "W1", targetCount: 8, pickTarget: 1 }],
+    reviewReasons: ["лестница"],
+  };
+  const region = { x: 0.25, y: 0.5, r: 0.1 };
+  for (const [name, args] of [
+    ["factory_plan_create", create],
+    ["factory_plan_update", { planId: "H-0004-C", reviewReasons: null, upsertGroups: [{ groupId: "W1", reviewReasons: null }] }],
+    ["factory_plan_report", { planId: "H-0004-C", rows: [{ stageId: "owner_review", itemKey: "W1/I", attemptRef: "a1", result: "rejected", markers: [{ start: 0, note: "фонарь", region }] }] }],
+  ] as const) {
+    assert.equal((await toolResult(await endpoint.handle(rpc(call(name, { ...args }), withToken(token))))).isError, false, name);
+  }
+  assert.deepEqual(seen[0], create);
+  assert.deepEqual([seen[1].reviewReasons, (seen[1].upsertGroups as Array<Record<string, unknown>>)[0].reviewReasons], [null, null]);
+  assert.deepEqual(((seen[2].rows as Array<Record<string, unknown>>)[0].markers as unknown[])[0], { start: 0, note: "фонарь", region });
+  const body = await (await endpoint.handle(rpc(call("factory_plan_create", { ...create, reviewChips: [] }), withToken(token)))).json();
+  assert.equal(body.result?.isError, true, "the create schema stays strict");
 });
 
 // BL-174 (GEMINI_MEDIA_PLAN.md AC-GM-13): a paid Gemini job passes the device mutation gate first and reaches nothing behind a
