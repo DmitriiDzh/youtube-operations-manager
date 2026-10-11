@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
+import { historyEntryOfVerdict, isDomainError, type PlanEvent, type PlanPickRecord, type PlanRecheck, type PlanResultRow, type PlanVerdictHistoryRow } from "./contracts";
 import type { PlanJobRow, PlanSessionRow } from "./progress";
-import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedVerdict } from "@/lib/sync-gateway";
+import type { GenerationPlansReport, SharedClaim, SharedGroupNote, SharedPickAction, SharedVerdict } from "@/lib/sync-gateway";
 import { createGenerationPlanServices, sharedNotices, type PlanServiceDependencies, type PlanStore, type StoredPlan } from "./services";
 
 // BL-143 acceptance criteria AC-GP-01..07 (docs/roadmap/plans/GENERATION_PLANS_PLAN.md §4), written before the services.
@@ -26,6 +26,9 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
   const history: Array<PlanVerdictHistoryRow & { planId: string }> = [];
   const claims = new Map<string, SharedClaim>();
   const rechecks: Array<PlanRecheck & { planId: string }> = [];
+  // BL-175: picks, one record per (plan, item, kind, attempt); pick actions sent to other devices.
+  const picks: Array<PlanPickRecord & { planId: string }> = [];
+  const peerPicks: SharedPickAction[] = [];
   const store: PlanStore = {
     async insertPlan(row) {
       if (plans.has(row.id)) return null;
@@ -96,8 +99,20 @@ function memoryStore(seed: { jobs?: Array<PlanJobRow & { planId: string | null; 
       r.answer = structuredClone(answer);
       return true;
     },
+    listPicks: async (planId) => picks.filter((r) => r.planId === planId).map(({ planId: _p, ...r }) => (void _p, structuredClone(r))),
+    async upsertPicks(planId, records) {
+      for (const r of records) {
+        const i = picks.findIndex((x) => x.planId === planId && x.itemKey === r.itemKey && x.kind === r.kind && (x.attemptRef ?? "") === (r.attemptRef ?? ""));
+        if (i >= 0) picks.splice(i, 1);
+        picks.push({ ...structuredClone(r), planId });
+      }
+    },
+    async insertPeerPick(a) {
+      peerPicks.push(structuredClone(a));
+    },
+    listPeerPicks: async (sinceIso) => peerPicks.filter((a) => a.at >= sinceIso).map((a) => structuredClone(a)),
   };
-  return { store, plans, results, events, jobs, peerVerdicts, history, claims, rechecks };
+  return { store, plans, results, events, jobs, peerVerdicts, history, claims, rechecks, picks, peerPicks };
 }
 
 const CHANNEL = "UC_plan_channel";
@@ -1351,14 +1366,15 @@ test("AC-WV-05: the verdict that takes a wave's waiting count to zero records gr
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:b", result: "accepted", rating: 7 });
   assert.equal(reviewed().length, 0, "C1 still has one waiting");
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "rejected", rating: 3 });
-  assert.deepEqual(reviewed().map((e) => [e.actor, e.details]), [["owner", { groupId: "C1", accepted: 2, rejected: 1, overridesValidator: 1 }]]);
+  // BL-175 (FO-REQ-0018 §B): group_reviewed also counts the wave's picks and "none fits" (none here: 0).
+  assert.deepEqual(reviewed().map((e) => [e.actor, e.details]), [["owner", { groupId: "C1", accepted: 2, rejected: 1, overridesValidator: 1, picked: 0, noneFits: 0 }]]);
   // Changing a verdict in a finished wave (confirmed by the owner, AC-TC-04) does not finish it again.
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:c", result: "accepted", rating: 6, replace: true });
   assert.equal(reviewed().length, 1);
   // A new waiting attempt reopens the wave; finishing it again records it again.
   await s.services.report({ planId: "R-0001-S1-music", rows: [{ stageId: "validate", itemKey: "C1/F1", attemptRef: "ext:e", result: "accepted", auditionFile: "R-0001/C1/e.mp3" }] });
   await s.services.recordOwnerVerdict({ planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "ext:e", result: "rejected" });
-  assert.deepEqual(reviewed().at(-1)?.details, { groupId: "C1", accepted: 3, rejected: 1, overridesValidator: 2 });
+  assert.deepEqual(reviewed().at(-1)?.details, { groupId: "C1", accepted: 3, rejected: 1, overridesValidator: 2, picked: 0, noneFits: 0 });
   assert.equal(reviewed().length, 2);
   assert.equal(reviewed().some((e) => e.details.groupId === "C2"), false, "C2 still waits");
 });
@@ -1371,7 +1387,8 @@ test("AC-WV-05: a verdict from the other computer that finishes a wave records g
   await d.win.recordPeerVerdict({ deviceId: "mac", planId: "R-0001-S1-music", itemKey: "C1/F1", attemptRef: "job:j1", result: "accepted", rating: 9 });
   await d.publish("win", d.win);
   await d.mac.applyPeerVerdicts();
-  assert.deepEqual(d.macBase.events.filter((e) => e.kind === "group_reviewed").map((e) => e.details), [{ groupId: "C1", accepted: 1, rejected: 0, overridesValidator: 0 }]);
+  // BL-175: with the wave's picks and "none fits" (0).
+  assert.deepEqual(d.macBase.events.filter((e) => e.kind === "group_reviewed").map((e) => e.details), [{ groupId: "C1", accepted: 1, rejected: 0, overridesValidator: 0, picked: 0, noneFits: 0 }]);
 });
 
 test("AC-WV-03: the review queue carries each wave's context", async () => {

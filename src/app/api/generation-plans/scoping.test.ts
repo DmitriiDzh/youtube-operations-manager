@@ -52,16 +52,22 @@ test("AC-SM-03: the peers list carries only the active channel's plans, the verd
         peerClaims: async () => [claim("R-japan"), claim("T-tropico")] as never,
         // BL-162: a wave note names another channel's plan as much as a verdict does.
         outgoingGroupNotes: async () => [{ noteId: "n-japan-1", planId: "R-japan", ownerDeviceId: "win", groupId: "C1", note: "too thin", at: "2026-10-09T10:00:00Z" }, { noteId: "n-tropico-1", planId: "T-tropico", ownerDeviceId: "win", groupId: "C1", note: "private", at: "2026-10-09T10:00:00Z" }],
+        // BL-175: a pick names another channel's plan as much as a verdict does.
+        outgoingPicks: async () => [
+          { pickId: "p-japan-1", planId: "R-japan", ownerDeviceId: "win", itemKey: "A/1", attemptRef: "job:1", action: "pick" as const, note: null, at: "2026-10-11T10:00:00Z" },
+          { pickId: "p-tropico-1", planId: "T-tropico", ownerDeviceId: "win", itemKey: "A/1", attemptRef: "job:1", action: "pick" as const, note: null, at: "2026-10-11T10:00:00Z" },
+        ],
       },
       activeChannelId: async () => active,
     });
-  const body = (await (await handler("UC_japan")()).json()) as { devices: Array<{ plans: Array<{ planId: string }> }>; outgoing: Array<{ planId: string }>; claims: Array<{ planId: string }>; outgoingNotes: Array<{ planId: string }> };
+  const body = (await (await handler("UC_japan")()).json()) as { devices: Array<{ plans: Array<{ planId: string }> }>; outgoing: Array<{ planId: string }>; claims: Array<{ planId: string }>; outgoingNotes: Array<{ planId: string }>; outgoingPicks: Array<{ planId: string }> };
   assert.deepEqual(body.devices[0].plans.map((p) => p.planId), ["R-japan"]);
   assert.deepEqual(body.outgoing.map((v) => v.planId), ["R-japan"], "a verdict on a Tropico plan is not shown while Japan is active");
   assert.deepEqual(body.claims.map((c) => c.planId), ["R-japan"]);
   assert.deepEqual(body.outgoingNotes.map((n) => n.planId), ["R-japan"]);
-  const none = (await (await handler(null)()).json()) as { devices: Array<{ plans: unknown[] }>; outgoing: unknown[]; claims: unknown[]; outgoingNotes: unknown[] };
-  assert.deepEqual([none.devices[0].plans, none.outgoing, none.claims, none.outgoingNotes], [[], [], [], []]);
+  assert.deepEqual(body.outgoingPicks.map((a) => a.planId), ["R-japan"]);
+  const none = (await (await handler(null)()).json()) as { devices: Array<{ plans: unknown[] }>; outgoing: unknown[]; claims: unknown[]; outgoingNotes: unknown[]; outgoingPicks: unknown[] };
+  assert.deepEqual([none.devices[0].plans, none.outgoing, none.claims, none.outgoingNotes, none.outgoingPicks], [[], [], [], [], []]);
 });
 
 // Review round 2 (BL-157): the claim and peer-verdict routes check the channel themselves; a release needs no channel.

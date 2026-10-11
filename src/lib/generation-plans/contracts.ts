@@ -29,7 +29,15 @@ export type PlanStage = { stageId: string; title: string; kind: PlanStageKind };
  * `note` is the factory's context for the wave; `ownerNote` (BL-157, SERVERS_MEDIA_PLAN.md AC-WV-04) is the owner's own note on
  * it, kept apart so neither overwrites the other -- present only once the owner wrote one.
  */
-export type PlanGroup = { groupId: string; title: string; dependsOn: string | null; note: string | null; ownerNote?: string | null };
+export type PlanGroup = {
+  groupId: string;
+  title: string;
+  dependsOn: string | null;
+  note: string | null;
+  ownerNote?: string | null;
+  /** BL-175 (VISUAL_REVIEW_PLAN.md §2.5): the reason chips of this wave's review (wins over the plan's); absent = not set. */
+  reviewReasons?: string[];
+};
 export type PlanItem = {
   itemKey: string;
   groupId: string | null;
@@ -46,6 +54,8 @@ export type PlanItem = {
   params: Record<string, PlanParamValue>;
   /** One job per seed (`fixed`), or the seeds tried in order (`until_accepted`). */
   seeds: number[];
+  /** BL-175 (§2.2): how many attempts the owner picks for this item; absent = `pickTargetOf`'s default. */
+  pickTarget?: number;
 };
 /** BL-143 phase 3 (FO-MSG-0009): a reference track for A/B listening, copied by the factory into the channel's Sent to YTM. */
 export type PlanReference = { id: string; label: string; file: string; lufs: number | null; lra: number | null; truePeak: number | null };
@@ -56,6 +66,8 @@ export type PlanDefinition = {
   references?: PlanReference[];
   /** BL-153 (FO-REQ-0008): validator-rejected attempts that can be played also wait for the owner's review. Default off. */
   reviewRejected?: boolean;
+  /** BL-175 (§2.5): the reason chips of the plan's review (a wave's own list wins); absent = the media kind's defaults. */
+  reviewReasons?: string[];
 };
 
 export type GenerationPlan = {
@@ -84,7 +96,15 @@ export type PlanCheck = {
   atSeconds: [number, number] | null;
   detail: string | null;
 };
-export type PlanMarker = { start: number; end: number | null; note: string | null };
+/** BL-175 (VISUAL_REVIEW_PLAN.md §2.4): a pin on a picture -- `x` of the width, `y` of the height, `r` of the shorter side, 0..1. */
+export type PlanMarkerRegion = { x: number; y: number; r: number };
+/** A time range (audio, video) or, with `start` 0 and a `region`, a spot on an image. `region` is absent, never null, without a pin. */
+export type PlanMarker = { start: number; end: number | null; note: string | null; region?: PlanMarkerRegion };
+
+/** A marker as stored and sent: optional fields made explicit, a region kept only when given (BL-175: never dropped on the way). */
+export function normalizeMarker(m: { start: number; end?: number | null; note?: string | null; region?: PlanMarkerRegion | null }): PlanMarker {
+  return { start: m.start, end: m.end ?? null, note: m.note ?? null, ...(m.region ? { region: { x: m.region.x, y: m.region.y, r: m.region.r } } : {}) };
+}
 
 /**
  * The files the review player plays or shows, by extension (BL-143 AC-GP-14). BL-173: here, not in the audition route, so a
@@ -111,6 +131,31 @@ export function auditionContentType(file: string): string | null {
   const name = file.split(/[\\/]/).pop() ?? "";
   const dot = name.lastIndexOf(".");
   return dot > 0 ? (AUDITION_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null) : null;
+}
+
+/** BL-175 (VISUAL_REVIEW_PLAN.md §2.1): what the review screen shows for a file -- a player, a picture or a clip. */
+/**
+ * BL-175 phase 3 (FO-REQ-0018 §G): the job output folders under a workspace's `99 Data Exchange/From YTM/` a plan file may name
+ * directly (`From YTM/gemini/<jobId>/image-1.png`) -- Gemini's outputs are reviewed where they are, without a copy into Sent to
+ * YTM. A contract string (the Gemini module's folder name), not an import: the plans module stays independent of it.
+ */
+export const PLAN_JOB_OUTPUT_SUBDIRS: readonly string[] = ["gemini"];
+
+/**
+ * BL-175 (§2.2, review of round 4): a verdict at the review stage that forbids a pick -- the owner's `rejected`, or a relayed
+ * `failed` (both count in `rejected`); an attempt is never both picked and one of these. The one rule for the screen and the server.
+ */
+export function forbidsPick(result: string | null | undefined): boolean {
+  return result === "rejected" || result === "failed";
+}
+
+export type PlanMediaKind = "audio" | "image" | "video";
+
+/** The media kind of a file by its extension (the same list the player serves); null = not shown. */
+export function mediaKindOf(file: string | null | undefined): PlanMediaKind | null {
+  const type = file ? auditionContentType(file) : null;
+  if (!type) return null;
+  return type.startsWith("image/") ? "image" : type.startsWith("video/") ? "video" : "audio";
 }
 
 export type PlanResultRow = {
@@ -175,7 +220,40 @@ export type PlanItemProgress = {
   pending: number;
   /** How many more attempts the item still needs (0 when complete). */
   missing: number;
+  /** BL-175 (VISUAL_REVIEW_PLAN.md §2.2/§2.3): how many attempts the owner picks for it (`pickTargetOf`). */
+  pickTarget: number;
+  /** The owner's active picks, oldest first. */
+  picks: PlanPickView[];
+  /** The owner's active "none fits" on the item, or null. */
+  noneFits: PlanNoneFitsView | null;
+  /** Attempts without a verdict that are no longer waiting because the item is decided (picks, or a "none fits" covering them). */
+  notChosen: number;
 };
+
+/** BL-175: one active pick of an item. */
+export type PlanPickView = { attemptRef: string } & PlanPickMark;
+/** BL-175: an item's active "none fits" -- the note, who and when, and how many attempts it covered when given. */
+export type PlanNoneFitsView = { note: string | null; device: string; at: string; attempts: number };
+
+/**
+ * BL-175 (§2.2): how many attempts the owner picks for an item -- its own `pickTarget`, else its `targetCount` for an
+ * `until_accepted` item (how many it needs accepted), else 1 (a `fixed` item's `targetCount` is how many attempts to generate).
+ */
+export function pickTargetOf(item: Pick<PlanItem, "mode" | "targetCount" | "pickTarget">): number {
+  if (typeof item.pickTarget === "number" && item.pickTarget >= 1) return item.pickTarget;
+  return item.mode === "until_accepted" ? item.targetCount : 1;
+}
+
+/** BL-175 (§2.2): what the owner can do about an item's attempts besides a verdict. */
+export const PLAN_PICK_ACTIONS = ["pick", "unpick", "none_fits", "clear_none_fits"] as const;
+export type PlanPickAction = (typeof PLAN_PICK_ACTIONS)[number];
+
+/**
+ * BL-175 (§2.2): one stored pick (`kind` pick, one per attempt) or "none fits" (`kind` none_fits, one per item, `attemptRef`
+ * null). Never deleted: withdrawing clears `active` and keeps the time, so a newer action from another computer is weighed
+ * against it. `covered` = the attempts a "none fits" covered when it was given.
+ */
+export type PlanPickRecord = { itemKey: string; kind: "pick" | "none_fits"; attemptRef: string | null; active: boolean; note: string | null; device: string; at: string; covered: string[] };
 
 /** BL-143 slice 4: one attempt on the owner's review screen, with what the earlier stages said about it. */
 export type PlanReviewEntry = {
@@ -206,9 +284,26 @@ export type PlanReviewEntry = {
   pendingFrom?: string;
   /** BL-173: the accepted revision's file the attempt plays now (absent = its reported file or job output). */
   currentFile?: string;
+  /** BL-175 (§2.1): what the screen shows for it (by the file it plays); null = nothing it can show. */
+  media?: PlanMediaKind | null;
+  /** BL-175 (§2.2): the owner picked this attempt ("this one of N") -- not a verdict. */
+  picked?: PlanPickMark;
+  /** BL-175 (§2.3): no verdict and not picked, but its item is decided (picks, or a "none fits" that covers it): not waiting. */
+  notChosen?: boolean;
 };
 
+/** BL-175: who picked an attempt, when, and the note given with it. */
+export type PlanPickMark = { device: string; at: string; note: string | null };
+
 export type PlanValidatorVerdict = "passed" | "rejected";
+
+/**
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.3): the one rule for "this entry still waits for the owner" -- every queue, count, badge and
+ * screen reads it, never `verdict === null` on its own.
+ */
+export function entryWaits(entry: { verdict: unknown; picked?: unknown; notChosen?: boolean }): boolean {
+  return entry.verdict === null && !entry.picked && entry.notChosen !== true;
+}
 
 /**
  * BL-153: the validator verdict of a review entry from what its stages said -- for an entry that does not carry `validator`
@@ -243,7 +338,7 @@ export type PlanEvent = { at: string; kind: string; actor: string; details: Reco
 export type PlanProgress = {
   stages: Array<PlanStage & { counts: PlanStageCounts }>;
   /** BL-173: `rechecks` = the wave's open re-checks (never part of `waitingReview`). */
-  groups: Array<{ groupId: string; title: string; counts: { items: number; generated: number; accepted: number; rejected: number; waitingReview: number; missing: number; rechecks: number } }>;
+  groups: Array<{ groupId: string; title: string; counts: { items: number; generated: number; accepted: number; rejected: number; waitingReview: number; missing: number; rechecks: number; picked: number; noneFits: number } }>;
   items: PlanItemProgress[];
   spend: { usd: number; gpuMinutes: number; sessions: Array<{ sessionId: string; status: string; gpuTypeId: string | null; usd: number; final: boolean; stopReason: string | null }> };
   budget: { usd: number | null; usedShare: number | null; warnings: Array<"80" | "100"> };
@@ -297,7 +392,14 @@ export type PlanReviewBatch = {
 export type PlanVerdictHistoryEntry = { result: "accepted" | "rejected"; rating: number | null; note: string | null; device: string; at: string; recheckId?: string; kept?: boolean };
 
 /** The full stored row (the history of a plan, every attempt). */
-export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & { itemKey: string; attemptRef: string; reasons: string[]; markers: PlanMarker[] };
+export type PlanVerdictHistoryRow = PlanVerdictHistoryEntry & {
+  itemKey: string;
+  attemptRef: string;
+  reasons: string[];
+  markers: PlanMarker[];
+  /** BL-175 phase 3 (§G): the owner's seconds on the attempt before this verdict (absent = not measured). */
+  reviewSeconds?: number;
+};
 
 /** BL-157 (AC-TC-04): what is already there when a verdict would replace it -- for "Already rated on … Replace?". */
 export type PlanExistingVerdict = { result: string; rating: number | null; device: string | null; at: string };
@@ -471,6 +573,8 @@ export function recheckEntry(
     playable: recheck.kind === "revision" || extra !== null || (base?.playable ?? false),
     // What the validator said about the attempt itself -- never the revision's row.
     validator: base ? validatorOfEntry(base) : null,
+    // BL-175 (review round 1): a question about a picture shows the picture (a revision's own file decides on the screen).
+    media: base?.media ?? mediaKindOf([...stages].reverse().find((s) => s.auditionFile !== null)?.auditionFile ?? null),
     ...(base?.history ? { history: base.history } : {}),
     ...(pending ? { pendingFrom: pending.from } : {}),
     ...(pending?.kept ? { pendingKept: true } : {}),

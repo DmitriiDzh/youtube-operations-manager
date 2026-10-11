@@ -3,12 +3,13 @@ import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { createChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { isPathInsideOrEqual, validateOperatorDirectoryPath } from "@/lib/local-path-validation";
-import { createExchangeFs, resolveSentToYtmFile } from "@/lib/workspace-exchange";
+import { createExchangeFs, resolveExchangeFile } from "@/lib/workspace-exchange";
 import { appDataPaths, linkMediaSessionToPlan } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 import { createGenerationPlansShareCoreForProduction, createReviewPresenceForProduction, GENERATION_PLANS_REPORT_FORMAT, GENERATION_PLANS_REPORT_VERSION } from "@/lib/sync-gateway";
 import { createMediaGenerationCore, isDomainError } from "@/lib/media-generation";
 import { createPlanStore } from "./adapters/store";
+import { PLAN_JOB_OUTPUT_SUBDIRS } from "./contracts";
 import { createGenerationPlanServices } from "./services";
 
 // BL-143 (ADR 0029): the generation plans core. Stateless apart from the database, so a new instance per call is fine.
@@ -43,7 +44,7 @@ export function createGenerationPlansCore() {
         return workspace.configured ? workspace.path : null;
       },
       sentFileExists: (workspace, relativePath) =>
-        resolveSentToYtmFile({ workspace, relativePath, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }).then(
+        resolveExchangeFile({ workspace, relativePath, jobSubdirs: PLAN_JOB_OUTPUT_SUBDIRS, fs: createExchangeFs(), validateWorkspacePath: validateOperatorDirectoryPath, isPathInsideOrEqual, unavailable: (reason) => new Error(reason) }).then(
           () => true,
           () => false
         ),
@@ -88,6 +89,8 @@ export async function publishGenerationPlansShare(): Promise<void> {
   await core.applyPeerVerdicts().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' verdicts: ${error instanceof Error ? error.message : String(error)}`));
   // BL-162 (FO-REQ-0013 §2.3): and the wave notes they wrote on this device's plans.
   await core.applyPeerGroupNotes().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' wave notes: ${error instanceof Error ? error.message : String(error)}`));
+  // BL-175 (VISUAL_REVIEW_PLAN.md §2.6): and their picks -- after the verdicts, so a rejection that came with them is known.
+  await core.applyPeerPicks().catch((error: unknown) => console.warn(`[generation-plans] could not apply other devices' picks: ${error instanceof Error ? error.message : String(error)}`));
   await createGenerationPlansShareCoreForProduction().publishLocalReport({
     format: GENERATION_PLANS_REPORT_FORMAT,
     version: GENERATION_PLANS_REPORT_VERSION,
@@ -100,5 +103,7 @@ export async function publishGenerationPlansShare(): Promise<void> {
     claims: await core.ownClaims(),
     // BL-162 (v3): the wave notes written here on other devices' plans.
     groupNotes: await core.outgoingGroupNotes(),
+    // BL-175 (v5): the pick actions taken here on other devices' plans.
+    picks: await core.outgoingPicks(),
   });
 }

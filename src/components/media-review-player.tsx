@@ -17,6 +17,8 @@ export type ReviewPlayerHandle = {
   /** For A/B: stop here, and resume from a given second. */
   pause(): void;
   playFrom(seconds: number): void;
+  /** BL-175 phase 3 (§G): whether the track plays now -- the owner listening counts as review time. */
+  isPlaying(): boolean;
 };
 
 /** BL-143 phase 3 (FO-MSG-0009 §4): a frequency the validator flagged (a ringing tone, a held note), drawn on the spectrogram. */
@@ -40,6 +42,7 @@ type WaveSurferLike = {
   getDuration(): number;
   setTime(seconds: number): void;
   setVolume(volume: number): void;
+  isPlaying?(): boolean;
   getDecodedData(): { numberOfChannels: number; sampleRate: number; getChannelData(i: number): Float32Array } | null;
   on(event: string, callback: (...args: unknown[]) => void): () => void;
   destroy(): void;
@@ -107,6 +110,7 @@ export const MediaReviewPlayer = forwardRef<ReviewPlayerHandle, MediaReviewPlaye
       w.setTime(Math.max(0, Math.min(w.getDuration(), w.getCurrentTime() + seconds)));
     },
     currentTime: () => wave.current?.getCurrentTime() ?? 0,
+    isPlaying: () => wave.current?.isPlaying?.() ?? false,
     pause: () => {
       const w = wave.current as (WaveSurferLike & { pause?: () => void }) | null;
       w?.pause?.();

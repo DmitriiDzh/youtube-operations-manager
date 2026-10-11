@@ -23,6 +23,15 @@ export const jobOutputPathSchema = z.string().regex(/^media\/[A-Za-z0-9_-]{1,64}
 const isoSchema = z.string().max(40);
 const looseRecord = z.record(z.string().max(64), z.unknown());
 
+/** BL-175 (v5, VISUAL_REVIEW_PLAN.md §2.4): a pin on a picture, 0..1 (absent on a marker without one). */
+const sharedRegionSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), r: z.number().gt(0).max(1) }).strict();
+/** A marker as every level of the report carries it; `region` only from version 5. */
+const sharedMarkerSchema = z.object({ start: z.number(), end: z.number().nullable(), note: z.string().max(200).nullable(), region: sharedRegionSchema.optional() }).strict();
+/** BL-175 (v5): a plan's or a wave's own reason chips. */
+const sharedReasonsSchema = z.array(z.string().max(60)).max(20);
+/** BL-175 (v5): who picked an attempt, when, and the note given with it. */
+const sharedPickMarkSchema = z.object({ device: z.string().max(255), at: isoSchema, note: z.string().max(2000).nullable() }).strict();
+
 const sharedResultRowSchema = z
   .object({
     stageId: z.string().max(40),
@@ -33,7 +42,7 @@ const sharedResultRowSchema = z
     note: z.string().max(2000).nullable(),
     rating: z.number().int().min(1).max(10).nullable(),
     reasons: z.array(z.string().max(60)).max(20),
-    markers: z.array(z.object({ start: z.number(), end: z.number().nullable(), note: z.string().max(200).nullable() }).strict()).max(50),
+    markers: z.array(sharedMarkerSchema).max(50),
     auditionFile: relativePathSchema.nullable(),
     checks: z.array(looseRecord).max(50),
     metrics: looseRecord,
@@ -115,10 +124,12 @@ export const sharedReviewEntrySchema = z
     history: z.array(sharedVerdictHistorySchema).max(10).optional(),
     /** BL-173 (v4): the file the attempt plays now when an accepted revision replaced its reported one. */
     currentFile: relativePathSchema.nullable().optional(),
+    /** BL-175 (v5): the owner picked this attempt. */
+    picked: sharedPickMarkSchema.optional(),
+    /** BL-175 (v5): no verdict, not picked, but its item is decided -- not waiting. */
+    notChosen: z.boolean().optional(),
   })
   .strict();
-
-const sharedMarkerSchema = z.object({ start: z.number(), end: z.number().nullable(), note: z.string().max(200).nullable() }).strict();
 
 /**
  * BL-173 (v4, PLAN_RECHECKS_PLAN.md §2.7): an OPEN re-check of the owning device's plan -- what the other computer's review
@@ -183,12 +194,34 @@ export const sharedPlanSchema = z
              * sent a note can tell whether it was applied (same time) or a newer one won; null = no owner note yet.
              */
             ownerNoteAt: z.string().datetime({ offset: true }).nullable().optional(),
+            /** BL-175 (v5): the wave's own reason chips. */
+            reviewReasons: sharedReasonsSchema.optional(),
           })
           .strict()
       )
       .max(200),
-    /** Items without their job params (the progress is what other devices show). */
-    items: z.array(z.object({ itemKey: z.string().max(120), groupId: z.string().max(40).nullable(), templateLabel: z.string().max(200).nullable(), targetCount: z.number(), mode: z.enum(["fixed", "until_accepted"]) }).strict()).max(1000),
+    /** Items without their job params (the progress is what other devices show). BL-175 (v5): `pickTarget` = `pickTargetOf`. */
+    items: z
+      .array(
+        z
+          .object({
+            itemKey: z.string().max(120),
+            groupId: z.string().max(40).nullable(),
+            templateLabel: z.string().max(200).nullable(),
+            targetCount: z.number(),
+            mode: z.enum(["fixed", "until_accepted"]),
+            pickTarget: z.number().int().min(1).optional(),
+          })
+          .strict()
+      )
+      .max(1000),
+    /** BL-175 (v5): the plan's own reason chips. */
+    reviewReasons: sharedReasonsSchema.optional(),
+    /** BL-175 (v5): the plan's active picks and "none fits" (what the other computer's grid and counts show). */
+    picks: z.array(z.object({ itemKey: z.string().max(120), attemptRef: z.string().max(120), device: z.string().max(255), at: isoSchema, note: z.string().max(2000).nullable() }).strict()).max(5000).optional(),
+    noneFits: z.array(z.object({ itemKey: z.string().max(120), note: z.string().max(2000).nullable(), device: z.string().max(255), at: isoSchema, attempts: z.number().int().min(0) }).strict()).max(1000).optional(),
+    /** BL-175 (v5): the pick actions from other devices this device already weighed (applied or superseded), newest 1000. */
+    handledPicks: z.array(z.string().max(64)).max(1000).optional(),
     /** BL-143 phase 3: the plan's reference tracks for A/B (files relative to the channel's Sent to YTM). */
     references: z
       .array(z.object({ id: z.string().max(64), label: z.string().max(200), file: relativePathSchema, lufs: z.number().nullable(), lra: z.number().nullable(), truePeak: z.number().nullable() }).strict())
@@ -219,13 +252,20 @@ export const sharedVerdictSchema = z
     rating: z.number().int().min(1).max(10).nullable(),
     reasons: z.array(z.string().max(60)).max(20),
     markers: z
-      .array(z.object({ start: z.number().min(0).max(86_400), end: z.number().min(0).max(86_400).nullable(), note: z.string().max(200).nullable() }).strict().refine((m) => m.end === null || m.end >= m.start, "end >= start"))
+      .array(
+        z
+          .object({ start: z.number().min(0).max(86_400), end: z.number().min(0).max(86_400).nullable(), note: z.string().max(200).nullable(), region: sharedRegionSchema.optional() })
+          .strict()
+          .refine((m) => m.end === null || m.end >= m.start, "end >= start")
+      )
       .max(50),
     note: z.string().max(2000).nullable(),
     at: z.string().datetime({ offset: true }),
     /** BL-173 (v4): the re-check this verdict answers; `kept` = the verdict was kept with a note. */
     recheckId: z.string().max(120).optional(),
     kept: z.boolean().optional(),
+    /** BL-175 phase 3 (v5, FO-REQ-0018 §G): the owner's seconds on the attempt before this verdict. */
+    reviewSeconds: z.number().int().min(0).max(86_400).optional(),
   })
   .strict();
 
@@ -242,6 +282,24 @@ export const sharedGroupNoteSchema = z
   })
   .strict();
 
+/** BL-175 (v5, VISUAL_REVIEW_PLAN.md §2.6): a pick action this device took on another device's plan, carried to that device. */
+export const sharedPickActionSchema = z
+  .object({
+    pickId: z.string().min(8).max(64),
+    planId: z.string().max(80),
+    ownerDeviceId: z.string().min(1).max(128),
+    itemKey: z.string().max(120),
+    attemptRef: z.string().max(120).nullable(),
+    action: z.enum(["pick", "unpick", "none_fits", "clear_none_fits"]),
+    note: z.string().max(2000).nullable(),
+    at: z.string().datetime({ offset: true }),
+    /** A "none fits": the attempts the owner saw on this computer -- only those are covered there (a newer one waits as usual). */
+    covered: z.array(z.string().max(120)).max(500).optional(),
+    /** BL-175 phase 3 (FO-REQ-0018 §G): the owner's seconds on the attempt before this action. */
+    reviewSeconds: z.number().int().min(0).max(86_400).optional(),
+  })
+  .strict();
+
 /**
  * BL-157 (SERVERS_MEDIA_PLAN.md §B): the report version this build writes. It still reads version 1 (no job channel,
  * history, waves or claims). A version 1 build refuses a version 2 report (every level is strict), so both computers update.
@@ -249,13 +307,17 @@ export const sharedGroupNoteSchema = z
  * `ownerNoteAt`. Read: 1-3. A version 2 build refuses a version 3 report ("update the app"), so both computers update again.
  * BL-173 (PLAN_RECHECKS_PLAN.md §2.7): version 4 adds the open re-checks (`plans[].rechecks`), an entry's `currentFile`, and
  * `recheckId` / `kept` on history entries and verdicts. Read: 1-4; a version 3 build refuses it, so both computers update again.
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.6): version 5 adds marker `region`s, `reviewReasons` (plan, waves), items' `pickTarget`, the
+ * plans' active `picks` / `noneFits` and `handledPicks`, entries' `picked` / `notChosen`, and the pick actions sent to other
+ * devices (`picks`, with `covered`); phase 3 (§8) adds the owner's `reviewSeconds` on verdicts and pick actions.
+ * Read: 1-5; a version 4 build refuses it, so both computers update again.
  */
-export const GENERATION_PLANS_REPORT_VERSION = 4;
+export const GENERATION_PLANS_REPORT_VERSION = 5;
 
 export const generationPlansReportSchema = z
   .object({
     format: z.literal(GENERATION_PLANS_REPORT_FORMAT),
-    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
     deviceId: z.string().min(1).max(128),
     hostname: z.string().max(255).nullable(),
     updatedAt: z.string().datetime({ offset: true }),
@@ -265,6 +327,8 @@ export const generationPlansReportSchema = z
     claims: z.array(sharedClaimSchema).max(200).optional(),
     /** BL-162 (v3): the newest wave note per plan and wave this device wrote on other devices' plans; absent before version 3. */
     groupNotes: z.array(sharedGroupNoteSchema).max(200).optional(),
+    /** BL-175 (v5): the pick actions this device took on other devices' plans (30 days); absent before version 5. */
+    picks: z.array(sharedPickActionSchema).max(1000).optional(),
   })
   .strict();
 
@@ -277,3 +341,4 @@ export type SharedBatch = z.infer<typeof sharedBatchSchema>;
 export type SharedClaim = z.infer<typeof sharedClaimSchema>;
 export type SharedVerdictHistory = z.infer<typeof sharedVerdictHistorySchema>;
 export type SharedRecheck = z.infer<typeof sharedRecheckSchema>;
+export type SharedPickAction = z.infer<typeof sharedPickActionSchema>;

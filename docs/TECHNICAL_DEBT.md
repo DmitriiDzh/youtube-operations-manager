@@ -1897,6 +1897,7 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 ## RISK-119 — Plans report version 3 and presence files: both computers must update; device clocks decide ties — OPEN, 2026-10-09
 
 - **Update (BL-173, 2026-10-10):** the plans report is version 4 (re-checks, `currentFile`, `recheckId`/`kept`). A version 3 build refuses it the same way, so both computers update together again; the rest of this entry applies unchanged.
+- **Update (BL-175, 2026-10-11):** the plans report is version 5 (picks, "none fits", marker regions, reason chips, pick targets). A version 4 build refuses it, and a pick sent to a computer still on version 4 is refused (`peer_update_required`); both computers update together again. Picks also compare two computers' clocks ("newer wins"); an action dated more than 5 min ahead waits.
 
 - **What:** BL-162 (`docs/roadmap/plans/MEDIA_UX_REDESIGN_PLAN.md` §5, FO-REQ-0013). The plans report is version 3. A computer on an older build refuses it ("version 3 is newer") and stops seeing the other computer's plans and verdicts until it updates, as with version 2 (RISK-114). A wave note to a computer still on version 2 is refused (`peer_update_required`). Wave notes ("written later wins") and the same-track tie-break of the review screen ("opened earlier keeps it") compare times from two computers' clocks.
 - **Bounded by:** nothing is lost: the verdict history keeps every rating; a superseded note is recorded as an event; a note or verdict dated more than 5 min ahead is not taken; claims stay advisory (a verdict still asks before replacing one). The presence file holds only claims (plan, track, times, host name).
@@ -1944,3 +1945,11 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Mitigation outside the app:** a monthly spend cap on the Google project (AI Studio → Spend, experimental, overshoots by about 10 minutes) and prepaid credit (at 0 every key gets 402).
 - **Re-evaluate:** when the operator works on both computers in the same month, when Google changes a price, or when the Veo models leave preview.
 - **Gate(s):** none. **Status:** open, accepted with the owner's switch and limits.
+
+## RISK-124 — A plan may review a Gemini output where it lies, in the From YTM buffer folder — OPEN, 2026-10-11
+
+- **What:** BL-175 phase 3 (FO-REQ-0018 §G, `docs/roadmap/plans/VISUAL_REVIEW_PLAN.md` §8). A plan file may be `From YTM/gemini/<jobId>/<file>`: the review screen reads the Gemini output in place instead of a copy in Sent to YTM. From YTM is the app's outgoing buffer ("the receiving side deletes what it has processed"), so if the operator (or a cleanup) deletes that job folder, the attempt stops playing (404 on the screen) and a plan move or a revision naming it is refused (`file_missing`); the verdicts and picks already given stay.
+- **Also:** a plan move needs the file at the same `From YTM/gemini/<jobId>/` path in the target channel's workspace (a copy into Sent to YTM does not count); `Sent to YTM/From YTM/gemini/…` is no longer reachable as a Sent to YTM path.
+- **Bounds:** the same folder proofs as a job output (plain folders, the real file inside the job's folder); only the `gemini` folder is allowed; documented in the Factory API texts (`factory_plan_report`, `factory_plan_move`, `factory_plan_request_recheck`) and `docs/interfaces.md`.
+- **Re-evaluate:** if outputs go missing in practice, or when a cleanup of From YTM is automated -- then either copy on report, or keep a plan's Gemini outputs out of the cleanup.
+- **Gate(s):** none. **Status:** open, accepted (the Operator asked for no copy, FO-REQ-0018 §G).

@@ -66,7 +66,48 @@ export function createRecheckAuditionGetHandler(deps: Omit<AuditionDeps, "resolv
   return createPlanFileGetHandler(deps, ["recheckId"], (planId, q) => deps.resolveRecheck({ planId, recheckId: q.recheckId }));
 }
 
-function createPlanFileGetHandler(deps: Omit<AuditionDeps, "resolveAudition">, names: string[], resolveTarget: (planId: string, query: Record<string, string>) => Promise<ResolvedTarget>) {
+/**
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.7): a small JPEG preview of an IMAGE attempt for the review grid, `?itemKey=&attemptRef=` --
+ * the attempt's file found and proven exactly as its audition is (loopback, session, active channel, workspace proof); anything
+ * that is not an image is 415. When no preview can be made, the original image is sent instead (the grid scales it).
+ */
+export function createPreviewGetHandler(deps: AuditionDeps & { preview(path: string): Promise<Uint8Array | null> }) {
+  return createPlanFileGetHandler(
+    deps,
+    ["itemKey", "attemptRef"],
+    (planId, q) => deps.resolveAudition({ planId, itemKey: q.itemKey, attemptRef: q.attemptRef }),
+    async (file, type, request) => {
+      if (!type.startsWith("image/")) return NextResponse.json({ error: "unsupported_media_type", message: "Only an image has a preview" }, { status: 415 });
+      const body = await deps.preview(file.path);
+      if (!body) return streamFile(file, type, request);
+      return new Response(new Uint8Array(body), { status: 200, headers: { "content-type": "image/jpeg", "content-length": String(body.byteLength), "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+    }
+  );
+}
+
+/** The file itself, with HTTP Range (the player seeks without loading the whole file). */
+function streamFile(file: { path: string; bytes: number }, type: string, request: Request): Response {
+  const range = parseRange(request.headers.get("range"), file.bytes);
+  const headers: Record<string, string> = { "content-type": type, "accept-ranges": "bytes", "cache-control": "no-store", "x-content-type-options": "nosniff" };
+  if (range === "invalid") return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${file.bytes}` } });
+  const start = range?.start ?? 0;
+  const end = range?.end ?? Math.max(0, file.bytes - 1);
+  const length = file.bytes === 0 ? 0 : end - start + 1;
+  const body = length === 0 ? null : (Readable.toWeb(createReadStream(file.path, { start, end })) as ReadableStream<Uint8Array>);
+  return new Response(body, {
+    status: range ? 206 : 200,
+    headers: { ...headers, "content-length": String(length), ...(range ? { "content-range": `bytes ${start}-${end}/${file.bytes}` } : {}) },
+  });
+}
+
+type Responder = (file: { path: string; bytes: number }, type: string, request: Request) => Response | Promise<Response>;
+
+function createPlanFileGetHandler(
+  deps: Omit<AuditionDeps, "resolveAudition">,
+  names: string[],
+  resolveTarget: (planId: string, query: Record<string, string>) => Promise<ResolvedTarget>,
+  respond: Responder = streamFile
+) {
   return async function GET(request: Request, context: { params: Promise<{ planId: string }> }): Promise<Response> {
     // A local file leaves this route only for a browser on this computer (ADR 0029 §5): loopback Host and Origin.
     if (!isLoopbackRequest(request.headers)) return NextResponse.json({ error: "forbidden", message: "Local files are served only to this computer" }, { status: 403 });
@@ -96,17 +137,7 @@ function createPlanFileGetHandler(deps: Omit<AuditionDeps, "resolveAudition">, n
       }
       const type = contentTypeFor(file.path);
       if (!type) return NextResponse.json({ error: "unsupported_media_type", message: `${path.extname(file.path) || "This file type"} is not played here` }, { status: 415 });
-      const range = parseRange(request.headers.get("range"), file.bytes);
-      const headers: Record<string, string> = { "content-type": type, "accept-ranges": "bytes", "cache-control": "no-store", "x-content-type-options": "nosniff" };
-      if (range === "invalid") return new Response(null, { status: 416, headers: { ...headers, "content-range": `bytes */${file.bytes}` } });
-      const start = range?.start ?? 0;
-      const end = range?.end ?? Math.max(0, file.bytes - 1);
-      const length = file.bytes === 0 ? 0 : end - start + 1;
-      const body = length === 0 ? null : (Readable.toWeb(createReadStream(file.path, { start, end })) as ReadableStream<Uint8Array>);
-      return new Response(body, {
-        status: range ? 206 : 200,
-        headers: { ...headers, "content-length": String(length), ...(range ? { "content-range": `bytes ${start}-${end}/${file.bytes}` } : {}) },
-      });
+      return await respond(file, type, request);
     } catch (error) {
       return planErrorResponse(error);
     }

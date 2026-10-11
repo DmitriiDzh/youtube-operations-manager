@@ -13,6 +13,10 @@ import {
   listGenerationPlanPeerVerdicts,
   insertGenerationPlanPeerGroupNote,
   listGenerationPlanPeerGroupNotes,
+  insertGenerationPlanPeerPick,
+  listGenerationPlanPeerPicks,
+  listGenerationPlanPicks,
+  upsertGenerationPlanPicks,
   insertGenerationPlan,
   insertGenerationPlanEvent,
   linkMediaJobToPlan,
@@ -27,7 +31,7 @@ import {
   type StoredGenerationPlanRecheck,
   type StoredGenerationPlanResult,
 } from "@/lib/db";
-import type { PlanDefinition, PlanEvent, PlanRecheck, PlanRecheckAnswer, PlanRecheckVerdict, PlanResultRow } from "../contracts";
+import type { PlanDefinition, PlanEvent, PlanPickRecord, PlanRecheck, PlanRecheckAnswer, PlanRecheckVerdict, PlanResultRow } from "../contracts";
 import type { PlanStore, StoredPlan } from "../services";
 
 // BL-143: the plans module's only door to the database (DEVELOPMENT_PLAYBOOK §6.2). JSON columns are written and read only here.
@@ -76,6 +80,26 @@ function resultFromDb(row: StoredGenerationPlanResult): PlanResultRow {
     referenceIds: parseJson<string[]>(row.referenceIdsJson, []),
     at: row.at.toISOString(),
   };
+}
+
+/**
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.1): the file name of the job output the review shows -- the same output `resolveAudition`
+ * plays (the first audio, video or image with a local file, else the first with a local file); null = none yet.
+ */
+export function outputFileOf(outputsJson: string | null | undefined): string | null {
+  const outputs = parseJson<Array<{ kind?: unknown; filename?: unknown; localPath?: unknown }>>(outputsJson, []);
+  if (!Array.isArray(outputs)) return null;
+  const local = outputs.filter((o) => o && typeof o.localPath === "string" && o.localPath.length > 0);
+  const chosen = local.find((o) => o.kind === "audio" || o.kind === "video" || o.kind === "image") ?? local[0];
+  if (!chosen) return null;
+  const name = typeof chosen.filename === "string" && chosen.filename ? chosen.filename : String(chosen.localPath).split(/[\\/]/).pop();
+  return name || null;
+}
+
+/** BL-175: a stored pick or "none fits"; an unknown kind reads as a pick (it then names its attempt). */
+function pickFromDb(row: { itemKey: string; kind: string; attemptRef: string; active: number; note: string | null; device: string; at: string; coveredJson: string | null }): PlanPickRecord {
+  const kind = row.kind === "none_fits" ? "none_fits" : "pick";
+  return { itemKey: row.itemKey, kind, attemptRef: kind === "none_fits" ? null : row.attemptRef, active: row.active === 1, note: row.note ?? null, device: row.device, at: row.at, covered: parseJson<string[]>(row.coveredJson, []) };
 }
 
 /** BL-173: a stored re-check; an unknown kind or status reads as the safe one (a question; open). */
@@ -168,6 +192,7 @@ export function createPlanStore(): PlanStore {
         createdAt: j.createdAt,
         submittedAt: j.submittedAt ?? null,
         finishedAt: j.finishedAt ?? null,
+        outputFile: outputFileOf(j.outputsJson),
       })),
     linkJob: (jobId, link) => linkMediaJobToPlan(jobId, link),
     insertPeerVerdict: (v) =>
@@ -185,6 +210,7 @@ export function createPlanStore(): PlanStore {
         at: v.at,
         recheckId: v.recheckId ?? null,
         kept: v.kept ? 1 : null,
+        reviewSeconds: v.reviewSeconds ?? null,
       }),
     listPeerVerdicts: async (sinceIso) =>
       (await listGenerationPlanPeerVerdicts(sinceIso)).map((r) => ({
@@ -201,6 +227,38 @@ export function createPlanStore(): PlanStore {
         at: r.at,
         ...(r.recheckId ? { recheckId: r.recheckId } : {}),
         ...(r.kept ? { kept: true } : {}),
+        ...(r.reviewSeconds !== null && r.reviewSeconds !== undefined ? { reviewSeconds: r.reviewSeconds } : {}),
+      })),
+    // BL-175 (VISUAL_REVIEW_PLAN.md §2.2/§2.6): picks on this device's plans, and pick actions given here on other devices' plans.
+    listPicks: async (planId) => (await listGenerationPlanPicks(planId)).map(pickFromDb),
+    upsertPicks: (planId, records) =>
+      upsertGenerationPlanPicks(
+        records.map((r) => ({
+          planId,
+          itemKey: r.itemKey,
+          kind: r.kind,
+          attemptRef: r.kind === "none_fits" ? "" : (r.attemptRef ?? ""),
+          active: r.active ? 1 : 0,
+          note: r.note,
+          device: r.device,
+          at: r.at,
+          coveredJson: r.covered.length > 0 ? JSON.stringify(r.covered) : null,
+        }))
+      ),
+    insertPeerPick: (a) =>
+      insertGenerationPlanPeerPick({ pickId: a.pickId, planId: a.planId, ownerDeviceId: a.ownerDeviceId, itemKey: a.itemKey, attemptRef: a.attemptRef, action: a.action, note: a.note, at: a.at, coveredJson: a.covered ? JSON.stringify(a.covered) : null, reviewSeconds: a.reviewSeconds ?? null }),
+    listPeerPicks: async (sinceIso) =>
+      (await listGenerationPlanPeerPicks(sinceIso)).map((r) => ({
+        pickId: r.pickId,
+        planId: r.planId,
+        ownerDeviceId: r.ownerDeviceId,
+        itemKey: r.itemKey,
+        attemptRef: r.attemptRef ?? null,
+        action: r.action === "unpick" || r.action === "none_fits" || r.action === "clear_none_fits" ? r.action : ("pick" as const),
+        note: r.note ?? null,
+        at: r.at,
+        ...(r.coveredJson ? { covered: parseJson<string[]>(r.coveredJson, []) } : {}),
+        ...(r.reviewSeconds !== null && r.reviewSeconds !== undefined ? { reviewSeconds: r.reviewSeconds } : {}),
       })),
     insertPeerGroupNote: (n) => insertGenerationPlanPeerGroupNote({ noteId: n.noteId, planId: n.planId, ownerDeviceId: n.ownerDeviceId, groupId: n.groupId, note: n.note, at: n.at }),
     listPeerGroupNotes: async (sinceIso) => (await listGenerationPlanPeerGroupNotes(sinceIso)).map((r) => ({ noteId: r.noteId, planId: r.planId, ownerDeviceId: r.ownerDeviceId, groupId: r.groupId, note: r.note ?? null, at: r.at })),
@@ -220,6 +278,7 @@ export function createPlanStore(): PlanStore {
         recordedAt: new Date(),
         recheckId: h.recheckId ?? null,
         kept: h.kept ? 1 : null,
+        reviewSeconds: h.reviewSeconds ?? null,
       }),
     listVerdictHistory: async (planId) =>
       (await listGenerationPlanVerdictHistory(planId)).map((h) => ({
@@ -234,6 +293,7 @@ export function createPlanStore(): PlanStore {
         at: h.at,
         ...(h.recheckId ? { recheckId: h.recheckId } : {}),
         ...(h.kept ? { kept: true } : {}),
+        ...(h.reviewSeconds !== null && h.reviewSeconds !== undefined ? { reviewSeconds: h.reviewSeconds } : {}),
       })),
     // BL-173: the plan's re-checks.
     insertRecheck: (planId, r) =>

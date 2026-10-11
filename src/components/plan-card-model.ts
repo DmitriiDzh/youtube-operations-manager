@@ -1,4 +1,5 @@
-import { sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { entryWaits, sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { withSentPicks, type SentPickAction } from "@/lib/generation-plans/picks";
 import type { SharedPlan } from "@/lib/sync-gateway";
 
 // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.1, FO-REQ-0013): one Plans card for every plan, wherever it was created. This
@@ -109,7 +110,8 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
           groupId: str(g.groupId),
           title: str(g.title, str(g.groupId)),
           // BL-173: `rechecks` is absent in an older build's report (none open there).
-          counts: { items: num(c.items), generated: num(c.generated), accepted: num(c.accepted), rejected: num(c.rejected), waitingReview: num(c.waitingReview), missing: num(c.missing), rechecks: num(c.rechecks) },
+          // BL-175: `picked` / `noneFits` are absent in an older build's report (none there).
+          counts: { items: num(c.items), generated: num(c.generated), accepted: num(c.accepted), rejected: num(c.rejected), waitingReview: num(c.waitingReview), missing: num(c.missing), rechecks: num(c.rechecks), picked: num(c.picked), noneFits: num(c.noneFits) },
         };
       }),
     items: list(raw.items)
@@ -128,6 +130,16 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
           waitingReview: num(i.waitingReview),
           pending: num(i.pending),
           missing: num(i.missing),
+          // BL-175: absent in an older build's report -- no picks there.
+          pickTarget: num(i.pickTarget, 1),
+          picks: list(i.picks)
+            .filter((p) => typeof p.attemptRef === "string")
+            .map((p) => ({ attemptRef: str(p.attemptRef), device: str(p.device), at: str(p.at), note: strOrNull(p.note) })),
+          noneFits: (() => {
+            const nf = i.noneFits && typeof i.noneFits === "object" ? record(i.noneFits) : null;
+            return nf ? { note: strOrNull(nf.note), device: str(nf.device), at: str(nf.at), attempts: num(nf.attempts) } : null;
+          })(),
+          notChosen: num(i.notChosen),
         })
       ),
     spend: {
@@ -146,11 +158,16 @@ export function sharedProgress(raw: Record<string, unknown>): PlanProgress {
  * Another device's plan as the card shows it, from that device's report. The waiting count is its review entries without a
  * verdict, less the verdicts this computer already sent there (they wait for that device to apply them).
  */
-export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevice>, outgoing: readonly OutgoingVerdictRef[], outgoingNotes: readonly OutgoingNoteRef[] = []): PlanCardModel {
+/** BL-175: a pick action sent from here to another device's plan (the peers route's `outgoingPicks`). */
+export type OutgoingPickRef = SentPickAction & { ownerDeviceId: string; planId: string };
+
+export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevice>, outgoing: readonly OutgoingVerdictRef[], outgoingNotes: readonly OutgoingNoteRef[] = [], outgoingPicks: readonly OutgoingPickRef[] = []): PlanCardModel {
   const mine = outgoing.filter((v) => v.ownerDeviceId === device.deviceId && v.planId === plan.planId);
   // BL-173: a kept re-check answer is no verdict on the track.
   const sent = new Set(mine.filter((v) => v.kept !== true).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
-  const open = plan.review.filter((e) => e.verdict === null && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
+  // BL-175 (review round 1): picks sent from here already settle their attempts, as on the badge and the review screen.
+  const review = withSentPicks(plan, plan.review, outgoingPicks.filter((a) => a.ownerDeviceId === device.deviceId && a.planId === plan.planId), "");
+  const open = review.filter((e) => entryWaits(e) && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
   const answered = new Set(mine.flatMap((v) => (v.recheckId ? [v.recheckId] : [])));
   const rechecks = (plan.rechecks ?? []).filter((r) => !answered.has(r.recheckId)).length;
   const waiting = open.length;
@@ -172,7 +189,7 @@ export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevi
     createdAt: plan.createdAt,
     note: plan.note,
     // Not in the report; validator-rejected tracks in its queue mean the option is on there (BL-153: they wait only then).
-    reviewRejected: plan.review.some((e) => e.verdict === null && validatorOfEntry(e) === "rejected") ? true : null,
+    reviewRejected: plan.review.some((e) => entryWaits(e) && validatorOfEntry(e) === "rejected") ? true : null,
     groups: plan.groups.map((g) => ({ groupId: g.groupId, title: g.title, dependsOn: g.dependsOn, note: g.note, ownerNote: g.ownerNote ?? null, ownerNoteAt: g.ownerNoteAt ?? null })),
     progress: { ...progress, notices },
     events: plan.events.map((e) => ({ at: e.at, kind: e.kind, actor: e.actor, details: e.details })),
