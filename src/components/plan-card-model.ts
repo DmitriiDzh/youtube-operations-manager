@@ -1,4 +1,4 @@
-import { sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
+import { entryWaits, sharedNotices, validatorOfEntry, type PlanEvent, type PlanItemProgress, type PlanNotice, type PlanProgress, type PlanStageCounts, type PlanStageKind, type PlanView } from "@/lib/generation-plans/contracts";
 import type { SharedPlan } from "@/lib/sync-gateway";
 
 // BL-162 (MEDIA_UX_REDESIGN_PLAN.md §5.1, FO-REQ-0013): one Plans card for every plan, wherever it was created. This
@@ -150,7 +150,7 @@ export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevi
   const mine = outgoing.filter((v) => v.ownerDeviceId === device.deviceId && v.planId === plan.planId);
   // BL-173: a kept re-check answer is no verdict on the track.
   const sent = new Set(mine.filter((v) => v.kept !== true).map((v) => `${v.itemKey}\u0000${v.attemptRef}`));
-  const open = plan.review.filter((e) => e.verdict === null && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
+  const open = plan.review.filter((e) => entryWaits(e) && !sent.has(`${e.itemKey}\u0000${e.attemptRef}`));
   const answered = new Set(mine.flatMap((v) => (v.recheckId ? [v.recheckId] : [])));
   const rechecks = (plan.rechecks ?? []).filter((r) => !answered.has(r.recheckId)).length;
   const waiting = open.length;
@@ -172,7 +172,7 @@ export function peerPlanModel(plan: SharedPlan, device: NonNullable<PlanCardDevi
     createdAt: plan.createdAt,
     note: plan.note,
     // Not in the report; validator-rejected tracks in its queue mean the option is on there (BL-153: they wait only then).
-    reviewRejected: plan.review.some((e) => e.verdict === null && validatorOfEntry(e) === "rejected") ? true : null,
+    reviewRejected: plan.review.some((e) => entryWaits(e) && validatorOfEntry(e) === "rejected") ? true : null,
     groups: plan.groups.map((g) => ({ groupId: g.groupId, title: g.title, dependsOn: g.dependsOn, note: g.note, ownerNote: g.ownerNote ?? null, ownerNoteAt: g.ownerNoteAt ?? null })),
     progress: { ...progress, notices },
     events: plan.events.map((e) => ({ at: e.at, kind: e.kind, actor: e.actor, details: e.details })),

@@ -1,6 +1,7 @@
 import {
   auditionContentType,
   currentFilesOf,
+  entryWaits,
   planClosed,
   planInvalid,
   planMismatch,
@@ -705,7 +706,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     }
     const pending = await pendingPeerVerdicts(row, events, results);
     if (pending.size === 0) return progress;
-    const given = reviewEntries(row, jobs, results).filter((e) => e.verdict === null && pending.has(keyOf(e.itemKey, e.attemptRef)));
+    const given = reviewEntries(row, jobs, results).filter((e) => entryWaits(e) && pending.has(keyOf(e.itemKey, e.attemptRef)));
     if (given.length === 0) return progress;
     const perItem = new Map<string, number>();
     const perGroup = new Map<string, number>();
@@ -755,8 +756,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
    * had rejected (the factory's cue to recalibrate it). A wave finished again later records it again.
    */
   async function recordGroupsReviewed(row: StoredPlan, before: PlanReviewEntry[], after: PlanReviewEntry[]): Promise<void> {
-    const waiting = (entries: PlanReviewEntry[], groupId: string) => entries.filter((e) => e.groupId === groupId && e.verdict === null).length;
-    const groups = [...new Set(before.filter((e) => e.verdict === null && e.groupId !== null).map((e) => e.groupId as string))];
+    const waiting = (entries: PlanReviewEntry[], groupId: string) => entries.filter((e) => e.groupId === groupId && entryWaits(e)).length;
+    const groups = [...new Set(before.filter((e) => entryWaits(e) && e.groupId !== null).map((e) => e.groupId as string))];
     for (const groupId of groups) {
       if (waiting(after, groupId) > 0) continue;
       const reviewed = after.filter((e) => e.groupId === groupId && e.verdict !== null);
@@ -1561,7 +1562,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       for (const row of await deps.store.listPlans({ status: "active" })) {
         const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
         // BL-157 (AC-TC-03): a verdict on its way from another device no longer waits here.
-        const waiting = (await ownerQueue(row, jobs, results)).filter((e) => e.verdict === null);
+        const waiting = (await ownerQueue(row, jobs, results)).filter(entryWaits);
         local += waiting.length;
         rejected += waiting.filter((e) => e.validator === "rejected").length;
       }
@@ -1570,7 +1571,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         const sent = new Set((await more.outgoingVerdicts()).map((v) => `${v.ownerDeviceId}\u0000${v.planId}\u0000${v.itemKey}\u0000${v.attemptRef}`));
         for (const report of await deps.peers.listPeerReports()) {
           for (const plan of report.plans.filter((p) => p.status === "active")) {
-            const waiting = plan.review.filter((e) => e.verdict === null && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
+            const waiting = plan.review.filter((e) => entryWaits(e) && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
             otherDevices += waiting.length;
             rejected += waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
           }
@@ -1613,7 +1614,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         if (!target) continue;
         const [jobs, results, sessions] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listSessions(row.id)]);
         const plan = toPublicPlan(row);
-        const waiting = (await ownerQueue(row, jobs, results)).filter((e) => e.verdict === null);
+        const waiting = (await ownerQueue(row, jobs, results)).filter(entryWaits);
         add(target, plan, null, waiting.map((e) => ({ groupId: e.groupId, rejected: e.validator === "rejected" })), planProgress(plan, jobs, results, sessions, now()).notices);
       }
       if (deps.peers) {
@@ -1622,7 +1623,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           for (const plan of report.plans.filter((p) => p.status === "active")) {
             const target = work.get(plan.channelId);
             if (!target) continue;
-            const waiting = plan.review.filter((e) => e.verdict === null && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
+            const waiting = plan.review.filter((e) => entryWaits(e) && !sent.has(`${report.deviceId}\u0000${plan.planId}\u0000${e.itemKey}\u0000${e.attemptRef}`));
             add(target, plan, { deviceId: report.deviceId, hostname: report.hostname }, waiting.map((e) => ({ groupId: e.groupId, rejected: validatorOfEntry(e) === "rejected" })), sharedNotices(plan.progress));
           }
         }

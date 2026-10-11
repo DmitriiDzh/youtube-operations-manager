@@ -3,6 +3,7 @@
 import { errorText } from "@/lib/ui-text";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  entryWaits,
   historyEntryOfVerdict,
   RECHECK_STAGE_ID,
   RECHECKS_WAVE,
@@ -138,7 +139,7 @@ export function reviewKeyAction(key: string): ReviewKeyAction | null {
 export function nextWaitingIndex<T extends { verdict: unknown }>(entries: T[], from: number, skip: (entry: T) => boolean = () => false): number {
   for (let step = 1; step <= entries.length; step++) {
     const i = (from + step) % entries.length;
-    if (entries[i].verdict === null && !skip(entries[i])) return i;
+    if (entryWaits(entries[i]) && !skip(entries[i])) return i;
   }
   return -1;
 }
@@ -202,7 +203,7 @@ export function beforeLufs(entry: Pick<PlanReviewEntry, "stages"> & { beforeRow?
 
 /** BL-173: the picker's re-checks line -- shown while any re-check is listed (or chosen), with the ones still open here. Exported for its test. */
 export function recheckPickerOption(rechecks: ReadonlyArray<{ verdict: unknown }>, wave: string | null): { shown: boolean; open: number } {
-  return { shown: rechecks.length > 0 || wave === RECHECKS_WAVE, open: rechecks.filter((e) => e.verdict === null).length };
+  return { shown: rechecks.length > 0 || wave === RECHECKS_WAVE, open: rechecks.filter(entryWaits).length };
 }
 
 /** BL-173: one line of a track's verdict history -- a kept answer reads as a note, and an answer to a re-check names it. Exported for its test. */
@@ -343,8 +344,8 @@ export function waveSummaries(entries: Array<Pick<PlanReviewEntry, "groupId" | "
   const ids = [...new Set(order)].filter((id) => entries.some((e) => e.groupId === id));
   return ids.map((groupId) => {
     const mine = entries.filter((e) => e.groupId === groupId);
-    const waiting = mine.filter((e) => e.verdict === null);
-    const reviewed = mine.filter((e) => e.verdict !== null);
+    const waiting = mine.filter(entryWaits);
+    const reviewed = mine.filter((e) => !entryWaits(e));
     const accepted = reviewed.filter((e) => e.verdict?.result === "accepted");
     const rejectedByValidator = waiting.filter((e) => validatorOfEntry(e) === "rejected").length;
     return {
@@ -369,7 +370,7 @@ export function waveSummaries(entries: Array<Pick<PlanReviewEntry, "groupId" | "
 export function nextOpenWave<E extends Pick<PlanReviewEntry, "groupId" | "verdict">>(waves: WaveSummary[], chosen: WaveSummary | null, entries: E[], skip: (entry: E) => boolean): WaveSummary | null {
   if (!chosen || chosen.waitingPassed + chosen.waitingRejected > 0) return null;
   const at = waves.findIndex((w) => w.groupId === chosen.groupId);
-  const open = (w: WaveSummary) => entries.some((e) => e.groupId === w.groupId && e.verdict === null && !skip(e));
+  const open = (w: WaveSummary) => entries.some((e) => e.groupId === w.groupId && entryWaits(e) && !skip(e));
   return [...waves.slice(at + 1), ...waves.slice(0, at)].find((w) => w.waitingPassed + w.waitingRejected > 0 && open(w)) ?? null;
 }
 
@@ -586,9 +587,9 @@ export function PlanReviewScreen({
   );
 
   // A track another computer is on is passed over by the arrows and auto-advance (AC-TC-02); the queue still opens it on a click.
-  const skipClaimed = useCallback((e: PlanReviewEntry) => e.verdict === null && claimOf(e, claims, nowMs) !== null, [claims, nowMs]);
+  const skipClaimed = useCallback((e: PlanReviewEntry) => entryWaits(e) && claimOf(e, claims, nowMs) !== null, [claims, nowMs]);
   /** The same rule against the claims `load` just read -- the state above only catches up on the next render (review round 1). */
-  const skipFresh = useCallback((e: PlanReviewEntry) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) !== null, []);
+  const skipFresh = useCallback((e: PlanReviewEntry) => entryWaits(e) && claimOf(e, freshClaims.current, Date.now()) !== null, []);
 
   useEffect(() => {
     // First open: the first waiting track no other computer is on (its claims arrive with the same answer). BL-162 (AC-UX-09):
@@ -597,13 +598,13 @@ export function PlanReviewScreen({
       // BL-173: `?wave=~rechecks` opens on the first open re-check no other computer is on (or says none is open).
       if (initialWave === RECHECKS_WAVE) {
         setWave(RECHECKS_WAVE);
-        setIndex(Math.max(0, rechecks.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null)));
+        setIndex(Math.max(0, rechecks.findIndex((e) => entryWaits(e) && claimOf(e, freshClaims.current, Date.now()) === null)));
         return;
       }
       const start = initialWave !== null && list.some((e) => e.groupId === initialWave) ? initialWave : null;
       if (start !== null) setWave(start);
       const walk = start === null ? list : list.filter((e) => e.groupId === start);
-      setIndex(Math.max(0, walk.findIndex((e) => e.verdict === null && claimOf(e, freshClaims.current, Date.now()) === null)));
+      setIndex(Math.max(0, walk.findIndex((e) => entryWaits(e) && claimOf(e, freshClaims.current, Date.now()) === null)));
     });
   }, [initialWave, load]);
 
@@ -743,7 +744,7 @@ export function PlanReviewScreen({
   // Always claimed while open and waiting, whatever the other computer claims (review round 6: dropping a claim already held
   // when the other computer's claim arrives let both walk onto the same track). Claim ids are per device, so they never
   // collide; the "next wave" offer already avoids leading onto another computer's tracks (`nextOpenWave`).
-  const claimKey = entry && entry.verdict === null ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
+  const claimKey = entry && entryWaits(entry) ? `${entry.itemKey}\u0000${entry.attemptRef}` : null;
   useEffect(() => {
     if (!claimKey) return;
     const [itemKey, attemptRef] = claimKey.split("\u0000");
@@ -765,7 +766,7 @@ export function PlanReviewScreen({
     if (pickedByHand.current !== claimKey) pickedByHand.current = null;
   }, [claimKey]);
   useEffect(() => {
-    if (!entry || entry.verdict !== null || !entries || !claimKey) return;
+    if (!entry || !entryWaits(entry) || !entries || !claimKey) return;
     const claim = claimOf(entry, claims, nowMs);
     const opened = openedAt.current;
     // Only in the first seconds after opening (review): a claim that arrives later (an older build's report) never pulls a track
@@ -784,7 +785,7 @@ export function PlanReviewScreen({
     (next: ReviewFilter) => {
       stopB();
       setFilter(next);
-      setIndex(Math.max(0, visibleEntries(allEntries ?? [], next, wave).findIndex((e) => e.verdict === null && !skipClaimed(e))));
+      setIndex(Math.max(0, visibleEntries(allEntries ?? [], next, wave).findIndex((e) => entryWaits(e) && !skipClaimed(e))));
       setDraft(emptyDraft());
       setMessage(null);
     },
@@ -798,7 +799,7 @@ export function PlanReviewScreen({
       const nextFilter = next === RECHECKS_WAVE ? "all" : filter;
       setFilter(nextFilter);
       setWave(next);
-      setIndex(Math.max(0, walkOf({ entries: allEntries ?? [], rechecks: recheckEntries }, nextFilter, next).findIndex((e) => e.verdict === null && !skipClaimed(e))));
+      setIndex(Math.max(0, walkOf({ entries: allEntries ?? [], rechecks: recheckEntries }, nextFilter, next).findIndex((e) => entryWaits(e) && !skipClaimed(e))));
       setDraft(emptyDraft());
       setMessage(null);
     },
@@ -811,7 +812,7 @@ export function PlanReviewScreen({
   const nextWave = useMemo(() => nextOpenWave(waves, chosenWave, allEntries ?? [], skipClaimed), [allEntries, chosenWave, skipClaimed, waves]);
   const filterCounts = useMemo(() => {
     const list = wave === null ? (allEntries ?? []) : (allEntries ?? []).filter((e) => e.groupId === wave);
-    const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter((e) => e.verdict === null).length;
+    const waitingIn = (f: ReviewFilter) => filterEntries(list, f).filter(entryWaits).length;
     return { all: waitingIn("all"), passed: waitingIn("passed"), rejected: waitingIn("rejected"), anyRejected: list.some((e) => validatorOfEntry(e) === "rejected") };
   }, [allEntries, wave]);
 
@@ -924,7 +925,7 @@ export function PlanReviewScreen({
 
   const savedMarkers = useMemo<ReviewMarker[]>(() => {
     if (!entry) return [];
-    const findings = blind && entry.verdict === null ? [] : findingMarkers(entry);
+    const findings = blind && entryWaits(entry) ? [] : findingMarkers(entry);
     // BL-173: the spots a re-check asks about, and the marks of the verdict it re-checks.
     const asked = recheckMarkers(entry.recheck, t("review.recheck.spot"));
     const previous = (entry.recheck?.previousVerdict?.markers ?? []).map((m) => ({ start: m.start, end: m.end, label: m.note, tone: "mark" as const }));
@@ -947,16 +948,16 @@ export function PlanReviewScreen({
     : null;
   const ownLufs = entry ? playedLufs(entry) : null;
   const lufsOf = entry ? (ownLufs ?? (measured && measured.src === src ? measured.lufs : null)) : null;
-  const hideFindings = blind && entry?.verdict === null;
+  const hideFindings = blind && entry !== null && entryWaits(entry);
 
   const segment = (selected: boolean) => `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${selected ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`;
   const toolButton = "flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700";
   const picker = pickerWaves(waves, wave, true);
-  const allWaiting = (allEntries ?? []).filter((e) => e.verdict === null).length;
+  const allWaiting = (allEntries ?? []).filter(entryWaits).length;
   // BL-173: open re-checks still waiting for an answer here (one answered elsewhere and on its way is not).
   const recheckOption = recheckPickerOption(recheckEntries, wave);
   const rechecksOpen = recheckOption.open;
-  const reviewedHere = (entries ?? []).filter((e) => e.verdict !== null).length;
+  const reviewedHere = (entries ?? []).filter((e) => !entryWaits(e)).length;
   const takenElsewhere = (groupId: string) => claims.find((c) => c.scope === "group" && c.groupId === groupId && Date.parse(c.until) > nowMs) ?? null;
   const device = source ? (source.hostname ?? source.deviceId) : null;
   /** The item key without the chosen wave's prefix ("C14/V04" → "V04" inside C14). */
@@ -1164,7 +1165,7 @@ export function PlanReviewScreen({
                 {/* BL-157 (AC-TC-02): another computer is on this track (or its wave) right now. */}
                 {(() => {
                   const claim = claimOf(entry, claims, nowMs);
-                  return claim && entry.verdict === null ? (
+                  return claim && entryWaits(entry) ? (
                     <p className="rounded-md border border-sky-900/60 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-200">{t("review.claimedBy", { device: claim.device, time: formatDisplayDateTime(claim.since) })}</p>
                   ) : null;
                 })()}
@@ -1500,7 +1501,7 @@ export function PlanReviewScreen({
             <div className="min-h-0 flex-1 overflow-y-auto">
               {(() => {
                 const row = (e: ScreenEntry, i: number) => {
-                  const claim = e.verdict === null ? claimOf(e, claims, nowMs) : null;
+                  const claim = entryWaits(e) ? claimOf(e, claims, nowMs) : null;
                   const current = i === index;
                   const auto = validatorOfEntry(e);
                   return (
@@ -1543,8 +1544,8 @@ export function PlanReviewScreen({
                   );
                 };
                 const all = (entries ?? []).map((e, i) => ({ e, i }));
-                const open = all.filter(({ e }) => e.verdict === null);
-                const done = all.filter(({ e }) => e.verdict !== null);
+                const open = all.filter(({ e }) => entryWaits(e));
+                const done = all.filter(({ e }) => !entryWaits(e));
                 const heading = (text: string) => <p className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">{text}</p>;
                 return (
                   <>

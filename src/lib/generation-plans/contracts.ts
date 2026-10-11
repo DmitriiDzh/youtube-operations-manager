@@ -211,6 +211,14 @@ export type PlanReviewEntry = {
 export type PlanValidatorVerdict = "passed" | "rejected";
 
 /**
+ * BL-175 (VISUAL_REVIEW_PLAN.md §2.3): the one rule for "this entry still waits for the owner" -- every queue, count, badge and
+ * screen reads it, never `verdict === null` on its own.
+ */
+export function entryWaits(entry: { verdict: unknown }): boolean {
+  return entry.verdict === null;
+}
+
+/**
  * BL-153: the validator verdict of a review entry from what its stages said -- for an entry that does not carry `validator`
  * (another device's report: the shared format has no such field, so devices on different versions still read each other).
  * The last stage row before the review decides, as in `reviewCandidates`.
