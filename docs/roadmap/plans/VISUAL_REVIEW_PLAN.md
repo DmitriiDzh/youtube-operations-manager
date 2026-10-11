@@ -220,7 +220,7 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
   - the owner's own pick action first applies the picks still on their way from the other computer (as the tick would), then is
     weighed against the stored picks -- what those moved is stored, never only shown (round 1 had lost it);
   - a "none fits" from the other computer also covers the item's attempts already settled here (its report may have cut them);
-  - a report row of the stage right before the review that fails or rejects a picked attempt withdraws the pick (`left_queue`); only picks on
+  - a report row of the stage right before the review that takes a picked attempt out of the queue withdraws the pick (`left_queue`); only picks on
     attempts in the queue that are counted show and decide an item; a ref only a relayed verdict names cannot be picked;
   - the same "none fits" weighed twice changes nothing;
   - focus holders stack (the "none fits" dialog and a pin's note box over the layer keep Tab); the focus goes back where it was;
@@ -231,6 +231,19 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
     stays each clip's own;
   - Esc goes back to the grid also after loupe ↔ compare; the C key and the button follow one rule; N/P in compare skip the
     compared attempt; held Z and held N/P in the layer do not repeat; the wheel does not set a pin's radius (dropped from §2.9).
+- **Review round 3** (the round-2 changes only, two reviewers; all findings fixed):
+  - the owner's own pick action counts the other computer's rejections still on their way, as the tick does (round 2 had
+    weighed its pending picks without them: a pick and a rejection of the same attempt could both be stored);
+  - one `left_queue` sweep after every report and every plan change (`reviewRejected` off, a stage removed), so it never
+    depends on an unrelated report; a pick that may no longer stand takes no place when another is picked;
+  - a "none fits" from the other computer covers settled attempts only if they existed when it was given;
+  - a picked attempt that only external stages report stays accepted when a stage after the review fails it, as the app's own;
+  - compare: a fresh pair starts together, a clip that joins (N/P) takes the other clip's moment and state, a picture or a clip
+    that fails never holds a clip back; Space and the frame keys lead with the clip that exists;
+  - focus goes back on close only when it was left in the closing layer or dialog (never away from the pin's note box); a
+    verdict or answer that arrives after the owner moved on keeps the owner where they are, with their draft;
+  - the layer opens only on a playable picture; its Compare button follows the screen's rule; N/P in compare stay put when the
+    only other attempt is the compared one.
 - **Live check (AC-VR-15)** ran on an isolated instance of the branch (`next dev` on 127.0.0.1:3100 with a scratch HOME and
   database, a test user and channel, generated PNG stills, 16 fps MP4 loops and an MP3; a session minted with the worktree's
   throwaway secret). Pictures in the owner's Chrome; clips in a separate headless Chrome (the Mac's display was off, and Chrome

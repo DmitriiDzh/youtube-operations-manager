@@ -58,6 +58,8 @@ type Props = {
   onNoneFits?: (itemKey: string) => void;
   onClose: () => void;
   onAddPin?: (region: PlanMarkerRegion, atSeconds: number) => void;
+  /** Review round 3: whether compare can open (the screen's one rule -- the compared attempt may be outside the grid's item). */
+  canCompare?: boolean;
   /** A line under the header (a message from the last action). */
   message?: { tone: "ok" | "error"; text: string } | null;
 };
@@ -75,16 +77,37 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
   const root = useRef<HTMLDivElement | null>(null);
   useDialogFocus(root, { initial: "container" });
 
-  // Review round 2: in compare the two clips start together -- each waits until both are loaded, then both play from the start.
+  // Review rounds 2 and 3: in compare the clips of a fresh pair start together -- each waits until every clip of the pair is
+  // loaded (or failed), then all play from the start; a clip that joins a running pair (N/P moves the current one, the compared
+  // one stays) takes the other clip's moment and state. A picture beside a clip never holds the clip back.
   const ready = useRef(new Set<string>());
-  // A layout effect: cleared before a cached clip's metadata can arrive.
+  const started = useRef(false);
+  // Layout effects: run before a cached clip's metadata can arrive. A mode change remounts every clip; a new pair keeps only
+  // the clips still in it.
   useLayoutEffect(() => {
     ready.current.clear();
-  }, [mode, current?.key, other?.key]);
-  const onClipReady = (key: string) => {
-    ready.current.add(key);
-    if (mode === "compare" && pair && pair.every((e) => ready.current.has(e.key))) for (const v of videos.current) v?.seekTo(0, "play");
+    started.current = false;
+  }, [mode]);
+  // A JSON list: an entry's key holds "\u0000" itself.
+  const pairKeys = JSON.stringify(pair ? pair.map((e) => e.key) : []);
+  useLayoutEffect(() => {
+    const keep = new Set(JSON.parse(pairKeys) as string[]);
+    for (const key of [...ready.current]) if (!keep.has(key)) ready.current.delete(key);
+  }, [pairKeys]);
+  const onClipReady = (slot: 0 | 1) => {
+    if (mode !== "compare" || !pair) return;
+    ready.current.add(pair[slot].key);
+    const clips = pair.filter((e) => e.media === "video");
+    if (!clips.every((e) => ready.current.has(e.key))) return;
+    const self = videos.current[slot];
+    const partner = videos.current[slot === 0 ? 1 : 0];
+    if (!started.current || !partner) {
+      started.current = true;
+      for (const v of videos.current) v?.seekTo(0, "play");
+    } else self?.seekTo(partner.currentTime(), partner.isPlaying() ? "play" : "pause");
   };
+  /** The clip that leads in compare: the current attempt's, else the other one (a picture beside a clip). */
+  const leadClip = () => videos.current[0] ?? videos.current[1];
 
   // Compare: the first clip leads -- every key and button drives it, and the other one follows its moves (`onUserSeek`).
   useImperativeHandle(ref, () => ({
@@ -94,17 +117,18 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
       if (mode === "compare") setLinked((v) => (v.fit ? { fit: false, scale: 1, cx: 0.5, cy: 0.5 } : FIT));
     },
     frame(direction) {
-      videos.current[0]?.stepFrame(direction);
+      leadClip()?.stepFrame(direction);
     },
     togglePlay() {
-      const lead = videos.current[0];
+      const lead = leadClip();
       if (!lead) return;
       const playing = lead.isPlaying();
       lead.togglePlay();
-      if (mode === "compare") videos.current[1]?.seekTo(lead.currentTime(), playing ? "pause" : "play");
+      const follower = videos.current[1];
+      if (mode === "compare" && follower && follower !== lead) follower.seekTo(lead.currentTime(), playing ? "pause" : "play");
     },
     seekBy(seconds) {
-      videos.current[0]?.seekBy(seconds);
+      leadClip()?.seekBy(seconds);
     },
   }));
 
@@ -176,7 +200,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
         onUserSeek={shared ? (seconds, playing) => videos.current[slot === 0 ? 1 : 0]?.seekTo(seconds, playing ? "play" : "pause") : undefined}
         onUserPlay={shared ? (playing, seconds) => videos.current[slot === 0 ? 1 : 0]?.seekTo(seconds, playing ? "play" : "pause") : undefined}
         autoPlay={!shared}
-        onReady={shared ? () => onClipReady(entry.key) : undefined}
+        onReady={shared ? () => onClipReady(slot) : undefined}
       />
     );
 
@@ -196,7 +220,7 @@ export const VisualReviewLayer = forwardRef<LayerHandle, Props>(function VisualR
           {modeButton("grid", t("review.layer.grid"), "G")}
           {/* ui-text-ignore: a keyboard key */}
           {modeButton("loupe", t("review.layer.loupe"), "Enter", !current)}
-          {modeButton("compare", t("review.layer.compare"), "C", !pair)}
+          {modeButton("compare", t("review.layer.compare"), "C", !(props.canCompare ?? pair))}
         </span>
         {mode === "grid" && (
           <span className="inline-flex gap-1 rounded-lg bg-zinc-900 p-1" role="group" aria-label={t("review.layer.scope")}>

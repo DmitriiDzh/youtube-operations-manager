@@ -890,6 +890,47 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
   }
 
   /**
+   * Review rounds 2 and 3: a pick lives only on an attempt a pick may stand on -- once a report row or a plan change takes the
+   * attempt out of the owner's queue (a failed or rejected row of the stage right before the review while rejected attempts are
+   * not shown, a stage removed, `reviewRejected` switched off), its pick is withdrawn (`owner_unpick` `left_queue`). Inside the
+   * plan's lock. Returns the plan's records after it.
+   */
+  async function withdrawPicksLeftQueue(row: StoredPlan, records: PlanPickRecord[], at: string, device: string): Promise<PlanPickRecord[]> {
+    if (!records.some((p) => p.kind === "pick" && p.active)) return records;
+    const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
+    const live = liveOf(row, jobs, results);
+    let picks = records;
+    for (const p of records.filter((r) => r.kind === "pick" && r.active && r.attemptRef !== null && !live.has(keyOf(r.itemKey, r.attemptRef)))) {
+      picks = await withdrawPickOf(row, picks, p.itemKey, p.attemptRef as string, at, device, {}, "left_queue");
+    }
+    return picks;
+  }
+
+  /** Review round 3: when each attempt of the plan was first known here, ms -- its job's creation, else its first result row. */
+  function firstSeenOf(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Map<string, number> {
+    const out = new Map<string, number>();
+    const seen = (key: string, ms: number) => {
+      const known = out.get(key);
+      if (Number.isFinite(ms) && (known === undefined || ms < known)) out.set(key, ms);
+    };
+    for (const a of inAppAttempts(toPublicPlan(row), jobs, results)) if (a.createdAt) seen(keyOf(a.itemKey, a.attemptRef), Date.parse(a.createdAt));
+    for (const r of results) seen(keyOf(r.itemKey, r.attemptRef), Date.parse(r.at));
+    return out;
+  }
+
+  /**
+   * The attempts a "none fits" sent from another computer covers here (`coveredRefs`): those its owner saw, and those already
+   * settled here that existed when it was given (review round 3: an attempt reported after it waits, even on an item a pick here
+   * had decided).
+   */
+  function noneFitsQueue(row: StoredPlan, action: SharedPickAction, ctx: { queueRefs: readonly string[] }, records: readonly PlanPickRecord[], entries: PlanReviewEntry[], live: ReadonlySet<string>, firstSeen: ReadonlyMap<string, number>): readonly string[] {
+    if (action.action !== "none_fits") return ctx.queueRefs;
+    const given = Date.parse(action.at);
+    const settled = [...settledRefs(records, row.definition.items, entries, action.itemKey, live)].filter((ref) => (firstSeen.get(keyOf(action.itemKey, ref)) ?? Infinity) <= given);
+    return coveredRefs(action, ctx.queueRefs, new Set(settled));
+  }
+
+  /**
    * The context one pick action is weighed in: the item's records, its pick target, its attempts in the review queue now that a
    * pick may stand on (`live`, review round 2: counted attempts only), the attempts the owner rejected (stored verdicts and,
    * `pendingRejected`, verdicts on their way from another computer), and those the stage before the review rejected.
@@ -898,7 +939,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     const item = row.definition.items.find((i) => i.itemKey === itemKey);
     const own = entries.filter((e) => e.itemKey === itemKey && live.has(keyOf(e.itemKey, e.attemptRef)));
     return {
-      records: records.filter((r) => r.itemKey === itemKey),
+      // An active pick a pick may no longer stand on takes no place (review round 3; it is withdrawn as `left_queue`).
+      records: records.filter((r) => r.itemKey === itemKey && (r.kind !== "pick" || !r.active || (r.attemptRef !== null && live.has(keyOf(r.itemKey, r.attemptRef))))),
       target: item ? pickTargetOf(item) : 1,
       queueRefs: own.map((e) => e.attemptRef),
       rejected: new Set([...own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef), ...pendingRejected]),
@@ -941,10 +983,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     // A rejection on its way from the other computer already counts, as it does for the owner's own picks.
     const entries = review ? withPending(reviewEntries(row, jobs, results, stored), await pendingPeerVerdicts(row, [...events], results), review.stageId) : [];
     const live = liveOf(row, jobs, results);
+    const firstSeen = firstSeenOf(row, jobs, results);
     let records = [...stored];
     for (const { action, from } of pending) {
       const ctx = pickContextOf(row, entries, records, action.itemKey, live);
-      const queueRefs = coveredRefs(action, ctx.queueRefs, settledRefs(records, row.definition.items, entries, action.itemKey, live));
+      const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, firstSeen);
       const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, { ...ctx, queueRefs });
       if (outcome.outcome === "applied") records = mergePicks(records, outcome.writes);
     }
@@ -961,8 +1004,13 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     const limit = now().getTime() + 5 * 60_000;
     const [jobs, results, events, stored] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id), deps.store.listEvents(row.id), deps.store.listPicks(row.id)]);
     const handled = handledPickIds(events);
-    const entries = reviewEntries(row, jobs, results, stored);
+    const before = reviewEntries(row, jobs, results, stored);
+    // Review round 3: a rejection still on its way from the other computer already counts (the tick applies verdicts first;
+    // the owner's own action weighs these picks before that).
+    const review = row.definition.stages.find((s) => s.kind === "owner_review");
+    const entries = review ? withPending(before, await pendingPeerVerdicts(row, events, results), review.stageId) : before;
     const live = liveOf(row, jobs, results);
+    const firstSeen = firstSeenOf(row, jobs, results);
     let records: PlanPickRecord[] = stored;
     let a = 0;
     let k = 0;
@@ -973,8 +1021,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         continue;
       }
       const ctx = pickContextOf(row, entries, records, action.itemKey, live);
-      // A "none fits" covers the attempts its owner saw there, and those already settled here (review rounds 1 and 2).
-      const queueRefs = coveredRefs(action, ctx.queueRefs, settledRefs(records, row.definition.items, entries, action.itemKey, live));
+      // A "none fits" covers the attempts its owner saw there, and those already settled here (review rounds 1-3).
+      const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, firstSeen);
       const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, { ...ctx, queueRefs });
       const base = { pickId: action.pickId, fromDevice: from, itemKey: action.itemKey, ...(action.attemptRef ? { attemptRef: action.attemptRef } : {}), action: action.action };
       if (outcome.outcome === "applied") {
@@ -988,7 +1036,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       handled.add(action.pickId);
     }
     // A pick from the other computer may finish a wave too.
-    if (a > 0) await recordGroupsReviewed(row, entries, reviewEntries(row, jobs, results, records), records);
+    if (a > 0) await recordGroupsReviewed(row, before, reviewEntries(row, jobs, results, records), records);
     return { applied: a, skipped: k };
   }
 
@@ -1328,6 +1376,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
         };
       });
       await record(updated.id, "plan_updated", actor);
+      // Review round 3: a plan change can take picked attempts out of the owner's queue too (stages, `reviewRejected`).
+      await serializedPerPlan(updated.id, async () => {
+        const row = await deps.store.getPlan(updated.id);
+        if (row && row.status === "active") await withdrawPicksLeftQueue(row, await deps.store.listPicks(row.id), now().toISOString(), actor === "owner" ? await ownLabel() : actor);
+      });
       return view(updated);
     },
 
@@ -1479,14 +1532,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       let picks = await deps.store.listPicks(row.id);
       const device = actor === "owner" ? await ownLabel() : actor;
       for (const r of relayedRejections) picks = await withdrawPickOf(row, picks, r.itemKey, r.attemptRef, at, device);
-      // Review round 2: nor does a stage before the review that fails or rejects a picked attempt -- it leaves the owner's queue.
-      if (picks.some((p) => p.kind === "pick" && p.active)) {
-        const [jobs, results] = await Promise.all([deps.store.listJobs(row.id), deps.store.listResults(row.id)]);
-        const live = liveOf(row, jobs, results);
-        for (const p of picks.filter((r) => r.kind === "pick" && r.active && r.attemptRef !== null && !live.has(keyOf(r.itemKey, r.attemptRef)))) {
-          picks = await withdrawPickOf(row, picks, p.itemKey, p.attemptRef as string, at, device, {}, "left_queue");
-        }
-      }
+      // Review round 2: nor does a row that takes a picked attempt out of the owner's queue.
+      await withdrawPicksLeftQueue(row, picks, at, device);
       return { planId: row.id, stored: parsed.rows.length };
       });
     },
@@ -1616,10 +1663,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
           if (parsed.action === "pick" && parsed.attemptRef) await endTrackClaim(await ownDeviceId(), row.id, parsed.itemKey, parsed.attemptRef);
         }
         const state = pickStateOf(after).get(parsed.itemKey);
+        const live = liveOf(row, jobs, results);
         return {
           itemKey: parsed.itemKey,
           outcome: outcome.outcome,
-          picks: state?.picks ?? [],
+          picks: (state?.picks ?? []).filter((p) => live.has(keyOf(parsed.itemKey, p.attemptRef))),
           noneFits: state?.noneFits ? { note: state.noneFits.note, device: state.noneFits.device, at: state.noneFits.at, attempts: state.noneFits.attempts } : null,
         };
       });

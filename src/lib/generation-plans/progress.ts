@@ -267,12 +267,13 @@ function derive(plan: GenerationPlan, jobs: PlanJobRow[], results: PlanResultRow
   }
   type Fate = "accepted" | "dead" | "pending" | "not_chosen";
   const fateOf = (itemKey: string, attemptRef: string, state: PlanAttemptState): Fate => {
-    if (state === "failed" || state === "interrupted" || state === "cancelled") return "dead";
     const key = `${itemKey}\u0000${attemptRef}`;
-    const rows = verdictsOf.get(key) ?? [];
-    // BL-175: a pick is the owner's choice -- it wins over a validator's rejection; a not-chosen attempt is settled, not pending.
+    // BL-175: a pick is the owner's choice -- it wins over a validator's rejection (and, review round 3, over a failed row of an
+    // attempt only external stages report, as it does for the app's own); a not-chosen attempt is settled, not pending.
     const candidate = candidateOf.get(key);
     if (candidate?.picked) return "accepted";
+    if (state === "failed" || state === "interrupted" || state === "cancelled") return "dead";
+    const rows = verdictsOf.get(key) ?? [];
     if (final && final.kind !== "in_app" && rows.some((r) => r.stageId === final.stageId && (r.result === "accepted" || r.result === "done"))) return "accepted";
     if (final?.kind === "in_app" && state === "done") return "accepted";
     if (candidate?.notChosen) return "not_chosen";

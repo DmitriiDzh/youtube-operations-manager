@@ -204,6 +204,8 @@ export const MediaVideoPlayer = forwardRef<
     seekTo(seconds, mode = "keep") {
       const v = video.current;
       if (!v) return;
+      // Led by the other clip: a hover-scrub here no longer gives its frame back (review round 3).
+      scrubFrom.current = null;
       seek(seconds);
       if (mode === "pause") v.pause();
       else if (mode === "play" && v.paused) play();
@@ -318,7 +320,11 @@ export const MediaVideoPlayer = forwardRef<
               setTime(event.currentTarget.currentTime);
             }}
             onSeeked={(event) => setTime(event.currentTarget.currentTime)}
-            onError={() => setFailed(true)}
+            onError={() => {
+              setFailed(true);
+              // A clip that cannot load never holds a linked one back (review round 3).
+              onReady?.();
+            }}
           />
         )}
         {box &&

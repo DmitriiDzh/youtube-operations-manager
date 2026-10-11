@@ -821,11 +821,17 @@ export function PlanReviewScreen({
         setMessage({ tone: "ok", text: t("review.recheck.answered", { item: entry.itemKey }) });
         onChanged?.();
         const list = walkOf(await load(), filter, wave);
+        visualDrafts.current.delete(draftKeyOf(entry));
+        // The owner moved on while the answer was on its way: stay there, with its draft (review round 3).
+        if (onScreen.current !== entryKey(entry)) {
+          const there = list.findIndex((e) => entryKey(e) === onScreen.current);
+          if (there >= 0) setIndex(there);
+          return;
+        }
         // An answered re-check leaves the list here (on another computer's plan it stays, "sent"): look on from where it was.
         const here = list.findIndex((e) => (e as ScreenEntry).recheck?.recheckId === recheck.recheckId);
         const next = nextWaitingIndex(list, here >= 0 ? here : index - 1, skipFresh);
         const to = next >= 0 ? next : Math.max(0, Math.min(here >= 0 ? here : index, list.length - 1));
-        visualDrafts.current.delete(draftKeyOf(entry));
         setDraft(draftFor(list[to] as ScreenEntry | undefined));
         stopB();
         setIndex(to);
@@ -889,6 +895,12 @@ export function PlanReviewScreen({
         onChanged?.();
         // Auto-advance: the next attempt still waiting after this one, in the refreshed queue.
         const list = visibleEntries((await load()).entries, filter, wave);
+        // The owner moved on while the verdict was on its way: stay there, with its draft (review round 3).
+        if (onScreen.current !== entryKey(entry)) {
+          const there = list.findIndex((e) => entryKey(e) === onScreen.current);
+          if (there >= 0) setIndex(there);
+          return;
+        }
         const here = list.findIndex((e) => e.itemKey === entry.itemKey && e.attemptRef === entry.attemptRef);
         const next = nextWaitingIndex(list, here >= 0 ? here : index, skipFresh);
         const to = next >= 0 ? next : Math.max(0, here);
@@ -1120,7 +1132,7 @@ export function PlanReviewScreen({
   // Review round 2: one rule for compare, the C key and the button alike -- a second picture or clip of the walk is chosen.
   const comparable = entry !== null && compareKey !== null && compareKey !== entryKey(entry) && visualWalk.some((e) => entryKey(e) === compareKey);
   // Review round 2: an open re-check shows its own file on the screen only -- the grid, the loupe and compare never open on it.
-  const layerable = visualEntry && !entry?.recheck;
+  const layerable = visualEntry && Boolean(entry?.playable) && !entry?.recheck;
 
   // Keyboard shortcuts, except while typing.
   useEffect(() => {
@@ -1184,7 +1196,9 @@ export function PlanReviewScreen({
           let to = stepIndex(entries ?? [], index, direction, skipClaimed);
           const at = (entries ?? [])[to];
           if (layer === "compare" && at && entryKey(at) === compareKey) to = stepIndex(entries ?? [], to, direction, skipClaimed);
-          go(to);
+          const landed = (entries ?? [])[to];
+          // Nowhere else to go (two attempts, the other one compared): stay (review round 3).
+          if (!(layer === "compare" && landed && entryKey(landed) === compareKey)) go(to);
         }
         return;
       }
@@ -2260,6 +2274,7 @@ export function PlanReviewScreen({
           entries={(layer === "grid" && gridScope === "item" ? visualWalk.filter((e) => e.itemKey === entry.itemKey) : visualWalk).map(layerEntryOf)}
           currentKey={entryKey(entry)}
           compareKey={compareKey}
+          canCompare={comparable}
           blind={blind}
           shortKey={shortKey}
           itemPicks={itemPickInfo}

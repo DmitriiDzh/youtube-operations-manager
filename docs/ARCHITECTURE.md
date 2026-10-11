@@ -3563,8 +3563,10 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   the other computer) are recorded. An attempt is never both picked and rejected: a rejection withdraws the pick (also one that
   arrives later from the other computer, or one the factory relays), a pick on a rejected attempt is refused. A pick stands only
   on an attempt in the owner's queue that is counted (`pickableRefs`: in-app, or reported by an external stage); a report row
-  of the stage right before the review that fails or rejects a picked attempt withdraws its pick (`left_queue`; a row of an
-  earlier stage does not -- only the stage right before the review decides the queue, `reviewCandidates`).
+  or a plan change that takes a picked attempt out of the owner's queue withdraws its pick (`left_queue`: a failed row of the
+  stage right before the review, a rejected one while the plan does not show rejected attempts, `reviewRejected` switched off,
+  a stage removed; a row of an earlier stage does not -- only the stage right before the review decides the queue,
+  `reviewCandidates`). A pick that may no longer stand never takes a place when another is picked.
 - **Counting.** `entryWaits` is the one "waits for the owner" rule (queue, counts, badge, screen). An item is decided at its pick
   target (`pickTargetOf`); its attempts without a verdict are `notChosen` (neither accepted, pending nor rejected). Attempts that
   only external stages report now count in `attempts`, `accepted` and `missing`; the Mac's two music plans had none, so their
@@ -3574,8 +3576,8 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   another computer's plan is refused (`peer_update_required`) while that computer's report is below v5. The owner's own pick
   action first weighs the pick actions still on their way from the other computer (`weighPeerPicks`, as the tick does), so what
   those move is stored before the owner's action is weighed. A "none fits" sent from the other computer carries `covered` (the
-  attempts its owner saw there); here it covers those plus the item's attempts already settled, so an attempt that still waits
-  and was not seen stays out (the report keeps 500 entries and cuts settled ones first). The same "none fits" weighed twice
+  attempts its owner saw there); here it covers those plus the item's attempts already settled that existed when it was given
+  (review round 3), so an attempt that still waits and was not seen -- or arrived later -- stays out (the report keeps 500 entries and cuts settled ones first). The same "none fits" weighed twice
   (its `peer_pick` event fell out of the newest 5000 events) is `unchanged`.
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression

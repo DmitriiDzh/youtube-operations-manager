@@ -738,3 +738,106 @@ test("review round 2: a pick on an attempt that is no longer pickable neither sh
   const again = applyPickAction({ itemKey: "I", attemptRef: null, action: "none_fits", note: "мимо", device: "WIN", at }, { records: [none], target: 1, queueRefs: ["a1", "a2"], rejected: new Set(), validatorRejected: new Set() });
   assert.deepEqual(again, { outcome: "unchanged" });
 });
+
+// -- Review round 3 -------------------------------------------------------------------------------------------------------
+
+test("review round 3: Windows picks a3 and then rejects it; any pick action of the owner on the Mac before the tick never stores the a3 pick", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a3", action: "pick" });
+  tick();
+  await win.services.recordPeerVerdict({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", attemptRef: "a3", result: "rejected" });
+  await sync();
+  tick();
+  // A no-op (a1 is not picked) -- it still weighs the pending pick first, with the rejection on its way counted (§2.2).
+  const answer = await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "unpick" });
+  assert.deepEqual([answer.outcome, answer.picks], ["unchanged", []]);
+  assert.deepEqual(kinds(mac, "owner_pick", "group_reviewed"), []);
+  assert.deepEqual((kinds(mac, "peer_pick").at(-1)?.[1] as Record<string, unknown>).reason, "rejected");
+  await mac.services.applyPeerVerdicts();
+  await mac.services.applyPeerPicks();
+  const item = await itemOf(mac);
+  // 8 attempts, a3 rejected: 7 wait, nothing picked, no wave recorded as reviewed.
+  assert.deepEqual([item.picks.length, item.waitingReview, kinds(mac, "group_reviewed").length], [0, 7, 0]);
+});
+
+/** reviewRejected on: render passes a1..a4 and rejects a5 (playable), so the owner may pick a5 over the validator. */
+async function overridePlan(pickTarget: number) {
+  const s = setup();
+  await s.services.createPlan({
+    planId: PLAN,
+    title: "override",
+    channelId: CHANNEL,
+    reviewRejected: true,
+    stages: [
+      { stageId: "render", title: "Render", kind: "external" },
+      { stageId: "owner_review", title: "Owner review", kind: "owner_review" },
+      { stageId: "post", title: "Post", kind: "external" },
+    ],
+    groups: [{ groupId: "W1", title: "Stills" }],
+    items: [
+      { itemKey: "W1/I", groupId: "W1", targetCount: 2, pickTarget },
+      { itemKey: "W1/J", groupId: "W1", targetCount: 1 },
+    ],
+  });
+  await s.services.report({
+    planId: PLAN,
+    rows: [
+      ...refs(4).map((a) => ({ stageId: "render", itemKey: "W1/I", attemptRef: a, result: "done" as const, auditionFile: `x/${a}.png` })),
+      { stageId: "render", itemKey: "W1/I", attemptRef: "a5", result: "rejected" as const, auditionFile: "x/a5.png" },
+      { stageId: "render", itemKey: "W1/J", attemptRef: "j1", result: "done" as const, auditionFile: "x/j1.png" },
+    ],
+  });
+  return s;
+}
+const itemNamed = async (s: ReturnType<typeof setup>, itemKey: string) => (await s.services.getPlan({ planId: PLAN })).progress.items.find((i) => i.itemKey === itemKey);
+
+test("review round 3: switching reviewRejected off takes a picked validator-rejected attempt out of the queue -- its pick is withdrawn right then, and only then", async () => {
+  const s = await overridePlan(2);
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" });
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a5", action: "pick" });
+  tick();
+  await s.services.updatePlan({ planId: PLAN, reviewRejected: false });
+  assert.deepEqual(kinds(s, "owner_unpick"), [["owner_unpick", { itemKey: "W1/I", attemptRef: "a5", device: "factory", reason: "left_queue" }]]);
+  assert.deepEqual((await itemNamed(s, "W1/I"))?.picks.map((p) => p.attemptRef), ["a1"]);
+  // One of two picked: a2 is the second -- a1 is not moved out by a pick nobody can see.
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a2", action: "pick" });
+  assert.deepEqual((await itemNamed(s, "W1/I"))?.picks.map((p) => p.attemptRef), ["a1", "a2"]);
+  // A report on another item, or rejected attempts shown again, brings nothing back and withdraws nothing more.
+  tick();
+  await s.services.report({ planId: PLAN, rows: [{ stageId: "render", itemKey: "W1/J", attemptRef: "j2", result: "done", auditionFile: "x/j2.png" }] });
+  await s.services.updatePlan({ planId: PLAN, reviewRejected: true });
+  assert.equal(kinds(s, "owner_unpick").length, 1);
+  assert.deepEqual((await itemNamed(s, "W1/I"))?.picks.map((p) => p.attemptRef), ["a1", "a2"]);
+});
+
+test("review round 3: a picked attempt a stage after the review fails stays accepted -- the owner's pick, as for the app's own attempts", async () => {
+  const s = await overridePlan(1);
+  tick();
+  await s.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a2", action: "pick" });
+  tick();
+  await s.services.report({ planId: PLAN, rows: [{ stageId: "post", itemKey: "W1/I", attemptRef: "a2", result: "failed" }] });
+  const item = await itemNamed(s, "W1/I");
+  assert.deepEqual([item?.picks.map((p) => p.attemptRef), item?.accepted], [["a2"], 1]);
+  assert.equal(kinds(s, "owner_unpick").length, 0);
+});
+
+test("review round 3: a none-fits from Windows never covers an attempt reported on the Mac after it was given, even on an item a Mac pick had decided", async () => {
+  const { mac, win, sync } = await twoComputers();
+  tick();
+  await mac.services.recordOwnerPick({ planId: PLAN, itemKey: "W1/I", attemptRef: "a1", action: "pick" });
+  await sync();
+  tick();
+  await win.services.recordPeerPick({ deviceId: "mac-id", planId: PLAN, itemKey: "W1/I", action: "none_fits", note: "все мимо" });
+  tick(60_000);
+  await mac.services.report({ planId: PLAN, rows: [{ stageId: "render", itemKey: "W1/I", attemptRef: "a9", result: "done", auditionFile: "H-0004/planC/a9.png" }] });
+  await sync();
+  // Before the tick, a9 is not chosen (a1 decides the item); the none-fits takes a1's pick away and covers a1..a8 only.
+  await mac.services.applyPeerPicks();
+  const item = await itemOf(mac);
+  assert.deepEqual([item.picks.length, item.noneFits?.attempts, item.notChosen, item.waitingReview], [0, 8, 8, 1]);
+  assert.deepEqual((await mac.services.todo({ planId: PLAN })).waitingReview.map((w) => w.attemptRef), ["a9"]);
+});

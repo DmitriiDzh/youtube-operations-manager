@@ -61,7 +61,10 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, options: { in
       document.removeEventListener("keydown", onKey, true);
       const at = holders.lastIndexOf(root);
       if (at >= 0) holders.splice(at, 1);
-      if (before && document.contains(before)) before.focus();
+      // Only when the focus was in the holder (it is gone now: the body has it) -- never away from a field that took the focus
+      // meanwhile, e.g. the pin's note box that the screen shows once the layer closes (review round 3).
+      const now = document.activeElement;
+      if (before && document.contains(before) && (!now || now === document.body || root.contains(now))) before.focus();
     };
   }, [initial, ref]);
 }

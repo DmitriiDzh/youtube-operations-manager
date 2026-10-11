@@ -700,7 +700,7 @@ export function createFactoryMcpServer(deps: FactoryToolDeps, options: FactorySe
   );
   planWrite(
     "factory_plan_update",
-    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys?, upsertReferences? (an existing id is replaced), removeReferenceIds?, reviewRejected? (1.6.0: true = validator-rejected attempts that can be played also wait for the owner's review), reviewReasons? (1.13.0: the plan's reason chips; null removes them; upsertGroups[].reviewReasons sets a wave's, null removes it; upsertItems[].pickTarget) } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
+    "Change an active plan: { planId, title?, note?, budget?, addStages?, upsertGroups? (an existing groupId is replaced), upsertItems? (an existing itemKey is replaced; its attempts stay), removeStageIds?, removeGroupIds?, removeItemKeys?, upsertReferences? (an existing id is replaced), removeReferenceIds?, reviewRejected? (1.6.0: true = validator-rejected attempts that can be played also wait for the owner's review; 1.13.0: switching it off -- or removing a stage -- withdraws the owner's pick of an attempt that leaves the queue, owner_unpick reason left_queue), reviewReasons? (1.13.0: the plan's reason chips; null removes them; upsertGroups[].reviewReasons sets a wave's, null removes it; upsertItems[].pickTarget) } -> { plan, progress }. A stage or item with attempts or results cannot be removed; a group with items cannot be removed (plan_invalid).",
     z
       .object({
         planId: z.string(),
