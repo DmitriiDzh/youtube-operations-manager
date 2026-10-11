@@ -743,8 +743,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const p = pending.get(keyOf(entry.itemKey, entry.attemptRef));
       if (!p) return entry;
       const v = p.verdict;
+      // An attempt with a verdict is never "not chosen" (review round 4).
+      const { notChosen: _notChosen, ...rest } = entry;
+      void _notChosen;
       return {
-        ...entry,
+        ...rest,
         verdict: { stageId: reviewStageId, itemKey: entry.itemKey, attemptRef: entry.attemptRef, result: v.result, reportedBy: "owner", note: v.note, rating: v.rating, reasons: v.reasons, markers: v.markers, auditionFile: null, checks: [], metrics: {}, at: v.at },
         pendingFrom: p.from,
       };
@@ -906,36 +909,52 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     return picks;
   }
 
-  /** Review round 3: when each attempt of the plan was first known here, ms -- its job's creation, else its first result row. */
-  function firstSeenOf(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Map<string, number> {
+  /**
+   * Review rounds 3 and 4: when each attempt entered the owner's queue here, ms -- the stage right before the review passed (or
+   * reported) it: its job finished, or that stage's row; or the owner's verdict row, whichever is earlier. A re-reported row
+   * replaces its time (the attempt counts as entering again). Times are whole seconds in the store.
+   */
+  function queuedAtOf(row: StoredPlan, jobs: PlanJobRow[], results: PlanResultRow[]): Map<string, number> {
+    const stages = row.definition.stages;
+    const index = stages.findIndex((s) => s.kind === "owner_review");
+    const before = index > 0 ? stages[index - 1] : null;
+    const review = index >= 0 ? stages[index] : null;
     const out = new Map<string, number>();
     const seen = (key: string, ms: number) => {
       const known = out.get(key);
       if (Number.isFinite(ms) && (known === undefined || ms < known)) out.set(key, ms);
     };
-    for (const a of inAppAttempts(toPublicPlan(row), jobs, results)) if (a.createdAt) seen(keyOf(a.itemKey, a.attemptRef), Date.parse(a.createdAt));
-    for (const r of results) seen(keyOf(r.itemKey, r.attemptRef), Date.parse(r.at));
+    if (before?.kind === "in_app") {
+      for (const a of inAppAttempts(toPublicPlan(row), jobs, results)) {
+        const at = a.finishedAt ?? a.createdAt;
+        if (at) seen(keyOf(a.itemKey, a.attemptRef), Date.parse(at));
+      }
+    }
+    for (const r of results) {
+      if ((before !== null && before.kind !== "in_app" && r.stageId === before.stageId) || r.stageId === review?.stageId) seen(keyOf(r.itemKey, r.attemptRef), Date.parse(r.at));
+    }
     return out;
   }
 
   /**
    * The attempts a "none fits" sent from another computer covers here (`coveredRefs`): those its owner saw, and those already
-   * settled here that existed when it was given (review round 3: an attempt reported after it waits, even on an item a pick here
-   * had decided).
+   * settled here that were in the queue when it was given (review rounds 3 and 4: an attempt that entered the queue after it
+   * waits, even on an item a pick here had decided).
    */
-  function noneFitsQueue(row: StoredPlan, action: SharedPickAction, ctx: { queueRefs: readonly string[] }, records: readonly PlanPickRecord[], entries: PlanReviewEntry[], live: ReadonlySet<string>, firstSeen: ReadonlyMap<string, number>): readonly string[] {
+  function noneFitsQueue(row: StoredPlan, action: SharedPickAction, ctx: { queueRefs: readonly string[] }, records: readonly PlanPickRecord[], entries: PlanReviewEntry[], live: ReadonlySet<string>, queuedAt: ReadonlyMap<string, number>): readonly string[] {
     if (action.action !== "none_fits") return ctx.queueRefs;
     const given = Date.parse(action.at);
-    const settled = [...settledRefs(records, row.definition.items, entries, action.itemKey, live)].filter((ref) => (firstSeen.get(keyOf(action.itemKey, ref)) ?? Infinity) <= given);
+    const settled = [...settledRefs(records, row.definition.items, entries, action.itemKey, live)].filter((ref) => (queuedAt.get(keyOf(action.itemKey, ref)) ?? Infinity) <= given);
     return coveredRefs(action, ctx.queueRefs, new Set(settled));
   }
 
   /**
    * The context one pick action is weighed in: the item's records, its pick target, its attempts in the review queue now that a
-   * pick may stand on (`live`, review round 2: counted attempts only), the attempts the owner rejected (stored verdicts and,
-   * `pendingRejected`, verdicts on their way from another computer), and those the stage before the review rejected.
+   * pick may stand on (`live`, review round 2: counted attempts only), the attempts the owner rejected (as `entries` show them --
+   * with verdicts on their way from another computer when the caller overlaid them), and those the stage before the review
+   * rejected.
    */
-  function pickContextOf(row: StoredPlan, entries: PlanReviewEntry[], records: readonly PlanPickRecord[], itemKey: string, live: ReadonlySet<string>, pendingRejected: ReadonlySet<string> = new Set()) {
+  function pickContextOf(row: StoredPlan, entries: PlanReviewEntry[], records: readonly PlanPickRecord[], itemKey: string, live: ReadonlySet<string>) {
     const item = row.definition.items.find((i) => i.itemKey === itemKey);
     const own = entries.filter((e) => e.itemKey === itemKey && live.has(keyOf(e.itemKey, e.attemptRef)));
     return {
@@ -943,7 +962,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       records: records.filter((r) => r.itemKey === itemKey && (r.kind !== "pick" || !r.active || (r.attemptRef !== null && live.has(keyOf(r.itemKey, r.attemptRef))))),
       target: item ? pickTargetOf(item) : 1,
       queueRefs: own.map((e) => e.attemptRef),
-      rejected: new Set([...own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef), ...pendingRejected]),
+      rejected: new Set(own.filter((e) => e.verdict?.result === "rejected").map((e) => e.attemptRef)),
       validatorRejected: new Set(own.filter((e) => e.validator === "rejected").map((e) => e.attemptRef)),
     };
   }
@@ -983,11 +1002,11 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     // A rejection on its way from the other computer already counts, as it does for the owner's own picks.
     const entries = review ? withPending(reviewEntries(row, jobs, results, stored), await pendingPeerVerdicts(row, [...events], results), review.stageId) : [];
     const live = liveOf(row, jobs, results);
-    const firstSeen = firstSeenOf(row, jobs, results);
+    const queuedAt = queuedAtOf(row, jobs, results);
     let records = [...stored];
     for (const { action, from } of pending) {
       const ctx = pickContextOf(row, entries, records, action.itemKey, live);
-      const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, firstSeen);
+      const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, queuedAt);
       const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, { ...ctx, queueRefs });
       if (outcome.outcome === "applied") records = mergePicks(records, outcome.writes);
     }
@@ -1010,7 +1029,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     const review = row.definition.stages.find((s) => s.kind === "owner_review");
     const entries = review ? withPending(before, await pendingPeerVerdicts(row, events, results), review.stageId) : before;
     const live = liveOf(row, jobs, results);
-    const firstSeen = firstSeenOf(row, jobs, results);
+    const queuedAt = queuedAtOf(row, jobs, results);
     let records: PlanPickRecord[] = stored;
     let a = 0;
     let k = 0;
@@ -1022,7 +1041,7 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       }
       const ctx = pickContextOf(row, entries, records, action.itemKey, live);
       // A "none fits" covers the attempts its owner saw there, and those already settled here (review rounds 1-3).
-      const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, firstSeen);
+      const queueRefs = noneFitsQueue(row, action, ctx, records, entries, live, queuedAt);
       const outcome = applyPickAction({ itemKey: action.itemKey, attemptRef: action.attemptRef, action: action.action, note: action.note, device: from, at: action.at }, { ...ctx, queueRefs });
       const base = { pickId: action.pickId, fromDevice: from, itemKey: action.itemKey, ...(action.attemptRef ? { attemptRef: action.attemptRef } : {}), action: action.action };
       if (outcome.outcome === "applied") {
@@ -1325,6 +1344,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
     /** AC-GP-06. */
     async updatePlan(input: unknown, actor: PlanActor = "factory"): Promise<PlanView> {
       const parsed = parseWithSchema(updatePlanInputSchema, input, "plan update");
+      // Review round 4: under the plan's lock, so a report or a pick cannot slip between the checks, the change and the
+      // withdrawal of picks it takes out of the queue.
+      return serializedPerPlan(parsed.planId, async () => {
       const [jobs, results] = await Promise.all([deps.store.listJobs(parsed.planId), deps.store.listResults(parsed.planId)]);
       const updated = await mutate(parsed.planId, (row) => {
         const d = row.definition;
@@ -1377,11 +1399,9 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       });
       await record(updated.id, "plan_updated", actor);
       // Review round 3: a plan change can take picked attempts out of the owner's queue too (stages, `reviewRejected`).
-      await serializedPerPlan(updated.id, async () => {
-        const row = await deps.store.getPlan(updated.id);
-        if (row && row.status === "active") await withdrawPicksLeftQueue(row, await deps.store.listPicks(row.id), now().toISOString(), actor === "owner" ? await ownLabel() : actor);
-      });
+      if (updated.status === "active") await withdrawPicksLeftQueue(updated, await deps.store.listPicks(updated.id), now().toISOString(), actor === "owner" ? await ownLabel() : actor);
       return view(updated);
+      });
     },
 
     /**
@@ -1528,7 +1548,8 @@ export function createGenerationPlanServices(deps: PlanServiceDependencies) {
       const at = now().toISOString();
       await deps.store.upsertResults(row.id, parsed.rows.map((r) => resultRow(r, actor, at)));
       // BL-175 (review round 1): a rejection the factory relays never leaves the attempt picked either.
-      const relayedRejections = review ? parsed.rows.filter((r) => r.stageId === review.stageId && r.result === "rejected") : [];
+      // Review round 4: a relayed `failed` at the review stage is a rejection too (it counts in `rejected`).
+      const relayedRejections = review ? parsed.rows.filter((r) => r.stageId === review.stageId && (r.result === "rejected" || r.result === "failed")) : [];
       let picks = await deps.store.listPicks(row.id);
       const device = actor === "owner" ? await ownLabel() : actor;
       for (const r of relayedRejections) picks = await withdrawPickOf(row, picks, r.itemKey, r.attemptRef, at, device);

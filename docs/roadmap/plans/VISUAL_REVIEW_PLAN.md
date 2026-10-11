@@ -244,6 +244,13 @@ same way from the entry it already receives (`currentFile`, stage `auditionFile`
     verdict or answer that arrives after the owner moved on keeps the owner where they are, with their draft;
   - the layer opens only on a playable picture; its Compare button follows the screen's rule; N/P in compare stay put when the
     only other attempt is the compared one.
+- **Review round 4** (the round-3 server changes only, one reviewer; all findings fixed):
+  - a "none fits" from the other computer covers settled attempts only if they were in the owner's queue when it was given (a
+    job that finished after it, or a row of the stage right before the review reported after it, waits);
+  - a `failed` review-stage row the factory relays withdraws the pick like a `rejected` one;
+  - a pick never revives an in-app attempt whose job failed (the round-3 reorder was reverted; a picked external attempt stays
+    usable through `externalState`);
+  - `updatePlan` runs whole under the plan's lock; a pending verdict overlaid on an entry clears its `notChosen`.
 - **Live check (AC-VR-15)** ran on an isolated instance of the branch (`next dev` on 127.0.0.1:3100 with a scratch HOME and
   database, a test user and channel, generated PNG stills, 16 fps MP4 loops and an MP3; a session minted with the worktree's
   throwaway secret). Pictures in the owner's Chrome; clips in a separate headless Chrome (the Mac's display was off, and Chrome

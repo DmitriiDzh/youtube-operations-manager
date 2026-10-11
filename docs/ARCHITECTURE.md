@@ -3561,25 +3561,32 @@ re-checks and the seam view are phase 2; Gemini outputs without copying, owner t
   serve the owner's own actions, the other computer's actions on the tick, and both pending overlays. A pick writes no result row
   and no verdict history; events `owner_pick` / `owner_unpick` / `owner_none_fits` (and `peer_pick` for an action weighed from
   the other computer) are recorded. An attempt is never both picked and rejected: a rejection withdraws the pick (also one that
-  arrives later from the other computer, or one the factory relays), a pick on a rejected attempt is refused. A pick stands only
-  on an attempt in the owner's queue that is counted (`pickableRefs`: in-app, or reported by an external stage); a report row
-  or a plan change that takes a picked attempt out of the owner's queue withdraws its pick (`left_queue`: a failed row of the
-  stage right before the review, a rejected one while the plan does not show rejected attempts, `reviewRejected` switched off,
-  a stage removed; a row of an earlier stage does not -- only the stage right before the review decides the queue,
-  `reviewCandidates`). A pick that may no longer stand never takes a place when another is picked.
+  arrives later from the other computer, or a `rejected` or `failed` row the factory relays at the review stage), a pick on a
+  rejected attempt is refused. A pick stands only on an attempt in the owner's queue that is counted (`pickableRefs`: in-app, or
+  reported by an external stage); a report row or a plan change (the factory's `factory_plan_update` or the owner's Web
+  `review-rejected` switch, both under the plan's lock) that takes a picked attempt out of the owner's queue withdraws its pick
+  (`left_queue`: a failed row of the stage right before the review, a rejected one while the plan does not show rejected
+  attempts -- or one that cannot be played --, `reviewRejected` switched off, a stage removed; a row of an earlier stage does
+  not -- only the stage right before the review decides the queue, `reviewCandidates`). A pick that may no longer stand never
+  takes a place when another is picked.
 - **Counting.** `entryWaits` is the one "waits for the owner" rule (queue, counts, badge, screen). An item is decided at its pick
   target (`pickTargetOf`); its attempts without a verdict are `notChosen` (neither accepted, pending nor rejected). Attempts that
   only external stages report now count in `attempts`, `accepted` and `missing`; the Mac's two music plans had none, so their
-  numbers did not change (`picks.test.ts` AC-VR-07 pins the old rules with fixed values).
+  numbers did not change (`picks.test.ts` AC-VR-07 pins the old rules with fixed values). A picked attempt that only external
+  stages report stays accepted and usable when a stage after the review fails it, like a picked attempt of the app's own (its
+  job is done); a pick never revives an in-app attempt whose job failed.
 - **Two computers.** Plans report v5: marker `region`s, `reviewReasons`, items' `pickTarget`, active `picks` / `noneFits`,
   entries' `picked` / `notChosen`, `handledPicks`, and the top-level `picks` this computer sent. A v4 build refuses v5. A pick on
   another computer's plan is refused (`peer_update_required`) while that computer's report is below v5. The owner's own pick
   action first weighs the pick actions still on their way from the other computer (`weighPeerPicks`, as the tick does), so what
   those move is stored before the owner's action is weighed. A "none fits" sent from the other computer carries `covered` (the
-  attempts its owner saw there); here it covers those plus the item's attempts already settled that existed when it was given
-  (review round 3: its job's creation, else the oldest of its stored rows -- a re-report replaces a row and its time, so an
-  attempt known only by a row re-reported after the action counts as new and waits), so an attempt that still waits and was not
-  seen -- or arrived later -- stays out (the report keeps 500 entries and cuts settled ones first). The same "none fits" weighed twice
+  attempts its owner saw there); here it covers those plus the item's attempts already settled that were in the owner's queue
+  when it was given (`queuedAtOf`: its job finished, or the row of the stage right before the review, or its review row -- the
+  earliest; a re-report replaces a row and its time, so such an attempt counts as entering again and waits), so an attempt that
+  still waits and was not seen -- or entered the queue later -- stays out (the report keeps 500 entries and cuts settled ones
+  first). Known limits: the store keeps these times in whole seconds and the action's time is the other computer's clock
+  (RISK-119); an attempt shown again because `reviewRejected` was switched on after the action has no time of its own and is
+  covered when its row is older. The same "none fits" weighed twice
   (its `peer_pick` event fell out of the newest 5000 events) is `unchanged`.
 - **Previews** (`src/lib/media-preview/`, a shared module that knows nothing about plans): `sharp` (a direct dependency since
   BL-175; Next.js already installed it) resizes an image to at most 480 px a side, `limitInputPixels` guards against decompression
